@@ -1,0 +1,340 @@
+# The platform partition's lockfile — written ONCE, at the freeze.
+
+# THE DESIGN IS `docs/product/partition-closure.md` AND IT IS THE AUTHORITY.
+# This file is that design's §2 boundary, §3 closure classes, §4 digest sections
+# and §7 always-run nets, as data. Nothing here is derived at run time except
+# each class's MEMBERS, which are globbed at hash time; the CLASSES themselves,
+# the app list and the one exclusion are a written-down record.
+
+# WHY WRITTEN DOWN RATHER THAN DERIVED (§2). A live derivation would agree with
+# whatever a clone's tree said the moment it said it, which is exactly the thing
+# the boundary exists to remember. This is the `FROZEN_FAMILIES` pattern applied
+# to apps: a record of the past, kept in a diff a human reads.
+
+# THE FAIL-SAFE DIRECTION IS LOAD-BEARING. An app NOT in `platform_apps` is
+# outside the partition and its tests ALWAYS run. There is no equality pin
+# between this list and the live app registry on either side — in a clone the
+# live registry is SUPPOSED to be a superset. A platform app added to the
+# template and forgotten here costs speed and never soundness. The one
+# directional check is cheap and loud: a name here the registry cannot find is
+# exit 2 (a closure may not claim territory it cannot see).
+
+# HOW THIS LIST WAS PRODUCED, at the freeze: the
+# publication manifest's own export census — `scripts/publish.sh`'s R1 rule
+# (`apps/* | config/* | manage.py`) read over `git ls-files` — restricted to the
+# app directories under `apps/`. The closure and the manifest are one
+# census read twice. It is not re-derived on any later run.
+
+schema: v1
+
+# --- §2 · the boundary --------------------------------------------------------
+platform_apps:
+  - accounts
+  - comms
+  - connections
+  - core
+  - events
+  - example
+  - exports
+  - files
+  - realtime
+  - search
+  - usage
+  - workflows
+
+# --- §3 · the input closure, class by class -----------------------------------
+
+# `members` are GLOBS over the tree (tracked files plus untracked-non-ignored
+# ones), expanded at hash time. `{app}` expands over `platform_apps`.
+
+# An enumerated class that matches NOTHING is exit 2, and a matched file that
+# cannot be read is exit 2 — the closure never silently narrows.
+closure_classes:
+  - id: C1
+    what: platform app code
+    members: ["apps/{app}/**"]
+    why: >-
+      the partition's own tests and the code under them, each app's `tests/`
+      and `tests/conftest.py` included.
+  - id: C2
+    what: the `apps`-package boundary files
+    members:
+      - apps/__init__.py
+      - apps/conftest.py
+      - apps/test_gate_liveness.py
+      - apps/test_temporal_guard.py
+    why: >-
+      `apps/conftest.py` is the fixture module every platform test loads — and
+      every product test too. It sits ON the boundary: a product that edits it
+      invalidates the partition, which is correct, because it changed machinery
+      the banked verdict ran on. A product extends fixtures in its own app's
+      `tests/conftest.py`, which pytest scopes by directory ancestry and the
+      platform tests never load. The two top-level test modules are platform
+      tests outside any app directory.
+  - id: C3
+    what: config/**
+    members: ["config/**"]
+    why: >-
+      settings (including `config/settings/test.py`, the environment
+      neutralization seam, and `config/settings/discovery.py`, which derives
+      INSTALLED_APPS), the mounts, the URL map, the one exception mapper.
+  - id: C4
+    what: dependency truth, and the declared environment
+    members: [pyproject.toml, uv.lock, .env.example]
+    why: >-
+      dependency behaviour — and the pytest configuration itself lives in
+      `pyproject.toml`: DJANGO_SETTINGS_MODULE, addopts, the randomization
+      policy, the liveness ceiling. `.env.example` joins them because it is the
+      REFERENCE the environment read-set check compares against (§3's non-file
+      inputs; `partition.py::reference_environment` carries the argument):
+      `base.py` calls it "the complete list" of what settings read, and a check
+      whose reference could move without the key moving would be a check that
+      quietly changed its mind about what "bent" means.
+  - id: C5
+    what: compose.yaml
+    members: [compose.yaml]
+    why: >-
+      read at test time: the chaos drill's `_pinned_image`
+      regexes the Meilisearch pin out of it, and `test_health` /
+      `test_settings` / `test_presign_matrix` read it too. Its
+      postgres/redis/temporal/meilisearch pins name the services the suite runs
+      against, which is the same class of input whether or not a test reads the
+      text.
+  - id: C6
+    what: manage.py
+    members: [manage.py]
+    why: R1's third member; the entry point test paths shell through.
+  - id: C7
+    what: the quality tree — gate data AND gate code a partition test reads
+    members: ["quality/**"]
+    why: >-
+      `apps/core/tests/test_plant_sites.py` censuses the canary/negative plant
+      sites out of `rules.yaml`; a product that grows an allow-list entry
+      (rule 3/17/25 exemptions live there) invalidates the partition — rare,
+      and honest. WIDENED FROM `rules.yaml` ALONE AT THE BUILD: the read census
+      found `apps/core/tests/test_audit_rule_seam.py` reading
+      `quality/audit_population_probe.py`, and this directory also holds the
+      partition tool itself — an edit to `partition.py` must invalidate every
+      verdict it banked, which only an in-closure `quality/**` gives.
+  - id: C8
+    what: repository files outside apps/, config/ and quality/ that a platform test reads
+    members:
+      - "scripts/**"
+      - "deploy/**"
+      - "vendor/**"
+      - TEMPLATE_VERSION
+      - CHANGELOG.md
+    why: >-
+      THE CLASS THE DESIGN'S §3 DOES NOT HAVE, added at the build by
+      `partition.py::read_census` — which is itself the tooth §3 was missing.
+      §3's class list is a hand list of an open set until something checks that
+      it covers what the partition's tests actually READ, and not one of §8's
+      canaries can notice a class that was never listed. Run for the first time
+      here, the census found eight paths: `scripts/setup.sh` and `scripts/db.sh`
+      (`test_settings.py`, `test_integrations.py`), `deploy/compose.yaml`,
+      `deploy/provision.sh`, `deploy/release.sh` and `deploy/env.staging.example`
+      (`test_settings.py`, `test_connection_pool.py`, `test_archive_retention.py`,
+      `test_integrations.py`), the vendored Scalar bundle under `vendor/scalar/`
+      (`test_api_docs.py` asserts its manifest and its artifacts), and the
+      version pair `TEMPLATE_VERSION` + `CHANGELOG.md` (`test_settings.py`,
+      `test_index.py`). Each was an out-of-closure file whose edit changes a
+      platform test's answer — a banked skip over any of them was a stale green.
+      `docs/**` is deliberately NOT here: no platform test builds a path into
+      it, and that is where a product's churn lives.
+
+# --- §3 · the ONE enumerated exclusion ----------------------------------------
+
+# A SECOND ENTRY HERE IS A DESIGN CHANGE, NOT AN EDIT.
+exclusions:
+  - path: apps/core/api/frozen_families.py
+    reason: >-
+      the product-append ledger (design §3, D1). It is the one platform file
+      whose DESIGN says a product appends to it in the commit that ships a
+      family — `scopes.py`'s own words, "a key joins this list in the commit
+      that ships it". In-closure, that append moves the closure hash on the
+      product's first door and the false red recurs. Out-of-closure, the
+      append reaches the partition through the discovery digest instead: the
+      family it freezes is itself a digest member (the `scope_families`
+      section), so the re-run it triggers is the same re-run the new family
+      already triggered.
+
+# --- §4 · the discovery digest's sections -------------------------------------
+
+# The seam census. Every platform module that performs the discovery walk shape
+# must belong to one of these sections; the AST seam census (`partition.py`)
+# exits 1 naming a walk that does not, so a future discovery seam joins the
+# digest in the commit that lands it or the gate says so.
+
+# `walks` names the modules the AST census expects to find performing a walk for
+# this section. A module performing a walk and named by NO section is the stray
+# the census refuses.
+# THE LAST THREE SECTIONS ARE THE CENSUS'S OWN FIRST FINDING. The design's §4
+# table names ten. The AST seam census, run for the first time at this build,
+# found THIRTEEN walking modules and three walked populations no section
+# covered: `policies.py` (`apps.core.authz`), `meters.py` (`apps.usage.meters`)
+# and `consumers.py` (`config.asgi`). Each is a population a product app joins
+# by dropping a conventionally named file — which is precisely the channel the
+# digest exists to close — so each joined the digest in this commit, which is
+# the mechanism §4 built the census for, working on its first run.
+digest_sections:
+  - id: apps
+    serializes: installed app labels + each AppConfig's `depends_on` and `optional`
+    walks: []
+  - id: rest
+    serializes: >-
+      the OpenAPI document, canonically serialized — paths, operations, tags,
+      schemas, docstring-derived summaries and descriptions.
+    walks: [config.api]
+  - id: mcp
+    serializes: "the tool registry: names, argument/output schemas, descriptions"
+    # `apps.core.mcp` walks the same registry to derive each tool's scope; it is
+    # a reader of this population, and this is the section that serializes it.
+    walks: [config.mcp, apps.core.mcp]
+  - id: models
+    serializes: >-
+      every registered model: label, fields with types, the scoped base it
+      inherits, `append_only`, `derive_org_from`, `InheritedDownward`.
+    # `introspect` walks models, events and routes to print them; it reads these
+    # populations and declares none of its own, so it is named once, here.
+    walks: [apps.core.management.commands.introspect]
+  - id: events
+    serializes: every app's declared event names
+    # There are no event VERSIONS in this tree — the design's §4 table says
+    # "names + versions" and the population has only names (`introspect`'s
+    # `_events_payload` says so too). Serialized as it is, not as it was hoped.
+    walks: [apps.events.events]
+  - id: search
+    serializes: the declared kinds and their `Searchable` shapes
+    walks: [apps.search.registry]
+  - id: lifecycle
+    serializes: the discovered lifecycle providers and what each declares
+    walks: [apps.core.lifecycle]
+  - id: integrations
+    serializes: >-
+      the declared integrations population — key, title, declaring module, probe
+      class. NOT `status`/`detail`/`remedy`: those are what the probes found on
+      this machine a moment ago, and a key that moved when Meilisearch went down
+      would re-run the platform suite for a reason no tree change caused.
+    walks: [apps.core.integrations]
+  - id: schedules
+    serializes: the discovered SCHEDULES entries
+    walks: [apps.workflows.client]
+  - id: scope_families
+    serializes: >-
+      `families()` and the frozen ledger — `frozen_families.py`, the §3
+      exclusion re-entering the key here.
+    walks: [apps.core.api.scopes]
+  - id: policies
+    serializes: >-
+      the discovered `policies.py` population — every action name mapped to its
+      predicate's dotted identity, plus the declared `ACTION_PROSE` keys.
+    walks: [apps.core.authz]
+  - id: meters
+    serializes: every app's declared `meters.py` names, by app label
+    walks: [apps.usage.meters]
+  - id: sockets
+    serializes: >-
+      the discovered `consumers.py` websocket URL patterns — the route and its
+      name. The fifth door had no section in the design's table.
+    walks: [config.asgi]
+
+# --- §3 · non-file inputs: the environment read-set ---------------------------
+
+# The read-set is DERIVED (an AST census over `config/settings/**` for the env
+# reads, minus the setting names `config/settings/test.py` pins), never typed.
+# A name in the derived read-set that is set to a non-default at run time means
+# the verdict RUNS and is NOT BANKED, with the name printed — banked green under
+# a bent environment is the stale-green class with no diff at all.
+environment:
+  # The declared escapes: names whose value provably cannot change a verdict
+  # ABOUT CODE, each with the reason. This list is short by construction and a
+  # new entry is an argument somebody has to make in a diff.
+  tolerated:
+    - name: DATABASE_NAME
+      reason: >-
+        the one derivation override `scripts/db.sh` honors, and the doctrine:
+        each checkout's database is derived from the checkout itself, so this
+        is set to a non-default on EVERY honest run in EVERY worktree. What it
+        names is which empty database the suite migrates into, not what the
+        suite asserts. Refusing to bank on it would mean never banking, which
+        is the dividend deleted rather than protected.
+    - name: DJB_TEST_DB_TEMPLATE
+      reason: >-
+        `scripts/test.sh` exports it when a migrated template exists for this
+        migration set (V1-e). It selects a CLONE SOURCE for a database the
+        suite then migrates-or-inherits identically; `scripts/db.sh` derives it
+        from the migration state, which is itself in-closure.
+    - name: AWS_STORAGE_BUCKET_NAME
+      reason: >-
+        derived per checkout by `scripts/rung_start.sh` for the same reason
+        DATABASE_NAME is, and pinned away from the suite by
+        `config/settings/test.py`.
+    - name: DJB_GATE_CALLER
+      reason: >-
+        the gate ledger's caller field. Read by `scripts/gate_ledger.sh`
+        and by nothing the suite asserts about.
+
+# --- §7 · the four always-run frozen nets -------------------------------------
+
+# These run on EVERY full gate, banked verdict or not. Each is inside the
+# platform partition and each is kept always-run because it is the belt for the
+# two residuals no file closure can hold — venv-vs-lock drift, and defects in
+# the skip machinery itself — applied at the highest-consequence surface the
+# platform has: the credential doors, where a silent regression is an incident.
+
+# THE LIVENESS CLAUSE: a listed net that collects zero tests is exit 2.
+always_run:
+  - path: apps/accounts/tests/test_auth_over_the_wire.py
+    catches: >-
+      the wire truth of API_AUTH under the real ASGI stack — real
+      CsrfViewMiddleware, real session cookie, real bearer path. Its founding
+      defect (queue V4: a bearer POST answering 403 "CSRF check Failed" while
+      every test was green) arrived through dependency behaviour, not through
+      any file this repo edits — the venv-drift class, live at the front door.
+  - path: apps/accounts/tests/test_a9_matrix.py
+    catches: >-
+      the twenty-two enumerated identity properties as a countable matrix — the
+      regression net over the identity engine, the layer most coupled to
+      installed dependency versions (allauth, jwt) and least visible in any diff
+      of ours.
+  - path: apps/accounts/tests/test_rp_login.py
+    catches: >-
+      the browser door end to end against a real in-process OpenID Connect
+      issuer: allauth's state store, PKCE verifier, token exchange, `jwt.decode`
+      with issuer/audience/expiry enforced. Protocol-level behaviour that
+      changes under a dependency bump the lock records but a drifted venv does
+      not honor.
+  - path: apps/accounts/tests/test_mcp_oauth.py
+    catches: >-
+      the machine door as an OAuth 2.1 resource server over real Streamable
+      HTTP — the same class as rp_login for the door agents use, where nobody
+      human is watching the failure happen.
+
+# --- the declared blind spots (§6's residual, restated where it is read) ------
+does_not_cover:
+  - >-
+    venv-vs-lock drift. `uv.lock` is in-closure; a virtualenv that drifts from
+    it is invisible to any file hash. §7's nets are the belt.
+  - >-
+    the live state of the compose services. The pins are in-closure (C5); the
+    daemons' state is not and cannot be. A service upgraded in place without a
+    pin change is invisible.
+  - >-
+    a hand-written migration that alters schema without touching `models.py`:
+    it changes what the model-registry digest cannot see.
+  - >-
+    an environment variable the settings read that the read-set derivation
+    misses — notably the `ANYMAIL_*` PREFIX SCAN in `config/settings/base.py`,
+    which is a comprehension over `os.environ` and names no variable an AST
+    census can collect.
+  - >-
+    a discovery seam written in a shape the AST seam census does not recognize
+    (it looks for `importlib.util.find_spec` / `import_module` over an app
+    config's own dotted name).
+  - >-
+    the canaries prove the INSTRUMENT — that the hash and the digest move when
+    they must. They do not prove the banked verdict was honest when it was
+    banked; that is the full run's own job.
+  - >-
+    the wall clock and the OS. Declared, unmitigated, the same as every other
+    suite in this tree.

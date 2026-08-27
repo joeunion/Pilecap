@@ -1,0 +1,54 @@
+{% comment %}
+The sign-in page's body: **a button, or a sentence — never nothing**.
+
+WHAT WAS WRONG. `SOCIALACCOUNT_ONLY = True` removes allauth's local login form,
+which is correct — this deployment signs people in through Zitadel and there is
+no password of ours to type. But allauth's own `account/login.html` renders the
+provider list only `{% if socialaccount_providers %}`, and a fresh clone has
+none until `./scripts/setup.sh` has run and put a client id in `.env`. So the
+page came back 200 with a heading and nothing under it. Measured on the tree
+this landed against: 895 bytes whose entire visible text was
+"Sign In Menu: Sign In Sign In". A person following an invitation arrived
+there and had no next move, and nothing on the page said why.
+
+The fix is the `{% else %}`. A page that cannot let you in should say what is
+missing and who fixes it — the operator, with one command — rather than look
+broken.
+
+WHY THIS FILE IS INCLUDED RATHER THAN BEING `account/login.html` ITSELF.
+Django's app-directories loader walks `INSTALLED_APPS` in order, and
+`config/settings/base.py` builds that list as DJANGO + THIRD_PARTY + LOCAL —
+so `allauth`'s templates are found before any app under `apps/`, and an
+`account/login.html` here would never be reached. Measured, not assumed:
+`get_template("account/login.html")` resolved to allauth's copy with this
+directory present. The override therefore sits in `templates/`, the
+project-level directory `TEMPLATES["DIRS"]` already declares and which is
+searched before every app — and it is four lines, so that everything worth
+reading is here, in the app that owns the doors.
+{% endcomment %}
+{% load allauth socialaccount %}
+{% get_providers as socialaccount_providers %}
+{% if socialaccount_providers %}
+    {% comment %}
+    allauth's own snippet, unchanged. Measured on the served stack: it renders
+    one link per configured provider with the provider's name as the link text
+    (`<a title="Zitadel" href="/accounts/oidc/zitadel/login/?process=login">Zitadel</a>`),
+    which is a button a person can see and click. There is nothing wrong with
+    this half — the bug was only ever the missing `{% else %}` below — so it is
+    included rather than reimplemented, and a product restyling its sign-in page
+    overrides allauth's element templates the way allauth documents.
+    {% endcomment %}
+    {% include "socialaccount/snippets/provider_list.html" with process="login" %}
+    {% include "socialaccount/snippets/login_extra.html" %}
+{% else %}
+    <p>
+        This deployment has no sign-in provider configured yet, so there is
+        nothing here to sign in with.
+    </p>
+    <p>
+        Whoever runs it fixes that by running <code>./scripts/setup.sh</code>,
+        which registers this application with the identity platform and writes
+        the client id into <code>.env</code>. Until then no invitation can be
+        completed and no account can be reached.
+    </p>
+{% endif %}

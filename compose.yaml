@@ -1,0 +1,428 @@
+# The services a laptop needs to run the product. The web process and the
+# Temporal worker run on the host, against these.
+#
+# Temporal is the CLI's own dev server (`temporal server start-dev`), not the
+# `auto-setup` image: one container instead of three, gRPC on 7233 and the web
+# UI on 8233, and its state in a file on a named volume so a restart keeps the
+# workflow history. The auto-setup image with its own Postgres is what a
+# production-shaped deployment uses; a laptop does not need it.
+#
+# The project name is pinned rather than derived from the directory, because a
+# git worktree is a different directory with the same compose file: without
+# this, `docker compose up` in a worktree would start a *second* stack fighting
+# for 5432, 6379 and 7233. One name, one stack, every worktree.
+#
+# NOT derived from PRODUCT_NAME, and deliberately: this is infrastructure
+# identity — every container, network and volume on your machine keys on it, so
+# changing it orphans the running stack and its data (ADR platform-1 in
+# docs/product/architecture.md — the one recorded exception).
+name: djangobootstrap
+
+services:
+  db:
+    # ADR deploy-1 · THE TEMPLATE TARGETS POSTGRES 18.
+    # Context: RDS staging runs 18.3, every pinned client in this tree was 16.10,
+    # `pg_dump` refuses cross-major outright ("aborting because of server version
+    # mismatch"), and `provision.sh infra` passed no --engine-version, so AWS's
+    # default decided which major a product got. Decision: pin 18 everywhere in one
+    # breath — the live instance is the fact on the ground, client moves are cheap,
+    # a pg_dump 18 reads 16 worlds, and 18 has the longer EOL runway. Rejected: pin
+    # 16.10 and rebuild RDS (an owner-approval infra act, to buy a shorter-lived
+    # major); no pin at all (that is the finding). Revisit trigger: a stack
+    # component refusing 18 — a stop-and-report for whichever rung finds it.
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-djb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-djb}
+      POSTGRES_DB: ${POSTGRES_DB:-djb_main}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # PG 18 MOVED THE MOUNT POINT, and the image refuses rather than guessing.
+      # 18+ stores data in MAJOR-VERSION-SPECIFIC subdirectories under
+      # /var/lib/postgresql (…/18/docker), matching how `pg_ctlcluster` and a
+      # real Postgres installation work, so `pg_upgrade --link` can run without
+      # crossing a mount boundary. A volume mounted at the old
+      # /var/lib/postgresql/data makes the container exit 1 with "in 18+, these
+      # Docker images are configured to store database data in a format which is
+      # compatible with pg_ctlcluster" — which is what it did here on the first
+      # 18 boot. The mount moves up one level; the volume is otherwise unchanged.
+      # Consequence, stated: a 16-era db_data volume cannot be reused across this
+      # pin. There is no in-place upgrade path in this template — a laptop stack
+      # is recreated (`deploy/teardown.sh --all-mine`), and a real environment's
+      # database is RDS, where the major is AWS's to move.
+      - db_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-djb} -d ${POSTGRES_DB:-djb_main}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  temporal:
+    # Pinned: `latest` is the CLI's rolling tag, and a laptop that silently
+    # moves a server version between two worktrees is a debugging session
+    # nobody asked for. 1.8.2 ships Temporal server 1.31.2 / UI 2.50.1.
+    image: temporalio/temporal:1.8.2
+    restart: unless-stopped
+    command:
+      - server
+      - start-dev
+      - --ip
+      - 0.0.0.0
+      - --ui-ip
+      - 0.0.0.0
+      - --db-filename
+      - /home/temporal/temporal.db
+      - --namespace
+      - ${TEMPORAL_NAMESPACE:-default}
+    ports:
+      - "127.0.0.1:7233:7233"
+      - "127.0.0.1:8233:8233"
+    volumes:
+      - temporal_data:/home/temporal
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  mailpit:
+    # Every email the product sends on a laptop, caught and readable at
+    # http://127.0.0.1:8025 instead of delivered. It is here rather than the
+    # console backend because an email is a rendered document — a subject line
+    # that is too long, an HTML alternative that does not match the text one, a
+    # link that points at the wrong host — and none of that is visible in a
+    # terminal dump of the MIME source.
+    #
+    # Nothing leaves this container: Mailpit accepts SMTP and stores. A laptop
+    # that could accidentally send a real invitation to a real customer while
+    # somebody was testing is the failure this removes.
+    #
+    # Pinned to the patch, like Temporal and the collector are, so two worktrees
+    # never see two versions.
+    image: axllent/mailpit:v1.30.7
+    restart: unless-stopped
+    environment:
+      # Accept whatever credentials a client offers, over plain SMTP: this
+      # listens on loopback only and stores what it receives, so an auth
+      # mechanism here would be configuration to get wrong rather than
+      # protection. Production sends through a real provider.
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+      MP_MAX_MESSAGES: 5000
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+    volumes:
+      - mailpit_data:/data
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  zitadel:
+    # The identity system (ADR ident-1). It is not a convenience: every
+    # interactive login, the MCP door's OAuth 2.1 authorization server and every
+    # customer's IdP hang off this container, so a laptop that cannot start it
+    # cannot run the product.
+    #
+    # Pinned to the patch, like Temporal and Mailpit are: v4.17.1 is the current
+    # stable release of the v4 line (2026-08-14). `latest` would move a
+    # first-instance bootstrap and a token format between two worktrees, and an
+    # identity provider that changes underneath a half-finished OIDC flow is the
+    # debugging session the Temporal pin's comment already refuses.
+    image: ghcr.io/zitadel/zitadel:v4.17.1
+    restart: unless-stopped
+    # `start-from-init` is init + setup + start in one command, and all three
+    # are idempotent: a container that is recreated against an existing database
+    # migrates what needs migrating and starts. The masterkey encrypts secrets
+    # at rest in Postgres — from the environment, never an argument, so it is
+    # not in `docker inspect` or the process table.
+    command: start-from-init --masterkeyFromEnv --tlsMode disabled
+    # Root, because the first-instance bootstrap writes the machine user's PAT
+    # to the bootstrap volume and the distroless image's default user cannot.
+    # The volume never leaves this laptop; see scripts/setup.sh for what reads it.
+    user: "0"
+    environment:
+      ZITADEL_MASTERKEY: ${ZITADEL_MASTERKEY:-djb-local-development-masterkey!}
+      # Where Zitadel thinks it is. This is not cosmetic: the issuer in the
+      # discovery document, every redirect and every token audience are built
+      # from these three, so they must name the address a browser on this
+      # laptop actually types — http://localhost:8081.
+      ZITADEL_EXTERNALDOMAIN: ${ZITADEL_EXTERNALDOMAIN:-localhost}
+      ZITADEL_EXTERNALPORT: ${ZITADEL_EXTERNALPORT:-8081}
+      ZITADEL_EXTERNALSECURE: ${ZITADEL_EXTERNALSECURE:-false}
+      ZITADEL_PORT: 8080
+      ZITADEL_TLS_ENABLED: false
+      # Off. Zitadel's service ping reports instance ids, domains and resource
+      # counts to zitadel.com daily, and it is on by default; a laptop running
+      # somebody's product is not a telemetry source. Nothing leaves this
+      # container, the way nothing leaves Mailpit.
+      ZITADEL_SERVICEPING_ENABLED: false
+      # A dedicated `zitadel` database on the one Postgres this repository
+      # already runs (ADR ident-1: isolation by database, not by instance — a
+      # second stateful container earns nothing on a laptop). The database and
+      # its owner do not exist on a fresh volume: `init` creates both, which is
+      # why the admin credentials below are the compose Postgres superuser's.
+      # That is the init mechanism — Zitadel's own, not a sidecar and not a
+      # line in db.sh, because it is the only one that also runs when somebody
+      # types `docker compose up -d zitadel` without setup.sh.
+      ZITADEL_DATABASE_POSTGRES_HOST: db
+      ZITADEL_DATABASE_POSTGRES_PORT: 5432
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: ${ZITADEL_DATABASE_USER:-zitadel}
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${ZITADEL_DATABASE_PASSWORD:-zitadel}
+      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: ${POSTGRES_USER:-djb}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${POSTGRES_PASSWORD:-djb}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
+      # The admin connection has to land somewhere that already exists to be
+      # able to create the one that does not.
+      ZITADEL_DATABASE_POSTGRES_ADMIN_EXISTINGDATABASE: postgres
+      # The first instance, created once, on an empty database. The human is a
+      # way in to the console; the machine user is what OUR services
+      # authenticate the management API with (ident-2: the console is not a
+      # door — this PAT is).
+      # Display names, so they derive from PRODUCT_NAME (ADR platform-1 in
+      # docs/product/architecture.md): set PRODUCT_NAME in .env and the
+      # first instance is named after the product. ZITADEL_ORG_NAME still wins
+      # when a deployment needs the org to differ from the product's name.
+      # The USERNAMES below do not derive: they are login identifiers, and a
+      # first instance is created once — renaming one is an account migration,
+      # not a setting.
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: ${ZITADEL_ORG_NAME:-${PRODUCT_NAME:-Pilecap}}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: ${ZITADEL_ADMIN_USERNAME:-zitadel-admin@djangobootstrap.localhost}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${ZITADEL_ADMIN_PASSWORD:-Password1!}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: false
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: ${ZITADEL_MACHINE_USERNAME:-djb-platform}
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: ${PRODUCT_NAME:-Pilecap} platform service account
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: ${ZITADEL_MACHINE_PAT_EXPIRES_AT:-2099-01-01T00:00:00Z}
+      # The PAT is written here, on a named volume — never into the tree, and
+      # never into an image. scripts/setup.sh copies it out into .env (which is
+      # gitignored) as ZITADEL_PAT, which is how settings and the management
+      # client read it.
+      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/machine.pat
+      # --- CLASSIC LOGIN, PINNED (classic-login-pin) -----------------------
+      # v4 routes OIDC `authorize` to Login V2, which is a SEPARATE CONTAINER
+      # this stack does not ship — so without this line the browser sign-in
+      # button redirects to `/ui/v2/login/login?authRequest=…` and gets a 404,
+      # and NO sign-in can complete on any laptop: the quickstart's step 1,
+      # invitation acceptance and the /mcp OAuth flow all die behind it.
+      # The reasoning, the spelling read out of the image's own defaults.yaml,
+      # and the re-worded adoption trigger live in ONE place —
+      # `deploy/compose.yaml`, at this same key. Read it there before changing
+      # this. The half that matters here: `DefaultInstance` applies WHEN THE
+      # INSTANCE IS CREATED, so this line fixes a fresh volume and does
+      # nothing to an instance that already exists; `scripts/setup.sh` repairs
+      # those through the feature API.
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: ${ZITADEL_LOGIN_V2_REQUIRED:-false}
+    ports:
+      # Loopback only, like every other service here. 8081 rather than
+      # Zitadel's own 8080, which the ClickStack UI already publishes: two
+      # services fighting for a port is not a debugging session either.
+      - "127.0.0.1:${ZITADEL_EXTERNALPORT:-8081}:8080"
+    volumes:
+      - zitadel_bootstrap:/zitadel/bootstrap
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # The binary's own readiness command — the image is distroless, so there
+      # is no shell and no curl to ask with.
+      test: ["CMD", "/app/zitadel", "ready"]
+      interval: 3s
+      timeout: 5s
+      # Generous: the first start on an empty database runs every migration and
+      # the first-instance bootstrap before it answers.
+      retries: 60
+      start_period: 10s
+
+  minio:
+    # The S3-compatible object store a laptop, a worktree and CI upload to
+    # (ADR files-2, STACK RULING ING-1 in docs/product/adrs-ingredients.md).
+    # Production is real S3 — one seam speaks boto3 to both — and this
+    # container is what makes the two-phase presigned upload contract
+    # exercisable without AWS credentials and without a network, which is the
+    # hermetic property worktree-per-rung exists for. The rejected alternative
+    # is not "MinIO or nothing": it is "S3 even in dev" (every worktree needs
+    # real credentials) or "local disk in dev" (local disk cannot presign at
+    # all, so the whole upload contract would have no local implementation).
+    #
+    # LICENCE, NAMED HERE RATHER THAN INHERITED: MinIO is AGPL-3.0. It is a
+    # container we run, never code we link or ship — no product artifact
+    # contains it and every deployment past a laptop points the same seam at
+    # S3 — so the copyleft does not reach the product. House rule 23's licence
+    # leg reads Python distributions and cannot see a compose image; this
+    # paragraph is the disposition, recorded where the choice is made rather
+    # than left for a reviewer to re-derive.
+    #
+    # NO BUCKET IS BOOTSTRAPPED HERE, and deliberately. The bucket name is
+    # derived per checkout the way `DATABASE_NAME` is, so two worktrees and
+    # every xdist worker never meet in one bucket — which means a sidecar here
+    # could only create a bucket with a name nobody uses, while reading as
+    # setup that had happened. The storage seam finds-or-creates its own
+    # bucket (ING-1's F1 rung); `AWS_STORAGE_BUCKET_NAME` ships empty in
+    # `.env.example` until it does, and an empty bucket name is what keeps
+    # uploads on the local filesystem in the meantime.
+    #
+    # Pinned to the release, like Temporal, Mailpit and Zitadel are: a store
+    # whose S3 dialect moved between two worktrees would be a debugging
+    # session nobody asked for. 2025-09-07 is the newest release published to
+    # Docker Hub.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      # Published development credentials, worth exactly nothing and meant to
+      # be — `.env.example` carries them and the boundary comment in
+      # `config/settings/guards.py` records that nothing refuses them, because
+      # no settings module reads MINIO_ROOT_*: they configure this container
+      # and nothing else. The app-side pair is AWS_ACCESS_KEY_ID /
+      # AWS_SECRET_ACCESS_KEY, which a real deployment leaves empty so boto3
+      # finds an instance role instead.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # Off, like Zitadel's service ping: a laptop running somebody's product
+      # is not a place that phones home for update notices.
+      MINIO_UPDATE: "off"
+    ports:
+      # 9000 is the S3 API — the address `AWS_S3_ENDPOINT_URL` names. 9001 is
+      # the operator console. Loopback only, like every other service here.
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      # `mc` is the only client in this image — there is no curl and no wget —
+      # and `mc ready local` is MinIO's own readiness command against the
+      # server in this container. It is what the vendor's own compose example
+      # uses, for the same reason Zitadel's healthcheck is `/app/zitadel ready`.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  meilisearch:
+    # The search engine (ADR search-2, the owner's ruling of 2026-08-22). One
+    # small container beside ClickStack, Zitadel and MinIO; the app reaches it
+    # through the one fenced client in `apps/search`, and Postgres full-text is
+    # the designed degradation engine behind it.
+    #
+    # DELIBERATELY NOT A `/readyz` DEPENDENCY, and the reason is in
+    # `apps/core/health.py`'s `checks()`: Meilisearch down means search is
+    # slower and plainer, never dead, so a readiness member here would convert
+    # a designed degradation into a self-inflicted outage — every replica in
+    # the fleet reporting unhealthy because search got worse. It is the one
+    # service in this file that is intentionally invisible to readiness.
+    #
+    # Pinned to the patch rather than to the minor the ADR asked for. That is
+    # the stronger of the two and it is the house precedent (Temporal, Mailpit,
+    # Zitadel): `v1.53` moves under a running worktree when a patch ships,
+    # `v1.53.1` does not.
+    image: getmeili/meilisearch:v1.53.1
+    restart: unless-stopped
+    environment:
+      # Published development value, worth exactly nothing — see
+      # `.env.example` and the boundary comment in `config/settings/guards.py`.
+      # Production injects a real one from Secrets Manager, per the standing
+      # AWS posture. With a key set, Meilisearch requires it on every request
+      # even in development mode, which is what keeps dev and prod the same
+      # shape rather than "no auth locally, auth in production".
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-djb-local-development-meili-master-key}
+      # `development` enables the bundled search preview on 7700 and relaxes
+      # nothing about the key above. Production runs `production`.
+      MEILI_ENV: ${MEILI_ENV:-development}
+      # Off, like Zitadel's service ping and MinIO's update check. Nothing
+      # leaves this container.
+      MEILI_NO_ANALYTICS: "true"
+    ports:
+      - "127.0.0.1:7700:7700"
+    volumes:
+      - meili_data:/meili_data
+    healthcheck:
+      # `/health` is Meilisearch's own unauthenticated readiness endpoint — it
+      # takes no master key, which is exactly what a compose healthcheck needs.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7700/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # --- The one sink, behind a profile ---------------------------------------
+  #
+  #   docker compose --profile observability up -d
+  #   OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 ./scripts/serve.sh
+  #
+  # Off by default because it is two more containers and a ClickHouse, and the
+  # everyday loop does not need them: with no endpoint set the app still traces
+  # (so `trace_id` is on every log line) and simply does not ship. Turn the
+  # profile on when you are actually reading traces — and in CI never.
+  #
+  # ClickStack (HyperDX) is the sink `architecture.md` ruled: logs, traces and
+  # metrics in one place, over one protocol, queried together. The UI is on
+  # http://127.0.0.1:8080.
+
+  otel-collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    environment:
+      CLICKSTACK_API_KEY: ${CLICKSTACK_API_KEY:-local-development-ingestion-key}
+    volumes:
+      - ./compose/otel-collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    depends_on:
+      - clickstack
+
+  clickstack:
+    profiles: ["observability"]
+    # ClickStack all-in-one: ClickHouse, the HyperDX UI and its own OTLP
+    # ingestion in one container. Pinned rather than `latest`, for the same
+    # reason the Temporal image is: a sink that changes its schema between two
+    # worktrees is a debugging session nobody asked for.
+    image: docker.hyperdx.io/hyperdx/hyperdx-all-in-one:2.10.0
+    restart: unless-stopped
+    environment:
+      HYPERDX_API_KEY: ${CLICKSTACK_API_KEY:-local-development-ingestion-key}
+    ports:
+      # The UI only. OTLP stays on the internal network: the app talks to the
+      # collector, and the collector is the only thing that talks to the sink.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - clickstack_data:/data/db
+
+volumes:
+  db_data:
+  redis_data:
+  temporal_data:
+  mailpit_data:
+  # Zitadel's own state is in the `zitadel` database on `db`; this volume holds
+  # only the machine user's PAT, written once by the first-instance bootstrap.
+  zitadel_bootstrap:
+  clickstack_data:
+  # Uploaded objects on a laptop. The only copy — a laptop's uploads are not
+  # backed up, the way a laptop's database is not.
+  minio_data:
+  # The search indexes. NOT BACKED UP, ON PURPOSE (ADR search-2): every
+  # document in here is a projection of rows that live in Postgres, so the
+  # recovery path for a lost volume is a reindex, not a restore. A backup would
+  # be a second copy of derived data that can silently go stale.
+  meili_data:

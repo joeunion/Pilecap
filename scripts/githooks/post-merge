@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Post-merge: measure the tree the merge just produced, the moment it lands.
+#
+# WHY A MERGE NEEDS ITS OWN HOOK. Every other gate tier is armed at a
+# moment somebody CHOSE: pre-commit fires on a commit, pre-push on a push. A
+# merge is neither — `git merge` writes a tree nobody staged and nobody typed,
+# and until now the first thing that measured it was the next commit or the
+# next push, whichever a human happened to reach for. So the window between
+# "two green branches" and "the green merge of them" was unmeasured, and a
+# semantic conflict — two rungs that pass alone and disagree together — lived
+# in that window. This closes it: the merge lands, the tree is measured.
+#
+# --fast AND NOT THE FULL GATE, deliberately. A post-merge hook that took three
+# minutes would be a hook people learn to work around, and working around a
+# gate is worse than not having one. The full gate still binds at push, where
+# the verdict ledger already makes a measured-green tree cheap. This tier is
+# the static legs — the ones that catch a merge that does not even import.
+#
+# REDIRECTED TO A FILE, AND NOT `exec`'d BARE — which is a correction, not a
+# preference (observed on this hook's first real firing). The gate REFUSES a
+# piped stdout with exit 2, on purpose: a filtered gate is broken enforcement.
+# A hook does not choose how its stdout is attached — git hands it whatever the
+# caller had — so under an agent or any tooling that runs git with a pipe, this
+# hook was handing the gate a pipe and getting the refusal line back INSTEAD OF
+# A MEASUREMENT. Every merge through that path printed "the gate refuses pipes"
+# and measured nothing, which is precisely the shape of not-measuring that looks
+# like output.
+#
+# `> "$LOG" 2>&1` is the escape the gate itself documents ("run it bare or
+# redirect to a file"): a file is not a pipe, so the gate runs, and it runs the
+# same way whoever invoked git was holding stdout. The cost is that this hook
+# can no longer `exec` — something has to happen after the gate to surface the
+# result — so the status is carried explicitly instead, and the ONLY thing
+# between the gate and the exit is reading a file.
+#
+# WHAT GIT DOES WITH A NONZERO EXIT, stated because it surprises people: NOTHING
+# IS UNDONE. `post-merge` runs after the merge commit exists, so a red here does
+# not roll it back and cannot — it is a REPORT, loud and immediate, that the
+# tree you are now sitting on does not pass. That is still worth having: the
+# alternative is finding out later, with more commits stacked on top, which is
+# precisely how a bad merge becomes expensive.
+#
+# `$1` is 1 when the merge was a squash. Ignored on purpose — a squash merge
+# produces a tree exactly as much in need of measuring as any other.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+# The same neutralisation `pre-push` carries, for the same reason and with the
+# same measured no-op on this hook's own discovery. An inherited GIT_DIR
+# overrides every `-C` in every child of this hook. See scripts/githooks/pre-push.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+echo "post-merge: measuring the tree this merge produced (--fast; the full gate binds at push)"
+
+# 0700 by mktemp, and it holds nothing secret anyway — the gate prints findings,
+# not credentials. Kept on RED so it can be read, removed on green.
+LOG="$(mktemp "${TMPDIR:-/tmp}/djb-post-merge.XXXXXX")"
+
+set +e
+./scripts/check.sh --fast >"$LOG" 2>&1
+RC=$?
+set -e
+
+if [ "$RC" -eq 0 ]; then
+    # The gate's OWN verdict line, not one of this hook's invention: a hook that
+    # composed its own "all good" would be a second writer for the same claim.
+    # `^ok:` and not `tail -1`, because the gate's last line is its footer about
+    # which tier binds where — true, and not the verdict somebody is looking for.
+    grep -E '^ok: ' "$LOG" || tail -1 "$LOG"
+    rm -f "$LOG"
+    exit 0
+fi
+
+# RED (or exit 2, enforcement broken). Surface enough to act on without
+# reprinting a gate run nobody asked to re-read, and say where the whole of it
+# is. The tail is deliberately generous: the gate names its failing leg near the
+# end, and a tail too short to include it would send the reader hunting.
+echo "" >&2
+if [ "$RC" -eq 2 ]; then
+    echo "!! post-merge: ENFORCEMENT BROKEN (exit 2) on the tree this merge produced." >&2
+else
+    echo "!! post-merge: --fast is RED (exit ${RC}) on the tree this merge produced." >&2
+fi
+echo "   The merge commit ALREADY EXISTS — git runs this hook after the fact and" >&2
+echo "   nothing here undoes it. Fix forward, or reset if the merge is not yet pushed." >&2
+echo "" >&2
+tail -40 "$LOG" >&2
+echo "" >&2
+echo "   full output: ${LOG}" >&2
+exit "$RC"

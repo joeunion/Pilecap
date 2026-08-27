@@ -1,0 +1,126 @@
+{
+  "filters": [],
+  "name": "The pipe — one id, door to delivery",
+  "tags": [
+    "djb",
+    "the-pipe"
+  ],
+  "tiles": [
+    {
+      "config": {
+        "displayType": "line",
+        "granularity": "auto",
+        "groupBy": "ServiceName",
+        "name": "Log lines by service — is the worker a ghost?",
+        "select": [
+          {
+            "aggFn": "count",
+            "alias": "lines",
+            "valueExpression": ""
+          }
+        ],
+        "sourceName": "Logs",
+        "where": "",
+        "whereLanguage": "sql"
+      },
+      "h": 3,
+      "id": "lines-by-service",
+      "w": 6,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "config": {
+        "displayType": "line",
+        "granularity": "auto",
+        "groupBy": "LogAttributes['door']",
+        "name": "Writes by door — rest / mcp / socket / workflow / webhook / admin / shell",
+        "select": [
+          {
+            "aggFn": "count",
+            "alias": "writes",
+            "valueExpression": ""
+          }
+        ],
+        "sourceName": "Logs",
+        "where": "endsWith(LogAttributes['event'], '.called')",
+        "whereLanguage": "sql"
+      },
+      "h": 3,
+      "id": "writes-by-door",
+      "w": 6,
+      "x": 6,
+      "y": 0
+    },
+    {
+      "config": {
+        "displayType": "line",
+        "granularity": "auto",
+        "groupBy": "LogAttributes['event']",
+        "name": "Delivery outcomes — succeeded, failed, dead-lettered",
+        "select": [
+          {
+            "aggFn": "count",
+            "alias": "deliveries",
+            "valueExpression": ""
+          }
+        ],
+        "sourceName": "Logs",
+        "where": "LogAttributes['event'] LIKE 'events.delivery.%'",
+        "whereLanguage": "sql"
+      },
+      "h": 3,
+      "id": "delivery-outcomes",
+      "w": 6,
+      "x": 0,
+      "y": 3
+    },
+    {
+      "config": {
+        "displayType": "line",
+        "granularity": "auto",
+        "groupBy": "ServiceName",
+        "name": "Errors and warnings — the number that should be zero",
+        "select": [
+          {
+            "aggFn": "count",
+            "alias": "bad",
+            "valueExpression": ""
+          }
+        ],
+        "sourceName": "Logs",
+        "where": "SeverityText IN ('error', 'fatal', 'warn')",
+        "whereLanguage": "sql"
+      },
+      "h": 3,
+      "id": "errors",
+      "w": 6,
+      "x": 6,
+      "y": 3
+    },
+    {
+      "config": {
+        "displayType": "line",
+        "granularity": "auto",
+        "groupBy": "SpanName",
+        "name": "Workflow activity latency, p95 (ms) — what waits, and how long",
+        "select": [
+          {
+            "aggFn": "quantile",
+            "alias": "p95_ms",
+            "level": 0.95,
+            "valueExpression": "Duration/1e6"
+          }
+        ],
+        "sourceName": "Traces",
+        "where": "SpanName LIKE 'RunActivity:%'",
+        "whereLanguage": "sql"
+      },
+      "h": 3,
+      "id": "activity-latency",
+      "w": 12,
+      "x": 0,
+      "y": 6
+    }
+  ]
+}

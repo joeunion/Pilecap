@@ -1,0 +1,12 @@
+{
+  "name": "03 · The worker's half — everything that waits",
+  "orderBy": "Timestamp DESC",
+  "select": "Timestamp, LogAttributes['event'], LogAttributes['correlation_id'], LogAttributes['tenant_id'], Body",
+  "sourceName": "Logs",
+  "tags": [
+    "djb",
+    "the-pipe"
+  ],
+  "where": "ServiceName = 'worker'",
+  "whereLanguage": "sql"
+}

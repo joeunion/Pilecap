@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Pre-commit: the fast static legs, unpiped, exit code trusted.
+# `scripts/setup.sh` wires core.hooksPath to scripts/githooks.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+# The same neutralisation `pre-push` carries, for the same reason and with the
+# same measured no-op on this hook's own discovery. git exports GIT_DIR
+# — and for a commit, GIT_INDEX_FILE — into a hook whenever it could not have
+# rediscovered them from the cwd, and an inherited one overrides every `-C` in
+# every child. See scripts/githooks/pre-push for the mechanism.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+exec ./scripts/check.sh --fast

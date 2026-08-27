@@ -1,0 +1,49 @@
+# THE DUMMY DESTINATION — laptop only, and it stands in for one thing.
+#
+#   DJB_HTTP_PORT=8080 DJB_HTTPS_PORT=8443 \
+#   docker compose -p djb-a1s \
+#     -f deploy/compose.yaml \
+#     -f deploy/compose.second.yaml \
+#     -f deploy/observability/alerts/compose.sink.yaml \
+#     --profile laptop up -d
+#
+# ONE CONTAINER: an HTTP request logger that answers 200 and writes every POST
+# it received to a JSONL file, so a criterion can COUNT the alerts that left
+# ClickStack instead of taking a screenshot's word for it.
+#
+# WHAT IT STANDS IN FOR, exactly: a real Slack incoming webhook, whose URL a
+# deployment supplies. The CONTRACT is the Secrets Manager slot —
+# `<namespace>/<env>/env`, key `SLACK_WEBHOOK_URL` — and `apply.py` reads whatever
+# is in that variable. On a laptop it is `http://alerts-dummy:9099/hook`; on
+# staging it is the real Slack URL. Nothing else about the definitions changes,
+# which is the whole reason `definitions.json` uses a `generic` webhook whose
+# body is `{"text": ...}`: one shape, two destinations.
+#
+# WHAT IT DOES NOT SHOW, written here rather than discovered later: it shows
+# the POST leaves ClickStack with the right body. It does not show Slack
+# accepts it. That takes a real webhook and a live performance.
+#
+# IT PUBLISHES NOTHING. The dummy is reachable only on the compose network,
+# like every organ but Caddy. Read its log through the container:
+#
+#   docker compose -p djb-a1s exec alerts-dummy cat /var/log/dummy/requests.jsonl
+#   docker compose -p djb-a1s logs alerts-dummy
+
+services:
+  alerts-dummy:
+    # The same discipline as everything else here: an exact tag. stdlib only,
+    # so there is nothing to install and nothing to build — the file a reviewer
+    # reads is the file that runs.
+    image: python:3.12.11-alpine
+    restart: unless-stopped
+    command: ["python3", "/alerts/dummy_receiver.py"]
+    environment:
+      DUMMY_PORT: "9099"
+      DUMMY_LOG: /var/log/dummy/requests.jsonl
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./observability/alerts:/alerts:ro
+      - alerts_dummy_log:/var/log/dummy
+
+volumes:
+  alerts_dummy_log:

@@ -1,0 +1,12 @@
+{
+  "name": "06 · Every write, through every door",
+  "orderBy": "Timestamp DESC",
+  "select": "Timestamp, ServiceName, LogAttributes['door'], LogAttributes['event'], LogAttributes['actor_kind'], LogAttributes['tenant_id'], LogAttributes['correlation_id']",
+  "sourceName": "Logs",
+  "tags": [
+    "djb",
+    "the-pipe"
+  ],
+  "where": "endsWith(LogAttributes['event'], '.called')",
+  "whereLanguage": "sql"
+}

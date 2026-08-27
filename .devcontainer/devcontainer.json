@@ -1,0 +1,178 @@
+// A room for `./scripts/setup.sh` to run in — never a second way to set this
+// repository up. Everything a fresh clone needs is already in that script, and
+// the one thing it cannot supply is the machine underneath it: Python 3.12,
+// `uv`, and a Docker daemon it can bring the compose stack up on. This file
+// supplies exactly those three and then calls the script.
+//
+// The reading order, if you are here to change something:
+//   * `Dockerfile` beside this file — the pinned Python and the pinned `uv`.
+//   * `scripts/setup.sh` — what actually happens on create. Not here.
+//   * `compose.yaml` — the services, and the ports below.
+//   * `devcontainer-lock.json` — the two features below, pinned to the exact
+//     digests a real boot was proven on. It is this file's `uv.lock`: a later
+//     create resolves what was measured, not what the tag moved to. `devcontainer
+//     upgrade` is what rewrites it, deliberately, when somebody means to.
+//
+// devcontainer.json is JSONC: comments are part of the format.
+{
+	// The window's display name. devcontainer.json is not interpolated from
+	// `.env`, so this is the one name-bearing surface a product edits BY HAND
+	// when it sets PRODUCT_NAME (ADR platform-1 in
+	// docs/product/architecture.md). It is cosmetic: nothing keys on it.
+	"name": "Pilecap",
+
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+
+	"features": {
+		// The `vscode` user, `sudo` and a usable shell. The base image is the plain
+		// Python one (see `Dockerfile` for why), which has no non-root user of its
+		// own, and a container that edits a bind-mounted workspace as root leaves
+		// root-owned files behind on a Linux host.
+		"ghcr.io/devcontainers/features/common-utils:2": {
+			"installZsh": true,
+			"username": "vscode",
+			"userUid": "automatic",
+			"userGid": "automatic",
+			"upgradePackages": false
+		},
+
+		// DOCKER-IN-DOCKER, AND THE CHOICE IS NOT A PREFERENCE. `compose.yaml`
+		// publishes every service on `127.0.0.1` — 5432, 6379, 7233, 8081 — and
+		// `.env.example` points the app at `127.0.0.1`/`localhost` to match. With
+		// docker-OUTSIDE-of-docker (the host's socket bind-mounted in) those
+		// publishes land on the HOST's loopback, which is a different network
+		// namespace from this container's: `setup.sh` would start the stack
+		// successfully and then fail to reach its own Postgres, and the fix would
+		// be editing `.env` or `compose.yaml` — i.e. growing the second setup path
+		// this file exists to avoid.
+		//
+		// With the daemon inside, `127.0.0.1` means the same thing to the compose
+		// publish and to the app reading `.env`, and nothing in the repository
+		// changes. The cost is honest and worth stating: this stack lives on the
+		// feature's own `dind-var-lib-docker-${devcontainerId}` volume, not on your
+		// machine's daemon — so a `docker ps` outside sees nothing of it, and
+		// `compose.yaml`'s pinned project name no longer keeps you to one stack
+		// across checkouts, because each devcontainer has a daemon of its own. A
+		// rebuild re-attaches the same volume; DELETING it (VS Code's "clean up dev
+		// containers and volumes", or moving the folder, which changes the id)
+		// takes the Postgres data and the Zitadel bootstrap PAT with it. `setup.sh`
+		// is idempotent and makes both again.
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {
+			"version": "latest",
+			"moby": true,
+			// v2 is `docker compose`, the spelling every script here uses.
+			"dockerDashComposeVersion": "v2"
+		}
+	},
+
+	// THE ONE SETUP PATH, CALLED — not copied. If this line and `setup.sh` ever
+	// disagree about what a fresh clone needs, `setup.sh` is right.
+	//
+	// It takes a while on first create: it pulls Postgres, Redis, Temporal and
+	// Zitadel, waits for each healthcheck, derives this checkout's database,
+	// migrates it and seeds the identity configuration. It is also idempotent, so
+	// running it again in the terminal afterwards is always safe.
+	//
+	// Its exit status is left alone deliberately. `setup.sh` exits 1 when the
+	// Zitadel seed did not complete — the stack is up, the identity door is shut —
+	// and the create step going red there is the honest report. Do not `|| true`
+	// it: that would turn "half a machine" into "your machine is ready".
+	"postCreateCommand": "./scripts/setup.sh",
+
+	// What a browser on your machine needs to reach. The rest of the stack is
+	// consumed from INSIDE this container and is deliberately not forwarded:
+	// 6379 (Redis) and 7233 (Temporal gRPC) have no human-facing surface, 1025 is
+	// Mailpit's SMTP ear (8025 below is how you read what it caught), and 8080 is
+	// the ClickStack UI, which only exists under `--profile observability`.
+	//
+	// `serve.sh` binds uvicorn to 127.0.0.1; VS Code forwards from inside this
+	// container's namespace, so a loopback bind still arrives on your machine.
+	//
+	// 8000 IS NOT THE APP'S PORT, and this list cannot name the app's port at
+	// all. `serve.sh` DERIVES it from the checkout's absolute path (the
+	// same derivation behind the database name, the cache prefix, the task
+	// queue and the bucket), so it differs per clone and is unknowable to a
+	// static list. VS Code auto-forwards a port when something starts
+	// listening on it, which is how the derived port reaches your machine;
+	// `serve.sh` prints the URL, and `./scripts/serve.sh --print-port` prints
+	// the port alone. 8000 stays listed for the one case that IS static: a run
+	// pinned with `PORT=8000 ./scripts/serve.sh`.
+	"forwardPorts": [8000, 5432, 8025, 8081, 8233],
+
+	"portsAttributes": {
+		"8000": {
+			"label": "app on a pinned PORT=8000 (the derived port is auto-forwarded)",
+			"onAutoForward": "notify"
+		},
+		"5432": {
+			"label": "postgres (for a GUI client on your machine)",
+			"onAutoForward": "silent"
+		},
+		// Forwarded, and nothing is behind it until you ask for it: `setup.sh`
+		// starts db, redis, temporal and zitadel, and Mailpit is not in that list.
+		// `docker compose up -d mailpit` and this port answers.
+		"8025": {
+			"label": "mailpit — every email this product sends (compose up -d mailpit)",
+			"onAutoForward": "silent"
+		},
+		// 8081 ON 8081, NOT WHATEVER IS FREE. `ZITADEL_ISSUER` is
+		// `http://localhost:8081`, and that string is baked into the discovery
+		// document, every redirect and every token audience. Forwarded to a
+		// different port, the browser would be sent somewhere the issuer does not
+		// claim to be and every OAuth flow through /mcp would fail on the audience.
+		"8081": {
+			"label": "zitadel — console /ui/console",
+			"onAutoForward": "silent",
+			"requireLocalPort": true
+		},
+		"8233": {
+			"label": "temporal ui",
+			"onAutoForward": "silent"
+		}
+	},
+
+	"containerEnv": {
+		// The workspace is a bind mount; `uv`'s default hardlink from its cache
+		// cannot cross that boundary, and the fallback it warns about on every
+		// sync is this. Set it once instead of reading the warning forever.
+		"UV_LINK_MODE": "copy"
+	},
+
+	// Codespaces reads these. The stack is a Postgres, a Redis, a Temporal and a
+	// Zitadel alongside the toolchain, and the images alone are several GB — a
+	// 2-core/8GB machine will run `setup.sh` to completion and then feel like it
+	// is broken.
+	"hostRequirements": {
+		"cpus": 4,
+		"memory": "8gb",
+		"storage": "32gb"
+	},
+
+	"remoteUser": "vscode",
+
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				// The linter and formatter the gate actually runs (`check.sh`,
+				// leg 1). Anything else formatting Python here would produce a
+				// diff the gate then rejects.
+				"charliermarsh.ruff",
+				"ms-python.mypy-type-checker"
+			],
+			"settings": {
+				// `uv sync` puts it here; every `uv run` in the scripts uses it.
+				"python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+				"python.terminal.activateEnvironment": false,
+				"[python]": {
+					"editor.defaultFormatter": "charliermarsh.ruff",
+					"editor.codeActionsOnSave": {
+						"source.organizeImports": "explicit"
+					}
+				}
+			}
+		}
+	}
+}

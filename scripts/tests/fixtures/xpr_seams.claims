@@ -1,0 +1,71 @@
+# Four seam gaps from a real dispatch, as a replayable claim set.
+#
+#   ./scripts/seam_check.sh --claims scripts/tests/fixtures/xpr_seams.claims \
+#       --settings config.settings.test --verbose > /tmp/xpr.log 2>&1; echo $?
+#
+# WHY THIS FILE EXISTS. A rung was once dispatched against a brief naming four
+# `apps/files` seams the baseline tree did not have in the shape the brief
+# claimed. A builder verified all four out-of-territory, held, and the rung
+# sat ~3h serialized behind a re-dispatch. Every one was knowable from the
+# baseline tree at brief time — which is the whole argument for
+# `seam_check.sh`, and this fixture replays exactly those four.
+#
+# **The claims themselves were never committed the first time.** They were
+# replayed from the brief and reported as verdicts in a report; re-verifying
+# later required RECONSTRUCTING them from that report. A regression whose
+# input lives in a report is a regression that gets reconstructed every time
+# somebody wants it, and reconstruction is where the drift enters. So the
+# input is a file now, and the replay is one command forever.
+#
+# THE EXPECTED VERDICTS ARE PART OF THE FIXTURE, and they differ by tree:
+#
+#   against the tree the dispatch was made against:
+#       ALL FOUR DISPROVEN. That is the regression: the instrument catches, in
+#       ~1.3s, every gap that cost that dispatch three hours.
+#
+#   against today's `main`:
+#       THREE PROVEN, and G2 DISPROVEN **permanently and correctly** — the
+#       presign-only ruling (docs/product/architecture.md, ADR files-2) means
+#       `get_stream` was deliberately never built, so a brief claiming it today
+#       would still be caught. G2 is not a stale claim to be fixed; it is the
+#       case that proves the check still bites on a current tree.
+#
+# So `exit 1` is the CORRECT status here, on both trees. A run of this fixture
+# that exits 0 means G2 got built after all and this comment needs rewriting;
+# exit 2 means the check could not look, which outranks either.
+#
+# WHAT A CLAIM IS: `module.path:callable(fragment)`. The fragment lists
+# parameter NAMES and nothing else — existence and signature, never behaviour,
+# types, order or defaults (`scripts/seam_check.py`'s declared blind spots).
+
+# --- G1 — a single-object delete -------------------------------------------
+# The brief needed to delete one object. `apps/files` had only `delete_prefix`,
+# which takes a whole tenant, so the purge declaration the brief asked for
+# would have been a lie about what it could actually remove.
+apps.files.storage:delete_object(tenant, key)
+
+# --- G2 — a body read (THE PERMANENT ONE) ----------------------------------
+# The brief needed to read an archive's bytes back to keep its door
+# byte-stable. There was no such seam, and there is none today: the ratified
+# either/or resolved it the other way — the backend signs, the client
+# fetches, and the bytes never pass through us. Expected DISPROVEN forever. If
+# this ever flips to PROVEN, somebody has built a body read and ADR files-2
+# needs re-reading first.
+apps.files.storage:get_stream(tenant, key)
+
+# --- G3 — a bucket on the shipped template ---------------------------------
+# The shipped template configured no bucket, so nothing the brief wrote could
+# land anywhere on a fresh clone. This was a flagged follow-on;
+# `create_bucket_if_absent` is what closed it (and `scripts/setup.sh` calls it
+# per checkout since).
+apps.files.storage:create_bucket_if_absent()
+
+# --- G4 — bytes, not a stream (THE IMPORT-NOT-GREP CASE) -------------------
+# The memory posture. The brief assumed a streamable body; the tree had
+# `store_bytes(content: bytes)`, which would have put a whole tenant's archive
+# in a worker's RAM. **A grep for the NAME goes green on the original tree and
+# the rung holds anyway** — the name was right there. Only importing and
+# comparing the signature catches it, which is the one argument for this
+# instrument that nobody works out unprompted. `store_stream` is the seam
+# that closed it.
+apps.files.services:store_stream(actor, file, body)

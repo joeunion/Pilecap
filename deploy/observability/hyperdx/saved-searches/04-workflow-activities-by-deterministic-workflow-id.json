@@ -1,0 +1,12 @@
+{
+  "name": "04 · Workflow activities, by deterministic workflow id",
+  "orderBy": "Timestamp DESC",
+  "select": "Timestamp, ServiceName, SpanName, SpanAttributes['temporalWorkflowID'], round(Duration/1e6) AS ms, StatusCode",
+  "sourceName": "Traces",
+  "tags": [
+    "djb",
+    "the-pipe"
+  ],
+  "where": "SpanName LIKE 'RunActivity:%'",
+  "whereLanguage": "sql"
+}

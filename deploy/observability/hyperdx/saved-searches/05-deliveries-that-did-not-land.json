@@ -1,0 +1,12 @@
+{
+  "name": "05 · Deliveries that did not land",
+  "orderBy": "Timestamp DESC",
+  "select": "Timestamp, LogAttributes['event'], LogAttributes['endpoint_id'], LogAttributes['event_id'], LogAttributes['attempts'], LogAttributes['correlation_id'], Body",
+  "sourceName": "Logs",
+  "tags": [
+    "djb",
+    "the-pipe"
+  ],
+  "where": "LogAttributes['event'] IN ('events.delivery.failed', 'events.delivery.dead_lettered', 'comms.message.failed')",
+  "whereLanguage": "sql"
+}

@@ -1,0 +1,57 @@
+{% comment %}
+The HTML alternative. The text version is the message; this is a nicer
+rendering of the same words, and the two are kept saying the same thing on
+purpose — a client that shows only the text part must not see less.
+
+`{% comment %}` and not `{# … #}`: Django's hash comment is single-line only,
+and a multi-line one is not a comment at all — it is text, and it goes out in
+the email. Which it did, until Mailpit showed it.
+
+TWO BRANCHES, and both are real. `set_credentials_url` is the link
+`ProvisionInvitedPersonWorkflow` merged in after Zitadel minted an invite code:
+the person has an account with no password and this is where they choose one.
+It is EMPTY when they already sign in to this deployment and are simply being
+invited into a second tenant — there is nothing for them to set, and telling
+them to "set a password" would be a dead end. Neither branch says "sign up":
+there is no signup door here, and there was not one when the old wording
+offered it.
+{% endcomment %}
+<div style="font-family: system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.55; color: #1a1a1a;">
+  <p><strong>{{ tenant_name }}</strong> invited you to join them.</p>
+  {% if invited_by %}<p>{{ invited_by }} sent this invitation.</p>{% endif %}
+  {% if set_credentials_url %}
+    <p>
+      Your account is waiting &mdash; it has no password yet, and you are the one
+      who chooses it.
+    </p>
+    <p><a href="{{ set_credentials_url }}">Set your password and sign in</a></p>
+    <p style="color: #6a6a6a; font-size: 13px;">{{ set_credentials_url }}</p>
+    {% if link_expires_on %}
+      <p>
+        That link stops working on <strong>{{ link_expires_on }}</strong>. The
+        invitation itself stands until {{ expires_on }}, so ask
+        {% if invited_by %}{{ invited_by }}{% else %}whoever invited you{% endif %}
+        for a fresh link if you miss it.
+      </p>
+    {% else %}
+      <p>The invitation stands until {{ expires_on }}. After that, ask for a new one.</p>
+    {% endif %}
+  {% else %}
+    <p>
+      You already sign in here, so there is nothing to set up. Sign in with this
+      address &mdash; <strong>{{ email }}</strong> &mdash; and you will land in
+      {{ tenant_name }}.
+    </p>
+    <p><a href="{{ sign_in_url }}">Sign in</a></p>
+    <p>The invitation stands until {{ expires_on }}. After that, ask for a new one.</p>
+  {% endif %}
+  <p>
+    You will arrive in {{ tenant_name }} with the <strong>{{ role }}</strong> role
+    already in place.
+  </p>
+  <hr style="border: none; border-top: 1px solid #e3e3e3; margin: 24px 0;">
+  <p style="color: #6a6a6a; font-size: 13px;">
+    Sent by {{ tenant_name }} to {{ email }}. If you were not expecting this,
+    ignore it: nothing is added to your account until you use the link above.
+  </p>
+</div>

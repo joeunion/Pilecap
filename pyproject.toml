@@ -1,0 +1,412 @@
+[project]
+name = "pilecap"
+version = "0.1.0"
+description = "A template repository for starting Django products."
+requires-python = ">=3.12"
+dependencies = [
+    "django>=5.2,<5.3",
+    # The `pool` extra is `psycopg_pool`, which Django 5.2 imports when a
+    # database declares `OPTIONS["pool"]` — and this one does by default
+    # (`config/settings/base.py`, "Connection reuse"). Without it Django raises
+    # `ImproperlyConfigured` naming this exact extra the first time a
+    # connection is opened, which is a 500 on a deployment's first request. It
+    # is LGPL, like `psycopg` beside it, which the licence leg allows.
+    "psycopg[binary,pool]>=3.2",
+    # The `socialaccount` extra (oauthlib, requests, pyjwt[crypto]) is what the
+    # Google Workspace door and the per-tenant OpenID Connect connections need.
+    # The `saml` extra is deliberately absent: it pulls `python3-saml`, which
+    # needs libxml2/libxmlsec1 headers on every machine that installs this
+    # template. See `config/settings/base.py`, "SAML", for the trigger and the
+    # exact steps to turn it on.
+    "django-allauth[socialaccount]>=65.0",
+    "django-linear-migrations>=2.16",
+    "django-environ>=0.11",
+    "django-stubs-ext>=6.1.0",
+    "django-ninja>=1.6.3",
+    "channels>=4.3.2",
+    "channels-redis>=4.3.0",
+    "uvicorn[standard]>=0.52.4",
+    "temporalio>=1.31.0",
+    "mcp>=2.0.0",
+    "httpx>=0.28.1",
+    "cryptography>=50.0.0",
+    # Promoted from a transitive dependency of `django-allauth[socialaccount]`
+    # to a direct one at P0 W2-R4: `apps/accounts/oauth.py` imports it to
+    # validate OAuth 2.1 access tokens at the MCP door. A library our own
+    # production code imports is a direct dependency — leaving it transitive
+    # means the day allauth drops it, the machine door stops authenticating and
+    # the lockfile change that did it names another package.
+    "pyjwt[crypto]>=2.10",
+    "django-redis>=7.0.0",
+    "uuid6>=2025.0.1",
+    "structlog>=26.1.0",
+    "opentelemetry-sdk>=1.44.0",
+    "opentelemetry-exporter-otlp>=1.44.0",
+    "opentelemetry-instrumentation-django>=0.65b0",
+    "opentelemetry-instrumentation-psycopg>=0.65b0",
+    "opentelemetry-instrumentation-redis>=0.65b0",
+    "opentelemetry-instrumentation-httpx>=0.65b0",
+    "django-cors-headers>=4.9.0",
+    "django-csp>=4.0",
+    "whitenoise>=6.12.0",
+    "django-storages[s3]>=1.14.6",
+    # The search index client, and the ONE library house rule 33 fences: no
+    # module under `apps/` outside `apps/search/engine.py` may import it. ADR
+    # search-2 makes Meilisearch the default engine and Postgres FTS the
+    # declared degradation, so this is a dependency of the *default* path and
+    # not an optional extra — a checkout without it cannot answer a search at
+    # all, which is why it is here rather than behind a marker. The pin is a
+    # floor rather than a range because the client is versioned with the server
+    # (`getmeili/meilisearch` in `compose.yaml`), and the two are upgraded
+    # together or not at all.
+    "meilisearch>=0.36.0",
+    # The house-rules engine's rule file is data (`quality/rules.yaml`), and the
+    # system checks in `apps/core/checks.py` read it at runtime (allow-lists and
+    # exemptions live there, not in code) — so the loader is a main dependency,
+    # not a dev one.
+    "pyyaml>=6.0",
+    # The ESP edge for `apps/comms`' email channel. Anymail is a set of Django
+    # email *backends* — SendGrid, Postmark, SES, Mailgun and the rest — so
+    # swapping provider is `EMAIL_BACKEND` plus that provider's credentials,
+    # never a code path in this repository (`architecture.md`,
+    # Communications). `apps/comms/providers.py` imports its *vocabulary*
+    # (`anymail.signals.EventType`, `RejectReason`) and its ESP
+    # webhook views — the normalisation and the signature check are anymail's
+    # for every ESP it supports, which is what keeps the seam provider-agnostic
+    # while one provider is what it is proven against. Sending still goes
+    # through `django.core.mail`, so a laptop keeps talking to Mailpit and
+    # pytest keeps talking to locmem. BSD-3.
+    #
+    # **The `[resend]` extra, and why it is the only one (ADR comms-12).** It
+    # pulls `svix`, which is what verifies a Resend webhook's signature.
+    # Anymail's other ESPs verify with a scheme that needs no extra package,
+    # so this is not "the Resend option" so much as "the one ESP whose
+    # signature check has a dependency" — a product on SES adds
+    # `django-anymail[amazon-ses]` (and boto3 with it) in its own
+    # `pyproject.toml` and changes nothing here. `[resend]` was picked over
+    # anymail's `WEBHOOK_SECRET` basic-auth alternative because this product's
+    # one inbound door verifies signatures and a product inherits the door it
+    # was given.
+    "django-anymail[resend]>=13.0",
+    # The SMS edge for `apps/comms`' `sms` channel (ADR comms-9 / ING-4 T2,
+    # the stack ruling: SMS = Twilio). Two public seams and no more:
+    # `twilio.rest.Client` carries a text out of `providers.TwilioSmsChannel`,
+    # and `twilio.request_validator.RequestValidator` is what checks the
+    # signature on the way back — **the vendor's own compute-and-compare, never
+    # a second signer of ours** (house rule 43's disposition, and the same
+    # trade `django-anymail` above is here for: the scheme belongs to whoever
+    # invented it). House rule 25's sender wall grows with it: no module under
+    # `apps/` outside `apps/comms/providers*` may import it, because a feature
+    # that reaches for an SMS SDK reaches around consent, quiet hours and
+    # suppression exactly as one reaching for a mail module does. MIT.
+    "twilio>=9.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-django>=4.9",
+    "mypy>=1.13",
+    "django-stubs[compatible-mypy]>=5.1",
+    "ruff>=0.8",
+    "import-linter>=2.1",
+    "factory-boy>=3.3",
+    "pytest-asyncio>=1.4.0",
+    "pip-audit>=2.10.1",
+    "pip-licenses>=5.5.5",
+    "detect-secrets>=1.5.0",
+    "types-pyyaml>=6.0",
+    # The parallel suite (ADR gate-1). They land as a PAIR, deliberately:
+    #
+    # `pytest-xdist` is the speed. `-n auto` is applied by the gate legs in
+    # `scripts/check.sh`, never here in `addopts` — a worker creates and
+    # migrates its OWN test database, so putting it in `addopts` would make
+    # `uv run pytest apps/core/tests/test_x.py::test_one` pay ten database
+    # creations to run one test. The gate wants the workers; a builder
+    # debugging one test does not. Per-worker isolation nests inside the
+    # checkout's: pytest-django suffixes the test database name with the
+    # worker id, so this checkout's `test_<DATABASE_NAME>` becomes
+    # `test_<DATABASE_NAME>_gw0..gwN` and two checkouts running `-n auto`
+    # concurrently still never meet (`scripts/db.sh`).
+    #
+    # `pytest-randomly` is the flush-forcer, and it is why xdist alone was
+    # rejected: xdist reorders tests as a side effect of distribution, so
+    # ordering couplings would arrive one at a time, months apart, each
+    # mid-rung and unattended. Randomizing on purpose surfaces them now, in
+    # one attended pass, and the seed prints on every run so a red order
+    # replays with `--randomly-seed=<seed>`. The full gate's two passes are
+    # fed ONE seed for the same reason: identical order across the pair means
+    # a pass-2 red is state left behind, never a different order.
+    "pytest-xdist>=3.6",
+    "pytest-randomly>=3.15",
+    # The liveness guard. A suite with no per-test ceiling cannot tell a
+    # hang from work: an earlier merge gate sat 22 minutes at 96% with every
+    # xdist worker at 0% CPU, and the only instrument that found the frame was a
+    # human sending SIGABRT. `pytest-timeout` turns that shape into an ordinary
+    # FAILURE with the hung frame attached, so the gate exits 1 on its own and
+    # says where. MIT. The ceiling and the method are configured ONCE, in
+    # `[tool.pytest.ini_options]` below, so every pytest entry point — the gate
+    # legs, `scripts/test.sh`, a bare `uv run pytest` — inherits the same one.
+    "pytest-timeout>=2.4",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# The canary and negative fixtures are deliberately wrong Python — planted
+# violations the house-rules engine proves it can catch. Linting them would
+# demand they stop being wrong, which is the one thing they must stay.
+extend-exclude = ["*/migrations/*", "quality/canary", "quality/negative"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "DJ"]
+
+[tool.ruff.format]
+# Ruff formats Python code blocks inside Markdown. That is wrong for this
+# repository: the skills and the docs deliberately show wrong-form/right-form
+# pairs, one-line illustrations and fragments that are not valid modules, and
+# reformatting them destroys the contrast they exist to draw. Prose is prose.
+exclude = ["*.md"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# What `uv run mypy` checks when it is given nothing — which is how the gate leg
+# and every skill document it. Without this, a bare `uv run mypy` exits 2 with a
+# usage message, and a gate leg that exits non-zero for the wrong reason is a
+# gate leg nobody trusts.
+files = ["apps", "config"]
+plugins = ["mypy_django_plugin.main"]
+exclude = ['(^|/)migrations/']
+warn_unreachable = true
+show_error_codes = true
+
+# Third-party packages that ship no `py.typed` marker. The alternative is a
+# `# type: ignore[import-untyped]` at every import site, which is a comment that
+# has to be kept in step by whoever next moves the import — and which mypy then
+# reports as UNUSED the day the package starts shipping stubs, in a file that has
+# nothing to do with the change.
+#
+# `boto3` / `botocore` joined here where ADR files-2's storage seam lands and
+# the first module whose whole job is the AWS SDK. An earlier rung stubbed the
+# readiness probe's two imports with per-site ignores and recorded the
+# disposition in `apps/core/health.py` — "named so the storage rung that lands
+# the real seam can take the override with it". This is that rung taking it,
+# and the two ignores it replaces came out in the same commit, because a
+# `strict` mypy reports an ignore it no longer needs.
+[[tool.mypy.overrides]]
+module = [
+    "environ.*",
+    "allauth.*",
+    "factory.*",
+    "channels.*",
+    "channels_redis.*",
+    "boto3.*",
+    "botocore.*",
+    # `twilio` joins on the same argument boto3 joined on: the SMS
+    # adapter's whole job is the vendor SDK, and the package ships no `py.typed`.
+    "twilio.*",
+]
+ignore_missing_imports = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings.test"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+addopts = "--strict-markers -p no:cacheprovider"
+python_files = ["test_*.py"]
+# `testpaths = ["apps"]` is also the perf boundary (ADR perf-1): the seeded-
+# scale harness lives in `perf/`, outside these paths, so the default suite —
+# and both gate pytest legs — collect zero perf tests. `scripts/perf.sh` runs
+# them by naming the measurement modules explicitly against the `_perf`
+# database; nothing here ever seeds a million rows.
+testpaths = ["apps"]
+markers = [
+    "perf: a seeded-scale measurement (ADR perf-1) — run via scripts/perf.sh, never in the default suite",
+]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+
+# --- The liveness ceiling ---------------------------------------------
+#
+# THE ONE CONFIG SITE. Not `addopts`, not a gate leg, not a conftest: an ini
+# option is inherited by every pytest entry point in the tree — both gate legs
+# in `scripts/check.sh`, `scripts/test.sh`, a builder's bare `uv run pytest`,
+# and `scripts/perf.sh` — so there is exactly one number to argue with and no
+# entry point that quietly runs without a ceiling.
+#
+# WHY, in one sentence: a suite with no ceiling cannot tell a hang from work.
+# An earlier merge gate sat 22+ minutes at 96% with every xdist worker at 0% CPU
+# and no instrument said so; a human sent SIGABRT and the faulthandler dump
+# named `apps/conftest.py`'s `ps` call. With a ceiling that is an ordinary red
+# with the frame attached, and the gate exits 1 by itself.
+#
+# THE METHOD IS `signal`, AND IT WAS MEASURED BOTH WAYS under `-n 2` against a
+# planted `subprocess.run` hang — the same call shape caught above:
+#
+#   signal  → the hung frame arrives as the FAILURE'S OWN TRACEBACK
+#             (test → subprocess.run → communicate → selector.select → poll),
+#             the other threads' stacks are captured beside it, the worker
+#             survives, the rest of the suite runs, exit 1.
+#   thread  → pytest-timeout dumps to the worker's stderr and then `os._exit`s
+#             the worker. xdist reports only `worker 'gw0' crashed while
+#             running <test>`; the dump is swallowed with the process. The
+#             frame — the whole point — does not reach the report.
+#
+# So `thread` is the method that LOSES the frame under xdist, which is the
+# opposite of the intuition (xdist workers are processes, not threads, and the
+# test runs in each worker's MAIN thread, which is exactly where SIGALRM lands).
+# `signal`'s known blind spot is a hang inside a C call that neither releases
+# the GIL nor returns to the interpreter; nothing in this tree is shaped like
+# that, and the hang measured above was not.
+timeout_method = "signal"
+#
+# `timeout_func_only` IS LEFT FALSE ON PURPOSE, and it is not a detail: the
+# hang measured above was in an autouse fixture's TEARDOWN, not in a test body.
+# Setting `timeout_func_only = true` would time the call phase only and would
+# have watched that earlier freeze go by. The ceiling covers setup + call + teardown,
+# and the number below is chosen knowing that is the window.
+#
+# THE NUMBER, AND THE THREE MEASUREMENTS THAT BOUND IT. All at `-n auto` on
+# this tree; the slowest legitimate ITEM means setup + call + teardown summed,
+# because that is what is timed:
+#
+#   quiet machine        14.5s  (test_the_two_starters_are_the_only_on_commit_
+#                                registrations_in_the_tree) — 4x floor ~58s
+#   quiet machine        19.3s  (test_a_flood_of_bounces_still_trips_the_wire_
+#                                beside_the_complaints) — 4x floor ~77s
+#   LOADED machine      146.8s  (apps/comms/tests/test_mcp.py, teardown) —
+#                                4x floor ~587s
+#
+# The loaded number is the one that binds, and it is not a hang: it is SESSION
+# teardown. pytest finalises session-scoped fixtures inside the last item's
+# teardown phase, so on each xdist worker the last test to run absorbs the
+# worker's database drop and connection release. With ten workers dropping ten
+# test databases against one Postgres while other checkouts do the same, that
+# reached 146.8s — ten different modules, one per worker, all teardown, all
+# innocent. A ceiling that fires there would blame a random test for the
+# session's own shutdown, which is exactly the "raised in anger or removed"
+# outcome a ceiling has to avoid.
+#
+# The other floor is `apps/conftest.py`'s `_FIRST_START_SECONDS` (300s): a cold
+# checkout downloads a 64 MB Temporal test-server binary INSIDE the first
+# start, and pytest-randomly means ANY test asking for a time-skipping
+# environment may be the one that pays it.
+#
+# 720s clears all of them — 4.9x the worst measured legitimate item, 37x the
+# quiet-machine slowest, 2.4x the cold-download budget. Twelve minutes is
+# deliberately generous, and generous is the right kind of wrong here: a
+# ceiling that never fires on honest work costs nothing, while one that fires
+# on honest work gets removed. It still turns the 22 silent minutes measured above into a
+# red that names the frame, which is the entire ask.
+timeout = 720
+
+[tool.importlinter]
+# Two root packages, because the direction between them is itself a contract:
+# `config` mounts `apps`, and no app ever reaches back up into `config`.
+root_packages = ["apps", "config"]
+include_external_packages = false
+
+[[tool.importlinter.contracts]]
+name = "config mounts apps; an app never imports config"
+type = "forbidden"
+source_modules = ["apps"]
+forbidden_modules = ["config"]
+# `introspect`'s whole job is to report what the mounts found, and it reads each
+# one lazily, inside the function that needs it. Tests may read a mount to drive
+# the real thing rather than a stand-in — the alternative is testing a copy.
+ignore_imports = [
+    "apps.core.management.commands.introspect -> config.*",
+    # The djb system checks (house rules 3 and 17) read the live ninja and MCP
+    # registries — the same "report what the mounts found" job as introspect,
+    # exempted by name for the same reason, lazily inside the check functions.
+    "apps.core.checks -> config.*",
+    "apps.*.tests.* -> config.*",
+    "apps.*.tests.* -> config.settings.*",
+]
+
+[[tool.importlinter.contracts]]
+name = "The fixed layers hold: platform above accounts above core"
+type = "layers"
+# Only the FIXED layers are named here, and deliberately so. import-linter has
+# no way to say "and every other app is a domain app above these" — a contract
+# that named them would have to be edited by every rung that adds an app, which
+# is the shared file this whole design removes. What it CAN say is the part that
+# never changes: `core` imports nothing above it, `accounts` sits on `core`, and
+# the platform apps sit on both.
+#
+# The rest — "app X may import only what its AppConfig's `depends_on` declares"
+# — is house rule 7's, enforced by AST over `apps/*/apps.py` in the quality
+# engine (rung C). The declaration lives with the app; the check reads it there.
+#
+# The platform apps beyond `workflows` do not exist yet; parenthesised layers
+# are optional, so each one becomes covered the day it lands, with no edit here.
+layers = [
+    "apps.workflows | (apps.events) | (apps.connections) | (apps.realtime)",
+    "apps.accounts",
+    "apps.core",
+]
+exhaustive = false
+# A test module may import another app to set up its rows and to prove isolation.
+# Production code in `core` imports nothing above it, which is what the layers say.
+#
+# **There is no production exception any more.** `apps.core.mail` used to reach
+# up into `apps.workflows` to start `SendEmailWorkflow`, named here because a
+# dependency the tooling cannot see is worse than one it can. The architect's
+# ruling that finding asked for landed with rung A3: an upward — or sideways —
+# call inverts through `apps.core.bridge`, a runtime registry that higher apps
+# fill from their `AppConfig.ready()` (`architecture.md`, "the doors and the
+# event spine"). The dependency is still declared, on the app's
+# `AppConfig.depends_on`, and the names are constants in one module; what is
+# gone is the import. Nothing in `apps/core` may reach upward again.
+ignore_imports = [
+    "apps.core.tests.* -> apps.accounts.*",
+    "apps.core.tests.* -> apps.workflows.*",
+    # `core`'s own tests drive the worked example app, because the example is
+    # what proves `@service`, the audit row and idempotency end to end. Now that
+    # `example.create_widget` starts a workflow — the ordinary downward call a
+    # domain app is *supposed* to make — that reach shows up as
+    # `core.tests -> example -> workflows`. The exemption is for the test
+    # modules only; `apps/core` itself still imports nothing above it.
+    "apps.core.tests.* -> apps.example.*",
+    # `core`'s bridge test proves the whole point of the bridge: that a `core`
+    # service can reach `emit` without importing the app that provides it. The
+    # proof has to name the app the production code does not.
+    "apps.core.tests.* -> apps.events.*",
+    "apps.workflows.tests.* -> apps.accounts.*",
+    # `apps.events` drives the real workflow machinery in its workflow tests —
+    # the test environment's client, the discovered worker — rather than a
+    # stand-in. Its production code imports none of it (the bridge does that
+    # work), which is the property the layers are protecting.
+    "apps.events.tests.* -> apps.workflows.*",
+    # And `apps.accounts` for the same reason, since P0 W2-R2: identity
+    # configuration is materialised by `SyncIdentityConfigWorkflow`, so its
+    # tests drive the real discovered worker and read the real `WorkflowRun`
+    # row. The production code imports none of it — `sync_identity_config`
+    # starts the run through `core.bridge` and `apply_identity_config` reads the
+    # context through it — which is exactly the property the layers protect and
+    # the reason this exemption is for the test modules only.
+    "apps.accounts.tests.* -> apps.workflows.*",
+    # And `apps.realtime` since P3-A1, for exactly the reason above one layer
+    # over: revocation and erasure now close the person's open sockets (ADR
+    # realtime-2 d), and a test that claims a socket closed has to open one.
+    # The production code imports none of it — `services.close_sockets` asks
+    # `core.bridge` for the name `realtime.kick` and no-ops when nothing
+    # registered it — which is precisely the property the layers protect, and
+    # the reason this exemption is for the test modules only.
+    # `apps/realtime/tests/websocket.py` is the socket client `build-contract.md`
+    # names for the whole repository (`channels.testing` imports daphne,
+    # which this repository does not install), so the alternative is a second
+    # copy of it living in `apps/accounts/tests/`.
+    # `**` and not `*`: the socket client is `apps.realtime.tests.websocket`,
+    # two segments below the app, and a single star matches exactly one.
+    "apps.accounts.tests.* -> apps.realtime.**",
+    # The documented upward reaches (see the contract above) are taken out
+    # of the graph here too, or every mount `introspect` reports would come back
+    # as a `core -> everything` chain through `config`.
+    "apps.core.management.commands.introspect -> config.*",
+    "apps.core.checks -> config.*",
+    "apps.*.tests.* -> config.*",
+    "apps.*.tests.* -> config.settings.*",
+]

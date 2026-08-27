@@ -1,0 +1,39 @@
+# THE COLLECTOR'S OWN VITALS, PUBLISHED ON THE COMPOSE NETWORK — a deployment
+# fragment, merged over `compose/otel-collector.yaml`, never instead of it.
+#
+#   command: ["--config=/etc/otel/config.yaml", "--config=/etc/otel/telemetry.yaml"]
+#
+# WHY A SECOND FILE RATHER THAN AN EDIT. `compose/otel-collector.yaml` is the
+# ONE pipeline definition, shared by the laptop's development stack and by this
+# deployment, and it belongs to the observability layer. This fragment is the
+# DEPLOYMENT's opinion about
+# where the collector's internal telemetry may be read from, which is a
+# deployment concern and nobody else's. The collector merges `--config` flags
+# left to right, so the pipeline stays exactly as written there and this file adds
+# one section.
+#
+# WHY IT IS NEEDED AT ALL, read out of the image rather than recalled:
+# `otelcol-contrib --help` on 0.140.0 lists the feature gate
+# `telemetry.UseLocalHostAsDefaultMetricsAddress` as ENABLED by default, so the
+# collector's Prometheus endpoint binds `localhost:8888` — inside the container,
+# `localhost` is the container, and the deaf-sink prober in the next container
+# over gets `connection refused` from a collector that is perfectly well. That
+# failure looks exactly like the outage it is supposed to detect, which is the
+# worst shape a monitor can have. Binding 0.0.0.0 publishes it on the compose
+# network and NOWHERE ELSE: `deploy/compose.yaml` gives this service no `ports:`
+# and Caddy is the only container that publishes one (ADR deploy-2).
+#
+# WHO READS IT: `deploy/observability/alerts/prober.sh`, once per probe
+# window, for `otelcol_exporter_send_failed_*` and `otelcol_exporter_enqueue_
+# failed_*` — the counters that grow when ClickStack stops accepting. That is
+# the one alert that cannot ride the sink it watches (ADR obs-2 as amended).
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888

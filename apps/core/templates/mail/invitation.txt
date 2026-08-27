@@ -1,0 +1,39 @@
+{% autoescape off %}{% comment %}
+AUTOESCAPE OFF, AND IT IS LOAD-BEARING. This is a plain-text body: there is no
+HTML here for escaping to protect, and escaping actively breaks it. The
+credential-setting link carries a query string — `?userID=…&code=…` — and
+Django's default rendering turns that `&` into `&amp;`, which a text client
+shows literally. The invited person copies a URL that does not work, which is
+the exact class of dead end this template exists to close. Caught by
+`test_the_email_leads_with_the_credential_setting_link`, which is why that test
+asserts the link byte for byte rather than checking that it is "in there
+somewhere".
+
+The HTML alternative is a different matter and keeps its escaping: `&amp;`
+inside an `href` is correct, and it is what makes the attribute well-formed.
+{% endcomment %}{{ tenant_name }} invited you to join them.
+{% if invited_by %}
+{{ invited_by }} sent this invitation.
+{% endif %}
+{% if set_credentials_url %}Your account is waiting — it has no password yet, and
+you are the one who chooses it. Set it here, and then sign in:
+
+    {{ set_credentials_url }}
+{% if link_expires_on %}
+That link stops working on {{ link_expires_on }}. The invitation itself stands
+until {{ expires_on }}, so ask {% if invited_by %}{{ invited_by }}{% else %}whoever invited you{% endif %} for a fresh link if you miss it.
+{% else %}
+The invitation stands until {{ expires_on }}. After that, ask for a new one.
+{% endif %}{% else %}You already sign in here, so there is nothing to set up. Sign in with this
+address — {{ email }} — and you will land in {{ tenant_name }}:
+
+    {{ sign_in_url }}
+
+The invitation stands until {{ expires_on }}. After that, ask for a new one.
+{% endif %}
+You will arrive in {{ tenant_name }} with the {{ role }} role already in place.
+
+--
+Sent by {{ tenant_name }} to {{ email }}. If you were not expecting this, ignore
+it: nothing is added to your account until you use the link above.
+{% endautoescape %}

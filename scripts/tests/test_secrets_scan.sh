@@ -1,0 +1,499 @@
+#!/usr/bin/env bash
+# The drive for `scripts/secrets_scan.sh` — the `--loop` secret scan's
+# changed-file derivation, its edge cases and the sentence it prints.
+#
+#   ./scripts/tests/test_secrets_scan.sh          run every case
+#   ./scripts/tests/test_secrets_scan.sh --list   name them and stop
+#
+# WHY IT EXISTS. This narrowed the per-rung secret scan from the whole tree to
+# the files a rung changed, which took ~40s off every `--loop` run. The entire
+# risk of that trade is a DERIVATION THAT QUIETLY NARROWS TOO FAR: a set that
+# comes back empty because the merge-base was wrong reads, on a terminal,
+# exactly like a set that came back empty because nothing changed — green, fast,
+# and vouching for nothing. Nothing else in the gate can see that. So every
+# rule of the derivation is driven here, in both directions: what MUST be in the
+# set, and what must NOT be, said out loud so the blind spots are declared
+# rather than discovered.
+#
+# IT BUILDS ITS OWN REPOSITORIES, `test_pm_merge.sh`'s trick and for its reason:
+# the derivation's whole subject is branches, merge-bases, deletions, renames
+# and linked worktrees, and none of those can be arranged in this checkout
+# without moving somebody's rung. Every derivation case runs against a throwaway
+# git repository under `mktemp -d`.
+#
+# ONE CASE PLANTS IN THIS TREE, and it is the case that matters most: a real
+# secret, in a real file, meeting the real `detect-secrets` through the real
+# leg. That is the house-rules self-test's own method (plant through the live
+# scope, assert it fires, restore) and it is here for the same reason — a
+# derivation that is provably correct and a leg that no longer runs the scanner
+# look identical from outside. The plant is restored in a trap, and the case
+# asserts the tree is green BEFORE it plants, so a red left behind by anything
+# else is reported as this driver's failure rather than absorbed by it.
+#
+# WHAT IT DOES NOT COVER, declared rather than discovered:
+#
+#   * WHETHER `detect-secrets` FINDS SECRETS. That is detect-secrets' business
+#     and its baseline's. This drives which FILES it is handed and what the leg
+#     SAYS about them; the one planted case proves the scanner is still wired to
+#     the derivation at all, not that its detectors are any good.
+#   * THE PUSH-SIDE FULL-TREE SCAN. It is one unchanged line in check.sh's
+#     supply-chain leg and it reads `git ls-files`. Nothing here touches it, and
+#     nothing here would notice if it were deleted — that is the census's and
+#     the full gate's business.
+#   * A SECRET IN A FILE THE RUNG DID NOT TOUCH. Not a gap in this driver: it is
+#     the narrowing itself, and `case_a_file_the_rung_did_not_touch_is_absent`
+#     asserts the blind spot exists rather than pretending it does not.
+#   * FILENAMES CONTAINING NEWLINES. The derivation is NUL-separated end to end
+#     and handles them; these assertions compare line by line and cannot express
+#     one, so no case plants one.
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+
+# --- the drive preamble, and it comes before the first git command -----------
+#
+# A drive run from the pre-push hook inherits an absolute `GIT_DIR` from
+# `git -C <linked worktree> push`, and an inherited `GIT_DIR` OVERRIDES `-C`.
+# `scripts/tests/test_pm_merge.sh` — this file's twin, the same
+# `git -C "$REPO"` shape — built its whole scenario in the REAL repository
+# three pushes running because of it. Every `git -C "$REPO"` below is that same
+# construction. The preamble unsets the inherited environment, guards the
+# scratch paths, and fingerprints this checkout so a drive that moves it says
+# so. Read its header for the measured mechanism.
+[ -r scripts/tests/drive_preamble.sh ] || {
+    echo "!! test_secrets_scan: scripts/tests/drive_preamble.sh is not in this tree." >&2
+    echo "   It carries the only thing keeping this drive's git commands inside its" >&2
+    echo "   own scratch directory. Refusing to run without it." >&2
+    exit 2
+}
+. scripts/tests/drive_preamble.sh
+
+PASSED=0
+FAILED=0
+
+cannot_look() {
+    echo "!! test_secrets_scan: $*" >&2
+    echo "   Nothing was asserted. A driver that could not run its cases has not" >&2
+    echo "   cleared them." >&2
+    exit 2
+}
+
+case "${1:-}" in
+"") ;;
+--list)
+    grep -n '^case_' "$0" | sed 's/() {.*//; s/^/  /'
+    exit 0
+    ;;
+*)
+    # A mistyped flag is never a silently different run.
+    echo "!! unknown argument '$1': test_secrets_scan.sh takes nothing or --list" >&2
+    exit 2
+    ;;
+esac
+
+command -v git >/dev/null 2>&1 || cannot_look "no git on PATH"
+[ -f scripts/secrets_scan.sh ] || cannot_look "scripts/secrets_scan.sh is not in this tree — there is nothing to drive"
+
+# THE FILE ITSELF IS WHAT RUNS, not a copy: the derivation reads the repository
+# containing the current working directory, so a `cd` into a scratch repo is all
+# it takes to aim it. No stub, no copy, no drift.
+# shellcheck source=scripts/secrets_scan.sh
+. scripts/secrets_scan.sh
+
+ROOT="$PWD"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/djb-secrets-drive.XXXXXX")" || cannot_look "could not make a scratch directory"
+drive_require_scratch WORK "${WORK:-}"
+
+# The plant, and its restore. Declared next to the trap so a case that dies
+# mid-plant still puts the tree back.
+PROBE="scripts/serve.sh"
+PROBE_SAVE="${WORK}/probe.orig"
+restore_probe() {
+    if [ -f "$PROBE_SAVE" ]; then
+        cp "$PROBE_SAVE" "$ROOT/$PROBE"
+        rm -f "$PROBE_SAVE"
+    fi
+}
+drive_at_exit 'restore_probe; rm -rf "$WORK"'
+
+# --- the assertions ----------------------------------------------------------
+CURRENT=""
+LIST=""
+DERIVE_RC=0
+BASIS=""
+OUT=""
+N=0
+
+# Aim the derivation at a directory and keep everything it said. Not a subshell:
+# SECRETS_SCAN_BASIS is half of what is being asserted and a subshell would
+# throw it away.
+derive_in() {
+    local dir="$1" label="$2" here
+    CURRENT="$label"
+    N=$((N + 1))
+    LIST="${WORK}/list${N}"
+    OUT="${WORK}/out${N}.log"
+    here="$PWD"
+    cd "$dir"
+    SECRETS_SCAN_BASIS=""
+    DERIVE_RC=0
+    secrets_scan_changed_files "$LIST" >"$OUT" 2>&1 || DERIVE_RC=$?
+    BASIS="$SECRETS_SCAN_BASIS"
+    cd "$here"
+}
+
+# The whole leg body, for the cases about what it PRINTS. Safe in a scratch repo
+# only while the change set is empty — a non-empty set reaches for `uv`, which
+# has no project to resolve outside this checkout.
+run_leg_in() {
+    local dir="$1" label="$2" here
+    CURRENT="$label"
+    N=$((N + 1))
+    OUT="${WORK}/out${N}.log"
+    here="$PWD"
+    cd "$dir"
+    DERIVE_RC=0
+    secrets_scan_loop >"$OUT" 2>&1 || DERIVE_RC=$?
+    cd "$here"
+}
+
+ok() {
+    echo "  ok       ${CURRENT} — $1"
+    PASSED=$((PASSED + 1))
+}
+bad() {
+    echo "  FAILED   ${CURRENT} — $1"
+    [ -n "$OUT" ] && [ -f "$OUT" ] && sed 's/^/             | /' "$OUT" | tail -20
+    FAILED=$((FAILED + 1))
+}
+
+exits() {
+    if [ "$DERIVE_RC" -eq "$1" ]; then
+        ok "exit ${DERIVE_RC}"
+    else
+        bad "wanted exit $1, got ${DERIVE_RC}"
+    fi
+}
+
+listed() {
+    if tr '\0' '\n' <"$LIST" | grep -qxF -- "$1"; then
+        ok "the set contains ${1}"
+    else
+        bad "the set does NOT contain ${1} — it is $(tr '\0' '\n' <"$LIST" | tr '\n' ' ')"
+    fi
+}
+
+not_listed() {
+    if tr '\0' '\n' <"$LIST" | grep -qxF -- "$1"; then
+        bad "the set contains ${1} and must not — it is $(tr '\0' '\n' <"$LIST" | tr '\n' ' ')"
+    else
+        ok "the set does not contain ${1}"
+    fi
+}
+
+set_is_empty() {
+    if [ -s "$LIST" ]; then
+        bad "the set is not empty — it is $(tr '\0' '\n' <"$LIST" | tr '\n' ' ')"
+    else
+        ok "the set is empty"
+    fi
+}
+
+# A derivation with the right membership and the wrong sentence is a leg nobody
+# can read, so both are asserted about the same run.
+basis_says() {
+    case "$BASIS" in
+    *"$1"*) ok "the basis says \"$1\"" ;;
+    *) bad "the basis does not say \"$1\" — it says \"${BASIS}\"" ;;
+    esac
+}
+
+says() {
+    if grep -qF -- "$1" "$OUT"; then
+        ok "says \"$1\""
+    else
+        bad "does not say \"$1\""
+    fi
+}
+
+says_not() {
+    if grep -qF -- "$1" "$OUT"; then
+        bad "says \"$1\" and must not"
+    else
+        ok "does not say \"$1\""
+    fi
+}
+
+# --- the scratch repository ---------------------------------------------------
+#
+#   main:   base -> on-main        (untouched.txt lands in `base` and is never
+#                                   touched again — the blind spot's subject)
+#   rung:   forked from `base`, empty until a case commits into it
+REPO=""
+R=0
+fresh_repo() {
+    R=$((R + 1))
+    REPO="${WORK}/repo${R}"
+    # THE BELT, and it comes before the `mkdir` as well as before the
+    # first git command. `git -C "" ...` is a no-op chdir, not a refusal: every
+    # command after it lands on whatever repository this process is standing in.
+    drive_require_scratch REPO "${REPO:-}"
+    mkdir -p "$REPO"
+    git -C "$REPO" init -q
+    git -C "$REPO" symbolic-ref HEAD refs/heads/main
+    git -C "$REPO" config user.email drive@example.invalid
+    git -C "$REPO" config user.name "secrets scan drive"
+
+    echo "nobody touches this" >"$REPO/untouched.txt"
+    echo "one" >"$REPO/shared.txt"
+    echo "doomed" >"$REPO/doomed.txt"
+    echo "before" >"$REPO/renamed_from.txt"
+    git -C "$REPO" add -A
+    git -C "$REPO" commit -q -m "base"
+
+    echo "two" >"$REPO/shared.txt"
+    git -C "$REPO" add shared.txt
+    git -C "$REPO" commit -q -m "on main"
+}
+
+on_a_rung() {
+    git -C "$REPO" checkout -q -b rung "$(git -C "$REPO" rev-parse HEAD~1)"
+}
+
+commit_in() {
+    git -C "$REPO" add -A
+    git -C "$REPO" commit -q -m "$1"
+}
+
+# --- the cases ----------------------------------------------------------------
+
+case_a_committed_change_on_a_branch_is_in_the_set() {
+    fresh_repo
+    on_a_rung
+    echo "the rung's own work" >"$REPO/rung.txt"
+    commit_in "rung work"
+    derive_in "$REPO" "a file committed on the rung"
+    exits 0
+    listed "rung.txt"
+    basis_says "1 file(s) committed on 'rung' since the merge-base with main"
+}
+
+case_a_file_the_rung_did_not_touch_is_absent() {
+    # THE NARROWING ITSELF, asserted as a property rather than left implicit.
+    # This is the whole cost of the narrowing and it is declared in the leg's own output
+    # every run: a secret in a file nobody touched is the PUSH scan's finding.
+    fresh_repo
+    on_a_rung
+    echo "the rung's own work" >"$REPO/rung.txt"
+    commit_in "rung work"
+    derive_in "$REPO" "an untouched file"
+    not_listed "untouched.txt"
+}
+
+case_a_change_only_on_main_is_absent() {
+    # The merge-base and not `main` itself: `shared.txt` moved on main AFTER the
+    # rung forked. Diffing against the branch tip would drag it in and the leg
+    # would redden a rung for somebody else's commit.
+    fresh_repo
+    on_a_rung
+    echo "the rung's own work" >"$REPO/rung.txt"
+    commit_in "rung work"
+    derive_in "$REPO" "a change made on main after the fork"
+    not_listed "shared.txt"
+}
+
+case_an_unstaged_edit_is_in_the_set() {
+    fresh_repo
+    on_a_rung
+    echo "edited, not staged" >>"$REPO/untouched.txt"
+    derive_in "$REPO" "an unstaged edit"
+    exits 0
+    listed "untouched.txt"
+}
+
+case_a_staged_new_file_is_in_the_set() {
+    fresh_repo
+    on_a_rung
+    echo "new and staged" >"$REPO/staged.txt"
+    git -C "$REPO" add staged.txt
+    derive_in "$REPO" "a staged new file"
+    exits 0
+    listed "staged.txt"
+}
+
+case_an_untracked_file_is_absent() {
+    # Parity with the push-side scan, which reads `git ls-files`. A `--loop` leg
+    # reddening on a scratch file the push scan would never look at is a
+    # false-positive machine, which is the cost this change exists to remove.
+    fresh_repo
+    on_a_rung
+    echo "scratch" >"$REPO/untracked.txt"
+    derive_in "$REPO" "an untracked, never-staged file"
+    not_listed "untracked.txt"
+}
+
+case_on_main_only_the_working_tree_is_read() {
+    fresh_repo
+    echo "edited on main" >>"$REPO/untouched.txt"
+    derive_in "$REPO" "standing on main"
+    exits 0
+    basis_says "on main itself"
+    basis_says "ONLY this checkout's uncommitted changes were scanned"
+    listed "untouched.txt"
+    not_listed "shared.txt"
+}
+
+case_a_branch_with_no_commits_yet_reads_the_working_tree() {
+    fresh_repo
+    git -C "$REPO" checkout -q -b rung
+    echo "not committed yet" >>"$REPO/untouched.txt"
+    derive_in "$REPO" "a branch that has committed nothing"
+    exits 0
+    basis_says "branch 'rung' has committed nothing yet"
+    listed "untouched.txt"
+}
+
+case_a_committed_deletion_is_excluded_without_erroring() {
+    fresh_repo
+    on_a_rung
+    git -C "$REPO" rm -q doomed.txt
+    commit_in "delete it"
+    derive_in "$REPO" "a file the rung deleted and committed"
+    exits 0
+    not_listed "doomed.txt"
+}
+
+case_a_working_tree_deletion_is_excluded_without_erroring() {
+    fresh_repo
+    on_a_rung
+    rm -f "$REPO/doomed.txt"
+    derive_in "$REPO" "a file deleted but not committed"
+    exits 0
+    not_listed "doomed.txt"
+}
+
+case_a_rename_names_the_destination_that_exists() {
+    fresh_repo
+    on_a_rung
+    git -C "$REPO" mv renamed_from.txt renamed_to.txt
+    commit_in "rename"
+    derive_in "$REPO" "a renamed file"
+    exits 0
+    listed "renamed_to.txt"
+    not_listed "renamed_from.txt"
+}
+
+case_no_local_main_falls_back_and_says_so() {
+    fresh_repo
+    git -C "$REPO" checkout -q -b rung
+    git -C "$REPO" branch -q -m main trunk
+    echo "changed" >>"$REPO/untouched.txt"
+    derive_in "$REPO" "no local refs/heads/main"
+    exits 0
+    basis_says "no local refs/heads/main to fork from"
+    listed "untouched.txt"
+}
+
+case_a_linked_worktree_derives_against_the_shared_main() {
+    # THE CASE THE BRIEF NAMED, and the one every rung actually runs in: refs
+    # live in the COMMON git dir, so `refs/heads/main` must resolve from a
+    # linked worktree exactly as it does from the main checkout.
+    fresh_repo
+    local wt="${WORK}/wt${R}"
+    git -C "$REPO" worktree add -q -b rung "$wt" "$(git -C "$REPO" rev-parse HEAD~1)" 2>/dev/null ||
+        cannot_look "git worktree add failed — the worktree case cannot be driven"
+    echo "the rung's own work" >"$wt/rung.txt"
+    git -C "$wt" add rung.txt
+    git -C "$wt" commit -q -m "rung work"
+    derive_in "$wt" "a linked worktree"
+    exits 0
+    listed "rung.txt"
+    basis_says "since the merge-base with main"
+    not_listed "shared.txt"
+}
+
+case_an_empty_change_set_says_nothing_was_scanned() {
+    # The honesty case. A leg that looked at nothing and a leg that looked at
+    # everything and found nothing print the same word — "ok" — unless one of
+    # them says which it was.
+    fresh_repo
+    run_leg_in "$REPO" "a clean tree on main"
+    exits 0
+    says "NOTHING WAS SCANNED"
+    says "FULL-TREE scan over \`git ls-files\` runs at push"
+    says_not "scanning"
+}
+
+case_a_directory_that_is_no_repository_cannot_look() {
+    local bare="${WORK}/not-a-repo"
+    mkdir -p "$bare"
+    # `git rev-parse --git-dir` walks upward, so this only means anything if the
+    # scratch root is itself outside any repository. mktemp puts it under the
+    # system temp directory, which is.
+    if git -C "$bare" rev-parse --git-dir >/dev/null 2>&1; then
+        cannot_look "the scratch directory is inside a git repository — the could-not-look case cannot be driven here"
+    fi
+    derive_in "$bare" "a directory that is not a repository"
+    exits 2
+}
+
+case_a_planted_secret_in_a_changed_file_fails_the_leg() {
+    # THE END-TO-END CASE. Everything above proves a list; this proves the list
+    # still reaches detect-secrets and that detect-secrets still reddens the leg.
+    # It runs in THIS checkout, through the real leg, against the real baseline.
+    [ -f "$ROOT/$PROBE" ] || cannot_look "$PROBE is not in this tree — the plant has nowhere to go"
+    [ -f "$ROOT/.secrets.baseline" ] || cannot_look ".secrets.baseline is not in this tree"
+    command -v uv >/dev/null 2>&1 || cannot_look "no uv on PATH — the real leg cannot be run"
+    cp "$ROOT/$PROBE" "$PROBE_SAVE"
+
+    run_leg_in "$ROOT" "this tree, before the plant"
+    exits 0
+    says "basis:"
+
+    # A private-key header: one line, one detector, no entropy luck — and TWO
+    # scanners in this repository would flag it if it were written down here,
+    # detect-secrets and house rule 23, which reads all of `scripts/` and knows
+    # no pragma. So the marker is ASSEMBLED rather than spelled: no line of this
+    # file contains the block. That is not a dodge past rule 23, it is exactly
+    # what rule 23 asserts — this tree holds no private key. The probe file
+    # holds one for about a second, which is the property being driven.
+    local head='-----BEGIN RSA' tail='PRIVATE KEY-----'
+    printf '# %s %s\n' "$head" "$tail" >>"$ROOT/$PROBE"
+    run_leg_in "$ROOT" "this tree, with a secret planted in a CHANGED file"
+    if [ "$DERIVE_RC" -eq 0 ]; then
+        bad "the leg passed with a planted secret in a changed file — the narrowed scan is no longer scanning"
+    else
+        ok "exit ${DERIVE_RC} — the planted secret reddened the leg"
+    fi
+    says "$PROBE"
+
+    restore_probe
+    run_leg_in "$ROOT" "this tree, after the plant was restored"
+    exits 0
+}
+
+case_a_committed_change_on_a_branch_is_in_the_set
+case_a_file_the_rung_did_not_touch_is_absent
+case_a_change_only_on_main_is_absent
+case_an_unstaged_edit_is_in_the_set
+case_a_staged_new_file_is_in_the_set
+case_an_untracked_file_is_absent
+case_on_main_only_the_working_tree_is_read
+case_a_branch_with_no_commits_yet_reads_the_working_tree
+case_a_committed_deletion_is_excluded_without_erroring
+case_a_working_tree_deletion_is_excluded_without_erroring
+case_a_rename_names_the_destination_that_exists
+case_no_local_main_falls_back_and_says_so
+case_a_linked_worktree_derives_against_the_shared_main
+case_an_empty_change_set_says_nothing_was_scanned
+case_a_directory_that_is_no_repository_cannot_look
+case_a_planted_secret_in_a_changed_file_fails_the_leg
+
+echo "test_secrets_scan: ${PASSED} passed · ${FAILED} failed"
+if [ "$FAILED" -gt 0 ]; then
+    echo "!! a property of the narrowed secret scan did not hold. The narrowing is only" >&2
+    echo "   defensible while the derivation is right AND says what it looked at: an" >&2
+    echo "   empty set from a wrong merge-base reads exactly like a clean rung." >&2
+    exit 1
+fi
+exit 0

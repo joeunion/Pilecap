@@ -1,0 +1,38 @@
+{% comment %}
+The page somebody sees when an identity provider authenticated them and this
+product declined to make that a session.
+
+It is deliberately plain and deliberately dead-ended: no retry button, no link
+back to the login form, nothing that invites the same click again. `reason` is
+written for the person in front of it and never names a tenant, a connection,
+or whether an account exists — this page is reachable by anybody with a Google
+account, so everything on it is public.
+
+A product with a front end overrides this template by putting its own at
+`templates/accounts/sso_refused.html`; the app's copy is the fallback, so a
+template that is only ever seen by the unlucky is never a missing file.
+{% endcomment %}<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign-in refused</title>
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 3rem 1.5rem;
+             color: #1a1a1a; background: #fafafa; }
+      main { max-width: 34rem; margin: 0 auto; }
+      h1 { font-size: 1.375rem; margin: 0 0 .75rem; }
+      p { margin: 0 0 1rem; }
+      .note { color: #555; font-size: .9375rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Sign-in refused</h1>
+      <p>{{ reason }}</p>
+      <p class="note">
+        If you think this is wrong, ask whoever administers your account.
+      </p>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,180 @@
+"""Production settings.
+
+`python manage.py check --deploy --settings=config.settings.production` must be
+clean — zero warnings — with `.env.example` values plus a real SECRET_KEY,
+DEBUG=0 and a real ALLOWED_HOSTS. Everything security-related is inherited from
+`base`, which is secure by default; this module only refuses to start on the
+things that must not be defaults in production.
+
+The refusals are by value, not only by absence: `.env.example` ships working
+secrets, and the whole point of that file is that people copy it. See
+`config.settings.guards`.
+"""
+
+from typing import Any
+from urllib.parse import urlsplit
+
+from .base import *  # noqa: F403
+from .base import (
+    ALLOWED_HOSTS,
+    CONNECTIONS_ENCRYPTION_KEY,
+    DEBUG,
+    MACHINERY_DEPLOYMENT,
+    MIDDLEWARE,
+    SECRET_KEY,
+    SOCIALACCOUNT_PROVIDERS,
+    STORAGES,
+    _parts_database_password,
+    env,
+    machinery_lifetime,
+)
+from .guards import refuse_development_defaults
+
+if DEBUG:
+    raise RuntimeError("DEBUG must be off in production; set DEBUG=0.")
+
+if not ALLOWED_HOSTS:
+    raise RuntimeError("ALLOWED_HOSTS must be set in production.")
+
+refuse_development_defaults(
+    secret_key=SECRET_KEY,
+    connections_encryption_key=CONNECTIONS_ENCRYPTION_KEY,
+    # Private on purpose: this is not a setting, it is base's answer to "did the
+    # DATABASE_* parts configure this connection, and with what password" — the
+    # population of the check, decided where the winner is decided. A URL-
+    # configured deployment passes `None` and is refused by the deployment's own
+    # start-up assertion instead.
+    database_password=_parts_database_password,
+)
+
+EMAIL_BACKEND = env.str("EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend")
+
+# Static files: WhiteNoise's compressed manifest storage, so the web container
+# serves the admin and `/api/v1/docs` itself — hashed filenames with a far-future
+# cache header, gzip and brotli pre-compressed at build time, and no separate
+# static server, CDN origin or nginx sidecar for two pages. `collectstatic` runs
+# in the image build (`Dockerfile`), which is what makes the manifest present
+# before the first request rather than generated during it.
+#
+# `default` is inherited from `base`: FileSystemStorage, or S3 the moment
+# AWS_STORAGE_BUCKET_NAME is set. A production deployment with uploads sets the
+# bucket; a production deployment without uploads does not need one.
+STORAGES = {
+    **STORAGES,
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
+
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE = "Lax"
+
+# --- Content Security Policy -------------------------------------------------
+# Production only, and deliberately so: `django-csp` on a laptop mostly breaks
+# the debug toolbar and the OpenAPI docs page, and a policy people turn off to
+# get work done is a policy that is off in production too.
+#
+# The pages this project serves are the admin and `/api/v1/docs`; a product with a
+# front end widens this in its own settings, and records why. `'unsafe-inline'`
+# is on styles because Django's admin ships inline `style=` attributes and
+# removing them is Django's job, not a deployment's; scripts have no such
+# exemption, which is the half that matters.
+
+MIDDLEWARE = [*MIDDLEWARE, "csp.middleware.CSPMiddleware"]
+
+# `form-action` is the one directive a sign-in door collides with, and the
+# collision is not the one the name suggests. **Browsers apply `form-action` to
+# the whole redirect chain a form submission travels, not just to the URL the
+# form names.** The provider-login form POSTs to our own host — same origin,
+# allowed — and our server answers `302` to the identity provider's authorize
+# endpoint. With `form-action 'self'` the browser refuses *that hop*:
+#
+#   Refused to send form data to '…/o/oauth2/v2/auth?…' because it violates the
+#   following Content Security Policy directive: "form-action 'self'".
+#
+# Measured in the owner's browser console on staging (four occurrences, both
+# doors) and only there: the server log shows the `302` leaving and cannot see
+# the browser decline to follow it, which is why this read as an identity
+# misconfiguration for a while.
+#
+# So the authorize origins join the directive — **derived, never a
+# per-environment literal**, and never wider than the doors this deployment
+# actually opened. `_authorize_origins` reads the provider blocks `base`
+# already built: an `APPS` list is empty exactly when the provider is
+# unconfigured (no client id, no workspace domain, no issuer), which is also
+# exactly when no button offers that door. A deployment that moves its identity
+# host moves `ZITADEL_ISSUER` and this moves with it.
+
+# Google's authorize endpoint is a constant of the *provider*, not of this
+# deployment: `accounts.google.com` is where allauth's Google adapter sends the
+# browser, for every client id in the world. It is a literal here rather than a
+# read of `GoogleOAuth2Adapter.authorize_url` because importing an allauth
+# provider view drags `socialaccount.models` in, and a settings module cannot
+# touch the app registry while it is still being built.
+_GOOGLE_AUTHORIZE_ORIGIN = "https://accounts.google.com"
+
+
+def _origin(url: str) -> str:
+    """Scheme and host of `url`, or "" if it is not an absolute URL.
+
+    A `form-action` source expression matches on scheme, host and port; a path
+    in the value would be noise at best. So the origin is what goes in, and a
+    configured value that is not an absolute URL contributes nothing rather
+    than contributing something malformed.
+    """
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else ""
+
+
+def _authorize_origins(providers: dict[str, Any]) -> list[str]:
+    """Where a sign-in that starts on this host is allowed to end up.
+
+    Order-preserving and de-duplicated, so the rendered header is stable
+    between restarts and a reader can diff two deployments' policies.
+    """
+    origins: list[str] = []
+
+    google: dict[str, Any] = providers.get("google", {})
+    if google.get("APPS"):
+        origins.append(_GOOGLE_AUTHORIZE_ORIGIN)
+
+    # Zitadel, and any other statically configured OpenID Connect app: the
+    # origin of the `server_url` allauth builds every endpoint from — the same
+    # `ZITADEL_ISSUER` the discovery document, the audiences and the callback
+    # are all checked against (`config.settings.base`).
+    oidc: dict[str, Any] = providers.get("openid_connect", {})
+    for app in oidc.get("APPS", []):
+        origin = _origin(str(app.get("settings", {}).get("server_url", "")))
+        if origin:
+            origins.append(origin)
+
+    return list(dict.fromkeys(origins))
+
+
+CONTENT_SECURITY_POLICY = {
+    "DIRECTIVES": {
+        "default-src": ["'none'"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "img-src": ["'self'", "data:"],
+        "font-src": ["'self'"],
+        "connect-src": ["'self'"],
+        "form-action": ["'self'", *_authorize_origins(SOCIALACCOUNT_PROVIDERS)],
+        "frame-ancestors": ["'none'"],
+        "base-uri": ["'self'"],
+        "object-src": ["'none'"],
+    }
+}
+
+# --- Machinery lifetime (ADR platform-lifecycle-1) ---------------------------
+# `deployment`, restated here rather than inherited, because this is the file
+# somebody reads to find out what production does. It is also the behaviour this
+# template has always had: durable Temporal Schedules, created at worker
+# startup, outliving the process — which is what buys catch-up across a deploy
+# gap and a missed run that is a fact rather than a silence.
+#
+# It is the right class **because a deployment's task queue is a stable
+# identity**, not because it is production. The day a deployment gives each
+# instance its own queue — a per-pod suffix, a blue/green pair — its identities
+# become ephemeral and this line is the one to revisit; that is the trigger
+# recorded with the ADR, and it is a question about identities rather than about
+# environments.
+TEMPORAL_MACHINERY_LIFETIME = machinery_lifetime(MACHINERY_DEPLOYMENT)

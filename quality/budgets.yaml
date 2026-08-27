@@ -1,0 +1,559 @@
+# Rising floors — the only "warn" shape the gate has, and it never warns: it
+# BLOCKS on growth and stays silent on existence. Each budget records a value
+# measured from the real tree on the date beside it. The check fails when the
+# measured value GROWS past the recorded ceiling; shrinking tightens nothing by
+# itself — a human commits the lower number when the shrink is real (that
+# asymmetry is the point: the ceiling only ever moves by a person's hand, in a
+# diff a reviewer sees).
+
+# A NEW subject (a new services.py, a new *Out schema) has no ceiling and FAILS
+# until somebody measures it and records it here — green-because-unrecorded is
+# not a pass.
+
+# Seeded 2026-08-19 from main. The numbers are the measured values, verbatim:
+# a ceiling above reality would be headroom nobody granted.
+
+service_function_length:
+  # Longest top-level function in each services.py, in lines. A service
+  # crossing its ceiling is a service growing a second job.
+  apps/accounts/services.py: 94 # revoke_token (P11, AUDIT-2) — was 89 (provision_sso_identity,
+  # A9), itself 76 (erase_user). The longest function changed hands, and **every one of the five
+  # lines is prose or a declared valve, not code**: `actor: Actor` on the signature (ADR core-22
+  # — the row records who ended a credential), the paragraph saying why it is required and
+  # never defaulted, and the `# authz: <reason>` comment rule 13 obliges the moment a service
+  # takes an actor. The body gained one parameter name and nothing else — no branch, no second
+  # job, which is the growth this ceiling exists to make visible. Recorded at the measured number
+  # rather than trimmed to look tidy, per this file's header; `provision_sso_identity` and
+  # `erase_user` are unchanged at 89 behind it.
+  apps/comms/services.py: 152 # send (P9, COM-1) — still the longest, 145 -> 152 for its
+  # column. **All seven lines are one keyword and its argument**: `send_at=` on the `_message_row`
+  # call, plus the six-line comment saying why a deferral gets the column too — "why is this still
+  # queued" is asked about a deferred message far more often than about a scheduled one, and a
+  # column that spoke only for `send_at=` callers would be a support answer with a footnote.
+  # No new branch and no new work: `_wait_for` (T4) already decided the duration, and this
+  # change only writes down what it decided. `send_step` came second at 127 (a defer fork) and
+  # `record_delivery_status` third at 126, both below this ceiling.
+  # The T4 note this replaces follows.
+  # send (T4) — the longest function in this module changed
+  # hands again, from `record_delivery_status` (126, unchanged, its note below) to `send`, which
+  # went 116 -> 145 for two features. **Nineteen of the twenty-nine lines are argument, not code.**
+  # The code is: one parameter (`send_at`), one call to `_wait_for` replacing the bare `_refusal`
+  # result, the nonce mint, and the two fields it puts on the workflow payload. Everything else is
+  # the reasoning a reader needs at the exact line it applies to — why a nonce rides in the run id
+  # rather than beside it, and why a temporal refusal now returns no refusal at all.
+  # **The work itself went to siblings rather than inside**, which is the trade this ceiling exists
+  # to make visible: `_wait_for` (48 lines, and it holds the whole argument) and
+  # `_delay_seconds` (18) were extracted out, so `send` still does one
+  # job — decide whether this message may go out, write it down, and hand the waiting to a run.
+  # Recorded at the measured number rather than trimmed to look tidy, per this file's own header.
+  # `record_delivery_status` is unchanged at 126 and the note it carried follows.
+  # record_delivery_status (P4 F1-comms, ADR comms-9 as amended) —
+  # the longest function in this module changed hands again, and by eleven lines: `record_delivery_status`
+  # was 115 and is now 126. **Three of those lines are code** — the `is_complaint` keyword, and the
+  # two-line fork that hands a spam complaint to `_record_complaint` before the `OPEN_TO_STATUS` gate
+  # is consulted at all. The other eight are the ordered contract this docstring IS: decision `2a`,
+  # which says a complaint leaves here and why none of the guards below it are about it, and the
+  # paragraph saying `is_complaint` is the adapter's judgement and never this function's. That trade
+  # is the one this ceiling exists to make visible: a reviewer sees eight lines bought, and what they
+  # bought is the reason a delivered message no longer gets logged as bounced. The work itself went to
+  # a sibling rather than inside — `_record_complaint` is 75 lines and holds the whole argument for
+  # the split — so this function still does one job: read what the transport said, once.
+  # `mark_message_sending` is unchanged at 117 and the note it carried follows.
+  # mark_message_sending (C2, ADR comms-10) — the longest function
+  # in this module changed hands: `send` held the ceiling at 116 and the edge wall has now
+  # passed it by one. What bought the line is the temporal fork — five lines of code that write
+  # a refused-for-quiet-hours row back to `queued` instead of killing it, and the paragraph
+  # saying why no event is emitted for a message that is about to be delivered. Recorded at the
+  # measured number rather than trimmed to look tidy: one line, for the branch that turns
+  # its kill switch into a delay. `send` is unchanged at 116 and the note it carried follows.
+  # send (P2-R3) — + the house-rule-26 reachability check and the
+  # four lines that say why the row `recipient=` names had to be asked about at all; was 110
+  # (C2-comms-b). The code is two lines and the rest is the argument, which is the trade this
+  # ceiling exists to make visible: a reviewer sees six lines bought, and what they bought.
+  # C2-comms-b's note, still true, on how it got to 110:
+  # send (C2-comms-b) — + policy provenance on the row and the
+  # "is there a run at all" decision; was 98 (C2-comms-a). Two extractions went the other
+  # way in the same change and are why it is 111 and not 126: `_plan` now owns every
+  # what-is-being-sent refusal, and `_message_row` is the one definition of the row both
+  # `send` and `send_step` write.
+  apps/connections/services.py: 83 # record_inbound_webhook (P1 W6) — was 48 (_hand_off).
+  # The BODY grew by ten lines: the delivery-id lookup that answers a redelivery with the row
+  # it already stored, and the log line that says so. The rest is the docstring paragraph
+  # explaining WHY the identity is the provider's id and never a hash of the body — two
+  # identical `payment.retried` bodies are two things that happened, and a reader without
+  # that sentence will "improve" the dedup into overruling senders about their own events.
+  # Recorded at the measured number rather than trimmed to look better: this ceiling catches a
+  # service growing a SECOND job, and this one still does one — store this delivery, once.
+  apps/core/services.py: 95 # invite_member (P11, AUDIT-2c) — was 90 (P5 B-CORE), itself 83.
+  # **All five lines are argument and a re-keyed guard call**, not code: `actor` becomes required
+  # and never defaulted (ADR core-22, L1), the `if actor is not None` authorization gate becomes
+  # `if actor.kind != "system"` — an exemption replaced by a NAMED audited altitude — and the
+  # comment saying why the wall now measures the ACTOR rather than `invited_by`, which both doors
+  # were already passing as the same person. No new branch and no second job. `redact_invitations`
+  # and `accept_invitation` came joint second at 88, both below this ceiling.
+  # The B-CORE note this replaces follows.
+  # invite_member (P5 B-CORE) — was 83. Five lines bought,
+  # and what they bought is the second of two questions. The escalation wall this function
+  # already ran is a CEILING ("may you grant this role") and it lets a member invite a
+  # member; nothing asked whether the caller may invite anybody at all, because until now
+  # nothing outside the tree could reach this service. Two of the five are the `require`
+  # call and its guard; three are the comment saying which question is which, so the next
+  # reader does not delete one of them believing it duplicates the other.
+  apps/events/services.py: 54 # enqueue_dispatch (P1 W5) — was 42 (record_event). The BODY
+  # grew by two lines: `if not resume:` around the attempt counter. Everything else is the
+  # docstring paragraph that says why a resume keeps the id a replay deliberately changes —
+  # the heal/no-op/Conflict trichotomy is the whole of ADR events-3's no-double-delivery
+  # argument, and a reader who does not have it will "simplify" the flag back out. Recorded
+  # at the measured number rather than trimmed to look better: this ceiling catches a service
+  # growing a SECOND JOB, and enqueue_dispatch still does one — put this event in the queue.
+  apps/example/services.py: 66 # create_widget (P0 W1-R3) — was 48 (A10). The BODY grew by
+  # three lines: the `policy=policy` field, and the two-line audited `may_be_named` fence.
+  # Everything else is signature and prose — the parameter list went multi-line (+7) and the
+  # docstring gained the paragraph explaining why `policy` is a row and not an id (+8). It is
+  # recorded at the measured number rather than trimmed to look better: this ceiling exists to
+  # catch a service growing a SECOND JOB, and create_widget still does one thing.
+  apps/usage/services.py: 108 # record_usage (U1) — a NEW subject, measured on the tree
+  # that introduced it. The BODY is short and does one thing: check the meter against the
+  # declared vocabulary, refuse a missing key and a missing hat, read the tenant's root once,
+  # return the first row if this key already wrote one, build the entry, validate, save, and
+  # look for a threshold it just crossed. The length is the SIGNATURE and the PROSE. The
+  # signature is seven keyword-only parameters and it is FIXED by ADR usage-1 — two other
+  # ingredient apps are writing their calls against it in the same cycle, which is the whole
+  # reason this app lands first — so it is multi-line by construction. The docstring carries
+  # what a caller of a BILLING seam genuinely needs and cannot get anywhere else: that the
+  # quantity may be negative (a purge answers a storage meter with one), that `occurred_at` is
+  # when it HAPPENED and not when it was written, what the idempotency key buys (which here is
+  # the difference between one charge and two), where the row lands and why an unresolved hat
+  # is refused rather than defaulted to the root, and the declared blind spot on `ref`. Seven of
+  # the 108 are rule 13's `# authz:` valve, which has to be a comment IN the body to be counted
+  # — this service is the ratified case of a write that carries an actor for the audit row and
+  # never asks it for permission, and the reason is the thing a reviewer is meant to disagree
+  # with, so it is a paragraph rather than a clause.
+  # Recorded at the measured number rather than trimmed to look tidy: this ceiling catches a
+  # service growing a SECOND JOB, and this one still does one — witness a consumption.
+  apps/exports/services.py: 102 # create_export (XP-1) — a NEW subject, measured on
+  # the tree that introduced it. The BODY is short: two refusals (no acting hat, an unknown
+  # scope), the idempotency read, the row, the authorization, the validate-and-save pair, the
+  # event, and the workflow start. The length is the SIGNATURE and the PROSE — the parameter
+  # list is multi-line, and the docstring carries three things a reader of this one function
+  # genuinely needs: why the verb is `create_` and not `request_` (the lexicon, not a
+  # preference), that ONE action key carries two bars and which predicate decides between them,
+  # and what `idempotency_key` buys — which here is not politeness but the difference between
+  # one copy of a customer's database in a bucket and two. Recorded at the measured number
+  # rather than trimmed to look tidy: this ceiling catches a service growing a SECOND JOB, and
+  # this one still does one — take the request, and start the run that answers it.
+  apps/files/services.py: 123 # record_stored (F2, ADR files-2) — a NEW subject, measured
+  # on the tree that introduced it. The BODY is 40 lines and it is one atom: lock the document
+  # and the version, note whether this is the first time, write the digest and the size the
+  # store handed back, promote, meter, announce. Everything else is the SIGNATURE and the
+  # PROSE, and both are load-bearing here in a way a reviewer should check rather than take
+  # on trust. The signature carries rule 26's `# reach:` valve — eight lines saying why the
+  # platform's own workflow does not ask `may_be_named` about a row it resolved from the id it
+  # was started with, and what asking would cost (an object in a bucket that no row admits to
+  # holding). Six more are rule 13's `# authz:` valve, which has to be a comment IN the body to
+  # be counted. The rest of the docstring is THE MONEY ARGUMENT: this is `apps/usage`'s first
+  # real customer, the retry is Temporal's guarantee rather than a hypothetical, and the reason
+  # one entry comes out of two runs is one expression — a key derived from the version's pk and
+  # the meter name — which is invisible in a diff and catastrophic to get wrong. Also recorded
+  # there: why there is deliberately NO second opinion in this function about a measurement
+  # that disagrees with one already recorded (the ledger refuses, and two predicates would be a
+  # place to disagree), and why the event fires once while the write is idempotent.
+  # ONE extraction went the other way in the same change rather than being argued for in
+  # prose: `_promote_if_higher` owns E8's upward-only rule, its argument and its write — 19
+  # lines this ceiling is not paying for, and a decision that is genuinely about what a READER
+  # is shown rather than about what was measured. Recorded at the measured number rather than
+  # trimmed to look tidy: this ceiling catches a service growing a SECOND JOB, and this one
+  # still does one — write down what the store holds.
+  apps/search/services.py: 29 # announce_degraded (P11, AUDIT-2c) — was 25 (delete_tenant_documents,
+  # P7 R-c). The longest function changed hands for four lines, and all four are the L8 check's
+  # answer written down: the emit call gains `actor=system_actor(tenant=tenant)` (the circuit
+  # breaker fired; nobody asked) and the function now RETURNS the `Event` it wrote, so its audit
+  # row names `events.Event` and its id instead of naming nothing. The ruling asked whether each
+  # self-report writes a row of ours; this module's own docstring already said it does.
+  # The R-c note this replaces follows.
+  # delete_tenant_documents (P7 R-c) — a NEW subject, measured on
+  # the tree that introduced it, and small on purpose. The BODY is six lines: build the engine,
+  # walk the declared kinds, empty each one, log, return the total. Everything that could have
+  # made it longer went to a private sibling instead — `_empty_one_kind` owns the round-trip
+  # loop, the tenant-wide filter and the argument for why that filter is legal — so the service
+  # itself still does one job: name the tenant whose documents leave. The rest of the count is
+  # the signature, rule 13's `# authz:` valve (which has to be a comment IN the body to be
+  # counted) and the paragraph saying the actor is carried for the audit row and never for a
+  # decision. The module docstring carries the long argument, where this ceiling does not
+  # charge for it.
+  apps/workflows/services.py: 94 # record_run (P5, ADR workflows-6) — the ceiling did NOT
+  # change hands: `record_run` was 83 and is now 94, and `start_replay`, the function
+  # added, is 91 and sits under it. **One of the eleven lines is a parameter** — `user`, the
+  # starter the two `start_*` already thread onto the workflow's headers and memo, threaded one
+  # place further so the ledger row can answer "whose run is this" at all. Four more are the
+  # `started_by=user` write and the note saying why the concrete user model and the base class
+  # disagree there. The remaining six are the paragraph that says `user` is never a door's
+  # parameter: a caller that could name a starter could hand itself somebody else's replay
+  # right, and a reader without that sentence will helpfully "expose" it on the schema. That is
+  # the trade this ceiling exists to make visible — a reviewer sees eleven lines bought, and
+  # what they bought is the predicate the whole replay door rests on. `record_run` still does
+  # one job: write the visibility row for a run that is about to start. P1 W1's note follows.
+  # record_run (P1 W1) — was 58 (start_workflow_on_commit).
+  # The 2x2 of ADR workflows-4 is a genuinely bigger job than the three-answer version it
+  # replaces, and the published contract has to say all four answers or the file everybody
+  # reads first is lying. Recorded at the measured number rather than trimmed to look
+  # better — and one extraction went the other way in the same change: `_reopen` owns the
+  # supersede quadrant, its reasoning and its eight-field write, which is 20 lines this
+  # ceiling is not paying for. BODY is 30 lines; the rest is signature and prose.
+
+out_schema_fields:
+  # Declared fields per published *Out schema. An Out crossing its ceiling is a
+  # contract quietly becoming a dump of the row.
+  apps/accounts/schemas.py::RealmOut: 3 # A9
+  apps/accounts/schemas.py::SsoConnectionOut: 13 # A9
+  apps/accounts/schemas.py::TokenOut: 7 # (ADR ident-7): + scopes, the ceiling the token
+  # carries. A read-shape field and not a dump of the row: it is the one thing about a token
+  # somebody needs to know afterwards that they cannot recover from the secret.
+  apps/accounts/schemas.py::TokenIssuedOut: 2 # + TokenOut's 7, inherited.: token, plus
+  # scopes as stored (null when the mint said "*") and effective_scopes, which is the part of
+  # what was asked for that the minting person's role can back — the mint is the only moment
+  # that answer is cheap, and an agent that asked for dead power learns here rather than from a
+  # refusal hours later.
+  apps/accounts/schemas.py::UserOut: 7 # P5 B-ACCT — id, email, is_active, is_staff,
+  # date_joined, created_at, updated_at. NOT is_superuser (the deployment's, not a tenant's) and
+  # NOT zitadel_sub (the identity platform's subject; naming it on the wire hands a caller the key
+  # to somebody's account on it). Measured, not chosen: the gate refused the new subject until a
+  # number was recorded, which is what this line is.
+  apps/comms/schemas.py::MessageOut: 22 # P9 (COM-1) — + send_at, and it is the one field
+  # on this shape that exists BECAUSE the shape was read by a person rather than by a client. T4
+  # shipped the scheduling timer with no column; the cost landed immediately and was booked the
+  # same day: a support agent could not tell a message waiting six hours from one waiting
+  # six seconds, because both read `queued` and the schedule lived only on the Temporal run. A
+  # 22nd field on a read shape is exactly the growth this ceiling exists to make somebody argue
+  # for, and the argument is that the alternative was answering a product question in a second
+  # system. Set for a quiet-hours deferral too, for the same reason.
+  # Was 21 — P3 C1 (ADR comms-9) — + bounce_kind, which is the
+  # question the hard/soft split creates: "it bounced and nothing was suppressed, why". Without
+  # it on the wire that answer is only reachable from a shell, which is its shape one app over.
+  # Was 20 (C2-comms-a — + delivered_at/bounced_at; was 18 at C1-1a)
+  apps/comms/schemas.py::DeviceOut: 8 # (T3, ADR comms-9's push half) — id, recipient_id,
+  # organization_id, platform, label, retired_at, created_at, updated_at. Measured at birth,
+  # not ratcheted. What is NOT on it is the point of the number: no `push_token`, no prefix of
+  # one, and no `push_token_hash` either. The token is the capability to put a notification on
+  # somebody's lock screen and it is encrypted at rest for that reason; this schema is also the
+  # payload of `comms.device.registered`, so it travels to every webhook endpoint the tenant has
+  # configured, and a fragment on that wire would undo the column. `organization_id` is house
+  # rule 38's, and here it is the CONTACT's branch rather than the hat that registered.
+  apps/comms/schemas.py::MessageEngagementOut: 8 # (T1, ADR comms-9's engagement half) —
+  # id, message_id, organization_id, kind, url, occurred_at, provider_event_id, created_at.
+  # Measured at birth, not ratcheted. `organization_id` is house rule 38's (the socket fan-out
+  # narrows on that key and nothing else) and here it is also the load-bearing one: the row's
+  # branch is the MESSAGE's, not the tenant root the webhook acted at. What is NOT on it is
+  # the point of the number: no `status`, no `delivered_at`, nothing about the message row —
+  # an engagement says nothing about whether the message arrived, and a client wanting
+  # delivery truth reads `MessageOut`. Two shapes, because they are two facts.
+  apps/comms/schemas.py::PolicyOut: 6 # C2-comms-b — a policy IS its steps, so they are on it
+  apps/comms/schemas.py::PolicyStepOut: 4 # C2-comms-b — channel, template, wait, escalate_when
+  apps/comms/schemas.py::PreferenceOut: 12 # P3 SEC-R2 — + organization_id, which house rule 38
+  # now requires of every Out schema of an OrgScopedModel: the socket fan-out narrows on that key
+  # and nothing else, so a read shape that omits it emits an event no branch owns and the bridge
+  # delivers it to the whole tenant. One field, and it is the one that decides who hears the row.
+  # Was 11 (C1-1b — consent's two dates, the window, the suppression)
+  apps/comms/schemas.py::RecipientOut: 9 # C2-comms-b — + phone/chat_handle, the addresses the
+  # other channel kinds reach; was 7 (C1-1b)
+  apps/comms/schemas.py::TemplateOut: 10 # C1-1b — the words included; a template IS its body
+  apps/connections/schemas.py::ConnectionOut: 11
+  apps/connections/schemas.py::OAuthStartOut: 4
+  apps/connections/schemas.py::InboundWebhookOut: 8
+  apps/connections/schemas.py::WebhookAcceptedOut: 2
+  apps/core/schemas.py::MeasuredBasisOut: 2 # P0 W1-R1 (ADR core-7) — formula + inputs, and
+  # a third field would mean the basis had stopped being one thing
+  apps/core/schemas.py::MeasuredOut: 2 # P0 W1-R1 (ADR core-7) — the value and the basis it
+  # came from; the pair IS the contract
+  apps/core/schemas.py::PingOut: 3 # + org, the acting hat (A10)
+  # The tenancy and hierarchy doors (P5 B-CORE). Six new Out shapes, measured here at
+  # birth rather than ratcheted: rule 41's ceiling is zero and these were written to it.
+  apps/core/schemas.py::OrganizationOut: 8 # a node: who it is (id/name/slug), where it sits
+  # (parent_id/path/depth) and when. `path` and `depth` are the two that earn their place —
+  # they are what let a client sort a flat list back into tree order without a second request.
+  apps/core/schemas.py::MembershipOut: 8 # person x branch x role: the three that ARE a
+  # membership, plus `user_email` (resolved off the related row, which is why every list
+  # select_relateds the user), `is_default`, and the timestamps.
+  apps/core/schemas.py::InvitationOut: 9 # who was invited, INTO WHICH ORGANIZATION, as what,
+  # how it stands, when it expires and whether it was taken up. **The token is not on it and
+  # must never be**: a pending invitation's plaintext is a bearer credential, and a list that
+  # carried it would turn "who have we invited" into "hand me every outstanding credential".
+  # Raised 8 -> 9 by ADR core-20 (INV-1), and the ninth field is not a nicety: an invitation
+  # is org-scoped now, so `organization_id` is the NARROWING KEY house rule 38 requires an
+  # org-scoped Out to declare — and "a place in which branch" is the substance of the offer,
+  # which a reader would otherwise have to infer from the sender's hat, a thing the response
+  # does not carry.
+  apps/core/schemas.py::InvitationIssuedOut: 2 # the row and the token, at the one moment the
+  # token exists. Two fields is the whole point: it is the exception to the line above, and it
+  # is shaped so that nothing can return it by accident.
+  apps/core/schemas.py::TenantSettingsOut: 6 # the tenant's own configuration: name/slug/status
+  # for identity, timezone/locale because the product renders dates with them, and the
+  # free-form `settings` map. Flags are deliberately NOT folded in — they resolve against
+  # deployment defaults too, so they answer a different question and have their own shape.
+  apps/core/schemas.py::FlagsOut: 1 # one map, deliberately. A flag read is a resolved
+  # name->bool and nothing else; a second field here would be somebody starting to explain
+  # WHY a flag resolved the way it did, which is a different endpoint.
+  apps/events/schemas.py::EventOut: 8 # + organization_id (P3 RT1, ADR realtime-2a) — which
+  # part of the tenant the row belongs to. It is the field the realtime fan-out narrows on, and
+  # it is on the ENVELOPE rather than on a second socket-only body because the two doors read
+  # one serialisation; a socket cannot narrow on something that never left apps/events. Was 7.
+
+  # The four below are NEW SUBJECTS, born with the spine's door (P5 B-EVT). Nothing
+  # here loosens a ceiling or moves a backlog: each is the measured field count of a schema
+  # that did not exist, recorded because the ledger refuses a subject it has never measured.
+  apps/events/schemas.py::WebhookEndpointOut: 7 # P5 B-EVT — the endpoint as every READ
+  # answers it: id, url, is_active, event_names, description and the two timestamps. The
+  # eighth field is the one that will never be here: `secret`. This ceiling is what makes
+  # adding it a visible diff rather than a quiet one, which is the whole "shown once"
+  # guarantee expressed as a number.
+  apps/events/schemas.py::WebhookEndpointSecretOut: 2 # pragma: allowlist secret — a FIELD COUNT (detect-secrets keys on the schema's own name); P5 B-EVT — the endpoint and the key,
+  # and nothing else, because a third field would mean this shape had stopped being the one
+  # narrow moment a signing key exists on the wire. Answered by exactly two acts.
+  apps/events/schemas.py::EventTypeOut: 2 # P5 B-EVT — a catalogue line is a name and the app
+  # that declares it. Deliberately not a payload schema: what an event's body looks like is
+  # `EventOut`'s `v` and the emitting app's own Out shape, and a subscriber wanting per-event
+  # payload schemas in the catalogue is a recorded future ask, not a field to add here.
+  apps/events/schemas.py::DeliveryOut: 13 # P5 B-EVT — one attempt at one subscriber, and every
+  # column an operator asks about when it did not land: which endpoint, which event (id and
+  # name), the status, the attempt lineage, what the far end last said (last_code/last_error),
+  # when it landed, when it gave up, the correlation id to join on, and the two timestamps.
+  # Recorded at the measured number rather than trimmed to look better: this ceiling catches an
+  # Out becoming a dump of the row, and every one of these is answering a question somebody asks
+  # while a webhook is broken.
+  apps/example/schemas.py::WidgetOut: 12 # + policy_id (P0 W1-R3) — the id and not the row:
+  # a widget's governing policy may live one or more levels UP, and embedding it would put
+  # exactly the upward visibility governing() was built not to grant onto the wire. Was 11 (A10)
+  apps/example/schemas.py::WidgetEntryOut: 8 # P0 W1-R3 — a ledger line: what it is about
+  # (widget_id), what it says (kind, note), where it landed (tenant/organization/_slug) and
+  # when. No `updated_at`, deliberately: the model is append_only, so there is never a second
+  # time to report and a field that always equalled created_at would be a lie in waiting.
+  apps/example/schemas.py::WidgetPolicyOut: 8 # P0 W1-R3 — id, name, body, the tenant, the
+  # organization and its slug, and the two timestamps. `organization_slug` is load-bearing
+  # rather than convenience here: it is how a caller can tell that the policy governing them
+  # was set further up the tree than they can see.
+  apps/workflows/schemas.py::WorkflowRunOut: 12 # P5 (ADR workflows-6) — a NEW subject,
+  # measured on the tree that introduced it. The run ledger's public face: what it is
+  # (workflow_id, run_id, type), where it got to (status, started_at, finished_at, error), what
+  # work it was (input_digest), who asked for it (started_by_id, started_by_email) and the row's
+  # own id and created_at. What is deliberately NOT on it is the run's INPUT: Temporal's history
+  # already witnesses it, a second copy here would be two truths about one fact, and a list
+  # endpoint carrying every caller's payload is how a ledger becomes a data leak. That absence is
+  # the whole reason `input_digest` exists, and this ceiling is what makes adding the payload a
+  # visible diff rather than a convenience.
+  apps/files/schemas.py::FileStoredOut: 1 # (F2, ADR files-2) — a NEW subject, measured on
+  # the tree that introduced it. ONE declared field, plus `StoredFileOut`'s nine by inheritance.
+  # The field is `version`, and the inheritance is the point: ADR files-2 says the
+  # `files.file.stored` payload IS a `StoredFileOut` and that it also carries the finalized
+  # version, its digest and the resulting `current_version` — a document shape cannot say the
+  # first two, because a digest belongs to a version. Inheriting rather than restating keeps the
+  # narrowing key (`organization_id`, house rule 38) at the TOP level where
+  # `events.services._subject_organization` reads it: a payload that buried it one level down
+  # would emit an event no branch owns, and the socket bridge reads no-branch as tenant-wide.
+  apps/files/schemas.py::StoredFileOut: 9 # (F1, ADR files-2) — a NEW subject, measured on
+  # the tree that introduced it. A document as everything that reads one needs it: which document
+  # (id), WHICH PART OF THE TENANT (organization_id — house rule 38's narrowing key, and the field
+  # the socket fan-out would otherwise deliver to the whole tenant on), what it is called and what
+  # it is for (filename, purpose), which version a reader gets by default (current_version), who
+  # filed it (uploaded_by_id), whether it is still in the working set (archived_at) and the two
+  # timestamps. **What is deliberately NOT on it is the object key.** The only legitimate way to
+  # reach bytes is a presigned URL this platform minted and audited; a key on the wire is the one
+  # string a misconfigured bucket policy turns into a URL, and it would tempt a client into
+  # constructing one. This ceiling is what makes adding it a visible diff.
+  apps/files/schemas.py::FileVersionOut: 9 # (F1) — a NEW subject. One version: the ordinal,
+  # what the platform MEASURED by streaming the object (size_bytes, sha256 — never what an
+  # uploader declared), whether it landed (status), who uploaded it, when, its declared
+  # content_type, its id and organization_id. Nine and not ten for the same reason as above: no
+  # key. A tenth field would be somebody starting to publish where the bytes live.
+  apps/files/schemas.py::UploadTicketOut: 4 # (F3, ADR files-2) — a NEW subject, measured on
+  # the tree that introduced it. What a caller needs to put one version's bytes somewhere and
+  # nothing else: the document, the version inside it, WHERE to PUT the bytes, and how long that
+  # place stays valid. Two of the four are nested shapes and are counted in their own ceilings
+  # above; the two scalars are `upload_url` and `expires_in`. **`upload_url` is in this answer and
+  # is not a column anywhere** — a signature at rest is a credential at rest — and `expires_in`
+  # rides beside it rather than being looked up by a door, so the number a caller is told comes
+  # from the same call that signed the URL. A fifth field would be the two required headers made
+  # into data, and they are contract rather than data: the schema's docstring names them, and the
+  # signature refuses a PUT without them, which is stronger than a client reading a list.
+  apps/files/schemas.py::FileDownloadOut: 8 # (F3, ADR files-2) — a NEW subject, measured on
+  # the tree that introduced it. Eight, and the count is the audit posture made a shape: WHICH
+  # document (file_id), WHICH VERSION was signed for (version, version_id — the ordinal a person
+  # quotes and the row an audit entry names), the link and its life (download_url, expires_in),
+  # and what the bytes ARE (content_type, size_bytes, sha256) so that a caller can check what
+  # arrived against what we measured. Naming the version twice is deliberate rather than
+  # redundant: an issued link is pinned to a version forever, so a client recording "I fetched
+  # v2" and a support engineer reading the audit row have to be talking about the same row.
+  # **The object key is not here**, for the same reason it is on no other shape in this app.
+  apps/usage/schemas.py::UsageEntryOut: 11 # (U1) — a NEW subject, measured on the tree
+  # that introduced it. One line of a billing ledger, and every field is something a customer
+  # disputing an invoice has to be able to see: what was consumed (meter, quantity), when it
+  # happened (occurred_at) as against when it was written (created_at), what caused it
+  # (ref_type, ref_id), which part of the tenant it belongs to (organization_id), the machine's
+  # own label for the unit of work (idempotency_key), the row's id, and THE CORRECTION PAIR —
+  # supersedes_id and superseded_because — which travel even when empty, because an audience
+  # that cannot tell "this is the truth" from "this was corrected" cannot use the ledger at all.
+  # What is deliberately NOT here is a PRICE: ADR usage-1 rules that this app meters and never
+  # rates, and a money column on this shape would be a second truth able to disagree with the
+  # rate card. Adding one should be a diff a reviewer reads, which is what this number is for.
+  apps/usage/schemas.py::ThresholdCrossingOut: 7 # (U1) — a NEW subject. What the one event
+  # this app publishes says: which line (meter, threshold), over which window (period,
+  # period_starts_on, period_ends_on), what the total now is (total, a MeasuredOut with its
+  # day-by-day basis rather than a naked number — ADR core-7), and which entry moved it across
+  # (crossed_by, so a subscriber can go and look). Seven and not more on purpose: a crossing is
+  # a notification, and an event that carried the period's entries would be a second read door
+  # nobody authorized.
+  apps/usage/schemas.py::UsageReportOut: 4 # (U2) — a NEW subject, measured on the tree
+  # that introduced it. The read door's whole answer: which window (period, starts_on, ends_on)
+  # and what it holds (meters, a mapping of meter name to its MeasuredOut). Four, and the
+  # interesting thing is the three that are NOT here. There is no `entries` list — the ledger's
+  # rows are what the totals are computed FROM, and putting them on this shape would make one
+  # response an unpaginated dump of a billing table. There is no `cost` and no `currency`, for
+  # the same reason `UsageEntryOut` has no price: this app meters and never rates (ADR usage-1),
+  # and a money field here would be a second truth able to disagree with a rate card nobody
+  # here can see. And there is no `generated_at` — a report is a statement about a window, not
+  # about the moment somebody asked. Any of the three arriving is a diff a reviewer reads,
+  # which is what this number is for.
+  apps/usage/schemas.py::MeterOut: 2 # P7 U3 — a NEW subject, measured on the tree that
+  # introduced it, and the smallest published Out in the template. A catalogue line is a NAME
+  # and the app that declares it, which is the whole of what `apps/events/schemas.py::
+  # EventTypeOut` carries one vocabulary over — the same shape because it is the same kind of
+  # thing. What is deliberately NOT here is a `description`: a meter's meaning is the declaring
+  # module's docstring (`apps/files/meters.py` argues `files.storage.bytes` in full), and a
+  # description field would be a second place to say it — one that a reviewer of the meters
+  # module would never see go stale. A `unit` is not here either, and for a sharper reason: the
+  # unit is the meter name's third segment, so a column for it would be the same fact spelled
+  # twice and free to disagree with itself. And there is no price, no rate and no included
+  # allowance, exactly as on the other three shapes in this file's usage block: this app meters
+  # and never rates (ADR usage-1). A third field arriving is a diff a reviewer reads, which is
+  # what this number is for.
+  apps/exports/schemas.py::ExportOut: 16 # (XP-1) — a NEW subject, measured on the tree
+  # that introduced it, and the largest published Out outside comms. What it carries is one
+  # request's whole life, because a client polls this row and nothing else: where it got to
+  # (status, error, completed_at), how wide it went (scope, organization_id + slug), who asked
+  # (requested_by_id), the row's own identity and clocks (id, tenant_id, created_at, updated_at,
+  # expires_at), how big the archive is (artifact_bytes), and the PAIR that says how to fetch it
+  # (download_url + download_path — a presigned link where the backend signs, and this API's own
+  # authenticated path always). The sixteenth is `manifest`, and it is the one worth defending:
+  # it says which tables are in the archive, how many rows each has, which columns were left out
+  # and why, and which tables a single-organization export could not carry. Behind a second
+  # request it would be a thing clients skip; on the read shape it is what lets somebody check
+  # what they are about to download before they download a multi-gigabyte file. What is
+  # deliberately NOT here is `artifact_key` — the storage key is the deployment's business and a
+  # client that had it would be a client that had guessed a bucket path.
+  apps/exports/schemas.py::ExportDownloadOut: 5 # (XP-1) — a NEW subject. The machine
+  # door's answer to a capability whose HTTP twin answers with BYTES: a tool result cannot carry
+  # a gigabyte, so it says where (download_url, download_path), how much (artifact_bytes), until
+  # when (expires_at) and which export (id). Five and not sixteen on purpose — this is a
+  # location, not a second rendering of the row, and `get_export` is one call away.
+  apps/search/schemas.py::SearchKindOut: 2 # P7 R-c — a NEW subject, measured on the
+  # tree that built it. Two, and the ceiling is the design: an entry in the vocabulary says
+  # WHAT can be searched (`kind`) and WHO owns it (`app`), which is everything a caller needs
+  # to send a narrowing and then go and fetch the row it points at. A third field would be a
+  # description somebody has to translate, or the searchable field list — which is the model's
+  # internals wearing a contract, and would freeze a declaration's shape the day a client read
+  # it. The kinds a deployment declares are already public; how they are indexed is not.
+  apps/search/schemas.py::SearchHitOut: 4 # (R-a) — a NEW subject, measured on the tree
+  # that built it. Four, and the ceiling is the design rather than a budget: a search hit is a
+  # POINTER (kind, id, label, rank), never a rendering of the row. A fatter hit would be a
+  # second, stale copy of a record with a different set of rules on it — the client fetches the
+  # real thing through that kind's own door, which is where the scoping, the field-level rules
+  # and the freshness already live (ADR search-2, "the document model is deliberately lean").
+  apps/example/schemas.py::WidgetStatsOut: 1 # P0 W1-R3 — one field, and it is a MeasuredOut
+  # rather than an int (ADR core-7). A second aggregate would be a second MeasuredOut beside
+  # it, never a naked number added to it; this ceiling is what makes that a visible diff.
+
+hot_path_lookup_columns:
+  # Cycle P3 F2 ( P-1). Rule 35's `index_served` clause asks that
+  # the subject table's scan carry an `Index Cond`; on a tenant-scoped read the
+  # `for_tenant` leg always supplies one, so an entry that has not declared
+  # WHICH column its narrowing lives on is served by tenancy alone and cannot
+  # see a predicate falling out of the index into a filter. Entries that have
+  # declared one (`lookup_columns:` in the registry) get the strong form; the
+  # rest are this number.
+
+  # It is a RATCHET, not a budget: it may fall and never rise. A new
+  # `index_served` table arriving with no declared column is the growth this
+  # blocks — the blind spot is allowed to exist and not allowed to spread.
+  # Measured 2026-08-22, F2: all five index_served tables are declared.
+  index_served_untyped: 0
+
+  # THE SECOND HALF, and the one F2 could not see (b), from ).
+  # Declaring the column is not the same as PROVING it. Under
+  # `enable_seqscan = off` a table of nought or two rows has exactly one plan,
+  # so "the column is in the Index Cond" restates the setting rather than
+  # asserting anything about the predicate — and four of the five declarations
+  # were in exactly that state: core_membership 2 rows, core_auditentry 0,
+  # events_outbox 0. Only core_organization (403 rows, predicate reaching ~1 of
+  # them) sat in a world where the planner had a choice to get wrong, which is
+  # the world quality/hotpaths.py's own sizing argument builds — for one table
+  # out of five.
+
+  # The probe now emits every declaration's subject-table row count and the
+  # predicate's share, and counts the ones under the floor. A RATCHET, like its
+  # neighbour: it may fall and never rise. Growing the probe world (or moving a
+  # declaration to a table that has one) is how it falls; the harness holds the
+  # evidence for the four that sit here meanwhile.
+  # Measured 2026-08-23, .
+  lookup_columns_unproven: 4
+
+hot_path_query_counts:
+  # Cycle P3 E1 (ADR gate-2). Gate-scale STATEMENT counts for the declared
+  # hot-path registry (quality/rules.yaml, rule 35 — the entry's citation is
+  # there; rule 5 holds the seam between the two files). The counts are
+  # legitimate at gate scale BECAUSE the harness proved each one flat under
+  # doubling of its axis (ADR perf-1: the harness proves flatness once, the
+  # gate pins the count forever) — a flat count is scale-free. `pin: probe`
+  # entries are re-measured by quality/hotpath_probe.py on every gate run and
+  # follow the rising-floor grammar (growth blocks; a shrink is a note until a
+  # human commits the lower number); `pin: harness`/`pin: tests` entries are
+  # the measured numbers recorded verbatim from the cited docs, re-proven at
+  # the harness's re-triggers.
+
+  # THIS SECTION STAYS LAST IN THE FILE: rule 5's registry canary appends an
+  # uncited entry here and expects it to land inside this mapping.
+  apps.example.selectors.list_widgets: 2 # the paginator's pair — the page (1) + the COUNT
+  # (1), pinned separately since F1d/F1a; M1 verdict rows 3–8.
+  # RE-MEASURED 2026-08-22 (P3 F2) through the RENDERING probe and unchanged at 2, which
+  # is the whole point rather than a null result: `probe_list_widgets` now passes every
+  # row of the page through `WidgetOut.from_orm` — the same call the door makes — and that
+  # costs nothing extra only BECAUSE `list_widgets` selects `owner` and `organization`.
+  # Until the probe fetched the page and never touched a row, so stripping the
+  # `select_related` cost it zero statements and this pin stayed green over the canonical
+  # N+1 it exists to catch (done-line item 2(c)). The same strip now measures
+  # 8 — 1 page + 3 rows x 2 relations + 1 COUNT — against this 2, in `--fast`.
+  apps.core.middleware.resolve_org: 4 # the granted named hat (2: memberships + the slug
+  # lookup) PLUS the refused hat the probe runs beside it (2 — held equal: a cheaper refusal
+  # is a timing oracle). Per-shape the number is 2, M1 rows 11–13 / M3 measures 7–9; the
+  # probe's total is what is recorded because the probe is what re-measures it.
+  apps.core.middleware.resolve_tenant: 1 # M3 measure 5
+  apps.core.models.ScopedQuerySet.governing: 1 # at the depth ceiling (12 segments), over a
+  # populated policy chain since F1d; M1 rows 9–10
+  apps.core.audit.AuditEntry.objects.for_tenant: 1 # page of 50; M2 measure 10, F1b re-measure
+  apps.core.audit.AuditEntry.objects.for_platform: 1 # page of 50; M2 measure 12, F1b re-measure
+  apps.events.selectors.list_stranded_outbox: 1 # with or without limit/already_seen (F1c);
+  # the ceiling rides the registry entry's constants (RECONCILE_BATCH = 500, MAX_BATCHES = 20)
+  apps.events.selectors.endpoints_for: 1 # M2 measure 4; the wants() filter is Python
+  apps.accounts.services.authenticate_token: 2 # cold: the key_hash read + the throttled
+  # touch. Warm is 1 (N6) and is the harness's to hold — the probe rolls back, so it is
+  # always cold.
+  apps.realtime.selectors.list_subtree_org_ids: 1 # all six hats, all three worlds; M4 §2.
+  # HOLD closed by SEC-R2: F1e's re-measure holds this count at 1 in all three worlds with
+  # migration 0015 applied, and its evidence forbids naming an index in the registry entry's
+  # plan clause — three indexes narrow this read and the planner mixes them within one plan.
+  apps.realtime.bridge.push_event: 0 # a push reads NOTHING (M4 §2/§8) — the zero that keeps
+  # every emit from becoming an N+1 across every connected socket
+  # -- harness-certified (recorded, cited, re-proven at perf/'s re-triggers):
+  apps.events.services.enqueue_dispatch: 9 # incl. the nested record_run and both audit rows
+  apps.events.services.record_delivery_attempt: 5 # the retry path; first attempt is 6
+  apps.events.services.close_outbox: 4 # exactly one of which is the audit row (rule 13)
+  apps.workflows.activities.stranded_runs: 1 # PER TENANT; the total is linear in tenants by
+  # design (rule 8's honest price)
+  apps.realtime.consumers.TenantEventsConsumer.connect: 1 # subtree reads per connection,
+  # by call count on the seam; 0 per pushed message
+  apps.accounts.oauth.authenticate_bearer: 2 # subject lookup + resolve_tenant's membership
+  # read; the JWKS fetch is a cache-hit count (≤1/window) and lives in the envelope, not here
+  "apps.example.api.list_widgets#session": 8 # pinned by apps/example/tests/test_api.py::
+  # LIST_QUERY_BUDGET at fixture scale, re-proven at 100k by M3 measure 10
+  "apps.example.api.list_widgets#x-org": 9 # M3 measure 11; no apps-tests pin yet (M3
+  # recommends one — the PM books it)
+  "apps.example.api.list_widgets#token-cold": 7 # M3 measure 12; same recommendation
+  "apps.example.api.list_widgets#token-warm": 6 # M3 measure 13; same recommendation

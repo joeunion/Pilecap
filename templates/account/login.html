@@ -1,0 +1,17 @@
+{% extends "account/base_entrance.html" %}
+{% comment %}
+The four lines that make `apps/accounts/templates/account/login_doors.html`
+reachable. That file is where the reasoning lives and where a change belongs;
+this one exists only because `INSTALLED_APPS` puts `allauth` before every app
+under `apps/`, so an override there is never found, and `TEMPLATES["DIRS"]`
+already names this directory and is searched first.
+
+`{% extends %}` is above the comment and not below it because Django requires
+it to be the first tag in the file — a comment counts.
+{% endcomment %}
+{% load i18n %}
+{% block head_title %}{% trans "Sign In" %}{% endblock head_title %}
+{% block content %}
+    <h1>{% trans "Sign In" %}</h1>
+    {% include "account/login_doors.html" %}
+{% endblock content %}

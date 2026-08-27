@@ -1,0 +1,96 @@
+# THIS FILE IS THE STATED SUPPLY-CHAIN POSTURE FOR A VENDORED BROWSER ASSET.
+#
+# House rule 23 audits the PYTHON supply chain — pip-audit for advisories,
+# pip-licenses for copyleft, detect-secrets over the tree. None of the three
+# sees a JavaScript bundle fetched from npm and committed here: there is no
+# lockfile entry to audit, no `uv.lock` line to diff, and no resolver that
+# would notice the bytes changing under the same filename. So the posture for
+# a vendored browser asset is not a scanner — it is THIS FILE. Every artifact
+# in this directory records the exact upstream version it came from, the URL
+# it was fetched from, its licence, the checksum of what was fetched, the
+# checksum of what is committed, and any transform between the two. A reader
+# who wants to know whether these bytes are the bytes Scalar published can
+# re-fetch the named URL and re-run the arithmetic below; an upgrade that does
+# not update this file is a diff whose provenance nobody can reconstruct, and
+# `apps/core/tests/test_api_docs.py` fails the gate when the committed file
+# and the `sha256` here disagree. What this file does NOT claim is stated at
+# the bottom, under [not_covered], and it is the honest half: a checksum
+# proves the artifact was not altered in transit or in this repository. It
+# proves nothing about how upstream built it.
+
+schema = 1
+
+[[artifact]]
+name = "scalar-api-reference"
+purpose = """
+The API reference renderer served at the REST door's docs URL. Vendored rather \
+than loaded from a CDN because the laptop stack works offline: a docs page \
+that needs jsdelivr is a docs page that is blank on an aeroplane, in an air- \
+gapped deployment, and in every test that asserts about it.\
+"""
+version = "1.66.1"
+license = "MIT"
+license_file = "LICENSE"
+license_source = "https://raw.githubusercontent.com/scalar/scalar/main/LICENSE"
+homepage = "https://github.com/scalar/scalar"
+
+# What was fetched, and from where. The tarball is the npm registry's own
+# published artifact for this exact version; `tarball_sha1` and
+# `tarball_sha512` below are the values npm publishes as `dist.shasum` and
+# `dist.integrity` in https://registry.npmjs.org/@scalar/api-reference, and
+# both were recomputed over the downloaded bytes and compared before anything
+# was extracted.
+source_url = "https://registry.npmjs.org/@scalar/api-reference/-/api-reference-1.66.1.tgz"
+tarball_sha1 = "e75c26714b0aba803dd9e3fca32b93cc7170e0f0"
+tarball_sha512 = "sha512-+iHSJX8HPUyDGinNiLRV8qgFb+fbNwAjGDWzl8Wg/VNEcbmA40t1ZuL/WoWNqphI2QaPfjiCLtmsIhanWAed3w=="
+
+# The one file taken out of that tarball, and what it hashed to as extracted.
+# Cross-checked against a second, independent distribution path — jsDelivr's
+# copy of the same version at
+# https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.66.1/dist/browser/standalone.js
+# — which was byte-identical. Two paths agreeing is not proof of a clean build;
+# it is evidence that neither path was tampered with in isolation.
+upstream_path = "package/dist/browser/standalone.js"
+upstream_sha256 = "5b5072a8bd9b9c2ffb946461f9e0756dd44dddae5dfdadc1ff11de7b6d14a0f3"
+upstream_bytes = 3803403
+
+# THE ONE TRANSFORM, and why it is not optional. The upstream file ends with
+# `//# sourceMappingURL=standalone.js.map`, and the map it names is 14.7 MB —
+# an order of magnitude more than the bundle, for a minified third-party
+# artifact nobody here will step through. Committing the reference without the
+# map is not merely untidy: Django's ManifestStaticFilesStorage (this project's
+# production staticfiles backend) rewrites `sourceMappingURL` targets during
+# `collectstatic` and RAISES on one it cannot resolve, so the dangling line
+# would break the production image build and nothing before it. The transform
+# is therefore: drop the final line, end the file with a newline. It is
+# mechanical, it is reproducible from `upstream_sha256`, and it changes no
+# executable byte.
+transform = "the final line (`//# sourceMappingURL=standalone.js.map`) removed; file ends with a newline"
+
+# What is actually committed here — the value the gate checks.
+file = "scalar-api-reference-1.66.1.js"
+sha256 = "0cf8b625d730db2cd241c0da03c2f5685852e1456da546ed3dc6c3db4cc8f701"
+bytes = 3803365
+
+# How the bundle is configured where it is used, recorded here because two of
+# these three are supply-chain facts and not styling: left at their defaults
+# the bundle would fetch a webfont from fonts.scalar.com on every page load and
+# route every "try it" request through proxy.scalar.com — a third-party origin
+# in the page, and a third party seeing this deployment's API traffic. Both are
+# switched off at the call site (`apps/core/api/docs.py`), and
+# `apps/core/tests/test_api_docs.py` asserts the rendered page carries no
+# external origin at all.
+offline_configuration = ["withDefaultFonts = false", "proxyUrl = \"\""]
+
+[not_covered]
+statement = """
+A checksum here proves the committed bytes are the bytes that arrived from the \
+named URL. It does NOT prove: that upstream's build was reproducible or \
+uncompromised (the artifact is trusted exactly as far as npm's publishing \
+account is); that the bundle's own transitive dependencies — everything \
+Scalar's build inlined into this file — are free of advisories, since there is \
+no lockfile here to audit and no scanner in this gate that reads minified \
+JavaScript; or that a later upstream release fixes a vulnerability in this \
+one, since nothing subscribes this pin to an advisory feed. Upgrading is a \
+deliberate act by a person, and this file is where they record it.\
+"""

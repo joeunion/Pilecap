@@ -1,0 +1,179 @@
+{
+  "_readme": [
+    "THE ALERT DEFINITIONS. Config-as-code: this file plus census.py IS the",
+    "alert surface, and apply.py reconciles a ClickStack to it. Nothing here",
+    "names a destination URL, a token, a laptop, or any interactive tool — the",
+    "delivery URL is read at apply time from the Secrets Manager slot named in",
+    "`webhook.url_slot` (house doctrine: slot and length only, never a value).",
+    "The SHAPES are here; the POPULATION is census.py's, derived from",
+    "apps/*/events.py. `transition` is instantiated once per derived pair.",
+    "Placeholders are Python str.format fields, filled from the census row —",
+    "except `{namespace}` in the webhook block below, which apply.py fills from",
+    "DJB_DEPLOY_NAMESPACE and REFUSES to guess: the bundle name and the secret",
+    "slot are this deployment's own coordinates and no file in this repository",
+    "spells them."
+  ],
+
+  "webhook": {
+    "name": "{namespace}-alerts",
+    "service": "generic",
+    "url_env": "SLACK_WEBHOOK_URL",
+    "url_slot": "{namespace}/<env>/env  key SLACK_WEBHOOK_URL  (ADR deploy-3a: one JSON secret per environment)",
+    "_service_note": [
+      "`generic`, not `slack`, and that is deliberate and portable. ClickStack",
+      "refuses a `slack` webhook whose host does not end in slack.com",
+      "(isValidSlackUrl), which would make the laptop definition and the",
+      "staging definition two different definitions. A `generic` webhook posts",
+      "the rendered body verbatim, and the body below is `{\"text\": ...}` —",
+      "exactly what a Slack incoming webhook accepts and exactly what the dummy",
+      "receiver logs. ONE definition, two destinations, the slot the only",
+      "difference."
+    ],
+    "_body_note": [
+      "SINGLE QUOTES inside the handlebars subexpression, and that is load-bearing.",
+      "ClickStack compiles this string with handlebars BEFORE it is ever JSON, so a",
+      "\\\" that keeps the JSON valid reaches the parser as backslash-quote and dies",
+      "with 'Parse error ... got INVALID' — the notification is then dropped with",
+      "one line in /var/log/app.log inside the sink container and NOTHING arrives",
+      "at the destination. That failure mode is exactly what the dummy receiver",
+      "was built to catch. Handlebars",
+      "takes 'ALERT' in single quotes, and a single quote is legal inside a JSON",
+      "string, so both parsers are happy."
+    ],
+    "_one_webhook_note": [
+      "ONE WEBHOOK, AND CLICKSTACK ENFORCES THAT. A second webhook pointing at",
+      "the same URL is refused with 400 `Webhook already exists` — it is unique",
+      "by URL, not by name — so the recovery alert cannot be given its own",
+      "webhook just to make its OPEN say RECOVERED.",
+      "",
+      "So the ALERT branch below renders `{{body}}` — the ALERT'S OWN MESSAGE —",
+      "and nothing else. Each alert therefore owns its own opening sentence,",
+      "emoji and verb, which is what lets `<x> degraded` open with a rotating",
+      "light and `<x> recovered` open with a white check mark through one",
+      "webhook and one destination. The OK branch is the same sentence for every",
+      "alert, because it means the same thing for every alert: the query window",
+      "stopped matching. It is deliberately NOT a verdict about the circuit."
+    ],
+    "body": "{\"text\": \"{{#if (eq state 'ALERT')}}{{body}}{{else}}:mag: window quiet — {{title}} — the query window stopped matching, which is NOT a verdict about the circuit{{/if}}\\n{{link}}\\nhdx_state={{state}} hdx_event_id={{eventId}} window={{startTime}}..{{endTime}}\"}"
+  },
+
+  "transition": {
+    "_note": [
+      "One alert per declared transition pair (ADR obs-2 clause 1). It OPENS on",
+      "the degraded half appearing in the sink. The N-past-K re-probes emit no",
+      "event at all — that is the announce-on-transition ruling doing the work,",
+      "not the alert — so they produce zero notifications by construction.",
+      "READ `docs/runbooks/alerts.md` § 'What closes it' before believing the",
+      "close is caused by the recovery event: it is not, and the message text",
+      "below says so rather than lying to the responder."
+    ],
+    "saved_search": {
+      "name": "{prefix} — degraded ({degraded})",
+      "whereLanguage": "sql",
+      "where": "JSONExtractString(Body, 'event') = '{degraded}'",
+      "select": "Timestamp, JSONExtractString(Body, 'event') AS event, JSONExtractString(Body, 'tenant_id') AS tenant_id, JSONExtractString(Body, 'connection_id') AS connection_id, JSONExtractString(Body, 'correlation_id') AS correlation_id, JSONExtractString(Body, 'count') AS count, TraceId AS trace_id",
+      "orderBy": "Timestamp DESC",
+      "_select_note": [
+        "The 'one link' fields, and nothing else. core/observability.py ships",
+        "structlog's JSONRenderer output as the OTel log record BODY, so every",
+        "structured key is inside one JSON string in ClickHouse's `Body` column",
+        "and JSONExtractString is how you read it. These columns are what the",
+        "alert body carries to the destination (checkAlerts renders up to 5",
+        "matching rows as CSV using exactly this select), which is what lets a",
+        "responder answer 'what happened' from the message alone."
+      ]
+    },
+    "alert": {
+      "_threshold_note": [
+        "1, not 0. ClickStack's `above` is `value >= threshold`",
+        "(checkAlerts/index.js::doesExceedThreshold), so a threshold of 0 makes",
+        "EVERY window breach — including the empty ones — and the alert sits in",
+        "ALERT for ever with a count of 0. That is not a hypothetical — it is",
+        "what an apply with a 0 threshold does, and the dummy receiver is how",
+        "it is seen.",
+        "1 means 'at least one matching line', which is what a transition alert",
+        "wants, and an empty window (0 >= 1 is false) resolves it."
+      ],
+      "source": "saved_search",
+      "interval": "5m",
+      "threshold": 1,
+      "thresholdType": "above",
+      "name": "{prefix} degraded",
+      "message": ":rotating_light: OPENED — {prefix} degraded — {degraded} is in the sink. The circuit is DEGRADED. It stays degraded until {recovered} appears in the sink; a 'window quiet' notification from this alert means the 5-minute query window stopped matching, NOT that the circuit recovered. Search the sink for {recovered} before standing down. Runbook: docs/runbooks/alerts.md"
+    }
+  },
+
+  "recovery": {
+    "_note": [
+      "THE SECOND HALF OF A TRANSITION PAIR, AND IT IS ITS OWN ALERT.",
+      "ADR obs-2 as amended: 'the recovery event is its own",
+      "notification ... delivered as a second alert rather than a close'.",
+      "",
+      "WHY IT HAD TO BE A SECOND ALERT. ClickStack's alerting is windowed: an",
+      "alert opens when its query window matches and auto-resolves the first",
+      "window that does not. So the degraded alert's OK notification means",
+      "'the 5-minute window stopped matching', NOT 'the circuit recovered' —",
+      "it says so in its own message text, and it fires whether or not the",
+      "recovery ever happened. The consequence, confirmed over the wire:",
+      "`comms.suppression.recovered` reaches the sink and fires NOTHING unless",
+      "something is watching that name.",
+      "",
+      "WHAT IT COSTS, STATED: four notifications per episode instead of two —",
+      "degraded OPENS, degraded window-quiets, recovered OPENS, recovered",
+      "window-quiets. That is option 2 of the three priced in",
+      "docs/runbooks/alerts.md, and it is now the one that is built.",
+      "",
+      "The population is unchanged: this is instantiated from the SAME census",
+      "row as `transition`, so a pair still declares two names in one",
+      "`events.py` and nobody edits a list."
+    ],
+    "saved_search": {
+      "name": "{prefix} — recovered ({recovered})",
+      "whereLanguage": "sql",
+      "where": "JSONExtractString(Body, 'event') = '{recovered}'",
+      "select": "Timestamp, JSONExtractString(Body, 'event') AS event, JSONExtractString(Body, 'tenant_id') AS tenant_id, JSONExtractString(Body, 'connection_id') AS connection_id, JSONExtractString(Body, 'correlation_id') AS correlation_id, JSONExtractString(Body, 'count') AS count, TraceId AS trace_id",
+      "orderBy": "Timestamp DESC",
+      "_select_note": [
+        "The same columns as the degraded half, deliberately: a responder who",
+        "read the OPEN should be able to read the all-clear without learning a",
+        "second set of fields, and the correlation id is what ties the two",
+        "notifications to one episode."
+      ]
+    },
+    "alert": {
+      "source": "saved_search",
+      "interval": "5m",
+      "threshold": 1,
+      "thresholdType": "above",
+      "name": "{prefix} recovered",
+      "message": ":white_check_mark: RECOVERED — {prefix} recovered — {recovered} is in the sink. THE CIRCUIT HAS RECOVERED, and this notification is the announcement rather than a close. The degraded alert ({prefix} degraded) does NOT close on this event; its own 'window quiet' means only that its query window stopped matching. This one fires because {recovered} is in the sink, which is the fact you were waiting for. Match it to the OPEN by correlation_id. Runbook: docs/runbooks/alerts.md"
+    }
+  },
+
+  "probe": {
+    "_note": [
+      "The hard-dependency half (ADR obs-2 clause 2). Outages are /readyz's,",
+      "never events — the ruling's scope boundary, held in code. The prober",
+      "(prober.sh, the `readyz-prober` service in deploy/compose.yaml) curls",
+      "the PUBLIC url every",
+      "PROBE_INTERVAL_SECONDS so DNS, TLS and Caddy are in the tested path, and",
+      "writes `probe.readyz.failed` / `probe.readyz.ok` into the sink in the",
+      "same one-JSON-string shape the app's own log lines have."
+    ],
+    "saved_search": {
+      "name": "readyz — failing ({failed_event})",
+      "whereLanguage": "sql",
+      "where": "JSONExtractString(Body, 'event') = '{failed_event}'",
+      "select": "Timestamp, JSONExtractString(Body, 'event') AS event, JSONExtractString(Body, 'target') AS target, JSONExtractString(Body, 'code') AS http_code, JSONExtractString(Body, 'detail') AS detail",
+      "orderBy": "Timestamp DESC"
+    },
+    "alert": {
+      "source": "saved_search",
+      "interval": "1m",
+      "threshold": 3,
+      "thresholdType": "above",
+      "name": "readyz outage",
+      "message": ":rotating_light: OPENED — readyz outage — the public /readyz is failing. ClickStack's 'above' is >=, so this fires at 3 or more probe failures inside one minute — at a 15-second probe that is 3 consecutive failures, and one blip never pages. Declared detection window: 3 x 15s = 45s of failing probes, plus up to 60s of ClickStack check latency = under 2 minutes. This alert cannot see the death of the box it runs on — see docs/runbooks/alerts.md § 'What this cannot see'."
+    }
+  }
+}

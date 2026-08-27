@@ -1,0 +1,64 @@
+{% comment %}
+The door index. Deliberately plain: this is a directory listing, not a landing
+page, and a product that wants one mounts its own `path("", ...)` ahead of this
+in its root URLconf. Nothing here is a hand-written path — every href comes from
+`apps/core/views.py`, which reverses it out of the live URL configuration.
+{% endcomment %}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Doors</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 16px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    margin: 0 auto; padding: 2rem 1.25rem; max-width: 46rem;
+  }
+  h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 .25rem; }
+  h2 { font-size: .85rem; font-weight: 600; margin: 2rem 0 .5rem; opacity: .7;
+       text-transform: uppercase; letter-spacing: .08em; }
+  p.lede { margin: 0 0 .5rem; opacity: .7; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { padding: .4rem 0; border-bottom: 1px solid rgba(128,128,128,.25); }
+  li:last-child { border-bottom: none; }
+  a { font-weight: 600; }
+  span.what { display: block; opacity: .65; font-size: .85rem; }
+  footer { margin-top: 2.5rem; font-size: .8rem; opacity: .6; }
+</style>
+</head>
+<body>
+<h1>Doors</h1>
+<p class="lede">Everything this deployment answers on, read off its own mounts.</p>
+
+<ul>
+  {% for door in doors %}
+  <li>
+    <a href="{{ door.href }}">{{ door.label }}</a> &mdash; <code>{{ door.href }}</code>
+    <span class="what">{{ door.what }}</span>
+  </li>
+  {% empty %}
+  <li>No door is mounted in this process.</li>
+  {% endfor %}
+</ul>
+
+{% if resources %}
+<h2>REST resources</h2>
+<ul>
+  {% for resource in resources %}
+  <li>
+    {% if resource.href %}<a href="{{ resource.href }}">{{ resource.path }}</a>
+    {% else %}<code>{{ resource.path }}</code>
+    <span class="what">a namespace; its routes are in the contract above</span>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<footer>
+  {% if version %}Template version {{ version }}.{% endif %}
+  This page names doors; it opens none.
+</footer>
+</body>
+</html>

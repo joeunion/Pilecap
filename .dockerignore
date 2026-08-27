@@ -1,0 +1,76 @@
+# What never reaches the build context.
+#
+# Two reasons, and the second is the one that bites: a smaller context is a
+# faster build, and a context that carries `.env`, `.git` or a local virtualenv
+# is a build that bakes a developer's secrets and a developer's platform into
+# an image somebody else runs. `.env` in particular is the file `setup.sh`
+# writes with working credentials in it.
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Version control and agent state
+.git
+.gitignore
+.github
+.claude
+.idea
+.vscode
+# The devcontainer definition is how a laptop BUILDS a dev environment; the
+# image being built here IS the environment. Shipping it would put a second,
+# contradictory description of the toolchain inside the artifact it describes.
+.devcontainer
+
+# Local virtualenv and caches — the image builds its own, for its own platform
+.venv
+__pycache__
+*.py[cod]
+.mypy_cache
+.pytest_cache
+.ruff_cache
+
+# Build output that the image regenerates
+staticfiles
+media
+node_modules
+
+# Documentation, method and enforcement: none of it runs in production
+docs
+quality
+scripts/githooks
+CLAUDE.md
+README.md
+CHANGELOG.md
+
+# ...with ONE exception, and it is not a convenience.
+#
+# `apps/core/checks.py` registers the `djb` system checks unconditionally and
+# reads its allow-lists from `<BASE_DIR>/quality/rules.yaml` — so with the
+# whole directory excluded, EVERY `manage.py` command inside the image died on
+# `djb.E000` plus a wall of E003/E013/E015/E017: `migrate` included, which
+# means a deployment could not run its own release step, and `check --deploy`
+# could not be shown clean where it actually matters. Found by D1, the first
+# thing in this repository ever to build and run the image.
+#
+# So the line above is right about the *engine* and wrong about this one file.
+# `quality/checks.py`, `gate.py`, the canaries, the negatives and the
+# measurement write-ups stay out — 1.6M of enforcement that no runtime path
+# touches. `rules.yaml` is 143K of DATA that the application's own checks read,
+# and it ships.
+#
+# THE NEGATION IS THE NARROWEST ONE THAT WORKS. Exactly one path under
+# `quality/` is read at runtime (`apps/core/checks.py:61`), so exactly one path
+# is un-ignored. If a second file ever becomes a runtime read, it gets its own
+# line here and its own reason — never `!quality` and never a glob.
+!quality/rules.yaml
+
+# The compose stack is a laptop's, not a deployment's
+compose.yaml
+compose
+Dockerfile
+.dockerignore
+
+# OS noise
+.DS_Store

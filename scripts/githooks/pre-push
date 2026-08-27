@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Pre-push: consult the verdict ledger first. A tree the full gate has already
+# measured green passes in ~2s; anything else runs the full gate now.
+#
+# The ledger's key is the WORKING TREE's content address, which on a clean tree
+# equals HEAD^{tree} — so a verdict earned before the commit vouches for the
+# push after it. See scripts/gate_ledger.sh for the three properties.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+# This is where the poison enters. `scripts/pm_push.sh` ends with
+# `exec git -C "$PM_PUSH" push ...` and `$PM_PUSH` is a LINKED WORKTREE — which
+# makes git EXPORT an absolute `GIT_DIR` into this hook's environment (a plain
+# `git push` from a checkout exports none). An inherited `GIT_DIR` is absolute
+# and it OVERRIDES `-C`, so every child of this hook that thought `-C <dir>`
+# aimed it somewhere was aimed here instead: the pm_merge drive built its whole
+# scenario in the real repository three pushes running.
+#
+# Unset AFTER the `cd` above, and measured to be free: discovery from a linked
+# worktree's own directory returns the identical toplevel and the identical
+# gitdir, because `.git` there is a file pointing at exactly the path git had
+# exported. Nothing this hook or the gate does changes; the drives, the gate and
+# `scripts/db.sh`'s checkout derivation simply stop inheriting an answer.
+# The drives neutralise it a second time for themselves
+# (`scripts/tests/drive_preamble.sh`) — they must be safe from any caller, not
+# only from this one.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
+    GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX
+
+. scripts/gate_ledger.sh
+
+TREE=$(gate_measured_tree || true)
+if [ -n "$TREE" ] && gate_has_green "$TREE"; then
+    echo "pre-push: tree $TREE already measured green by a full gate run — verdict honoured"
+    exit 0
+fi
+echo "pre-push: no verdict for this tree — running the full gate"
+# The wall names itself. This is the doctrine's own case — one full gate
+# per push — and it is the baseline every other caller is counted against.
+export DJB_GATE_CALLER=push-wall
+exec ./scripts/check.sh

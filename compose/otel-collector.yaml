@@ -1,0 +1,58 @@
+# The local OpenTelemetry collector: one hop between the app and the sink.
+#
+# The app and the worker never talk to ClickStack directly. They talk to this,
+# and this decides where telemetry goes — which is the whole reason a collector
+# exists: change the destination here, once, instead of in every process's
+# environment. In production the same shape holds, with the collector run as a
+# sidecar or a daemonset and ClickStack at a real endpoint.
+#
+# Batching is here rather than in the app for the same reason: an app process
+# that batches holds telemetry it may lose on a restart, and a laptop that
+# flushes every span makes the collector's own latency look like the app's.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  # Never let a burst of telemetry take the collector down with it: it is the
+  # one process that must survive the incident it is recording.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+
+exporters:
+  # ClickStack's own OTLP ingestion. The key is the ingestion API key the
+  # HyperDX UI prints on first run; on a laptop the published default below is
+  # fine and is worth nothing.
+  otlphttp/clickstack:
+    endpoint: http://clickstack:4318
+    headers:
+      authorization: ${env:CLICKSTACK_API_KEY}
+  # Uncomment while debugging the pipeline itself. Off by default: it doubles
+  # the volume and makes `docker compose logs` unreadable.
+  # debug:
+  #   verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/clickstack]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/clickstack]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/clickstack]

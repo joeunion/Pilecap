@@ -1,0 +1,525 @@
+#!/usr/bin/env bash
+# The drive for `scripts/pm_merge.sh` — the refusals, the exit propagation and
+# the proof of merge.
+#
+#   ./scripts/tests/test_pm_merge.sh          run every case
+#   ./scripts/tests/test_pm_merge.sh --list   name them and stop
+#
+# WHY IT EXISTS, and it is `scripts/tests/test_sweep.sh`'s reason exactly: a
+# wrapper is made of refusals, and a refusal nothing drives can be deleted by
+# accident and stay deleted — the happy path goes on merging, the proof line
+# goes on printing, and the first person to find out is whoever types a branch
+# name that does not exist and gets a green gate on an unmerged tree. That is
+# not a hypothetical: it is the incident pm_merge.sh was built from.
+#
+# IT BUILDS ITS OWN REPOSITORIES AND MERGES IN THOSE. Every case here runs
+# against a throwaway git repository this file creates under `mktemp -d`, with
+# its own commits, its own branches and — the piece that makes the last third of
+# the cases possible — ITS OWN STUB `scripts/check.sh`. Nothing here merges
+# anything in this checkout, and nothing here runs the real gate.
+#
+# THAT SENTENCE WAS FALSE FOR AS LONG AS THIS FILE HAS EXISTED, and `git -C` is
+# why it read as true. Under the pre-push hook this drive
+# inherits an absolute `GIT_DIR` — `git -C <linked worktree> push` exports one,
+# and it OVERRIDES `-C` — so every `git -C "$REPO" ...` below built the scenario
+# in the real repository instead: `stale`, `safe` and `clash` in real refs,
+# "base" and "only on main" committed onto real main, and `core.bare true` set
+# on the real config, three pushes running, every command exiting 0. The
+# sentence is true now because `scripts/tests/drive_preamble.sh` makes it true
+# rather than because `-C` was ever the guard anybody read it as.
+#
+# WHAT IT DOES NOT COVER, declared rather than discovered:
+#
+#   * THE REAL GATE. The scratch repositories carry a stub `scripts/check.sh`
+#     that records the arguments it was handed and exits with whatever status
+#     the case asked for. So these cases prove the WIRING — that pm_merge runs
+#     the tree's own gate, with `--fast`, only after a merge that actually
+#     happened, and that the gate's exit status becomes pm_merge's own. They
+#     prove nothing whatever about `scripts/check.sh` itself, which is the full
+#     gate's business and is measured everywhere else in this repository.
+#   * A COPY, NOT THE FILE ITSELF, IS WHAT RUNS. `scripts/pm_merge.sh` refuses
+#     to act when the checkout you are standing in is not the one it lives in
+#     (a property worth having on its own), which means the
+#     cases must run a copy inside each scratch repository. The copy is made
+#     with `cp` from this tree in every case, so it is the same bytes; if that
+#     ever stops being true, `case_the_real_script_refuses_a_foreign_checkout`
+#     is the one case that runs THIS tree's file, and it asserts the refusal.
+#   * WHETHER A MERGE SHOULD HAPPEN. Criteria, reviews and whether the branch
+#     is the one a builder reported are the PM's judgement; see pm_merge.sh's
+#     own "what this does not cover".
+#   * CONFLICT RESOLUTION. The conflicting case asserts the refusal and the
+#     stated working-tree state, then aborts the merge itself. pm_merge never
+#     resolves and never aborts, deliberately.
+#   * THE ENVIRONMENT, EXCEPT FOR ONE NAME. The pipe guard exempts CI, so this
+#     drive's expectations used to change with the harness — green on a laptop,
+#     three red assertions on a runner, with the wrapper working perfectly both
+#     times. `drive_preamble.sh` section 4 now unsets the exemption
+#     variables for the whole drive and the two pipe cases below drive BOTH
+#     directions. Nothing else here is pinned against the environment, and
+#     nothing else here was found to need it.
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+
+# --- the drive preamble, and it comes before the first git command -----------
+#
+# This drive is the one that escaped. Run under the pre-push hook it
+# inherited an absolute `GIT_DIR` from `git -C <linked worktree> push`, which
+# overrides `-C` — so `git -C "$REPO" init/commit/branch` built its scenario in
+# the REAL repository three times: `stale`, `safe` and `clash` in real refs,
+# "base" and "only on main" on real main, `core.bare true` on the real config.
+# The preamble unsets that environment, guards the scratch paths, and
+# fingerprints this checkout so a drive that moves it says so. Read its header
+# for the measured mechanism.
+[ -r scripts/tests/drive_preamble.sh ] || {
+    echo "!! test_pm_merge: scripts/tests/drive_preamble.sh is not in this tree." >&2
+    echo "   It carries the only thing keeping this drive's git commands inside its" >&2
+    echo "   own scratch directory. Refusing to run without it." >&2
+    exit 2
+}
+. scripts/tests/drive_preamble.sh
+
+PASSED=0
+FAILED=0
+
+cannot_look() {
+    echo "!! test_pm_merge: $*" >&2
+    echo "   Nothing was asserted. A driver that could not run its cases has not" >&2
+    echo "   cleared them." >&2
+    exit 2
+}
+
+case "${1:-}" in
+"") ;;
+--list)
+    grep -n '^case_' "$0" | sed 's/() {.*//; s/^/  /'
+    exit 0
+    ;;
+*)
+    # A mistyped flag is never a silently different run.
+    echo "!! unknown argument '$1': test_pm_merge.sh takes nothing or --list" >&2
+    exit 2
+    ;;
+esac
+
+command -v git >/dev/null 2>&1 || cannot_look "no git on PATH"
+[ -f scripts/pm_merge.sh ] || cannot_look "scripts/pm_merge.sh is not in this tree — there is nothing to drive"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/djb-pm-merge-drive.XXXXXX")" || cannot_look "could not make a scratch directory"
+drive_require_scratch WORK "${WORK:-}"
+drive_at_exit 'rm -rf "$WORK"'
+
+SOURCE="$PWD/scripts/pm_merge.sh"
+# check.sh is read as TEXT by one case only — the pipe guard pm_merge's header
+# claims it copied. It is never run from here; `--fast` would refuse anyway
+# while the full gate holds this checkout's lock.
+GATE="$PWD/scripts/check.sh"
+
+# --- the two assertions every case makes (test_sweep.sh's helpers) -----------
+DRIVE_OUT=""
+DRIVE_EXIT=0
+CURRENT=""
+drive() {
+    local label="$1" want="$2"
+    shift 3
+    CURRENT="$label"
+    DRIVE_OUT="${WORK}/$(printf '%s' "$label" | tr -c 'a-zA-Z0-9' '_').log"
+    set +e
+    "$@" >"$DRIVE_OUT" 2>&1
+    DRIVE_EXIT=$?
+    set -e
+    if [ "$DRIVE_EXIT" -eq "$want" ]; then
+        echo "  ok       ${label} — exit ${DRIVE_EXIT}"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${label} — wanted exit ${want}, got ${DRIVE_EXIT}"
+        sed 's/^/             | /' "$DRIVE_OUT" | tail -20
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+# A refusal with the right code and the wrong sentence is a refusal nobody can
+# act on, so both are asserted about the same run.
+says() {
+    if grep -qF -- "$1" "$DRIVE_OUT"; then
+        echo "  ok       ${CURRENT} — says \"$1\""
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — does not say \"$1\""
+        sed 's/^/             | /' "$DRIVE_OUT" | tail -20
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+says_not() {
+    if grep -qF -- "$1" "$DRIVE_OUT"; then
+        echo "  FAILED   ${CURRENT} — says \"$1\" and must not"
+        sed 's/^/             | /' "$DRIVE_OUT" | tail -20
+        FAILED=$((FAILED + 1))
+    else
+        echo "  ok       ${CURRENT} — does not say \"$1\""
+        PASSED=$((PASSED + 1))
+    fi
+}
+
+holds() {
+    local label="$1" want="$2" got="$3"
+    if [ "$want" = "$got" ]; then
+        echo "  ok       ${label} — ${got}"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${label} — wanted '${want}', got '${got}'"
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+# --- the scratch repository ---------------------------------------------------
+#
+# main:  base -> only-on-main   (so no branch is ever a fast-forward)
+# safe:  base -> safe-change    (merges cleanly into main)
+# clash: base -> clash-change   (touches the same line as only-on-main)
+# stale: base                   (already an ancestor of main)
+REPO=""
+GATE_LOG=""
+N=0
+fresh_repo() {
+    N=$((N + 1))
+    REPO="${WORK}/repo${N}"
+    GATE_LOG="${WORK}/gate${N}.log"
+    # Created empty, so "the gate never ran" is an empty file rather than a
+    # missing one — an absent file and a gate that ran zero times read the same
+    # to `wc`, and only one of them is the property being asserted.
+    : >"$GATE_LOG"
+    # THE BELT, and it comes before the `mkdir` as well as before the
+    # first git command. `git -C "" ...` is a no-op chdir, not a refusal: every
+    # command after it lands on whatever repository this process is standing in.
+    # An empty $REPO makes the line below `mkdir -p /scripts`, which is the same
+    # incident one step earlier.
+    drive_require_scratch REPO "${REPO:-}"
+    mkdir -p "$REPO/scripts"
+    git -C "$REPO" init -q
+    git -C "$REPO" symbolic-ref HEAD refs/heads/main
+    git -C "$REPO" config user.email drive@example.invalid
+    git -C "$REPO" config user.name "pm_merge drive"
+
+    cp "$SOURCE" "$REPO/scripts/pm_merge.sh"
+    chmod +x "$REPO/scripts/pm_merge.sh"
+
+    # The stub gate: it records what it was handed and exits with the status the
+    # case asked for. This is the whole of what these cases know about the gate.
+    {
+        echo '#!/usr/bin/env bash'
+        echo "echo \"STUB GATE ran with: \$*\""
+        echo "printf '%s\\n' \"\$*\" >>\"$GATE_LOG\""
+        echo "exit \"\${DJB_DRIVE_GATE_RC:-0}\""
+    } >"$REPO/scripts/check.sh"
+    chmod +x "$REPO/scripts/check.sh"
+
+    echo "one" >"$REPO/shared.txt"
+    git -C "$REPO" add -A
+    git -C "$REPO" commit -q -m "base"
+    git -C "$REPO" branch stale
+
+    git -C "$REPO" checkout -q -b safe
+    echo "safe" >"$REPO/safe.txt"
+    git -C "$REPO" add safe.txt
+    git -C "$REPO" commit -q -m "safe change"
+
+    git -C "$REPO" checkout -q -b clash main
+    echo "clash" >"$REPO/shared.txt"
+    git -C "$REPO" add shared.txt
+    git -C "$REPO" commit -q -m "clash change"
+
+    git -C "$REPO" checkout -q main
+    echo "main" >"$REPO/shared.txt"
+    git -C "$REPO" add shared.txt
+    git -C "$REPO" commit -q -m "only on main"
+}
+
+# Run a command with the scratch repository as the working directory — the
+# checkout pm_merge reads from `git rev-parse --show-toplevel`.
+in_repo() { (cd "$REPO" && "$@"); }
+
+head_of() { git -C "$REPO" rev-parse HEAD; }
+
+# --- the refusals ------------------------------------------------------------
+
+case_no_branch_named_is_refused() {
+    fresh_repo
+    local before
+    before="$(head_of)"
+    drive "no branch named" 2 -- in_repo ./scripts/pm_merge.sh
+    says "no branch named"
+    holds "no branch named: HEAD did not move" "$before" "$(head_of)"
+}
+
+case_an_unknown_flag_is_refused() {
+    fresh_repo
+    drive "unknown flag" 2 -- in_repo ./scripts/pm_merge.sh --merge-it safe
+    says "unknown flag"
+}
+
+case_two_branches_are_refused() {
+    fresh_repo
+    drive "two branches" 2 -- in_repo ./scripts/pm_merge.sh safe clash
+    says "one branch at most"
+}
+
+# A branch name that does not exist must be a loud refusal that names itself,
+# not git's one-line "not something we can merge".
+case_a_nonexistent_branch_is_a_loud_refusal() {
+    fresh_repo
+    local before
+    before="$(head_of)"
+    drive "nonexistent branch" 2 -- in_repo ./scripts/pm_merge.sh worktree-agent-typo-safe
+    says "names no commit"
+    says "Nothing was merged"
+    holds "nonexistent branch: HEAD did not move" "$before" "$(head_of)"
+    holds "nonexistent branch: the gate never ran" "0" "$(wc -l <"$GATE_LOG" | tr -d ' ')"
+}
+
+# The other half of the same class: a name that DOES resolve but is already in.
+# git exits 0 on that, which is a success status for a merge that did not happen.
+case_an_already_merged_branch_is_refused() {
+    fresh_repo
+    local before
+    before="$(head_of)"
+    drive "already an ancestor" 2 -- in_repo ./scripts/pm_merge.sh stale
+    says "ALREADY an ancestor"
+    says "Already up to date"
+    holds "already an ancestor: HEAD did not move" "$before" "$(head_of)"
+    says_not "Proof of merge"
+}
+
+case_a_dirty_tree_is_refused() {
+    fresh_repo
+    local before
+    before="$(head_of)"
+    echo "an unsaved edit" >>"$REPO/shared.txt"
+    drive "dirty tree" 2 -- in_repo ./scripts/pm_merge.sh safe
+    says "uncommitted changes"
+    holds "dirty tree: HEAD did not move" "$before" "$(head_of)"
+}
+
+# The refusal is actually about: you cannot filter this script's output.
+#
+# THIS CASE DEPENDS ON AN ENVIRONMENT IT DOES NOT SET, and for eight days it did
+# not say so. The guard exempts CI (`scripts/pm_merge.sh:91`, check.sh's line
+# copied), so on a GitHub runner — where CI is exported and every step's stdout
+# IS a pipe — the exemption fires, the pipe is allowed, the scratch merge really
+# happens, and all three assertions here go red against a wrapper that is
+# working exactly as designed. The refusal path is
+# exercised on every platform now because `drive_preamble.sh` section 4 unsets
+# the exemption variables for the whole drive; the exemption's own half is the
+# case below, which sets them back at its own call site.
+case_a_piped_stdout_is_refused() {
+    fresh_repo
+    local before
+    before="$(head_of)"
+    drive "piped stdout" 2 -- in_repo bash -c 'set -o pipefail; ./scripts/pm_merge.sh safe | cat'
+    says "refuses pipes"
+    holds "piped stdout: HEAD did not move" "$before" "$(head_of)"
+}
+
+# THE OTHER HALF, and the reason the strip above is a fix rather than a dodge: a
+# refusal exercised everywhere and an exemption exercised nowhere is the same
+# blindness pointed the other way. If the exemption is ever lost, CI stops being
+# able to run the gate at all — and this is the case that says so first, on a
+# laptop, in fifteen seconds, instead of fourteen minutes into a runner.
+#
+# There is no exemption SENTENCE to assert: the guard falls through silently, so
+# what it honestly says is the merge itself — the proof line, the gate the
+# wrapper went on to run, and a HEAD that really moved.
+case_the_ci_exemption_lets_a_piped_run_through() {
+    fresh_repo
+    local before
+    before="$(head_of)"
+    drive "piped stdout under CI" 0 -- in_repo env CI=true GITHUB_ACTIONS=true \
+        bash -c 'set -o pipefail; ./scripts/pm_merge.sh safe | cat'
+    says_not "refuses pipes"
+    says "MERGED. Proof of merge"
+    says "STUB GATE ran with: --fast"
+    if [ "$before" = "$(head_of)" ]; then
+        echo "  FAILED   piped stdout under CI — HEAD did not move, so the pipe was refused after all"
+        FAILED=$((FAILED + 1))
+    else
+        echo "  ok       piped stdout under CI — HEAD moved to $(git -C "$REPO" rev-parse --short HEAD)"
+        PASSED=$((PASSED + 1))
+    fi
+}
+
+# THE TOOTH ON THE TWO CASES ABOVE. Both of them are only as honest as the list
+# of variables `drive_preamble.sh` strips, and that list is typed. So it is
+# checked against the guard itself rather than promised: the guard's condition
+# is lifted out of pm_merge.sh by the one test it is made of (`-p` on the stdout
+# fd — a marker, never a line number), asserted to be check.sh's same line
+# (pm_merge's header claims it is), and every environment variable it reads is
+# asserted to be one the preamble unsets. An exemption that grows a variable the
+# drives do not strip is a red case here, not a refusal that quietly stopped
+# being exercised anywhere.
+case_the_pipe_guard_reads_only_what_the_preamble_strips() {
+    local marker='[ -p /dev/fd/1 ]'
+    local mine theirs vars v unstripped=""
+    CURRENT="the pipe guard's variables"
+    [ -r "$GATE" ] ||
+        cannot_look "scripts/check.sh is not readable — the guard the two pipe cases turn on cannot be compared against the file it was copied from"
+    mine="$(grep -m1 -F -- "$marker" "$SOURCE" || true)"
+    theirs="$(grep -m1 -F -- "$marker" "$GATE" || true)"
+    [ -n "$mine" ] ||
+        cannot_look "no pipe guard found in scripts/pm_merge.sh (looked for '${marker}') — the pipe cases assert a refusal that may no longer exist"
+    [ -n "$theirs" ] ||
+        cannot_look "no pipe guard found in scripts/check.sh (looked for '${marker}') — pm_merge's header claims its guard IS check.sh's and there is nothing left to compare it to"
+
+    holds "the pipe guard is check.sh's line, byte for byte" "$theirs" "$mine"
+
+    # `|| true` is load-bearing and was found by the plant, not reasoned to: a
+    # guard that reads NO variable makes grep exit 1, and under this file's
+    # `pipefail` that kills the drive mid-case — exit 1 with the case unscored
+    # and no summary line at all. The empty set is a RESULT here (it is the
+    # assertion below), never a reason to stop reporting.
+    vars="$(printf '%s\n' "$mine" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*' | sed 's/^..//' |
+        LC_ALL=C sort -u | tr '\n' ' ' || true)"
+    vars="${vars% }"
+    holds "the guard reads an environment variable at all (the exemption exists)" \
+        "yes" "$([ -n "$vars" ] && echo yes || echo no)"
+
+    for v in $vars; do
+        case " ${DRIVE_CI_VARS} " in
+        *" $v "*) ;;
+        *) unstripped="${unstripped}${unstripped:+ }${v}" ;;
+        esac
+    done
+    holds "every variable the guard reads is one drive_preamble.sh unsets (${DRIVE_CI_VARS})" \
+        "(none)" "${unstripped:-(none)}"
+}
+
+case_the_real_script_refuses_a_foreign_checkout() {
+    fresh_repo
+    local before
+    before="$(head_of)"
+    # THIS tree's pm_merge.sh, run while standing in the scratch repository.
+    drive "foreign checkout" 2 -- in_repo "$SOURCE" safe
+    says "not the checkout this script lives in"
+    holds "foreign checkout: HEAD did not move" "$before" "$(head_of)"
+}
+
+# --- the conflict -------------------------------------------------------------
+
+case_a_conflicting_merge_surfaces_the_conflict() {
+    fresh_repo
+    drive "conflicting merge" 1 -- in_repo ./scripts/pm_merge.sh clash
+    says "THE MERGE FAILED"
+    says "WORKING TREE: MID-MERGE"
+    says "shared.txt"
+    says "merge --abort"
+    # The state it claims is the state that is actually there.
+    local mid="no"
+    git -C "$REPO" rev-parse --verify --quiet MERGE_HEAD >/dev/null && mid="yes"
+    holds "conflicting merge: the tree really is mid-merge" "yes" "$mid"
+    holds "conflicting merge: the gate never ran" "0" "$(wc -l <"$GATE_LOG" | tr -d ' ')"
+    says_not "Proof of merge"
+    git -C "$REPO" merge --abort
+}
+
+# --- the clean merge ----------------------------------------------------------
+
+case_a_clean_merge_prints_the_proof_line() {
+    fresh_repo
+    local before
+    before="$(head_of)"
+    drive "clean merge" 0 -- in_repo ./scripts/pm_merge.sh safe
+    says "MERGED. Proof of merge"
+    # The proof line is the real one: the sha it printed is this tree's new HEAD.
+    says "$(git -C "$REPO" rev-parse --short HEAD)"
+    if [ "$before" = "$(head_of)" ]; then
+        echo "  FAILED   clean merge — HEAD did not move"
+        FAILED=$((FAILED + 1))
+    else
+        echo "  ok       clean merge — HEAD moved to $(git -C "$REPO" rev-parse --short HEAD)"
+        PASSED=$((PASSED + 1))
+    fi
+    holds "clean merge: the new tip has two parents" "2" \
+        "$(git -C "$REPO" log -1 --format=%P | wc -w | tr -d ' ')"
+    holds "clean merge: the gate ran once, with --fast" "--fast" "$(cat "$GATE_LOG")"
+}
+
+case_a_merge_message_file_is_used() {
+    fresh_repo
+    printf 'Merge: the message from a file\n' >"${WORK}/msg${N}.txt"
+    drive "merge message from a file" 0 -- in_repo ./scripts/pm_merge.sh safe -m "${WORK}/msg${N}.txt"
+    holds "the merge commit carries the file's subject" \
+        "Merge: the message from a file" "$(git -C "$REPO" log -1 --format=%s)"
+}
+
+case_a_merge_message_on_stdin_is_used() {
+    fresh_repo
+    drive "merge message on stdin" 0 -- in_repo bash -c \
+        'printf "Merge: the message from stdin\n" | ./scripts/pm_merge.sh safe -m -'
+    holds "the merge commit carries stdin's subject" \
+        "Merge: the message from stdin" "$(git -C "$REPO" log -1 --format=%s)"
+}
+
+case_an_unreadable_message_file_is_refused() {
+    fresh_repo
+    local before
+    before="$(head_of)"
+    drive "message file that is not there" 2 -- in_repo ./scripts/pm_merge.sh safe -m "${WORK}/nope.txt"
+    says "no such readable file"
+    holds "unreadable message file: HEAD did not move" "$before" "$(head_of)"
+}
+
+# --- the exit propagation -----------------------------------------------------
+#
+# The whole point of the wrapper: the caller's exit status is the gate's, and a
+# red gate does not un-print the proof of a merge that really happened.
+case_a_red_gate_propagates() {
+    fresh_repo
+    drive "red gate propagates" 1 -- in_repo env DJB_DRIVE_GATE_RC=1 ./scripts/pm_merge.sh safe
+    says "MERGED. Proof of merge"
+    says "STUB GATE ran with: --fast"
+    holds "red gate: the merge commit is still there" "2" \
+        "$(git -C "$REPO" log -1 --format=%P | wc -w | tr -d ' ')"
+}
+
+case_an_enforcement_broken_gate_propagates() {
+    fresh_repo
+    drive "gate exit 2 propagates" 2 -- in_repo env DJB_DRIVE_GATE_RC=2 ./scripts/pm_merge.sh safe
+    says "MERGED. Proof of merge"
+}
+
+case_a_missing_gate_is_refused_before_the_merge() {
+    fresh_repo
+    local before
+    before="$(head_of)"
+    rm -f "$REPO/scripts/check.sh"
+    drive "no gate to run" 2 -- in_repo ./scripts/pm_merge.sh safe
+    says "no executable gate"
+    holds "no gate: HEAD did not move" "$before" "$(head_of)"
+}
+
+case_no_branch_named_is_refused
+case_an_unknown_flag_is_refused
+case_two_branches_are_refused
+case_a_nonexistent_branch_is_a_loud_refusal
+case_an_already_merged_branch_is_refused
+case_a_dirty_tree_is_refused
+case_a_piped_stdout_is_refused
+case_the_ci_exemption_lets_a_piped_run_through
+case_the_pipe_guard_reads_only_what_the_preamble_strips
+case_the_real_script_refuses_a_foreign_checkout
+case_a_conflicting_merge_surfaces_the_conflict
+case_a_clean_merge_prints_the_proof_line
+case_a_merge_message_file_is_used
+case_a_merge_message_on_stdin_is_used
+case_an_unreadable_message_file_is_refused
+case_a_red_gate_propagates
+case_an_enforcement_broken_gate_propagates
+case_a_missing_gate_is_refused_before_the_merge
+
+echo "test_pm_merge: ${PASSED} passed · ${FAILED} failed"
+if [ "$FAILED" -gt 0 ]; then
+    echo "!! a property did not hold. Both halves of a refusal are load-bearing: the" >&2
+    echo "   status a caller branches on and the sentence a human acts on." >&2
+    exit 1
+fi
+exit 0

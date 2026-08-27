@@ -1,0 +1,12 @@
+{
+  "name": "07 · Errors and warnings, both services",
+  "orderBy": "Timestamp DESC",
+  "select": "Timestamp, ServiceName, SeverityText, LogAttributes['logger'], LogAttributes['correlation_id'], Body",
+  "sourceName": "Logs",
+  "tags": [
+    "djb",
+    "the-pipe"
+  ],
+  "where": "SeverityText IN ('error', 'fatal', 'warn')",
+  "whereLanguage": "sql"
+}

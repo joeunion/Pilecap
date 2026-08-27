@@ -1,0 +1,586 @@
+"""The addressing-header law, as a decision table, driven at every door.
+
+The law (ADR core-21): **an addressing header (`X-Tenant`,
+`X-Org`) that was SENT and cannot be honoured for this credential refuses —
+truthfully and loudly. An OMITTED header falls back to the default membership.**
+
+Before this module the platform said three different things about one question:
+
+* `config/api.py` promised every authenticated route that "a tenant you hold no
+  membership in reads as empty rather than as forbidden";
+* `apps/accounts/api.py` promised a pinned token "can only ever act in that
+  tenant, whatever `X-Tenant` a later request sends";
+* the wire answered **401 "We could not tell who is making this request"** over
+  a perfectly valid credential, 200 `[]` for an
+  unpinned one, and the ROOT bill for an `X-Org` that was sent empty.
+
+Three answers to one question is what "crossed contract" means. The table below
+is the single answer, and it is the spec as well as the test: **every cell is
+written here and driven**, so a door that comes to disagree with another door
+fails by name rather than by somebody noticing.
+
+## The table
+
+Five header states × three credential kinds × two headers:
+
+| sent            | answer                                              |
+|-----------------|-----------------------------------------------------|
+| omitted         | honoured — the default membership, exactly as before |
+| valid           | honoured — that tenant, that hat                     |
+| foreign         | **refused** `addressing_header_not_honoured` (403)   |
+| nonexistent     | **refused**, byte-identical to foreign               |
+| empty (`X-Org;`)| **SENT** — and refused                               |
+
+The credential kind does not appear in the answer column, and that is the
+ruling's whole content: a pinned token, an unpinned token and a browser session
+that all send the same unhonourable header get the same refusal. The
+disambiguation the earlier law recorded — unpinned answers `200 []`, pinned answers `401`
+— was the defect, not the contract.
+
+## The doors
+
+`DOOR_COVERAGE` below is checked against a **derived** census: every module in
+the tree that calls `resolve_tenant` or `resolve_org` is a door that reads an
+addressing header, and every one of them has a row here or a declared reason it
+is not driven. A door added tomorrow fails this module rather than shipping
+uncovered (rule 40's census shape).
+
+`session × MCP` is the one absent cell in the cross product and it is absent by
+construction: the machine door takes a bearer token and there is no session to
+present to it. It is named in `UNDRIVEN` below rather than left as a hole.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+from django.test import Client
+
+from apps.accounts.models import User
+from apps.accounts.services import issue_token
+from apps.core.actor import actor_for
+from apps.core.models import Membership, Organization, Tenant
+from apps.core.services import create_organization
+from apps.core.tests.test_mcp import MCP_HEADERS, running
+from apps.core.tests.tree_census import source_tree, vanishing_source_file
+
+pytestmark = pytest.mark.django_db
+
+LIST_URL = "/api/v1/widgets/"
+MCP_URL = "/mcp"
+CODE = "addressing_header_not_honoured"
+REFUSED_STATUS = 403
+
+#: The five header states the table walks. `None` is "the header was not sent at
+#: all"; every string — the empty one included — is a header that WAS sent.
+OMITTED = "omitted"
+VALID = "valid"
+FOREIGN = "foreign"
+NONEXISTENT = "nonexistent"
+EMPTY = "empty"
+STATES = (OMITTED, VALID, FOREIGN, NONEXISTENT, EMPTY)
+
+#: The three credential kinds. A session is a person at a browser; the two token
+#: kinds differ only in whether the token row carries a tenant.
+SESSION = "session"
+PINNED = "pinned-token"
+UNPINNED = "unpinned-token"
+KINDS = (SESSION, PINNED, UNPINNED)
+
+HEADERS = ("X-Tenant", "X-Org")
+
+#: The cells the cross product does not contain, named rather than skipped.
+UNDRIVEN = {
+    (SESSION, "mcp"): "the machine door takes a bearer token; there is no session to send",
+    # The machine door accepts a THIRD credential kind — an OAuth 2.1
+    # JWT from the identity platform, validated by `apps/accounts/oauth.py` —
+    # and no row here drives it. It is not in `KINDS` because the door is OFF
+    # in this suite and in any deployment that has not set
+    # `ZITADEL_MCP_AUDIENCE`, so a row would drive a path that does not exist
+    # on the tree it runs against.
+    #
+    # THE MITIGATION, which is why this is a declared gap and not an untested
+    # door: both credential paths converge on ONE call. `config/mcp.py:431`
+    # asks `addressing_refusal` after the credential has resolved and before
+    # the transport is reached, and it asks it for whichever kind resolved —
+    # the bearer token rows below and the JWT reach the same function with the
+    # same four arguments. What is undriven is the RESOLUTION that feeds it,
+    # not the law itself.
+    #
+    # What that leaves uncovered, stated: a JWT that resolved a tenant or org
+    # DIFFERENTLY from a bearer token carrying the same claims would produce a
+    # different refusal, and nothing here would see it. The trigger for driving
+    # it is the first deployment that sets `ZITADEL_MCP_AUDIENCE`.
+    ("oauth-jwt", "mcp"): (
+        "the OAuth 2.1 JWT door is off without ZITADEL_MCP_AUDIENCE; both paths "
+        "converge on the same addressing_refusal at config/mcp.py:431"
+    ),
+}
+
+#: Every module that resolves an addressing header, and how the table reaches it.
+#: Checked against the derived census in `test_the_header_reading_door_census_is_covered`.
+DOOR_COVERAGE = {
+    "apps/core/middleware.py": "rest — the session door, driven by every session row",
+    "apps/accounts/auth.py": "rest — the bearer door, driven by every token row",
+    "apps/accounts/services.py": "the one token resolver behind all three token doors",
+    "apps/accounts/oauth.py": "the OAuth bearer, resolved into config/mcp.py's seam below",
+    "config/mcp.py": "mcp — driven by every token row",
+    "apps/core/asgi_middleware.py": (
+        "socket (session) — apps/realtime/tests/test_addressing_headers.py, SOCKET_ROWS"
+    ),
+    "apps/realtime/middleware.py": (
+        "socket (bearer) — apps/realtime/tests/test_addressing_headers.py, SOCKET_ROWS"
+    ),
+}
+
+
+def _slug_for(state: str, *, mine: str, foreign: str) -> str | None:
+    """The header value this state sends, or `None` for a header never sent."""
+    return {
+        OMITTED: None,
+        VALID: mine,
+        FOREIGN: foreign,
+        NONEXISTENT: "no-such-slug-anywhere",
+        EMPTY: "",
+    }[state]
+
+
+def _honoured(state: str) -> bool:
+    return state in (OMITTED, VALID)
+
+
+# --- the world the table is driven against ------------------------------------
+
+
+@pytest.fixture
+def branch(tenant: Tenant, owner: User, root_org: Organization) -> Organization:
+    """A second node under the tenant's root, so `X-Org` has somewhere valid to go."""
+    from apps.core.actor import actor_for
+
+    return create_organization(
+        tenant=tenant,
+        actor=actor_for(user=owner, tenant=tenant, org=root_org),
+        name="Branch",
+        slug="branch",
+        parent=root_org,
+    )
+
+
+@pytest.fixture
+def foreign_org(other_tenant: Tenant, other_root_org: Organization) -> Organization:
+    """A real organization in a tenant the caller has nothing to do with."""
+    return other_root_org
+
+
+def _rest(
+    *, kind: str, user: User, tenant: Tenant, plaintext: str, header: str, value: str | None
+) -> Any:
+    client = Client()
+    headers: dict[str, str] = {}
+    if kind == SESSION:
+        client.force_login(user)
+    else:
+        headers["authorization"] = f"Bearer {plaintext}"
+    if value is not None:
+        headers[header.lower()] = value
+    return client.get(LIST_URL, headers=headers)
+
+
+# --- the table, at the REST door ----------------------------------------------
+
+
+@pytest.mark.parametrize("header", HEADERS)
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("state", STATES)
+def test_the_table_at_the_rest_door(
+    state: str,
+    kind: str,
+    header: str,
+    tenant: Tenant,
+    other_tenant: Tenant,
+    owner: User,
+    root_org: Organization,
+    branch: Organization,
+    foreign_org: Organization,
+) -> None:
+    """One cell of the decision table, over HTTP, through the mounted API."""
+    pinned = issue_token(
+        user=owner, tenant=tenant, name="pinned", actor=actor_for(user=owner, tenant=tenant)
+    )[1]
+    unpinned = issue_token(
+        user=owner, tenant=None, name="unpinned", actor=actor_for(user=owner, tenant=None)
+    )[1]
+    plaintext = pinned if kind == PINNED else unpinned
+
+    if header == "X-Tenant":
+        value = _slug_for(state, mine=tenant.slug, foreign=other_tenant.slug)
+    else:
+        value = _slug_for(state, mine=branch.slug, foreign=foreign_org.slug)
+
+    response = _rest(
+        kind=kind,
+        user=owner,
+        tenant=tenant,
+        plaintext=plaintext,
+        header=header,
+        value=value,
+    )
+
+    if _honoured(state):
+        assert response.status_code == 200, (state, kind, header, response.content)
+        return
+    assert response.status_code == REFUSED_STATUS, (state, kind, header, response.content)
+    body = response.json()
+    assert body["code"] == CODE, (state, kind, header, body)
+    assert header in body["detail"], (state, kind, header, body)
+    assert body["remedies"], body
+
+
+# --- the table, at the MCP door -----------------------------------------------
+
+
+def _mcp_body() -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+
+
+@pytest.mark.parametrize("header", HEADERS)
+@pytest.mark.parametrize("kind", (PINNED, UNPINNED))
+@pytest.mark.parametrize("state", STATES)
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_the_table_at_the_mcp_door(
+    state: str,
+    kind: str,
+    header: str,
+    tenant: Tenant,
+    other_tenant: Tenant,
+    owner: User,
+    root_org: Organization,
+    branch: Organization,
+    foreign_org: Organization,
+) -> None:
+    """The same cell, at the machine door, in the same envelope."""
+    from apps.core.asyncdb import run_db
+    from config.asgi import build_application
+
+    if kind == PINNED:
+        plaintext = (
+            await run_db(
+                issue_token,
+                user=owner,
+                tenant=tenant,
+                name="pinned",
+                actor=actor_for(user=owner, tenant=tenant),
+            )
+        )[1]
+    else:
+        plaintext = (
+            await run_db(
+                issue_token,
+                user=owner,
+                tenant=None,
+                name="unpinned",
+                actor=actor_for(user=owner, tenant=None),
+            )
+        )[1]
+
+    if header == "X-Tenant":
+        value = _slug_for(state, mine=tenant.slug, foreign=other_tenant.slug)
+    else:
+        value = _slug_for(state, mine=branch.slug, foreign=foreign_org.slug)
+
+    headers = {**MCP_HEADERS, "authorization": f"Bearer {plaintext}"}
+    if value is not None:
+        headers[header.lower()] = value
+
+    application = build_application()
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.post(MCP_URL, headers=headers, json=_mcp_body())
+
+    if _honoured(state):
+        assert response.status_code == 200, (state, kind, header, response.text)
+        return
+    assert response.status_code == REFUSED_STATUS, (state, kind, header, response.text)
+    body = response.json()
+    assert body["code"] == CODE, (state, kind, header, body)
+    assert header in body["detail"], (state, kind, header, body)
+
+
+# --- door parity: the same refusal, byte for byte -----------------------------
+
+
+@pytest.mark.parametrize("header", HEADERS)
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_the_two_doors_refuse_in_the_same_bytes(
+    header: str,
+    tenant: Tenant,
+    other_tenant: Tenant,
+    owner: User,
+    root_org: Organization,
+    branch: Organization,
+    foreign_org: Organization,
+) -> None:
+    """Rule 17 / E9: one refusal, two doors, one body — not two equivalent ones.
+
+    The doors reach the decision by different routes (an `HttpRequest`'s headers
+    against an ASGI scope's) and compose the answer through the same
+    `wire_refusal` over the same exception class, which is what makes this true
+    by construction rather than by two modules agreeing. It is asserted on the
+    raw bytes because that is what a client receives; a dictionary comparison
+    would pass over two serialisations of one shape.
+    """
+    from apps.core.asyncdb import run_db
+    from config.asgi import build_application
+
+    plaintext = (
+        await run_db(
+            issue_token,
+            user=owner,
+            tenant=tenant,
+            name="parity",
+            actor=actor_for(user=owner, tenant=tenant),
+        )
+    )[1]
+    value = other_tenant.slug if header == "X-Tenant" else foreign_org.slug
+    credential = {"authorization": f"Bearer {plaintext}", header.lower(): value}
+
+    application = build_application()
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.get(
+                LIST_URL, headers={**credential, "accept": "application/json"}
+            )
+            over_rpc = await client.post(
+                MCP_URL, headers={**MCP_HEADERS, **credential}, json=_mcp_body()
+            )
+
+    assert over_http.status_code == over_rpc.status_code == REFUSED_STATUS
+    assert over_http.content == over_rpc.content, (over_http.text, over_rpc.text)
+
+
+# --- the anti-oracle: foreign and nonexistent are one answer ------------------
+
+
+@pytest.mark.parametrize("header", HEADERS)
+def test_foreign_and_nonexistent_are_byte_identical(
+    header: str,
+    tenant: Tenant,
+    other_tenant: Tenant,
+    owner: User,
+    root_org: Organization,
+    branch: Organization,
+    foreign_org: Organization,
+) -> None:
+    """A refusal that told them apart would be an existence oracle over the estate."""
+    plaintext = issue_token(
+        user=owner, tenant=tenant, name="oracle", actor=actor_for(user=owner, tenant=tenant)
+    )[1]
+    if header == "X-Tenant":
+        foreign, absent = other_tenant.slug, "no-such-slug-anywhere"
+    else:
+        foreign, absent = foreign_org.slug, "no-such-slug-anywhere"
+
+    first = _rest(
+        kind=PINNED, user=owner, tenant=tenant, plaintext=plaintext, header=header, value=foreign
+    )
+    second = _rest(
+        kind=PINNED, user=owner, tenant=tenant, plaintext=plaintext, header=header, value=absent
+    )
+
+    assert first.status_code == second.status_code == REFUSED_STATUS
+    assert first.content == second.content, (first.content, second.content)
+
+
+# --- the promise that is now true --------------------------------------------
+
+
+def test_a_valid_credential_never_answers_unauthenticated(
+    tenant: Tenant, other_tenant: Tenant, owner: User, root_org: Organization
+) -> None:
+    """Verbatim: a pinned token plus a foreign `X-Tenant`.
+
+    It answered `401 unauthenticated` — "We could not tell who is making this
+    request" — over a live, unrevoked token belonging to a real active user.
+    E9's grammar refuses a fact that is false, and that one was.
+    """
+    plaintext = issue_token(
+        user=owner, tenant=tenant, name="f1", actor=actor_for(user=owner, tenant=tenant)
+    )[1]
+
+    response = _rest(
+        kind=PINNED,
+        user=owner,
+        tenant=tenant,
+        plaintext=plaintext,
+        header="X-Tenant",
+        value=other_tenant.slug,
+    )
+
+    assert response.status_code != 401, response.content
+    body = response.json()
+    assert body["code"] != "unauthenticated", body
+    assert body["code"] == CODE, body
+
+
+def test_an_omitted_header_still_falls_back_to_the_default_membership(
+    tenant: Tenant, owner: User, root_org: Organization
+) -> None:
+    """The well-behaved client sees no change. This is the half that must NOT move."""
+    plaintext = issue_token(
+        user=owner, tenant=None, name="quiet", actor=actor_for(user=owner, tenant=None)
+    )[1]
+    client = Client()
+    response = client.get(LIST_URL, headers={"authorization": f"Bearer {plaintext}"})
+    assert response.status_code == 200, response.content
+
+    session = Client()
+    session.force_login(owner)
+    assert session.get(LIST_URL).status_code == 200
+
+
+# --- the derived census ------------------------------------------------------
+
+
+def _repository_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _modules() -> Iterator[Path]:
+    root = _repository_root()
+    for base in ("apps", "config"):
+        for path in sorted((root / base).rglob("*.py")):
+            if "/tests/" in str(path) or path.name.startswith("test_"):
+                continue
+            yield path
+
+
+def _resolves_an_addressing_header(path: Path) -> bool:
+    """True when this module CALLS one of the two resolvers.
+
+    Derived off the call, not off a list of file names: a door added tomorrow
+    that resolves `X-Tenant` shows up here the moment it is written.
+    """
+    try:
+        tree = source_tree(path)
+    except SyntaxError:  # pragma: no cover - not a thing in this tree
+        return False
+    wanted = {"resolve_tenant", "resolve_org"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+            if name in wanted:
+                return True
+        # `run_db(resolve_org, ...)` and `run_db(resolve_tenant, ...)` — the
+        # async doors hand the function itself rather than calling it.
+        if isinstance(node, ast.Name) and node.id in wanted:
+            return True
+    return False
+
+
+def test_the_header_reading_door_census_is_covered() -> None:
+    """Every module that resolves an addressing header has a row in this table."""
+    root = _repository_root()
+    census = {
+        str(path.relative_to(root)) for path in _modules() if _resolves_an_addressing_header(path)
+    }
+    # The declaring module itself is where the resolvers live, not a door.
+    census.discard("apps/core/middleware.py")
+    covered = set(DOOR_COVERAGE) - {"apps/core/middleware.py"}
+
+    assert census == covered, {
+        "in the tree but not in the table": sorted(census - covered),
+        "in the table but not in the tree": sorted(covered - census),
+    }
+
+
+def test_the_undriven_cell_is_named() -> None:
+    """An absent cell is declared, never silently missing."""
+    assert (SESSION, "mcp") in UNDRIVEN
+
+
+# --- the socket door ----------------------------------------------------------
+#
+# ITS ROWS ARE DRIVEN IN `apps/realtime/tests/test_addressing_headers.py`, and
+# the split is the layer contract rather than a preference: `core` sits below
+# `realtime` and may not import it, so the socket client and the close codes are
+# unreachable from here. That module imports the table constants above — the
+# legal direction — so the two halves cannot come to disagree about which cells
+# exist. `SOCKET_ROWS` names the cells it owes.
+
+SOCKET_ROWS = tuple(
+    (state, header) for state in (FOREIGN, NONEXISTENT, EMPTY) for header in HEADERS
+)
+
+
+def test_the_registry_holds_the_code() -> None:
+    """Rule 47: the code is registered, and its fact is about the header."""
+    from apps.core.exceptions import refusal_for
+
+    refusal = refusal_for(CODE)
+    assert refusal is not None
+    assert refusal.boundary == "door"
+    assert refusal.remedies
+    assert any("header:" in remedy.destination for remedy in refusal.remedies)
+
+
+def test_the_code_is_published_on_every_authenticated_route() -> None:
+    """Rule 47's other half: a code with no `CODE_STATUS` line drops out silently."""
+    from config.api import CODE_STATUS, api
+
+    assert CODE_STATUS[CODE] == REFUSED_STATUS
+    document = api.get_openapi_schema()
+    operation = document["paths"][LIST_URL]["get"]
+    published = {
+        code
+        for response in operation.get("responses", {}).values()
+        if isinstance(response, dict)
+        for code in response.get("x-refusal-codes", ())
+    }
+    assert CODE in published, sorted(published)
+
+
+def test_the_header_descriptions_say_the_ruled_behaviour() -> None:
+    """Rule 41: the document IS the contract, and it used to promise the opposite."""
+    from config.api import api
+
+    document = api.get_openapi_schema()
+    operation = document["paths"][LIST_URL]["get"]
+    described = {
+        parameter["name"]: parameter["description"]
+        for parameter in operation.get("parameters", [])
+        if parameter.get("in") == "header"
+    }
+    assert "reads as empty" not in json.dumps(described)
+    for header in HEADERS:
+        assert "refused" in described[header].lower(), described[header]
+
+
+def test_a_membership_is_what_makes_a_header_honourable(
+    tenant: Tenant, owner: User, root_org: Organization
+) -> None:
+    """The honoured half, said about rows rather than about strings."""
+    assert Membership.objects.filter(user=owner, tenant=tenant).exists()
+
+
+def test_the_header_census_tolerates_a_file_that_vanishes_at_open() -> None:
+    """The falsifier for the tolerant read. RED before RACE-1: `FileNotFoundError`.
+
+    This census already caught `SyntaxError` and NOT `FileNotFoundError`, which
+    is the shape the whole class is about — a guard around the wrong exception
+    reads exactly like a guard.
+    """
+    with vanishing_source_file() as planted:
+        for path in _modules():
+            _resolves_an_addressing_header(path)
+        assert not planted.exists(), "the census never opened the plant — this drove nothing"

@@ -1,0 +1,12 @@
+{
+  "name": "02 · One business chain, door to delivery",
+  "orderBy": "Timestamp ASC",
+  "select": "Timestamp, ServiceName, LogAttributes['door'], LogAttributes['event'], LogAttributes['request_id'], Body",
+  "sourceName": "Logs",
+  "tags": [
+    "djb",
+    "the-pipe"
+  ],
+  "where": "LogAttributes['correlation_id'] = '00000000000000000000000000000000'",
+  "whereLanguage": "sql"
+}

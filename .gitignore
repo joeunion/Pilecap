@@ -1,0 +1,53 @@
+# IDE
+.idea/
+.vscode/
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+# Django
+*.sqlite3
+/media/
+/staticfiles/
+# Env
+.env
+.env.*
+!.env.example
+# Node (frontend, if a product adds one)
+node_modules/
+# Run logs. The gate's verdict key is the working tree measured through
+# `git add -A`, which honours this file — "the content the gate can read", not
+# the content plus every build artefact (scripts/gate_ledger.sh). A gate log
+# redirected into the worktree, exactly as CLAUDE.md and rung-execution §3 tell
+# every builder to redirect it, GROWS WHILE THE GATE RUNS: MEASURED_START !=
+# MEASURED_END, and an ~8-minute green full run banks nothing, forever. A log
+# is an artefact of a run, never source — nothing here is tracked — so ignoring
+# it removes the trap instead of documenting around it, and leaves the
+# tattle-tale intact: every source file, tracked or untracked, still moves the
+# key and still refuses the verdict.
+*.log
+
+# Rung-start artefacts. `scripts/rung_start.sh` dumps the schema to
+# .rung/introspect.json so a builder reads it instead of guessing it. It is the
+# output of a command, never source — and it must be ignored for the same
+# reason the log above is: an untracked file in the worktree moves the gate's
+# verdict key (`git add -A`) and an ~8-minute green full run then banks nothing.
+/.rung/
+
+# Load-drive results. `deploy/load/drive.py` writes its manifest and
+# its two CSVs to `--out`, which defaults here. They are measurements of one box
+# at one moment, not source: the envelope document quotes them and the run that
+# produced them is named in it. Ignored for the same reason as the two above —
+# an untracked file in the worktree moves the gate's verdict key.
+/deploy/load/out/
+
+# OS
+.DS_Store
+# Claude local state
+.claude/settings.local.json
+.claude/worktrees/
+clients/
+backups/

@@ -1,0 +1,45 @@
+# One answer to "tabs or spaces", "how wide", and "does the file end in a
+# newline", read by every editor without anyone configuring one.
+#
+# It exists because the alternative is a diff full of whitespace nobody wrote,
+# which is the noise that makes a real change hard to see in review — and
+# because several people and several agents edit this tree from several editors.
+# `ruff format` is still the authority for Python; this is what keeps the
+# editor from disagreeing with it before the formatter ever runs.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# 100 to match `line-length` in pyproject.toml's [tool.ruff]; an editor that
+# wrapped at 88 would fight the formatter on every save.
+max_line_length = 100
+
+[*.py]
+indent_size = 4
+
+[*.{yml,yaml,json,toml,js,ts,tsx,css,html}]
+indent_size = 2
+
+[*.md]
+# Two trailing spaces are a hard line break in Markdown. Stripping them silently
+# reflows somebody's paragraph.
+trim_trailing_whitespace = false
+max_line_length = 80
+
+[Makefile]
+indent_style = tab
+
+[*.sh]
+indent_size = 4
+
+# Generated, or not ours to reformat.
+[{uv.lock,*.min.js,*.min.css}]
+insert_final_newline = false
+trim_trailing_whitespace = false

@@ -1,0 +1,276 @@
+# The gate, run by GitHub Actions on every pull request and every push to main.
+#
+# **CI does not have its own list of legs. CI runs the gate.** One step,
+# `./scripts/check.sh` with no argument — the full mode — because a second
+# hand-written list of legs is a list that drifts: this file used to spell the
+# legs by hand and quietly omitted the house-rules engine entirely, so
+# twenty-four rules and every canary self-test never ran on a pull request and
+# CI-green did not mean gate-green. The only way that cannot happen again is
+# for there to be nothing here to keep in sync.
+#
+# What the one call covers, in its own order: ruff (lint + format) · mypy
+# --strict · import-linter · the Django `djb` system checks · the house-rules
+# engine (`quality/rules.yaml`, live scan) · `makemigrations --check` ·
+# `check --deploy` · pytest twice (the second pass is where a non-idempotent
+# suite shows) · the canary self-test (every planted violation must fire, every
+# negative must stay silent) · the full house rules again · the supply chain
+# (pip-audit, licences, detect-secrets). `scripts/check.sh` is the authority on
+# that list; `docs/product/architecture.md` — "The gate" — is what it answers
+# to.
+#
+# Exit codes carry through: 0 clean · 1 violations · **2 enforcement broken**,
+# which outranks any pass. Nothing is piped, here or in the script — a pipe
+# replaces the exit status of the thing you meant to trust with the exit status
+# of the last command in the pipe.
+#
+# **AND CI DOES NOT HAVE ITS OWN ENVIRONMENT EITHER. CI BRINGS UP THE STACK THE
+# GATE ASSUMES** — `docker compose up -d --wait`, this repository's own
+# `compose.yaml`, the same file a laptop runs. That is the same sentence as the
+# one above, one layer down: a hand-built CI environment that *resembles* the
+# gate's is a second description of the stack, and a second description drifts.
+#
+# It drifted. This job used to publish GitHub SERVICE CONTAINERS for
+# Postgres and Redis — a port on localhost, which is everything a Django
+# process needs and is exactly why it read as correct. But half the gate does
+# not reach Postgres over a port. `scripts/db.sh` runs `docker compose exec -T
+# db psql` and `scripts/lifecycle.sh` runs `docker compose exec -T temporal
+# temporal`, deliberately: there is no `psql` and no `temporal` CLI on the host,
+# and a Homebrew one would be whatever major somebody installed. A service
+# container is not a compose service, so `docker compose exec db` finds no such
+# service — and the instruments that ask it say COULD NOT LOOK, exit 2, which
+# outranks a pass and is the correct answer. There was no Temporal here at all.
+#
+# TWO LEGS NEED THE STACK AND NOT THE PORT, and they are the two the gate runs
+# last before `full-house-rules` — with a third, `pytest-x2`, needing only the
+# database:
+#
+#   pytest-x2         the port. Already met; now met by the compose db, which
+#                     is Postgres 18 as the laptop and RDS are (ADR deploy-1),
+#                     rather than the 16 this file used to publish on its own.
+#   own-tree-census   `scripts/sweep.sh` — compose `db` AND compose `temporal`.
+#   selftest          BOTH shell refusal drives live in this leg:
+#                     `scripts/tests/test_backup_restore.sh` needs compose `db`
+#                     (`backup.sh` dumps with the pg_dump INSIDE the container),
+#                     `scripts/tests/test_sweep.sh` needs `db` AND `temporal`.
+#
+# `own-tree-census` runs BEFORE `selftest`, so it is the first leg that would
+# have gone red, not the drives themselves — both answer to the same
+# `docker compose exec`.
+#
+# WHAT IS DELIBERATELY NOT STARTED, and why, because "start the stack" must not
+# quietly mean "start everything":
+#
+#   * zitadel — `config/settings/test.py` pins ZITADEL_ISSUER at 127.0.0.1:1 and
+#     the PAT empty (the suite must not dial), and no gate leg touches identity;
+#     `manage.py zitadel_audit` is an operator's drift tripwire, not a leg. Its
+#     first-instance bootstrap on an empty database also costs more than every
+#     other service here put together.
+#   * mailpit — `config/settings/test.py` uses the locmem email backend, so
+#     nothing in the gate opens an SMTP socket. (On a laptop it IS the contract;
+#     `scripts/setup.sh` starts it there for that reason. Here it would be a
+#     container nothing connects to.)
+#   * the `observability` profile (otel-collector, clickstack) — `compose.yaml`
+#     says "in CI never" in as many words, and a profile is not started by a
+#     bare `up` in any case.
+#   * `deploy/compose.yaml` — the deployment stack. The backup/restore drive
+#     drives `--stack`'s REFUSALS and declares the real `--stack` dump out of
+#     its own scope; bringing that stack up would be this file inventing a leg.
+#
+# `redis` IS started even though the suite runs LocMemCache and the in-memory
+# channel layer today: the `env:` block below advertises REDIS_URL and CACHE_URL
+# to every step, and an advertised address that answers nothing is a lie waiting
+# for the first test that reads a real cache. One small container keeps the
+# environment the one the settings describe.
+#
+# `minio` AND `meilisearch` ARE STARTED, and by the same argument one step
+# further out. Nothing in the gate dials either one *today* — the ingredients
+# that will are `apps/files` and `apps/search`, which land in the rungs
+# immediately after this one. They are started here
+# rather than by those rungs because `compose.yaml` and this file are the two
+# shared files the whole cycle was shaped to have exactly one writer for: the
+# alternative is two more rungs editing this list, which is the collision the
+# batching exists to prevent. The cost is two small containers on an ephemeral
+# runner; the thing bought is that the first rung whose tests need a bucket or
+# an index finds one already there.
+#
+# `minio` is AGPL-3.0 and is a container CI runs, never code the product links
+# or ships — the disposition is recorded on the service in `compose.yaml`,
+# where the choice is made. House rule 23's licence leg reads Python
+# distributions and cannot see a compose image.
+#
+# The one thing below that the gate does not do is `collectstatic` under
+# production settings: it needs the production static pipeline that a laptop
+# gate deliberately skips, and a broken static reference is a 500 on the admin
+# that shows up nowhere else. It is kept, named, and it is the one candidate to
+# fold into `check.sh` later rather than to leave growing here.
+
+name: gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A pull request that gets three pushes in five minutes should measure the last
+# tree, not all three. `main` is never cancelled: a push to main is a tree
+# somebody will cherry-pick from.
+concurrency:
+  group: gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  # Matches `.python-version` and the `requires-python` floor in pyproject.
+  PYTHON_VERSION: "3.12"
+  # THE COMPOSE STACK'S ADDRESS AND CREDENTIALS, AND THEY ARE THE SOURCE, NOT A
+  # COPY: the "start the stack" step below passes these three straight into
+  # compose as POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB, so the value
+  # Django dials and the value the container is created with cannot drift apart
+  # the way two hand-kept lists do. `compose.yaml`'s own `${...:-djb}` defaults
+  # are then never relied on here.
+  #
+  # (The sentence this replaces claimed the checked-in defaults in
+  # `config/settings/base.py` made an override unnecessary. Half true and now
+  # false: DATABASE_NAME's default there is the empty string — it MUST be set,
+  # by `scripts/db.sh` on a laptop or by this block here. Booked as stale in
+  # `docs/product/queue.md`; closed in passing.)
+  #
+  # Postgres always — never SQLite, in CI as on a laptop, because the
+  # Postgres-specific fields, constraints and query behaviour are part of the
+  # contract.
+  DATABASE_HOST: 127.0.0.1
+  DATABASE_PORT: "5432"
+  # A NAME, NOT A DERIVATION. `scripts/db.sh` gives every checkout its own
+  # `djb_<branch>_<path hash>` so two trees on one laptop never share a
+  # database; an ephemeral runner has exactly one checkout and destroys it, so
+  # the pin is honest here and it is the one `compose.yaml` creates on first
+  # boot — which is what the backup drive needs to exist before it can dump it.
+  DATABASE_NAME: djb_main
+  DATABASE_USER: djb
+  DATABASE_PASSWORD: djb  # pragma: allowlist secret — the published compose password, refused in production by config.settings.guards
+  REDIS_URL: redis://127.0.0.1:6379/0
+  CACHE_URL: redis://127.0.0.1:6379/1
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+
+    # NO `services:` BLOCK. There was one — postgres:16 and redis:7 as GitHub
+    # service containers — and it is gone rather than kept alongside: a service
+    # container publishes 5432 on the runner, which is the same port compose
+    # publishes, so the two cannot both exist. The header says why the port was
+    # never enough. The stack comes up in a step now, from `compose.yaml`.
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The gate's diff layer asks what a change added, and its self-test
+          # refuses to run against a tree it cannot read the git status of.
+          # A depth-1 clone answers both questions wrongly.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      - name: Install dependencies
+        # `--frozen`: CI installs what `uv.lock` says and never re-resolves. A
+        # gate that quietly upgraded a dependency would be measuring a tree
+        # nobody has.
+        run: uv sync --frozen
+
+      - name: the stack the gate assumes (docker compose up)
+        # THE ENVIRONMENT, from the repository's OWN `compose.yaml` — the same
+        # file, the same pinned images and the same published ports a laptop
+        # runs, which is the point (see the header). ubuntu-latest ships docker
+        # and the compose v2 plugin, so this needs no setup action.
+        #
+        # `--wait` is what makes it a precondition rather than a race: every
+        # service named here declares a healthcheck in `compose.yaml`, and
+        # `--wait` blocks until each reports healthy — so "up" is never mistaken
+        # for "ready" and the gate never opens a socket that is still starting.
+        # It is also what a fresh Postgres volume needs: the first boot runs
+        # initdb and creates POSTGRES_DB before it answers.
+        #
+        # FIVE, NOT THREE. `zitadel`, `mailpit` and the
+        # `observability` profile are still excluded on purpose and the header
+        # says why for each; `minio` and `meilisearch` joined here in the same
+        # rung that put them in `compose.yaml`, and the header says why for
+        # those two as well.
+        #
+        # The credentials come from the workflow `env:` block above rather than
+        # from `compose.yaml`'s `${...:-djb}` defaults, so the value Django
+        # dials and the value the container is created with are one value.
+        #
+        # No teardown step: the runner is ephemeral and is destroyed with the
+        # job. A laptop tears down with `deploy/teardown.sh`; here there is
+        # nothing to tear down that outlives the next minute.
+        run: |
+          POSTGRES_USER="$DATABASE_USER" \
+          POSTGRES_PASSWORD="$DATABASE_PASSWORD" \
+          POSTGRES_DB="$DATABASE_NAME" \
+            docker compose up -d --wait db redis temporal minio meilisearch
+
+      - name: the gate (./scripts/check.sh, full)
+        # THE step. Not piped, not wrapped, not summarised: its exit status is
+        # the job's. Which leg failed is printed by the script, with its wall
+        # time beside it.
+        run: ./scripts/check.sh
+
+      - name: collectstatic (production settings)
+        # Proves the whitenoise compressed-manifest storage can actually
+        # post-process everything the admin and /api/v1/docs reference. A broken
+        # reference in a CSS file is a 500 on the admin, and it only shows up
+        # when the manifest is built. Throwaway credentials: the point is the
+        # settings, not the secrets.
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.production
+          DEBUG: "0"
+          ALLOWED_HOSTS: example.invalid
+          SECRET_KEY: ci-only-throwaway-0000000000000000000000000000000000000000000  # pragma: allowlist secret — a throwaway, minted for this one step
+          CONNECTIONS_ENCRYPTION_KEY: aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTI9
+          # Third throwaway, and it is required for the same reason as the two
+          # above: the workflow-level DATABASE_PASSWORD is the published `djb`,
+          # and production now refuses to start on it. This step reads no
+          # database — it renders a manifest — so any strong value will do.
+          DATABASE_PASSWORD: ci-only-throwaway-database-password-0000000000  # pragma: allowlist secret
+        run: uv run python manage.py collectstatic --noinput --clear
+
+      - name: the stack, when something failed
+        # DIAGNOSTICS, NOT A LEG. It asserts nothing, it can fail nothing, and
+        # `if: failure()` means it only ever runs after a step that already
+        # decided the job. It exists because the failures this job's new
+        # environment can produce — a container that never went healthy, a port
+        # already taken on the runner, a Temporal that answered late — are
+        # invisible in the gate's own transcript, which reports only that an
+        # instrument could not look. `--no-color` because these logs are read
+        # in a browser, not a terminal.
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color --tail=200 db redis temporal
+
+  images:
+    name: images
+    runs-on: ubuntu-latest
+    # A separate job, because it needs no database and no Redis and there is no
+    # reason for a docker build to wait behind a test suite.
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: docker build --target web
+        run: docker build --target web -t djb-web .
+
+      - name: docker build --target worker
+        run: docker build --target worker -t djb-worker .
+
+      - name: the images run as a non-root user
+        # Cheap, and it catches the one mistake a Dockerfile refactor makes
+        # most often: losing the USER line.
+        run: |
+          test "$(docker run --rm --entrypoint id djb-web -u)" = "10001"
+          test "$(docker run --rm --entrypoint id djb-worker -u)" = "10001"

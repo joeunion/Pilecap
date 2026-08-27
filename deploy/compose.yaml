@@ -1,0 +1,752 @@
+# THE DEPLOYMENT — the same organs `compose.yaml` runs on a laptop, arranged as
+# a deployment (ADR deploy-1).
+#
+#   docker compose -f deploy/compose.yaml --profile laptop up -d     # the proof
+#   docker compose -f deploy/compose.yaml up -d                      # a box with RDS
+#
+# WHAT IS DIFFERENT FROM THE ROOT compose.yaml, and why:
+#
+#   * The app is IN here. The root file runs the services a laptop's host
+#     processes talk to; this one runs `web` and `worker` as containers built
+#     from the repository's own Dockerfile targets, because that is what a
+#     deployment ships.
+#   * Caddy is in front and is the ONLY thing that publishes a port. Every
+#     other container is reachable on the compose network and nowhere else —
+#     no `127.0.0.1:5432` escape hatches, because on a box "loopback" is a
+#     shell somebody has.
+#   * Temporal is the `auto-setup` image against the real Postgres, not the
+#     CLI's dev server. The dev server keeps its history in a file; a
+#     deployment's workflow history belongs in the database that gets backed
+#     up (ops-1, B1's drill).
+#   * Postgres is NOT here in a real environment. It is RDS (ADR deploy-1:
+#     managed snapshots ARE half the backup posture). The `db` service below
+#     carries `profiles: ["laptop"]` and exists only so the laptop proof needs
+#     no AWS; `--profile laptop` is the whole difference, and the runbook says
+#     so at the step that would otherwise be a lie.
+#
+# THE PROJECT NAME IS PER CHECKOUT, AND IT IS NOT IN THIS FILE. A `name:` here
+# would be one name for every checkout on the machine — which is what it was,
+# and what made `teardown.sh local --purge` in one worktree destroy another
+# worktree's containers, network and volumes. `scripts/db.sh`
+# settled this argument for databases; the same answer applies here.
+#
+#     COMPOSE_PROJECT_NAME=djb_deploy_<8 hex of the checkout's path>
+#
+# `deploy/provision.sh env-file` writes that line into `deploy/.env`, and compose
+# reads it out of that file itself — so every bare `docker compose -f
+# deploy/compose.yaml ...` below lands on THIS checkout's stack with nothing
+# threaded through the command line. Exporting `COMPOSE_PROJECT_NAME` (or `-p`)
+# overrides it, deliberately, and `teardown.sh` then refuses to destroy anything
+# it cannot prove this checkout brought up.
+#
+# Nothing here publishes 5432, 6379, 7233, 8081 or 8080 either, so this stack
+# and the root `compose.yaml` development stack can be up together.
+#
+# EVERY IMAGE IS PINNED TO AN EXACT TAG. `latest` nowhere — an organ that
+# changes version underneath a runbook makes the runbook a lie between two
+# performances of it (the N8 precedent; house rule none, discipline all).
+#
+# WHERE THE SECRETS COME FROM — two paths, deliberately, and the seam is
+# declared rather than blurred:
+#
+#   1. `web` and `worker` fetch their own secrets AT CONTAINER START, through
+#      `deploy/entrypoint.sh`, from Secrets Manager (`DJB_SECRETS_SOURCE=
+#      aws:<namespace>/<env>/`) or from a file (`file:/deploy/.env`, the laptop
+#      seam). The app's SECRET_KEY and Fernet key never land on the box's disk
+#      in the first path.
+#   2. The ORGANS — Postgres, Zitadel, Temporal, ClickStack, Caddy's o11y
+#      wall — take theirs by compose variable substitution from `deploy/.env`,
+#      because `docker compose` has no vault client and inventing one here
+#      would be a second secrets mechanism to keep in step. That file is mode
+#      600, written by `provision.sh`, and removed by `teardown.sh`.
+#
+# Path 2 is exactly the population `config/settings/guards.py` declared it
+# structurally could not see, which is why `assert_not_published.sh` reads the
+# same file before anything starts. The belt is at the deployment because the
+# deployment is where the values are in hand.
+
+services:
+  # --- Postgres, for the laptop proof ONLY ------------------------------------
+  # A real environment's database is RDS and this service never starts there.
+  # It carries the same credentials the app and Zitadel and Temporal are handed,
+  # so the laptop exercises the same wiring — including the app role that
+  # `grants.sql.py` revokes on, which is created by the runbook's release step
+  # and is NOT the superuser below.
+  db:
+    profiles: ["laptop"]
+    # ADR deploy-1 · THE TEMPLATE TARGETS POSTGRES 18.
+    # Context: `pg_dump` refuses cross-major outright ("aborting because of
+    # server version mismatch"), and with no `--engine-version` passed to
+    # `provision.sh infra` the cloud provider's default decides which major a
+    # product gets. Decision: pin 18 everywhere in one breath — client moves are
+    # cheap, a pg_dump 18 reads 16 worlds, and 18 has the longer EOL runway.
+    # Rejected: pin 16.x and rebuild the managed instance (an owner-approval
+    # infra act, buying a shorter-lived major); no pin at all (that is the
+    # defect). Revisit trigger: a stack component refusing 18 — stop and report.
+    # THE MINOR is pinned here and only the major in the development stack: a
+    # deployment says exactly which build it proved; a development stack tracks
+    # the major. The ratified decision is the MAJOR, and the pin follows the
+    # latest minor — minors are the safe-by-policy kind.
+    image: postgres:18.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required — see deploy/env.staging.example}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${DATABASE_NAME:?DATABASE_NAME is required}
+    volumes:
+      # PG 18 MOVED THE MOUNT POINT, and the image refuses rather than guessing.
+      # 18+ stores data in MAJOR-VERSION-SPECIFIC subdirectories under
+      # /var/lib/postgresql (…/18/docker), matching how `pg_ctlcluster` and a
+      # real Postgres installation work, so `pg_upgrade --link` can run without
+      # crossing a mount boundary. A volume mounted at the old
+      # /var/lib/postgresql/data makes the container exit 1 with "in 18+, these
+      # Docker images are configured to store database data in a format which is
+      # compatible with pg_ctlcluster" — which is what it did here on the first
+      # 18 boot. The mount moves up one level; the volume is otherwise unchanged.
+      # Consequence, stated: a 16-era db_data volume cannot be reused across this
+      # pin. There is no in-place upgrade path in this template — a laptop stack
+      # is recreated (`deploy/teardown.sh --all-mine`), and a real environment's
+      # database is RDS, where the major is AWS's to move.
+      - db_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${DATABASE_NAME}"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  redis:
+    image: redis:7.4.5
+    restart: unless-stopped
+    # `--appendonly yes` because the channel layer and the cache both live here
+    # and a restart that silently empties both looks like an application bug.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # --- Meilisearch: the search engine this deployment is WIRED to -------------
+  #
+  # WHY IT IS HERE AT ALL. Without it a deployment dials an
+  # address nothing answers, `apps/search` reports the index NOT CONFIGURED, and
+  # the release wall — correctly — refuses. The alternative considered was a
+  # carve-out: teach the wall that a search-less deployment is fine because the
+  # Postgres fallback is a DESIGNED state (ADR search-2). It was rejected, and
+  # the distinction is worth keeping straight: **Postgres degradation is a
+  # designed RUNTIME state, not a deployment posture.** A deployment that never
+  # had an engine is not degraded, it is unwired — and the row that says so is
+  # telling the truth. With the engine present the row reads `configured`
+  # honestly and no rule anywhere had to be widened.
+  #
+  # PINNED TO THE SAME PATCH THE LAPTOP RUNS (`compose.yaml` at the repository
+  # root). Two compose files, one engine: a drift between them is a box proving a
+  # version nobody developed against, and `deploy/tests/test_release.sh` reads
+  # both pins and refuses the drift rather than trusting a reviewer to diff them.
+  #
+  # DELIBERATELY NOT A `/readyz` DEPENDENCY, for `apps/core/health.py`'s reason:
+  # Meilisearch down means search is slower and plainer, never dead, so a member
+  # there would convert a designed degradation into a self-inflicted outage —
+  # every replica reporting unhealthy because search got worse.
+  #
+  # NO PUBLISHED PORT. The laptop publishes 7700 for the bundled search preview;
+  # a box has no reason to, and the app reaches it by service name on the
+  # project's own network. One less door to wall.
+  meilisearch:
+    image: getmeili/meilisearch:v1.53.1
+    restart: unless-stopped
+    environment:
+      # Generated per environment by `provision.sh env-file` and read from
+      # `deploy/.env` by BOTH sides — this container and the app — so there is
+      # one value and nothing to keep in step. With a key set the engine
+      # requires it on every request, which is what keeps a box and a laptop the
+      # same shape rather than "no auth locally, auth in production".
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?MEILI_MASTER_KEY is required — deploy/provision.sh env-file generates it; see deploy/env.staging.example}
+      # `production` here, where the laptop runs `development`: no bundled
+      # preview UI on a machine with a public IP.
+      MEILI_ENV: production
+      # Off, like Zitadel's service ping and MinIO's update check.
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meili_data:/meili_data
+    healthcheck:
+      # Meilisearch's own unauthenticated readiness endpoint — it takes no
+      # master key, which is exactly what a compose healthcheck needs.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7700/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # --- Temporal: auto-setup, against the deployment's Postgres ----------------
+  # `auto-setup` creates the two databases and runs the schema migrations on
+  # first start and is idempotent afterwards, which is what makes a redeploy a
+  # `compose up` rather than a documented sequence somebody performs by hand.
+  #
+  # The UI is not here and not exposed (ADR deploy-2): one more door to wall
+  # for a screen two people read; the ssh tunnel is the wall.
+  temporal:
+    image: temporalio/auto-setup:1.29.0
+    restart: unless-stopped
+    environment:
+      DB: postgres12
+      DB_PORT: ${DATABASE_PORT:-5432}
+      POSTGRES_SEEDS: ${DATABASE_HOST:?DATABASE_HOST is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      DBNAME: ${TEMPORAL_DB_NAME:-temporal}
+      VISIBILITY_DBNAME: ${TEMPORAL_VISIBILITY_DB_NAME:-temporal_visibility}
+      # Standard visibility on Postgres. Elasticsearch is a fourth stateful
+      # organ on a two-vCPU box to make list-filters faster on a workload
+      # nobody has measured yet.
+      ENABLE_ES: "false"
+      # TLS TO THE DATABASE, and the reason it is here rather than assumed.
+      # Every OTHER consumer of this database already carries its TLS answer —
+      # Django through DATABASE_SSLMODE, `pg_dump`/`psql` through libpq's own
+      # PGSSLMODE (ADR deploy-3b), Zitadel through
+      # ZITADEL_DATABASE_POSTGRES_*_SSL_MODE just below. Temporal carried
+      # none, so it connected in the clear, and RDS refuses that outright:
+      #
+      #   pq: no pg_hba.conf entry for host "...", user "djb_master",
+      #       database "postgres", no encryption
+      #
+      # On a laptop the `db` container accepts plaintext and the gap is
+      # invisible; on a box it is a crash loop that reads as a database
+      # problem — the standing blind spot ("a laptop stack proves the compose,
+      # not the box"), made real.
+      #
+      # `false` by default so the laptop proof is unchanged; the staging and
+      # prod manifests set it true.
+      #
+      # TWO PAIRS, NOT ONE, and that is the image's shape rather than
+      # belt-and-braces: this image does two different jobs, and each half
+      # reads its own variable — spelled differently, which is exactly how a
+      # deployment ends up half-encrypted and cannot tell.
+      #
+      #   setup   `/etc/temporal/auto-setup.sh` runs `temporal-sql-tool` to
+      #           create the two databases and migrate their schemas, passing
+      #           `--tls="${POSTGRES_TLS_ENABLED}"` (auto-setup.sh:214-219,
+      #           and four more call sites).
+      #   server  the server it then starts is rendered from
+      #           `/etc/temporal/config/config_template.yaml`, whose
+      #           `persistence.*.sql.tls.enabled` reads `SQL_TLS_ENABLED`
+      #           (template lines 65, 95, 114, 140) — NOT `SQL_TLS`.
+      #
+      # Set only one of them and the failure is indistinguishable from the
+      # other: with the setup half plaintext RDS refuses before the server is
+      # reached, and with the server half plaintext the schema migrates fine
+      # and then "sql schema version compatibility check failed: no usable
+      # database connection found". Both spellings were read out of this exact
+      # image tag rather than recalled — do the same before changing the tag.
+      POSTGRES_TLS_ENABLED: ${TEMPORAL_SQL_TLS:-false}
+      SQL_TLS_ENABLED: ${TEMPORAL_SQL_TLS:-false}
+      # Encrypt, do not verify the CA — deliberately the SAME posture ADR
+      # deploy-3b chose for every other consumer, because `PGSSLMODE=require`
+      # is exactly "encrypt, do not verify" too. Verifying would mean carrying
+      # Amazon's RDS CA bundle into this image and keeping it in step with
+      # Amazon's rotations; the trigger to do that is a deployment whose
+      # policy requires `verify-full`, at which point EVERY consumer here
+      # changes together, not just this one.
+      #
+      # The two spellings are opposite in sense — one DISABLES verification,
+      # the other ENABLES it — so they read `true` and `false` for one meaning.
+      # `SQL_HOST_VERIFICATION` already defaults to "false" in the template;
+      # it is written out anyway, because a security-relevant default that is
+      # only true by omission is one upstream bump away from flipping.
+      POSTGRES_TLS_DISABLE_HOST_VERIFICATION: "true"
+      SQL_HOST_VERIFICATION: "false"
+      # --- THE SQL POOL, BOUNDED -------------------------------------------
+      # WHY THIS IS HERE AT ALL. Temporal's defaults are not a small constant
+      # and never were: `auto-setup` runs frontend + history + matching +
+      # worker in ONE process, and EACH ROLE builds its own SQL pool from the
+      # same config — so `SQL_MAX_CONNS` (default 20) is a PER-ROLE cap and the
+      # true ceiling out of the box is 4x20 + 4x10 = 120 slots on a database
+      # whose `max_connections` is 79. The manifest used to carry "Temporal
+      # 17+3" as a budget constant; that was an at-rest reading of an unbounded
+      # thing, and RATIO-1 measured 41 held at rest after a reboot — a number
+      # no single pool of 20 could produce. The arithmetic could never have
+      # held. It confounded a paid experiment (size B's knee was slot-gated,
+      # not CPU-gated) and it refused a release act on a loaded box.
+      #
+      # THE SPELLINGS WERE READ OUT OF THE IMAGE, not recalled — the same
+      # discipline the TLS pair above records.
+      # `/etc/temporal/config/config_template.yaml` inside
+      # temporalio/auto-setup:1.29.0 maps:
+      #
+      #   SQL_MAX_CONNS          -> persistence.default.sql.maxConns
+      #   SQL_MAX_IDLE_CONNS     -> persistence.default.sql.maxIdleConns
+      #   SQL_VIS_MAX_CONNS      -> persistence.visibility.sql.maxConns
+      #   SQL_VIS_MAX_IDLE_CONNS -> persistence.visibility.sql.maxIdleConns
+      #
+      # Do the same before changing the tag.
+      #
+      # THE VALUES, AS WORST-CASE PRODUCTS rather than per-variable readings:
+      # 4 roles x 4 default + 4 roles x 2 visibility = **24 slots**, and that
+      # is the number `deploy/env.staging.example` and
+      # `config/settings/base.py` subtract. The visibility half is stated at
+      # 4x though matching may never touch visibility — the bound is honest as
+      # a ceiling and loose as an estimate, which is the right direction for a
+      # thing being subtracted from a budget.
+      #
+      # IDLE == MAX deliberately. Churn is paid in connection setup on a
+      # BURSTABLE instance whose CPU is the convicted resource (ADR config-1's
+      # own argument for a pool at all), so a bounded pool that keeps what it
+      # opened is cheaper than one that reopens.
+      #
+      # THE SHARP EDGE, SAID PLAINLY: Go's `database/sql` WAITS when a pool is
+      # exhausted. A starved Temporal emits no error signature at all — only
+      # latency (workflow op latency, schedule-to-start lag). If those climb
+      # after this trim, the recovery is one step and env-only: set
+      # `TEMPORAL_SQL_MAX_CONNS=6` in `deploy/.env` and RECREATE (not restart —
+      # an environment change needs a new container). Minutes, no image, no
+      # code.
+      #
+      # SHAPES SHOPPED AND REJECTED. Splitting the RDS instance (a purchase;
+      # the data says trim first). Temporal dynamicconfig persistence QPS
+      # limits (a second knob for the same job, and the DYNAMIC_CONFIG note
+      # immediately below records why that file is a trap in this image).
+      # Splitting `SERVICES` across containers (a deployment reshape to solve a
+      # pool bound — four processes instead of one, the same total).
+      #
+      # Substitution with the ruled value as the default, the TLS pair's own
+      # shape: the laptop proof inherits the same bounds, and an environment
+      # may override by name in `deploy/.env` without editing this file.
+      SQL_MAX_CONNS: ${TEMPORAL_SQL_MAX_CONNS:-4}
+      SQL_MAX_IDLE_CONNS: ${TEMPORAL_SQL_MAX_IDLE_CONNS:-4}
+      SQL_VIS_MAX_CONNS: ${TEMPORAL_SQL_VIS_MAX_CONNS:-2}
+      SQL_VIS_MAX_IDLE_CONNS: ${TEMPORAL_SQL_VIS_MAX_IDLE_CONNS:-2}
+      # SQL_MAX_CONN_TIME / SQL_VIS_MAX_CONN_TIME are deliberately NOT set: the
+      # image's 1h lifetime is fine once the COUNT is bounded, and a second
+      # knob doing the same job is how two settings come to disagree.
+      #
+      # DYNAMIC_CONFIG_FILE_PATH is deliberately NOT set. The path everybody
+      # copies from Temporal's own docker-compose examples
+      # (`config/dynamicconfig/development-sql.yaml`) is not in the auto-setup
+      # image, and pointing at a file that is not there makes the server log
+      # "Unable to create dynamic config client" and never answer a health
+      # check — an outage that reads as a database problem. The image's default
+      # is an empty dynamic config, which is what this deployment wants until
+      # something needs an override.
+    healthcheck:
+      # `temporal:7233`, NOT `127.0.0.1:7233`. The auto-setup image binds the
+      # frontend to the container's own bridge IP, so loopback refuses the
+      # connection and the health check fails forever while the server is
+      # perfectly well — an outage that exists only in the check. (The root
+      # compose.yaml's `127.0.0.1` is right for the image IT runs: the CLI's
+      # dev server, started with `--ip 0.0.0.0`.) The service name resolves
+      # through Docker's DNS from inside the container too.
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
+      interval: 5s
+      timeout: 5s
+      # Generous: the first start migrates two schemas from nothing.
+      retries: 60
+      start_period: 20s
+
+  # --- Zitadel: the identity system (ADR ident-1) -----------------------------
+  # Same image the laptop runs, same `start-from-init`, pointed at the
+  # deployment's Postgres and told it lives behind TLS at the `auth.` name.
+  # ZITADEL_EXTERNALSECURE=true is not cosmetic: the issuer, every redirect and
+  # every token audience in the discovery document are built from these three,
+  # and getting them wrong is a login loop nobody can debug from the outside.
+  zitadel:
+    image: ghcr.io/zitadel/zitadel:v4.17.1
+    restart: unless-stopped
+    command: start-from-init --masterkeyFromEnv --tlsMode external
+    # Root, for the same reason the laptop's is: the first-instance bootstrap
+    # writes the machine user's PAT into the bootstrap volume and the distroless
+    # image's default user cannot.
+    user: "0"
+    environment:
+      ZITADEL_MASTERKEY: ${ZITADEL_MASTERKEY:?ZITADEL_MASTERKEY is required}
+      ZITADEL_EXTERNALDOMAIN: ${ZITADEL_EXTERNALDOMAIN:?ZITADEL_EXTERNALDOMAIN is required}
+      ZITADEL_EXTERNALPORT: ${ZITADEL_EXTERNALPORT:-443}
+      ZITADEL_EXTERNALSECURE: ${ZITADEL_EXTERNALSECURE:-true}
+      ZITADEL_PORT: 8080
+      ZITADEL_TLS_ENABLED: false
+      ZITADEL_SERVICEPING_ENABLED: false
+      ZITADEL_DATABASE_POSTGRES_HOST: ${DATABASE_HOST:?DATABASE_HOST is required}
+      ZITADEL_DATABASE_POSTGRES_PORT: ${DATABASE_PORT:-5432}
+      ZITADEL_DATABASE_POSTGRES_DATABASE: ${ZITADEL_DATABASE_NAME:-zitadel}
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: ${ZITADEL_DATABASE_USER:?ZITADEL_DATABASE_USER is required}
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${ZITADEL_DATABASE_PASSWORD:?ZITADEL_DATABASE_PASSWORD is required}
+      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: ${DATABASE_SSLMODE:-disable}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: ${POSTGRES_USER:?POSTGRES_USER is required}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: ${DATABASE_SSLMODE:-disable}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_EXISTINGDATABASE: ${ZITADEL_ADMIN_EXISTING_DATABASE:-postgres}
+      # --- THE POOL, BOUNDED -----------------------------------------------
+      # ONE TOP-LEVEL POOL, not one per User/Admin pair — read out of the
+      # `defaults.yaml` embedded in ghcr.io/zitadel/zitadel:v4.17.1, which
+      # carries `MaxOpenConns` (default 10) and `MaxIdleConns` (default 5)
+      # under `Database.postgres`, above the User/Admin credential split. The
+      # manifest used to subtract 3 for Zitadel on an at-rest reading; RATIO-1
+      # measured 12 after a reboot, which is ABOVE the image's own default of
+      # 10 — so up to 2 connections are unattributed by the configuration
+      # alone. That residue is stated rather than assumed, and the census
+      # criterion attributes it or stops and reports; the bound below is what
+      # the configuration can promise.
+      #
+      # 5 open / 2 idle. Zitadel serves the login and the token endpoints for
+      # one small deployment; its steady demand is a handful of short queries
+      # and its burst is a login storm nobody here has.
+      ZITADEL_DATABASE_POSTGRES_MAXOPENCONNS: ${ZITADEL_DATABASE_MAX_OPEN_CONNS:-5}
+      ZITADEL_DATABASE_POSTGRES_MAXIDLECONNS: ${ZITADEL_DATABASE_MAX_IDLE_CONNS:-2}
+      # MAXCONNLIFETIME (30m) and MAXCONNIDLETIME (5m) keep the image's
+      # defaults: once the COUNT is bounded the lifetimes are not the problem.
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: ${ZITADEL_ORG_NAME:-Pilecap}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: ${ZITADEL_ADMIN_USERNAME:?ZITADEL_ADMIN_USERNAME is required}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${ZITADEL_ADMIN_PASSWORD:?ZITADEL_ADMIN_PASSWORD is required}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: false
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: ${ZITADEL_MACHINE_USERNAME:-djb-platform}
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: Pilecap platform service account
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: ${ZITADEL_MACHINE_PAT_EXPIRES_AT:-2099-01-01T00:00:00Z}
+      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/machine.pat
+      # --- CLASSIC LOGIN, PINNED -------------------------------------------
+      # Zitadel v4 routes OIDC `authorize` to Login V2 by default, and Login V2
+      # is a SEPARATE CONTAINER this deployment does not ship. So the browser
+      # button on /accounts/login/ redirected to `/ui/v2/login/login?authRequest=…`
+      # and gets a 404 — as seeded, no browser login can ever complete. This
+      # one line keeps `authorize` on the classic UI that the image already
+      # serves. No second container, no second TLS name, and the Google
+      # redirect note stands unchanged.
+      #
+      # THE SPELLING WAS READ OUT OF THE IMAGE, not recalled. The embedded
+      # `defaults.yaml` inside ghcr.io/zitadel/zitadel:v4.17.1 carries, verbatim:
+      #
+      #     LoginV2:
+      #       Required: true # ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED
+      #       BaseURI: # ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI
+      #
+      # WHEN IT TAKES, and this is the sharp edge: `DefaultInstance` is applied
+      # WHEN THE INSTANCE IS CREATED. On a fresh box this line is the whole fix;
+      # on a Zitadel whose instance already exists it does nothing, because — in
+      # that same defaults.yaml, four lines above — "once a feature is set on the
+      # instance (true or false), system level feature settings will be ignored
+      # until instance level features are reset". An existing instance is changed
+      # through the feature API, not through this file. There is no
+      # `ZITADEL_FEATURES_*` at all: `strings` over the v4.17.1 binary returns
+      # nothing for it.
+      #
+      # THE TRIGGER TO REVISIT: adopt Login V2 at
+      # **the first Zitadel upgrade that removes classic login**. v4 deprecates
+      # it rather than removing it, so the clock is running and the alarm has not
+      # gone off. Adopting it means a compose service, a TLS name, and the Google
+      # IdP callback moving to `/idps/callback` — three changes for one button,
+      # and the product that needs Login V2's features is the one that should pay
+      # for them.
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: ${ZITADEL_LOGIN_V2_REQUIRED:-false}
+    volumes:
+      - zitadel_bootstrap:/zitadel/bootstrap
+    healthcheck:
+      test: ["CMD", "/app/zitadel", "ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
+  # --- The sink: collector -> ClickStack, both on the box (ADR obs-2) ---------
+  # No profile here, unlike the laptop's: an environment with no observability
+  # is an environment nobody can answer a question about, and the ruling was
+  # self-host. The app's exporter is wired at this collector and the questions
+  # are read from the sink; this file only has to make both exist and be
+  # reachable by name.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    restart: unless-stopped
+    # TWO CONFIGS, MERGED LEFT TO RIGHT. The first is the pipeline, shared with
+    # the laptop's development stack. The second is this
+    # DEPLOYMENT's one addition: it publishes the collector's own Prometheus
+    # endpoint on the compose network so the prober below can ask it whether the
+    # sink is still accepting. The fragment says why the default (localhost:8888)
+    # is not good enough here.
+    command:
+      - "--config=/etc/otel/config.yaml"
+      - "--config=/etc/otel/telemetry.yaml"
+    environment:
+      CLICKSTACK_API_KEY: ${CLICKSTACK_API_KEY:?CLICKSTACK_API_KEY is required}
+    volumes:
+      # The SAME collector configuration the laptop uses — one file, so the
+      # pipeline that was debugged locally is the pipeline that runs. It names
+      # `clickstack:4318`, which resolves here exactly as it does there.
+      - ../compose/otel-collector.yaml:/etc/otel/config.yaml:ro
+      - ./observability/collector-telemetry.yaml:/etc/otel/telemetry.yaml:ro
+    depends_on:
+      - clickstack
+
+  clickstack:
+    image: docker.hyperdx.io/hyperdx/hyperdx-all-in-one:2.10.0
+    restart: unless-stopped
+    environment:
+      HYPERDX_API_KEY: ${CLICKSTACK_API_KEY:?CLICKSTACK_API_KEY is required}
+    volumes:
+      - clickstack_data:/data/db
+
+  # --- The product ------------------------------------------------------------
+  # Both built from the repository's own Dockerfile, whose two targets exist
+  # for exactly this: one tree, one lock file, two commands.
+  #
+  # `entrypoint:` and `command:` are BOTH set, and that is not redundancy —
+  # Compose clears the image's CMD when `entrypoint` is overridden, so the
+  # command the Dockerfile declares has to be restated here or the container
+  # starts with nothing to run. The values are the Dockerfile's, verbatim.
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: web
+    # WHAT COMPOSE TAGS WHAT IT BUILT. Without this, a `build:` service is
+    # tagged `<project>-web:latest` — which made this file's own "EVERY IMAGE IS
+    # PINNED TO AN EXACT TAG, `latest` nowhere" paragraph false about the only
+    # two images the repository actually builds. The tag is the
+    # TREE hash, from `deploy/provision.sh image-tag`: it says which tree the
+    # image came from, which `latest` cannot, and two commits with identical
+    # content name the same image. Required, never defaulted — a floating
+    # default is the thing being removed.
+    image: djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; re-export it when you rebuild}
+    restart: unless-stopped
+    entrypoint: ["/deploy/entrypoint.sh"]
+    command: ["uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      # WHERE THIS PROCESS GETS ITS SECRETS. `aws:<prefix>` fetches every
+      # secret under the prefix from Secrets Manager at start; `file:<path>`
+      # sources a file. Nothing else is a mode, and an unrecognised value is a
+      # refusal, not a default (deploy/entrypoint.sh).
+      DJB_SECRETS_SOURCE: ${DJB_SECRETS_SOURCE:?DJB_SECRETS_SOURCE is required — aws:<prefix> or file:<path>}
+      DJANGO_SETTINGS_MODULE: config.settings.production
+      DJB_SERVICE_NAME: web
+    volumes:
+      # Read-only: the belt, the entrypoint and the grant emitter are code the
+      # container runs and may never rewrite.
+      - .:/deploy:ro
+      # NOTHING MOUNTS `quality/` HERE ANY MORE, and the absence is the point.
+      # A bind mount of it stood here while this deployment was being built,
+      # because
+      # `apps/core/checks.py` reads `<BASE_DIR>/quality/rules.yaml` and
+      # `.dockerignore` excluded the whole directory — so every `manage.py`
+      # command inside the image died on a wall of E000/E011/E013/E017,
+      # `migrate` included. The mount was a workaround and said so.
+      #
+      # It is gone because the image now CARRIES that one file:
+      # `.dockerignore` un-ignores `quality/rules.yaml` and nothing else under
+      # `quality/`. The checks read exactly one path there, so exactly one path
+      # ships. An image that needs a bind mount to run its own release step is
+      # an image that is not the deliverable.
+      - media_data:/app/media
+    depends_on:
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    healthcheck:
+      # /healthz is liveness and touches nothing (apps/core/health.py) — the
+      # right question for "is this process still answering". Readiness is
+      # /readyz and is Caddy's and the operator's to ask, not the restarter's:
+      # restarting a container because Postgres blinked amplifies the outage.
+      #
+      # THE HOST HEADER IS THE WHOLE TRICK. Curling 127.0.0.1 sends
+      # `Host: 127.0.0.1:8000`, and ALLOWED_HOSTS in a real environment is the
+      # site's name and nothing else — so Django answers 400 DisallowedHost,
+      # `-f` makes curl fail, and the container sits `unhealthy` forever while
+      # the site itself serves perfectly — the public /healthz returns 200
+      # while `docker ps` says unhealthy. The laptop never shows it,
+      # because the laptop generator sets ALLOWED_HOSTS=localhost,127.0.0.1.
+      #
+      # Sending the site's own name is better than widening ALLOWED_HOSTS to
+      # include 127.0.0.1: it keeps the app's accepted-host list exactly as
+      # narrow as the deployment intends, and it exercises the SAME host path
+      # a real request takes. Still no DNS and still no proxy — the connection
+      # is to loopback inside the container.
+      test: ["CMD", "curl", "-fsS", "-H", "Host: ${SITE_ADDRESS:?SITE_ADDRESS is required}",
+             "http://127.0.0.1:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: worker
+    image: djb-worker:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; re-export it when you rebuild}
+    restart: unless-stopped
+    entrypoint: ["/deploy/entrypoint.sh"]
+    command: ["python", "-m", "apps.workflows.worker"]
+    environment:
+      DJB_SECRETS_SOURCE: ${DJB_SECRETS_SOURCE:?DJB_SECRETS_SOURCE is required — aws:<prefix> or file:<path>}
+      DJANGO_SETTINGS_MODULE: config.settings.production
+      DJB_SERVICE_NAME: worker
+    volumes:
+      - .:/deploy:ro
+      - media_data:/app/media
+    depends_on:
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+
+  # --- The one-off door -------------------------------------------------------
+  # NEVER `up`'d. This service exists so that `docker compose run` has a name to
+  # land on that is not `web`, and that is the whole of it.
+  #
+  # WHAT WENT WRONG WITHOUT IT. `compose run --rm web python manage.py …`
+  # inherits `DJB_SERVICE_NAME=web` from the `web` service's environment, so the
+  # settings module derives `max_size=20` and a one-off `revoke_token` reserved a
+  # deployment's worth of connection slots. On a loaded box there were none left:
+  # the command PoolTimeout'd, and release acts 1, 2, 3 and 5 are the same shape
+  # — A RELEASE CAN BE REFUSED BY ITS OWN BOX'S LOAD. Recovery is a
+  # force-recreate, and it recurs until the one-off door exists.
+  #
+  # WHY A SERVICE AND NOT `-e DJB_SERVICE_NAME=oneoff` ON EACH INVOCATION. The
+  # invocation set is OPEN — four release acts, seven runbook lines, and every
+  # future command anybody types on a box — and a forgotten `-e` silently
+  # reserves 20 slots again with nothing anywhere saying so. A service name is
+  # ONE seam, and "no one-off runs as web" becomes a closed, greppable census
+  # (`deploy/tests/test_release.sh`, the compose-run census case) instead of a
+  # hand list somebody has to remember to extend.
+  #
+  # NO `depends_on`, and that is load-bearing rather than an omission. A one-off
+  # on a loaded box must not try to (re)start organs — `migrate` needs the
+  # database and nothing else, and the acts that need redis or temporal are run
+  # against a stack that is already up. This is what makes `--no-deps`
+  # STRUCTURAL: callers no longer carry the flag, because the service declares
+  # no dependency to skip.
+  #
+  # NO `build:`. It runs the image `web` builds, by tag, so a one-off can never
+  # be a DIFFERENT tree from the deployment it is operating on.
+  #
+  # THE `command` IS A REFUSAL, not a placeholder. `compose run <service> <cmd>`
+  # always overrides it, so the only way this command executes is somebody
+  # `up`ping a service that is a door rather than an organ — and then it says so
+  # and exits instead of sitting in a restart loop.
+  oneoff:
+    image: djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; re-export it when you rebuild}
+    restart: "no"
+    entrypoint: ["/deploy/entrypoint.sh"]
+    command: ["python", "-c", "raise SystemExit('oneoff is a compose-run door, not a service')"]
+    environment:
+      DJB_SECRETS_SOURCE: ${DJB_SECRETS_SOURCE:?DJB_SECRETS_SOURCE is required — aws:<prefix> or file:<path>}
+      DJANGO_SETTINGS_MODULE: config.settings.production
+      # The one seam. `config/settings/base.py`'s `_POOL_MAX_SIZE_BY_SERVICE`
+      # reads this name and gives it max_size 2.
+      DJB_SERVICE_NAME: oneoff
+    volumes:
+      - .:/deploy:ro
+      - media_data:/app/media
+
+  # --- The edge ---------------------------------------------------------------
+  # The only container with a published port, and the only one that terminates
+  # TLS. `.dev` is HSTS-preloaded, so every name here is HTTPS from birth and
+  # there is no plain-HTTP era to redirect out of (ADR deploy-2).
+  caddy:
+    image: caddy:2.10.2
+    restart: unless-stopped
+    ports:
+      # 80 is open for ONE reason: Let's Encrypt HTTP-01 (the ratified choice,
+      # environments contract). `auto_https disable_redirects` in the Caddyfile
+      # means nothing else is served on it — there is no redirect to follow,
+      # which is the posture a preloaded domain wants.
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS is required — e.g. staging.example.invalid}
+      AUTH_ADDRESS: ${AUTH_ADDRESS:?AUTH_ADDRESS is required — e.g. auth.staging.example.invalid}
+      O11Y_ADDRESS: ${O11Y_ADDRESS:?O11Y_ADDRESS is required — e.g. o11y.staging.example.invalid}
+      # `internal` on a laptop (Caddy's own CA, no ACME, no port 80); an email
+      # address in a real environment, which is the ACME account Let's Encrypt
+      # issues against.
+      CADDY_TLS: ${CADDY_TLS:-internal}
+      O11Y_USER: ${O11Y_USER:-observer}
+      # A bcrypt hash, never a password: `provision.sh env-file` generates the
+      # pair and prints the plaintext once.
+      O11Y_PASSWORD_HASH: ${O11Y_PASSWORD_HASH:?O11Y_PASSWORD_HASH is required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The certificates and the ACME account key. A named volume rather than a
+      # bind mount because losing it means re-issuing every certificate, and
+      # Let's Encrypt counts that against a rate limit.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - zitadel
+      - clickstack
+
+  # --- The prober: the two alerts that cannot ride the sink -------------------
+  # PRODUCTION FURNITURE, NOT AN OVERRIDE. This service was
+  # `deploy/observability/alerts/compose.probe.yaml` for exactly one rung, and
+  # that file said so in its own header: "the prober belongs to EVERY environment
+  # that wants an outage alert, so the honest end state is that this service folds
+  # into deploy/compose.yaml the next time its owner touches it." This is that
+  # time. An override file is how a deployment ends up with an alert path that is
+  # only armed when somebody remembers a second `-f`.
+  #
+  # IT ANSWERS TWO QUESTIONS AND DELIVERS THEM DIFFERENTLY (ADR obs-2 as
+  # amended):
+  #
+  #   is the app up?     it curls the PUBLIC /readyz and writes
+  #                      probe.readyz.{ok,failed} into the sink; a ClickStack
+  #                      alert counts the failures and sends the notification.
+  #   is the sink deaf?  it scrapes the COLLECTOR's own counters and POSTs the
+  #                      notification ITSELF, because the one alert a sink cannot
+  #                      deliver is the one that says the sink stopped accepting.
+  #
+  # THE PROBE INTERVAL IS A JUDGMENT VALUE, stated rather than tuned: 15 seconds.
+  # Three consecutive failures is each alert's threshold, so the declared
+  # detection window is 3 x 15s = 45s plus (for the /readyz half) up to 60s of
+  # ClickStack check latency — under two minutes. `docs/runbooks/alerts.md` owns
+  # the arithmetic and the observation is RECORDED, never gated.
+  readyz-prober:
+    # Pinned to the patch, like every other image in this deployment: a prober
+    # whose curl changes underneath a runbook makes the runbook a lie between
+    # two performances of it.
+    image: curlimages/curl:8.11.1
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/alerts/prober.sh"]
+    environment:
+      # The public URL, so DNS, TLS and Caddy are in the tested path. On a
+      # laptop SITE_ADDRESS is `localhost`, so PROBE_CONNECT_TO points the
+      # socket at the caddy container while Host and SNI stay `localhost`; on a
+      # box PROBE_CONNECT_TO is unset and public DNS is in the path for real.
+      PROBE_TARGET: ${PROBE_TARGET:-https://${SITE_ADDRESS}/readyz}
+      PROBE_CONNECT_TO: ${PROBE_CONNECT_TO:-}
+      # 1 on a laptop (Caddy's own internal CA), 0 on a box (Let's Encrypt).
+      PROBE_INSECURE: ${PROBE_INSECURE:-0}
+      PROBE_INTERVAL_SECONDS: ${PROBE_INTERVAL_SECONDS:-15}
+      PROBE_SERVICE_NAME: readyz-prober
+      # One sink, one protocol. The collector is the only thing that talks to
+      # ClickStack (this file's own rule), and this prober is no exception —
+      # for the half that CAN ride the sink.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # The half that cannot. The collector's internal Prometheus endpoint,
+      # published on the compose network by
+      # ./observability/collector-telemetry.yaml and nowhere else.
+      COLLECTOR_METRICS_URL: ${COLLECTOR_METRICS_URL:-http://otel-collector:8888/metrics}
+      SINK_DEAF_WINDOWS: ${SINK_DEAF_WINDOWS:-3}
+      # The destination, from the same slot every other alert uses
+      # (<namespace>/<env>/env, key SLACK_WEBHOOK_URL). EMPTY IS A DISARMED HALF and
+      # the prober says so, loudly, once per start — it is not a silent default.
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+    volumes:
+      - ./observability/alerts:/alerts:ro
+    depends_on:
+      - otel-collector
+      - caddy
+
+volumes:
+  db_data:
+  redis_data:
+  # The search index. Rebuildable from the rows by `manage.py` rather than
+  # precious — losing it costs a reindex, not data — but a volume all the same,
+  # so a restart is not a cold index.
+  meili_data:
+  zitadel_bootstrap:
+  clickstack_data:
+  caddy_data:
+  caddy_config:
+  # Uploads. In a real environment `AWS_STORAGE_BUCKET_NAME` is set and this
+  # volume holds nothing (files store via apps/files/storage.py to MinIO/S3); it exists so the laptop proof
+  # has somewhere to put a file without a bucket.
+  media_data:

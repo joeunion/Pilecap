@@ -1,0 +1,12 @@
+{
+  "name": "01 · Which business chains just ran",
+  "orderBy": "Timestamp DESC",
+  "select": "Timestamp, LogAttributes['correlation_id'], ServiceName, LogAttributes['door'], LogAttributes['event']",
+  "sourceName": "Logs",
+  "tags": [
+    "djb",
+    "the-pipe"
+  ],
+  "where": "LogAttributes['correlation_id'] != ''",
+  "whereLanguage": "sql"
+}
