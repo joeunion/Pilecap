@@ -1,4 +1,36 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # Restore a backup, prove it is real, and never become the hazard.
 #
 #   ./scripts/restore_drill.sh                     # the newest dump in backups/
@@ -23,7 +55,7 @@
 # script, never the worktree's own database. Nothing it does can touch real
 # data. This mode is unchanged from the day it was written.
 #
-# `--into-project <project>` (P4-B1′): restores into a *deployment* stack's live
+# `--into-project <project>`: restores into a *deployment* stack's live
 # application database — `deploy/compose.yaml` under that compose project. This
 # is the mode that turns "backups that restore" from a claim about a scratch
 # database into a claim about a deployment: the dump comes off stack A and the
@@ -49,6 +81,12 @@
 # (3) is the one that earns the drill. A dump that restores cleanly but is three
 # migrations behind is a backup you cannot deploy onto without a migration
 # window nobody has planned.
+#
+# --- AND IT SAYS WHEN IT DIED -------------------------------------------------
+#
+# Three states, all three legible: `RESTORE DRILL PASSED` (one of two forms),
+# `RESTORE DRILL DID NOT FINISH (exit N)`, or neither — which then means the
+# drill is still running. See the death guard beside the cleanup trap.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -180,11 +218,60 @@ cleanup() {
         db_drop "$TARGET_DB" > /dev/null
     fi
 }
-# The scratch database is dropped whether the drill passed or failed: one left
-# behind is the one somebody eventually points an application at. A stack's own
-# database is NOT dropped on the way out — it is the stack's, and the operator
-# who asked for the restore wants what the restore produced.
-trap cleanup EXIT
+
+# --- THE DEATH GUARD ---------------------------------------------------------
+#
+# A drill has three states and only two of them were legible. It could PASS,
+# saying so in one of the two sentences at the bottom of this file. It could be
+# STILL RUNNING. And it could be GONE — killed at 3am, or tripped by `set -e`
+# on `pg_restore` or on `migrate --check` — in which case the transcript ended
+# at whatever the failing command last said and looked exactly like a drill
+# still working. "No PASSED line yet" meant either "wait" or "this proved
+# nothing", and nothing in the output told them apart.
+#
+# The sentinel covers everything BELOW this line, which is precisely the region
+# where the drill creates, restores and asserts. Every refusal ABOVE it is
+# declared to fire "before anything is created or dropped", exits with its own
+# sentence, and runs with no trap installed — so those transcripts are byte-for-
+# byte what they were. Below it, a deliberate `exit 1` or `exit 2` gets the
+# sentinel too, and that is deliberate: those runs also did not finish, and a
+# guard with a per-site flag to remember is a guard somebody forgets on the one
+# site that mattered.
+DRILL_FINISHED=0
+
+on_exit() {
+    local status=$?
+    # The sentence comes BEFORE cleanup speaks: a death has to be legible even
+    # when what follows it is noisy, and cleanup runs real commands.
+    if [ "$DRILL_FINISHED" -eq 0 ]; then
+        printf '\nRESTORE DRILL DID NOT FINISH (exit %s)\n' "$status" >&2
+        printf '   Neither PASSED line was reached, so nothing has been proven about\n' >&2
+        printf '   %s. This is a death, not a pass and not a drill still running.\n' "$DUMP" >&2
+    fi
+    # The scratch database is dropped whether the drill passed, failed or died:
+    # one left behind is the one somebody eventually points an application at. A
+    # stack's own database is NOT dropped on the way out — it is the stack's,
+    # and the operator who asked for the restore wants what the restore
+    # produced. `|| true` because `set -e` inside an EXIT trap would skip the
+    # line below, and losing the exit code to a cleanup hiccup is the bug this
+    # function exists to not have.
+    cleanup || true
+    # Captured first, re-raised last: cleanup cannot overwrite the status a
+    # caller branches on. The 0/1/2 grammar is untouched by this trap.
+    exit "$status"
+}
+
+# A signal has to become an exit before the EXIT trap can see it at all. 128+n
+# is the shell's own grammar for "died on signal n", so the sentinel names the
+# code the caller would have seen anyway.
+on_signal() {
+    trap - INT TERM HUP
+    exit "$((128 + $1))"
+}
+trap 'on_signal 2' INT
+trap 'on_signal 15' TERM
+trap 'on_signal 1' HUP
+trap on_exit EXIT
 
 if [ -n "$INTO_PROJECT" ]; then
     echo "Restoring ${DUMP} into the LIVE database of stack ${INTO_PROJECT} (${TARGET_DB})"
@@ -277,6 +364,9 @@ else
 fi
 
 echo ""
+# The one place this is set. Everything above here that exits — a refusal, a
+# failed assertion, a killed process — leaves it 0 and gets the sentinel.
+DRILL_FINISHED=1
 if [ -n "$INTO_PROJECT" ]; then
     echo "RESTORE DRILL PASSED: ${DUMP} restores into stack ${INTO_PROJECT}'s own"
     echo "database and today's code can run the schema it produced."

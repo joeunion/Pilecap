@@ -54,6 +54,29 @@ fact, or carrying a remedy that is a string rather than a `Remedy`, **at import
 time** — the same tier an unregistered code is refused at, because a grammar
 whose parts are optional parameters is a grammar half the product will skip.
 
+And a fifth, which is genuinely optional and says so:
+
+* **`status`** — *what number the HTTP door answers this code with* (ADR
+  core-23). Declared beside the code rather than appended to a table under
+  `config/`, because a template whose first law is "registration is by
+  discovery, never by editing `config/`" had exactly one exception left, and it
+  cost a `config/api.py` edit per refusal code in every product rung that
+  declared one. `CODE_STATUSES` below is that derivation, and `config/api.py`
+  publishes it as `CODE_STATUS` — the module that *speaks* the number is still
+  the door's, which is what house rule 14 asks; what moved is who *knows* it.
+
+  **The absence is a declaration too.** A code with no status is a code the HTTP
+  door has no number for, and there are two real populations: a refusal only the
+  MACHINE door can make (`invalid_arguments`, `apps/core/mcp.py` — the MCP door
+  has no status codes at all, a tool answers one line of text), and house rule
+  47's own canary, which is registered, refusable and *deliberately* unpublished
+  so that the rule's drop path stays reachable. Forcing a number on every code
+  would cure the disease that instrument carries, and a canary that cannot fire
+  is exit 2. So `status` is optional, its absence means "no number here", and
+  rule 47's question moves from "is there a `CODE_STATUS` line" to "is there a
+  `status=` at the declaring site" — one line, in the app that owns the refusal,
+  and no edit under `config/` at all.
+
 **One composer, both doors.** `wire_refusal(exc)` builds the body —
 `{detail, code, errors?, remedies?}` — and `config/api.py` sends it as JSON
 while `core.mcp.tool_call` renders it through `refusal_message`. Neither door
@@ -106,6 +129,12 @@ BOUNDARIES: tuple[Boundary, ...] = ("selector", "service", "policy", "door")
 # held to a shape: lower snake case, which is what every existing one is and
 # what a client can switch on without normalising.
 CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+
+#: The range a refusal's declared status may sit in. 4xx and 5xx and nothing
+#: else: a refusal that answered 2xx or 3xx would be a success or a redirect
+#: wearing a refusal's clothes, and the one thing every reader of this table
+#: assumes is that the number means "no".
+REFUSAL_STATUS_RANGE = range(400, 600)
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +196,11 @@ class Refusal:
     remedy: str
     fact: str
     remedies: tuple[Remedy, ...]
+    #: What the HTTP door answers this code with, or `None` for a code that
+    #: door has no number for — see the module docstring's fifth part. `None` is
+    #: a declaration and not an omission: `invalid_arguments` is a machine-door
+    #: refusal and the machine door has no statuses at all.
+    status: int | None = None
 
 
 _registry: dict[str, Refusal] = {}
@@ -174,6 +208,60 @@ _registry: dict[str, Refusal] = {}
 #: Every registered refusal, read-only. `register_refusal` is the only writer,
 #: and a `MappingProxyType` is what makes that a fact rather than a comment.
 REFUSALS: Mapping[str, Refusal] = MappingProxyType(_registry)
+
+
+class _CodeStatuses(Mapping[str, int]):
+    """Every code that declared a number, and the number — read LIVE (ADR core-23).
+
+    A view rather than a snapshot, for the reason `REFUSALS` is one: a dict built
+    at some module's import is a dict whose contents depend on which module got
+    imported first, and this one is read by three callers at three different
+    moments — `config/api.py` while it writes the OpenAPI document, `config/mcp.py`
+    inside a request, and `quality/refusal_probe.py` from outside the process
+    that built the mount. A late registration used to be handled by somebody
+    remembering to add a line; now it is handled by there being no line.
+    """
+
+    def __getitem__(self, code: str) -> int:
+        refusal = _registry.get(code)
+        if refusal is None or refusal.status is None:
+            raise KeyError(code)
+        return refusal.status
+
+    def __iter__(self) -> Iterator[str]:
+        return iter([code for code, row in _registry.items() if row.status is not None])
+
+    def __len__(self) -> int:
+        return sum(1 for row in _registry.values() if row.status is not None)
+
+    def __repr__(self) -> str:
+        return f"CODE_STATUSES({dict(self)!r})"
+
+
+#: The code→status derivation ADR core-23 replaced the hand-appended table with.
+#: `config/api.py` re-exports it as `CODE_STATUS`, which is the name the document
+#: derivation, the machine door and the gate's refusal probe all read.
+CODE_STATUSES: Mapping[str, int] = _CodeStatuses()
+
+
+def envelope_codes() -> frozenset[str]:
+    """Every code the EDGE decided — the refusals a claim was never spent on.
+
+    **The replay boundary (ADR core-23), derived and never a hand list.** The
+    idempotency middleware fingerprints `method + path + raw body`; a credential,
+    an addressing header, a CSRF token, the rate-limit counters and the query
+    string are all outside that. `boundary="door"` is this registry's own word
+    for *the edge refused before a service was reached* — so nothing ran, nothing
+    was written, and the key was never spent. Replaying such a refusal answers a
+    question the retry did not ask again, and that is how a fixed credential
+    finds its write permanently unreachable under the key it retried with.
+
+    A hand list was rejected: the set is open, and a code registered
+    `boundary="door"` next month has to join by being registered and by nothing
+    else. `apps/core/idempotency.py` is the one caller; the argument in full is
+    in its `_remember`.
+    """
+    return frozenset(code for code, row in _registry.items() if row.boundary == "door")
 
 
 def as_remedies(remedies: Sequence[Remedy] | None, *, where: str) -> tuple[Remedy, ...]:
@@ -216,6 +304,7 @@ def register_refusal(
     remedy: str,
     fact: str = "",
     remedies: Sequence[Remedy] | None = None,
+    status: int | None = None,
 ) -> Refusal:
     """Declare a refusal code. **The only writer of the registry.**
 
@@ -231,7 +320,29 @@ def register_refusal(
     `TypeError` from the interpreter. Optional parameters are how a grammar
     becomes a suggestion: a `fact` nobody wrote is a code that can only ever
     say "no", and a `remedies` nobody wrote is a dead end with a status code.
+
+    **`status` is the fifth part, and it is the one that really is optional**
+    (ADR core-23). Give it and the code is published: `CODE_STATUSES` carries it,
+    `config/api.py` answers with it, and the operation's `x-refusal-codes` names
+    it — with no edit under `config/` anywhere. Leave it out and the code has no
+    number at the HTTP door, which is the honest answer for a machine-door-only
+    refusal and the state house rule 47's canary depends on. What is checked here
+    is only that a number, when given, is a refusal's number: 4xx or 5xx, an
+    `int` and not a `bool` (Python's `True` IS an `int`, and `True == 1` would
+    key a table on a status of 1).
     """
+    if status is not None and (isinstance(status, bool) or not isinstance(status, int)):
+        raise ValueError(
+            f"A refusal's status is the number the HTTP door answers it with, as an int; "
+            f"{code!r} declared {status!r}."
+        )
+    if status is not None and status not in REFUSAL_STATUS_RANGE:
+        raise ValueError(
+            f"A refusal's status is a 4xx or a 5xx — every reader of it assumes the "
+            f"number means no; {code!r} declared {status!r}. A code the HTTP door has no "
+            "number for (a machine-door refusal) declares no status at all rather than a "
+            "number outside the range."
+        )
     if not CODE_PATTERN.match(code):
         raise ValueError(
             f"A refusal code is lower snake case and starts with a letter; got {code!r}."
@@ -266,6 +377,7 @@ def register_refusal(
         remedy=remedy.strip(),
         fact=fact.strip(),
         remedies=declared,
+        status=status,
     )
     existing = _registry.get(code)
     if existing is not None:
@@ -301,6 +413,10 @@ register_refusal(
         "Nothing was written."
     ),
     remedies=(Remedy("See everything this product can refuse with", "introspect:refusals"),),
+    # 500, and the only status in this file that is not an answer: a service
+    # refused for a reason the vocabulary has no word for, so the door has no
+    # number for it either and says so honestly rather than inventing a 4xx.
+    status=500,
 )
 
 
@@ -342,6 +458,8 @@ class DomainError(Exception):
                 f"        remedy=...,    # the DEVELOPER's next step; never sent to a client\n"
                 f"        fact=...,      # what is TRUE, said to whoever is refused\n"
                 f"        remedies=(Remedy(label=..., destination=...),),  # what they can DO\n"
+                f"        status=...,    # the HTTP door's number; omit ONLY for a "
+                f"machine-door code\n"
                 f"    )\n"
             )
 
@@ -420,6 +538,7 @@ register_refusal(
         Remedy("Check which tenant you are acting in", "header:X-Tenant"),
         Remedy("Check which organization you are wearing", "header:X-Org"),
     ),
+    status=404,
 )
 
 
@@ -453,6 +572,7 @@ register_refusal(
             "Ask for the first answer back instead of a second attempt", "header:Idempotency-Key"
         ),
     ),
+    status=409,
 )
 
 
@@ -479,6 +599,7 @@ register_refusal(
         Remedy("Check the role your membership gives you here", "self:membership"),
         Remedy("Ask somebody who administers this organization", "header:X-Org"),
     ),
+    status=403,
 )
 
 
@@ -505,6 +626,10 @@ register_refusal(
         Remedy("Read the failing fields and resend", "field:errors"),
         Remedy("Read the shape this endpoint accepts", "docs:openapi"),
     ),
+    # 400 — a rule about your data did not hold; a service looked and said no.
+    # NOT 422, which is what the door answers when the request never matched the
+    # operation's shape at all (`invalid_body`, config/api.py).
+    status=400,
 )
 
 
@@ -565,6 +690,10 @@ register_refusal(
         Remedy("Start the walk again with no cursor", "field:cursor"),
         Remedy("Follow the next_cursor the last response gave you", "field:next_cursor"),
     ),
+    # 400, its base class's. The line exists because this table is keyed on the
+    # CODE and a narrower code needs its own declaration — the same fact the
+    # `CODE_STATUS["invalid_cursor"]` append used to record under `config/`.
+    status=400,
 )
 
 
@@ -600,6 +729,7 @@ register_refusal(
         "Nothing was written, and the allowance refills on its own."
     ),
     remedies=(Remedy("Wait the seconds Retry-After names, then retry", "header:Retry-After"),),
+    status=429,
 )
 
 
@@ -640,6 +770,10 @@ register_refusal(
         "nothing was written."
     ),
     remedies=(Remedy("Retry the same search shortly", "docs:openapi"),),
+    # 503, and one of the two 5xx in this file that are not a bug: the caller's
+    # request was fine and retrying is the remedy, which is what 503 means and
+    # what `error`'s bare 500 above does not say.
+    status=503,
 )
 
 
@@ -786,6 +920,8 @@ register_refusal(
         ),
         Remedy("Check whether this deployment is ready to serve", "route:readyz"),
     ),
+    # 503, the second one, on the same terms as `search_unavailable`'s above.
+    status=503,
 )
 
 

@@ -49,10 +49,30 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from quality import checks as C  # noqa: E402
+from quality import worlds as W  # noqa: E402
 from quality.checks import FLOOR_PROXIES, REGISTRY, CheckResult, Finding  # noqa: E402
 
-RULES: list[dict] = yaml.safe_load((ROOT / "quality" / "rules.yaml").read_text())["rules"]
+_DOC: dict = yaml.safe_load((ROOT / "quality" / "rules.yaml").read_text())
+RULES: list[dict] = _DOC["rules"]
 RULES_BY_ID: dict[str, dict] = {str(r["id"]): r for r in RULES}
+
+# --- the world this run holds ---------------------------------------------------
+#
+# Read once, at import, exactly as `config/settings/base.py:117` reads it: a
+# running process does not re-derive its world and neither does a gate run. Both
+# are DECLARATIONS — `optional = True` on an `AppConfig`, and the deployment's
+# `DJB_DISABLED_APPS` — and `quality/worlds.py` carries the whole argument for
+# why neither is a list in this file.
+OPTIONAL_APPS: frozenset[str] = W.optional_app_labels(ROOT)
+DISABLED_APPS: frozenset[str] = W.disabled_app_labels()
+
+# THE SELF-TEST'S OWN BACKLOG, and the only thing standing between "a rule that
+# an environment variable can delete" and exit 2. Measured over the whole rule
+# set; the members are printed by name on every self-test run. Same grammar as
+# `ratchets:` (see this module's header): it may shrink and never grow, one over
+# it turns the whole census into violations, and a human commits the lower
+# number in a diff somebody reads. Nothing tightens by itself.
+RESIDENCE_BACKLOG: int = int(_DOC.get("selftest_residence_backlog") or 0)
 CANARY_DIR = ROOT / "quality" / "canary"
 NEGATIVE_DIR = ROOT / "quality" / "negative"
 BUDGETS_PATH = ROOT / "quality" / "budgets.yaml"
@@ -228,9 +248,23 @@ def run_rule(rule: dict, *, floors: bool = True) -> tuple[list[Finding], dict]:
     if floors:
         for key, floor in (rule.get("floors") or {}).items():
             matched = targets.get(key, 0)
-            if matched < floor:
+            # A floor that counts registry members an ABSENT app contributed is
+            # lowered by exactly what that app contributed, and the message says
+            # so. Everything else keeps the recorded number: a smaller
+            # world is the one legal reason a floor may fall, and it has to be
+            # paid for by a named app.
+            expected = W.derived_floor(rule, key, int(floor), DISABLED_APPS)
+            if matched < expected:
+                paid = (
+                    ""
+                    if expected == int(floor)
+                    else (
+                        f" (recorded {floor}, lowered to {expected} — "
+                        f"{', '.join(sorted(DISABLED_APPS))} is not in this deployment)"
+                    )
+                )
                 broken.append(
-                    f"rule {rid}: UNBOUND — {key}={matched} below floor {floor}; "
+                    f"rule {rid}: UNBOUND — {key}={matched} below floor {expected}{paid}; "
                     "the check may be watching nothing"
                 )
     return kept, targets
@@ -278,20 +312,75 @@ def run_django_leg() -> list[tuple[str, str]]:
 # --- budgets: the rising floors --------------------------------------------------
 
 
-def measure_budgets() -> dict[str, dict[str, int]]:
+def _docstring_lines(node: object) -> int:
+    """How many source lines the first statement spends being a docstring.
+
+    The docstring is the first Expr-of-a-str-Constant statement in the body —
+    the same thing `ast.get_docstring` reads — and nothing else. A module whose
+    first statement is a string that is NOT a docstring does not exist in
+    Python's grammar, so there is no ambiguity to resolve here.
+    """
     import ast as _ast
 
-    service_lengths: dict[str, int] = {}
+    body = getattr(node, "body", None)
+    if not body:
+        return 0
+    first = body[0]
+    if (
+        isinstance(first, _ast.Expr)
+        and isinstance(first.value, _ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        return (first.end_lineno or first.lineno) - first.lineno + 1
+    return 0
+
+
+def measure_budgets() -> dict[str, dict[str, int]]:
+    """The measured value of every budget subject, keyed as budgets.yaml keys it.
+
+    `service_function_length` measures the BODY MINUS THE DOCSTRING: the
+    span from `def` to the last line, less whatever the docstring spends. The
+    ceiling exists to catch a service growing a SECOND JOB, and prose is the
+    opposite of that — a function that shrinks by ten lines of code while its
+    author writes ten lines explaining why measured flat under the old span, so
+    the instrument could not see the thing it was pointed at. Rule-mandated
+    comment lines (13's `# authz:`, 26's `# reach:`) still count, deliberately:
+    "a rule-mandated block" is an open set, and an unfalsifiable population is
+    the one thing the checklist forbids an instrument to carry.
+    """
+    return {
+        section: {key: value for key, (value, _label) in subjects.items()}
+        for section, subjects in _measure_budgets_detailed().items()
+    }
+
+
+def _measure_budgets_detailed() -> dict[str, dict[str, tuple[int, str]]]:
+    """Every budget subject as (measured value, the label that NAMES it).
+
+    The label is what lets a refusal say *which function* grew. `service_
+    function_length` is keyed per FILE (the ruling: re-keying per function would
+    make every new function a new-subject red and rewrite budgets.yaml's
+    contract for a message-sized win), so without a label the message can only
+    point at a module and leave the reader to go and find the longest thing in
+    it.
+    """
+    import ast as _ast
+
+    service_lengths: dict[str, tuple[int, str]] = {}
     for path in sorted(ROOT.glob("apps/*/services.py")):
         tree = C._parse(path)
         if tree is None:
             continue
-        longest = 0
+        longest, label = 0, ""
         for node in tree.body:
             if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
-                longest = max(longest, (node.end_lineno or node.lineno) - node.lineno + 1)
-        service_lengths[str(path.relative_to(ROOT))] = longest
-    out_fields: dict[str, int] = {}
+                end = node.end_lineno or node.lineno
+                measured = end - node.lineno + 1 - _docstring_lines(node)
+                if measured > longest:
+                    longest = measured
+                    label = f"{node.name} (lines {node.lineno}-{end})"
+        service_lengths[str(path.relative_to(ROOT))] = (longest, label)
+    out_fields: dict[str, tuple[int, str]] = {}
     for path in sorted(ROOT.glob("apps/*/schemas.py")):
         tree = C._parse(path)
         if tree is None:
@@ -299,7 +388,11 @@ def measure_budgets() -> dict[str, dict[str, int]]:
         for node in _ast.walk(tree):
             if isinstance(node, _ast.ClassDef) and node.name.endswith("Out"):
                 key = f"{path.relative_to(ROOT)}::{node.name}"
-                out_fields[key] = sum(1 for s in node.body if isinstance(s, _ast.AnnAssign))
+                end = node.end_lineno or node.lineno
+                out_fields[key] = (
+                    sum(1 for s in node.body if isinstance(s, _ast.AnnAssign)),
+                    f"{node.name} (lines {node.lineno}-{end})",
+                )
     return {"service_function_length": service_lengths, "out_schema_fields": out_fields}
 
 
@@ -309,26 +402,30 @@ def check_budgets(recorded: dict | None = None) -> list[str]:
     if not recorded:
         return ["quality/budgets.yaml is missing or empty — the rising floors are not recorded"]
     problems: list[str] = []
-    measured = measure_budgets()
-    for section, values in measured.items():
+    for section, subjects in _measure_budgets_detailed().items():
         ceilings = recorded.get(section) or {}
-        for key, value in values.items():
+        for key, (value, label) in subjects.items():
+            named = f"{key} — {label}" if label else key
             ceiling = ceilings.get(key)
             if ceiling is None:
                 problems.append(
-                    f"budget: {section} has no recorded ceiling for {key} (measured {value}) — "
-                    "a new subject fails until a human measures it and commits the number"
+                    f"budget: {section} has no recorded ceiling for {named} (measured {value}) — "
+                    "a new subject fails until a human measures it and commits the number. "
+                    f"The line to paste under `{section}:` in quality/budgets.yaml:\n"
+                    f"  {key}: {value}"
                 )
             elif value > int(ceiling):
                 problems.append(
-                    f"budget: {section} {key} grew to {value}, past the recorded ceiling "
+                    f"budget: {section} {named} grew to {value}, past the recorded ceiling "
                     f"{ceiling} — shrink it, or raise the ceiling in quality/budgets.yaml "
-                    "in a diff a reviewer sees"
+                    "in a diff a reviewer sees. The line to paste, verbatim:\n"
+                    f"  {key}: {value}"
                 )
             elif value < int(ceiling):
                 notes.append(
-                    f"budget note: {section} {key} measured {value}, below its ceiling {ceiling} — "
-                    "a human may commit the lower number"
+                    f"budget note: {section} {named} measured {value}, below its ceiling "
+                    f"{ceiling} — a human may commit the lower number:\n"
+                    f"  {key}: {value}"
                 )
     return problems
 
@@ -352,6 +449,56 @@ def _scope_paths(node: object, trail: tuple[str, ...] = ()) -> Iterator[tuple[st
     elif isinstance(node, list):
         for child in node:
             yield from _scope_paths(child, trail)
+
+
+def registry_floor_consistency(rule: dict) -> None:
+    """A floor over a registry an optional app feeds must say what it counts.
+
+    `probed_paths: 11` is a fact about eleven executed registry entries — and
+    six of rule 35's twenty-one entries are the worked example's. Take the
+    worked example out and the same number is a fact about a world that no
+    longer exists, so the floor reads as a broken gate rather than as a smaller
+    tree. The repair is not a lower number (that would lower it for everybody);
+    it is a DECLARED BASIS, from which the expectation is derived per run.
+
+    Required only where it bites: a registry with no optional-app member feeds
+    no world-dependent number, and taxing it would be a rule about nothing. The
+    day such a member arrives, this refuses — which is the day the floor
+    actually became world-dependent.
+    """
+    rid = str(rule["id"])
+    registry = rule.get("registry") or []
+    declared = rule.get("registry_floors") or {}
+    floors = rule.get("floors") or {}
+    if not registry:
+        if declared:
+            broken.append(f"rule {rid}: registry_floors declared with no registry to feed them")
+        return
+    for key, basis in declared.items():
+        if str(basis) not in W.REGISTRY_BASES:
+            broken.append(
+                f"rule {rid}: registry_floors {key!r} names basis {basis!r}, which is not "
+                f"one of {', '.join(sorted(W.REGISTRY_BASES))}"
+            )
+        if key not in floors:
+            broken.append(
+                f"rule {rid}: registry_floors names {key!r}, which is not one of this "
+                "rule's floors — a derivation for a number nobody reads"
+            )
+    if not any(W.registry_entry_app(e) in OPTIONAL_APPS for e in registry):
+        return
+    for key in floors:
+        if key not in declared:
+            broken.append(
+                f"rule {rid}: floor {key!r} is pinned to {floors[key]} over a registry an "
+                f"OPTIONAL app feeds ({', '.join(sorted(OPTIONAL_APPS))}) and does not say "
+                "what it counts. Declare `registry_floors: {"
+                f"{key}: <basis>"
+                "}` so the expectation is derived from the apps this deployment "
+                f"actually holds — one of {', '.join(sorted(W.REGISTRY_BASES))}; `opaque` "
+                "is the honest answer where the registry cannot count it, and carries its "
+                "reason on the rule"
+            )
 
 
 def consistency() -> None:
@@ -419,11 +566,21 @@ def consistency() -> None:
                 broken.append(f"rule {rid}: ratchet {klass!r} is {count!r}, which is not a count")
         if not str(rule.get("does_not_cover", "")).strip():
             broken.append(f"rule {rid}: no does_not_cover — an undeclared blind spot")
+        registry_floor_consistency(rule)
         for kind, base in (("canaries", CANARY_DIR), ("negatives", NEGATIVE_DIR)):
             for entry in rule.get(kind) or []:
                 for e in [entry, *(entry.get("extra_files") or [])]:
                     if not (base / rid / e["fixture"]).is_file():
                         broken.append(f"rule {rid}: {kind[:-1]} fixture {e['fixture']} missing")
+                # A form may DECLARE the world it needs when its plant path
+                # cannot say so, and a declaration naming an app that is not on
+                # this tree is a plan for a world nobody can enter.
+                declared = entry.get("needs_app")
+                if declared and not (ROOT / "apps" / str(declared)).is_dir():
+                    broken.append(
+                        f"rule {rid}: {kind[:-1]} {entry['fixture']} declares "
+                        f"`needs_app: {declared}`, which is not an app under apps/"
+                    )
         for cid in rule.get("django_check_ids") or []:
             checks_src = (ROOT / "apps" / "core" / "checks.py").read_text()
             if str(cid) not in checks_src:
@@ -660,6 +817,109 @@ def selftest_floor(rule: dict) -> dict[str, int]:
     }
 
 
+def residence_findings(rules: list[dict]) -> list[str]:
+    """A rule whose whole canary plan lives in an app a deployment may remove.
+
+    THE SUBJECT. `optional = True` is a promise that a product can ship
+    without an app. A rule whose every canary form plants into that app keeps
+    its promise and loses its teeth in the same move: the check still runs, the
+    self-test still prints a line, and nothing anywhere can demonstrate that the
+    rule can fail. That is not a rule with a smaller world; it is a rule an
+    environment variable deleted.
+
+    The population is read off the `optional` declarations, never a list here
+    (`quality/worlds.py`), and the same ratchet grammar the rest of this engine
+    uses holds it: at or below `selftest_residence_backlog` the members are
+    NOTES, printed by name every run; one over it and every member is exit 2
+    naming the growth. Shrinking never tightens the number by itself.
+    """
+    census = W.residence_census(rules, OPTIONAL_APPS)
+    lines = [
+        f"rule {rid}: every canary form this rule has plants in apps/{app}, which declares "
+        f"`optional = True` — a deployment that leaves {app} out leaves this rule unable to "
+        "demonstrate a failure at all. Re-home one form into an app the product cannot "
+        "remove, or say in the rule why the subject only exists there"
+        for rid, app in census
+    ]
+    if len(census) <= RESIDENCE_BACKLOG:
+        return []
+    return [
+        f"selftest residence is at {len(census)} rules, past the recorded backlog of "
+        f"{RESIDENCE_BACKLOG} — a rule whose whole canary plan lives in an optional app may "
+        f"shrink and never grow. The whole census follows:",
+        *lines,
+    ]
+
+
+def residence_leg() -> None:
+    """Run the residence census, and prove the census itself can fail.
+
+    THE MECHANISM'S OWN CANARY, in the shape the budget canary already uses
+    below: this leg's subject is `rules.yaml` data rather than the tree, so its
+    forms are RULE-SHAPED and asserted directly. Planting a file could not
+    exercise it — there is no file whose presence makes a rule's canary plan
+    live in one app.
+    """
+    census = W.residence_census(RULES, OPTIONAL_APPS)
+    for line in residence_findings(RULES):
+        broken.append(line)
+    if len(census) <= RESIDENCE_BACKLOG:
+        # The standing backlog, printed BY NAME on every run: a number nobody
+        # can expand into a list is a number nobody can pay down. Said with
+        # `say` and not through `notes`, which a self-test run fills with every
+        # ratchet note from every planted tree and never prints.
+        say(
+            f"selftest residence: {len(census)} of {len(RULES)} rules prove nothing without "
+            f"an optional app, against a recorded backlog of {RESIDENCE_BACKLOG}:"
+        )
+        for rid, app in census:
+            say(f"    rule {rid}: whole canary plan in apps/{app}")
+        if len(census) < RESIDENCE_BACKLOG:
+            say(
+                f"    a human may commit {len(census)} to quality/rules.yaml "
+                "(selftest_residence_backlog); nothing tightens by itself."
+            )
+
+    optional_app = min(OPTIONAL_APPS) if OPTIONAL_APPS else None
+    if optional_app is None:
+        # No app in this tree declares `optional = True`, so the census has no
+        # subject and its canary would be a plant into a world that does not
+        # exist. Said out loud rather than skipped silently.
+        say(
+            "selftest residence: no app declares `optional = True` on this tree, so the "
+            "residence census has no subject and its canary did not run."
+        )
+        return
+    canary = {
+        "id": "residence-canary",
+        "canaries": [
+            {"fixture": "a.py", "plant_at": f"apps/{optional_app}/models.py", "mode": "append"},
+            {"fixture": "b.py", "plant_at": f"apps/{optional_app}/services.py", "mode": "append"},
+        ],
+    }
+    if not residence_findings([*RULES, canary]):
+        broken.append(
+            "RESIDENCE CANARY DEAD — a rule planted 100% in "
+            f"apps/{optional_app} did not push the census past its recorded backlog"
+        )
+    # THE NEGATIVE, and it is rule 35's real plan set rather than an invention:
+    # three forms in `core`, `events` and `realtime` and one in `quality/`
+    # itself. A census that fired here would be telling every mixed-residence
+    # rule to move canaries that are already outside the optional world.
+    mixed = {
+        "id": "residence-negative",
+        "canaries": [
+            {"fixture": "a.py", "plant_at": f"apps/{optional_app}/models.py", "mode": "append"},
+            {"fixture": "b.py", "plant_at": "apps/core/audit.py", "mode": "append"},
+        ],
+    }
+    if residence_findings([*RULES, mixed]):
+        broken.append(
+            "RESIDENCE FALSE-POSITIVE REGRESSION — a rule with one canary form outside "
+            f"apps/{optional_app} was counted into the residence census"
+        )
+
+
 def selftest() -> None:
     # Read the tree's migration leaves BEFORE anything is planted into it, and
     # stop if any placeholder could not be resolved: a self-test that guessed a
@@ -675,6 +935,8 @@ def selftest() -> None:
         )
         return
 
+    residence_leg()
+
     fired = 0
     silent = 0
     # : Per rule id: how many canary forms fired for IT, and how many of its
@@ -685,6 +947,12 @@ def selftest() -> None:
         for rule in RULES
         if rule.get("enabled", True)
     }
+    # : The forms this run did NOT plant because the app they need is not in
+    # : this deployment. Counted per rule and per kind, printed on the
+    # : rule's own line, and subtracted from its recorded population — a world
+    # : that is smaller is not a plan that shrank.
+    skipped: dict[str, dict[str, int]] = {rid: {"canaries": 0, "negatives": 0} for rid in per_rule}
+    absent: dict[str, set[str]] = {rid: set() for rid in per_rule}
 
     # -- AST + diff canaries and negatives, one fixture at a time ---------------
     for rule in RULES:
@@ -693,6 +961,11 @@ def selftest() -> None:
             continue
         for entry in rule.get("canaries") or []:
             via = entry.get("via", "ast")
+            gone = W.entry_out_of_world(entry, DISABLED_APPS)
+            if gone:
+                skipped[rid]["canaries"] += 1
+                absent[rid].add(gone)
+                continue
             if via == "django":
                 continue  # batched probe runs below
             plant = Plant()
@@ -722,6 +995,11 @@ def selftest() -> None:
                 plant.restore()
         for entry in rule.get("negatives") or []:
             via = entry.get("via", "ast")
+            gone = W.entry_out_of_world(entry, DISABLED_APPS)
+            if gone:
+                skipped[rid]["negatives"] += 1
+                absent[rid].add(gone)
+                continue
             if via == "django":
                 continue
             plant = Plant()
@@ -778,8 +1056,14 @@ def selftest() -> None:
             if not rule.get("enabled", True):
                 continue
             for entry in rule.get(kind) or []:
-                if entry.get("via") == "django":
-                    entries.append((rid, entry))
+                if entry.get("via") != "django":
+                    continue
+                # Already counted as out-of-world in the AST loop above; the
+                # two loops must agree about what this run's world holds or the
+                # census would count the same form twice, once each way.
+                if W.entry_out_of_world(entry, DISABLED_APPS):
+                    continue
+                entries.append((rid, entry))
         if not entries:
             continue
         plant = Plant()
@@ -886,16 +1170,32 @@ def selftest() -> None:
         if not rule.get("enabled", True):
             say(f"  rule {rid} {name}: DISABLED — not planted")
             continue
-        floor = selftest_floor(rule)
+        recorded = selftest_floor(rule)
         got = per_rule[rid]
+        # THE ONLY LEGAL LOWERING, and it is paid for by a NAMED APP.
+        # The recorded number in rules.yaml never moves — a reviewer still
+        # reads the plan's full population in the diff — and what this run
+        # expected falls by exactly the forms whose world this deployment does
+        # not hold, with the app that took them printed on the same line. A
+        # shrink nothing absent paid for is still POPULATION SHORT.
+        floor = {k: max(0, recorded[k] - skipped[rid][k]) for k in ("canaries", "negatives")}
         status = (
             "ok"
             if got["canaries"] >= floor["canaries"] and got["negatives"] >= floor["negatives"]
             else "SHORT"
         )
+        elsewhere = (
+            ""
+            if not absent[rid]
+            else (
+                f" · {skipped[rid]['canaries']}c/{skipped[rid]['negatives']}n not in this "
+                f"world ({', '.join(sorted(absent[rid]))} disabled; recorded "
+                f"{recorded['canaries']}/{recorded['negatives']})"
+            )
+        )
         say(
             f"  rule {rid} {name}: canaries {got['canaries']}/{floor['canaries']} · "
-            f"negatives {got['negatives']}/{floor['negatives']} — {status}"
+            f"negatives {got['negatives']}/{floor['negatives']} — {status}{elsewhere}"
         )
         for kind in ("canaries", "negatives"):
             if got[kind] < floor[kind]:

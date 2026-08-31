@@ -125,29 +125,40 @@ env:
   # Matches `.python-version` and the `requires-python` floor in pyproject.
   PYTHON_VERSION: "3.12"
   # THE COMPOSE STACK'S ADDRESS AND CREDENTIALS, AND THEY ARE THE SOURCE, NOT A
-  # COPY: the "start the stack" step below passes these three straight into
-  # compose as POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB, so the value
-  # Django dials and the value the container is created with cannot drift apart
-  # the way two hand-kept lists do. `compose.yaml`'s own `${...:-djb}` defaults
-  # are then never relied on here.
+  # COPY: the "start the stack" step below passes the two credentials straight
+  # into compose as POSTGRES_USER / POSTGRES_PASSWORD, so the value Django dials
+  # and the value the container is created with cannot drift apart the way two
+  # hand-kept lists do. `compose.yaml`'s own `${...:-djb}` defaults are then
+  # never relied on here. POSTGRES_DB is the third and it is NOT here — it comes
+  # from the derivation step, for the reason written where DATABASE_NAME used to
+  # be pinned.
   #
   # (The sentence this replaces claimed the checked-in defaults in
   # `config/settings/base.py` made an override unnecessary. Half true and now
   # false: DATABASE_NAME's default there is the empty string — it MUST be set,
-  # by `scripts/db.sh` on a laptop or by this block here. Booked as stale in
-  # `docs/product/queue.md`; closed in passing.)
+  # and it is set by `scripts/db.sh` in both places now, on a laptop and here.
+  # Booked as stale in `docs/product/queue.md`; closed in passing.)
   #
   # Postgres always — never SQLite, in CI as on a laptop, because the
   # Postgres-specific fields, constraints and query behaviour are part of the
   # contract.
   DATABASE_HOST: 127.0.0.1
   DATABASE_PORT: "5432"
-  # A NAME, NOT A DERIVATION. `scripts/db.sh` gives every checkout its own
-  # `djb_<branch>_<path hash>` so two trees on one laptop never share a
-  # database; an ephemeral runner has exactly one checkout and destroys it, so
-  # the pin is honest here and it is the one `compose.yaml` creates on first
-  # boot — which is what the backup drive needs to exist before it can dump it.
-  DATABASE_NAME: djb_main
+  # DATABASE_NAME IS DELIBERATELY ABSENT FROM THIS BLOCK. It is DERIVED, by the
+  # step below, by invoking `scripts/db.sh` — the same function a laptop runs.
+  #
+  # (The sentence this replaces read "A NAME, NOT A DERIVATION", pinned
+  # `djb_main`, and argued that an ephemeral runner with one checkout makes the
+  # pin honest. The pin is honest about isolation and DISHONEST about the
+  # census. `scripts/check.sh`'s own-tree-census leg narrows every verdict with
+  # `--only "$DATABASE_NAME"`, and `scripts/sweep.sh` only reasons about names
+  # of the derived shape `djb_<branch>_<8 hex>` — `lc_derived_shape`
+  # (`scripts/lifecycle.sh`) refuses anything else, and a refused name is
+  # printed but never classified, so it can never be UNRECOGNIZED and can never
+  # redden the leg. `djb_main` fails that test. Which means the census leg on
+  # every CI run so far asserted its two properties over an EMPTY SCOPE and
+  # reported clean: a green that vouched for nothing, in the one environment
+  # where nobody is watching the machine afterwards.)
   DATABASE_USER: djb
   DATABASE_PASSWORD: djb  # pragma: allowlist secret — the published compose password, refused in production by config.settings.guards
   REDIS_URL: redis://127.0.0.1:6379/0
@@ -183,6 +194,41 @@ jobs:
         # nobody has.
         run: uv sync --frozen
 
+      - name: this runner's own database name (derived, not typed)
+        # THE ONE THING THAT MAKES THE CENSUS LEG MEAN ANYTHING HERE. The name
+        # is not written down in this file; it is INVOKED out of
+        # `scripts/db.sh`, the same `db_name()` a laptop and a worktree run, so
+        # there is one derivation in this repository and not a copy of it in a
+        # YAML string. On a runner it resolves to `djb_<branch>_<8 hex of
+        # /home/runner/work/...>` — a derived shape, which is what
+        # `scripts/sweep.sh` requires before it will reason about an instance at
+        # all.
+        #
+        # AND IT REFUSES RATHER THAN FALLING BACK. If the derivation comes back
+        # empty, or something upstream has pinned a name of another shape, this
+        # step exits 2 and the job stops. A fallback to a typed name would
+        # restore exactly the vacuous green this step exists to end: the leg
+        # would run, find nothing in scope, and say clean. Could-not-look
+        # outranks a pass here as everywhere else.
+        #
+        # `$GITHUB_ENV` and not an output, because every later step wants it:
+        # compose creates POSTGRES_DB with it, and `scripts/db.sh`'s rule 1 — a
+        # name already in the environment wins — means the gate, the backup
+        # drive and the restore drill all read this same value rather than
+        # re-deriving one each.
+        run: |
+          . ./scripts/db.sh
+          . ./scripts/lifecycle.sh
+          if [ -z "${DATABASE_NAME:-}" ] || ! lc_derived_shape "$DATABASE_NAME"; then
+              echo "!! this job has no checkout-derived database name (exit 2)." >&2
+              echo "   DATABASE_NAME is '${DATABASE_NAME:-<empty>}'. The own-tree census" >&2
+              echo "   narrows every verdict to a derived identity, so a name of any other" >&2
+              echo "   shape leaves it asserting over an empty scope and passing." >&2
+              exit 2
+          fi
+          echo "DATABASE_NAME=${DATABASE_NAME}" >>"$GITHUB_ENV"
+          echo "this runner's database: ${DATABASE_NAME} (derived by scripts/db.sh)"
+
       - name: the stack the gate assumes (docker compose up)
         # THE ENVIRONMENT, from the repository's OWN `compose.yaml` — the same
         # file, the same pinned images and the same published ports a laptop
@@ -202,9 +248,14 @@ jobs:
         # rung that put them in `compose.yaml`, and the header says why for
         # those two as well.
         #
-        # The credentials come from the workflow `env:` block above rather than
-        # from `compose.yaml`'s `${...:-djb}` defaults, so the value Django
-        # dials and the value the container is created with are one value.
+        # The credentials come from the workflow `env:` block above and the
+        # database NAME from the derivation step above, rather than from
+        # `compose.yaml`'s `${...:-djb}` defaults — so the value Django dials
+        # and the value the container is created with are one value. That is
+        # also what puts the derived database on disk BEFORE the gate runs:
+        # `initdb` creates POSTGRES_DB on first boot, which is what the backup
+        # drive needs to exist before it can dump it, and what the own-tree
+        # census needs to exist before it can have anything in scope.
         #
         # No teardown step: the runner is ephemeral and is destroyed with the
         # job. A laptop tears down with `deploy/teardown.sh`; here there is
@@ -257,20 +308,171 @@ jobs:
   images:
     name: images
     runs-on: ubuntu-latest
-    # A separate job, because it needs no database and no Redis and there is no
-    # reason for a docker build to wait behind a test suite.
+
+    # THIS JOB IS THE ONLY PLACE THE DEPLOYED IMAGE IS EVER BUILT (ADR deploy-4).
+    #
+    # It used to build two single-arch images, tag them locally, check the USER
+    # line, and let them die with the runner. Meanwhile `deploy/compose.yaml`
+    # carried a `build:` and runbook step 33 built the SAME tree a third time,
+    # arm64, on the box — the slowest and least debuggable machine in the
+    # system. Three builds of one tree is three chances to differ (a base image
+    # that moved, a transient mirror, a wheel rebuilt) and NOTHING anywhere
+    # could say whether the thing CI proved and the thing the box ran were the
+    # same software.
+    #
+    # Now: one build, `linux/amd64,linux/arm64`, pushed under the tree tag, and
+    # every environment pulls it. The box builds nothing.
+    #
+    # `needs: gate` IS A CRITERION, NOT A COURTESY. A registry tag is a
+    # promotable artefact and `deploy/release.sh` will deploy anything the
+    # registry has — so a tag for a tree the gate has not passed is a red tree
+    # one command away from production. The build no longer runs beside the
+    # suite; it runs behind its verdict. The cost is the gate's wall clock added
+    # to the image's, paid once per tree, and it buys the invariant that
+    # EVERYTHING IN THE REGISTRY IS GREEN.
+    needs: gate
+
+    permissions:
+      contents: read
+      # OIDC. The push credential is a short-lived role assumption, never a
+      # stored access key — there is no long-lived registry secret in this
+      # repository and that is deliberate (ADR deploy-3's doctrine, one level
+      # out: no human types a secret, and nothing durable holds one).
+      id-token: write
+
     steps:
       - uses: actions/checkout@v5
 
-      - name: docker build --target web
-        run: docker build --target web -t djb-web .
+      - name: the tag this tree carries
+        # DERIVED, NEVER TYPED, and derived by the function that already owns it
+        # — `deploy/provision.sh image-tag`, the same one `deploy/ship.sh` writes
+        # into the box's TREE marker and `deploy/release.sh` resolves. A second
+        # copy of the derivation here is a second answer to "which tree is this".
+        #
+        # A `-dirty` tag cannot occur on a runner (the checkout is committed
+        # bytes) and is refused anyway, because a tag that says the tree was
+        # uncommitted names an image nobody can reproduce.
+        id: tag
+        run: |
+          tag="$(./deploy/provision.sh image-tag)"
+          echo "tag=$tag"
+          case "$tag" in
+            untracked|*-dirty|"") echo "::error::image-tag says '$tag' — refusing to build an image whose name is a lie" ; exit 1 ;;
+          esac
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
 
-      - name: docker build --target worker
-        run: docker build --target worker -t djb-worker .
+      # WHETHER THIS RUN CAN PUSH AT ALL, decided once and read by the two steps
+      # that care. A fork's pull request has no OIDC role to assume, and the
+      # honest behaviour there is to BUILD (so the Dockerfile is still proved)
+      # and not to push — rather than to fail a contributor's PR on a credential
+      # they were never going to have. `vars.` and not `secrets.`: the role ARN
+      # and the registry are coordinates, not secrets, and putting them in
+      # `vars` is what lets this condition be evaluated at all.
+      - name: can this run push
+        id: push
+        run: |
+          if [ -n "${{ vars.AWS_ECR_ROLE_ARN }}" ] && [ -n "${{ vars.DJB_IMAGE_REGISTRY }}" ]; then
+            echo "push=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::notice::no AWS_ECR_ROLE_ARN / DJB_IMAGE_REGISTRY variable — building without pushing"
+            echo "push=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: assume the push role
+        if: steps.push.outputs.push == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: log in to the registry
+        if: steps.push.outputs.push == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: buildx, with a builder that can do two architectures
+        # `docker build` on the runner's default builder produces ONE
+        # architecture — the runner's, amd64 — and this deployment's box is
+        # Graviton. A single-arch image would be pulled by an arm64 box as a
+        # manifest it cannot run, or (worse, on some daemons) silently emulated.
+        # The `docker-container` driver is what makes `--platform` with two
+        # values produce a manifest LIST rather than a refusal.
+        uses: docker/setup-buildx-action@v3
+
+      - uses: docker/setup-qemu-action@v3
+
+      - name: build web and worker — ONE build, two architectures
+        # `--push` when there is a registry, `--load` is not available for a
+        # multi-arch build (the local image store holds one architecture), so a
+        # no-push run builds both architectures and keeps neither: what it
+        # proves is that the Dockerfile builds for both, which is the half a
+        # fork's PR can prove.
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
+          PUSH: ${{ steps.push.outputs.push }}
+        run: |
+          set -euo pipefail
+          if [ "$PUSH" = "true" ]; then output="--push"; else output=""; fi
+          for target in web worker; do
+            if [ "$PUSH" = "true" ]; then
+              ref="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-ref "$target" "$TAG")"
+            else
+              ref="local/djb-${target}:${TAG}"
+            fi
+            echo "-- $target -> $ref"
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              --target "$target" \
+              --tag "$ref" \
+              --provenance=false \
+              $output \
+              .
+          done
+
+      - name: the manifest carries BOTH architectures
+        # THE ASSERTION THAT MAKES "MULTI-ARCH" A FACT RATHER THAN A FLAG. A
+        # `--platform` typo, a builder that quietly fell back to the default
+        # driver, or a base image with no arm64 variant all produce a perfectly
+        # green build and a single-arch manifest — which fails, for the first
+        # time, on the Graviton box at 3am. Read back OUT OF THE REGISTRY, not
+        # out of the build log, because the registry is what the box will pull.
+        if: steps.push.outputs.push == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
+        run: |
+          set -euo pipefail
+          for target in web worker; do
+            ref="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-ref "$target" "$TAG")"
+            platforms="$(docker buildx imagetools inspect --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' "$ref")"
+            echo "$ref -> $platforms"
+            case "$platforms" in *linux/amd64*) ;; *) echo "::error::$ref has no linux/amd64" ; exit 1 ;; esac
+            case "$platforms" in *linux/arm64*) ;; *) echo "::error::$ref has no linux/arm64" ; exit 1 ;; esac
+            digest="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-digest "$target" "$TAG")"
+            echo "$ref -> $digest"
+          done
 
       - name: the images run as a non-root user
         # Cheap, and it catches the one mistake a Dockerfile refactor makes
-        # most often: losing the USER line.
+        # most often: losing the USER line. Run against the runner's own
+        # architecture, pulled back from the registry where there is one — so
+        # what is checked is the artefact that will be deployed, not a
+        # by-product of the build.
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
+          PUSH: ${{ steps.push.outputs.push }}
         run: |
-          test "$(docker run --rm --entrypoint id djb-web -u)" = "10001"
-          test "$(docker run --rm --entrypoint id djb-worker -u)" = "10001"
+          set -euo pipefail
+          for target in web worker; do
+            if [ "$PUSH" = "true" ]; then
+              ref="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-ref "$target" "$TAG")"
+              docker pull -q "$ref"
+            else
+              # No registry: build this one architecture into the local store,
+              # which is the only way a non-push run can run the image at all.
+              ref="local/djb-${target}:${TAG}"
+              docker buildx build --load --target "$target" --tag "$ref" .
+            fi
+            test "$(docker run --rm --entrypoint id "$ref" -u)" = "10001"
+          done

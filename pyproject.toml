@@ -388,7 +388,7 @@ ignore_imports = [
     # context through it — which is exactly the property the layers protect and
     # the reason this exemption is for the test modules only.
     "apps.accounts.tests.* -> apps.workflows.*",
-    # And `apps.realtime` since P3-A1, for exactly the reason above one layer
+    # And `apps.realtime` since the socket seam landed, for exactly the reason above one layer
     # over: revocation and erasure now close the person's open sockets (ADR
     # realtime-2 d), and a test that claims a socket closed has to open one.
     # The production code imports none of it — `services.close_sockets` asks

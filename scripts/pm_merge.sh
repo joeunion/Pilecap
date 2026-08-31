@@ -1,10 +1,43 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # Merge a returned builder's branch into this checkout, and own the exit status.
 # The PM's one merge path.
 #
 #   ./scripts/pm_merge.sh <branch>              # merge --no-ff, git's default message
 #   ./scripts/pm_merge.sh <branch> -m FILE      # ...with the message in FILE
 #   ./scripts/pm_merge.sh <branch> -m -         # ...with the message on stdin
+#   ./scripts/pm_merge.sh <branch> --bank       # ...and gate the merged tree FULLY, banking a verdict
 #
 # WHY THIS EXISTS, and like scripts/pm_push.sh it is a scar rather than a
 # convenience. A merge was once run as
@@ -47,7 +80,13 @@
 # answer to "the cheap per-rule floor check, if one exists as a separable
 # leg"):
 #
-#   * `./scripts/check.sh --fast` is what runs here. It is the tier the
+#   * `./scripts/check.sh --fast` is the DEFAULT tier here, and `--bank` on
+#     this script's own command line is the other one — the ritual full gate,
+#     handed straight to `check.sh`, which is legal from this checkout and
+#     refused from a rung worktree. The tier is printed before it runs either
+#     way. It was advertised in prose here for a cycle while the code could
+#     only ever run one of the two, which is the drift a flag closes.
+#     `--fast` is the tier the
 #     post-merge hook already runs, and its `house-rules` leg is
 #     `python -m quality.gate --diff HEAD` — the ENGINE'S ORDINARY SCAN, which
 #     already includes the per-rule FLOORS and the consistency pass
@@ -107,11 +146,29 @@ die() {
 
 BRANCH=""
 MSG_ARG=""
+#: `--fast` unless the caller asks for the ritual full gate. The tier this
+#: script runs is a CHOICE the caller makes and the script prints; it was
+#: advertised in prose here for a cycle while the code could only ever run one
+#: of the two, which is the class of drift a flag closes.
+GATE_TIER="--fast"
 while [ "$#" -gt 0 ]; do
     case "$1" in
     -h | --help)
-        sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
+        ;;
+    --bank)
+        # THE RITUAL FULL GATE, from the checkout this script has already
+        # proven it is standing in. `check.sh --bank` is legal from the primary
+        # checkout or from pm-push and refuses everywhere else, and the
+        # foreign-checkout guard below has already established that this IS the
+        # checkout this file lives in — so the flag is handed on rather than
+        # re-argued here. What it buys over the pre-push hook's identical run
+        # is that an ~8-minute gate is watched by the operator who asked for
+        # it, instead of firing from inside a hook, and that the verdict row
+        # says `caller=pm-bank` rather than `unstated`.
+        GATE_TIER="--bank"
+        shift
         ;;
     -m)
         [ "$#" -ge 2 ] || die "-m needs a message file, or - for stdin."
@@ -309,8 +366,23 @@ fi
 # report on a tree that exists, and the next move is a fix commit or
 # `git -C <root> reset --hard <the sha printed above as 'onto'>`.
 echo ""
-echo "pm_merge: gating the merged tree — ${GATE} --fast"
-echo "  NOT run here: pytest, the supply chain, the canary self-test, the shell"
-echo "                refusal drives, the verdict. Those bind at push. See this"
-echo "                script's header for why the self-test is not here (ADR gate-3)."
-exec "$GATE" --fast
+echo "pm_merge: gating the merged tree — ${GATE} ${GATE_TIER}"
+if [ "$GATE_TIER" = "--bank" ]; then
+    echo "  THE FULL GATE, asked for with --bank: two whole-suite passes, the supply"
+    echo "                chain, the canary self-test, every shell refusal drive, and a"
+    echo "                verdict recorded against this tree with caller=pm-bank."
+    echo "  It takes the machine-wide full-gate lease and one of this box's pytest"
+    echo "  slots, so every other full gate here waits behind it. That is the price of"
+    echo "  a verdict, and it is the same price the pre-push hook pays unwatched."
+else
+    echo "  NOT run here: pytest, the supply chain, the canary self-test, the shell"
+    echo "                refusal drives, the verdict. Those bind at push. See this"
+    echo "                script's header for why the self-test is not here (ADR gate-3)."
+    echo "  To BANK a verdict for the merged tree before pushing it — the ritual full"
+    echo "  gate, which is legal from this checkout and refused from a rung worktree —"
+    echo "  pass --bank to THIS script, or run it yourself:"
+    echo "      ${GATE} --bank > \"\$PWD/bank.log\" 2>&1"
+    echo "  It records caller=pm-bank and a sanction on the verdict row. Skipping it is"
+    echo "  legal too: the pre-push hook runs the same gate if the tree has no verdict."
+fi
+exec "$GATE" "$GATE_TIER"

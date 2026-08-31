@@ -234,6 +234,11 @@ register_refusal(
         ),
         Remedy("Check which memberships you actually hold", "self:membership"),
     ),
+    # 403, its base class's, declared here rather than appended to a table under
+    # `config/` (ADR core-23). The number was always right on the wire — what
+    # this line buys is the DOCUMENT, which is written off the code and used to
+    # need a `config/api.py` edit to hear about a refusal declared in `apps/`.
+    status=403,
 )
 
 

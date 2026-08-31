@@ -129,7 +129,7 @@ LOG_KEYS: frozenset[str] = frozenset(
 
 
 # --- The socket seam ----------------------------------------------------------
-# **The implementation moved; the vocabulary did not.** P3-A1 wrote
+# **The implementation moved; the vocabulary did not.** An earlier rung wrote
 # `close_sockets` and `close_sockets_on_commit` here, when the only callers were
 # credential withdrawals. SEC-1's MED-1 found the other half — *authorization*
 # withdrawal (a membership removed, a subtree re-parented) never reached an open
@@ -226,7 +226,7 @@ def deactivate_user(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
 
     ---
 
-    **The signature grew an `actor` and a `tenant` in P5-B-ACCT, and both were
+    **The signature grew an `actor` and a `tenant` when the doors landed, and both were
     load-bearing.** It used to be `deactivate_user(*, user)`: no actor, so
     nothing authorized — an admin door was free to call it on anybody, and rule
     13 stayed quiet because the rule only asks a service that *resolves* an
@@ -395,7 +395,7 @@ def erase_user(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
 # the same split `redact_invitations` makes one table over, and the same one
 # `erase_user` makes about the `User` row itself.
 #
-# **Why the enumeration is not the guarantee.** P5-R1 found the person in four
+# **Why the enumeration is not the guarantee.** A probe found the person in four
 # tables this service never touched, and found them with a DB-level sweep rather
 # than by reading the code — because a service says nothing about the tables it
 # does not touch, and neither does a comment. What keeps the list at four is

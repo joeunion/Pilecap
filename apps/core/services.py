@@ -532,7 +532,7 @@ def apply_organization_move(
 
 
 # --- The socket seam ----------------------------------------------------------
-# **One home for the kick, and this is it.** P3-A1 built this pair inside
+# **One home for the kick, and this is it.** An earlier rung built this pair inside
 # `apps/accounts/services.py`, where the only callers then were credential
 # withdrawals (a revoked token, an erased user, the identity-revocation
 # activity). SEC-1's MED-1 found the other half: *authorization* withdrawal —
@@ -597,7 +597,7 @@ def close_sockets(*, user_id: UUID, reason: str) -> None:
     try:
         kick(user_id=user_id, reason=reason)
     except Exception:
-        # **The blind spot says its own name.** P3-SEC-1's LOW-3: the on-commit
+        # **The blind spot says its own name.** A LOW security finding: the on-commit
         # registration is `robust=True` (deliberately — see
         # `close_sockets_on_commit`), so a kick that raises is swallowed by
         # Django's hook handler and reported through `django.db.backends.base`.
@@ -655,7 +655,7 @@ def close_sockets_on_commit(*, user_id: UUID, reason: str) -> None:
     side.
 
     **The blind spot is observable, which is a different thing from being
-    closed** (P3-SEC-1, LOW-3). `close_sockets` writes
+    closed** (the same LOW finding). `close_sockets` writes
     `core.socket.kick_failed` through `core.log` before it re-raises, so the
     dropped kick appears in the structured stream an operator actually watches —
     Django's own `django.db.backends.base` line is not our logging and nobody

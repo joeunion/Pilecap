@@ -408,7 +408,7 @@ DATABASE_URL: str = _configured_database_url or _default_database_url
 # one to refuse at all. This line, not `guards`, is what knows the answer:
 # a URL wins over the parts one line above, and when it does, the password lives
 # inside a string this module is handed whole and never assembled — a different
-# population, whose belt is the deployment's own start-up assertion (P4-D1).
+# population, whose belt is the deployment's own start-up assertion.
 # `None` therefore means "the parts were not consulted", never "do not check".
 _parts_database_password: str | None = None if _configured_database_url else DATABASE_PASSWORD
 

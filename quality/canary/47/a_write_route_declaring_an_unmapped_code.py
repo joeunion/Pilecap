@@ -21,8 +21,9 @@
 # the same `register_refusal` every real code goes through, with the same fact
 # and remedies the grammar demands, so rule 41 is satisfied and stays SILENT on
 # it, which is the whole point: 41 asks whether a declared code is REGISTERED and
-# this one is. And it is unkeyable in `CODE_STATUS` BY CONSTRUCTION — nothing
-# outside this fixture has ever heard of it, so no rung can add its line, and
+# this one is. And it is STATUSLESS BY CONSTRUCTION — the `register_refusal`
+# call below passes no `status=`, which since ADR core-23 is the only way a code
+# gets a number, so the derived `CODE_STATUS` cannot hold it and
 # `_document_operation`'s `if status is not None` drops it forever. Registered,
 # refusable, unpublished: the three facts the rule exists to notice, held by the
 # plant itself.

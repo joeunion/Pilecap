@@ -1,9 +1,42 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # Pin the pm-push worktree to a commit and push it. The PM's one push path.
 #
 #   ./scripts/pm_push.sh              # pin pm-push to THIS checkout's HEAD, push
 #   ./scripts/pm_push.sh <sha>        # pin it to that commit instead
 #   ./scripts/pm_push.sh --dry-run    # everything except the push
+#   ./scripts/pm_push.sh --bank       # bank a verdict for this tree FIRST, then push
 #
 # WHY THIS EXISTS, and it is a scar rather than a convenience. On
 # 2026-08-23 a `cd` into the pm-push worktree persisted as the PM session's
@@ -47,13 +80,38 @@ die() {
     exit 2
 }
 
+BANK=0
 case "${1:-}" in
 --dry-run)
     DRY_RUN=1
     SHA_ARG=""
     ;;
+--bank)
+    # THE RITUAL FULL GATE, RUN BEFORE THE PUSH RATHER THAN INSIDE IT. The
+    # pre-push hook already runs the same gate when the tree has no verdict —
+    # this flag moves that ~8 minutes in front of the operator who asked for
+    # it, where it can be watched and where a red one is a decision rather
+    # than a surprise. It was written up in this file's footer for a cycle
+    # with no code behind it; a comment block is not a flag.
+    #
+    # IT TAKES NO COMMIT, and that is the whole of how it stays honest. A bank
+    # is a claim about a TREE: `check.sh` keys its verdict on the working tree
+    # it measures here, and the pre-push hook consults the ledger with the same
+    # key. Measuring this checkout and then pushing some other commit would
+    # vouch for a tree the push does not carry — so the combination is refused
+    # at the argument rather than reasoned about later, and `--bank` means HEAD
+    # by construction. (The first draft of this flag accepted the pair and
+    # compared them below; that guard could never fire, because `$#` is capped
+    # at one. An unreachable refusal is worse than no refusal — it reads like
+    # cover.)
+    [ "$#" -eq 1 ] ||
+        die "--bank measures THIS checkout's tree, so it pushes THIS checkout's HEAD and takes no commit argument. Got: $*"
+    DRY_RUN=0
+    SHA_ARG=""
+    BANK=1
+    ;;
 -h | --help)
-    sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
 -*)
@@ -100,6 +158,56 @@ if [ -n "$(git -C "$PM_PUSH" status --porcelain)" ]; then
     exit 2
 fi
 
+# --- --bank: the verdict, earned in front of the operator --------------------
+#
+# WHERE IT SITS. After every refusal that costs nothing — a bad commit-ish, no
+# pm-push worktree, a dirty pm-push — and before anything is pinned or pushed.
+# An eight-minute gate that runs and THEN discovers there is no worktree to pin
+# is an expensive way to learn about a typo.
+#
+# WHAT IT REFUSES: A BANK IS A CLAIM ABOUT A TREE, so the tree it measures must
+# be the tree that is about to be pushed. `check.sh` keys its verdict on the
+# WORKING TREE it measures here, and the pre-push hook consults the ledger with
+# the same key. A DIRTY checkout is therefore refused — the verdict would be
+# keyed on a tree that exists in nobody's history while the push carried a
+# different one. The other half of that rule is enforced up at the argument:
+# `--bank` takes no commit, so what is measured is always this checkout's HEAD.
+#
+# Exit 2 (could not get as far as pushing) rather than a red gate: nothing was
+# measured and nothing was judged.
+if [ "$BANK" = "1" ]; then
+    GATE="$ROOT/scripts/check.sh"
+    [ -x "$GATE" ] || die "no executable gate at ${GATE} — there is nothing to bank with"
+    if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+        echo "!! pm_push --bank: ${ROOT} has uncommitted changes." >&2
+        git -C "$ROOT" status --short >&2
+        echo "   A banked verdict is keyed on the tree the gate measured, and that tree" >&2
+        echo "   would not be the one this push carries. Commit or stash first." >&2
+        echo "   Nothing was banked, nothing was pinned and nothing was pushed." >&2
+        exit 2
+    fi
+    echo "pm_push: banking a verdict for ${ROOT} before the push — ${GATE} --bank"
+    echo "  This is the full gate: two whole-suite passes, the supply chain, the canary"
+    echo "  self-test and every shell refusal drive. It takes the machine-wide lease and"
+    echo "  one pytest slot, so every other full gate on this box waits behind it."
+    echo "  A red one stops here: nothing is pinned and nothing is pushed."
+    # NOT `exec`, and not piped. The push is still this script's job and the
+    # header's third property is about the PUSH, not about every command in the
+    # file — so the gate's status is captured and answered, and only a 0 goes
+    # on. check.sh's own exit 2 (enforcement broken) outranks a pass on the way
+    # through here exactly as it does everywhere else.
+    BANK_RC=0
+    "$GATE" --bank || BANK_RC=$?
+    if [ "$BANK_RC" != "0" ]; then
+        echo "!! pm_push --bank: the full gate exited ${BANK_RC}." >&2
+        echo "   2 is enforcement broken, 1 is a red tree; neither is a tree to push." >&2
+        echo "   Nothing was pinned and nothing was pushed." >&2
+        exit "$BANK_RC"
+    fi
+    echo "pm_push: verdict banked. The pre-push hook will honour it and cost seconds."
+    echo ""
+fi
+
 echo "pm_push: pinning ${WORKTREE_NAME} and pushing to ${REMOTE}/${TARGET_BRANCH}"
 echo "  checkout      ${ROOT}"
 echo "  pm-push       ${PM_PUSH}"
@@ -143,5 +251,17 @@ fi
 # a cleanup, not a log line, not an `echo done` — so nothing can run between the
 # push failing and the caller reading the status. The exit code a caller sees is
 # git's own, always.
+#
+# THE FULL GATE IS BEHIND THIS PUSH, not in this script. `scripts/githooks/pre-push`
+# consults the verdict ledger and runs `./scripts/check.sh` itself when the tree
+# has none, exporting `DJB_GATE_CALLER=push-wall` — which is one of the three
+# things that SANCTIONS a full run (`scripts/check.sh`, THE FULL GATE IS
+# SANCTIONED). So the wall needs nothing typed here and never has. To bank the
+# verdict AHEAD of the push instead — an ~8-minute gate the operator can watch
+# rather than one that fires inside a hook — pass `--bank` to THIS script,
+# which runs it above and refuses to pin or push on anything but a 0. Running
+# it by hand from this checkout or from pm-push is still legal and identical:
+#     ./scripts/check.sh --bank > "$PWD/bank.log" 2>&1
+# The push then honours that verdict and costs seconds.
 echo "pm_push: pushing ${SHA} -> ${REMOTE}/${TARGET_BRANCH}"
 exec git -C "$PM_PUSH" push "$REMOTE" "${SHA}:refs/heads/${TARGET_BRANCH}"

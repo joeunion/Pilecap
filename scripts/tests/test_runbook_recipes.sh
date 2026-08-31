@@ -1,4 +1,36 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # THE EXECUTABLE-DOCS DRIVE — `docs/runbooks/deploy.md`'s webhook recipes, run
 # as printed against a live receiver, and
 # `docs/runbooks/capacity.md`'s connection-census and envelope-line recipes, run
@@ -124,8 +156,26 @@
 # brooms, so a drive killed mid-run leaves something a broom can reach rather
 # than something nobody named. It never touches this checkout's own database.
 #
-# COST. ~30s: the migration chain into a fresh scratch database is nearly all of
-# it, the server start and the five recipes are the rest.
+# AND IT TERMINATES THE RUNS IT STARTS, which for a year it did not. Seeding the
+# world starts a Temporal execution per message and per emitted event, onto the
+# queue this run's scratch DATABASE derives — a queue no worker anywhere polls,
+# whose name dies with the database at exit. Fifteen executions per run stayed
+# RUNNING for ever; a machine's dev namespace was holding over a thousand of
+# them, all from this file, before anybody counted. The database was always
+# dropped and the executions were the half nobody owned, which is a LIFETIME
+# CLASS MISMATCH minted at creation and not a missing broom
+# (`scripts/lifecycle.sh` argues that in full).
+#
+# The scope of the cleanup is both halves at once — THIS checkout's derived task
+# queue AND a workflow id under the harness's own tenant slug — and it runs on
+# every exit path including a killed one, which is what section 6 of
+# `drive_preamble.sh` was written for. `kill -9` is untrappable and is the
+# declared hole. `scripts/sweep.sh --class open-execution` is what finds a
+# strand this file failed to reach.
+#
+# COST. ~35s: the migration chain into a fresh scratch database is nearly all of
+# it, the server start and the five recipes are most of the rest, and
+# terminating fifteen executions one at a time is about three seconds.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -195,6 +245,12 @@ command -v openssl >/dev/null 2>&1 || cannot_look "no openssl on PATH — the le
 command -v uv >/dev/null 2>&1 || cannot_look "no uv on PATH — the receiver runs on this checkout's venv"
 
 . scripts/db.sh
+# `lc_temporal` and nothing else: the ONE way anything in this tree reaches the
+# Temporal CLI, which lives in the compose container and not on the host. This
+# drive terminates the executions it starts (see THE RUNS THIS DRIVE STARTS
+# above) and a second copy of `docker compose exec -T temporal temporal` here
+# would be a second answer to "how do we talk to the server".
+. scripts/lifecycle.sh
 
 ROOT="$PWD"
 
@@ -205,11 +261,98 @@ drive_require_scratch WORK "${WORK:-}"
 RECEIVER_PID=""
 SCRATCH_DB=""
 
+# --- the runs this drive starts, and terminating them -------------------------
+#
+# THE DRIVE TERMINATES WHAT IT STARTS. Seeding two messages through `send()`
+# and posting three webhooks at the receiver starts Temporal executions — a
+# `DeliverMessageWorkflow` per message and a `DispatchEventWorkflow` per emitted
+# event — onto the queue this checkout's scratch DATABASE derives. Nothing ever
+# polls that queue: the drive runs no worker, and the queue name dies with the
+# scratch database at exit. So every one of those executions stayed RUNNING for
+# ever, fifteen per run, and a machine's dev namespace had accumulated over a
+# thousand of them by the time anybody counted. The database was always dropped;
+# the executions were the half nobody owned.
+#
+# THE SCOPE IS BOTH HALVES AT ONCE and it is deliberately narrow: the task queue
+# THIS checkout derived, AND a workflow id starting with the harness's own
+# tenant slug. Either alone would be wider than this drive's business — a queue
+# name is a checkout, not a drive, and the slug is shared by every checkout's
+# copy of this drive on the same machine — and their conjunction is exactly
+# "runs this process caused". Both values are ASKED FOR (`runbook_receiver.py
+# world`) rather than derived here; its docstring says why.
+#
+# IT RUNS ON EVERY EXIT PATH, including a killed one: `drive_at_exit` puts it in
+# the preamble's epilogue, which bash reaches for TERM, INT and HUP as well as
+# for a pass, a fail and a could-not-look (section 6 of the preamble carries the
+# measurement and the announcement). `kill -9` is untrappable and is the
+# declared hole, there and here.
+DRIVE_QUEUE=""
+DRIVE_SLUG=""
+
+# Both halves, in Temporal's own list-filter grammar. Empty when this run never
+# learned where its work lands, which every caller checks before using it.
+our_runs_query() {
+    [ -n "$DRIVE_QUEUE" ] && [ -n "$DRIVE_SLUG" ] || return 1
+    printf 'TaskQueue="%s" AND ExecutionStatus="Running" AND WorkflowId STARTS_WITH "%s:"' \
+        "$DRIVE_QUEUE" "$DRIVE_SLUG"
+}
+
+# One workflow id per line, or a non-zero exit if the server could not be asked.
+# A document that did not parse is NOT an empty population — an empty answer
+# there would read as "nothing to clean" and leave everything behind.
+our_running_ids() {
+    local query
+    query="$(our_runs_query)" || return 1
+    lc_temporal workflow list --query "$query" -o json 2>/dev/null |
+        python3 -c 'import json, sys
+try:
+    docs = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(2)
+for doc in docs:
+    print(doc["execution"]["workflowId"])
+'
+}
+
+# Terminate every one of them, ONE AT A TIME BY ID rather than as a batch over
+# the query. `temporal workflow terminate --query` starts an asynchronous batch
+# job and returns before it has done anything, so the assertion that follows it
+# would be racing the server; terminating by id is synchronous, and at ~0.2s a
+# call against fifteen runs it costs about three seconds.
+#
+# Three rounds, because the list and the terminates are not one atomic act: an
+# execution that started between them would survive a single pass. In practice
+# the receiver is already dead by the time this runs and round two finds
+# nothing.
+terminate_the_runs_this_drive_started() {
+    local round ids id
+    for round in 1 2 3; do
+        ids="$(our_running_ids)" || return 1
+        [ -n "$ids" ] || return 0
+        for id in $ids; do
+            lc_temporal workflow terminate --workflow-id "$id" \
+                --reason "test_runbook_recipes: the drive that started it has finished" \
+                >/dev/null 2>&1 || true
+        done
+    done
+    ids="$(our_running_ids)" || return 1
+    [ -z "$ids" ]
+}
+
 teardown() {
     if [ -n "$RECEIVER_PID" ]; then
         # By pid, never by name: `pkill -f` has killed other agents' gates twice.
         kill "$RECEIVER_PID" 2>/dev/null || true
         wait "$RECEIVER_PID" 2>/dev/null || true
+    fi
+    # AFTER the receiver is dead, so nothing is still starting work, and before
+    # the database goes: the two are independent but this order reads as the
+    # story it is. A failure here is one line on stderr and never a verdict —
+    # the cleanup is not a case, and a drive that asserted 38 things correctly
+    # did not stop being right because docker was not there to be asked.
+    if [ -n "$DRIVE_QUEUE" ]; then
+        terminate_the_runs_this_drive_started ||
+            echo "!! test_runbook_recipes: could not terminate this drive's Temporal runs on ${DRIVE_QUEUE} — they are stranded, and scripts/sweep.sh is what finds them." >&2
     fi
     if [ -n "$SCRATCH_DB" ]; then
         db_drop "$SCRATCH_DB" >/dev/null 2>&1 || true
@@ -687,6 +830,142 @@ case_the_vendor_signed_recipes_bind_their_symbols() {
     fi
 }
 
+# A KILLED DRIVE STILL OWES ITS CLEANUPS, and that is a property of the
+# preamble rather than of any one case here. It is asserted in THIS file because
+# this is the drive that pays for it: an interrupted run left its Temporal
+# executions behind exactly as a finished one did — not because the exit path
+# was skipped (bash runs an EXIT trap on TERM, INT and HUP by itself; the
+# measurement is in section 6 of `drive_preamble.sh`) but because nothing on
+# that path had ever been asked to terminate them.
+#
+# WHAT IS DRIVEN IS THE MECHANISM, NOT A KILLED COPY OF THIS DRIVE, and the
+# reason is a collision rather than a cost: the scratch database name is derived
+# from the CHECKOUT, so a nested self-run would create and drop the very
+# database the outer run is using. So the case builds the smallest thing that
+# has the property — a script that sources the preamble, registers a cleanup and
+# waits — kills it with TERM, and asserts the cleanup ran and the status is the
+# shell's `128 + 15`.
+case_a_killed_drive_still_runs_its_cleanups() {
+    CURRENT="a killed drive still runs the cleanups it registered"
+    N=$((N + 1))
+    OUT="${WORK}/killed${N}.log"
+
+    local script sentinel started pid rc waited
+    script="${WORK}/killable.sh"
+    sentinel="${WORK}/killable.cleaned"
+    started="${WORK}/killable.started"
+
+    cat >"$script" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${ROOT}"
+. scripts/tests/drive_preamble.sh
+drive_at_exit "touch '${sentinel}'"
+touch "${started}"
+# Short sleeps rather than one long one: bash runs a trap for a signal received
+# during a foreground command only after that command returns, and this case is
+# about the trap, not about bash's wait semantics (declared in section 6).
+while :; do sleep 0.2; done
+SH
+
+    bash "$script" >"$OUT" 2>&1 &
+    pid=$!
+
+    waited=0
+    while [ ! -e "$started" ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            bad "the killable script died before it was ready — see ${OUT}"
+            return 0
+        fi
+        waited=$((waited + 1))
+        if [ "$waited" -ge 100 ]; then
+            kill "$pid" 2>/dev/null || true
+            bad "the killable script never became ready"
+            return 0
+        fi
+        sleep 0.1
+    done
+
+    if [ -e "$sentinel" ]; then
+        bad "the cleanup had already run before anything was killed — this case cannot fail"
+        kill "$pid" 2>/dev/null || true
+        return 0
+    fi
+
+    kill -TERM "$pid" 2>/dev/null || true
+    rc=0
+    wait "$pid" || rc=$?
+
+    if [ -e "$sentinel" ]; then
+        ok "a TERM'd drive ran its registered cleanup"
+    else
+        bad "a TERM'd drive skipped its registered cleanup — this is the class exactly"
+    fi
+    # 128 + SIGTERM. A killed drive must not be able to read as a pass.
+    if [ "$rc" = "143" ]; then
+        ok "it exited 143, so a caller still sees a killed drive as killed"
+    else
+        bad "a TERM'd drive exited ${rc}, not 143"
+    fi
+    # THE HALF THAT IS ACTUALLY SECTION 6'S. Bash runs an EXIT trap on these
+    # signals by itself — section 6's own header carries the measurement — so
+    # the two assertions above would pass with the signal traps deleted. What
+    # would NOT survive is a killed drive SAYING it was killed, which is the
+    # only thing that tells a transcript ending mid-drive from a drive that
+    # hung.
+    if grep -q 'killed by SIGTERM' "$OUT"; then
+        ok "and it named the signal, so a transcript that stops here says why"
+    else
+        bad "a TERM'd drive died silently — a truncated transcript is unreadable"
+    fi
+}
+
+# THE CRITERION THIS RUNG EXISTS FOR, asserted against the real server rather
+# than against a promise. Positive half FIRST, as the no-copy cases do it: if
+# nothing was running, the negative half below would pass because there was
+# nothing to terminate, which is the shape of a green that proves nothing.
+case_the_drive_terminates_the_runs_it_started() {
+    CURRENT="the drive terminates the Temporal runs it started"
+    N=$((N + 1))
+    OUT="${WORK}/ourruns${N}.log"
+
+    local before after
+    before="$(our_running_ids | wc -l | tr -d ' ')" ||
+        cannot_look "could not ask Temporal what this drive left running — is the compose stack up? (scripts/setup.sh)"
+
+    if [ "${before:-0}" -gt 0 ]; then
+        ok "this drive has ${before} executions running on ${DRIVE_QUEUE}, which nothing polls"
+    else
+        bad "nothing of this drive's was running — the assertion below would pass for the wrong reason"
+        return 0
+    fi
+
+    if terminate_the_runs_this_drive_started; then
+        ok "every one of them is terminated"
+    else
+        our_running_ids >"$OUT" 2>&1 || true
+        bad "runs remained after the terminator ran — see ${OUT}"
+        return 0
+    fi
+
+    after="$(our_running_ids | wc -l | tr -d ' ')" || after="?"
+    if [ "$after" = "0" ]; then
+        ok "the server agrees: nothing of this drive's is still running"
+    else
+        bad "the server still lists ${after} of this drive's runs as Running"
+    fi
+
+    # THE WIRING, and not only the function. The two assertions above would go on
+    # passing if somebody deleted the call from the exit cleanup, and then only
+    # a drive that FINISHED would clean up — which is most of them, and not the
+    # ones that matter. The live function body is what is read, never this file.
+    if declare -f teardown | grep -q 'terminate_the_runs_this_drive_started'; then
+        ok "the registered exit cleanup calls the terminator, so a drive that dies here still cleans"
+    else
+        bad "teardown does not call the terminator — only a drive that reaches this case would clean up"
+    fi
+}
+
 # =============================================================================
 
 echo "== test_runbook_recipes — driving ${DOC}'s and ${CAPDOC}'s recipes as printed"
@@ -698,6 +977,9 @@ case_every_marker_in_the_capacity_chapter_is_driven
 case_the_drive_holds_no_copy_of_the_capacity_recipes
 case_the_envelope_line_checker_accepts_the_chapters_own_example
 case_the_envelope_line_checker_refuses_an_incomplete_line
+# Needs nothing but the preamble and a shell, so it sits above every world this
+# drive builds: the property it asserts is what makes those worlds cleanable.
+case_a_killed_drive_still_runs_its_cleanups
 # Needs the compose Postgres, which every case below here needs too. It sits
 # above the scratch-database block deliberately: this one reads the cluster, it
 # creates nothing, and a failure here is about the recipe rather than about
@@ -718,6 +1000,19 @@ case_the_census_recipes_are_legal_and_attribute_in_one_read
 SCRATCH_DB="test_djb_rbk_$(db_path_hash "$ROOT" 12)"
 db_valid_name "$SCRATCH_DB" || cannot_look "the derived scratch database name is not a name: ${SCRATCH_DB}"
 
+# BEFORE the database exists, deliberately: this reads settings, not rows, and
+# asking now means the exit cleanup knows where this run's work lands even if
+# every line below it fails. See `runbook_receiver.py::_world` for why the two
+# values are asked for rather than derived in this file.
+WORLDFILE="${WORK}/world.env"
+if (cd "$ROOT" && DATABASE_NAME="$SCRATCH_DB" uv run python "$HARNESS" world) >"$WORLDFILE" 2>"${WORK}/world.log"; then
+    # shellcheck disable=SC1090
+    . "$WORLDFILE"
+fi
+[ -n "$DRIVE_QUEUE" ] ||
+    cannot_look "the harness would not say which Temporal task queue this run's work lands on — see ${WORK}/world.log. Without it this drive cannot clean up after itself, and running it anyway is how a thousand executions accumulated."
+
+echo "   queue:    ${DRIVE_QUEUE} (this drive terminates what it starts on it)"
 echo "   database: ${SCRATCH_DB} (created here, dropped at exit)"
 db_create "$SCRATCH_DB" >"${WORK}/db.log" 2>&1 ||
     cannot_look "could not create ${SCRATCH_DB} — is the compose stack up? (scripts/setup.sh) — see ${WORK}/db.log"
@@ -755,6 +1050,8 @@ case_the_v2_recipe_as_printed_bounces_the_message
 case_the_legacy_recipe_lands_an_engagement
 case_the_legacy_recipe_as_printed_bounces_the_message
 case_the_vendor_signed_recipes_bind_their_symbols
+# LAST, and it has to be: it asserts against everything the cases above started.
+case_the_drive_terminates_the_runs_it_started
 
 echo
 echo "== ${PASSED} passed, ${FAILED} failed"

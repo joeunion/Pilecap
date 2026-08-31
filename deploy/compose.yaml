@@ -483,27 +483,27 @@ services:
       - clickstack_data:/data/db
 
   # --- The product ------------------------------------------------------------
-  # Both built from the repository's own Dockerfile, whose two targets exist
-  # for exactly this: one tree, one lock file, two commands.
+  # Both PULLED, never built here. THIS FILE HAS NO `build:` AND THAT IS THE
+  # POINT (ADR deploy-4): the image for a tree is built ONCE, in CI, multi-arch,
+  # pushed under the tree tag, and every environment runs those same bytes.
+  # A `build:` stanza here is what made a deploy build its own arm64 image on
+  # the box — a third build of "the same" tree, on the slowest and least
+  # debuggable machine in the system, with nothing anywhere able to say whether
+  # it matched the amd64 image CI had proved.
   #
   # `entrypoint:` and `command:` are BOTH set, and that is not redundancy —
   # Compose clears the image's CMD when `entrypoint` is overridden, so the
   # command the Dockerfile declares has to be restated here or the container
   # starts with nothing to run. The values are the Dockerfile's, verbatim.
   web:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-      target: web
-    # WHAT COMPOSE TAGS WHAT IT BUILT. Without this, a `build:` service is
-    # tagged `<project>-web:latest` — which made this file's own "EVERY IMAGE IS
-    # PINNED TO AN EXACT TAG, `latest` nowhere" paragraph false about the only
-    # two images the repository actually builds. The tag is the
-    # TREE hash, from `deploy/provision.sh image-tag`: it says which tree the
-    # image came from, which `latest` cannot, and two commits with identical
-    # content name the same image. Required, never defaulted — a floating
-    # default is the thing being removed.
-    image: djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; re-export it when you rebuild}
+    # THE ONE COMPOSED NAME, and `deploy/provision.sh image-ref web` composes the
+    # identical string — CI pushes it and `release.sh` resolves it, so the four
+    # sites cannot drift. `latest` nowhere: the tag is the TREE hash, which says
+    # which tree the image came from and is the same tag in every environment,
+    # because promotion is a re-pin and never a re-tag. BOTH halves required,
+    # never defaulted — a floating default is the thing being removed, and a
+    # guessed registry pulls somebody else's image and succeeds.
+    image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
     restart: unless-stopped
     entrypoint: ["/deploy/entrypoint.sh"]
     command: ["uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
@@ -565,11 +565,8 @@ services:
       start_period: 30s
 
   worker:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-      target: worker
-    image: djb-worker:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; re-export it when you rebuild}
+    # Pulled, never built — `web`'s paragraph above, same reason.
+    image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-worker:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
     restart: unless-stopped
     entrypoint: ["/deploy/entrypoint.sh"]
     command: ["python", "-m", "apps.workflows.worker"]
@@ -613,15 +610,16 @@ services:
   # STRUCTURAL: callers no longer carry the flag, because the service declares
   # no dependency to skip.
   #
-  # NO `build:`. It runs the image `web` builds, by tag, so a one-off can never
-  # be a DIFFERENT tree from the deployment it is operating on.
+  # NO `build:` — and nothing in this file has one any more (ADR deploy-4). It
+  # runs the same image reference `web` does, so a one-off can never be a
+  # DIFFERENT tree from the deployment it is operating on.
   #
   # THE `command` IS A REFUSAL, not a placeholder. `compose run <service> <cmd>`
   # always overrides it, so the only way this command executes is somebody
   # `up`ping a service that is a door rather than an organ — and then it says so
   # and exits instead of sitting in a restart loop.
   oneoff:
-    image: djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; re-export it when you rebuild}
+    image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
     restart: "no"
     entrypoint: ["/deploy/entrypoint.sh"]
     command: ["python", "-c", "raise SystemExit('oneoff is a compose-run door, not a service')"]

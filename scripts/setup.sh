@@ -1,4 +1,36 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # Fresh clone to running, idempotently. Safe to run again at any time, and safe
 # to run from a second worktree while the first one's stack is up: compose.yaml
 # pins the project name, so every checkout of this repository sees the same
@@ -315,15 +347,26 @@ db_create
 # already wrote the derived name unconditionally — which is the reconciliation
 # the build contract promises, and also, for a checkout that pinned a name on
 # purpose, the same silent clobber as above (a value a human put there,
-# replaced without being asked). The marker `# pinned` on the DATABASE_NAME
-# line is the one-grep escape: a checkout that carries it keeps its name and
-# is told that it did.
+# replaced without being asked). A `# pinned` comment line directly ABOVE the
+# DATABASE_NAME line is the escape: a checkout that carries it keeps its name
+# and is told that it did. Its own line, never appended to the value — an
+# inline comment is read INTO the name by django-environ and by
+# `docker --env-file` (scripts/db.sh, "THE MARKER'S GRAMMAR").
 #
 # The disagreement itself is NOT silenced by the marker — `db.sh` still prints
 # its notice on every source, because a pinned checkout still has two
 # databases and that fact does not stop being true because somebody meant it.
 # The marker governs what this script WRITES, not what any script SAYS.
-if grep -qE '^DATABASE_NAME=.*#[[:space:]]*pinned' .env; then
+#
+# THE MARKER IS `db_pin_marked`'S, NOT A GREP OF OUR OWN. This block used to
+# carry its own copy of the marker regex, and `rung_start.sh` carried a third.
+# When the marker's grammar changed — it now lives on its OWN comment line
+# above a bare value, because an inline one is read INTO the name by
+# django-environ and by docker --env-file (scripts/db.sh, "THE MARKER'S
+# GRAMMAR") — three copies meant three chances to leave one behind, and a
+# reader left behind here is `setup.sh` silently clobbering a name a human
+# pinned. `db.sh` is already sourced above; the marker has one definition.
+if db_pin_marked; then
     env_pin="$(grep -E '^DATABASE_NAME=' .env | tail -1)"
     echo "DATABASE_NAME left alone — .env carries the \`# pinned\` marker"
     echo "  .env:       ${env_pin}"

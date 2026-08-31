@@ -1,4 +1,36 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # The drive for the gate's `db-pin` leg — `db_pin_leg` in `scripts/db.sh`, the
 # refusal that stands between a stale `.env` pin and a checkout quietly running
 # two databases.
@@ -240,23 +272,205 @@ case_a_pinned_line_passes_silently() {
     # The marker is the checkout saying it meant this name. A pin is legal
     # (db.sh rule 1); what the marker buys is silence, so the leg can never
     # become noise a deliberate checkout learns to skip.
+    #
+    # THE MARKER IS ON ITS OWN LINE, ABOVE A BARE VALUE. This case used to
+    # write `DATABASE_NAME=djb_main  # pinned` and is re-pointed: that inline
+    # form is now refused, because django-environ and docker --env-file read
+    # the comment INTO the name (db.sh, "THE MARKER'S GRAMMAR").
     fresh_checkout
-    write_env "DATABASE_NAME=djb_main  # pinned" "DEBUG=1"
+    write_env "# pinned" "DATABASE_NAME=djb_main" "DEBUG=1"
     run_leg_in "$REPO" "a pinned line"
     exits 0
     silent
 }
 
-case_the_marker_must_be_on_the_database_name_line() {
-    # `# pinned` somewhere else in the file is not this line's marker. Without
-    # this case the marker grep could lose its anchor and silence every
-    # checkout whose .env happens to carry the word.
+case_the_marker_carries_a_reason_and_still_passes() {
+    # The own-line form's one gain worth having: the marker can say WHY, and
+    # the reason is on the same line as the word. A grammar that refused this
+    # would push the reason somewhere no reader of the pin would find it.
+    fresh_checkout
+    write_env "# pinned — the owner's live development database" \
+        "DATABASE_NAME=djb_main" "DEBUG=1"
+    run_leg_in "$REPO" "a marker carrying its reason"
+    exits 0
+    silent
+}
+
+case_the_marker_must_be_directly_above_the_database_name_line() {
+    # `# pinned` somewhere else in the file is not this line's marker. The old
+    # grammar anchored on "the DATABASE_NAME line"; the new one anchors on
+    # ADJACENCY, and it has to be as strict, or a file that merely CONTAINS the
+    # word silences the leg for every checkout that copied that .env.
     fresh_checkout
     write_env "# pinned — a comment about something else entirely" \
-        "DATABASE_NAME=djb_main" "REDIS_URL=redis://localhost"
-    run_leg_in "$REPO" "the marker on another line"
+        "REDIS_URL=redis://localhost" "DATABASE_NAME=djb_main"
+    run_leg_in "$REPO" "a marker two lines up"
     exits 1
     says "$DERIVED"
+
+    # And the marker belongs to the line the pin is READ from — the last one,
+    # matching django-environ's last-wins reading. A marker over an earlier,
+    # overridden DATABASE_NAME line silences nothing.
+    fresh_checkout
+    write_env "# pinned" "DATABASE_NAME=${DERIVED}" "DATABASE_NAME=djb_stale_second"
+    run_leg_in "$REPO" "a marker over the overridden first line"
+    exits 1
+    says "djb_stale_second"
+}
+
+case_the_inline_form_is_refused() {
+    # THE RUNG'S SEAM, IN THE REFUSING DIRECTION. The form this file itself
+    # prescribed until now is a corruption, and the leg has to say so rather
+    # than quietly keep passing it.
+    fresh_checkout
+    write_env "DATABASE_NAME=djb_main  # pinned" "DEBUG=1"
+    run_leg_in "$REPO" "the old inline marker form"
+    exits 1
+    says "INLINE COMMENT"
+    # The two-line rewrite, printed — a refusal a reader can act on without
+    # going and reading db.sh's header.
+    says "# pinned"
+    says "DATABASE_NAME=djb_main"
+    # ...and printed CLEAN: the suggested line must not carry the whitespace
+    # that separated the value from the comment it just removed.
+    if grep -qE '^ *DATABASE_NAME=djb_main +$' "$OUT"; then
+        bad "the suggested rewrite has trailing whitespace — it hands the reader a second corrupt line"
+    else
+        ok "the suggested rewrite is trimmed"
+    fi
+}
+
+case_an_inline_comment_that_agrees_is_still_refused() {
+    # THE FALSE GREEN THIS RUNG CLOSES, and the strongest case here. Before
+    # this change `db_env_file_pin` cut the comment off before comparing, so a
+    # line whose value MATCHED the derivation passed the leg in silence — while
+    # a bare `manage.py`, reading through django-environ, opened a database
+    # called `<derivation>  # pinned`. Agreement was the disguise, not the
+    # safety.
+    fresh_checkout
+    write_env "DATABASE_NAME=${DERIVED}  # pinned"
+    run_leg_in "$REPO" "an inline comment on a value that agrees"
+    exits 1
+    says "INLINE COMMENT"
+    says_not "agree"
+}
+
+case_any_inline_comment_is_refused_not_only_the_marker() {
+    # The corruption is the `#`, not the word after it. A line commented for
+    # any reason at all resolves to a name with the comment inside it.
+    fresh_checkout
+    write_env "DATABASE_NAME=djb_main # temporary, see the runbook"
+    run_leg_in "$REPO" "an inline comment that is not the marker"
+    exits 1
+    says "INLINE COMMENT"
+}
+
+read_env_three_ways() {
+    # Prints one line per reader that could be posed: "<reader> [<value>]".
+    # A reader that is not available prints "<reader> SKIP <reason>" — declared,
+    # never silently dropped, so a green run can be told from a vacuous one.
+    local envfile="$1" py
+    printf 'shell [%s]\n' \
+        "$(
+            set -a
+            # shellcheck disable=SC1090
+            . "$envfile"
+            set +a
+            printf '%s' "${DATABASE_NAME:-}"
+        )"
+    py="${ROOT}/.venv/bin/python"
+    if [ -x "$py" ] && "$py" -c 'import environ' >/dev/null 2>&1; then
+        printf 'environ [%s]\n' "$("$py" -c '
+import os, sys, environ
+os.environ.pop("DATABASE_NAME", None)
+environ.Env.read_env(sys.argv[1], overwrite=True)
+sys.stdout.write(os.environ.get("DATABASE_NAME", "<unset>"))
+' "$envfile")"
+    else
+        printf 'environ SKIP no .venv python with django-environ in this tree\n'
+    fi
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 &&
+        docker run --rm --env-file "$envfile" alpine:3 true >/dev/null 2>&1; then
+        printf 'docker [%s]\n' \
+            "$(docker run --rm --env-file "$envfile" alpine:3 printenv DATABASE_NAME 2>/dev/null || true)"
+    else
+        printf 'docker SKIP no usable docker (or alpine:3 unavailable) on this machine\n'
+    fi
+}
+
+case_the_new_form_reads_identically_for_every_reader() {
+    # THE RUNG'S SEAM, IN THE PASSING DIRECTION, and the only case here that
+    # asks the actual readers rather than db.sh's model of them. `.env` is read
+    # three ways in this repository — a shell `. .env`, django-environ (every
+    # bare `manage.py`), and `docker --env-file` (compose) — and the marker's
+    # whole job is to mean the same thing to all of them.
+    CURRENT="the three readers, new form"
+    N=$((N + 1))
+    OUT="${WORK}/out${N}.log"
+    local envfile want line reader value seen
+    envfile="${WORK}/three-readers-new.env"
+    want="djb_three_readers"
+    printf '# pinned\nDATABASE_NAME=%s\n' "$want" >"$envfile"
+    read_env_three_ways "$envfile" >"$OUT" 2>&1
+    seen=0
+    while IFS= read -r line; do
+        reader="${line%% *}"
+        value="${line#* }"
+        case "$value" in
+        SKIP*)
+            ok "${reader} — ${value} (declared)"
+            continue
+            ;;
+        esac
+        seen=$((seen + 1))
+        if [ "$value" = "[${want}]" ]; then
+            ok "${reader} reads ${value} — the clean value"
+        else
+            bad "${reader} reads ${value} and must read [${want}] — the own-line marker is not neutral to this reader"
+        fi
+    done <"$OUT"
+    if [ "$seen" -lt 2 ]; then
+        bad "only ${seen} reader could be posed — this case proves agreement and cannot do it with one"
+    else
+        ok "${seen} readers posed (a one-reader run would be vacuous and is refused)"
+    fi
+}
+
+case_the_old_form_still_splits_the_readers() {
+    # THE DISEASE, KEPT ON THE RECORD. The inline form is refused by the leg;
+    # this is WHY, measured rather than asserted from memory. If this case ever
+    # goes green-by-agreement it is not a failure of the fix — it means a
+    # reader changed its mind about trailing comments, and the refusal's
+    # reasoning needs re-reading before anybody relaxes it.
+    CURRENT="the three readers, old inline form"
+    N=$((N + 1))
+    OUT="${WORK}/out${N}.log"
+    local envfile want line reader value clean dirty
+    envfile="${WORK}/three-readers-old.env"
+    want="djb_three_readers"
+    printf 'DATABASE_NAME=%s  # pinned\n' "$want" >"$envfile"
+    read_env_three_ways "$envfile" >"$OUT" 2>&1
+    clean=0
+    dirty=0
+    while IFS= read -r line; do
+        reader="${line%% *}"
+        value="${line#* }"
+        case "$value" in
+        SKIP*) continue ;;
+        esac
+        if [ "$value" = "[${want}]" ]; then
+            clean=$((clean + 1))
+            echo "           | ${reader} strips the comment: ${value}"
+        else
+            dirty=$((dirty + 1))
+            echo "           | ${reader} keeps the comment IN THE NAME: ${value}"
+        fi
+    done <"$OUT"
+    if [ "$dirty" -gt 0 ]; then
+        ok "the inline form splits the readers (${clean} strip, ${dirty} keep the comment in the name) — which is what db_pin_leg refuses"
+    else
+        bad "every reader posed stripped the comment — the premise of the inline-form refusal has moved and db.sh's reasoning needs re-reading before it is relaxed"
+    fi
 }
 
 case_no_env_file_at_all_passes() {
@@ -291,7 +505,7 @@ case_a_pin_that_agrees_and_is_marked_passes() {
     # agreement is checked before the marker, so this passes on the agreement
     # and the marker changes nothing.
     fresh_checkout
-    write_env "DATABASE_NAME=${DERIVED}  # pinned"
+    write_env "# pinned" "DATABASE_NAME=${DERIVED}"
     run_leg_in "$REPO" "a marked pin that also agrees"
     exits 0
 }
@@ -438,7 +652,13 @@ case_the_leg_is_wired_into_the_fast_tier() {
 case_a_stale_pin_is_refused
 case_the_refusal_says_what_the_disagreement_costs
 case_a_pinned_line_passes_silently
-case_the_marker_must_be_on_the_database_name_line
+case_the_marker_carries_a_reason_and_still_passes
+case_the_marker_must_be_directly_above_the_database_name_line
+case_the_inline_form_is_refused
+case_an_inline_comment_that_agrees_is_still_refused
+case_any_inline_comment_is_refused_not_only_the_marker
+case_the_new_form_reads_identically_for_every_reader
+case_the_old_form_still_splits_the_readers
 case_no_env_file_at_all_passes
 case_an_env_with_no_database_name_line_passes
 case_a_pin_that_agrees_passes

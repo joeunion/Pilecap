@@ -146,7 +146,7 @@ def test_workflow_context_answers_with_three_things(tenant: Any) -> None:
     needed no database. The registered accessor now *refuses* a run that stamped
     no tenant rather than answering `None` — a missing tenant that travelled one
     hop further became `for_tenant(None)`, which is empty rather than refused
-    (P1-R0's F5) — so calling it unbound no longer measures arity, it measures
+    (an earlier finding) — so calling it unbound no longer measures arity, it measures
     the guard. Binding one real principal restores the measurement and pins one
     thing more than before: the first element is the tenant row itself.
     """

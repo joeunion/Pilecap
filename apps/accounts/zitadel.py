@@ -2,8 +2,9 @@
 
 Two surfaces, one door. Org-scoped administration is Zitadel's v1 management
 API (`MANAGEMENT`); creating a person with no credentials and minting them an
-invite code exist only on its v2 user API (`USER`); one instance-wide read
-(`ADMIN`) tells the invitation email how long its link stands. All three are
+invite code exist only on its v2 user API (`USER`); two instance-wide reads
+(`ADMIN`) tell the invitation email how long its link stands and `zitadel_audit`
+who this instance's mail comes from. All three are
 dialled through the same `_client()` with the same machine PAT, and rule 27
 fences the module rather than any one prefix — which is what keeps "one door"
 true while Zitadel is mid-migration between its own versions.
@@ -83,9 +84,10 @@ MANAGEMENT = "/management/v1"
 # here, and this constant is the one that is.
 USER = "/v2"
 
-# The instance-wide administration prefix. One read only (`invite_code_lifetime`
-# below), because the number in the invitation email has to be Zitadel's number
-# rather than ours.
+# The instance-wide administration prefix. Two reads, both of them reads:
+# `invite_code_lifetime`, because the number in the invitation email has to be
+# Zitadel's number rather than ours, and `smtp_configuration`, because who this
+# instance's mail comes from is instance-wide and no row of ours claims it.
 ADMIN = "/admin/v1"
 
 # Zitadel's id for "this person has already set credentials, so there is nothing
@@ -346,6 +348,62 @@ def google_client_id_of(provider: Mapping[str, Any]) -> str:
     config = provider.get("config") or {}
     google = config.get("google") or {} if isinstance(config, Mapping) else {}
     return str(google.get("clientId", "") if isinstance(google, Mapping) else "").strip()
+
+
+# --- the console's own surfaces: observed, never judged ----------------------
+#
+# Everything above this line has a row behind it: a `SsoConnection` names an IdP,
+# the environment names the workforce door. These two have neither. They are
+# configuration **no product on this instance manages through services** — which
+# is precisely why rule 27's declared blind spot covered them completely, and why
+# `zitadel_audit` reads them and prints them rather than comparing them.
+#
+# There is no intent to compare against, so there is no verdict to reach: a
+# drift verdict here would need an intent row, and inventing one is rule 27's
+# full materialisation machinery for a surface nothing writes (ADR ident-2's
+# amendment names the trigger that would change that). Both are GETs, so the
+# change-nothing property the audit already holds extends to them unchanged.
+
+
+def login_policy() -> dict[str, Any]:
+    """The login policy in force for the credential's **org**, or `{}`.
+
+    MEASURED against the pinned build, not read off a doc page:
+    `GET /management/v1/policies/login` answers `200` with the policy under a
+    `policy` key, and the interesting field is one Zitadel only *sometimes*
+    sends. When the org has no policy of its own the body carries
+    `isDefault: true` and a `details.resourceOwner` that is the **instance**;
+    when somebody has set an org policy the flag is **absent** and the
+    `resourceOwner` is the org. So "did anybody change this org's login policy"
+    is answerable from this one read, and `zitadel_audit` says which of the two
+    it is rather than dumping the object.
+
+    Not `None` on failure like `get_identity_provider`: this read has no row
+    behind it, so there is no line the audit would otherwise print. The caller
+    catches `ZitadelError` and says it could not look — which is a different
+    sentence from "the policy is empty", and the difference matters to whoever
+    reads a clean report.
+    """
+    return dict(_call("GET", "/policies/login").get("policy") or {})
+
+
+def smtp_configuration() -> dict[str, Any]:
+    """The **instance's** active SMTP sender, or `{}`.
+
+    Instance-wide (`ADMIN`), not org-scoped: on a shared development instance
+    the sender belongs to whoever configured it last, which is exactly the fact
+    worth printing.
+
+    MEASURED against the pinned build: `GET /admin/v1/smtp` answers `200` with
+    the config under `smtpConfig`, carrying `senderAddress`, `senderName`,
+    `host`, `state`, `description` and `id`. **It does not return the SMTP
+    password**, which is what makes this safe to print at all — the report says
+    who the mail comes from, never the credential it is sent with. There is a
+    `POST /admin/v1/smtp/_search` that answers with the same rows in a list; the
+    GET is used because one active configuration is what a reader needs and a
+    `_search` would invite a report that ranks them.
+    """
+    return dict(_call("GET", "/smtp", prefix=ADMIN).get("smtpConfig") or {})
 
 
 def find_user(*, username: str) -> dict[str, Any] | None:

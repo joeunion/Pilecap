@@ -14,192 +14,75 @@
 # a ceiling above reality would be headroom nobody granted.
 
 service_function_length:
-  # Longest top-level function in each services.py, in lines. A service
-  # crossing its ceiling is a service growing a second job.
-  apps/accounts/services.py: 94 # revoke_token (P11, AUDIT-2) — was 89 (provision_sso_identity,
-  # A9), itself 76 (erase_user). The longest function changed hands, and **every one of the five
-  # lines is prose or a declared valve, not code**: `actor: Actor` on the signature (ADR core-22
-  # — the row records who ended a credential), the paragraph saying why it is required and
-  # never defaulted, and the `# authz: <reason>` comment rule 13 obliges the moment a service
-  # takes an actor. The body gained one parameter name and nothing else — no branch, no second
-  # job, which is the growth this ceiling exists to make visible. Recorded at the measured number
-  # rather than trimmed to look tidy, per this file's header; `provision_sso_identity` and
-  # `erase_user` are unchanged at 89 behind it.
-  apps/comms/services.py: 152 # send (P9, COM-1) — still the longest, 145 -> 152 for its
-  # column. **All seven lines are one keyword and its argument**: `send_at=` on the `_message_row`
-  # call, plus the six-line comment saying why a deferral gets the column too — "why is this still
-  # queued" is asked about a deferred message far more often than about a scheduled one, and a
-  # column that spoke only for `send_at=` callers would be a support answer with a footnote.
-  # No new branch and no new work: `_wait_for` (T4) already decided the duration, and this
-  # change only writes down what it decided. `send_step` came second at 127 (a defer fork) and
-  # `record_delivery_status` third at 126, both below this ceiling.
-  # The T4 note this replaces follows.
-  # send (T4) — the longest function in this module changed
-  # hands again, from `record_delivery_status` (126, unchanged, its note below) to `send`, which
-  # went 116 -> 145 for two features. **Nineteen of the twenty-nine lines are argument, not code.**
-  # The code is: one parameter (`send_at`), one call to `_wait_for` replacing the bare `_refusal`
-  # result, the nonce mint, and the two fields it puts on the workflow payload. Everything else is
-  # the reasoning a reader needs at the exact line it applies to — why a nonce rides in the run id
-  # rather than beside it, and why a temporal refusal now returns no refusal at all.
-  # **The work itself went to siblings rather than inside**, which is the trade this ceiling exists
-  # to make visible: `_wait_for` (48 lines, and it holds the whole argument) and
-  # `_delay_seconds` (18) were extracted out, so `send` still does one
-  # job — decide whether this message may go out, write it down, and hand the waiting to a run.
-  # Recorded at the measured number rather than trimmed to look tidy, per this file's own header.
-  # `record_delivery_status` is unchanged at 126 and the note it carried follows.
-  # record_delivery_status (P4 F1-comms, ADR comms-9 as amended) —
-  # the longest function in this module changed hands again, and by eleven lines: `record_delivery_status`
-  # was 115 and is now 126. **Three of those lines are code** — the `is_complaint` keyword, and the
-  # two-line fork that hands a spam complaint to `_record_complaint` before the `OPEN_TO_STATUS` gate
-  # is consulted at all. The other eight are the ordered contract this docstring IS: decision `2a`,
-  # which says a complaint leaves here and why none of the guards below it are about it, and the
-  # paragraph saying `is_complaint` is the adapter's judgement and never this function's. That trade
-  # is the one this ceiling exists to make visible: a reviewer sees eight lines bought, and what they
-  # bought is the reason a delivered message no longer gets logged as bounced. The work itself went to
-  # a sibling rather than inside — `_record_complaint` is 75 lines and holds the whole argument for
-  # the split — so this function still does one job: read what the transport said, once.
-  # `mark_message_sending` is unchanged at 117 and the note it carried follows.
-  # mark_message_sending (C2, ADR comms-10) — the longest function
-  # in this module changed hands: `send` held the ceiling at 116 and the edge wall has now
-  # passed it by one. What bought the line is the temporal fork — five lines of code that write
-  # a refused-for-quiet-hours row back to `queued` instead of killing it, and the paragraph
-  # saying why no event is emitted for a message that is about to be delivered. Recorded at the
-  # measured number rather than trimmed to look tidy: one line, for the branch that turns
-  # its kill switch into a delay. `send` is unchanged at 116 and the note it carried follows.
-  # send (P2-R3) — + the house-rule-26 reachability check and the
-  # four lines that say why the row `recipient=` names had to be asked about at all; was 110
-  # (C2-comms-b). The code is two lines and the rest is the argument, which is the trade this
-  # ceiling exists to make visible: a reviewer sees six lines bought, and what they bought.
-  # C2-comms-b's note, still true, on how it got to 110:
-  # send (C2-comms-b) — + policy provenance on the row and the
-  # "is there a run at all" decision; was 98 (C2-comms-a). Two extractions went the other
-  # way in the same change and are why it is 111 and not 126: `_plan` now owns every
-  # what-is-being-sent refusal, and `_message_row` is the one definition of the row both
-  # `send` and `send_step` write.
-  apps/connections/services.py: 83 # record_inbound_webhook (P1 W6) — was 48 (_hand_off).
-  # The BODY grew by ten lines: the delivery-id lookup that answers a redelivery with the row
-  # it already stored, and the log line that says so. The rest is the docstring paragraph
-  # explaining WHY the identity is the provider's id and never a hash of the body — two
-  # identical `payment.retried` bodies are two things that happened, and a reader without
-  # that sentence will "improve" the dedup into overruling senders about their own events.
-  # Recorded at the measured number rather than trimmed to look better: this ceiling catches a
-  # service growing a SECOND job, and this one still does one — store this delivery, once.
-  apps/core/services.py: 95 # invite_member (P11, AUDIT-2c) — was 90 (P5 B-CORE), itself 83.
-  # **All five lines are argument and a re-keyed guard call**, not code: `actor` becomes required
-  # and never defaulted (ADR core-22, L1), the `if actor is not None` authorization gate becomes
-  # `if actor.kind != "system"` — an exemption replaced by a NAMED audited altitude — and the
-  # comment saying why the wall now measures the ACTOR rather than `invited_by`, which both doors
-  # were already passing as the same person. No new branch and no second job. `redact_invitations`
-  # and `accept_invitation` came joint second at 88, both below this ceiling.
-  # The B-CORE note this replaces follows.
-  # invite_member (P5 B-CORE) — was 83. Five lines bought,
-  # and what they bought is the second of two questions. The escalation wall this function
-  # already ran is a CEILING ("may you grant this role") and it lets a member invite a
-  # member; nothing asked whether the caller may invite anybody at all, because until now
-  # nothing outside the tree could reach this service. Two of the five are the `require`
-  # call and its guard; three are the comment saying which question is which, so the next
-  # reader does not delete one of them believing it duplicates the other.
-  apps/events/services.py: 54 # enqueue_dispatch (P1 W5) — was 42 (record_event). The BODY
-  # grew by two lines: `if not resume:` around the attempt counter. Everything else is the
-  # docstring paragraph that says why a resume keeps the id a replay deliberately changes —
-  # the heal/no-op/Conflict trichotomy is the whole of ADR events-3's no-double-delivery
-  # argument, and a reader who does not have it will "simplify" the flag back out. Recorded
-  # at the measured number rather than trimmed to look better: this ceiling catches a service
-  # growing a SECOND JOB, and enqueue_dispatch still does one — put this event in the queue.
-  apps/example/services.py: 66 # create_widget (P0 W1-R3) — was 48 (A10). The BODY grew by
-  # three lines: the `policy=policy` field, and the two-line audited `may_be_named` fence.
-  # Everything else is signature and prose — the parameter list went multi-line (+7) and the
-  # docstring gained the paragraph explaining why `policy` is a row and not an id (+8). It is
-  # recorded at the measured number rather than trimmed to look better: this ceiling exists to
-  # catch a service growing a SECOND JOB, and create_widget still does one thing.
-  apps/usage/services.py: 108 # record_usage (U1) — a NEW subject, measured on the tree
-  # that introduced it. The BODY is short and does one thing: check the meter against the
-  # declared vocabulary, refuse a missing key and a missing hat, read the tenant's root once,
-  # return the first row if this key already wrote one, build the entry, validate, save, and
-  # look for a threshold it just crossed. The length is the SIGNATURE and the PROSE. The
-  # signature is seven keyword-only parameters and it is FIXED by ADR usage-1 — two other
-  # ingredient apps are writing their calls against it in the same cycle, which is the whole
-  # reason this app lands first — so it is multi-line by construction. The docstring carries
-  # what a caller of a BILLING seam genuinely needs and cannot get anywhere else: that the
-  # quantity may be negative (a purge answers a storage meter with one), that `occurred_at` is
-  # when it HAPPENED and not when it was written, what the idempotency key buys (which here is
-  # the difference between one charge and two), where the row lands and why an unresolved hat
-  # is refused rather than defaulted to the root, and the declared blind spot on `ref`. Seven of
-  # the 108 are rule 13's `# authz:` valve, which has to be a comment IN the body to be counted
-  # — this service is the ratified case of a write that carries an actor for the audit row and
-  # never asks it for permission, and the reason is the thing a reviewer is meant to disagree
-  # with, so it is a paragraph rather than a clause.
-  # Recorded at the measured number rather than trimmed to look tidy: this ceiling catches a
-  # service growing a SECOND JOB, and this one still does one — witness a consumption.
-  apps/exports/services.py: 102 # create_export (XP-1) — a NEW subject, measured on
-  # the tree that introduced it. The BODY is short: two refusals (no acting hat, an unknown
-  # scope), the idempotency read, the row, the authorization, the validate-and-save pair, the
-  # event, and the workflow start. The length is the SIGNATURE and the PROSE — the parameter
-  # list is multi-line, and the docstring carries three things a reader of this one function
-  # genuinely needs: why the verb is `create_` and not `request_` (the lexicon, not a
-  # preference), that ONE action key carries two bars and which predicate decides between them,
-  # and what `idempotency_key` buys — which here is not politeness but the difference between
-  # one copy of a customer's database in a bucket and two. Recorded at the measured number
-  # rather than trimmed to look tidy: this ceiling catches a service growing a SECOND JOB, and
-  # this one still does one — take the request, and start the run that answers it.
-  apps/files/services.py: 123 # record_stored (F2, ADR files-2) — a NEW subject, measured
-  # on the tree that introduced it. The BODY is 40 lines and it is one atom: lock the document
-  # and the version, note whether this is the first time, write the digest and the size the
-  # store handed back, promote, meter, announce. Everything else is the SIGNATURE and the
-  # PROSE, and both are load-bearing here in a way a reviewer should check rather than take
-  # on trust. The signature carries rule 26's `# reach:` valve — eight lines saying why the
-  # platform's own workflow does not ask `may_be_named` about a row it resolved from the id it
-  # was started with, and what asking would cost (an object in a bucket that no row admits to
-  # holding). Six more are rule 13's `# authz:` valve, which has to be a comment IN the body to
-  # be counted. The rest of the docstring is THE MONEY ARGUMENT: this is `apps/usage`'s first
-  # real customer, the retry is Temporal's guarantee rather than a hypothetical, and the reason
-  # one entry comes out of two runs is one expression — a key derived from the version's pk and
-  # the meter name — which is invisible in a diff and catastrophic to get wrong. Also recorded
-  # there: why there is deliberately NO second opinion in this function about a measurement
-  # that disagrees with one already recorded (the ledger refuses, and two predicates would be a
-  # place to disagree), and why the event fires once while the write is idempotent.
-  # ONE extraction went the other way in the same change rather than being argued for in
-  # prose: `_promote_if_higher` owns E8's upward-only rule, its argument and its write — 19
-  # lines this ceiling is not paying for, and a decision that is genuinely about what a READER
-  # is shown rather than about what was measured. Recorded at the measured number rather than
-  # trimmed to look tidy: this ceiling catches a service growing a SECOND JOB, and this one
-  # still does one — write down what the store holds.
-  apps/search/services.py: 29 # announce_degraded (P11, AUDIT-2c) — was 25 (delete_tenant_documents,
-  # P7 R-c). The longest function changed hands for four lines, and all four are the L8 check's
-  # answer written down: the emit call gains `actor=system_actor(tenant=tenant)` (the circuit
-  # breaker fired; nobody asked) and the function now RETURNS the `Event` it wrote, so its audit
-  # row names `events.Event` and its id instead of naming nothing. The ruling asked whether each
-  # self-report writes a row of ours; this module's own docstring already said it does.
-  # The R-c note this replaces follows.
-  # delete_tenant_documents (P7 R-c) — a NEW subject, measured on
-  # the tree that introduced it, and small on purpose. The BODY is six lines: build the engine,
-  # walk the declared kinds, empty each one, log, return the total. Everything that could have
-  # made it longer went to a private sibling instead — `_empty_one_kind` owns the round-trip
-  # loop, the tenant-wide filter and the argument for why that filter is legal — so the service
-  # itself still does one job: name the tenant whose documents leave. The rest of the count is
-  # the signature, rule 13's `# authz:` valve (which has to be a comment IN the body to be
-  # counted) and the paragraph saying the actor is carried for the audit row and never for a
-  # decision. The module docstring carries the long argument, where this ceiling does not
-  # charge for it.
-  apps/workflows/services.py: 94 # record_run (P5, ADR workflows-6) — the ceiling did NOT
-  # change hands: `record_run` was 83 and is now 94, and `start_replay`, the function
-  # added, is 91 and sits under it. **One of the eleven lines is a parameter** — `user`, the
-  # starter the two `start_*` already thread onto the workflow's headers and memo, threaded one
-  # place further so the ledger row can answer "whose run is this" at all. Four more are the
-  # `started_by=user` write and the note saying why the concrete user model and the base class
-  # disagree there. The remaining six are the paragraph that says `user` is never a door's
-  # parameter: a caller that could name a starter could hand itself somebody else's replay
-  # right, and a reader without that sentence will helpfully "expose" it on the schema. That is
-  # the trade this ceiling exists to make visible — a reviewer sees eleven lines bought, and
-  # what they bought is the predicate the whole replay door rests on. `record_run` still does
-  # one job: write the visibility row for a run that is about to start. P1 W1's note follows.
-  # record_run (P1 W1) — was 58 (start_workflow_on_commit).
-  # The 2x2 of ADR workflows-4 is a genuinely bigger job than the three-answer version it
-  # replaces, and the published contract has to say all four answers or the file everybody
-  # reads first is lying. Recorded at the measured number rather than trimmed to look
-  # better — and one extraction went the other way in the same change: `_reopen` owns the
-  # supersede quadrant, its reasoning and its eight-field write, which is 20 lines this
-  # ceiling is not paying for. BODY is 30 lines; the rest is signature and prose.
+  # Longest top-level function in each services.py, in lines, measured as the
+  # span from `def` to the last line MINUS whatever the docstring spends
+  # (quality/gate.py::_measure_budgets_detailed). A service crossing its ceiling
+  # is a service growing a second job.
+
+  # THE INSTRUMENT CHANGED HERE — 2026-08-29. Until that change the
+  # span included the docstring, so a function that shed ten lines of code while
+  # its author wrote ten lines explaining why measured flat: the ceiling could
+  # not see the only thing it exists to see. Every entry below was re-measured
+  # on this tree under the new measure and EVERY ONE FELL — the shrink-only
+  # ratchet holds, nothing was granted headroom, and no value here is above what
+  # was measured. What the re-measure also showed is why the change was worth
+  # making: in FIVE of the eleven modules the "longest function" changed hands
+  # (accounts revoke_token -> provision_sso_identity, events enqueue_dispatch ->
+  # record_event, search announce_degraded -> _empty_one_kind, usage
+  # record_usage -> record_correction, workflows record_run -> start_replay).
+  # In each of those five the module's most-argued function was outranking its
+  # longest one, which is the failure mode in miniature.
+  #
+  # The per-entry notes this block replaces are NOT carried forward, and their
+  # absence is deliberate rather than tidy: every one of them argued a number
+  # under an instrument that no longer exists — most of them in the words "the
+  # length is the SIGNATURE and the PROSE", which is precisely what this measure
+  # stopped charging for. An argument kept past the thing it was about is worse
+  # than no argument. They are in this file's git history, at 1bffb2a, whole.
+  #
+  # What the measure still charges for, deliberately: the signature, and the
+  # rule-mandated comment lines inside a body (rule 13's `# authz:`, rule 26's
+  # `# reach:` — both must be comments IN the body to be counted at all).
+  # Excluding "rule-mandated blocks" was rejected at the ruling: it is an open
+  # set, and an unfalsifiable population is the one thing an instrument here may
+  # not carry. So a service that buys length with a valve still pays for it, and
+  # that is the visible diff the ceiling is for.
+  apps/accounts/services.py: 63 # provision_sso_identity — the longest CODE in
+  # this module, and it took the ceiling from `revoke_token` the moment the docstring stopped
+  # counting: `revoke_token` was the module's most-argued function, not its longest one. 63 is
+  # the identity round-trip a reader would expect to be the biggest thing here.
+  apps/comms/services.py: 130 # send — was 152 under the old span; it keeps the
+  # ceiling under the new one, which is the module's own claim confirmed rather than a reprieve.
+  # `send_step` and `record_delivery_status` sit behind it as before.
+  apps/connections/services.py: 46 # record_inbound_webhook — was 83, and the
+  # 37-line gap IS the paragraph about why the identity is the provider's delivery id and never a
+  # hash of the body. The argument is still in the source; it no longer buys ceiling.
+  apps/core/services.py: 70 # invite_member — was 95. Still the module's longest
+  # code, and still two questions in one function (may you invite at all, may you grant this role).
+  apps/events/services.py: 35 # record_event — took the ceiling from
+  # `enqueue_dispatch`, whose 54 was largely the ADR events-3 resume argument. 35 lines of code
+  # writing an event and its outbox row is what this module's biggest job actually costs.
+  apps/example/services.py: 50 # create_widget — was 66. The worked example, and
+  # the one whose old note said outright that its growth was "signature and prose"; the new number
+  # is what that sentence was describing.
+  apps/exports/services.py: 73 # create_export — was 102. Keeps the ceiling: two
+  # refusals, the idempotency read, the row, the authorization, validate-and-save, the event and
+  # the workflow start, which is the list its old note gave.
+  apps/files/services.py: 84 # record_stored — was 123. Note that this one does
+  # NOT fall to the "BODY is 40 lines" its old note claimed: rule 26's `# reach:` valve (8 lines)
+  # and rule 13's `# authz:` valve (6) are comments inside the body and are still counted, by the
+  # ruling that refused to exclude rule-mandated blocks. Recorded at the measured number.
+  apps/search/services.py: 16 # _empty_one_kind — the ceiling changed hands to a
+  # PRIVATE helper, which is honest and worth not smoothing over: `announce_degraded` (29) was
+  # four lines of code and the rest an argument, and the biggest block of code in this module is
+  # the per-kind round-trip loop. The measure names what is there, not what is public.
+  apps/usage/services.py: 79 # record_correction — took the ceiling from
+  # `record_usage`, whose 108 was, by its own note, "the SIGNATURE and the PROSE" plus seven lines
+  # of rule 13 valve. A correction is genuinely the larger piece of code: it supersedes a row and
+  # has to say what it supersedes and why.
+  apps/workflows/services.py: 55 # start_replay — took the ceiling from
+  # `record_run` (94 recorded, 93 measured on this tree before the change — a stale ceiling this
+  # re-measure also closes). ADR workflows-6's 2x2 is an argument; the replay door is code.
 
 out_schema_fields:
   # Declared fields per published *Out schema. An Out crossing its ceiling is a

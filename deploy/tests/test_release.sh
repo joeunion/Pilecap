@@ -148,6 +148,15 @@ CASE_DIR=""
 DEPLOY=""
 DOCKER_LOG=""
 ALERTS_LOG=""
+PIN_LOG=""
+
+# THE REGISTRY'S DEFAULT ANSWERS, per case. Build-once/promote-by-digest makes
+# "the registry has the image this tree names" a precondition of every release
+# (ADR deploy-4), so an ordinary case needs a registry that says yes — and the
+# cases that drive the two refusals blank or contradict these.
+DRIVE_TAG="tree-stub00000000"
+DRIVE_DIGEST_WEB="sha256:1111111111111111111111111111111111111111111111111111111111111111"
+DRIVE_DIGEST_WORKER="sha256:2222222222222222222222222222222222222222222222222222222222222222"
 N=0
 fresh_deploy() {
     N=$((N + 1))
@@ -155,7 +164,20 @@ fresh_deploy() {
     DEPLOY="${CASE_DIR}/deploy"
     DOCKER_LOG="${CASE_DIR}/docker.log"
     ALERTS_LOG="${CASE_DIR}/alerts.log"
+    PIN_LOG="${CASE_DIR}/pin.log"
     mkdir -p "$DEPLOY/observability/alerts" "$CASE_DIR/bin"
+    # Same reason as the docker log: "nothing was pinned" must be an empty file
+    # rather than a missing one.
+    : >"${CASE_DIR}/pin.log"
+    # The box's TREE marker. `release.sh` pins into it only where one exists, so
+    # its presence here is what makes the pin reachable at all — and the file's
+    # FIRST LINE is the tag, per the grammar `deploy/provision.sh image_tag()`
+    # declares.
+    printf '%s\n' "$DRIVE_TAG" >"${CASE_DIR}/TREE"
+    # Reset the registry's answers, so a case that blanked one cannot leak into
+    # the next.
+    DRIVE_DIGEST_WEB="sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    DRIVE_DIGEST_WORKER="sha256:2222222222222222222222222222222222222222222222222222222222222222"
     # Created empty, so "docker was never invoked" is an empty file rather than a
     # missing one — an absent file and zero invocations read the same to `wc`,
     # and only one of them is the property being asserted.
@@ -203,12 +225,42 @@ PROBE_INSECURE='0'
 PROBE_CONNECT_TO=''
 ENV
 
-    # The stub provision.sh — only reached when the env file names no project.
-    {
-        echo '#!/usr/bin/env bash'
-        echo '[ "${1:-}" = "project-name" ] || { echo "stub provision: unexpected $*" >&2; exit 2; }'
-        echo 'echo "djb_deploy_derived"'
-    } >"$DEPLOY/provision.sh"
+    # THE STUB provision.sh. `project-name` is reached only when the env file
+    # names no project; the five image arms are reached on EVERY run, because
+    # build-once/promote-by-digest (ADR deploy-4) makes "does the registry have
+    # the image this tree names" a precondition of every release.
+    #
+    # Each arm answers from a case knob, so a case can drive the registry's
+    # answer without a registry: an empty digest knob IS "the registry has no
+    # such tag" and is the exit 2 the real `image-digest` performs. `pin-digest`
+    # records rather than writes, which is how a case asserts WHAT was pinned
+    # without reading a file the real script would have rewritten.
+    cat >"$DEPLOY/provision.sh" <<'PROVISION'
+#!/usr/bin/env bash
+service="${2:-}"
+upper="$(printf '%s' "$service" | tr '[:lower:]' '[:upper:]')"
+case "${1:-}" in
+project-name) echo "djb_deploy_derived" ;;
+image-tag)    echo "${DJB_DRIVE_IMAGE_TAG:-tree-stub00000000}" ;;
+image-ref)    echo "${DJB_DRIVE_REGISTRY:-drive.invalid/ns}/djb-${service}:${3:-${DJB_DRIVE_IMAGE_TAG:-tree-stub00000000}}" ;;
+image-digest)
+    eval "answer=\${DJB_DRIVE_REGISTRY_DIGEST_${upper}:-}"
+    if [ -z "$answer" ]; then
+        echo "stub provision: the registry has no djb-${service} at that tag" >&2
+        exit 2
+    fi
+    echo "$answer"
+    ;;
+tree-digest)
+    eval "answer=\${DJB_DRIVE_TREE_PIN_${upper}:-}"
+    [ -z "$answer" ] || echo "$answer"
+    ;;
+pin-digest)
+    [ -z "${DJB_DRIVE_PIN_LOG:-}" ] || echo "$service ${3:-}" >>"$DJB_DRIVE_PIN_LOG"
+    ;;
+*) echo "stub provision: unexpected $*" >&2; exit 2 ;;
+esac
+PROVISION
     chmod +x "$DEPLOY/provision.sh"
 
     # The stub apply.py. It records the environment it was handed — which is how
@@ -357,8 +409,12 @@ release() {
         PATH="${CASE_DIR}/bin:$PATH" \
         DJB_DRIVE_DOCKER_LOG="$DOCKER_LOG" \
         DJB_DRIVE_ALERTS_LOG="$ALERTS_LOG" \
+        DJB_DRIVE_PIN_LOG="$PIN_LOG" \
         DJB_READYZ_ATTEMPTS=2 \
         DJB_READYZ_INTERVAL=0 \
+        DJB_DRIVE_IMAGE_TAG="$DRIVE_TAG" \
+        DJB_DRIVE_REGISTRY_DIGEST_WEB="$DRIVE_DIGEST_WEB" \
+        DJB_DRIVE_REGISTRY_DIGEST_WORKER="$DRIVE_DIGEST_WORKER" \
         ${envs[@]+"${envs[@]}"} "$@"
 }
 
@@ -1121,6 +1177,206 @@ case_a_release_that_stopped_can_be_re_run_from_the_top() {
         "$(acts_in_order)"
 }
 
+# =============================================================================
+# BUILD ONCE, PROMOTE BY DIGEST (ADR deploy-4)
+# =============================================================================
+# The box builds nothing. `release.sh` therefore has to answer, BEFORE act 1,
+# the question compose would otherwise answer at act 6 with the schema already
+# migrated: does the registry have the image this tree names, and is it the same
+# image this box last released?
+#
+# Both refusals are asserted in BOTH directions — the status a caller branches
+# on and the sentence a human acts on — and each has a canary case below that
+# severs the guard and shows the release sail past, because a refusal nothing
+# can make fire is a refusal that can be deleted by accident and stay deleted.
+
+case_a_tag_the_registry_lacks_stops_before_act_one() {
+    fresh_deploy
+    # The registry answers about neither image. `image-digest` exits 2 and this
+    # is the whole reason the question is asked here rather than at act 6.
+    DRIVE_DIGEST_WEB="" DRIVE_DIGEST_WORKER=""
+    drive "no such tag" 2 -- release DJB_DRIVE_REGISTRY_DIGEST_WEB= DJB_DRIVE_REGISTRY_DIGEST_WORKER= \
+        "$DEPLOY/release.sh"
+    says "REFUSED — the registry does not have"
+    says "djb-web:tree-stub00000000"
+    says "THE BOX DOES NOT BUILD"
+    says "Nothing was released; no act ran."
+    holds "no such tag: docker was never invoked" "0" "$(docker_calls)"
+    holds "no such tag: nothing was pinned" "0" "$(wc -l <"$PIN_LOG" | tr -d ' ')"
+}
+
+case_a_registry_digest_that_contradicts_the_pin_stops_before_act_one() {
+    fresh_deploy
+    # The box last released one digest under this tag; the registry now answers
+    # a different one. Same tree tag, two images — somebody pushed over an
+    # immutable name, and a quiet re-pull is the one thing that must not happen.
+    drive "digest mismatch" 1 -- release \
+        DJB_DRIVE_TREE_PIN_WEB="sha256:9999999999999999999999999999999999999999999999999999999999999999" \
+        "$DEPLOY/release.sh"
+    says "THE REGISTRY AND THIS BOX DISAGREE"
+    says "the registry says   sha256:1111"
+    says "this box pinned     sha256:9999"
+    says "Nothing was released; no act ran."
+    holds "digest mismatch: docker was never invoked" "0" "$(docker_calls)"
+}
+
+case_a_pin_that_agrees_with_the_registry_is_not_a_mismatch() {
+    fresh_deploy
+    # The ordinary re-release: the box has a pin and it is the registry's own
+    # answer. A guard that fired here would make every second release refuse.
+    drive "pin agrees" 0 -- release \
+        DJB_DRIVE_TREE_PIN_WEB="$DRIVE_DIGEST_WEB" \
+        DJB_DRIVE_TREE_PIN_WORKER="$DRIVE_DIGEST_WORKER" \
+        "$DEPLOY/release.sh"
+    says "RELEASED. 7/7 acts complete."
+    says_not "DISAGREE"
+}
+
+case_an_unpinned_box_is_not_a_mismatch() {
+    fresh_deploy
+    # A freshly shipped tree has never been released here, so `tree-digest`
+    # prints nothing. Absence is not disagreement.
+    drive "no pin yet" 0 -- release "$DEPLOY/release.sh"
+    says "RELEASED. 7/7 acts complete."
+    says_not "DISAGREE"
+}
+
+case_the_release_pins_the_registrys_digest_after_the_recreate() {
+    fresh_deploy
+    drive "pinning release" 0 -- release "$DEPLOY/release.sh"
+    says "pinned both digests into"
+    holds "the pin names web with the registry's digest" \
+        "web ${DRIVE_DIGEST_WEB}" "$(sed -n 1p "$PIN_LOG")"
+    holds "the pin names worker with the registry's digest" \
+        "worker ${DRIVE_DIGEST_WORKER}" "$(sed -n 2p "$PIN_LOG")"
+    # THE ORDER IS THE ASSERTION. A pin written before the containers were on
+    # the image would be recording an intention as a fact — so the recreate must
+    # already be in the docker log when the pin happens, and the transcript is
+    # where that is visible.
+    local recreate_line pin_line
+    recreate_line="$(grep -n 'recreate — web and worker' "$DRIVE_OUT" | head -n1 | cut -d: -f1)"
+    pin_line="$(grep -n 'pinned both digests into' "$DRIVE_OUT" | head -n1 | cut -d: -f1)"
+    if [ -n "$recreate_line" ] && [ -n "$pin_line" ] && [ "$recreate_line" -lt "$pin_line" ]; then
+        echo "  ok       the pin is written AFTER the recreate act announced itself"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   the pin must follow the recreate (recreate line ${recreate_line:-none}, pin line ${pin_line:-none})"
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+case_a_checkout_with_no_tree_marker_pins_nothing_and_says_so() {
+    fresh_deploy
+    rm -f "${CASE_DIR}/TREE"
+    drive "no TREE marker" 0 -- release "$DEPLOY/release.sh"
+    says "this is a checkout, not a shipped box; nothing pinned"
+    holds "no TREE marker: nothing was pinned" "0" "$(wc -l <"$PIN_LOG" | tr -d ' ')"
+}
+
+case_the_dry_run_names_the_image_and_the_digest_it_would_release() {
+    fresh_deploy
+    drive "--dry-run names the image" 0 -- release "$DEPLOY/release.sh" --dry-run
+    says "tree tag     tree-stub00000000"
+    says "djb-web:tree-stub00000000"
+    says "$DRIVE_DIGEST_WEB"
+    says "nothing was touched."
+    holds "--dry-run: nothing was pinned" "0" "$(wc -l <"$PIN_LOG" | tr -d ' ')"
+}
+
+case_the_registry_guards_can_actually_fire() {
+    # THE CANARY, and it is the only thing that proves the two cases above are
+    # about a guard rather than about a coincidence. Sever each guard in a COPY
+    # of release.sh, drive the same case, and assert the release sails past —
+    # then restore byte-identically and assert the refusal is back.
+    fresh_deploy
+    # BESIDE the real one, not above it: release.sh derives `HERE` from its own
+    # path and reads `compose.yaml` and `.env` out of it, so a copy anywhere
+    # else refuses as "not a deployment checkout" and every canary would read
+    # as firing while measuring nothing.
+    local severed="${DEPLOY}/severed.sh"
+
+    # 1 · the no-such-tag guard. `image-digest`'s non-zero status stops being
+    #     consulted, which is exactly what a careless `|| true` would do.
+    sed 's/    if \[ "\$release_rc" != "0" \]; then/    if false; then/' "$SOURCE" >"$severed"
+    chmod +x "$severed"
+    if cmp -s "$SOURCE" "$severed"; then
+        echo "  FAILED   the no-such-tag canary planted NOTHING — the sever pattern no longer matches release.sh"
+        FAILED=$((FAILED + 1))
+    else
+        drive "severed: no such tag" 0 -- release DJB_DRIVE_REGISTRY_DIGEST_WEB= DJB_DRIVE_REGISTRY_DIGEST_WORKER= "$severed"
+        says_not "REFUSED — the registry does not have"
+    fi
+
+    # 2 · the digest-mismatch guard.
+    sed 's/    if \[ -n "\$release_pin" \] && \[ "\$release_pin" != "\$release_digest" \]; then/    if false; then/' "$SOURCE" >"$severed"
+    chmod +x "$severed"
+    if cmp -s "$SOURCE" "$severed"; then
+        echo "  FAILED   the digest-mismatch canary planted NOTHING — the sever pattern no longer matches release.sh"
+        FAILED=$((FAILED + 1))
+    else
+        drive "severed: digest mismatch" 0 -- release \
+            DJB_DRIVE_TREE_PIN_WEB="sha256:9999999999999999999999999999999999999999999999999999999999999999" "$severed"
+        says_not "THE REGISTRY AND THIS BOX DISAGREE"
+    fi
+
+    # 3 · restored. The unsevered script is the one in the tree, and it still
+    #     refuses — so what cases 1 and 2 measured was the guard and not the
+    #     weather.
+    fresh_deploy
+    drive "restored: no such tag" 2 -- release DJB_DRIVE_REGISTRY_DIGEST_WEB= DJB_DRIVE_REGISTRY_DIGEST_WORKER= "$DEPLOY/release.sh"
+    says "REFUSED — the registry does not have"
+}
+
+case_promotion_is_a_re_pin_of_the_same_digest_and_never_a_build() {
+    # PROMOTION, staging → prod, and the property is that NOTHING IS REBUILT.
+    # Two boxes, two projects, two databases, one tree tag — so one digest. The
+    # second box is not handed the first box's pin; it resolves the registry
+    # itself and arrives at the same answer, which is what makes "the same
+    # software is running in both places" a fact rather than a hope.
+    fresh_deploy
+    drive "staging release" 0 -- release "$DEPLOY/release.sh"
+    local staging_pin
+    staging_pin="$(cat "$PIN_LOG")"
+
+    fresh_deploy
+    drive "prod release, same tree" 0 -- release "$DEPLOY/release.sh"
+    holds "prod pinned the identical digests staging did" "$staging_pin" "$(cat "$PIN_LOG")"
+
+    # AND NOTHING WAS BUILT. The docker log is every invocation in order; a
+    # `build` or a `buildx` anywhere in it would mean this deployment still
+    # manufactures its own image somewhere, which is the defect ADR deploy-4
+    # closes.
+    if grep -qE '(^| )(build|buildx)( |$)' "$DOCKER_LOG"; then
+        echo "  FAILED   a promotion BUILT something:"
+        grep -nE '(^| )(build|buildx)( |$)' "$DOCKER_LOG" | sed 's/^/             | /'
+        FAILED=$((FAILED + 1))
+    else
+        echo "  ok       a promotion built nothing — $(docker_calls) docker invocations, no build among them"
+        PASSED=$((PASSED + 1))
+    fi
+}
+
+case_the_deployment_compose_declares_no_build() {
+    # THE GREPPABLE HALF, read off the real file rather than the stub. A
+    # `build:` stanza anywhere in the deployment compose is a third build site
+    # for a tree CI already built once, and it is how the box got its own
+    # divergent arm64 image in the first place.
+    #
+    # `|| true` on every grep here, and it is not laziness: this file runs under
+    # `set -euo pipefail`, and `grep -c` exits 1 when it counts zero — which is
+    # the PASSING answer for the first assertion. Without it the drive dies
+    # silently at this line and every case after it is never run, which is
+    # exactly what it did while this case was being written.
+    local hits qualified
+    hits="$(grep -cE '^[[:space:]]*build:' deploy/compose.yaml deploy/compose.second.yaml | awk -F: '{s+=$2} END {print s+0}' || true)"
+    holds "the deployment compose files declare no build:" "0" "$hits"
+
+    # And the one composed name is composed from the registry prefix in all
+    # three services, so no service can be a different image from the others.
+    qualified="$(grep -c 'image: ${DJB_IMAGE_REGISTRY' deploy/compose.yaml || true)"
+    holds "every app image is registry-qualified" "3" "$qualified"
+}
+
 case_two_clean_runs_perform_the_identical_sequence() {
     fresh_deploy
     drive "first clean run" 0 -- release "$DEPLOY/release.sh"
@@ -1177,6 +1433,16 @@ case_the_runbook_documents_as_many_acts_as_the_script_performs
 case_no_one_off_runs_as_web_or_worker
 case_the_compose_run_census_can_actually_fire
 case_a_release_that_stopped_can_be_re_run_from_the_top
+case_a_tag_the_registry_lacks_stops_before_act_one
+case_a_registry_digest_that_contradicts_the_pin_stops_before_act_one
+case_a_pin_that_agrees_with_the_registry_is_not_a_mismatch
+case_an_unpinned_box_is_not_a_mismatch
+case_the_release_pins_the_registrys_digest_after_the_recreate
+case_a_checkout_with_no_tree_marker_pins_nothing_and_says_so
+case_the_dry_run_names_the_image_and_the_digest_it_would_release
+case_the_registry_guards_can_actually_fire
+case_promotion_is_a_re_pin_of_the_same_digest_and_never_a_build
+case_the_deployment_compose_declares_no_build
 case_two_clean_runs_perform_the_identical_sequence
 
 echo "test_release: ${PASSED} passed · ${FAILED} failed"

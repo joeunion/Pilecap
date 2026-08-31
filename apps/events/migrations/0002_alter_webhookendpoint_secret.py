@@ -1,6 +1,6 @@
 """`WebhookEndpoint.secret` stops being plaintext in the column (rung W6).
 
-P1-R1's MEDIUM: the one recoverable credential in a tree whose doctrine says
+A MEDIUM finding: the one recoverable credential in a tree whose doctrine says
 encrypted-at-rest, sitting beside `Connection.credentials`, which has been
 encrypted since the day that app landed. The contract does not change — a
 `str` goes in and a `str` comes out — only the storage does.

@@ -1,6 +1,6 @@
 
 
-# P1-R0 F4, the cheapest evasion of all: rename the starter on the way in.
+# The cheapest evasion of all: rename the starter on the way in.
 # `as begin_run` is three characters, needs no comment, no override and no
 # argument with anybody — and until the alias was read off the import, rule 18
 # went silent on the callsite and a uuid4 id sailed through. A retried start

@@ -15,9 +15,18 @@ are easy to leave out:
 * **The body is fingerprinted.** Reusing one key for a different request is a
   client bug, and answering it with the *other* request's response would be a
   silent, expensive wrong answer. It is `409 idempotency_key_reuse` instead.
-* **A 5xx is not replayed.** Everything below it is a decision the server made
-  and will make again; a 500 is a failure, and caching one would turn a
-  transient fault into a permanent answer.
+* **A 5xx is not replayed.** A decision the server made below the doors it will
+  make again; a 500 is a failure, and caching one would turn a transient fault
+  into a permanent answer.
+* **A refusal the EDGE made is not replayed either** (ADR core-23). A door
+  refusal — a bad credential, an addressing header this caller cannot use, a
+  missing CSRF token, a rate limit — is decided in *front* of every service, on
+  material the fingerprint does not name, and it ran nothing: the key was never
+  spent. Recording one used to poison the key for its whole TTL, so a client
+  that fixed its credential and retried got the stale refusal back with
+  `Idempotent-Replayed: true` and could never reach its write. The population is
+  `core.exceptions.envelope_codes()` — every code registered `boundary="door"`,
+  derived and never a hand list. See `_remember`.
 * **The scope is the credential and the tenant the door RESOLVED**, hashed
   together — not the key alone, and never the tenant the request *spelled*.
   Keys are chosen by clients and two of them will collide eventually; a
@@ -119,6 +128,7 @@ to exactly that.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any, ClassVar, cast
@@ -133,6 +143,7 @@ from apps.core.exceptions import (
     DomainError,
     Refusal,
     Remedy,
+    envelope_codes,
     register_refusal,
     wire_refusal,
 )
@@ -163,6 +174,11 @@ KEY_REUSE = register_refusal(
         Remedy("Resend the identical body to replay the first answer", "header:Idempotency-Key"),
         Remedy("Give a genuinely different write a key of its own", "header:Idempotency-Key"),
     ),
+    # 409, and declared here rather than appended to a table under `config/`
+    # (ADR core-23). Both of these are conflicts and they answer the number
+    # `Conflict` carries, which is now a fact this declaration states instead of
+    # one `config/api.py` restated on their behalf.
+    status=409,
 )
 
 IN_PROGRESS = register_refusal(
@@ -180,6 +196,7 @@ IN_PROGRESS = register_refusal(
         "retries of one write must not both write."
     ),
     remedies=(Remedy("Wait, then retry the identical request", "header:Idempotency-Key"),),
+    status=409,
 )
 
 
@@ -228,6 +245,15 @@ METHODS = frozenset({"POST", "PUT", "PATCH"})
 # is replayed: a client that retries a 400 gets the same 400 rather than a
 # second attempt at the same rejected write. A 5xx is not a decision — it is a
 # failure — so the claim is dropped and a retry genuinely retries.
+#
+# **This line is right about everything a SERVICE decided and was wrong about
+# everything decided in front of one** (ADR core-23). The second arm is
+# `envelope_codes()` below; what survives here, deliberately, is the residual
+# stated so nobody has to rediscover it: a domain `403 forbidden` for an actor
+# who was PROMOTED between the two calls still replays. That is not an oversight
+# — a policy decision is a decision about this fingerprinted request, made below
+# the doors, by the layer whose answers this cache exists to hold. A client that
+# wants the new answer is making a new request and says so with a new key.
 REPLAYABLE_BELOW = 500
 
 
@@ -566,6 +592,37 @@ def _may_replay(record: IdempotencyRecord, request: HttpRequest) -> bool:
     return bool(record.tenant_id == tenant.pk)
 
 
+def _refusal_code(response: HttpResponse) -> str | None:
+    """The `code` in a refusal envelope, when the answer is one of ours.
+
+    **Read off the wire rather than off an exception**, because by the time this
+    middleware sees the answer the exception is long gone: it sits in front of
+    every door, and what comes back up the stack is an `HttpResponse` that ninja,
+    `handler500`, or a Django middleware below this one already composed. The
+    envelope is `wire_refusal`'s and `REFUSAL_CONTENT_TYPE` is what it is served
+    as, so `code` is exactly where it always is.
+
+    **Narrow on purpose, and every `None` is the old behaviour.** A streaming
+    response (whose `.content` would raise), a body that is not JSON, a JSON body
+    that is not an object, an object with no `code` — none of those is a refusal
+    this middleware can classify, and it stores them exactly as it did before.
+    Guessing at an unreadable body would be this layer inventing a refusal
+    nobody made.
+    """
+    if getattr(response, "streaming", False):
+        return None
+    if not response.headers.get("Content-Type", "").startswith("application/json"):
+        return None
+    try:
+        body = json.loads((getattr(response, "content", b"") or b"").decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    code = body.get("code")
+    return code if isinstance(code, str) else None
+
+
 def _replay(record: IdempotencyRecord) -> HttpResponse:
     response = HttpResponse(
         record.body,
@@ -648,8 +705,39 @@ class IdempotencyMiddleware:
     def _remember(
         self, record: IdempotencyRecord, request: HttpRequest, response: HttpResponse
     ) -> None:
-        """Store a replayable response, or drop the claim so a retry may proceed."""
+        """Store a replayable response, or drop the claim so a retry may proceed.
+
+        **Two arms drop the claim, and they drop it the same way** — the record
+        is deleted, so the retry is the fresh request it always was rather than
+        one that is told anything about the first.
+
+        1. **A 5xx is not a decision, it is a failure** (`REPLAYABLE_BELOW`).
+           Caching one turns a transient fault into a permanent answer.
+        2. **A refusal the EDGE made was never this key's answer** (ADR core-23).
+           `envelope_codes()` is every code registered `boundary="door"`, which
+           is this product's own word for *the edge refused before a service was
+           reached*: no route ran, nothing was read, nothing was written, and the
+           claim was never spent. Replaying one is how a client that fixes its
+           credential and retries — the exact retry `Idempotency-Key` exists to
+           make safe — gets the stale refusal back with `Idempotent-Replayed:
+           true` and finds its write unreachable for the record's whole TTL.
+
+        The material says the same thing from the other side: the fingerprint is
+        `method + path + raw body`, and a credential, an addressing header, a
+        CSRF token, the rate-limit counters and the query string all sit outside
+        it. A refusal decided on any of those is a refusal about something the
+        key never named.
+
+        **Derived, never a hand list.** The set is open — a product registers its
+        own door refusals — and a list here would go stale the first time one
+        landed, silently, which is the shape of the defect rather than a fix for
+        it.
+        """
         if response.status_code >= REPLAYABLE_BELOW:
+            IdempotencyRecord.objects.filter(pk=record.pk).delete()
+            return
+        refused_with = _refusal_code(response)
+        if refused_with is not None and refused_with in envelope_codes():
             IdempotencyRecord.objects.filter(pk=record.pk).delete()
             return
         content = getattr(response, "content", b"") or b""

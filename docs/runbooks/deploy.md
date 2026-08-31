@@ -18,7 +18,7 @@ finding — never an improvisation that dies with your shell.
 | 1 · The laptop proof | 5–15 | the whole deployment, on a laptop, no AWS | anyone, any time |
 | 2 · Provision | 16–25 | the key pair, the role, EC2, RDS, S3, secrets | the operator |
 | 3 · DNS and the box | 26–31 | records, docker, compose, the tree | the operator |
-| 4 · Deploy | 32–36 | build, boot, certificates | the operator |
+| 4 · Deploy | 32–36 | pull, boot, certificates | the operator |
 | 5 · Release | 37 | `deploy/release.sh` — migrate, the role, the grants, the alert route, restart, readyz | the operator, every deploy |
 | 6 · Identity | 41–46 | Zitadel, seeding, the tripwire, the first tenant | the operator |
 | 7 · Smoke | 47–50 | the doors, from outside | the operator |
@@ -137,7 +137,9 @@ aws sts get-caller-identity        # parts 2–8 only
 ```
 
 **2. Have the repository.** Parts 1 and 3–8 all run from a checkout — the
-compose file builds from it, and `deploy/` is bind-mounted into the containers.
+release tooling (`release.sh`, `provision.sh`, `ship.sh`) lives in it, and
+`deploy/` is bind-mounted into the containers. The compose file builds
+nothing (ADR deploy-4): images are pulled from the registry by tree tag.
 
 ```bash
 git clone <this repository> && cd <the checkout>
@@ -235,12 +237,27 @@ is stored nowhere, and re-running this step generates a whole new environment.
 ./deploy/assert_not_published.sh deploy/.env
 ```
 
-**7. Build the two images**, from the repository's own `Dockerfile` targets.
+**7. Build the two images — ON THE LAPTOP AND ONLY ON THE LAPTOP.**
 
 ```bash
 export DJB_IMAGE_TAG="$(./deploy/provision.sh image-tag)"
-docker compose -f deploy/compose.yaml --profile laptop build
+docker build --target web    -t "$(./deploy/provision.sh image-ref web)" .
+docker build --target worker -t "$(./deploy/provision.sh image-ref worker)" .
 ```
+
+**`deploy/compose.yaml` has no `build:` and this is not a `compose build`** —
+that is ADR deploy-4, and it is the whole change: **the image for a tree is
+built once, in CI, multi-arch, and pushed; every box pulls it.** What you are
+doing here is the one exception the ruling names — a laptop proving *this
+compose file and these settings* against an image that never leaves the laptop.
+The env file the previous step generated pins `DJB_IMAGE_REGISTRY='local'`, so
+these two names (`local/djb-web:tree-…`, `local/djb-worker:tree-…`) are purely
+local and no registry is consulted for them.
+
+**A locally built image can never be released.** `deploy/release.sh` resolves
+the tree tag in the registry before its first act and refuses, exit 2, a tag the
+registry does not have — so nothing you build here can reach a box, which is
+what makes this exception safe rather than a hole.
 
 `DJB_IMAGE_TAG` is the tree hash, so the images say which tree they came from
 and no tag is `latest`. `deploy/.env` carries the value that was current when
@@ -526,6 +543,161 @@ therefore has to write them back into the vault or they are lost with the
 instance. The grant is one resource, two actions, and no `secretsmanager:*` —
 it can rewrite this environment's own env blob and nothing else in the account.
 
+**19a. Create the image repositories and the push credential.** ONCE PER
+ACCOUNT, NOT ONCE PER ENVIRONMENT — and that is the whole of ADR deploy-4 in one
+observation: the image is per **tree**, not per environment, so staging and prod
+pull the *same* two repositories at the *same* tag and run the same digest.
+There is no `$DJB_ENV` anywhere in this step, deliberately. A second environment
+skips it entirely.
+
+It is numbered `19a` rather than `20` because the numbers in this runbook do not
+move; step 20 is still step 20.
+
+```bash
+# 0 · the region. Step 20 exports it too and that is not a duplicate to remove:
+#     this step runs BEFORE step 20 and every ARN below is composed from it.
+export AWS_REGION=us-east-1
+
+# 1 · the two repositories. IMMUTABLE TAGS, and it is not optional: a tree tag
+#     is derived from content, so one tag naming two images is a lie the
+#     registry can be asked to stop telling. `release.sh` refuses the
+#     disagreement anyway (exit 1, naming both digests) — this makes the
+#     disagreement impossible instead of merely loud.
+for repo in djb-web djb-worker; do
+  aws ecr create-repository \
+    --repository-name "$DJB_DEPLOY_NAMESPACE/$repo" \
+    --image-tag-mutability IMMUTABLE \
+    --image-scanning-configuration scanOnPush=true \
+    --region "$AWS_REGION"
+done
+
+# 2 · the registry prefix every image name is composed from. Record it: it is
+#     `DJB_IMAGE_REGISTRY` in deploy/.env AND a GitHub repository variable, and
+#     the two must be the same string.
+ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+export DJB_IMAGE_REGISTRY="$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/$DJB_DEPLOY_NAMESPACE"
+echo "$DJB_IMAGE_REGISTRY"
+
+# 3 · the GitHub OIDC provider, if the account has none yet. `list` first: a
+#     second provider for the same issuer is an error, and an account that
+#     already builds anything on GitHub has one.
+aws iam list-open-id-connect-providers
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com
+
+# 4 · the push role. SHORT-LIVED BY CONSTRUCTION — CI assumes it for the length
+#     of one job and nothing durable holds a registry credential. The trust
+#     policy names THIS repository and no other; widening `sub` to `repo:*` is
+#     how somebody else's fork pushes into your registry.
+OIDC_ARN="arn:aws:iam::$ACCOUNT:oidc-provider/token.actions.githubusercontent.com"
+cat > /tmp/djb-ci-trust.json <<JSON
+{"Version": "2012-10-17", "Statement": [{
+  "Effect": "Allow",
+  "Principal": {"Federated": "$OIDC_ARN"},
+  "Action": "sts:AssumeRoleWithWebIdentity",
+  "Condition": {
+    "StringEquals": {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com"},
+    "StringLike": {"token.actions.githubusercontent.com:sub": "repo:<owner>/<repo>:*"}
+  }}]}
+JSON
+aws iam create-role --role-name "$DJB_DEPLOY_NAMESPACE-ci-images" \
+  --assume-role-policy-document file:///tmp/djb-ci-trust.json
+
+# 5 · what it may do: push to THESE TWO repositories and nothing else. The
+#     token action is account-wide because `ecr:GetAuthorizationToken` has no
+#     resource; every other action is pinned to the two ARNs.
+cat > /tmp/djb-ci-policy.json <<JSON
+{"Version": "2012-10-17", "Statement": [
+  {"Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*"},
+  {"Effect": "Allow",
+   "Action": ["ecr:BatchCheckLayerAvailability", "ecr:CompleteLayerUpload",
+              "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart",
+              "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
+              "ecr:DescribeImages", "ecr:DescribeRepositories"],
+   "Resource": ["arn:aws:ecr:$AWS_REGION:$ACCOUNT:repository/$DJB_DEPLOY_NAMESPACE/djb-web",
+                "arn:aws:ecr:$AWS_REGION:$ACCOUNT:repository/$DJB_DEPLOY_NAMESPACE/djb-worker"]}]}
+JSON
+aws iam put-role-policy --role-name "$DJB_DEPLOY_NAMESPACE-ci-images" \
+  --policy-name djb-ci-images --policy-document file:///tmp/djb-ci-policy.json
+rm -f /tmp/djb-ci-trust.json /tmp/djb-ci-policy.json
+
+# 6 · tell CI where to push and who to be. VARIABLES, NOT SECRETS: a role ARN
+#     and a registry host are coordinates, and `.github/workflows/ci.yml` reads
+#     them with `vars.` so the images job can DECIDE — a fork's PR, which has
+#     neither, builds without pushing rather than failing a contributor on a
+#     credential they were never going to have.
+gh variable set DJB_IMAGE_REGISTRY --body "$DJB_IMAGE_REGISTRY"
+gh variable set AWS_ECR_ROLE_ARN --body "arn:aws:iam::$ACCOUNT:role/$DJB_DEPLOY_NAMESPACE-ci-images"
+gh variable set AWS_REGION --body "$AWS_REGION"
+```
+
+**7 · give the BOX read access.** The box pulls; its role (step 19) has no ECR
+grant yet. One more inline statement on the same role, scoped to the same two
+repositories:
+
+```bash
+aws iam put-role-policy --role-name "$DJB_DEPLOY_NAMESPACE-$DJB_ENV-box" \
+  --policy-name djb-box-ecr --policy-document "$(cat <<JSON
+{"Version": "2012-10-17", "Statement": [
+  {"Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*"},
+  {"Effect": "Allow",
+   "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
+              "ecr:BatchCheckLayerAvailability", "ecr:DescribeImages"],
+   "Resource": ["arn:aws:ecr:$AWS_REGION:$ACCOUNT:repository/$DJB_DEPLOY_NAMESPACE/djb-web",
+                "arn:aws:ecr:$AWS_REGION:$ACCOUNT:repository/$DJB_DEPLOY_NAMESPACE/djb-worker"]}]}
+JSON
+)"
+```
+
+**And the box logs the daemon in once per deploy**, before step 33 — an ECR
+token lasts twelve hours, so this is a step and not a setting:
+
+```bash
+aws ecr get-login-password --region "$AWS_REGION" \
+  | docker login --username AWS --password-stdin \
+      "$(echo "$DJB_IMAGE_REGISTRY" | cut -d/ -f1)"
+```
+
+**READING THE PUSH SCAN, AND THE ONE THING THAT SURPRISES EVERYBODY.**
+`scanOnPush=true` is set above, and **asking about the TAG returns
+`ScanNotFoundException`** — measured, not guessed, on the first real push. A
+multi-arch tag names a manifest *list*, and ECR scans the concrete child
+manifests, not the index. So resolve the index first:
+
+```bash
+aws ecr describe-images --repository-name "$DJB_DEPLOY_NAMESPACE/djb-web" \
+  --region "$AWS_REGION" --query 'imageDetails[?!imageTags].imageDigest' --output text
+aws ecr describe-image-scan-findings --repository-name "$DJB_DEPLOY_NAMESPACE/djb-web" \
+  --region "$AWS_REGION" --image-id imageDigest=<one of those> \
+  --query 'imageScanFindings.findingSeverityCounts'
+```
+
+**And know what the scan is telling you about.** The gate's supply-chain leg is
+`pip-audit` plus licences — it reads this project's *Python* dependencies. This
+scan reads the **operating-system layer of the base image**, which nothing in
+this repository has ever looked at, because until the registry move nothing ever pushed
+an image to a registry that scans. A non-zero count here is not a regression;
+it is a surface that was always there and is now visible. Treat it as its own
+queue item with its own owner, never as something to silence in passing.
+
+**WHAT THIS STEP COSTS, priced rather than assumed.** ECR storage is per
+gigabyte-month; two images per tree at a few hundred megabytes each, one tree per
+merge, is dollars a month and it grows without a lifecycle rule.
+
+**THERE IS NO LIFECYCLE POLICY, AND THAT IS A RULING RATHER THAN AN OMISSION**
+(owner, 2026-08-31). The trade is real in both directions: a rule keeps the bill
+flat, and **an expired image is a tree you can no longer roll back to** (Part 10,
+step 59 — `image-digest` refusing there is exactly this). The ruling takes
+**rollback-forever over storage growth**, because at one merge per tree the bill
+is small and the 3am case is not.
+
+**The residual, and its trigger:** revisit when **ECR storage becomes a visible
+line on the bill**, or when **a third product shares this account** — either
+makes the growth somebody else's problem as well as this deployment's. Until one
+of those happens, do not add a rule "to be tidy": you would be trading a
+capability you can measure for a cost you cannot yet see.
+
 **20. Export what `infra` needs.** Two more inputs; the other two are already
 exported by steps 18 and 19.
 
@@ -625,9 +797,10 @@ Pinned, like every image this deployment runs: `latest` on the tool that reads
 the compose file is the same hazard as `latest` on an organ. `aarch64` because
 the box is Graviton (step 22).
 
-**30. Ship the tree to the box.** The compose file builds from it and
-bind-mounts `deploy/` into the containers, so the checkout is part of the
-deployment, not a convenience.
+**30. Ship the tree to the box.** The release tooling runs from it and
+`deploy/` is bind-mounted into the containers, so the checkout is part of the
+deployment, not a convenience. (The compose file builds nothing — ADR
+deploy-4; the box pulls images, it never builds them.)
 
 **Not `git clone`.** The old step said to clone, and on a private repository a
 fresh box has no credential to clone with — no deploy key, no token, no agent —
@@ -681,11 +854,32 @@ Commit, or name the tree you mean with `--ref <sha>`.
 and this deployment's own "every image is pinned to a tree" claim was false on
 the only machine it mattered on, and the tag had to be pinned by hand. Now it is derived
 **where git is** — on your laptop, by the same function — and carried in the
-archive as a one-line `TREE` file beside `deploy/`. **Git still wins where git
+archive as a `TREE` file beside `deploy/`. **Git still wins where git
 exists**, so a laptop is unchanged and a checkout can never be fooled by a stale
 `TREE` somebody left behind; `TREE` answers only where the repository does not.
 `untracked` survives as the last resort and now means what it says: no git AND
 no archive marker, i.e. somebody assembled this tree by hand.
+
+**`TREE` IS LINE-ORIENTED, AND ITS FIRST LINE IS THE TAG.** It used to be one
+line read as "the whole file with the whitespace taken out", which is a reader
+that cannot survive the file growing a second line — and it grew one:
+`release.sh` now pins the released image **digest** beside the tag (ADR
+deploy-4). So the grammar is stated rather than assumed: **line 1 is the tag,
+bare; every later line is `<key> <value…>` and is read by key, never by
+position.** A box shipped before this change carries a one-line `TREE` and is
+read correctly by the same code.
+
+```
+tree-a1b2c3d4e5f6
+digest web sha256:…
+digest worker sha256:…
+```
+
+Read them with `./deploy/provision.sh image-tag` and
+`./deploy/provision.sh tree-digest web`. Nothing writes the digest lines but
+`release.sh`, and it writes them only after the containers are actually on that
+image — the file records what this box **released**, not what somebody intended
+to release.
 
 `--add-virtual-file` needs git ≥ 2.38, and `ship.sh` refuses (exit 2) on an older
 one rather than shipping a box that cannot say what it is holding.
@@ -735,36 +929,56 @@ account expiry notices go to.
 ./deploy/assert_not_published.sh deploy/.env
 ```
 
-**33. Build the images on the box.** Graviton, so this is an arm64 build of the
-same two targets.
+**33. Confirm the box can GET the image for this tree. IT DOES NOT BUILD ONE.**
 
 ```bash
 cd ~/"$DJB_DEPLOY_NAMESPACE"
 export DJB_IMAGE_TAG="$(./deploy/provision.sh image-tag)"
-echo "$DJB_IMAGE_TAG"        # tree-<12 hex>, NEVER `untracked`
-docker compose -f deploy/compose.yaml build
+echo "$DJB_IMAGE_TAG"                        # tree-<12 hex>, NEVER `untracked`
+./deploy/provision.sh image-ref web          # <registry>/djb-web:tree-<12 hex>
+./deploy/provision.sh image-digest web       # the registry's answer, sha256:…
+./deploy/provision.sh image-digest worker
 ```
 
-**There is no `.git` on this box** (step 30), so `image-tag` reads the `TREE`
-file the archive carried and prints the same bytes your laptop's
-`./deploy/provision.sh image-tag` printed. **If it says `untracked`, stop**: the
-archive was made without `--add-virtual-file`, and building anyway produces
-images whose tag is a lie. Re-run step 30.
+**THIS STEP USED TO BE A BUILD, AND THAT WAS THE DEFECT (ADR deploy-4).** The
+box is Graviton, so it built its own arm64 image — a *third* build of the same
+tree, after CI's two, on the slowest and least debuggable machine in the system,
+with nothing anywhere able to say whether it matched the amd64 image CI had
+proved. **One image per tree now, built once, in CI, `linux/amd64` and
+`linux/arm64` in one manifest, pushed under the tree tag.** The box pulls it;
+staging and prod pull the *same* digest; promotion is a re-pin and never a
+rebuild.
+
+**If `image-digest` refuses (exit 2), STOP — do not build anything.** It means
+one of two things and both are worth knowing before you go further:
+
+* **this tree never reached a green CI run.** The images job runs `needs: gate`,
+  so an ungated tree has no registry tag by construction. Push the tree, wait
+  for the gate, come back.
+* **this box is pointed at the wrong registry.** `grep DJB_IMAGE_REGISTRY
+  deploy/.env` — it is the repository prefix
+  (`<account>.dkr.ecr.<region>.amazonaws.com/<namespace>`), it has no default,
+  and an empty slot is a refusal rather than a guess.
+
+**If `image-tag` says `untracked`, stop** for the older reason: the archive was
+made without `--add-virtual-file` and this box cannot say which tree it is
+holding. Re-run step 30.
 
 **No `--profile laptop`.** Postgres is RDS here; the `db` service does not
 start and must not.
 
 **THE TAG YOU EXPORT HERE IS NOT THE TAG THAT RUNS.** `deploy/compose.yaml`
-interpolates `djb-web:${DJB_IMAGE_TAG}` out of **`deploy/.env`**, and step 31
-just restored that file from the vault carrying the tag stored at the LAST
-deploy. So a re-deploy could build a new image and then start the old one —
-nothing fails, `/` serves the previous tree, and the only witness is `docker
-inspect`, which is exactly what a hand-run re-deploy produces.
+interpolates `${DJB_IMAGE_REGISTRY}/djb-web:${DJB_IMAGE_TAG}` out of
+**`deploy/.env`**, and step 31 just restored that file from the vault carrying
+the tag stored at the LAST deploy. So a re-deploy could pull a new image and
+then start the old one — nothing fails, `/` serves the previous tree, and the
+only witness is `docker inspect`.
 
-Step 34 now reconciles it: `provision.sh up` compares the env file's pin against
+Step 34 reconciles it: `provision.sh up` compares the env file's pin against
 `provision.sh image-tag` (the tree on this box), **adopts the tree's tag** and
-says so, and **refuses, exit 2**, when no image is tagged for this tree — which
-means you skipped this step. Check it yourself with:
+says so, **pulls** the image if this box does not have it yet, and **refuses,
+exit 2**, when neither this machine nor the registry has it. Check it yourself
+with:
 
 ```bash
 docker inspect $(docker compose -f deploy/compose.yaml ps -q web) \
@@ -865,6 +1079,11 @@ release: project      <compose project>
 release: database     <database> on <host>:<port>
 release: app role     djb_app (created if absent; the password never leaves the environment)
 release: psql client  postgres:18.6  (read from <checkout>/deploy/compose.yaml)
+release: tree tag     tree-<12 hex>
+release: image        <registry>/djb-web:tree-<12 hex>
+release:              sha256:…  (the registry's answer; act 6 pins it into TREE)
+release: image        <registry>/djb-worker:tree-<12 hex>
+release:              sha256:…  (the registry's answer; act 6 pins it into TREE)
 release: readyz       https://<SITE_ADDRESS>/readyz  (up to 24 attempts, 5s apart)
 release: accepted     2 fake(s) named in DJB_ACCEPTED_FAKES: comms-channel-push comms-channel-sms
 release:              act 1 will refuse any of them that is not FAKE right now.
@@ -894,6 +1113,31 @@ picked up the alert reconcile that used to live in
 `docs/runbooks/alerts.md` alone and the integrations wall in front of all of it.
 **Nothing after this part was renumbered** — step 41 is still step 41 — because
 a runbook whose numbers move is a runbook whose cross-references rot.
+
+**BEFORE ACT 1 THERE IS A REFUSAL THAT IS NOT AN ACT, AND IT IS ABOUT THE
+IMAGE.** The box builds nothing (ADR deploy-4), so this script would otherwise
+be releasing something it had never checked existed — and compose's answer to a
+missing image arrives at **act 6**, after the migrate, with the schema already
+moved and the containers still on the previous tree. "Nothing was released"
+would then be false. So the question is asked where the honest answer is still
+*no act ran*:
+
+* **the registry has no such tag → exit 2**, naming the reference it looked for
+  and where the two coordinates live. Either this tree never reached a green CI
+  run, or this box is pointed at the wrong registry.
+* **the registry and this box's pin disagree → exit 1, naming both.** A tree tag
+  is derived from content, so one tag resolving to two digests means somebody
+  pushed over it. The pin is what this box last *released* (the `digest` lines in
+  `TREE`); the registry is what it would pull now. This is not "could not look" —
+  it is a verification that ran and failed, which is `ship.sh`'s exit 1 exactly.
+  **Find out which image you meant before re-running anything.**
+* **a box with no pin yet is not a disagreement.** A freshly shipped tree has
+  never been released here; absence is absence.
+
+**And act 6 pins what it released.** Once `web` and `worker` are actually on the
+image, the two digests are written into `TREE` beside the tag — after the
+recreate and never before it, or the file would be recording an intention as a
+fact. A checkout with no `TREE` marker (a laptop) says so and pins nothing.
 
 **ACT 1 IS THE WALL, AND IT IS THE ACT THIS PART IS MOST LIKELY TO STOP AT.**
 `manage.py integrations --wall` reports every external service this deployment
@@ -1998,10 +2242,23 @@ re-shipping is what makes the landed tree verified against an archive again:
 ```
 
 `--ref` is the whole difference from step 30. The `TREE` marker carries that
-ref's tag, so the images built in step 59 are named after the tree that is
-actually on the box. Exit 1 means the landed tree does not match the archive and
+ref's tag, so the image step 59 pulls is the tree that is actually on the box.
+Exit 1 means the landed tree does not match the archive and
 **nothing was swapped** — the box is still serving what it was serving, which on
 a rollback is the broken thing; do not proceed, fix the ship.
+
+**A ROLLBACK IS A PULL AND HAS ALWAYS BEEN ONE IMAGE AWAY.** The old tree's
+image is still in the registry under its own tree tag — nothing expires it and
+nothing rebuilds it — so going back is resolving a tag that was already green
+once. That is the quiet dividend of build-once (ADR deploy-4): the old rollback
+re-built the old tree on the box, at 3am, on the machine you were rolling back
+*because of*, and a build that failed there left you with neither tree.
+
+**Re-shipping REPLACES `TREE`, so the previous release's `digest` lines go with
+it.** That is correct and not a loss: the pin records what *this box* last
+released of *this* tree, and after a re-ship this box has released nothing of it
+yet. The first release after a rollback therefore has no pin to disagree with,
+exactly as a first deploy does.
 
 **58. Re-materialize the environment** — step 31 again, verbatim, and for step
 31's reason: `ship.sh` does not carry `deploy/.env`, and a hand-copy loses the
@@ -2012,20 +2269,25 @@ group the containers read it as.
 ls -ln deploy/.env      # group 10001, mode -rw-r-----
 ```
 
-**59. Rebuild and bring it up** — steps 33 and 34 again. `provision.sh up`
-compares the env file's pin against this box's `image-tag` and **adopts the
-tree's tag**, which is what stops a rollback from starting the image you were
-rolling away from:
+**59. Pull the old image and bring it up** — steps 33 and 34 again. `provision.sh
+up` compares the env file's pin against this box's `image-tag`, **adopts the
+tree's tag** and **pulls** it, which is what stops a rollback from starting the
+image you were rolling away from:
 
 ```bash
 cd ~/"$DJB_DEPLOY_NAMESPACE"
 export DJB_IMAGE_TAG="$(./deploy/provision.sh image-tag)"
-echo "$DJB_IMAGE_TAG"        # must be the OLD tree's tag now
-docker compose -f deploy/compose.yaml build
+echo "$DJB_IMAGE_TAG"                   # must be the OLD tree's tag now
+./deploy/provision.sh image-digest web  # exit 2 here = the old image is gone from the registry
 ./deploy/provision.sh up
 docker inspect $(docker compose -f deploy/compose.yaml ps -q web) \
   --format '{{.Config.Image}}'      # must end in the tag above
 ```
+
+**`image-digest` refusing here is the one rollback failure worth naming in
+advance**: it means a registry lifecycle rule expired the old tree's image. A
+rollback then has nothing to go back *to* — and that is a policy to fix in the
+registry, not on the box.
 
 **60. Release from the top.** Part 5, unchanged and in full — the wall, then the
 grants, then the restart, then `/readyz`. It is safe and it is not optional:

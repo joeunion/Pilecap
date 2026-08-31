@@ -124,6 +124,14 @@ def in_a_process(db: None) -> InAProcess:
 
     The alternative — letting the child re-derive the name from the checkout —
     is what made these tests report a missing environment as a red suite.
+
+    **And the child starts in the FULL world unless the call says otherwise.**
+    These tests compare a process WITH an app against a process WITHOUT it, and
+    inheriting `DJB_DISABLED_APPS` from the outer environment makes the "with"
+    half a lie: run under the absent-app suite itself, `test_the_root_index…`'s
+    control child was reading the very world it was the control for. The flag is
+    blanked here for exactly the reason `DATABASE_URL` is — an outer value that
+    silently wins is not a default, it is a wrong answer nobody can see.
     """
     live = connection.settings_dict
     riding = {
@@ -135,6 +143,8 @@ def in_a_process(db: None) -> InAProcess:
         # A stale URL would win over every part above and take the child
         # straight back to the base database this fixture exists to avoid.
         "DATABASE_URL": "",
+        # The world is the caller's to name, never the outer run's to leak.
+        "DJB_DISABLED_APPS": "",
     }
 
     def once(script: str, **environment: str) -> subprocess.CompletedProcess[str]:
@@ -174,20 +184,54 @@ def test_the_worked_example_is_the_only_app_that_declares_itself_optional() -> N
     assert optional == {"example"}
 
 
-def test_the_default_environment_installs_every_app() -> None:
-    """The dev tree is unchanged: an empty flag subtracts nothing.
+def test_this_environment_installs_every_app_it_did_not_disable() -> None:
+    """A BOTH-WORLDS assertion: what came out is exactly what the flag named.
+
+    This used to end `assert settings.DJB_DISABLED_APPS == []`, which is true of
+    the development tree and false of the one configuration the flag exists to
+    allow — so the documented end state was permanently red and the absent-app
+    suite could never be green by construction. The claim that survives both
+    worlds is the SUBTRACTION: everything under `apps/` is installed except the
+    apps this process was told to leave out, and in the ordinary world that set
+    is empty and this says exactly what it used to.
+
+    Where the dev DEFAULT is pinned instead: `.env.example`, by
+    `test_the_flag_ships_empty_in_env_example` below. That is the right home for
+    it — a file on disk cannot be changed by how you invoked the suite.
 
     `without_transient_apps` because `test_settings.py` creates a real directory
     under `apps/` and, under `-n auto`, runs while this one counts it — see
     `apps/core/tests/tree_census.py` for why filtering is the honest form of
     these assertions rather than a dodge.
     """
+    disabled = list(settings.DJB_DISABLED_APPS)
     everything = without_transient_apps(discover_local_apps(APPS_DIR))
+    installed = without_transient_apps(discover_local_apps(APPS_DIR, disabled))
 
     assert without_transient_apps(discover_local_apps(APPS_DIR, [])) == everything
-    assert set(everything) <= set(settings.INSTALLED_APPS)
-    assert "apps.example" in everything
-    assert settings.DJB_DISABLED_APPS == []
+    assert "apps.example" in everything, "the worked example is in the tree in every world"
+    assert set(installed) <= set(settings.INSTALLED_APPS)
+    assert set(everything) - set(installed) == {f"apps.{label}" for label in disabled}
+
+
+def test_the_settings_flag_is_what_the_environment_said() -> None:
+    """The two readers of `DJB_DISABLED_APPS` agree — in either world.
+
+    `config/settings/base.py` reads it once while settings are derived, and
+    `apps/conftest.py` and `quality/worlds.py` re-read the raw variable to build
+    their own worlds. A drift between them is a suite that withheld one set of
+    modules and a process that installed another.
+
+    Compared stripped on both sides, because that is where the forgiveness lives:
+    `env.list` splits on commas and keeps the whitespace, and `discover_apps` is
+    what strips it (see `test_the_label_is_read_forgivingly`). Comparing raw
+    would make ` example ` a red test about a spelling the template accepts.
+    """
+    spoken = [part.strip() for part in os.environ.get("DJB_DISABLED_APPS", "").split(",")]
+
+    assert [label.strip() for label in settings.DJB_DISABLED_APPS] == [
+        label for label in spoken if label
+    ]
 
 
 # --- the subtraction ----------------------------------------------------------

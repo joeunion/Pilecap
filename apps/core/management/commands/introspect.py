@@ -33,6 +33,7 @@ from django.db import models
 from django.urls import URLPattern, URLResolver, get_resolver
 
 from apps.core.management import BaseCommand
+from apps.core.models import is_append_only
 
 SENSITIVE = re.compile(r"KEY|SECRET|PASSWORD|TOKEN|PASSWD|SALT", re.IGNORECASE)
 REDACTED = "[redacted]"
@@ -158,6 +159,42 @@ def _field_payload(field: models.Field[Any, Any] | models.ForeignObjectRel) -> d
     return payload
 
 
+def _markers_payload(model: type[models.Model]) -> dict[str, Any]:
+    """The behavioural declarations a model carries, read off the class.
+
+    A model's `bases` already say what it INHERITS; they do not say what it has
+    DECLARED, and the three declarations below change how the row behaves for
+    everybody who touches it:
+
+    * **`append_only`** — rows are created and never updated or deleted (house
+      rule 20). The population is the declaration, not a name.
+    * **`inherited_downward`** — `governing(org)` is legal on this model, and a
+      branch may NAME a row its parent owns (`core.models.InheritedDownward`).
+    * **`derive_org_from`** — the FK this row's organization must equal, or
+      `None` when it chooses its own (`OrgScopedModel`'s landing gate).
+
+    Before this, a criterion phrased "the marker is visible in `introspect`" was
+    unwritable: the payload's keys were exactly app/bases/fields/name/table, so
+    the only way to answer "which models are append-only" from the instrument was
+    to infer it from a base class that does not carry it.
+
+    DERIVED, not listed: the models come from the registry and each marker is
+    read off the class by the attribute the class declares. What IS pinned is the
+    set of marker KINDS — three today, and a fourth joins this dict as one line.
+    `apps/core/tests/test_introspect.py` holds the key names and refuses a
+    vacuous population.
+    """
+    markers: dict[str, Any] = {}
+    if is_append_only(model):
+        markers["append_only"] = True
+    if getattr(model, "inherited_downward", False):
+        markers["inherited_downward"] = True
+    derived_from = getattr(model, "derive_org_from", None)
+    if derived_from:
+        markers["derive_org_from"] = str(derived_from)
+    return markers
+
+
 def _model_payload(model: type[models.Model]) -> dict[str, Any]:
     meta = model._meta
     bases = [
@@ -171,6 +208,7 @@ def _model_payload(model: type[models.Model]) -> dict[str, Any]:
         "name": model.__name__,
         "table": meta.db_table,
         "bases": bases,
+        "markers": _markers_payload(model),
         "fields": fields,
     }
 
@@ -220,7 +258,16 @@ def _routes_payload() -> list[dict[str, Any]]:
     The auth column is the one that matters: a route with an empty list declares
     no authentication, and that is a house-rule violation visible from here
     without reading a single source file.
+
+    `paginated` answers what a CALLER meets — whether the body is the cursor
+    envelope — and it is read off the one seam (ADR core-24), not off a private
+    ninja marker. Read off the marker it said `false` about three routes that
+    answer `{items, has_more, next_cursor, count}`, and an instrument a
+    criteria-writer trusts is worse than no instrument when it is confidently
+    wrong. `apps/core/tests/test_pagination_seam.py` holds the column to the
+    mounted behaviour.
     """
+    from apps.core.api.pagination import answers_cursor_envelope
     from config.api import api
     from config.urls import API_PREFIX
 
@@ -236,7 +283,7 @@ def _routes_payload() -> list[dict[str, Any]]:
                         "name": f"api:{operation.url_name}" if operation.url_name else None,
                         "view": _callable_name(view_func),
                         "auth": [type(callback).__name__ for callback in operation.auth_callbacks],
-                        "paginated": hasattr(view_func, "_ninja_contribute_args"),
+                        "paginated": answers_cursor_envelope(operation),
                     }
                 )
     return sorted(routes, key=lambda route: (str(route["pattern"]), str(route["methods"])))
@@ -413,9 +460,18 @@ def _refusals_payload() -> list[dict[str, Any]]:
     this product say no with, which layer decides each one, what is true when
     it happens, and what can be done about it.
 
-    Four fields, and the split between the last two is the point:
+    Five fields, and the split between `remedies` and `remedy` is the point:
 
     * `boundary` — where to look: `selector`, `service`, `policy` or `door`.
+      It is also what decides whether an idempotent retry REPLAYS this refusal
+      or re-evaluates the request (ADR core-23: `boundary == "door"` means the
+      key was never spent), so it is a behavioural fact and not a filing label.
+    * `status` — the number the HTTP door answers this code with, and **`null`
+      is a declaration too**: a code with no status is one the HTTP door never
+      answers (a machine-door refusal — a tool answers one line of text, not a
+      number). Derived off the registry since ADR core-23; before that
+      `CODE_STATUS` was a hand-appended table in `config/api.py` and this
+      instrument could not see it at all.
     * `fact` — what is TRUE, and what the client is told. `not_found`'s says
       that not-there and not-yours are one answer on purpose.
     * `remedies` — what the caller can DO, as label + destination. **These
@@ -432,6 +488,7 @@ def _refusals_payload() -> list[dict[str, Any]]:
             {
                 "code": refusal.code,
                 "boundary": refusal.boundary,
+                "status": refusal.status,
                 "fact": refusal.fact,
                 "remedies": [
                     {"label": remedy.label, "destination": remedy.destination}

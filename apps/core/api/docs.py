@@ -1210,9 +1210,29 @@ def example_census(components: Mapping[str, Any]) -> tuple[list[str], list[str]]
 
 
 def _is_shape(spec: Mapping[str, Any]) -> bool:
-    """Whether a property is another component rather than a value of its own."""
+    """Whether a property is another component rather than a value of its own.
+
+    Three roads to the same answer, and the third is the one that was missing.
+    A `$ref` is plainly another component; a `oneOf`/`anyOf`/`allOf` branch that
+    holds one is the nullable spelling of the same thing; and **an ARRAY whose
+    `items` is a `$ref` is a collection of another component**, which is that
+    component's business in exactly the same way and for exactly the same reason
+    — the example belongs beside the fields it describes, once, rather than once
+    per place it is embedded.
+
+    Leaving the array road out put every ninja-synthesised `Paged<X>.items` into
+    the undeclared backlog: 21 fields that no author can ever declare, because
+    `@paginate` builds those classes at mount time and there is no source line to
+    hang an example on. A ratchet whose backlog contains entries nobody can
+    remove is a ratchet that has stopped being about anything, and it was
+    inflating the number the whole census is judged by.
+    """
     if _ref_name(spec) is not None:
         return True
+    if spec.get("type") == "array":
+        items = spec.get("items")
+        if isinstance(items, Mapping) and _is_shape(items):
+            return True
     for key in ("anyOf", "oneOf", "allOf"):
         branches = spec.get(key)
         if isinstance(branches, list) and any(

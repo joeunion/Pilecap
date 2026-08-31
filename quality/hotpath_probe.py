@@ -304,7 +304,10 @@ def main() -> int:
 
     call_command("migrate", verbosity=0, interactive=False)
 
-    from quality.hotpaths import PROBES, World, ensure_world
+    from quality import worlds as W
+    from quality.hotpaths import PROBE_NEEDS_APP, PROBES, World, app_installed, ensure_world
+
+    optional = W.optional_app_labels(ROOT)
 
     world = World()
     ensure_world(world)
@@ -313,6 +316,7 @@ def main() -> int:
     counts = load_counts()
     findings: list[str] = []
     notes: list[str] = []
+    skipped: list[str] = []
     explained = 0
     probed = 0
     declared_columns = 0
@@ -355,6 +359,35 @@ def main() -> int:
             path = str(entry["path"])
             if entry.get("pin") != "probe":
                 continue
+            # NOT IN THIS DEPLOYMENT'S WORLD. An entry whose probe reads
+            # an app this deployment left out cannot be executed, and executing
+            # it anyway is how one optional import took three rules' canaries
+            # down with it. Skipped, reported, and paid for on the other side:
+            # rule 35's floors declare what they count (`registry_floors`) and
+            # `quality/worlds.py` lowers each expectation by exactly the members
+            # the absent app contributed.
+            needs = PROBE_NEEDS_APP.get(path)
+            if needs and not app_installed(str(needs)):
+                skipped.append(f"{path} (needs apps/{needs}, which this deployment omits)")
+                continue
+            # THE TWO DECLARATIONS OF ONE FACT, held against each other. This
+            # module's `PROBE_NEEDS_APP` decides what RUNS; the registry's app —
+            # derived from the dotted path, or declared with `needs_app:` where
+            # the path lies — is what the FLOORS are lowered by. They must name
+            # the same optional app or a floor will be derived for a world the
+            # probe did not measure, and the direction that hurts is silent:
+            # the expectation falls and nothing is missing from the count.
+            # Compared over OPTIONAL apps only, because a mandatory app is never
+            # absent and never needs saying twice.
+            registry_needs = W.registry_entry_app(entry)
+            registry_needs = registry_needs if registry_needs in optional else None
+            if needs != registry_needs:
+                findings.append(
+                    f"{path}: quality/hotpaths.py::PROBE_NEEDS_APP says {needs!r} and rule "
+                    f"35's registry entry resolves to {registry_needs!r} — the probe's world "
+                    "and the floor's derivation would disagree about which optional app this "
+                    "entry needs"
+                )
             probe = PROBES.get(path)
             if probe is None:
                 findings.append(
@@ -512,7 +545,12 @@ def main() -> int:
         json.dumps(
             {
                 "findings": findings,
-                "notes": notes,
+                # The skipped entries ride in `notes` as well as in their own
+                # key: `quality/checks.py` forwards notes and would drop an
+                # unknown key, and a world that shrank silently is the whole
+                # defect. Both, so neither reader has to know about the other.
+                "notes": notes + [f"NOT IN THIS WORLD: {one}" for one in skipped],
+                "skipped": skipped,
                 "hot_paths": len(registry),
                 "probed": probed,
                 "explained_statements": explained,

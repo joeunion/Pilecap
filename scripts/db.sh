@@ -43,6 +43,51 @@
 #
 # This file is meant to be sourced. It sets no shell options of its own so it
 # cannot change the caller's behaviour.
+#
+# --- THE SOURCED-LIBRARY CONTRACT -------------------------------------------
+#
+# The shebang on line 1 is INERT. Nothing executes this file; every consumer
+# sources it, so the interpreter is always the CALLER'S shell and never the one
+# named above. On this machine that caller is usually bash, and on a laptop
+# whose default shell is zsh — macOS since Catalina — a `. scripts/db.sh` at an
+# interactive prompt is zsh. So the contract this file signs is: it is POSIX-ish
+# shell that must behave IDENTICALLY under bash and under zsh, and the belt for
+# a shell that cannot run it is the caller's, not this file's. A `BASH_VERSION`
+# refusal HERE would refuse the exact case this paragraph exists to support.
+#
+# ONE RULE, AND IT HAS ALREADY COST A REAL FALSE GREEN. zsh has TIED and SPECIAL
+# parameters, and `local` does not untie them: `local path=fallback` inside a
+# function does not make a private string, it sets the caller's PATH to
+# `fallback` for the length of that function. `db_create_the_checkouts_own` did
+# exactly that. Under zsh, with docker on PATH and the server up, it printed
+#
+#     db_psql:1: command not found: docker
+#     created database djb_...            <- and no database was created
+#
+# and returned 0. Every tool the function needed — docker, awk, date — vanished
+# mid-function, and the one line the caller reads said the work was done.
+#
+# THE CLOSED AUDIT, run over this whole file and printed here so a reader does
+# not have to re-derive it. Never use any of these as a variable name, `local`
+# or not:
+#
+#   path      tied to PATH (array<->scalar). The one that bit us.
+#   status    zsh's `$?` under another name; assigning it rewrites exit status.
+#   options   the shell's own option table; assigning it can change behaviour.
+#   fignore   filename-completion ignore list; assigning it changes globbing.
+#
+# As of this file today the audit finds ONE occurrence and it is the fix below:
+# `path` in `db_create_the_checkouts_own` became `creation_path`. `status`,
+# `options` and `fignore` appear nowhere in this file as variables, and the two
+# `path` matches in `db_migration_listing` are `find -path` OPERANDS, not shell
+# parameters — no change was needed for those and none was made. The wider
+# zsh-tied set (`cdpath`, `fpath`, `manpath`, `argv`, `psvar`, `signals`,
+# `module_path`, `mailpath`, `watch`, `prompt`, `histchars`) was grepped beside
+# the four and appears nowhere in this file at all.
+#
+# `scripts/tests/test_db_zsh.sh` is the tooth: it sources this file under a REAL
+# zsh and drives `db_create`, asserting the created database EXISTS. It skips
+# with a reason when there is no zsh, and never passes vacuously.
 
 # First N hex digits of the SHA-256 of $1 (N defaults to 8), with fallbacks down
 # to a POSIX one, because this must not need a tool a fresh laptop might not
@@ -144,10 +189,29 @@ db_env_file_pin() {
     line="$(grep -E '^DATABASE_NAME=' "${root}/.env" 2>/dev/null | tail -1 || true)"
     [ -n "$line" ] || return 0
     line="${line#DATABASE_NAME=}"
-    # Strip a trailing marker comment before the value is compared, so
-    # `DATABASE_NAME=djb_x  # pinned` compares as `djb_x` (setup.sh reads the
-    # marker itself; here it is only noise on the value).
-    line="${line%%#*}"
+    # NOTHING IS STRIPPED AFTER THE `=` ANY MORE, AND THAT IS THE FIX.
+    #
+    # This used to do `line="${line%%#*}"`, so `DATABASE_NAME=djb_x  # pinned`
+    # compared as `djb_x`. That made this function agree with `sh`'s reading of
+    # the line and disagree with the reading that actually matters: `.env` is
+    # read by django-environ, and `environ.Env.read_env` does NOT strip a
+    # trailing comment. Measured on this tree:
+    #
+    #   line               DATABASE_NAME=djb_probe_value  # pinned
+    #   environ.read_env   'djb_probe_value  # pinned'
+    #   docker --env-file  'djb_probe_value  # pinned'
+    #   shell `. .env`     'djb_probe_value'
+    #
+    # Two of the three readers keep the comment. So the strip did not remove
+    # noise, it removed EVIDENCE: a pin whose value agreed with the derivation
+    # once the comment was cut passed this leg silently, while a bare
+    # `manage.py` resolved a database name with `# pinned` inside it. That is
+    # the split brain this whole section exists to refuse, wearing the marker
+    # that was supposed to prove somebody meant it.
+    #
+    # The value is therefore reported RAW, exactly as environ will read it, and
+    # `db_pin_leg` refuses an inline comment outright (the marker's grammar is
+    # now its own comment line ABOVE a bare value — see `db_pin_marked`).
     line="${line%"${line##*[![:space:]]}"}"
     # Strip a surrounding quote pair, the way django-environ does, so a
     # hand-written `DATABASE_NAME="djb_x"` compares as `djb_x`. The escapes are
@@ -168,12 +232,60 @@ db_checkout_root() {
     git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD"
 }
 
-# Does the .env DATABASE_NAME line carry the `# pinned` marker? This is the
-# same one-grep escape `setup.sh` reads before deciding whether to rewrite the
-# line (scripts/setup.sh's pin-reconcile block), and it means the same thing in
-# both places: a human put this name here on purpose.
+# --- THE MARKER'S GRAMMAR, AND WHY IT MOVED ---------------------------------
+#
+# THE MARKER LIVES ON ITS OWN COMMENT LINE, DIRECTLY ABOVE A BARE VALUE:
+#
+#     # pinned
+#     DATABASE_NAME=djb_x
+#
+# and NOT `DATABASE_NAME=djb_x  # pinned`, which is what this file prescribed
+# until now. The inline form is not a style preference that lost; it is
+# CORRUPTING. `.env` has three readers here and they do not agree about a
+# trailing comment (measured, see `db_env_file_pin`): a shell `. .env` strips
+# it, and `environ.Env.read_env` — the reader every bare `manage.py` goes
+# through — and `docker --env-file` both keep it IN THE VALUE. So the marker
+# that says "a human meant this name" was, at the same time, changing the name
+# for two readers out of three. A checkout following the old instruction ended
+# up resolving a database called `djb_x  # pinned`.
+#
+# The own-line form has no such split: every reader treats a whole-line comment
+# as a comment, and all three then yield the identical clean value. The comment
+# line may carry a reason after the word — `# pinned — the owner's live db` —
+# and that is encouraged; what it may not do is share a line with the value.
+#
+# THE ANCHOR IS ADJACENCY, and it is as strict as the old grammar's was. The
+# old rule was "on the DATABASE_NAME line", so that a file merely CONTAINING
+# the word could not silence the leg. The new rule is "on the line immediately
+# above the DATABASE_NAME line the pin is read from" — the LAST one, matching
+# django-environ's last-wins reading and `db_env_file_pin`'s. A `# pinned`
+# anywhere else in the file is still not this line's marker.
 db_pin_marked() {
-    grep -qE '^DATABASE_NAME=.*#[[:space:]]*pinned' "$(db_checkout_root)/.env" 2>/dev/null
+    local root
+    root="$(db_checkout_root)"
+    [ -f "${root}/.env" ] || return 1
+    # `marked` is re-decided at every DATABASE_NAME line, so the LAST one wins,
+    # which is the line `db_env_file_pin` reports and the one environ resolves.
+    awk '
+        /^DATABASE_NAME=/ { marked = previous_line_is_marker }
+        { previous_line_is_marker = ($0 ~ /^[[:space:]]*#[[:space:]]*pinned([[:space:]].*)?$/) }
+        END { exit(marked ? 0 : 1) }
+    ' "${root}/.env" 2>/dev/null
+}
+
+# Does the .env's operative DATABASE_NAME line carry an INLINE comment? That is
+# the corrupting form above, and `db_pin_leg` refuses it outright — including
+# when the value before the `#` happens to equal the derivation, because the
+# value AFTER environ reads it does not.
+db_pin_line_has_inline_comment() {
+    local root operative
+    root="$(db_checkout_root)"
+    [ -f "${root}/.env" ] || return 1
+    operative="$(grep -E '^DATABASE_NAME=' "${root}/.env" 2>/dev/null | tail -1 || true)"
+    case "$operative" in
+    *"#"*) return 0 ;;
+    *) return 1 ;;
+    esac
 }
 
 # --- THE LEG ----------------------------------------------
@@ -197,7 +309,11 @@ db_pin_marked() {
 # said it meant it has answered the question. A pin with no marker has not.
 #
 #   exit 0  no .env · no DATABASE_NAME line · the pin agrees · `# pinned`
+#           on its own line above the value
 #   exit 1  a pin disagreeing with the derivation, unmarked
+#   exit 1  an INLINE comment on the DATABASE_NAME line, marked or not,
+#           agreeing or not — the comment is inside the name for two of the
+#           three readers, so there is nothing here a marker could excuse
 #   exit 2  could not look — an .env in the tree that cannot be read
 #
 # WHAT IT DOES NOT SEE, unchanged from the note it replaces and declared here
@@ -207,7 +323,7 @@ db_pin_marked() {
 # are both outside it — and both of those override .env for a bare `manage.py`
 # too, so a green leg means "the file agrees", never "the process will".
 db_pin_leg() {
-    local root pin derived
+    local root pin derived cleaned
     root="$(db_checkout_root)"
     if [ ! -f "${root}/.env" ]; then
         # No file, no second opinion: the derivation is the only truth here.
@@ -224,6 +340,35 @@ db_pin_leg() {
         return 0
     fi
     derived="$(db_name)"
+    # THE CORRUPTED LINE IS REFUSED BEFORE ANYTHING IS COMPARED, and before the
+    # marker can excuse it, because the comparison is not the point: whatever
+    # the value looks like to the left of the `#`, environ and docker both read
+    # the `#` and everything after it AS PART OF THE NAME. A line that "agrees"
+    # here is the worst case of the three, not the safe one — it passed
+    # silently while a bare `manage.py` opened a different database.
+    if db_pin_line_has_inline_comment; then
+        # The value with the comment cut off AND the whitespace that separated
+        # them trimmed — printing `djb_x  ` with two trailing spaces as the
+        # suggested rewrite would hand the reader a second corrupt line.
+        cleaned="${pin%%#*}"
+        cleaned="${cleaned%"${cleaned##*[![:space:]]}"}"
+        echo "!! DATABASE_NAME: this checkout's .env line carries an INLINE COMMENT." >&2
+        echo "     the line:   $(grep -E '^DATABASE_NAME=' "${root}/.env" | tail -1)" >&2
+        echo "     environ reads the name as: [${pin}]" >&2
+        echo "   A trailing comment is NOT stripped by the reader a bare \`manage.py\` uses" >&2
+        echo "   (django-environ), nor by \`docker --env-file\`. Only a shell \`. .env\` strips" >&2
+        echo "   it. So this one line means two different database names depending on who" >&2
+        echo "   reads it — which is the exact split brain this leg exists to refuse, and" >&2
+        echo "   the old \`# pinned\` instruction is what put it there." >&2
+        echo "   REWRITE IT AS TWO LINES in ${root}/.env — the marker on its own line:" >&2
+        echo "" >&2
+        echo "     # pinned" >&2
+        echo "     DATABASE_NAME=${cleaned}" >&2
+        echo "" >&2
+        echo "   (drop the marker line entirely if the pin was not deliberate, then re-run" >&2
+        echo "   ./scripts/setup.sh to reconcile.)" >&2
+        return 1
+    fi
     if [ "$pin" = "$derived" ]; then
         echo "  .env and the derivation agree: ${derived}"
         return 0
@@ -240,7 +385,14 @@ db_pin_leg() {
     echo "   migrate and a token mint landed in the owner's live database once already," >&2
     echo "   with every step of it legal and none of it visible." >&2
     echo "   Two fixes, and this leg does not choose between them:" >&2
-    echo "     * KEEP THE PIN — add \`# pinned\` to that line in ${root}/.env." >&2
+    echo "     * KEEP THE PIN — add a \`# pinned\` line ABOVE that line in ${root}/.env:" >&2
+    echo "" >&2
+    echo "         # pinned" >&2
+    echo "         DATABASE_NAME=${pin}" >&2
+    echo "" >&2
+    echo "       Its OWN line, never appended to the value: a trailing comment is read" >&2
+    echo "       INTO the name by django-environ and by docker --env-file, so the inline" >&2
+    echo "       form this file used to prescribe corrupts the very name it pins." >&2
     echo "       The name stays, setup.sh stops rewriting it, and this leg goes silent." >&2
     echo "     * RECONCILE — re-run ./scripts/setup.sh, which rewrites the line to the" >&2
     echo "       derivation and prepares that database." >&2
@@ -276,7 +428,7 @@ db_psql() {
     docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres "$@"
 }
 
-# --- Names are not strings (P3-SEC-1, LOW-5) ----------------------------------
+# --- Names are not strings ----------------------------------------------------
 #
 # A database name reaching this file is OPERATOR input — `DATABASE_NAME` out of
 # the environment, or an argument — and it used to be pasted into SQL with
@@ -637,7 +789,16 @@ db_clone_database() {
 # `path=` and `elapsed=` — whichever way it went, because a mechanism whose
 # speed claim is a builder's stopwatch is a claim nobody else can re-measure.
 db_create_the_checkouts_own() {
-    local name="$1" t0 key tmpl="" path=fallback reason=""
+    # `creation_path` and NOT `path`: under zsh `path` is tied to PATH and
+    # `local` does not untie it, so the old name emptied PATH for the length of
+    # this function — docker, awk and date all vanished and `created database`
+    # printed over a database that was never created. THE SOURCED-LIBRARY
+    # CONTRACT at the top of this file has the reproduction and the closed
+    # audit; `scripts/tests/test_db_zsh.sh` is the tooth. The PRINTED token
+    # stays `path=` — that string is the instrument's contract with its readers
+    # (`scripts/tests/test_db_template.sh:471` greps it); only the shell
+    # variable was ever the bug.
+    local name="$1" t0 key tmpl="" creation_path=fallback reason=""
     t0="$(db_now_ms)"
     key="$(db_migration_key 2>/dev/null || true)"
     if [ -z "$key" ]; then
@@ -646,7 +807,7 @@ db_create_the_checkouts_own() {
         tmpl="djb_tmpl_${key}"
         if db_exists "$tmpl"; then
             if db_clone_database "$name" "$tmpl"; then
-                path=template
+                creation_path=template
             else
                 reason="${tmpl} is on this server and could not be cloned — the server's own words are above"
             fi
@@ -654,14 +815,14 @@ db_create_the_checkouts_own() {
             reason="no ${tmpl} on this server for this checkout's migration set"
         fi
     fi
-    if [ "$path" = fallback ]; then
+    if [ "$creation_path" = fallback ]; then
         db_query 'CREATE DATABASE :"name" OWNER :"owner"' \
             -v name="$name" -v owner="$POSTGRES_USER" >/dev/null
     fi
     # The line every caller reads, unchanged and first.
     echo "created database ${name}"
-    printf 'db.sh: db_create %s path=%s elapsed=%s\n' "$name" "$path" "$(db_elapsed_since "$t0")"
-    if [ "$path" = template ]; then
+    printf 'db.sh: db_create %s path=%s elapsed=%s\n' "$name" "$creation_path" "$(db_elapsed_since "$t0")"
+    if [ "$creation_path" = template ]; then
         printf 'db.sh: cloned from %s — the migration chain did not run; the caller'\''s\n' "$tmpl"
         printf '       `migrate` has nothing left to apply.\n'
     else

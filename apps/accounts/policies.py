@@ -99,7 +99,7 @@ def administers_the_whole_tenant(actor: Actor, obj: Any = None) -> bool:
 def themselves_or_administers_the_whole_tenant(actor: Actor, obj: Any = None) -> bool:
     """The person themselves, or `admin` or better at the tenant's root.
 
-    **The wall the doors of P5-B-ACCT stand behind** (ADR ident-6). Erasure and
+    **The wall the account doors stand behind** (ADR ident-6). Erasure and
     deactivation both reach a `User`, and there are exactly two answers to "who
     may take this person's access away": that person, and somebody who
     administers the whole tenant they are in.

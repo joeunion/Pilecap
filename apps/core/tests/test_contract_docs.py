@@ -162,6 +162,96 @@ def test_the_declared_example_census_is_at_or_below_its_ratchet(
     assert int(scope["title_max_length"]) == TITLE_MAX_LENGTH
 
 
+def test_an_array_of_a_component_is_that_components_business(document: dict[str, Any]) -> None:
+    """The third road into `_is_shape`, and the ratchet it un-inflated.
+
+    A `$ref` is another component. So is a nullable branch holding one. So is
+    **an array whose `items` is one** — and that road was missing, which put
+    every ninja-synthesised `Paged<X>.items` into the undeclared backlog. Nobody
+    can declare an example on those: `@paginate` builds the class at mount time
+    by re-annotating `items`, and a pydantic subclass that re-annotates a field
+    gets a fresh `FieldInfo`, so an example on `core.schemas.ListPage.items` is
+    dropped and there is no third place to put one.
+
+    A ratchet whose backlog contains entries nobody can remove had stopped being
+    about anything, and rule 41's own scope had booked the fix twice as a raise
+    it did not want to make. This asserts the fix rather than the number: no
+    array-of-`$ref` field is in either half of the census.
+    """
+    schemas = document["components"]["schemas"]
+    declared, undeclared = example_census(schemas)
+    counted = set(declared) | set(undeclared)
+    arrays = {
+        f"{name}.{field}"
+        for name, node in schemas.items()
+        if isinstance(node, dict)
+        for field, spec in (node.get("properties") or {}).items()
+        if isinstance(spec, dict)
+        and spec.get("type") == "array"
+        and isinstance(spec.get("items"), dict)
+        and "$ref" in spec["items"]
+    }
+    assert arrays, "no array-of-$ref field was found; this pass proves nothing"
+    assert "PagedWidgetOut.items" in arrays
+    assert not (arrays & counted), (
+        "these array-of-component fields are still counted as scalars in the example "
+        f"census: {sorted(arrays & counted)}"
+    )
+
+
+def test_the_documents_top_level_keys_are_the_declared_census(
+    document: dict[str, Any],
+) -> None:
+    """Rule 41's `djb.E042`, driven from the test side as well as the check side.
+
+    Set equality both ways against `openapi_top_level_keys` in `rules.yaml`. The
+    check is the enforcement; this is the assertion that the census is about the
+    live document and not about a list somebody once typed.
+    """
+    from apps.core.checks import declared_top_level_keys
+
+    declared = declared_top_level_keys()
+    assert declared, "rule 41 declares no top-level keys; djb.E042 is watching nothing"
+    assert set(document) == set(declared)
+    assert all(reason.strip() for reason in declared.values())
+
+
+def test_servers_ships_empty_and_says_so(document: dict[str, Any]) -> None:
+    """The deliberate absence, asserted rather than shipped silently.
+
+    A template has no deploy URL. An invented one would be worse than nothing
+    because a client would try it — so `servers` is `[]`, and the reason for that
+    is recorded in `quality/rules.yaml` under rule 41 where a product cloning
+    this tree will meet it. This is the assertion that reason points at.
+    """
+    from apps.core.checks import declared_top_level_keys
+
+    assert document["servers"] == []
+    assert "empty" in declared_top_level_keys()["servers"].lower()
+
+
+def test_a_vanished_top_level_key_is_a_fault_too(document: dict[str, Any]) -> None:
+    """The other direction, which the live mount can never demonstrate.
+
+    The document the mount builds is always complete, so the arm that catches a
+    DECLARED key going missing has no natural victim — it gets a planted one: the
+    live document minus `servers`. Without this the branch is unreachable code
+    that reads as covered.
+    """
+    from apps.core.checks import top_level_key_faults
+
+    assert top_level_key_faults(document) == []
+
+    without = {key: value for key, value in document.items() if key != "servers"}
+    faults = top_level_key_faults(without)
+    assert len(faults) == 1 and "'servers'" in faults[0] and "no longer carries" in faults[0]
+
+    surplus = {**document, "x-canary-undeclared": {}}
+    faults = top_level_key_faults(surplus)
+    assert len(faults) == 1 and "x-canary-undeclared" in faults[0]
+    assert "does not declare" in faults[0]
+
+
 def test_a_declared_example_beats_the_synthesised_one(document: dict[str, Any]) -> None:
     """The seam, end to end: what a field declared is what the document shows."""
     organization = document["components"]["schemas"]["OrganizationOut"]

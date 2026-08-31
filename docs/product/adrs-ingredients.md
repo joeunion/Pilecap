@@ -125,7 +125,7 @@ so.
 
 - **A `version` column mutated in place** — replacing rewrites `sha256`/
   `size_bytes` under the audit trail; "who uploaded v2, when, and what did
-  v1 hold" becomes unanswerable; the P5-R1 export census loses per-version
+  v1 hold" becomes unanswerable; the export census loses per-version
   disposition (an export manifest that cited a digest must still be true
   months later).
 - **Latest-pointer keys** (one stable key per file, overwritten per
@@ -377,7 +377,7 @@ there.
   ING-2 Meili-documents posture, verbatim). Until purge lands, the
   declaration carries the honest interim retention line (the dated
   residual above). `StoredFile`/`FileVersion` rows are ordinary ORM
-  populations, dispositioned by the P5-R1 export census like the rest.
+  populations, dispositioned by the export census like the rest.
 - Criteria-tier: sibling-branch 404 byte-identical to absence (E9);
   TTLs honored wire-true; recorded digest equals a local recomputation
   (E10's spirit — the basis is checked); **a version key is never
@@ -424,7 +424,7 @@ named F-line adds the entry after U1; the lead sequences and says which.
 needs an extraction activity + ING-2 adoption; trigger recorded, no build
 edge now. **ING-1 → P5's export rung:** the export archive is written
 through this app (`store_bytes`, purpose `export`) and handed out by
-`issue_download_url` — P5-R1's recorded dependency, the reason export may
+`issue_download_url` — the export rung's recorded dependency, the reason it may
 trail into P6. Migrations: `apps/files/migrations/0001_initial` (leaf).
 
 **Size: 5 rungs** — the decomposition below.
@@ -527,9 +527,10 @@ Size L. Cites C1, C2, C4, C7, C8, D4, E8, E9; rules 9, 10, 13, 18, 26,
 5. The object population's rule-31 declaration exists
    (purged-by-callable, `delete_tenant_objects`, honest interim
    retention line); `close_tenant`'s walk reaches it **by discovery** —
-   a hand-list reference anywhere is the violation P5-R1 closed. If
+   a hand-list reference anywhere is the violation the declared-population
+   ruling closed. If
    P5's registry has not landed, the callable + module-docstring truth
-   per P5-R1's shape, the declaration joining in P5's own rung (the
+   per that ruling's shape, the declaration joining in P5's own rung (the
    ING-2 R-c posture, verbatim).
 6. `delete_tenant_objects` prefix-deletes: after it, a head on any of
    the tenant's keys 404s and another tenant's objects are untouched
@@ -537,7 +538,7 @@ Size L. Cites C1, C2, C4, C7, C8, D4, E8, E9; rules 9, 10, 13, 18, 26,
 
 **F5 · rule 32 + canaries + `storage_audit` + THE PROBE** — `apps/files`
 + `quality/rules.yaml`. Size M. Cites C8, E9, E10's spirit, G3; rules
-24, 26; rule 32 born here; the P3-R0 probe precedent.
+24, 26; rule 32 born here; the socket-leak probe precedent.
 1. Rule 32 lands **with firing canaries**: a planted `import boto3` in a
    domain app, a planted bucket-settings name outside the allow-list,
    and a planted `ACL="public-read"` in `storage.py` all fire through
@@ -546,8 +547,8 @@ Size L. Cites C1, C2, C4, C7, C8, D4, E8, E9; rules 9, 10, 13, 18, 26,
 2. `manage.py storage_audit` (read-only) runs against MinIO in the
    suite: public-access-block on, no public ACLs; its P4 access-logging
    leg is a stated pending line with an owner, never silently absent.
-3. **THE PROBE, born proven, kept as permanent regressions** (the P3-R0
-   precedent — red demonstrated first, then the real wall refuses):
+3. **THE PROBE, born proven, kept as permanent regressions** (the
+   socket-leak precedent — red demonstrated first, then the real wall refuses):
    (a) cross-tenant issuance — a tenant-B actor names tenant A's file
    id → `not_found`, both doors; the red half disables the scope check
    through a test double and shows the leak; (b) same-tenant
@@ -711,7 +712,7 @@ The engine receives resolved ids only — it never sees the actor, the hat or
 a path, so an engine cannot get scoping wrong, only receive it. Per-kind
 filter shape: `tenant_id = <t> AND org_id IN [<ids>]` for org-scoped kinds;
 `tenant_id = <t>` for tenant-scoped kinds (the registry knows each model's
-base — the P3-R0 lesson applied: the injection is per-kind-aware, never a
+base — the org-blind-push lesson applied: the injection is per-kind-aware, never a
 one-shape-fits-all that goes org-blind on the scoped half). `q` travels
 only as the engine's query parameter and is **never concatenated into the
 filter expression** — the filter is built from resolved UUIDs and nothing
@@ -791,8 +792,8 @@ at-least-once plus last-writer-agnostic equals exactly-current. There is no
 version fencing to maintain and no ordering assumption to violate.
 
 **The erasure hook, and the lifecycle declaration.** The Meili documents
-are an off-ORM population, and P5-R1's ruling is that populations are
-**declared, never hand-listed** (the lifecycle-declarations rule — P5-R1
+are an off-ORM population, and the standing ruling is that populations are
+**declared, never hand-listed** (the lifecycle-declarations rule, its
 §2, now firmly **rule 31** per the PM landing-order assignment; the
 storage wall renumbered to 32 in ADR files-2 — the collision this
 parenthesis used to record is resolved).
@@ -802,7 +803,7 @@ written for exactly this): `delete_tenant_documents(*, tenant)` is the
 callable, reached by discovery from `close_tenant`'s walk. Person-level
 erasure needs no search-specific hand edit either: `erase_user` anonymises
 rows through services, those services emit, and the spine converges the
-documents — the **erased-absence criterion** (P5-R1's probe, extended to
+documents — the **erased-absence criterion** (the erasure probe, extended to
 the index: after erasure and an outbox drain, no document in any index
 contains the pre-erasure email or name) is what proves the chain rather
 than a second walk.
@@ -1059,14 +1060,15 @@ G3; rules 13, 22 (none — no migrations), the lifecycle-declarations rule.
    (console-is-a-window, rule-27 posture).
 3. The document population is declared purged-by-callable through the
    P5 lifecycle registry (or, if P5 has not landed it, the callable +
-   module-docstring truth per P5-R1's shape, with the declaration named
+   module-docstring truth per the declared-population ruling's shape (named
+   below), with the declaration named
    as P5's wiring); `close_tenant`'s walk reaches
    `delete_tenant_documents` by discovery — a hand-list reference
-   anywhere is the violation P5-R1 closed.
+   anywhere is the violation the declared-population ruling closed.
 4. `delete_tenant_documents` deletes by filter; after it, a root-actor
    query returns zero hits for that tenant across every kind.
 5. **Erased-absence**: after `erase_user` + outbox drain, no document in
-   any index contains the pre-erasure email or name — P5-R1's probe,
+   any index contains the pre-erasure email or name — the erasure probe,
    extended to the index; it fails against a build that skips the drain
    and passes once the drain lands.
 6. Backup honesty: the recovery story (`search_reindex`, no volume
@@ -1105,7 +1107,7 @@ posture; rules 5, 8, 12, 24.
 
 **R-e · example adoption + wire proofs + the adversarial probe** —
 `apps/example` (declaration + migration) + wire tests. Size M. Cites E1,
-E2, E6, E9; rules 5, 16, 17, 22, 24; the P3-R0 class.
+E2, E6, E9; rules 5, 16, 17, 22, 24; the socket-leak class.
 1. `apps/example/search.py` declares the Widget searchable with
    `refresh_on` names from `events.py`; migration
    `0010_widget_search_vector` adds the generated column + GIN + trigram
@@ -1120,7 +1122,7 @@ E2, E6, E9; rules 5, 16, 17, 22, 24; the P3-R0 class.
    tenant) → zero hits, zero counts, on **both engines**; cross-tenant
    likewise; and the red is demonstrated first — the injection disabled
    through a test double leaks, then the real chokepoint refuses (the
-   P3-R0 probes' precedent: the probe that found the socket leak became
+   earlier probes' precedent: the probe that found the socket leak became
    the regression).
 5. Filter smuggling: a documented corpus of hostile `q` values (Meili
    filter syntax, quotes, backslashes, `OR tenant_id != …`) each returns
@@ -1593,7 +1595,7 @@ is this ledger plus this event, and no counter anywhere.
 
 No workflows, still deliberate (the rollup workflow — a Temporal
 schedule writing append-only rollup rows derived from the ledger — is
-**deferred with its trigger**: the P3-style harness measuring the
+**deferred with its trigger**: a perf harness measuring the
 day-bucketed SUM as too slow at seeded scale).
 
 ### Rules & canaries born with it

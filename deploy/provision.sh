@@ -11,6 +11,11 @@
 #   deploy/provision.sh project-name                   the name THIS stack carries
 #   deploy/provision.sh derived-project-name           the name this CHECKOUT derives
 #   deploy/provision.sh image-tag                      the tag its images carry
+#   deploy/provision.sh image-repo <web|worker>        the registry repository it lives in
+#   deploy/provision.sh image-ref <web|worker> [tag]   repository:tag, the one composed name
+#   deploy/provision.sh image-digest <web|worker> [tag]  what the REGISTRY says that tag is
+#   deploy/provision.sh tree-digest <web|worker>       what the box's TREE file PINS it to
+#   deploy/provision.sh pin-digest <web|worker> <sha>  write that pin (release.sh's, act 7)
 #   deploy/provision.sh up [args...]                   `compose up -d`, on THIS box's stack
 #   deploy/provision.sh backup-policy <env> [--apply]  the backups bucket's WORM-ish posture
 #
@@ -205,7 +210,7 @@ resolved_project_name() {
 # machine it mattered on.
 #
 # So the tag is DERIVED WHERE GIT IS — on the laptop — and CARRIED IN THE ARCHIVE
-# as a one-line `TREE` file beside `deploy/`:
+# as a `TREE` file beside `deploy/`, whose FIRST LINE is the tag:
 #
 #     git archive --add-virtual-file=TREE:"$(./deploy/provision.sh image-tag)" HEAD \
 #       | ssh … 'mkdir -p "$NS" && tar -x -C "$NS"'
@@ -215,15 +220,33 @@ resolved_project_name() {
 # repository does not, which is the one place it is the better witness. `untracked`
 # survives as the last resort and now means what it says: no git AND no archive
 # marker, i.e. somebody assembled this tree by hand.
+#
+# --- THE TREE FILE'S GRAMMAR, AND WHY IT IS LINE-ORIENTED ---------------------
+# It used to be read as `tr -d ' \t\r\n' < TREE` — the WHOLE FILE with every
+# whitespace byte removed — which is a reader that cannot survive the file
+# growing a second line. `release.sh` now pins the released image DIGEST beside
+# the tag, so the file does grow one, and the old reader would have
+# concatenated `tree-abc123def456` and `sha256:…` into a single tag naming
+# nothing. That is the C1 disease exactly: two readers of one file that disagree
+# about where a value ends.
+#
+# The grammar, and it is one sentence: LINE 1 IS THE TAG, BARE. Every later line
+# is `<key> <value…>`, read by key and never by position. A legacy one-line
+# `TREE` is therefore still read correctly by the same code — which is what lets
+# a box shipped before this change be released after it.
+#
+#     tree-a1b2c3d4e5f6
+#     digest web sha256:…
+#     digest worker sha256:…
 image_tag() {
     local tree dirty=""
     tree="$( cd "$HERE" && git rev-parse --short=12 'HEAD^{tree}' 2>/dev/null )" || tree=""
     if [ -z "$tree" ]; then
         if [ -f "$HERE/../TREE" ]; then
-            # One line, whitespace trimmed. Written by the ship step above out of
+            # LINE 1, whitespace trimmed. Written by the ship step above out of
             # this same function, so the box's tag and the laptop's are the same
             # bytes by construction rather than by anybody remembering.
-            tr -d ' \t\r\n' < "$HERE/../TREE"
+            head -n1 "$HERE/../TREE" | tr -d ' \t\r\n'
             return
         fi
         printf 'untracked'
@@ -233,6 +256,163 @@ image_tag() {
         dirty="-dirty"
     fi
     printf 'tree-%s%s' "$tree" "$dirty"
+}
+
+# =============================================================================
+# THE REGISTRY — build once, promote by digest (ADR deploy-4)
+# =============================================================================
+# WHAT WENT WRONG WITHOUT IT. This deployment built its images THREE TIMES for
+# one tree: twice in CI (`docker build --target web|worker`, whose output died
+# with the runner and was therefore never CI-tested in any sense that reached a
+# box), and once more on the box itself, arm64, at runbook step 33. Three builds
+# of "the same" tree is three chances to differ — a base image that moved
+# between them, a transient apt mirror, a wheel rebuilt — and NOTHING anywhere
+# could tell you whether the amd64 thing CI proved and the arm64 thing the box
+# ran were the same software. The box build is also the slowest step in a
+# deploy and the one most likely to fail at 3am, on the machine least able to
+# be debugged.
+#
+# THE RULE NOW. One image per tree, built ONCE, in CI, multi-arch, pushed to a
+# registry under the tree tag. The box PULLS it. A release RESOLVES the tag to
+# an immutable digest, refuses a tag the registry does not have, and pins the
+# digest it released into `TREE` — so the question "what is actually running"
+# has a byte answer on the box rather than an inference from a tag.
+#
+# WHY A TAG AT ALL, IF THE DIGEST IS THE TRUTH. Because the tag is DERIVED
+# (`tree-<12hex>`), not chosen: it is a name for the digest that a human can
+# read, and it is the same name on every environment. There is deliberately no
+# `:staging` and no `:prod` — a moving tag makes "which image is prod running"
+# unanswerable from the box, which is the disease this whole file exists to
+# refuse. PROMOTION IS THEREFORE NOT A RE-TAG AND NOT A REBUILD: staging and
+# prod point their `DJB_IMAGE_TAG` at the same tree, resolve the same digest,
+# and run the same bytes.
+
+# The repository PREFIX every image name here is composed from. Configuration,
+# no default — `deploy/dns.sh`'s grammar and `DJB_DEPLOY_NAMESPACE`'s, for the
+# same reason one level down: a guessed registry is a pull from, or a push to,
+# somebody else's namespace, and both succeed. For ECR it is
+# `<account>.dkr.ecr.<region>.amazonaws.com/<namespace>`; on a laptop the
+# generator writes the bare local prefix `local`, which no registry is ever
+# consulted for.
+#
+# The refusal is a statement rather than a `$(...)`: `die` inside a command
+# substitution exits only the subshell.
+IMAGE_REGISTRY=""
+require_image_registry() {
+    IMAGE_REGISTRY="${DJB_IMAGE_REGISTRY:-}"
+    if [ -z "$IMAGE_REGISTRY" ] && [ -f "$HERE/.env" ]; then
+        IMAGE_REGISTRY="$(sed -n "s/^DJB_IMAGE_REGISTRY='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | head -n1)"
+    fi
+    [ -n "$IMAGE_REGISTRY" ] || die "DJB_IMAGE_REGISTRY is empty.
+   It is the repository prefix every image name is composed from — for ECR
+   '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>', on a laptop 'local'.
+   It has no default on purpose: a guessed registry pulls somebody else's image
+   and succeeds. Export it, or fill the slot deploy/.env carries."
+}
+
+# The two services that have an image, named once. A third one added below
+# without a name here would compose a repository nothing pushes to.
+IMAGE_SERVICES="web worker"
+
+require_image_service() {
+    local want="${1:-}"
+    case " $IMAGE_SERVICES " in
+    *" $want "*) return 0 ;;
+    esac
+    die "unknown image service '${want:-<none>}'. This deployment has: $IMAGE_SERVICES"
+}
+
+# `<prefix>/djb-<service>`. The `djb-` half is the image NAME this repository has
+# always used and it is deliberately kept: `apps/core/tests/test_connection_pool.py`
+# reads `deploy/compose.yaml` and asserts the one-off door runs the same image
+# name `web` does, and the runbooks, the release drive and the provision drive
+# all speak it. A registry migration is not the moment to rename the thing being
+# migrated.
+image_repo() {
+    require_image_service "${1:-}"
+    require_image_registry
+    printf '%s/djb-%s' "$IMAGE_REGISTRY" "$1"
+}
+
+# repository:tag — THE ONE COMPOSED NAME. `deploy/compose.yaml` interpolates the
+# identical string out of `deploy/.env`; CI builds and pushes it; `release.sh`
+# resolves it. Four sites, one composition, so they cannot drift.
+#
+# `repo` is resolved into a variable and its status CHECKED, rather than
+# interpolated inline: `die` inside a command substitution exits the SUBSHELL,
+# so an inline `$(image_repo …)` printed the refusal on stderr and then went on
+# to print `:tree-…` on stdout and exit 0 — a caller reading that string would
+# have composed an image name with no repository in it. The file's own
+# `require_namespace` paragraph says the same thing about the same trap.
+image_ref() {
+    local service="${1:-}" tag="${2:-}" repo
+    [ -n "$tag" ] || tag="$(image_tag)"
+    repo="$(image_repo "$service")" || exit 2
+    printf '%s:%s' "$repo" "$tag"
+}
+
+# WHAT THE REGISTRY SAYS THAT TAG IS. The manifest digest — for a multi-arch
+# image, the digest of the INDEX, which is the thing both architectures resolve
+# through and therefore the only digest that names "this image" rather than
+# "this image on amd64".
+#
+# `docker buildx imagetools inspect` rather than `docker manifest inspect`: the
+# latter needs experimental mode on some daemons and prints the manifest without
+# reliably printing its own digest. This prints exactly one line or fails.
+#
+# EXIT 2 ON ANYTHING IT COULD NOT RESOLVE, and the caller must not turn that
+# into "no digest". "The registry does not have this tag" and "I could not reach
+# the registry" are different sentences and only one of them is the deployer's
+# fault; both are refusals, neither is a pass.
+image_digest() {
+    local service="${1:-}" tag="${2:-}" ref out
+    ref="$(image_ref "$service" "$tag")" || exit 2
+    command -v docker >/dev/null 2>&1 || die "no 'docker' on PATH; the registry cannot be asked what $ref is"
+    out="$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' "$ref" 2>&1)" || {
+        echo "!! provision: the registry has no $ref (or could not be reached)." >&2
+        printf '   %s\n' "$out" >&2
+        exit 2
+    }
+    out="${out//\"/}"
+    case "$out" in
+    sha256:*) printf '%s' "$out" ;;
+    *) die "the registry answered about $ref with something that is not a digest: $out" ;;
+    esac
+}
+
+# WHAT THE BOX PINS. Read off `TREE`'s `digest <service> <sha256:…>` line — by
+# KEY, never by position, per the grammar above. Empty output and exit 0 mean
+# "this tree has never been released here", which is a legitimate state (the
+# first release of a freshly shipped tree) and is NOT a mismatch.
+tree_digest() {
+    require_image_service "${1:-}"
+    [ -f "$HERE/../TREE" ] || return 0
+    awk -v svc="$1" '$1 == "digest" && $2 == svc { print $3; exit }' "$HERE/../TREE"
+}
+
+# WRITE that pin. `release.sh` act 7's, and nobody else's — the pin is a record
+# of what was RELEASED, so anything that wrote it earlier would be recording an
+# intention as a fact.
+#
+# Rewritten whole rather than appended to, so a re-release of the same tree
+# replaces its own line instead of growing a file with two answers in it. Line 1
+# is never touched.
+pin_digest() {
+    local service="${1:-}" digest="${2:-}" file="$HERE/../TREE" tmp
+    require_image_service "$service"
+    case "$digest" in
+    sha256:*) : ;;
+    *) die "pin-digest: '$digest' is not a sha256:… digest" ;;
+    esac
+    [ -f "$file" ] || die "no $file — this box has no TREE marker to pin a digest into. Re-ship (deploy/ship.sh)."
+    tmp="$(mktemp "${file}.XXXXXX")" || die "could not write beside $file"
+    awk -v svc="$service" -v dg="$digest" '
+        NR == 1 { print; next }
+        $1 == "digest" && $2 == svc { next }
+        { print }
+        END { print "digest " svc " " dg }
+    ' "$file" >"$tmp" || { rm -f "$tmp"; die "could not rewrite $file"; }
+    mv "$tmp" "$file" || die "could not replace $file"
 }
 
 # The Caddy image, for `caddy hash-password`. Pinned to the same tag
@@ -306,6 +486,7 @@ cmd_env_file() {
       CADDY_IMAGE="$(caddy_image)" \
       DJB_PROJECT_NAME="$(derived_project_name)" \
       DJB_IMAGE_TAG="$(image_tag)" \
+      DJB_IMAGE_REGISTRY_SLOT="$( [ "$environment" = "laptop" ] && printf 'local' || printf '%s' "${DJB_IMAGE_REGISTRY:-}" )" \
       DJB_DEFERRED_SENTINEL="$(deferred_sentinel)" \
       DJB_ADOPT_FROM="$adopt" \
       "$PYTHON_BIN" - "$HERE" "$out" "$environment" <<'PYTHON'
@@ -324,6 +505,12 @@ here, out, environment = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 # generated env file with no project name is one that silently shares a stack.
 project_name = os.environ["DJB_PROJECT_NAME"]
 image_tag = os.environ["DJB_IMAGE_TAG"]
+# The repository prefix every image name is composed from (ADR deploy-4). The
+# shell resolved it: `local` for the laptop (a purely local name no registry is
+# consulted for), otherwise whatever the operator exported — EMPTY when they
+# exported nothing, which is a deliberate refusal at `up` rather than a guess
+# here. `deploy/compose.yaml`'s `${DJB_IMAGE_REGISTRY:?…}` is where it lands.
+image_registry = os.environ["DJB_IMAGE_REGISTRY_SLOT"]
 # Read out of deploy/entrypoint.sh by the shell above. See DEFERRED_SENTINEL.
 deferred_sentinel = os.environ["DJB_DEFERRED_SENTINEL"]
 
@@ -694,10 +881,23 @@ lines: list[str] = [
     "# ONE escape is exporting COMPOSE_PROJECT_NAME, which outranks this line.",
     emit("COMPOSE_PROJECT_NAME", project_name),
     "",
-    "# What the two built images are tagged. Never `latest` — the tree hash says",
-    "# which tree the image came from. Re-export it when you rebuild:",
-    "#     DJB_IMAGE_TAG=\"$(./deploy/provision.sh image-tag)\" docker compose ... build",
+    "# What the two images are tagged. Never `latest` — the tree hash says which",
+    "# tree the image came from, and it is the SAME tag in every environment,",
+    "# because promotion is not a re-tag (ADR deploy-4).",
+    "#     ./deploy/provision.sh image-tag",
     emit("DJB_IMAGE_TAG", image_tag),
+    "",
+    "# --- WHERE THE IMAGES COME FROM ----------------------------------------",
+    "# The repository prefix `deploy/compose.yaml` composes every image name",
+    "# from: '<registry>/web:<tag>' and '<registry>/worker:<tag>'. For ECR that",
+    "# is '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>'; on a laptop it",
+    "# is the bare local prefix 'local', which no registry is consulted for.",
+    "#",
+    "# EMPTY IS A REFUSAL, NEVER A FALLBACK. A guessed registry pulls somebody",
+    "# else's image and succeeds. `provision.sh up` refuses on an empty slot and",
+    "# so does compose's own `${DJB_IMAGE_REGISTRY:?…}`.",
+    "#     ./deploy/provision.sh image-ref web",
+    emit("DJB_IMAGE_REGISTRY", image_registry),
     "",
 ]
 
@@ -1023,28 +1223,48 @@ image_tag_in_env_file() {
 # uses, and for the same reason: a re-deploy should MIGRATE the pin rather than
 # fork off it.
 #
-# It refuses, rather than adopting, when nothing has built that image yet: the
+# It refuses, rather than adopting, when no image for this tree can be got: the
 # alternative is `up` dying on a missing image with compose's own message, which
 # does not say which step was skipped.
+#
+# WHAT THE REGISTRY MOVE CHANGED HERE. The check used to be `docker image inspect` on a
+# LOCALLY BUILT tag, because the box built its own images at runbook step 33.
+# The box builds nothing now — CI does, once, multi-arch — so the honest
+# question is "can this box GET the image for this tree", and the honest way to
+# ask it is to try the pull. A local hit short-circuits it (the laptop proof
+# builds its own and never reaches a registry), a pull satisfies it, and only a
+# tree no registry has is a refusal.
 reconcile_image_tag() {
-    local tree_tag file_tag
+    local tree_tag file_tag service ref missing=""
     tree_tag="$(image_tag)"
     file_tag="$(image_tag_in_env_file)"
     [ -n "$tree_tag" ] || return 0
     [ "$tree_tag" != "$file_tag" ] || return 0
 
-    if ! docker image inspect "djb-web:$tree_tag" >/dev/null 2>&1 \
-       || ! docker image inspect "djb-worker:$tree_tag" >/dev/null 2>&1; then
+    for service in $IMAGE_SERVICES; do
+        ref="$(image_ref "$service" "$tree_tag")" || exit 2
+        docker image inspect "$ref" >/dev/null 2>&1 && continue
+        say "pulling $ref"
+        docker pull "$ref" >/dev/null 2>&1 && continue
+        missing="$missing $ref"
+    done
+
+    if [ -n "$missing" ]; then
         echo "!! provision: REFUSED." >&2
         echo "   this tree is    $tree_tag" >&2
         echo "   the env file    ${file_tag:-<none>}" >&2
         echo "" >&2
-        echo "   No image is tagged $tree_tag on this machine, so bringing the stack" >&2
-        echo "   up would either run the OLD image the env file pins or die on a" >&2
-        echo "   missing one. Build this tree first:" >&2
+        echo "   Neither this machine nor the registry has:" >&2
+        printf '     %s\n' $missing >&2
         echo "" >&2
-        echo "     export DJB_IMAGE_TAG=\"\$(./deploy/provision.sh image-tag)\"" >&2
-        echo "     docker compose -f deploy/compose.yaml build" >&2
+        echo "   Bringing the stack up would either run the OLD image the env file" >&2
+        echo "   pins or die on a missing one. THE BOX DOES NOT BUILD (ADR deploy-4):" >&2
+        echo "   the image for a tree is built once, in CI, and pushed. So either" >&2
+        echo "   this tree never reached a green CI run, or you are pointed at the" >&2
+        echo "   wrong registry:" >&2
+        echo "" >&2
+        echo "     ./deploy/provision.sh image-ref web       # what is being looked for" >&2
+        echo "     grep DJB_IMAGE_REGISTRY deploy/.env       # where it is being looked for" >&2
         echo "" >&2
         echo "   Nothing was started." >&2
         exit 2
@@ -1627,6 +1847,11 @@ case "${1:-}" in
     project-name)  resolved_project_name; echo ;;
     derived-project-name) derived_project_name; echo ;;
     image-tag)     image_tag; echo ;;
+    image-repo)    shift; image_repo "${1:-}"; echo ;;
+    image-ref)     shift; image_ref "${1:-}" "${2:-}"; echo ;;
+    image-digest)  shift; image_digest "${1:-}" "${2:-}"; echo ;;
+    tree-digest)   shift; tree_digest "${1:-}" ;;
+    pin-digest)    shift; pin_digest "${1:-}" "${2:-}" ;;
     up)            shift; cmd_up "$@" ;;
     env-file)      shift; cmd_env_file "$@" ;;
     secrets-put)   shift; cmd_secrets_put "$@" ;;

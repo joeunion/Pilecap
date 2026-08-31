@@ -19,6 +19,7 @@ from __future__ import annotations
 import functools
 import inspect
 import re
+from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -243,7 +244,47 @@ def _bound_operations() -> list[tuple[str, Any]]:
     return out
 
 
+def answers_cursor_envelope(operation: Any) -> bool:
+    """The ADR core-24 seam, reached the way this module reaches `config.api`.
+
+    Imported inside the call rather than at the top of the file: `checks.py` is
+    imported from `AppConfig.ready()`, and `apps.core.api.pagination` pulls in
+    schemas and the refusal registry — a module-level import here would run that
+    while the app registry is still populating. Reporting on what the mounts
+    found is this module's job, which is the same reason `_bound_operations`
+    imports `config.api` where it does.
+    """
+    from apps.core.api.pagination import answers_cursor_envelope as seam
+
+    return seam(operation)
+
+
+def offers_pagination_controls(operation: Any) -> bool:
+    """The seam's other half — `?cursor=` and `?limit=`. Lazy for the same reason."""
+    from apps.core.api.pagination import offers_pagination_controls as seam
+
+    return seam(operation)
+
+
 def _is_list_response(operation: Any) -> bool:
+    """Every route that answers MANY of something — both shapes it can take.
+
+    The `list[` string-match below is the BARE list: `response=list[WidgetOut]`,
+    an endpoint whose cost is set by whoever has the most rows. It used to be the
+    whole population, and on this tree that population is EMPTY — every list here
+    already answers the cursor envelope, so `djb.E030` was enforcing nothing at
+    all against the real registry while its canary went on firing against a
+    planted bare list. An envelope route that gives a caller no way to ask for
+    page two is exactly the ADR core-18 deviation rule 3 exists to refuse, and
+    nothing saw it.
+
+    So the population is the union, and `answers_cursor_envelope` (ADR core-24)
+    is the half that reads the envelope — the same predicate the docs derivation
+    and `introspect` read, so the three cannot come to disagree about which
+    routes are lists.
+    """
+    if answers_cursor_envelope(operation):
+        return True
     model = (getattr(operation, "response_models", None) or {}).get(200)
     if model is None:
         return False
@@ -272,11 +313,15 @@ def check_route_auth(app_configs: Any = None, **kwargs: Any) -> list[CheckMessag
                 )
             )
         if "GET" in operation.methods and _is_list_response(operation):
-            if not hasattr(view, "_ninja_contribute_args"):
+            if not offers_pagination_controls(operation):
                 found.append(
                     Error(
-                        f"list route {url_name or where} ({where}) is not @paginate'd — an "
-                        "unpaginated list is a slower way to ask for everything (house rule 3).",
+                        f"list route {url_name or where} ({where}) offers no pagination "
+                        "controls — an unpaginated list is a slower way to ask for "
+                        "everything, and an envelope with no `?cursor=` behind it is a "
+                        "`next_cursor` nobody can spend (house rule 3). Either "
+                        "`@paginate(CursorPagination)` it, or take `cursor` and `limit` "
+                        "and call `apps.core.api.pagination.cursor_page` yourself.",
                         obj=url_name or where,
                         id="djb.E030",
                     )
@@ -1030,6 +1075,75 @@ def check_contract_documentation(app_configs: Any = None, **kwargs: Any) -> list
                 )
             )
     return found
+
+
+# --- rule 41's other half: the document's own top-level keys --------------------
+#
+# Forty-seven rules cover the document's OPERATIONS and its refusal codes, and
+# nothing covered the document ITSELF. Its top level is where a contract says
+# which OpenAPI version it speaks, who it is, and — in `servers` — where it can
+# be reached; every one of those is a thing a generated client reads before it
+# reads a single route, and every one of them could appear, vanish or change
+# meaning with no check anywhere noticing.
+#
+# `servers` is why this is worth a census rather than a shrug. It ships EMPTY
+# here, and empty is correct: a template has no deploy URL, and inventing one
+# would be worse than saying nothing. But "correct" and "silently empty" are not
+# the same thing, and until this key was declared nobody could tell which of the
+# two the template was doing. Now it is said, with the reason, in the one file
+# the gate consistency-checks — which is also what makes a product that DOES
+# have a URL notice the day it ships without one.
+#
+# Set equality, both directions, because both rots are real: an undeclared key
+# is something the mount grew that nobody decided, and a declared key that is
+# gone is a contract element the document stopped publishing while its reason
+# went on sitting in `rules.yaml` saying it was there.
+
+
+def declared_top_level_keys() -> dict[str, str]:
+    """Rule 41's document census: `{key: reason}`, from `quality/rules.yaml`."""
+    return {
+        str(entry["key"]): str(entry.get("reason") or "")
+        for entry in _scope("41").get("openapi_top_level_keys") or []
+        if entry.get("key")
+    }
+
+
+def top_level_key_faults(document: Mapping[str, Any]) -> list[str]:
+    """The two-directional diff, as sentences. Empty is the passing answer.
+
+    Split out from the check so the vanished-key direction can be driven against
+    a document that is missing one — the live mount always builds a complete
+    document, so that arm would otherwise be a branch no test could reach.
+    """
+    declared = declared_top_level_keys()
+    if not declared:
+        return []
+    live = set(document)
+    faults = [
+        f"the OpenAPI document carries a top-level key {key!r} that rule 41's "
+        "`openapi_top_level_keys` census does not declare — a contract element "
+        "nobody decided is a contract element nobody owns. Declare it in "
+        "`quality/rules.yaml` with the reason it is there, or stop publishing it"
+        for key in sorted(live - set(declared))
+    ]
+    faults += [
+        f"rule 41 declares a top-level key {key!r} the OpenAPI document no longer "
+        "carries — the reason recorded for it in `quality/rules.yaml` now describes "
+        "something that is not published. Restore the key or retire its line"
+        for key in sorted(set(declared) - live)
+    ]
+    return faults
+
+
+@register(DJB)
+def check_document_top_level(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
+    from config.api import api
+
+    return [
+        Error(f"{fault} (house rule 41, ADR api-1).", obj="quality/rules.yaml", id="djb.E042")
+        for fault in top_level_key_faults(api.get_openapi_schema())
+    ]
 
 
 # --- the engine's own tripwire --------------------------------------------------

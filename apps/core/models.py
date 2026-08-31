@@ -249,7 +249,7 @@ class BaseModel(models.Model):
     # House rule 20's static half reads the source: `.delete()`, `.update()`
     # and `.bulk_update()` on a name that mentions a declared member. It cannot
     # see a BOUND name — `row = fetch(); row.field = x; row.save()` reads as
-    # three innocent lines — and P5-R0's F1 drove exactly that tamper on an
+    # three innocent lines — and a probe drove exactly that tamper on an
     # append-only member through a full CLEAN gate. P4's production database
     # grant is the third belt and it protects production only, which is not
     # where a tamper gets written.

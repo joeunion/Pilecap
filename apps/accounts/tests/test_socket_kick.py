@@ -1,6 +1,6 @@
 """The socket dies with the credential — the reviewer's probe, made permanent.
 
-P3-R0's MEDIUM, in one sentence: **socket auth is resolved once, at the
+The finding, in one sentence: **socket auth is resolved once, at the
 handshake.** That is the right design for a channel that then stays open for
 hours and the wrong one the moment the credential behind it is withdrawn — a
 revoked token's connection kept receiving until the client happened to hang up,
@@ -223,7 +223,7 @@ async def test_deactivating_a_person_closes_their_sockets(
 
     Everything `deactivate_user` does stops the *next* request — the session is
     re-checked against `is_active`, and so is every token — and none of it
-    reaches a connection that was authenticated an hour ago. Until P5-B-ACCT
+    reaches a connection that was authenticated an hour ago. Until the doors landed
     this service had no kick and no door, so nobody could have noticed: giving
     it a door is what made "a deactivated person keeps receiving" a thing a
     person could actually do.
@@ -365,7 +365,7 @@ async def test_a_dropped_kick_says_so_through_our_own_logging(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """**P3-SEC-1's LOW-3.** The swallowed kick is no longer also silent.
+    """**The swallowed-kick finding.** It is no longer also silent.
 
     `close_sockets_on_commit` registers with `robust=True` on purpose — a
     failing channel layer must not cancel the hooks queued behind it — and the

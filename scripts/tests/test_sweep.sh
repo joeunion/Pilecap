@@ -1,4 +1,36 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # The drive for `scripts/sweep.sh` and `scripts/lifecycle.sh` — the registry, the
 # four verdicts, the two new Temporal classes, and the unrecognized-shape refusal.
 #
@@ -173,6 +205,14 @@ teardown() {
         --reason "test_sweep teardown" >/dev/null 2>&1
     lc_temporal workflow terminate --workflow-id "liveprobe:this:checkout:open" \
         --reason "test_sweep teardown" >/dev/null 2>&1
+    # The strand `case_the_gate_census_remedy_actually_clears_a_strand` plants on
+    # THIS checkout's queue. Its own body ends it by running the gate's printed
+    # remedy — which is the assertion — so this line only ever fires when the
+    # remedy did not work, i.e. exactly when the case has just gone red. A
+    # driver that leaked a strand while proving strands get cleared would be
+    # funny once.
+    lc_temporal workflow terminate --workflow-id "g3fixprobe:this:checkout:strand" \
+        --reason "test_sweep teardown" >/dev/null 2>&1
     # ONLY IF THIS RUN CREATED IT. See plant_our_checkout_database.
     if [ "$PLANTED_OUR_DATABASE" -eq 1 ]; then
         db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$OUR_BASE" >/dev/null 2>&1
@@ -297,6 +337,24 @@ says_contains() {
         echo "  FAILED   ${label} — does not say \"${needle}\""
         echo "             | ${haystack}"
         FAILED=$((FAILED + 1))
+        ;;
+    esac
+}
+
+# The mirror of `says_contains`, for a sentence that must have STOPPED being
+# said. It exists for exactly one thing today: an inoperative remedy that was
+# printed for a while must not come back, and "it is gone" is not something a
+# positive assertion can express.
+says_not_contains() {
+    local label="$1" haystack="$2" needle="$3"
+    case "$haystack" in
+    *"$needle"*)
+        echo "  FAILED   ${label} — says \"${needle}\" and must not"
+        FAILED=$((FAILED + 1))
+        ;;
+    *)
+        echo "  ok       ${label} — does not say \"${needle}\""
+        PASSED=$((PASSED + 1))
         ;;
     esac
 }
@@ -732,6 +790,168 @@ case_this_checkouts_running_work_survives_force_foreign() {
         --reason "test_sweep: live probe teardown" >/dev/null 2>&1
 }
 
+# --- the gate's own-tree census asks BOTH questions ---------------------------
+#
+# READ AS TEXT, and that is the weaker proof `test_db_pin.sh`,
+# `test_loop_tier.sh` and `test_gate_lease.sh` each declare for their own
+# wiring, for the same reason: running the real full gate from inside a drive
+# that the full gate runs is not a thing a drive may do. What it buys is the
+# thing that actually rots — a leg silently narrowed back to one class.
+#
+# 1,061 stranded executions accumulated while the census leg asked only about
+# Schedules and was green every time. The invocation below is the belt; a
+# deletion of it would be invisible in every transcript, which is exactly what
+# a text assertion is for.
+case_the_gate_census_asserts_open_executions_too() {
+    local leg
+    leg="$(cat scripts/check.sh)"
+
+    says_contains "gate census: it asserts the open-execution class too" \
+        "$leg" './scripts/sweep.sh --class open-execution --only "$DATABASE_NAME" --assert-none'
+    says_contains "gate census: the schedule assertion is still there beside it" \
+        "$leg" './scripts/sweep.sh --class schedule --only "$DATABASE_NAME" --assert-none'
+
+    # Liveness is READ from this registry, not decided in the leg — a worker
+    # that is up means the open runs on this queue are work, and a gate that
+    # reddened on that is the "reddened by legitimate work" class the leg's own
+    # header refuses.
+    says_contains "gate census: live pollers are asked about before anything is asserted" \
+        "$leg" 'lc_queue_pollers "$OWN_QUEUE"'
+    says_contains "gate census: the queue is derived from the identity, never typed" \
+        "$leg" 'OWN_QUEUE="djb-${DATABASE_NAME#djb_}"'
+
+    # Both exit arms, because they mean different things and the house
+    # semantics rest on the difference.
+    says_contains "gate census: could-not-look on the new class is exit 2" \
+        "$leg" "THE OPEN-EXECUTION CENSUS COULD NOT BE TAKEN"
+    says_contains "gate census: a strand is exit 1, with a remedy" \
+        "$leg" "THIS TREE STRANDED A RUNNING TEMPORAL EXECUTION"
+
+    # THE REMEDY IS NOT ASSERTED HERE ANY MORE, and that absence is the whole
+    # lesson of this file's own defect. What used to stand here was
+    #
+    #     says_contains "gate census: the remedy names this instrument" \
+    #         "$leg" "--sweep --class open-execution --only"
+    #
+    # which passed for the entire life of an INOPERATIVE COMMAND. Two screens
+    # up, `case_this_checkouts_running_work_survives_force_foreign` proves that
+    # this very instrument refuses to destroy this checkout's own open
+    # executions — so the leg was printing, as its remedy for a stranded run,
+    # the one command this file had already proven could not clear one. A text
+    # assertion vouched for it, because a text assertion can only ever say the
+    # string is there.
+    #
+    # The replacement is `case_the_gate_census_remedy_actually_clears_a_strand`
+    # below: it reaches the red, lifts the printed line out of the leg, RUNS it,
+    # and asserts the strand is gone. Only the negative stays here — the dead
+    # line must not come back.
+    says_not_contains "gate census: the inoperative broom remedy is gone for good" \
+        "$leg" "--sweep --class open-execution --only"
+    # ... and the schedule arm, one class up, still names it, because for a
+    # SCHEDULE the broom is operative: that class declares itself disposable.
+    says_contains "gate census: the schedule arm still names the broom, which works there" \
+        "$leg" "--sweep --class schedule --only"
+
+    # A deployment-lifetime checkout is told the property does not apply,
+    # exactly as it already is for Schedules (ADR platform-lifecycle-1).
+    says_contains "gate census: non-process lifetime asserts nothing about either" \
+        "$leg" "Nor does the open-execution property"
+}
+
+# --- the remedy is EXECUTED, because a printed command is a promise -----------
+#
+# THE DEFECT THIS CASE WAS BOUGHT WITH. The leg above printed a remedy for a
+# stranded run for a whole cycle, and it did nothing. Run verbatim in the exact
+# red situation it was printed for, `./scripts/sweep.sh --sweep --class
+# open-execution --only <db>` reported `1 found · 0 destroyed · 1 left alone`
+# and exited 0, and the gate stayed red — because `scripts/lifecycle.sh`
+# declares this class disposable "no" and `scripts/sweep.sh` terminates open
+# executions only on its FOREIGN path. Both of those are CORRECT and neither
+# changed; the remedy was the thing that was wrong.
+#
+# WHY THE OLD ASSERTION COULD NOT SEE IT. It asked whether the leg SAID a
+# string. A string is there or it is not; whether typing it achieves anything is
+# a different question, and only running it asks that one. So this case runs it.
+#
+# THE COMMAND IS LIFTED OUT OF THE LEG, NEVER RETYPED HERE. A copy in this file
+# would go on passing the day the leg's line changed, which is the same class of
+# blindness one level along. The printed line carries no shell variable on
+# purpose (see the leg), so the source text between `echo "` and `" >&2` IS what
+# an operator reads, and the one thing this case supplies is the placeholder the
+# line openly invites.
+#
+# WHAT IT DOES NOT DO: run the gate leg itself. `scripts/check.sh` is what runs
+# this driver, and a drive that ran the full gate would be running itself. The
+# leg's assertion is one command — pinned as text by the case above, so it
+# cannot drift — and this case runs THAT, on either side of the remedy: red
+# before, green after.
+GATE_REMEDY_PLACEHOLDER="<an id above>"
+
+gate_strand_remedy() {
+    # The first indented command line the strand arm prints, un-echoed. Anchored
+    # on the arm's own headline so a second command elsewhere in the file cannot
+    # be picked up by accident.
+    awk '
+        /THIS TREE STRANDED A RUNNING TEMPORAL EXECUTION/ { seen = 1 }
+        seen && /^ *echo "     / {
+            line = $0
+            sub(/^ *echo "/, "", line)
+            sub(/" >&2$/, "", line)
+            sub(/^ +/, "", line)
+            print line
+            exit
+        }
+    ' scripts/check.sh
+}
+
+case_the_gate_census_remedy_actually_clears_a_strand() {
+    # THE RED. This checkout's own identity, because that is the only way to be
+    # `live` AND `mine` at once — the pair the remedy has to work against. The
+    # id is prefixed so it is attributable to this driver on a shared server.
+    local wid="g3fixprobe:this:checkout:strand" remedy remedy_rc
+    lc_temporal workflow start --workflow-id "$wid" --task-queue "$OUR_QUEUE" \
+        --type "GateStrandProbeNeverRuns" >/dev/null 2>&1
+    holds "remedy: the strand is really there to begin with" "yes" \
+        "$(execution_present "$wid" && echo yes || echo no)"
+    drive "remedy: the leg's own assertion is RED on it" 1 -- \
+        ./scripts/sweep.sh --class open-execution --only "$OUR_BASE" --assert-none
+    says "$wid"
+
+    remedy="$(gate_strand_remedy)"
+    holds "remedy: the leg prints a command at all" "yes" \
+        "$([ -n "$remedy" ] && echo yes || echo no)"
+    says_contains "remedy: it is the destroy verb the class declares, not the broom" \
+        "$remedy" "workflow terminate"
+
+    # THE ONE SUBSTITUTION THE PRINTED LINE INVITES, and nothing else is done to
+    # it: no rewriting, no adding a flag, no second command. If what the operator
+    # reads does not work, this goes red.
+    if [ -n "$remedy" ]; then
+        remedy="${remedy//$GATE_REMEDY_PLACEHOLDER/$wid}"
+        says_not_contains "remedy: nothing unsubstituted is left in it" \
+            "$remedy" "<"
+        echo "  ...      running the printed remedy verbatim: ${remedy}"
+        eval "$remedy" >"${WORK}/remedy.log" 2>&1
+        remedy_rc=$?
+        holds "remedy: it exits 0" "0" "$remedy_rc"
+        [ "$remedy_rc" -eq 0 ] || sed 's/^/             | /' "${WORK}/remedy.log"
+    fi
+
+    # THE GREEN. Visibility is the store the census reads and it is not
+    # contractually synchronous with the terminate, so the strand is given a
+    # bounded moment to disappear rather than one instant — a flake here would
+    # teach people to re-run this drive, which is worse than a slow case.
+    local tries=0
+    while [ "$tries" -lt 15 ] && execution_present "$wid"; do
+        sleep 1
+        tries=$((tries + 1))
+    done
+    holds "remedy: the strand is GONE after it" "no" \
+        "$(execution_present "$wid" && echo yes || echo no)"
+    drive "remedy: the leg's own assertion RE-GREENS" 0 -- \
+        ./scripts/sweep.sh --class open-execution --only "$OUR_BASE" --assert-none
+}
+
 # --- CRITERION 5: the Redis answer is written down ----------------------------
 
 case_the_redis_answer_is_recorded() {
@@ -993,6 +1213,8 @@ case_this_checkouts_running_work_survives_force_foreign
 case_assert_none_is_silent_on_an_empty_scope
 case_assert_none_fails_on_a_populated_scope
 case_assert_none_refuses_to_be_a_broom
+case_the_gate_census_asserts_open_executions_too
+case_the_gate_census_remedy_actually_clears_a_strand
 case_the_redis_answer_is_recorded
 case_the_parser_reads_both_of_temporals_time_formats
 case_a_stamp_the_parser_cannot_read_is_unknown_and_never_zero

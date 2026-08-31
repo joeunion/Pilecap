@@ -1,7 +1,7 @@
 """LF1-2: the runtime append-only belt. **The tamper that drove a clean gate.**
 
 Criterion LF1-2 of rung LF-1, carrying ADR core-14 as ratified. The
-absent-answer is not hypothetical and is not a guess: P5-R0's F1 wrote an
+absent-answer is not hypothetical and is not a guess: a probe wrote an
 instance `.save()` tamper on an append-only member and drove it through the
 FULL gate, CLEAN. House rule 20's static half reads the source for `.delete()`,
 `.update()` and `.bulk_update()` on a name that mentions a member; it cannot
@@ -71,7 +71,7 @@ def entry(tenant: Tenant, owner_actor: Actor) -> WidgetEntry:
 
 
 def test_an_update_save_on_a_member_raises(entry: WidgetEntry) -> None:
-    """**The P5-R0 tamper.** Three innocent lines, refused at the third one.
+    """**The tamper.** Three innocent lines, refused at the third one.
 
     Reloaded from the database first, deliberately: that is the shape a tamper
     actually has, and it is the shape `pk is None` would have got wrong —

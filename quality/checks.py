@@ -930,7 +930,7 @@ _WF_BANNED_CALLS = {
     # answers differently in the worker that replays than in the one that first
     # ran — a hash-keyed branch or a hash-derived partition replays down the
     # other leg and Temporal calls it a non-determinism error. Banned outright
-    # rather than argued about per type (P1-R0 F4).
+    # rather than argued about per type.
     "hash",
 }
 
@@ -1527,8 +1527,11 @@ def naming_grammar(root: Path, rule: dict) -> CheckResult:
                 str((app / "apps.py").relative_to(root)),
                 1,
                 f"app {app.name!r} is not plural — an app is a collection of things "
-                "(`orders`, not `order`); a singular name that is deliberate is an "
-                "exemption with a reason in rules.yaml",
+                "(`orders`, not `order`). A singular name that is deliberate is either "
+                "`# rule-16: <reason>` on line 1 of this apps.py — counted and printed, "
+                "and the cheap road when it is this one app — or an "
+                "`app_name_exemptions` entry with a reason in rules.yaml, which is the "
+                "road that says the GRAMMAR admits a singular",
                 klass="apps",
             )
 
@@ -1574,8 +1577,14 @@ def naming_grammar(root: Path, rule: dict) -> CheckResult:
                     str(path.relative_to(root)),
                     node.lineno,
                     f"service {node.name!r} does not begin with a declared verb — a service "
-                    "is something somebody DOES; add the verb to `service_verbs` in "
-                    "rules.yaml if the lexicon is what is wrong",
+                    "is something somebody DOES. Three roads, cheapest first: if this is a "
+                    f"private helper rather than a capability, rename it `_{node.name}` and "
+                    "it leaves the population outright; if this one function is the "
+                    "exception, record `# rule-16: <reason>` on its `def` line (or the "
+                    "contiguous comment block above it), which is counted and printed on "
+                    "every run; add the verb to `service_verbs` in rules.yaml only if the "
+                    "LEXICON is what is wrong, because that widens the vocabulary for the "
+                    "whole template forever",
                     klass="services",
                 )
 
@@ -1652,7 +1661,7 @@ def _assigned_values(tree: ast.Module, name: str) -> list[ast.expr]:
 
 
 def _starter_id_pin(root: Path, out: CheckResult) -> None:
-    """The pin on rule 18's own excluded zone (P1-R0 F4).
+    """The pin on rule 18's own excluded zone.
 
     `workflow_ids` skips `apps/workflows/` because that module *defines* the
     starters — and an exclusion is a promise about what lives inside it. The
@@ -1726,7 +1735,7 @@ def workflow_ids(root: Path, rule: dict) -> CheckResult:
         id_builders = {"workflow_id"}
         starter_names = set(_START_NAMES)
         # An IMPORT ALIAS binds a starter just as firmly as its own name, and
-        # until P1-R0 F4 it was rule 18's cheapest evasion: three characters
+        # until that pin landed it was rule 18's cheapest evasion: three characters
         # (`as begin`) and the rule went quiet on the callsite. The alias is
         # read off the import, so `from ... import start_workflow_on_commit as
         # begin` puts `begin` in the starter set for this module only.
@@ -2145,7 +2154,7 @@ def role_bound_assignment(root: Path, rule: dict) -> CheckResult:
 
 # --- rule 30: a retry clock that nothing reads is a promise nobody keeps -------
 #
-# P1-R1's HIGH, generalised (ADR events-3). `emit()` wrote
+# An early HIGH finding, generalised (ADR events-3). `emit()` wrote
 # `Outbox.next_attempt_at`, indexed it over `(status, next_attempt_at)`,
 # documented it in three modules — and NOTHING in production ever queried it. A
 # row whose dispatch died held a promise for ever, with a management command
@@ -2497,8 +2506,10 @@ def tenant_blind_index_census(root: Path, rule: dict) -> CheckResult:
                 f"`{fields[0].lstrip('-')}` with no `condition` — a tenant-blind index over "
                 "the whole deployment, the exact shape ADR core-11 removed. Lead with "
                 "`tenant`, or carry a `condition` that excludes tenant rows (the "
-                "`AuditEntry` platform-partial shape), or exempt it in rules.yaml with the "
-                "reason (rule 37)",
+                "`AuditEntry` platform-partial shape). If this one index is the "
+                "exception, `# rule-37: <reason>` on its line is counted and printed; the "
+                "rules.yaml exemption is the heavier road and says the SHAPE is blessed "
+                "rather than this line",
                 klass="no_blind_time_index",
             )
 
@@ -2515,8 +2526,10 @@ def tenant_blind_index_census(root: Path, rule: dict) -> CheckResult:
                 f"{model}.{field_name} is a date field with `db_index=True` — the original "
                 "disease's exact spelling (ADR core-11). A bare index on a time column of a "
                 "SCOPED model orders the whole deployment, and every read of this table is "
-                "tenant-scoped. Drop the flag and lead a composite with `tenant`, or exempt "
-                "it in rules.yaml naming the cross-tenant reader that wants it (rule 37)",
+                "tenant-scoped. Drop the flag and lead a composite with `tenant`. If this "
+                "one field is the exception, `# rule-37: <reason>` on its line is counted "
+                "and printed; the rules.yaml exemption is the heavier road and wants the "
+                "cross-tenant reader that needs it named",
                 klass="no_blind_field_index",
             )
 
@@ -2525,7 +2538,7 @@ def tenant_blind_index_census(root: Path, rule: dict) -> CheckResult:
 
 # --- rule 15's secret-at-rest clause ------------------------------------------
 #
-# P1-R1's plaintext-credential class, closed by W6a for the one field that had
+# The plaintext-credential class, closed for the one field that had
 # it. `WebhookEndpoint.secret` was a plain `CharField` in a tree where every
 # sibling credential was already encrypted — the outbound signing secret sat in
 # the clear beside `Connection.credentials` (EncryptedJSONField) and
@@ -2581,8 +2594,10 @@ def secret_at_rest(root: Path, rule: dict) -> CheckResult:
                 "Every sibling credential in this tree is encrypted at rest "
                 "(core.fields.EncryptedCharField / EncryptedJSONField); a database dump, a "
                 "replica, a backup and a traceback are four ways a plaintext one leaves. "
-                "Use an encrypted field type, or allow-list it in rules.yaml with the "
-                "reason (rule 15, P1-R1)",
+                "Use an encrypted field type. If this field is not really a secret, "
+                "`# rule-15: <reason>` on its line is the counted, printed road for this "
+                "one line; the rules.yaml allow-list is the heavier one and blesses the "
+                "NAME for the whole template (rule 15)",
                 klass="secrets",
             )
     return out
@@ -2941,8 +2956,33 @@ def org_scoped_model_names(root: Path) -> set[str]:
     Derived from the tree on every run, exactly as rule 8 derives its own set:
     a new org-scoped model is in scope the moment it exists, without anybody
     editing a list.
+
+    The abstract base is NOT a member: `_transitive` discards its seed, and it
+    is right to, because every reader of this set asks a question about a real
+    table — which reads must chain `visible_to` (rule 24), which `Out` schemas
+    owe `organization_id` (rule 38). Nobody has a row of `OrgScopedModel`. The
+    one question that is about the ANNOTATION rather than the table has its own
+    population below.
     """
     return _transitive(_class_bases_by_name(root), _ORG_BASE)
+
+
+def org_scoped_annotation_names(root: Path) -> set[str]:
+    """The names an annotation may use to say "a row one part of a tenant owns".
+
+    Every concrete org-scoped model, AND the abstract base itself.
+
+    The distinction from `org_scoped_model_names` is the whole point. A model
+    population must not hold the abstract class; an ANNOTATION population must,
+    because `row: OrgScopedModel` is the most honest declaration a service can
+    make — "any row one part of a tenant owns" — and the seed being discarded
+    made exactly that declaration structurally invisible to rule 26. The
+    parameter whose type said loudest that reachability needed asking was the
+    one parameter nobody asked about. Measured on the tree that closed it: zero
+    parameters in `apps/*/services.py` are annotated with the base, so counting
+    it costs no false positive and the first one to arrive is seen.
+    """
+    return org_scoped_model_names(root) | {_ORG_BASE}
 
 
 def _parent_map(tree: ast.Module) -> dict[int, ast.AST]:
@@ -3328,7 +3368,10 @@ def mail_imports(root: Path, rule: dict) -> CheckResult:
                 getattr(node, "lineno", 1),
                 f"imports {module} — comms.send() is the only legal sender in this product, "
                 "and consent, quiet hours and suppression are enforced inside it. Call it, or "
-                "add this module to rule 25's allow-list in quality/rules.yaml with the reason",
+                "add this module to rule 25's allow-list in quality/rules.yaml with the "
+                "reason — and note which road that is: the allow-list exempts the MODULE "
+                "for every line it will ever hold, where `# rule-25: <reason>` on this "
+                "import line exempts this import and is counted and printed on every run",
                 klass=MAIL_KLASS,
             )
     return out
@@ -3507,8 +3550,16 @@ def service_reach(root: Path, rule: dict) -> CheckResult:
     another app's growth — the per-app numbers in the measurement report and the
     per-app ratchets in `rules.yaml` are the same numbers."""
     out = CheckResult()
-    org_models = org_scoped_model_names(root)
-    out.targets_matched["org_scoped_models"] = len(org_models)
+    # Two numbers because they answer two questions, and reporting one for both
+    # is how the abstract base hid: `org_scoped_models` is the table population (what rule
+    # 24 and rule 38 read), `org_scoped_annotations` is what a parameter may be
+    # typed with — the same set plus the abstract base a service may honestly
+    # name. Both print on this rule's status line, so the day they stop
+    # differing by exactly one, somebody can see it.
+    concrete = org_scoped_model_names(root)
+    org_models = org_scoped_annotation_names(root)
+    out.targets_matched["org_scoped_models"] = len(concrete)
+    out.targets_matched["org_scoped_annotations"] = len(org_models)
     # Seeded at zero rather than counted up from nothing, so the rule's own
     # status line always PRINTS the standing valve count — "counted and printed"
     # is the whole discipline, and a key that only appears when it is non-zero
@@ -3680,7 +3731,10 @@ def zitadel_client(root: Path, rule: dict) -> CheckResult:
                         f"names the {PAT_SETTING} setting — the platform credential is read in "
                         f"{client_rel} and declared in config/settings, and nowhere else. Call "
                         f"{CLIENT_MODULE}, or add this module to rule 27's allow-list in "
-                        "quality/rules.yaml with the reason",
+                        "quality/rules.yaml with the reason. The two roads are not the "
+                        "same size: the allow-list makes this MODULE a standing second "
+                        "reader of the credential, where `# rule-27: <reason>` on this "
+                        "line exempts this line and is counted and printed on every run",
                         klass=ZITADEL_KLASS,
                     )
                 continue
@@ -3697,7 +3751,9 @@ def zitadel_client(root: Path, rule: dict) -> CheckResult:
                 "service, a door or a selector: an external call inside a transaction is a "
                 "hiccup that rolls back a legitimate row. Start "
                 "SyncIdentityConfigWorkflow instead, or add this module to rule 27's "
-                "allow-list in quality/rules.yaml with the reason",
+                "allow-list in quality/rules.yaml with the reason — which makes this "
+                "MODULE a standing importer, where `# rule-27: <reason>` on this import "
+                "line exempts this line and is counted and printed on every run",
                 klass=ZITADEL_KLASS,
             )
     return out
@@ -3841,7 +3897,10 @@ def meili_client(root: Path, rule: dict) -> CheckResult:
                         "A second reader is a second way to dial the index, and the index is "
                         "where the tenant walls are injected. Call apps.search.selectors."
                         "search(), or add this module to rule 33's allow-list in "
-                        "quality/rules.yaml with the reason",
+                        "quality/rules.yaml with the reason — the allow-list makes this "
+                        "MODULE a standing second reader, where `# rule-33: <reason>` on "
+                        "this line exempts this line and is counted and printed on every "
+                        "run",
                         klass=MEILI_KLASS,
                     )
                 continue
@@ -3869,7 +3928,9 @@ def meili_client(root: Path, rule: dict) -> CheckResult:
                 "build, so a caller outside the chokepoint is a caller choosing its own "
                 "walls. Reads go through apps.search.selectors.search(); writes go "
                 "through apps.search.services. Or add this module to rule 33's "
-                "allow-list in quality/rules.yaml with the reason",
+                "allow-list in quality/rules.yaml with the reason — which makes this "
+                "MODULE a standing importer, where `# rule-33: <reason>` on this import "
+                "line exempts this line and is counted and printed on every run",
                 klass=MEILI_KLASS,
             )
     return out
@@ -4110,7 +4171,7 @@ def socket_group_discipline(root: Path, rule: dict) -> CheckResult:
     Exact-shape by design (M4 §8): the whole subject is one decision point
     (`apps/realtime/bridge.py::group_for`) and the `group_send` call sites under
     `apps/`. A `group_send` whose group argument is a direct `tenant_group(...)`
-    call and whose message is org-bearing is the org-blind push P3-R0 found.
+    call and whose message is org-bearing is the org-blind push the socket probe found.
     """
     out = CheckResult()
     for path in _py_files(root, "apps"):
@@ -4140,7 +4201,7 @@ def socket_group_discipline(root: Path, rule: dict) -> CheckResult:
                     rel,
                     node.lineno,
                     f"an org-bearing payload is pushed to the bare tenant group ({reason}) — "
-                    "every branch's socket hears another branch's rows (P3-R0's HIGH, priced "
+                    "every branch's socket hears another branch's rows (a HIGH finding, priced "
                     "at 495 wrong-branch frames per 500 sockets by M4). The group is "
                     "`group_for`'s decision, never `tenant_group(...)` at a push site.",
                 )
@@ -4526,6 +4587,30 @@ def diff_checks(root: Path, ref: str, rules_by_id: dict[str, dict]) -> dict[str,
     # api.py, nowhere else, and never in a test module .
     v2_added = _breaking_change_is_declared(root, ref, changed)
 
+    # THE MOVE. A schema class that leaves one module and arrives,
+    # field for field identical, in another module IN THE SAME CHANGE has not
+    # left the wire — it has been promoted, which is the ordinary refactor
+    # (a shared `Out` moving to `core/schemas.py`). Read per FILE, this looked
+    # exactly like a deletion, and the message then offered the two heaviest
+    # exits in the engine: move the mount, or declare a version. A rule that
+    # answers the safest change class with "declare a breaking change" teaches
+    # the version marker as a way past the gate.
+    #
+    # The comparison is the whole class body's fields, not the name: a class
+    # that arrives elsewhere with a field removed or re-typed is a move AND a
+    # break, and the message below says so instead of choosing one.
+    schema_paths = [p for p in changed if p.startswith("apps/") and Path(p).name == "schemas.py"]
+    schema_before = {p: _out_fields(_ref_source(root, ref, p)) for p in schema_paths}
+    schema_after = {p: _out_fields(_read(root / p)) for p in schema_paths}
+
+    def _arrivals(cls: str, source: str) -> list[tuple[str, dict[str, str]]]:
+        """Every OTHER changed schemas.py this class newly appeared in."""
+        return [
+            (other, schema_after[other][cls])
+            for other in schema_paths
+            if other != source and cls in schema_after[other] and cls not in schema_before[other]
+        ]
+
     for path in changed:
         parts = Path(path).parts
         app = parts[1] if len(parts) > 1 and parts[0] == "apps" else None
@@ -4589,17 +4674,42 @@ def diff_checks(root: Path, ref: str, rules_by_id: dict[str, dict]) -> dict[str,
         # rule 17 — a removed or re-typed field on an existing Out schema is a
         # breaking change; it blocks unless this same change adds a v2 router.
         if app and Path(path).name == "schemas.py":
-            old = _out_fields(_ref_source(root, ref, path))
-            new = _out_fields(_read(root / path))
+            old = schema_before.get(path, _out_fields(_ref_source(root, ref, path)))
+            new = schema_after.get(path, _out_fields(_read(root / path)))
             for cls, old_fields in old.items():
                 if cls not in new:
+                    arrivals = _arrivals(cls, path)
+                    clean = [where for where, fields in arrivals if fields == old_fields]
+                    if clean:
+                        # A MOVE, not a deletion. Recorded on the diff result —
+                        # and NOT on rule 17's status line today, because
+                        # `live_scan` merges the diff layer's FINDINGS and not
+                        # its TARGETS (quality/gate.py:1180-1182). The count is
+                        # written here so it becomes visible the moment that
+                        # merge exists; that it does not yet is flagged, not
+                        # claimed away.
+                        results["17"].count("schema_moves")
+                        continue
                     if not v2_added:
+                        broke = (
+                            ""
+                            if not arrivals
+                            else (
+                                f" It DID arrive in {', '.join(w for w, _ in arrivals)}, with "
+                                "different fields — that is a move AND a break, and only the "
+                                "break is this rule's."
+                            )
+                        )
                         results["17"].hit(
                             path,
                             1,
                             f"{cls} was removed — a breaking contract change is DECLARED: "
                             "move the mount (`API_PREFIX` in config/urls.py), or carry "
-                            "`# api-version: <N>` on a line of this app's api.py",
+                            f"`# api-version: <N>` on a line of this app's api.py.{broke}"
+                            " If you MOVED this class rather than deleting it, the arrival "
+                            "has to land in this same change: a move split across two "
+                            "commits is a deletion here, and nothing can tell them apart "
+                            "from one commit",
                         )
                     continue
                 for fname, ann in old_fields.items():
@@ -5227,12 +5337,47 @@ DOOR_GLOBS = (
     "apps/*/management/commands/*.py",
 )
 
+# The census used to answer one bit — reached or not — and a bit cannot
+# tell `list_widgets`, which a person with a session can call, from
+# `close_outbox`, which only this tree's own worker ever calls. Both read
+# "reachable", and the peer's report is right that the two blur: a management
+# command is a shell, and an activity is a workflow step. Neither is a door
+# somebody outside this tree can knock on.
+#
+# So the kind is DERIVED from the same glob list above — never a second opinion
+# about what a door is — and printed per class on the rule's status line.
+_DOOR_KIND_BY_NAME = {
+    "mcp.py": "tool",
+    "consumers.py": "socket",
+    "activities.py": "activity",
+    "receivers.py": "receiver",
+}
+# A caller OUTSIDE this tree, holding a credential, can reach these.
+EXTERNAL_DOOR_KINDS = frozenset({"route", "tool", "socket", "receiver"})
+# These are this tree's own hands: a workflow's activity, and the shell.
+INTERNAL_DOOR_KINDS = frozenset({"activity", "command"})
+DOOR_KINDS = tuple(sorted(EXTERNAL_DOOR_KINDS | INTERNAL_DOOR_KINDS))
+
+
+def _door_kind(root: Path, path: Path) -> str:
+    """Which kind of door this module is, off the glob that matched it."""
+    if "commands" in path.parts and "management" in path.parts:
+        return "command"
+    return _DOOR_KIND_BY_NAME.get(path.name, "route")
+
 
 def _door_reason(lines: list[str], line: int) -> str | None:
     """The reason a `# door:` marker claims at this line, or None.
 
     On the line itself or in the contiguous comment block above it — the same
     grammar as `# reach:` and `# rule-<id>:`, so there is one shape to learn.
+
+    ONE MARKER, TWO CLAIMS. The valve was born for the unreached
+    service ("this deliberately has no door") and is now read for the
+    internal-only one too ("this is deliberately a workflow's step, or the
+    shell's"). A second marker spelling would have been a second grammar to
+    learn for a claim that is the same claim one degree weaker; the CLASS of
+    the finding, and the count it lands in, are what tell the two apart.
     """
     if not lines or line < 1 or line > len(lines):
         return None
@@ -5410,18 +5555,38 @@ def _resolved_calls(
 def door_reachability(root: Path, rule: dict) -> CheckResult:
     """Rule 42. Findings are classed by APP, so one app's backlog cannot pay for
     another app's growth — the per-app numbers in the census report and the
-    per-app ratchets in `rules.yaml` are the same numbers."""
+    per-app ratchets in `rules.yaml` are the same numbers.
+
+    TWO CLASSES PER APP, not one. `<app>` is the doorless service —
+    nothing reaches it at all. `<app>:internal-only` is the service reached
+    ONLY by this tree's own hands, an activity or a management command: a real
+    fact about who can call it, which the old reached/not-reached bit could not
+    say. Separate classes because they have separate repairs and separate
+    backlogs, and because a doorless service paid for by a workflow-only one
+    would be the exact accounting this rule refuses everywhere else.
+    """
     out = CheckResult()
     out.targets_matched["door_overrides"] = 0
     out.targets_matched["reachable_services"] = 0
-    reached: set[tuple[str, str]] = set()
+    # Seeded so every class PRINTS on every run, at zero or otherwise: a number
+    # that only appears when it is non-zero is a number nobody watches fall.
+    for kind in DOOR_KINDS:
+        out.targets_matched[f"reached_by_{kind}"] = 0
+    out.targets_matched["reached_internal_only"] = 0
+    out.targets_matched["internal_only_declared"] = 0
+    reached: dict[tuple[str, str], set[str]] = {}
     for path in _door_modules(root):
         tree = _parse(path)
         if tree is None:
             continue
         out.count("door_modules")
-        reached |= _called_qualnames(root, tree, _dotted(root, path))
-    unresolved = {name for module, name in reached if module == UNRESOLVED}
+        kind = _door_kind(root, path)
+        for pair in _called_qualnames(root, tree, _dotted(root, path)):
+            reached.setdefault(pair, set()).add(kind)
+    unresolved: dict[str, set[str]] = {}
+    for (module, name), kinds in reached.items():
+        if module == UNRESOLVED:
+            unresolved.setdefault(name, set()).update(kinds)
     # The residual false-pass surface, printed on the rule's status line beside
     # `door_overrides` because it is the same kind of thing: a service counted
     # reachable ONLY because a call somewhere could not be resolved to a
@@ -5443,14 +5608,57 @@ def door_reachability(root: Path, rule: dict) -> CheckResult:
             if "service" not in _decorator_names(node):
                 continue
             out.count("services_censused")
-            if (here, node.name) in reached:
-                out.count("reachable_services")
-                continue
-            if node.name in unresolved:
-                out.count("reachable_services")
-                out.count("reached_by_bare_name")
-                continue
             top = min([d.lineno for d in node.decorator_list] or [node.lineno])
+            kinds = set(reached.get((here, node.name)) or ())
+            by_bare_name = False
+            if not kinds and node.name in unresolved:
+                kinds = set(unresolved[node.name])
+                by_bare_name = True
+            if kinds:
+                out.count("reachable_services")
+                if by_bare_name:
+                    out.count("reached_by_bare_name")
+                for kind in sorted(kinds):
+                    out.count(f"reached_by_{kind}")
+                if kinds & EXTERNAL_DOOR_KINDS:
+                    continue
+                # REACHED, AND ONLY BY THIS TREE'S OWN HANDS. An
+                # activity is a workflow's step and a management command is a
+                # shell: both are legitimate, and neither is a door somebody
+                # outside this tree can knock on. That is a different fact from
+                # "doorless", so it is a different CLASS with its own recorded
+                # backlog — one app's workflow-only work cannot pay for
+                # another's, and neither can pay for a doorless service.
+                out.count("reached_internal_only")
+                said = " and ".join(sorted(kinds))
+                internal_klass = f"{app}:internal-only"
+                reason = _door_reason(lines, node.lineno) or _door_reason(lines, top)
+                if reason is not None:
+                    if len(reason) >= _MIN_DOOR_REASON:
+                        out.count("internal_only_declared")
+                        continue
+                    out.hit(
+                        rel,
+                        node.lineno,
+                        f"`# door:` with no reason on {node.name} — an escape hatch nobody "
+                        "has to justify is an off switch; write the sentence a reviewer can "
+                        "disagree with",
+                        klass=internal_klass,
+                    )
+                    continue
+                out.hit(
+                    rel,
+                    node.lineno,
+                    f"{node.name} is reached only from {said} — no route, tool, consumer or "
+                    "receiver calls it, so no credential-holding caller outside this tree "
+                    "can. That may be exactly right (a workflow's own step, an operator "
+                    "act) and it is not the same claim as a capability with a door: record "
+                    "`# door: <reason>` saying which, counted and printed like every valve "
+                    "here, or give it the door the persona who needs it would use "
+                    "(house rule 42)",
+                    klass=internal_klass,
+                )
+                continue
             reason = _door_reason(lines, node.lineno) or _door_reason(lines, top)
             if reason is not None:
                 if len(reason) >= _MIN_DOOR_REASON:
@@ -6669,7 +6877,11 @@ def ninja_internals_census(root: Path, rule: dict) -> CheckResult:
                 f"did not define — {where}. A private we hold is declared in "
                 "`ninja_internals_we_hold` (quality/rules.yaml) with the class it belongs "
                 "to and the reason, in the same commit that binds it, so that the gate can "
-                "tell an upstream rename BEFORE the import tripwire does",
+                "tell an upstream rename BEFORE the import tripwire does. Declaring it is "
+                "the road that BUYS something — the census then watches the upstream name "
+                "for you; `# rule-44: <reason>` on this line is the counted, printed road "
+                "that only silences this line and buys nothing, which is why it is named "
+                "second",
                 root=root,
                 klass="wrap",
             )
@@ -6889,7 +7101,10 @@ def mcp_dispatch_surfaces(root: Path, rule: dict) -> CheckResult:
                 "answered about the request instead of refused (one surface "
                 f"over). Install the guard from the registering app's `register()`, the way "
                 "`install_ceiling_gate` is installed, and name it in this surface's census "
-                "entry (quality/rules.yaml, rule 45)",
+                "entry (quality/rules.yaml, rule 45). If this surface is guarded by "
+                "something this detector cannot see, `# rule-45: <reason>` on this line is "
+                "the counted, printed road — and it silences one line where the census "
+                "entry teaches the next reader what guards this surface",
                 root=root,
                 klass="unguarded",
             )
@@ -7055,9 +7270,17 @@ def door_pair_parity(root: Path, rule: dict) -> CheckResult:
 # its find, and the reason it is a rule rather than a fix: the drop is
 # SILENT. `config/api.py::_document_operation` turns a route's refusal codes into
 # responses through `CODE_STATUS.get(code)` guarded by `if status is not None`,
-# so a code with no line in that table leaves the document without a word — the
-# route still refuses that way on the wire, and the published `x-refusal-codes` a
-# generated client switches on has no branch for it.
+# so a code with no status leaves the document without a word — the route still
+# refuses that way on the wire, and the published `x-refusal-codes` a generated
+# client switches on has no branch for it.
+#
+# WHERE THE STATUS COMES FROM MOVED (ADR core-23, 2026-08-29) and this
+# rule's messages moved with it. `CODE_STATUS` was a hand-appended block in
+# `config/api.py`; it is now DERIVED — `CODE_STATUSES` in
+# `apps/core/exceptions.py`, fed by `status=` on each `register_refusal(...)`
+# call at its declaring site. The finding below therefore names the declaring
+# site, not a table to append to: a message that sends a builder to a table that
+# no longer exists teaches an edit the tree refuses.
 #
 # PRODUCTION STAYS TOLERANT. The mount does not raise for this and must not: the
 # document is built at import, and a refusal to build it takes the whole API down
@@ -7098,11 +7321,11 @@ def declared_refusals_documented(root: Path, rule: dict) -> CheckResult:
     broke.
 
     Two branches, and the difference between them is the whole of . A missing
-    code that is ALSO absent from `CODE_STATUS` is the one drop this rule has
-    proven, and the finding names the table line to add. A missing code that IS
-    in `CODE_STATUS` went somewhere else, and the finding says exactly that — a
-    violation that admits what it has not established, rather than one that names
-    a cause it guessed.
+    code that ALSO carries no registered status is the one drop this rule has
+    proven, and the finding names the declaring `register_refusal` site to give
+    a `status=` to. A missing code that DOES carry one went somewhere else, and
+    the finding says exactly that — a violation that admits what it has not
+    established, rather than one that names a cause it guessed.
     """
     out = CheckResult()
     proc = subprocess.run(
@@ -7143,12 +7366,15 @@ def declared_refusals_documented(root: Path, rule: dict) -> CheckResult:
                 str(drop.get("path")),
                 int(drop.get("line") or 1),
                 f"`{route}` {said} the refusal `{code}`, and the published document does "
-                f"not carry it. `{code}` has no line in `CODE_STATUS`, so "
+                f"not carry it. `{code}` has no status in the refusal registry, so "
                 f"`_document_operation`'s `if status is not None` ({table_rel}:{table_line}) "
                 "drops it without a word: the route refuses that way on the wire and a "
-                "client that branches on `x-refusal-codes` has no branch for it. Add the "
-                f'`CODE_STATUS["{code}"] = ...` line beside its siblings, in the same commit '
-                "that registers the code",
+                "client that branches on `x-refusal-codes` has no branch for it. Give the "
+                f"code its number where it is DECLARED — `status=<4xx or 5xx>` on the "
+                f'`register_refusal(code="{code}", ...)` call beside the class that raises '
+                "it — in the same commit that registers the code. `CODE_STATUS` in "
+                "config/api.py is DERIVED off the registry (ADR core-23) and is not a "
+                "table anybody appends to any more",
                 root=root,
                 klass="unmapped",
             )
@@ -7157,8 +7383,8 @@ def declared_refusals_documented(root: Path, rule: dict) -> CheckResult:
                 str(drop.get("path")),
                 int(drop.get("line") or 1),
                 f"`{route}` {said} the refusal `{code}`, and the published document does "
-                f"not carry it — AND `{code}` IS in `CODE_STATUS` (status "
-                f"{drop.get('status')}), "
+                f"not carry it — AND `{code}` DOES carry a registered status "
+                f"({drop.get('status')}), so it is in the derived `CODE_STATUS`, "
                 f"so this is NOT the `if status is not None` drop at {table_rel}:{table_line} "
                 "that this rule has proven. Where it went is UNDIAGNOSED: this message says "
                 "so rather than naming a cause nobody established, and the fix starts by "
@@ -7492,7 +7718,9 @@ def storage_client(root: Path, rule: dict) -> CheckResult:
                         "thing between one tenant's bytes and another's is the key grammar in "
                         "that module and the prefix belt beside it. Call apps.files.services, "
                         "or add this module to rule 48's allow-list in quality/rules.yaml "
-                        "with the reason",
+                        "with the reason — which makes this MODULE a standing second "
+                        "reader, where `# rule-48: <reason>` on this line exempts this "
+                        "line and is counted and printed on every run",
                         klass=STORAGE_KLASS,
                     )
                 continue
@@ -7509,7 +7737,9 @@ def storage_client(root: Path, rule: dict) -> CheckResult:
                         "tenant's bytes out of another's reach, and a client that never met "
                         "them can address any key in the bucket. Call apps.files.services, or "
                         "add this module to rule 48's allow-list in quality/rules.yaml with "
-                        "the reason",
+                        "the reason — which makes this MODULE a standing importer, where "
+                        "`# rule-48: <reason>` on this import line exempts this line and is "
+                        "counted and printed on every run",
                         klass=STORAGE_KLASS,
                     )
                 continue
@@ -7526,7 +7756,9 @@ def storage_client(root: Path, rule: dict) -> CheckResult:
                         "setting named anywhere. This is the door apps/exports took until XPr, "
                         "under a key built from a renamable slug and a user-supplied filename. "
                         f"Call apps.files.services, or add this module to rule 48's allow-list "
-                        "in quality/rules.yaml with the reason",
+                        "in quality/rules.yaml with the reason — which makes this MODULE a "
+                        "standing importer, where `# rule-48: <reason>` on this import line "
+                        "exempts this line and is counted and printed on every run",
                         klass=STORAGE_KLASS,
                     )
                 continue

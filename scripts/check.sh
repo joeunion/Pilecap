@@ -4,7 +4,15 @@
 #                               legs — the only one that leaves this machine) +
 #                               TWO pytest passes under one seed + canary
 #                               self-test + full house rules; records a verdict
-#                               keyed on the tree hash
+#                               keyed on the tree hash. SANCTIONED — see THE
+#                               FULL GATE IS SANCTIONED below: bare, it is legal
+#                               only from the pre-push hook, and anywhere else
+#                               it needs --bank (from the ritual checkout) or a
+#                               typed DJB_GATE_SANCTION.
+#   ./scripts/check.sh --bank   the same full run, asked for deliberately from
+#                               the primary checkout or pm-push, to bank a
+#                               verdict for a tree about to be pushed. Records
+#                               caller=pm-bank unless the caller said otherwise.
 #   ./scripts/check.sh --fast   the static legs — what pre-commit runs. No
 #                               database, no network, no suite: seconds, not
 #                               minutes.
@@ -38,12 +46,14 @@
 # The leg PRINTS which tier it ran and why on every single run.
 #
 # THE SUITE RUNS PARALLEL AND IN RANDOM ORDER (ADR gate-1). Both pytest legs
-# below run `-n auto` — one worker per core, each with its OWN test database
-# (pytest-django suffixes this checkout's derived name: `test_<DATABASE_NAME>
-# _gw0..gwN`, so worker isolation nests inside the checkout isolation from
-# `scripts/db.sh` and two checkouts still never meet). pytest-randomly shuffles
-# collection and prints the seed it used at the top of every run; a red order
-# replays exactly with `--randomly-seed=<the printed seed>`.
+# below run `-n <one slot's share of this box's cores>` — NEVER `-n auto` any
+# more, and that changed for a measured reason: see ONE PYTEST LEG PER SLOT
+# below. Each worker gets its OWN test database (pytest-django suffixes this
+# checkout's derived name: `test_<DATABASE_NAME>_gw0..gwN`, so worker isolation
+# nests inside the checkout isolation from `scripts/db.sh` and two checkouts
+# still never meet). pytest-randomly shuffles collection and prints the seed it
+# used at the top of every run; a red order replays exactly with
+# `--randomly-seed=<the printed seed>` at the worker count the leg printed.
 #
 # The two legs differ in TWO ways now, and both are the point. The first is the
 # seed: `--loop` takes a fresh one every run (discovery, continuously, at the
@@ -62,16 +72,34 @@
 # ONE FULL GATE AT A TIME PER MACHINE: the full run also holds a LEASE in
 # a machine-wide directory, and a second full gate anywhere on this box WAITS for
 # it — out loud, naming the holder — rather than running beside it. Two full
-# gates contend for every core (each is `pytest -n auto` twice, plus a real
+# gates contend for every core (each runs the whole suite twice, plus a real
 # Meili, MinIO and Temporal), and the measurement is 607s with two RED tests
 # contended against 99s green quiet on the same tree. --fast and --loop take NO
 # lease and never wait on one. Its scope, its trust class and its declared limit
 # — one machine, never cross-machine CI — are `scripts/gate_lease.sh`'s header.
 #
+# ONE PYTEST LEG PER SLOT, N SLOTS PER MACHINE. A SECOND and different guard,
+# and the distinction matters to anybody reading a wait: the lease above is
+# EXCLUSIVE and only full gates take it; the SLOT is a COUNTING semaphore and
+# EVERY pytest leg takes one — `--loop`'s included. It exists because the load
+# that flattened this box was never a second full gate: it was a wave of
+# builders each running `--loop`, whose pytest leg was `-n auto` — one worker
+# per core — five and more times over on ten cores. Measured: load average 162,
+# 5-8x wall clock, and two runs killed at the harness ceiling having judged
+# nothing. So the box has N slots (cores/5, floor, `DJB_GATE_SLOTS` overrides),
+# a slot holder runs `-n cores/N`, and the arithmetic closes: however many gates
+# are live, the workers they have started total this machine's cores. `--fast`
+# takes no slot and never waits — it has no suite. The lock order is fixed and
+# mechanically enforced (LEASE FIRST, THEN SLOT) so the two guards cannot
+# deadlock; the limits and the trust class are `scripts/gate_lease.sh`'s header.
+#
 # THE CALLER IS RECORDED: a full run's ledger and run-log lines carry
 # `caller=<kind>` from `DJB_GATE_CALLER` — `push-wall` (the pre-push hook sets
-# it), `quality-rung`, `pm-bank`, or `unstated` when nobody said. Measurement
-# only: no run is refused for its caller. See `scripts/gate_ledger.sh`.
+# it), `quality-rung`, `pm-bank`, or `unstated` when nobody said. That field is
+# measurement only and no run is refused for it; the REFUSAL is the sanction
+# check below, which is a different question (not "which kind" but "why at
+# all"), and its answer rides into the same verdict row as `sanction=`. See
+# `scripts/gate_ledger.sh`.
 #
 # Exit: 0 clean · 1 violations · 2 ENFORCEMENT BROKEN. 2 outranks a pass.
 # Never pipe this script: a pipe replaces its exit status with the pipe's — and
@@ -108,12 +136,23 @@ fi
 cd "$(dirname "$0")/.."
 
 MODE=${1:-}
+#: Set by `--bank`. The flag is the PM's ritual bank — a full run asked for
+#: deliberately, from the checkout family's primary or its pm-push worktree, so
+#: that the tree about to be pushed has a verdict before the push. It is a
+#: SANCTION, not a mode: it normalises to `MODE=""` immediately below and every
+#: line after this point runs the identical full gate. See THE FULL GATE IS
+#: SANCTIONED below.
+GATE_BANK=""
 case "$MODE" in
 "" | --fast | --loop) ;;
+--bank)
+    GATE_BANK=1
+    MODE=""
+    ;;
 *)
     # Not a usage nit: a mistyped flag falling through to a silently different
     # run is enforcement misfiring, and that is an exit 2.
-    echo "!! unknown argument '$MODE': check.sh takes nothing, --fast, or --loop" >&2
+    echo "!! unknown argument '$MODE': check.sh takes nothing, --fast, --loop, or --bank" >&2
     exit 2
     ;;
 esac
@@ -121,6 +160,174 @@ shift || true
 if [ "$#" -gt 0 ]; then
     echo "!! unexpected extra arguments: $*" >&2
     exit 2
+fi
+
+# --- THE FULL GATE IS SANCTIONED --------------------------------------------
+# WHAT THIS REFUSES, and the measurement behind it. The doctrine is one full
+# gate per push. The ledger, once it started recording WHO ASKED, said
+# otherwise: hundreds of full runs in days, of which a countable few were the
+# push wall and the rest were somebody deciding, in the moment and from
+# anywhere, that a full gate was the right next move. A full gate is the most
+# expensive thing on this machine — two whole-suite passes, a real Meili, a real
+# MinIO, a real Temporal — and while one runs, every OTHER full gate on the box
+# waits for the lease. An unaccountable one does not just cost its own minutes;
+# it spends everybody else's.
+#
+# So a full run now needs a REASON THAT SURVIVES THE RUN, and there are exactly
+# three ways to have one. The list is closed on purpose: a valve anybody can
+# open by inference is a valve that is always open.
+#
+#   1. THE PUSH WALL. `DJB_GATE_CALLER=push-wall`, which only
+#      `scripts/githooks/pre-push` sets. The doctrine's own case, and the one
+#      that must never need a human to type anything.
+#   2. `--bank` FROM THE RITUAL CHECKOUT. The PM banking a verdict for a tree
+#      that is about to be pushed. Legal from the checkout family's PRIMARY
+#      worktree or from `pm-push`, and nowhere else — because a bank is a claim
+#      about the tree that is going out, and a linked rung worktree is by
+#      construction not that tree.
+#
+#      THE TEST IS MECHANICAL, NEVER A CWD SHAPE. `git rev-parse --git-dir` is
+#      `.git` in the primary checkout and `.git/worktrees/<name>` in a linked
+#      one, while `--git-common-dir` is the one shared `.git` for the whole
+#      family. Equal means primary. Inferring from the PATH ("does it contain
+#      /worktrees/?") is the kind of guess that is wrong the first time somebody
+#      clones into a directory with that name, and this repository has been
+#      bitten by an inherited GIT_DIR once already
+#      (`scripts/githooks/pre-push`'s header).
+#   3. A TYPED SANCTION. `DJB_GATE_SANCTION="<rung-id>: <reason>"` — the escape
+#      valve, and the whole design rests on it being CHEAP and EXPLICIT. A
+#      builder whose rung touches `quality/**` or the dependencies must run the
+#      full gate (rung-execution §3 names both), and that must stay a one-line
+#      thing to do. What it must not stay is INVISIBLE: the sanction is printed
+#      in the gate's header and written into the verdict row, so the population
+#      of hand-run fulls is readable afterwards instead of inferred.
+#
+# WHAT IS NOT ENFORCED, declared rather than implied: the QUALITY of the reason.
+# `DJB_GATE_SANCTION="X-1: because"` passes the shape check. This guard makes
+# the reason exist and makes it durable; whether it was a good one is a PM's
+# read of the ledger, which is a judgement no script makes.
+#
+# CI IS EXEMPT, the same explicit exemption the pipe guard above carries and for
+# a related reason: a runner has no ritual checkout, no hook environment and
+# nobody to type a sanction, and every CI run is by construction a full run
+# somebody asked for in a workflow file. THE RESIDUAL IS THE PIPE GUARD'S,
+# declared and accepted: an agent exporting `CI=1` — or `DJB_GATE_CALLER=push-wall`
+# — to get past this is deliberate circumvention, it is visible in the command
+# line, and this guard stops casual unaccountable fulls rather than sabotage.
+#
+# WHERE IT SITS, and that is load-bearing: ABOVE the lease and the slot, so a
+# refused run takes neither. A gate that queued for an hour and then told the
+# caller it was not allowed to run would be an expensive way to learn about a
+# missing environment variable.
+#
+#: What sanctioned this run, in one phrase, for the header and the verdict row.
+#: Empty on every `--fast`/`--loop` path — those are never sanctioned because
+#: they are never refused.
+GATE_SANCTIONED_BY=""
+# `-z "$MODE"` rather than `= ""`: the drive reads `check.sh` as text and pins
+# the FULL-mode branch by the literal `if [ "$MODE" = "" ]; then`, which must go
+# on naming exactly one line — the one that takes the lease.
+if [ -z "$MODE" ]; then
+    # The sanction's SHAPE is checked first and unconditionally: `<id>: <reason>`
+    # — something before the first colon, a colon, a space, then something. A
+    # value that is set but shapeless is a broken invocation whoever set it, and
+    # letting it fall through to the generic refusal below would hide the typo
+    # behind a different sentence.
+    if [ -n "${DJB_GATE_SANCTION:-}" ] && ! [[ ${DJB_GATE_SANCTION} =~ ^[^:]+:\ .+$ ]]; then
+        echo "!! DJB_GATE_SANCTION is set but is not a sanction." >&2
+        echo "   got:  ${DJB_GATE_SANCTION}" >&2
+        echo "   want: DJB_GATE_SANCTION=\"<rung-id>: <reason>\"" >&2
+        echo "         e.g. DJB_GATE_SANCTION=\"gate-rung: quality/** rung — the canary self-test is the point\"" >&2
+        echo "   A sanction that does not name who is asking and why is not a reason, and" >&2
+        echo "   a full gate is not run on one. Nothing was judged." >&2
+        exit 2
+    fi
+
+    if [ -n "${CI:-}" ]; then
+        GATE_SANCTIONED_BY="CI (exempt, as at the pipe guard)"
+    elif [ "${DJB_GATE_CALLER:-}" = "push-wall" ]; then
+        GATE_SANCTIONED_BY="the push wall (DJB_GATE_CALLER=push-wall)"
+    elif [ -n "${DJB_GATE_SANCTION:-}" ]; then
+        GATE_SANCTIONED_BY="DJB_GATE_SANCTION=${DJB_GATE_SANCTION}"
+    elif [ -n "$GATE_BANK" ]; then
+        GATE_GIT_DIR=$(git rev-parse --git-dir 2>/dev/null || true)
+        GATE_GIT_COMMON=$(git rev-parse --git-common-dir 2>/dev/null || true)
+        GATE_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null || true)
+        if [ -z "$GATE_GIT_DIR" ] || [ -z "$GATE_GIT_COMMON" ]; then
+            echo "!! --bank could not ask git which checkout this is." >&2
+            echo "   The flag is legal from the primary checkout or from pm-push and nowhere" >&2
+            echo "   else, and a test that could not run has cleared nothing. Nothing was judged." >&2
+            exit 2
+        elif [ "$GATE_GIT_DIR" -ef "$GATE_GIT_COMMON" ]; then
+            GATE_SANCTIONED_BY="--bank from the PRIMARY checkout ($GATE_TOPLEVEL)"
+        elif [ "$(basename "${GATE_TOPLEVEL:-}")" = "${DJB_PUSH_WORKTREE:-pm-push}" ] &&
+            ! git symbolic-ref -q HEAD >/dev/null 2>&1; then
+            # THE SECOND HALF IS THE MECHANICAL ONE, and it is here because the
+            # first half alone is INFERENCE FROM A NAME: any linked worktree
+            # somebody called `pm-push` was accepted, including a rung worktree.
+            # The primary-checkout arm above is mechanical (git-dir against
+            # git-common-dir, an identity git computes); this arm had nothing of
+            # the kind, and a basename is the class of test that is wrong the
+            # first time somebody names a directory after the thing it is not.
+            #
+            # DETACHED HEAD IS THE PROPERTY, and it is a property of the real
+            # pm-push worktree rather than a convention about it: `pm_push.sh`
+            # pins it with `git checkout --detach` on every push, and the
+            # worktree its own refusal tells you to create is created with
+            # `git worktree add --detach`. A RUNG WORKTREE IS ON A BRANCH — that
+            # is what a rung worktree is — so `symbolic-ref HEAD` succeeds there
+            # and fails here, and the two are now told apart by what git says
+            # rather than by what the directory is called.
+            #
+            # DECLARED RESIDUAL, and it is smaller than the one it replaces: a
+            # DETACHED linked worktree that somebody has also named `pm-push`
+            # still passes. That is a checkout in the pm-push posture wearing
+            # the pm-push name, which is as close to being pm-push as anything
+            # outside `git worktree list` can get; the identity of pm-push is
+            # its name in that list, and `pm_push.sh` itself finds it the same
+            # way (`scripts/pm_push.sh`, "Where pm-push is, asked rather than
+            # assumed"). Both files would have to change together to make the
+            # name stop being the identity, and nothing here needs that.
+            GATE_SANCTIONED_BY="--bank from the ${DJB_PUSH_WORKTREE:-pm-push} worktree, detached ($GATE_TOPLEVEL)"
+        else
+            echo "!! --bank from a LINKED worktree: ${GATE_TOPLEVEL:-$PWD}" >&2
+            echo "   git-dir:        $GATE_GIT_DIR" >&2
+            echo "   git-common-dir: $GATE_GIT_COMMON" >&2
+            echo "   HEAD:           $(git symbolic-ref -q HEAD 2>/dev/null || echo '(detached)')" >&2
+            echo "   They differ, so this is not the primary checkout — and it is not the" >&2
+            echo "   '${DJB_PUSH_WORKTREE:-pm-push}' worktree either, which is DETACHED (pm_push.sh pins it that way on" >&2
+            echo "   every push) and named that. A worktree sitting on a branch is a rung" >&2
+            echo "   worktree whatever its directory is called." >&2
+            echo "   A bank is a claim about the tree that is about to be" >&2
+            echo "   pushed; a rung worktree is by construction not that tree." >&2
+            echo "   If you MEANT to run the full gate here — a quality/** or dependency rung," >&2
+            echo "   where it uniquely binds — say why:" >&2
+            echo "       DJB_GATE_SANCTION=\"<rung-id>: <reason>\" ./scripts/check.sh" >&2
+            echo "   Nothing was judged." >&2
+            exit 2
+        fi
+    else
+        echo "!! REFUSING an unsanctioned FULL gate." >&2
+        echo "   A full run is the most expensive thing on this machine — two whole-suite" >&2
+        echo "   passes, a real Meilisearch, MinIO and Temporal — and every other full gate" >&2
+        echo "   on the box waits behind it. So it needs a reason that outlives the run." >&2
+        echo "   ONE of these, and they are the whole list:" >&2
+        echo "     * the pre-push hook (it sets DJB_GATE_CALLER=push-wall for itself)" >&2
+        echo "     * ./scripts/check.sh --bank   from the primary checkout or pm-push" >&2
+        echo "     * DJB_GATE_SANCTION=\"<rung-id>: <reason>\" ./scripts/check.sh" >&2
+        echo "   The per-rung gate is ./scripts/check.sh --loop and is untouched by this." >&2
+        echo "   Nothing was judged: no lease was taken, no slot, no leg was run." >&2
+        exit 2
+    fi
+
+    # `--bank` says pm-bank unless the caller has already said something else.
+    # The ritual naming itself is the point of the flag: three of this ledger's
+    # banked verdicts say `caller=unstated` because nobody remembered to export
+    # anything, and a population with a hole in it is not a population.
+    if [ -n "$GATE_BANK" ] && [ -z "${DJB_GATE_CALLER:-}" ]; then
+        DJB_GATE_CALLER=pm-bank
+        export DJB_GATE_CALLER
+    fi
 fi
 
 # --- the gate's own instruments must run where CI runs them ------------------
@@ -357,15 +564,25 @@ gate_lock_release() {
 }
 
 if [ "$MODE" = "" ]; then
-    # THE ORDER OF THE TWO GUARDS IS LOAD-BEARING. The machine-wide lease is
-    # taken FIRST and the per-checkout lock second, because the lease is the one
-    # that WAITS: a gate that took the checkout lock and then queued would make
-    # every `--fast`/`--loop` in its own checkout refuse for the whole wait,
-    # which is the friction the lease exists to remove, one checkout over.
+    # THE ORDER OF THE THREE GUARDS IS LOAD-BEARING, and it is the same order on
+    # every path a full gate can take. The machine-wide EXCLUSIVE LEASE is taken
+    # FIRST and the per-checkout lock second, because the lease is the one that
+    # WAITS: a gate that took the checkout lock and then queued would make every
+    # `--fast`/`--loop` in its own checkout refuse for the whole wait, which is
+    # the friction the lease exists to remove, one checkout over. The PYTEST
+    # SLOT — the counting semaphore, which `--loop` also takes — comes LAST, at
+    # the `pytest-x2` leg, so that no holder of a slot is ever waiting for the
+    # lease and the deadlock cycle cannot be formed.
+    #
+    # `GATE_SLOT_LEASE_FIRST=1` is that order made mechanical rather than
+    # remembered: `gate_slot_acquire` refuses, exit 2, if this run reaches a slot
+    # without the lease in hand. See scripts/gate_lease.sh, THE LOCK ORDER.
     #
     # The EXIT trap is installed IMMEDIATELY AFTER the lease is taken and covers
-    # both releases — `gate_lock_release` is a no-op while `GATE_LOCK` is empty
-    # — so no line between here and the first leg can exit holding either.
+    # all three releases — `gate_lock_release` and `gate_slot_release` are
+    # no-ops while their variables are empty — so no line between here and the
+    # first leg can exit holding any of them.
+    GATE_SLOT_LEASE_FIRST=1
     set +e
     gate_lease_acquire
     LEASE_RC=$?
@@ -374,13 +591,16 @@ if [ "$MODE" = "" ]; then
         # Could-not-look: this run judged nothing. Never a red tree.
         exit 2
     fi
-    trap 'RC=$?; trap "" PIPE; gate_lock_release; gate_lease_release; gate_run_finish "$RC" || true' EXIT
+    trap 'RC=$?; trap "" PIPE; gate_lock_release; gate_slot_release; gate_lease_release; gate_run_finish "$RC" || true' EXIT
     gate_lock_acquire
     trap 'gate_run_killed' TERM INT HUP
     # Measured BEFORE the first leg reads a byte, so the key names the content
     # the gate actually saw. `|| true`: failing to measure costs a verdict,
     # never a gate run.
     MEASURED_START=$(gate_measured_tree || true)
+    # What made this run legal, handed to the ledger BEFORE it announces, so the
+    # header line and the verdict row carry the identical phrase.
+    GATE_RUN_SANCTION="$GATE_SANCTIONED_BY"
     gate_run_start "${MEASURED_START:-unknown-tree}"
     gate_run_announce
 else
@@ -643,7 +863,26 @@ if [ "$MODE" = "--loop" ]; then
     # not a second derivation of it — see scripts/loop_tier.sh. It is
     # derived AFTER the leg announces itself, so its cost and any refusal land
     # under the pytest leg's name rather than silently inside the last one's.
-    leg pytest "pytest (ONE pass, -n auto, a FRESH random seed — the fast tier plus the active rung's own app, or the WHOLE suite when the active rung changed shared test infrastructure; the full gate at push runs two whole-suite passes under one seed, which is where idempotency is proven)"
+    leg pytest "pytest (ONE pass, a FRESH random seed, ONE OF THIS MACHINE'S PYTEST SLOTS — the fast tier plus the active rung's own app, or the WHOLE suite when the active rung changed shared test infrastructure; the full gate at push runs two whole-suite passes under one seed, which is where idempotency is proven)"
+    # THE SLOT, TAKEN HERE AND NOWHERE ELSE IN THIS MODE. `--loop` takes no
+    # lease — a builder must never queue behind somebody else's push — but it
+    # does take a slot, because the thing that flattened the box was not one
+    # gate, it was ELEVEN `--loop` runs each starting `pytest -n auto` on the
+    # same ten cores (load 162, 5-8x wall clock, two runs killed having judged
+    # nothing). The slot is released by the EXIT trap installed with it, so a
+    # killed leg gives it back; the semaphore's stale-clear is the belt.
+    #
+    # Everything before this line — ruff, mypy, the secret scan — took nothing
+    # and waited for nothing. The queue starts where the cost is.
+    trap 'gate_slot_release' EXIT
+    set +e
+    gate_slot_acquire loop
+    SLOT_RC=$?
+    set -e
+    if [ "$SLOT_RC" != "0" ]; then
+        echo "!! no pytest slot — see above. Nothing was judged about this tree." >&2
+        exit 2
+    fi
     set +e
     loop_tier_own_apps
     TIER_RC=$?
@@ -685,15 +924,25 @@ if [ "$MODE" = "--loop" ]; then
     # not an empty expansion. The `full` branch therefore passes NO tier flag at
     # all — which is also the honest thing for it to do, because that is the
     # byte-identical command this leg ran before the tier existed.
+    #
+    # `-n $GATE_SLOT_WORKERS`, NEVER `-n auto`, and the banner says the number
+    # and why on every run. `auto` is one worker per core, which is the right
+    # answer for a machine running one suite and the wrong answer for a machine
+    # running N. The arithmetic the semaphore keeps: N slots x cores/N workers
+    # = this machine's cores, however many gates are live.
+    echo "  workers:    -n ${GATE_SLOT_WORKERS} (this box's cores split ${GATE_SLOT_TOTAL} ways — one share per pytest slot)"
+    echo "              NOT -n auto: auto is every core, and it is every core in each of"
+    echo "              the ${GATE_SLOT_TOTAL} gates that may be running. Override the slot count with"
+    echo "              DJB_GATE_SLOTS."
     set +e
     if [ "$LOOP_TIER_MODE" = "full" ]; then
-        ./scripts/test.sh -n auto
+        ./scripts/test.sh -n "$GATE_SLOT_WORKERS"
     else
         TIER_ARGS=(--djb-tier=fast)
         for TIER_APP in $LOOP_TIER_OWN_APPS; do
             TIER_ARGS+=("--djb-own-app=$TIER_APP")
         done
-        ./scripts/test.sh -n auto "${TIER_ARGS[@]}"
+        ./scripts/test.sh -n "$GATE_SLOT_WORKERS" "${TIER_ARGS[@]}"
     fi
     PYTEST_RC=$?
     set -e
@@ -963,7 +1212,27 @@ if [ -z "$PARTITION_MODE" ]; then
     exit 2
 fi
 
-leg pytest-x2 "pytest (twice, -n auto, both passes under ONE seed, nothing in between — the second run proves the first left nothing behind)"
+leg pytest-x2 "pytest (twice, both passes under ONE seed and ONE OF THIS MACHINE'S PYTEST SLOTS, nothing in between — the second run proves the first left nothing behind)"
+
+# THE SLOT, TAKEN HERE AND HELD ACROSS BOTH PASSES. This leg is the heaviest
+# single consumer on the box and it is the last of the three guards a full gate
+# takes: the exclusive lease is already in hand (LEASE FIRST, THEN SLOT — see
+# the full-mode branch above, where GATE_SLOT_LEASE_FIRST makes that mechanical
+# rather than remembered), the checkout lock too, and this is the ceiling on how
+# much of the machine the suite may claim while `--loop` runs elsewhere.
+#
+# HELD ACROSS BOTH PASSES DELIBERATELY, and released the moment the second ends:
+# releasing between them would let the worker count change underneath the one
+# thing this leg proves, and holding it through the self-test would make every
+# builder on the box queue behind legs that start no suite at all.
+set +e
+gate_slot_acquire full
+SLOT_RC=$?
+set -e
+if [ "$SLOT_RC" != "0" ]; then
+    echo "!! no pytest slot — see above. Nothing was judged about this tree." >&2
+    exit 2
+fi
 
 # WHAT THE TWO PASSES ARE POINTED AT, said out loud on every run. Empty means
 # the whole suite; a path list means the platform partition is skipped under a
@@ -983,7 +1252,8 @@ fi
 # picks a fresh seed per run by default, which would quietly widen that meaning
 # to "run 2 failed for one of two reasons and you cannot tell which" — the
 # order differed, or the state did. So the seed is fixed here and fed to both,
-# and `-n auto` is the same on both, which pins the worker assignment too. What
+# and the worker count — one slot's share of this box's cores, held across both
+# passes — is the same on both, which pins the worker assignment too. What
 # differs between the two passes is then exactly one thing.
 #
 # Generated in the shell, NOT read back out of pass 1's output: reading it back
@@ -1038,7 +1308,7 @@ pytest_x2_verdict() {
         echo "   This leg saw: ${harness%; }." >&2
         echo "   A harness that does not come up produces failures of its own, so nothing" >&2
         echo "   here says anything about what pass 1 left behind. Fix the harness, then" >&2
-        echo "   re-run: ./scripts/test.sh -n auto --randomly-seed=$seed" >&2
+        echo "   re-run: ./scripts/test.sh -n ${GATE_SLOT_WORKERS} --randomly-seed=$seed" >&2
         if [ -n "$failures" ]; then
             echo "   (Tests are reported failed or errored above. This leg does NOT read them as" >&2
             echo "    state inherited from pass 1 — it cannot tell those apart from the harness.)" >&2
@@ -1064,12 +1334,15 @@ pytest_x2_verdict() {
 
 PYTEST_SEED=$(((RANDOM << 15) | RANDOM))
 echo "  both passes run --randomly-seed=$PYTEST_SEED (replay a red order with it)"
+echo "  workers:    -n ${GATE_SLOT_WORKERS} (this box's cores split ${GATE_SLOT_TOTAL} ways — one share per pytest slot)"
+echo "              NOT -n auto, and the same number on BOTH passes, which is what pins"
+echo "              the worker assignment and keeps this leg's meaning narrow."
 
 set +e
 # UNQUOTED ON PURPOSE: `$PARTITION_TARGETS` is a path LIST that has to word-split
 # into pytest arguments, and it is empty when the whole suite runs.
 # shellcheck disable=SC2086
-./scripts/test.sh -n auto --randomly-seed="$PYTEST_SEED" $PARTITION_TARGETS
+./scripts/test.sh -n "$GATE_SLOT_WORKERS" --randomly-seed="$PYTEST_SEED" $PARTITION_TARGETS
 TEST_RC=$?
 set -e
 if [ "$TEST_RC" != "0" ]; then
@@ -1088,7 +1361,7 @@ echo "  pytest pass 2 running (output is captured and printed whole when it ends
 PASS2_OUT=$(mktemp "${TMPDIR:-/tmp}/djb-pytest-pass2.XXXXXX")
 set +e
 # shellcheck disable=SC2086
-./scripts/test.sh -n auto --randomly-seed="$PYTEST_SEED" $PARTITION_TARGETS >"$PASS2_OUT" 2>&1
+./scripts/test.sh -n "$GATE_SLOT_WORKERS" --randomly-seed="$PYTEST_SEED" $PARTITION_TARGETS >"$PASS2_OUT" 2>&1
 TEST_RC=$?
 set -e
 cat "$PASS2_OUT"
@@ -1099,6 +1372,12 @@ if [ "$TEST_RC" != "0" ]; then
 fi
 rm -f "$PASS2_OUT"
 echo "  pytest pass 2: green (seed $PYTEST_SEED)"
+# THE SLOT GOES BACK THE MOMENT THE SUITE IS DONE, not at the end of the gate.
+# Everything after this line — the census, the self-test, the shell drives, the
+# house rules — starts no suite, and a builder waiting for a slot must not be
+# waiting on legs that would not have used one. The EXIT trap is the belt if
+# anything below exits before this runs.
+gate_slot_release
 
 # --- banking the partition's verdict -----------------------------------
 #
@@ -1245,6 +1524,9 @@ if [ "$MACHINERY_CLASS" != "process" ]; then
     echo "  lifetime class is '${MACHINERY_CLASS}': durable Schedules for this queue are"
     echo "  CORRECT here, so the zero-schedules property does not apply (ADR"
     echo "  platform-lifecycle-1). Nothing was asserted about them."
+    echo "  Nor does the open-execution property: in deployment lifetime a running"
+    echo "  execution on this queue is the product working. Nothing was asserted"
+    echo "  about those either."
 else
     # THE ASSERTION IS THE INSTRUMENT'S, NOT THIS LEG'S. `--assert-none` exits 1
     # when anything is in scope and 2 when it could not look, so this leg reads a
@@ -1271,6 +1553,93 @@ else
         exit 1
     fi
     echo "  process lifetime: this queue owns no durable Schedule"
+
+    # --- THE SECOND PROPERTY: THIS QUEUE STRANDS NO OPEN EXECUTION -----------
+    #
+    # WHY THE SCHEDULE ASSERTION ALONE WAS NOT ENOUGH, measured rather than
+    # argued. A schedule is one shape of durable-object-on-a-mortal-identity;
+    # a RUNNING EXECUTION on the same queue is the other, and it accumulates
+    # faster because anything can start one. The drive that started them was
+    # fixed in this cycle (it terminates what it starts now) — but a fix in one
+    # drive is a promise about one drive, and 1,061 stranded runs had piled up
+    # under a census that was green every single time, because the census only
+    # ever asked about Schedules. This leg is the BELT: whatever starts a run
+    # and walks away, this checkout's own gate says so before the push.
+    #
+    # LIVE POLLERS ARE WORK, NOT A STRAND, and that distinction is READ from
+    # the registry rather than decided here. `scripts/lifecycle.sh` declares
+    # this class's liveness as "DescribeTaskQueue pollers on its queue
+    # (positive only)", so a worker that is up is positive proof that the open
+    # runs on this queue are being worked. A builder with `./scripts/worker.sh`
+    # running and a workflow in flight is not leaking anything, and a gate that
+    # reddened on that would be the "gate reddened by legitimate work" class
+    # this leg's own header refuses one property up.
+    #
+    # WHY THE LIVENESS QUESTION IS ASKED SEPARATELY rather than left to
+    # `--assert-none`: the sweep counts every instance IN SCOPE, and for THIS
+    # checkout's own identity the verdict is `live` (a path this run hashed)
+    # before pollers are ever consulted — so `--assert-none` alone cannot tell
+    # a strand from work in progress. Asking `lc_queue_pollers` first is not a
+    # second opinion about the census: it is the same function the census's own
+    # verdicts read, called through the file that declares it, in a subshell so
+    # that nothing the registry defines leaks into this one.
+    #
+    # A POLLER COUNT THAT CANNOT BE READ IS NOT A POLLER. `lc_queue_pollers`
+    # answers 0 for a queue the server would not describe (its own declared
+    # shape: "no pollers, nothing known"), so an unreachable Temporal falls
+    # through to the assertion below — which is `--assert-none`'s exit 2, the
+    # could-not-look this leg already outranks a pass with.
+    OWN_QUEUE="djb-${DATABASE_NAME#djb_}"
+    set +e
+    OWN_POLLERS=$(
+        # shellcheck source=scripts/lifecycle.sh
+        . scripts/lifecycle.sh >/dev/null 2>&1 || exit 1
+        lc_queue_pollers "$OWN_QUEUE"
+    )
+    POLLERS_RC=$?
+    set -e
+    case "${OWN_POLLERS:-}" in
+    '' | *[!0-9]*) OWN_POLLERS=0 ;;
+    esac
+    if [ "$POLLERS_RC" = "0" ] && [ "$OWN_POLLERS" != "0" ]; then
+        echo "  ${OWN_POLLERS} poller(s) on ${OWN_QUEUE} right now: open executions here are"
+        echo "  WORK, not strands (scripts/lifecycle.sh declares this class's liveness as"
+        echo "  pollers on its queue, positive evidence only). Nothing was asserted about"
+        echo "  them."
+    else
+        # Same discipline as the schedule assertion above: the leg reads a
+        # STATUS the instrument owns, never a summary line it does not.
+        set +e
+        ./scripts/sweep.sh --class open-execution --only "$DATABASE_NAME" --assert-none
+        EXEC_RC=$?
+        set -e
+        if [ "$EXEC_RC" = "2" ]; then
+            echo "!! THE OPEN-EXECUTION CENSUS COULD NOT BE TAKEN — see above. Nothing was asserted." >&2
+            exit 2
+        fi
+        if [ "$EXEC_RC" != "0" ]; then
+            echo "!! THIS TREE STRANDED A RUNNING TEMPORAL EXECUTION." >&2
+            echo "   Nothing is polling ${OWN_QUEUE}, and the server is holding open run(s)" >&2
+            echo "   on it — named above with how long each has been running. An execution" >&2
+            echo "   on a queue with no poller never advances and never ends: it sits in the" >&2
+            echo "   namespace forever, and this checkout's identity does not. That is how" >&2
+            echo "   1,061 of them accumulated under a green census." >&2
+            echo "   Either is a fix: start the worker (./scripts/worker.sh) if that work is" >&2
+            echo "   real and should finish; or END EACH RUN NAMED ABOVE BY HAND, with the" >&2
+            echo "   destroy verb its own class declares (scripts/lifecycle.sh, open-execution):" >&2
+            echo "     bash -c '. scripts/lifecycle.sh && lc_temporal workflow terminate --workflow-id <an id above>'" >&2
+            echo "   AND NOT THE BROOM, which is the line that used to be printed here and" >&2
+            echo "   which does nothing at all in this exact situation: this checkout's OWN" >&2
+            echo "   open executions are declared NOT disposable, so no sweep of any kind" >&2
+            echo "   touches one — owning a thing is not a licence to destroy it. That stance" >&2
+            echo "   is right and stays: a poller count is a racy thing to kill on (a worker" >&2
+            echo "   restarting reads as zero), so nothing gets a flag meaning 'destroy my own" >&2
+            echo "   running work'. You name the run instead, one at a time, on purpose." >&2
+            echo "   Whatever started them and walked away is the defect; this is the belt." >&2
+            exit 1
+        fi
+        echo "  process lifetime: this queue strands no open execution"
+    fi
 fi
 
 leg selftest "house-rules self-test (every canary planted through the real scope must fire; every negative must stay silent) + every shell refusal drive under scripts/tests/"
@@ -1625,6 +1994,158 @@ elif [ "$LEASE_DRIVE_RC" != "0" ]; then
     echo "   lease that stops CLEARING blocks every full gate on this machine until" >&2
     echo "   somebody is told to delete a file." >&2
     exit "$LEASE_DRIVE_RC"
+fi
+
+# THE TWELFTH, THIRTEENTH AND FOURTEENTH DRIVES, and all three are here for one
+# reason that has now been paid for four times in this file: a deferral outlived
+# its reason.
+#
+# Each of these was written in a cycle where `scripts/check.sh` belonged to
+# somebody else, so each author did the correct thing — they flagged the wiring
+# as owed in their report and in their `instruments.md` row instead of editing a
+# file another rung was building in. That is the discipline working. What it
+# leaves behind is a drive that passes 78/28/17 in a report nobody re-runs, and
+# the note above the seventh and eighth drives is the same sentence twice over:
+# BY HAND IS A PROMISE; A LEG IS A MEASUREMENT. The reason expired at those
+# merges; this is the file where it stops being owed.
+#
+# `test_verify_start.sh` drives the verifier-start instrument's three guards —
+# the dirty-source refusal, the verdict-key refusal that names a stray untracked
+# file (the mechanism that once cost this repository a push made by hand), and
+# the rule that the database name is ASKED FOR rather than copied. It builds
+# scratch repositories and plants nothing here. No docker, no database; ~14s.
+set +e
+./scripts/tests/test_verify_start.sh
+VERIFY_START_DRIVE_RC=$?
+set -e
+if [ "$VERIFY_START_DRIVE_RC" = "2" ]; then
+    echo "!! the verifier-start drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$VERIFY_START_DRIVE_RC" != "0" ]; then
+    echo "!! scripts/verify_start.sh no longer refuses what it is there to refuse." >&2
+    echo "   Its guards are invisible when they are right: a clone made over somebody's" >&2
+    echo "   uncommitted work, or a stray untracked file that shifts the gate's verdict" >&2
+    echo "   key so that an eight-minute green run banks nothing at all." >&2
+    exit "$VERIFY_START_DRIVE_RC"
+fi
+
+# `test_db_zsh.sh` drives `scripts/db.sh` under the shell it is actually sourced
+# by. That library is the one file here that is SOURCED rather than run, so its
+# shebang is inert and the interpreter is the caller's — which on this platform
+# is routinely zsh, where a tied parameter used as a local emptied PATH mid-call
+# and `db_create` printed `created database` over a database it had not made.
+# It SKIPS rather than passes when it cannot find the shell, and says so. Needs
+# zsh and the compose Postgres for the live tooth; ~4s.
+set +e
+./scripts/tests/test_db_zsh.sh
+DB_ZSH_DRIVE_RC=$?
+set -e
+if [ "$DB_ZSH_DRIVE_RC" = "2" ]; then
+    echo "!! the db.sh-under-zsh drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$DB_ZSH_DRIVE_RC" != "0" ]; then
+    echo "!! scripts/db.sh no longer behaves the same way under the shell that sources" >&2
+    echo "   it. A derivation that forks by shell gives one checkout two databases, and" >&2
+    echo "   a create function that returns 0 over work it did not do is a green line" >&2
+    echo "   about a database that is not there." >&2
+    exit "$DB_ZSH_DRIVE_RC"
+fi
+
+# `test_publish.sh` drives the export instrument — the one that decides what a
+# consuming product receives. Every case is a refusal or a census, and once a
+# consumer has merged a release, history can never be re-cut: the per-publish
+# census is the only wall left. It builds its own throwaway repository and reads
+# nothing in this checkout, so its verdict does not move when this tree does.
+# No docker, no database; ~12s.
+set +e
+./scripts/tests/test_publish.sh
+PUBLISH_DRIVE_RC=$?
+set -e
+if [ "$PUBLISH_DRIVE_RC" = "2" ]; then
+    echo "!! the publish drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$PUBLISH_DRIVE_RC" != "0" ]; then
+    echo "!! a scripts/publish.sh refusal or census did not fire. That instrument decides" >&2
+    echo "   what leaves this repository, and a consumer that has merged a release cannot" >&2
+    echo "   be given a different history afterwards — the census at publish time is the" >&2
+    echo "   only wall there is." >&2
+    exit "$PUBLISH_DRIVE_RC"
+fi
+
+# --- WHAT THIS LEG DOES NOT RUN, SAID OUT LOUD --------------------------------
+#
+# THE GAP. Every drive above is under `scripts/tests/`, and all fourteen of them
+# are here. There is a SECOND drive directory in this repository — `deploy/tests/`
+# — and NOT ONE of its drives is invoked by any moment: not this leg, not
+# `--loop`, not CI. `docs/product/instruments.md` says so of each of them in as
+# many words ("nobody's moment invokes it; it is run by hand and its counts are
+# pasted into the work report"), and `docs/product/queue.md` carries the row
+# that closes it. They pass — measured on this machine while writing this, 379
+# assertions and 0 failures across the five, in about 74s — and that is precisely
+# the state `scripts/backup.sh` was in before its drive was wired: green every
+# time somebody remembered.
+#
+# WHY THIS BLOCK DECLARES THE GAP INSTEAD OF CLOSING IT, which is the honest
+# half. Cost is not the reason; 74s next to this leg's existing minutes would be
+# affordable. The reason is that NOT ONE of them sources
+# `scripts/tests/drive_preamble.sh`, and that file is not a nicety at THIS
+# moment:
+#
+#   * Its §1 neutralises the ABSOLUTE `GIT_DIR` that
+#     `git -C <linked worktree> push` exports into the pre-push hook — which is
+#     the moment this leg runs in. Its header records what happened the one time
+#     a drive built throwaway git repositories without it: branches, commits and
+#     `core.bare true` written into the REAL repository, every command exiting 0.
+#     `deploy/tests/test_ship.sh` builds throwaway git repositories.
+#   * Its §4 strips `CI`/`GITHUB_ACTIONS`, and it names
+#     `deploy/tests/test_release.sh` explicitly as carrying the identical defect
+#     at its own piped-stdout case: "the day it is wired, it is red exactly as
+#     this one was." The queue row records the same measurement (98/3 under a CI
+#     environment).
+#
+# So wiring them from here would trade a STATED blind spot for an UNSTATED
+# hazard, in somebody else's territory (`deploy/`), on the gate every push runs.
+# That is a rung of its own. The gap is declared instead — in
+# the transcript, where the person reading a green gate is, rather than only in
+# a queue row nobody reads at push time.
+#
+# AND IT IS DERIVED, NEVER TYPED. The list below is the directory, so the sixth
+# deploy drive is named here THE DAY IT EXISTS instead of being invisible the way
+# these five have been. The preamble question is asked per drive for the same
+# reason: when the stated reason expires, the transcript says so itself rather
+# than going on reciting a blocker that is gone. It stays a printed notice and
+# not a red — a gate that reddened because somebody else improved a drive is the
+# "reddened by legitimate work" class this file refuses elsewhere.
+DEPLOY_DRIVES=()
+for DEPLOY_DRIVE in deploy/tests/test_*.sh; do
+    [ -f "$DEPLOY_DRIVE" ] || continue
+    DEPLOY_DRIVES+=("$DEPLOY_DRIVE")
+done
+if [ "${#DEPLOY_DRIVES[@]}" -gt 0 ]; then
+    echo ""
+    echo "  NOT RUN BY THIS LEG — a DECLARED blind spot, not a silent one:"
+    echo "  ${#DEPLOY_DRIVES[@]} deploy-layer drive(s) under deploy/tests/, which no moment invokes."
+    DEPLOY_READY=0
+    for DEPLOY_DRIVE in "${DEPLOY_DRIVES[@]}"; do
+        if grep -q "drive_preamble.sh" "$DEPLOY_DRIVE"; then
+            echo "    ${DEPLOY_DRIVE} — sources drive_preamble.sh now; its blocker is gone"
+            DEPLOY_READY=$((DEPLOY_READY + 1))
+        else
+            echo "    ${DEPLOY_DRIVE} — no drive_preamble.sh: an inherited GIT_DIR and the"
+            echo "        CI/GITHUB_ACTIONS strip are both unhandled in it"
+        fi
+    done
+    echo "  Wiring them here without that preamble is how a drive writes into the real"
+    echo "  repository from the pre-push hook (see the note above this block). Until"
+    echo "  then they are run BY HAND — ./deploy/tests/<name>.sh, same 0/1/2 semantics"
+    echo "  as every drive above — and queue.md carries the row that closes this."
+    if [ "$DEPLOY_READY" = "${#DEPLOY_DRIVES[@]}" ]; then
+        echo "  ** ALL of them now carry the preamble: the reason printed above has EXPIRED."
+        echo "     Wire them into this leg and delete this block (see queue.md). **"
+    fi
 fi
 
 leg full-house-rules "house rules, full (live scan + diff vs merge-base when on a branch)"

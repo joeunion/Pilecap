@@ -644,9 +644,13 @@ def test_every_published_example_is_taken_by_the_door_that_publishes_it(world: W
         "these schemas publish an example their own door refuses:\n  "
         + "\n  ".join(str(refused[name]) for name in new)
         + "\nAn example a caller cannot paste is a contract that is wrong in the one "
-        "place a client has no reason to doubt. Fix the example where the schema is "
-        "declared, or declare the reason in `DECLARED_REFUSALS` with the app that "
-        "owns it."
+        "place a client has no reason to doubt. THREE ROADS, and the third is the one "
+        "this message used to leave out: (1) fix the EXAMPLE where the schema is "
+        "declared; (2) fix the DOOR, when the refusal is the defect — an example that "
+        "is a fair thing to send and is refused anyway is a door bug wearing a "
+        "documentation failure, and declaring it here files the bug as a fact about "
+        "the docs; (3) declare the reason in `DECLARED_REFUSALS` with the app that "
+        "owns it. Reach for (3) only once you have decided the refusal is right."
     )
 
     healed = sorted(set(DECLARED_REFUSALS) - set(refused))

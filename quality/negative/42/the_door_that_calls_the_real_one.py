@@ -3,23 +3,28 @@
 `services.deactivate_user` resolves to `apps.zzz_canary.services`, which is
 where the `@service` lives, so the census credits it. `vendor.deactivate_user`
 resolves elsewhere and credits nothing — which is exactly what it should do.
+
+A ROUTE rather than an activity, since 2026-08-29. The subject here is
+NAME RESOLUTION, and the module kind is incidental to it — but it stopped being
+incidental to the rule: a service reached only from an activity now lands in the
+`:internal-only` class, and this negative would have fired for a reason that has
+nothing to do with what it exists to prove. The canary twin keeps the
+activity, because THAT one is replaying a live incident that happened in one.
 """
 
-from collections.abc import Callable
-from typing import Any
+from ninja import Router
 
-from temporalio import activity
-
-from apps.core.actor import system_actor
-from apps.workflows.context import workflow_context
+from apps.accounts.auth import API_AUTH
+from apps.core.actor import actor_from_request
+from apps.core.requests import TenantRequest
 from apps.zzz_canary import services, vendor
 
+router = Router(tags=["zzz-canary"], auth=API_AUTH)
 
-@activity.defn(name="probe_deactivate")
-def probe_deactivate(email: str) -> None:
-    tenant, _user_id, org = workflow_context()
+
+@router.post("/deactivate/", response={200: str}, url_name="zzz-canary-deactivate")
+def deactivate(request: TenantRequest, email: str) -> str:
     vendor.deactivate_user(email)
-    services.deactivate_user(tenant=tenant, actor=system_actor(tenant, org), email=email)
-
-
-ACTIVITIES: list[Callable[..., Any]] = [probe_deactivate]
+    return services.deactivate_user(
+        tenant=request.tenant, actor=actor_from_request(request), email=email
+    )

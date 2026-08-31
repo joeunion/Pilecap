@@ -486,7 +486,13 @@ def test_the_template_states_its_version_once() -> None:
     """`TEMPLATE_VERSION` is how a product knows what it cloned; one source."""
     version = (BASE_DIR / "TEMPLATE_VERSION").read_text().strip()
 
-    assert version == "1.0.0"
+    # The SHAPE, never the value. A literal here would be a SECOND source of the
+    # version — the exact thing this test's name says there is only one of — and
+    # it would redden on every release, which the child-commit publish makes a
+    # standing cadence rather than a one-off. What is actually load-bearing is
+    # below: whatever version this file states, CHANGELOG.md has its section.
+    parts = version.split(".")
+    assert len(parts) == 3 and all(p.isdigit() for p in parts), version
     assert f"## [{version}]" in (BASE_DIR / "CHANGELOG.md").read_text()
 
 

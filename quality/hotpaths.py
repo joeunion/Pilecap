@@ -147,19 +147,50 @@ class ProbeResult:
     findings: list[str] = field(default_factory=list)
 
 
+def app_installed(label: str) -> bool:
+    """Whether this deployment holds `apps/<label>`.
+
+    Asked of Django's own registry rather than of `DJB_DISABLED_APPS`, because
+    the registry is the fact and the variable is only one of the ways to change
+    it. The probe is a subprocess that has already called `django.setup()`, so
+    the registry is the cheapest true answer available here.
+    """
+    from django.apps import apps as django_apps
+
+    return django_apps.is_installed(f"apps.{label}")
+
+
+#: The optional apps this probe world has halves for. `apps/example` is the only
+#: one today; the entry exists so that adding a second is a line here rather
+#: than a second `if` buried in `ensure_world`.
+OPTIONAL_WORLD_APPS: tuple[str, ...] = ("example",)
+
+
 def ensure_world(world: World) -> None:
     """Create (or find) the fixed probe world. Idempotent by construction.
 
     Bare ORM on purpose: this is gate infrastructure seeding its own probe
     database, the same trust class as a test fixture — rule 8/10/13 scopes are
     `apps/` and `config/`, and nothing here is a door.
+
+    THE EXAMPLE HALF IS OPTIONAL, and this used to be the whole of the
+    fifteen dead canaries. `from apps.example.models import Widget` sat at the
+    top of this function unconditionally, so a deployment that took the worked
+    example out — the one subtraction `config/settings/discovery.py` exists to
+    allow — crashed the probe with `Model class apps.example.models.Widget
+    doesn't declare an explicit app_label`, rule 35 reported "the probe could
+    not run", and its FOUR canaries died: the three planted in `core`, `events`
+    and `realtime`, which have nothing to do with the example, along with the
+    one that does. **One optional import in the world builder unbound three
+    rules' worth of scope.** The widget half now builds only where the app that
+    owns it is installed, and the entries that read it declare `needs_app` in
+    rule 35's registry so the floors fall by exactly what is missing.
     """
     from django.contrib.auth import get_user_model
 
     from apps.accounts.models import ApiToken
     from apps.accounts.services import hash_token
     from apps.core.models import Membership, Organization, Tenant, encode_path_segment
-    from apps.example.models import Widget
 
     tenant, _ = Tenant.objects.get_or_create(slug=TENANT_SLUG, defaults={"name": TENANT_NAME})
     root, _ = Organization.objects.get_or_create(
@@ -212,6 +243,28 @@ def ensure_world(world: World) -> None:
             ],
             ignore_conflicts=True,
         )
+    world.tenant, world.root, world.branch, world.leaf = tenant, root, branch, leaf
+    world.user, world.branch_user = user, branch_user
+    if app_installed("example"):
+        _ensure_example_world(tenant, root, branch, user)
+
+
+def _ensure_example_world(tenant: object, root: object, branch: object, user: object) -> None:
+    """The half of the probe world the WORKED EXAMPLE owns.
+
+    Split out rather than wrapped in an `if` where it stood, so that the
+    optional dependency is a named seam a reader meets before the rows: this
+    block, and only this block, is what a deployment without `apps/example`
+    does not get. Everything above it — the tenant, the tree, the fillers, the
+    memberships, the token — is core's and accounts' and is built in every
+    world.
+    """
+    from django.contrib.auth import get_user_model
+
+    from apps.core.models import Membership, Organization, Tenant
+    from apps.example.models import Widget
+
+    User = get_user_model()
     # Rows for the rendering probe to render. Owned by `user` and living in
     # `branch`, so `list_widgets(tenant, org=branch)` returns all of them.
     # Counted first and bulk-created once, like the organizations above.
@@ -270,8 +323,6 @@ def ensure_world(world: World) -> None:
             ],
             ignore_conflicts=True,
         )
-    world.tenant, world.root, world.branch, world.leaf = tenant, root, branch, leaf
-    world.user, world.branch_user = user, branch_user
 
 
 # --- the probes, one per probed registry entry --------------------------------
@@ -474,6 +525,19 @@ PROBES: dict[str, Callable[[World], ProbeResult]] = {
     "apps.accounts.services.authenticate_token": probe_authenticate_token,
     "apps.realtime.selectors.list_subtree_org_ids": probe_list_subtree_org_ids,
     "apps.realtime.bridge.push_event": probe_push_event,
+}
+
+# : dotted registry path -> the OPTIONAL app that probe needs. Kept
+# : beside `PROBES` because this module is the only thing that knows what a
+# : probe body reads: `probe_governing`'s registry path is core's and the only
+# : `InheritedDownward` model on this tree is the worked example's
+# : `WidgetPolicy`. Rule 35's registry declares the same fact with `needs_app:`
+# : so the FLOORS can fall by the right amount; this dict is what stops the
+# : probe from executing an entry whose world is not here. The two are checked
+# : against each other by `quality/hotpath_probe.py`, so they cannot drift.
+PROBE_NEEDS_APP: dict[str, str] = {
+    "apps.example.selectors.list_widgets": "example",
+    "apps.core.models.ScopedQuerySet.governing": "example",
 }
 
 

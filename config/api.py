@@ -90,11 +90,14 @@ from ninja.errors import ValidationError as NinjaValidationError
 from ninja.openapi.schema import BODY_CONTENT_TYPES
 from ninja.responses import NinjaJSONEncoder
 
-from apps.accounts.auth import API_AUTH, PageTokenMissing, SessionRequired, Unauthenticated
+from apps.accounts.auth import API_AUTH, PageTokenMissing, Unauthenticated
 from apps.core.actor import TOKEN_ATTR
 from apps.core.api import docs, scopes
+from apps.core.api.pagination import answers_cursor_envelope
 from apps.core.exceptions import (
+    CODE_STATUSES,
     NON_FIELD_KEY,
+    REFUSALS,
     Conflict,
     DatabaseUnavailable,
     DomainError,
@@ -115,7 +118,6 @@ from apps.core.idempotency import REPLAYED_HEADER
 from apps.core.middleware import (
     ORG_HEADER,
     TENANT_HEADER,
-    AddressingHeaderNotHonoured,
     request_addressing_refusal,
 )
 from apps.core.throttling import default_throttles
@@ -334,6 +336,7 @@ register_refusal(
         Remedy("See which methods this path answers", "header:Allow"),
         Remedy("Read the operations on this path", "docs:openapi"),
     ),
+    status=405,
 )
 
 
@@ -388,6 +391,10 @@ register_refusal(
         Remedy("Read the failing fields and resend", "field:errors"),
         Remedy("Read the shape this operation accepts", "docs:openapi"),
     ),
+    # 422, and NOT folded into `Invalid`'s 400 — RFC 9110 §15.5.21. The argument
+    # is at `STATUS_FOR` below, where it has always been; this is the same fact
+    # said once, where the code is declared.
+    status=422,
 )
 
 
@@ -467,11 +474,24 @@ REFUSAL_FOR_STATUS: dict[int, type[DomainError]] = {
 def status_for(exc: DomainError) -> int:
     """The status code for a refusal, including one a product subclassed.
 
-    Walked up the MRO rather than looked up by exact type, so a product's
-    `class InsufficientFunds(Conflict)` is a 409 without editing this table.
-    An unmapped `DomainError` is a 500: the service refused for a reason this
-    door has no vocabulary for, and inventing one would hide it.
+    **The declaration answers first** (ADR core-23). A code that declared its own
+    `status=` at its registration site gets that number, because the document is
+    written off the same declaration and a wire that disagreed with the document
+    is the one failure the declaration exists to make impossible: a new code whose
+    class happens to subclass `Forbidden` must not answer 403 while
+    `x-refusal-codes` promises what it declared.
+
+    `STATUS_FOR` is then the fallback, walked up the MRO rather than looked up by
+    exact type, so a product's `class InsufficientFunds(Conflict)` is a 409
+    without declaring anything at all — and so a code that deliberately declares
+    NO status (a machine-door refusal, house rule 47's canary) still becomes a
+    number if it ever reaches this door. An unmapped `DomainError` is a 500: the
+    service refused for a reason this door has no vocabulary for, and inventing
+    one would hide it.
     """
+    declared = REFUSALS.get(exc.code)
+    if declared is not None and declared.status is not None:
+        return declared.status
     for base in type(exc).__mro__:
         if base in STATUS_FOR:
             return STATUS_FOR[base]
@@ -829,67 +849,35 @@ def on_throttled(request: HttpRequest, exc: Throttled) -> HttpResponse:
 
 
 # --- Which refusal each code IS, as a number -----------------------------------
-# The reverse of `STATUS_FOR`, and it stays in this module for the same reason
-# `STATUS_FOR` does: a status code is HTTP vocabulary, and house rule 14 keeps
-# HTTP vocabulary above the doors. `apps.core.api.docs` writes the document and
-# is handed this; it never decides it.
+#
+# **DERIVED, since ADR core-23.** Every registered refusal that declared a
+# `status=` at its declaring site is in this table, and nothing else is. What
+# stood here before that was a hand-appended block — one `CODE_STATUS[...] =`
+# line per refusal code, each with a comment explaining that the line existed
+# only because the DOCUMENT is written off this table and `_document_operation`
+# silently drops a code it has no number for (house rule 47). That made
+# `config/api.py` the last file a purely-domain rung still had to edit, in a
+# template whose first law is that registration is by discovery; three product
+# rungs in a row paid the tax, and the block grew past the line range the queue
+# row cited for it while the row was being read.
+#
+# **House rule 14 is untouched, and this is the part worth being careful about.**
+# A status code is HTTP vocabulary and this module is still the only one that
+# SPEAKS one: `on_domain_error` sets the status line, `status_for` decides it,
+# `REFUSAL_FOR_STATUS` translates a route that spoke HTTP back into the domain's
+# word. What moved is not the speaking but the KNOWING — a per-code fact into the
+# registry that already carries every other per-code fact (the boundary, the
+# fact, the remedies, the wire destinations). Rule 14's scan covers `services.py`,
+# `selectors.py`, `models.py` and `policies.py`, and no `register_refusal` call
+# in this tree lives in one of those; the rule does not fire and needs no
+# `does_not_cover` clause for this.
+#
+# `apps.core.api.docs` writes the document and is handed this; it never decides
+# it. A code with no declared status is absent here on purpose — see
+# `CODE_STATUSES` in `apps/core/exceptions.py` for the two populations that
+# depend on the absence.
 
-CODE_STATUS: dict[str, int] = {cls.code: status for cls, status in STATUS_FOR.items()}
-CODE_STATUS[DomainError.code] = 500
-# The two the idempotency middleware refuses with, in front of every door. Both
-# are conflicts, and `apps/core/idempotency.py` answers them with the number
-# `Conflict` carries here rather than one of its own.
-CODE_STATUS["idempotency_key_reuse"] = STATUS_FOR[Conflict]
-CODE_STATUS["in_progress"] = STATUS_FOR[Conflict]
-# The pagination seam's own refusal (ADR core-18). `InvalidCursor` subclasses
-# `Invalid`, so `status_for` already walks its MRO to 400; this table is keyed on
-# the CODE rather than the class and a narrower code needs its own line.
-CODE_STATUS["invalid_cursor"] = STATUS_FOR[Invalid]
-# The door's own validation refusal, which is the one narrower `Invalid`
-# that does NOT share 400 — see the note beside its entry in `STATUS_FOR`. The
-# line exists for the same reason `invalid_cursor`'s does: this table is keyed
-# on the CODE, and the document is written off it.
-CODE_STATUS[InvalidBody.code] = STATUS_FOR[InvalidBody]
-# The token-ceiling refusal (ADR ident-7). `InsufficientScope` subclasses
-# `Forbidden`, so the status is already walked; the line exists because this
-# table is keyed on codes and the document is written off it.
-CODE_STATUS[scopes.InsufficientScope.code] = STATUS_FOR[Forbidden]
-# The authentication door's own two, declared in
-# `apps/accounts/auth.py` beside the authenticator that makes them. Both are
-# already in `STATUS_FOR` above, so both are in this table by derivation; the
-# lines exist only because `PageTokenMissing` and `Forbidden` share 403 and a
-# dict comprehension over `STATUS_FOR` keeps whichever came last.
-CODE_STATUS[Unauthenticated.code] = STATUS_FOR[Unauthenticated]
-CODE_STATUS[PageTokenMissing.code] = STATUS_FOR[PageTokenMissing]
-# And the mint door's own. `SessionRequired` subclasses `Forbidden`, so
-# `status_for` already walks its MRO to 403 and the WIRE was always right; what
-# was wrong was the DOCUMENT. `_document_operation` groups a route's declared
-# refusals by looking each code up in THIS table and drops any code it has no
-# status for — silently, because a code with no number has no response object to
-# hang on. So `@refuses("session_required", …)` on the mint route reached the
-# published document as `403: [forbidden]`, and the one refusal that route
-# exists to explain was the one an agent reading `x-refusal-codes` could not
-# see. A code declared at a raise site is not published until it is in this
-# table; that is the class of defect, and it is one line per code.
-CODE_STATUS[SessionRequired.code] = STATUS_FOR[Forbidden]
-# Search's residual 503. It is in
-# `STATUS_FOR` above and therefore in this table by derivation; the line exists
-# because rule 47 asks a NEW code for its `CODE_STATUS` entry in the rung that
-# declares it — a code with no number here has no response object to hang on and
-# drops out of `x-refusal-codes` silently — the same class of defect.
-CODE_STATUS[SearchUnavailable.code] = STATUS_FOR[SearchUnavailable]
-# The database's 503, on the same terms and here for the same rule-47
-# reason: this is the code every door answers during slot exhaustion, so it is
-# the one code a client integrating against this API most needs to find in the
-# document before it meets it in production.
-CODE_STATUS[DatabaseUnavailable.code] = STATUS_FOR[DatabaseUnavailable]
-# The addressing-header law's refusal (ADR core-21), declared in
-# `apps/core/middleware.py` beside the two headers it is about.
-# `AddressingHeaderNotHonoured` subclasses `Forbidden`, so `status_for` already
-# walks its MRO to 403 and the WIRE is right without this line; the line exists
-# because this table is keyed on the CODE and the DOCUMENT is written off it —
-# the same class of defect, one line per code.
-CODE_STATUS[AddressingHeaderNotHonoured.code] = STATUS_FOR[Forbidden]
+CODE_STATUS: Mapping[str, int] = CODE_STATUSES
 
 
 # --- The mount ---------------------------------------------------------------
@@ -1178,9 +1166,17 @@ def _document_operation(path: str, operation: Any) -> None:
             has_body=_has_body(operation),
             authenticated=authenticated,
             idempotent_methods=IDEMPOTENT_METHODS,
-            # Set by ninja's own `@paginate`, which is house rule 3's population
-            # read off the decorator rather than off a list anybody maintains.
-            paginated=bool(getattr(view, "_ninja_is_paginated", False)),
+            # THE ONE SEAM (ADR core-24), and not `view._ninja_is_paginated`.
+            # The marker says `@paginate` was applied; the question this
+            # derivation is really asking is whether a caller can be handed a
+            # cursor by this route, and three routes hand one out without ever
+            # touching the decorator. Reading the marker meant the document
+            # derived no `invalid_cursor` for those three — a refusal a
+            # generated client had no branch for, which is rule 47's whole
+            # defect. `answers_cursor_envelope` is the same predicate rule 3's
+            # census and `introspect` read, so a route cannot be a list here and
+            # not a list there.
+            paginated=answers_cursor_envelope(operation),
         )
 
     by_status: dict[int, list[str]] = {}

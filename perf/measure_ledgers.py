@@ -71,7 +71,7 @@ AUDIT_INSERTS_PER_SERVICE_CALL = 1
 
 #: `events.selectors.list_stranded_outbox` — the relay's candidate selection.
 #: One query however many rows are pending: the drain is a single indexed scan.
-#: Still one with the `LIMIT` P3-F1c added — the `+ 1` row the activity reads to
+#: Still one with the `LIMIT` the bounding change added — the `+ 1` row the activity reads to
 #: answer "is there more" is a wider `LIMIT`, not a second statement.
 RELAY_CANDIDATE_STATEMENTS = 1
 
@@ -217,7 +217,7 @@ def test_relay_candidate_selection_is_one_indexed_query(db: None, tenant: Any, s
     in the candidate set. Both cutoffs are measured; both are one query on
     `outbox_status_next_attempt`.
 
-    Re-measured after P3-F1c bounded the read (FINDING C). The batched form —
+    Re-measured after the read was bounded (FINDING C). The batched form —
     a `LIMIT`, an `OFFSET`, and one extra row so the activity can answer "is
     there more" without a `COUNT` — is measured here beside the unbounded one,
     because the fix is only a fix if it did not cost a statement or the index.
@@ -259,7 +259,7 @@ def test_relay_candidate_selection_is_one_indexed_query(db: None, tenant: Any, s
 def test_the_drain_has_a_ceiling_and_it_is_the_declared_one(
     db: None, tenant: Any, spec: Any
 ) -> None:
-    """P3-F1c, against the population FINDING C was written about.
+    """The bounded read, against the population FINDING C was written about.
 
     The finding was not a count that moved — every count in this file was flat.
     It was an unbounded SET: the candidate selection was one indexed query at
@@ -301,7 +301,7 @@ def test_the_drain_pays_the_enqueue_price_per_row(
     Doubled axis: **events**. `reconcile_outbox` hands every candidate back
     through `enqueue_dispatch(resume=True)`, so one activity execution's cost is
     `min(candidates, RECONCILE_BATCH) x this number`. The per-row number is
-    unchanged by P3-F1c — the fix was to the multiplicand, not the multiplier,
+    unchanged by that bounding — the fix was to the multiplicand, not the multiplier,
     and re-measuring it is how that claim stops being an assertion.
     """
     from apps.events import services

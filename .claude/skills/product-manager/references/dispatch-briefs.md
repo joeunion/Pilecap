@@ -47,8 +47,19 @@ so a PM can tell an obsolete clause from a load-bearing one.
   sub-gigabyte perf world and a multi-gigabyte telemetry stack will fill the
   disk, wedge Docker and stall every concurrent rung. **"Leave the clone in
   place" is no longer a sentence a PM brief may contain.**
+- **"A journey (composition) rung consumes proven ingredients only."** A
+  missing or inadequate ingredient stops the rung — flag it, never inline a
+  one-off primitive and never edit the ingredient from inside the journey
+  rung; growing the foundation is its own phase-1 rung. (The build strategy:
+  ingredients → journeys → fit-and-finish; paid for by a first product's
+  rejected UI.)
 - **A mid-flight amendment only half-lands.** If the brief changes materially,
   re-dispatch cleanly with the prior output carried forward — do not patch it.
+- **An exhibit is written in the past tense, with the rung id that closed
+  it.** A brief (or plan) quoting a defect as a live present-tense fact reads
+  as an instruction to fix it again after it is fixed; the moment a rung
+  closes it, every later citation says *was*, and names the rung. (Paid for
+  in P15: three documents carried present-tense exhibits of closed defects.)
 
 ---
 
@@ -100,11 +111,14 @@ finding against the criteria.
 paraphrase of it:**
 
 > *Verify a green full verdict exists in the ledger for the exact tree under
-> test — one grep of `git rev-parse HEAD^{tree}` against the verdict ledger
-> that `scripts/gate_ledger.sh` maintains. One grep; that is observation. Then
-> drive the criteria through the doors and the UI. Running `check.sh`, `test.sh`
-> or any suite is out of scope and a criteria-writing error — if a criterion
-> asks you to, say so and stop.*
+> test — one grep of the measured tree against the verdict ledger that
+> `scripts/gate_ledger.sh` maintains (its `gate_measured_tree` is the key:
+> HEAD's tree plus untracked non-ignored files — `git rev-parse HEAD^{tree}`
+> matches it only on a checkout with no untracked files; docs-or-ledger-only
+> commits after the banked tree are not a fail). One grep; that is
+> observation. Then drive the criteria through the doors and the UI. Running
+> `check.sh`, `test.sh` or any suite is out of scope and a criteria-writing
+> error — if a criterion asks you to, say so and stop.*
 
 Why a prohibition rather than a preference: the gate is deterministic on a tree,
 so re-running it is not a second opinion, it is the same opinion bought again —

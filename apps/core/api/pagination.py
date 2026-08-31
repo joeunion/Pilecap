@@ -107,7 +107,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, overload
+from inspect import signature
+from typing import Any, get_args, overload
 from uuid import UUID
 
 from django.conf import settings
@@ -739,3 +740,103 @@ class CursorPagination(PaginationBase):
         this one — which is the point at which this becomes a parameter.
         """
         return ("name",)
+
+
+# --- the one predicate three instruments read (ADR core-24) --------------------
+#
+# Three instruments used to answer "is this route paginated?" for themselves, off
+# two different PRIVATE ninja attributes, and all three answered wrong about the
+# same three routes:
+#
+# * rule 3's census (`apps/core/checks.py`) — `_ninja_contribute_args`;
+# * the docs derivation (`config/api.py`) — `_ninja_is_paginated`;
+# * `manage.py introspect`'s `paginated` column — `_ninja_contribute_args`.
+#
+# All three markers say the same thing: **`@paginate` was applied**. None of them
+# says what a caller actually experiences, which is whether the route ANSWERS THE
+# CURSOR ENVELOPE. A route may reach `cursor_page` directly and return a `*Page`
+# schema — three do (`api:search_kind-list`, `api:search-query`, `api:meter-list`),
+# each for a stated reason in its own docstring — and every one of those markers
+# is absent on all three. So the census did not see them, the document derived no
+# `invalid_cursor` for them, and `introspect` published `paginated: false` about a
+# route whose body is `{items, has_more, next_cursor, count}`.
+#
+# The failure that matters is not the wrong column. It is that FIXING ONE LEAVES
+# TWO BLIND: three private re-derivations of one fact drift apart silently, and
+# nothing anywhere fails when they do. Hence one predicate, here, beside the
+# envelope it is about, read by all three — sever it and all three go red at
+# once, which `apps/core/tests/test_pagination_seam.py` plants and proves.
+#
+# It reads the RESPONSE MODEL rather than a decorator marker, because the
+# response model is the thing the caller meets: `@paginate` builds its
+# `Paged<X>Out` out of `CursorPagination.Output`, which is a `ListPage`, and a
+# direct-cursor route declares a `*Page` schema, which is also a `ListPage`. One
+# class, both roads, no list of route names anywhere.
+
+
+def _annotation_members(annotation: Any) -> list[Any]:
+    """An annotation flattened into the concrete types a response may be.
+
+    `X`, `X | None` and `Union[X, Y]` all arrive here; nested unions are walked
+    because `get_args` on `X | None | Y` is already flat but a `Literal` or a
+    generic alias is not, and a member this cannot understand is simply not a
+    class and falls out of the `issubclass` test below.
+    """
+    args = get_args(annotation)
+    if not args:
+        return [annotation]
+    flattened: list[Any] = []
+    for arg in args:
+        flattened.extend(_annotation_members(arg) if get_args(arg) else [arg])
+    return flattened
+
+
+def answers_cursor_envelope(operation: Any) -> bool:
+    """Whether this route's success response IS the cursor envelope.
+
+    True for a route that carries `@paginate(CursorPagination)` and for one that
+    calls `cursor_page` itself and declares a `*Page` schema, because the
+    question asked is about the body a caller receives and those two are the same
+    body. False for everything else, including a bare `list[X]` — an unpaginated
+    list is exactly what house rule 3 is about and is not the envelope.
+
+    Takes a ninja `Operation` — every one of the three readers already holds one
+    — and reads its 2xx response models. Nothing here knows a route by name.
+    """
+    models = getattr(operation, "response_models", None) or {}
+    for status, model in models.items():
+        if not isinstance(status, int) or not (200 <= status < 300):
+            continue
+        field = (getattr(model, "model_fields", None) or {}).get("response")
+        if field is None:
+            continue
+        for member in _annotation_members(field.annotation):
+            if isinstance(member, type) and issubclass(member, ListPage):
+                return True
+    return False
+
+
+def offers_pagination_controls(operation: Any) -> bool:
+    """Whether a caller can actually WALK this route — `?cursor=` and `?limit=`.
+
+    The other half of house rule 3, and a separate question from the one above:
+    a route may answer the envelope and still give nobody a way to ask for page
+    two, which is an envelope with a dead `next_cursor` in it. `@paginate`
+    contributes both parameters off `CursorPagination.Input`; a direct-cursor
+    route declares them in its own signature, which is why both roads are read.
+
+    `_ninja_is_paginated` and not `_ninja_contribute_args`: the second is ninja's
+    generic "this decorator adds arguments" marker and says nothing about
+    pagination — reading it is how the census came to treat *any* contributing
+    decorator as a paginator.
+    """
+    view = getattr(operation, "view_func", None)
+    if view is None:
+        return False
+    if getattr(view, "_ninja_is_paginated", False):
+        return True
+    try:
+        parameters = set(signature(view).parameters)
+    except (TypeError, ValueError):  # pragma: no cover - a non-introspectable view
+        return False
+    return {"cursor", "limit"} <= parameters

@@ -45,7 +45,7 @@ Two invariants outrank any per-file preference:
 | R3 | `scripts/**` · `deploy/**` · `perf/**` · `compose.yaml` · `compose/**` · `Dockerfile` · `.dockerignore` · `.devcontainer/**` · `.github/**` | SHIP | instruments and posture-as-code; every executable already owes its `instruments.md` row |
 | R4 | `pyproject.toml` · `uv.lock` · `.python-version` · `.env.example` · `.gitignore` · `.editorconfig` · `.secrets.baseline` · `vendor/**` · `templates/**` | SHIP | the pinned environment and vendored assets (the Scalar manifest's checksum posture rides along) |
 | R5 | `.claude/skills/**` · `CLAUDE.md` · `README.md` · `docs/runbooks/**` · `docs/standards.md` | SHIP | the method, the map, the operator procedures — and, at the last path, the portable account of the method written FOR OTHER TEAMS, which is guidance of the same class and belongs where a browsing stranger lands rather than under `docs/product/` (those are the decisions THIS repository is built on) or `docs/runbooks/` (operations). **The path, not a glob:** R5 gains this one file, so the next guidance-class file at `docs/*.md` still fails unplaced and is decided rather than absorbed |
-| R6 | `TEMPLATE_VERSION` · `CHANGELOG.md` | SHIP | the template-updates mechanism (products cherry-pick system-layer commits — the platform table's own line) |
+| R6 | `TEMPLATE_VERSION` · `CHANGELOG.md` | SHIP | the template-updates mechanism: `TEMPLATE_VERSION` names the release a checkout is on and the release TAG is derived from it; `CHANGELOG.md` is what a consumer reads before merging that tag, and release mode refuses to publish a version the file has no section for (§ Release mode) |
 | R7 | `docs/product/<ledger>.md` for the nine ledgers below | SKELETON | ships as a committed skeleton + one marked worked example each |
 | R8 | `docs/product/cycles/**` · `archive/**` · `retro/**` · `drafts/**` · `proposals/**` · the dated `pm-handoff-*.md` handoffs | TRIM | the build's archaeology; the source repository keeps it as the archive of record |
 | R8S | two named files inside `cycles/` (dispositions table below) | SHIP | the format-teaching pair in an otherwise-trimmed directory |
@@ -111,9 +111,11 @@ skeleton file is therefore the whole act of converting one; a
 
 - **Derivation:** apply the bucket rules to `git ls-files` at HEAD; census
   refusal per above (exit 2 on unmatched/double-matched).
-- **Export:** copy the ship-set into a fresh `git init` (no source history;
-  a product clone starts at commit one); substitute skeletons per R7;
-  commit as the single initial commit.
+- **Export:** copy the ship-set into a fresh `git init` in a SCRATCH target
+  (no source history); substitute skeletons per R7; commit as that scratch
+  artifact's single initial commit. This is the verification world, and it is
+  what every drive runs against. Publishing to the real repository is § Release
+  mode below, which reuses this export whole and adds one commit.
 - **Idempotent, falsifiably:** two runs at the same source sha produce the
   same exported TREE HASH (`git rev-parse HEAD^{tree}` on the artifact) —
   printed by the instrument itself, the claim being its own line.
@@ -126,11 +128,70 @@ skeleton file is therefore the whole act of converting one; a
   (rule 23 — the trim itself can surface what history hid); and the
   byte-identical check for R2. A fresh clone of the artifact is then driven
   through `setup.sh`, the FULL gate and the primer walkthrough.
-- **Target:** a fresh-history public GitHub **template repo**; the source
-  repository keeps its history as the archive of record. Repeatable because
-  the template keeps evolving — publish is a command, never a hand-copy.
+- **Target:** a public GitHub **template repo**, cut from this source once and
+  extended by release commits after that (§ Release mode); the source
+  repository keeps its full history as the archive of record. Repeatable
+  because the template keeps evolving — publish is a command, never a
+  hand-copy.
 - **House discipline:** owns its exit codes, refuses a piped stdout, owes
   its `docs/product/instruments.md` row.
+
+## Release mode — the child-commit publish (owner's ruling, 2026-08-30)
+
+**A release is a forward commit.** `./scripts/publish.sh --release <dir>` runs
+the census, the export and every verification leg above against a scratch
+artifact exactly as the default mode does, and then writes ONE squashed commit
+into `<dir>` — a clone of the published repository — as a **child of its tip**,
+tagged `v<TEMPLATE_VERSION>`. `--to` keeps its meaning: it names the scratch
+artifact, never the published repository.
+
+**Consumers merge the tag they want.** Each release commit carries the WHOLE
+tree rather than a delta, and the chain is linear, so a product on `v1.0.0`
+merges `v1.4.0` directly and skips every intermediate for free. A product
+cloned from the published repository shares its root commit, so a merge base
+always exists: inherited files nobody touched merge silently and a locally
+edited file arrives as an ordinary conflict in that file alone. Cadence and
+batch size stay the platform's — the consumer's cost does not grow with them.
+
+**The release commit's tree IS the census-verified tree, and that is
+asserted.** The artifact's objects are fetched into the published repository
+and `git commit-tree` is handed the very hash the export printed; the new
+commit's tree is then read back and compared. Unequal is exit 2 with both
+hashes named and no tag written. This is why the idempotence line is now
+doubly load-bearing: it is both the repeatability claim and the release
+commit's identity.
+
+**Refusals (all exit 2, all before anything is written):** a target that is
+not a repository root, is bare, has a detached HEAD, has no commits, or has a
+dirty working tree; a target carrying **no release tag at all** (there is then
+nothing to compare the tip against, and guessing what is already published is
+the one thing this refuses to do — tag the published tip once and re-run); a
+target whose **tip is not its last release**, naming both shas (somebody
+committed onto the published branch by hand, or the clone is behind); and a
+target that **already carries this version's tag**, because a released tree
+never changes. A run with violations prints the release step and commits
+nothing.
+
+**Leg `changelog` (release mode, exit 1):** the artifact's `CHANGELOG.md` must
+carry a `## [<version>]` section for the version being released. A tag with no
+entry behind it asks a consumer to merge a tree on trust — a diff answers
+"what changed" and never "would I want this, and what does it change under
+me", which is the question `CHANGELOG.md`'s own header says an entry answers.
+
+**THE ROOT RE-CUT DOOR IS CLOSED.** A target carrying release tags is refused
+with the door-closed sentence in every mode that exports. Re-cutting the root
+of a published repository destroys the merge base every consumer shares: their
+next pull would see the whole template as new work and conflict with every
+local patch they carry. The scratch mode is untouched — a fresh or
+previously-stamped directory still exports normally, which is how the drives
+run.
+
+**And so the per-publish census is load-bearing FOREVER.** History that cannot
+be re-cut cannot be cleaned up later. A private name, a dangling pointer, a
+lost decision or a secret that reaches a release commit is in every consumer's
+history the moment they merge it. Every leg above used to be a wall in front of
+a mistake that could be undone by re-cutting; none of them is that any more,
+and that is the reason none of them may be weakened for convenience.
 
 ## Blind spots (this design's own, declared)
 
@@ -147,3 +208,18 @@ skeleton file is therefore the whole act of converting one; a
   is a parser with its own false-positive surface, and the known instances
   are cheaper to fix than the class is to automate. The trigger to build the
   joining scanner is a SECOND wrapped instance found.
+- **Release mode judges the release's SHAPE, never its prose.** Leg
+  `changelog` proves a section for the version exists; whether the entry
+  answers the file's own question honestly is a reviewer's judgment, the same
+  class as skeleton content above.
+- **Release mode pushes nothing.** It writes a commit and a tag in a local
+  clone and prints the push command. Whether the published repository's remote
+  is the intended one, and whether the tag reaches it, are outside every leg
+  here — deliberately, because a leg that pushed would make a refusal
+  unrecoverable.
+- **The closed door is recognised by release TAGS.** A published repository
+  that carries none is invisible to the door-closed refusal, and only the
+  destruction guard's weaker "not empty and unstamped" refusal stands in
+  front of it. That is the whole reason release mode refuses an untagged
+  target rather than inventing a version for it: the one act that arms both
+  guards is tagging the published tip, and it is asked for by name.

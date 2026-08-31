@@ -1,4 +1,36 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # The drive for `scripts/pm_merge.sh` — the refusals, the exit propagation and
 # the proof of merge.
 #
@@ -393,6 +425,124 @@ case_the_pipe_guard_reads_only_what_the_preamble_strips() {
         "(none)" "${unstripped:-(none)}"
 }
 
+# --- the tripwire may not convict a drive of a PEER'S merge ------------------
+#
+# THE DEFECT. `drive_repo_fingerprint` carried `main` BY SHA, on the sentence
+# "the PM merges into main from the main checkout, never during a push". That
+# was true of ONE caller and the fingerprint is read by every drive: the PM
+# merges into LOCAL main continuously, refs are shared across every worktree of
+# this repository, and a builder's drive is not a push. So a merge landing
+# while any drive ran demoted that drive to exit 2 through no act of its own,
+# and it cost one rung a full re-run before anybody found the mechanism.
+#
+# DRIVEN LIVE, IN BOTH DIRECTIONS, because a text assertion here would only say
+# the line is gone and not that the tripwire still works. Each half builds a
+# scratch repository with a `main` and a rung branch checked out — this
+# repository's shape — and runs a throwaway drive inside it that sources THIS
+# tree's real preamble.
+#
+# The act each half performs is written into the fake drive as shell, and it
+# runs with the drive's own working directory inside the scratch repository —
+# so a plain `git` there is the scratch repository's, which is the whole point
+# of the preamble's section 1.
+N454_RC=0
+run_fake_drive() {
+    # Three statements, not one: on bash 3.2 a single `local a=$1 b=${a}` reads
+    # `a` before the assignment lands and dies under `set -u`. Found here, by
+    # this file, on its first run.
+    local label="$1"
+    local act="$2"
+    local repo="${WORK}/n454-${label}"
+    drive_require_scratch repo "${repo:-}"
+    mkdir -p "$repo"
+    git -C "$repo" init -q
+    git -C "$repo" symbolic-ref HEAD refs/heads/main
+    git -C "$repo" config user.email drive@example.invalid
+    git -C "$repo" config user.name "n454 drive"
+    echo one >"$repo/a.txt"
+    git -C "$repo" add a.txt
+    git -C "$repo" commit -qm one
+    # The rung worktree's own branch is what is checked out, so `main` is not
+    # this checkout's HEAD — a builder's worktree, exactly.
+    git -C "$repo" checkout -q -b worktree-agent-n454
+
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -uo pipefail'
+        echo "cd \"$repo\" || exit 9"
+        echo ". \"${PWD}/scripts/tests/drive_preamble.sh\""
+        echo 'DRIVE_OPTED_IN_TO_FINISH=1'
+        printf '%s\n' "$act"
+        echo 'drive_finished'
+        echo 'exit 0'
+    } >"${WORK}/n454-${label}.sh"
+    chmod +x "${WORK}/n454-${label}.sh"
+    DRIVE_OUT="${WORK}/n454-${label}.log"
+    # `|| N454_RC=$?` and not a bare call: this file runs under `set -e`, and
+    # HALF THESE CASES EXPECT A NONZERO STATUS. A bare invocation killed this
+    # drive mid-case on its first run — exit 2, no summary line, no failing
+    # assertion, nothing printed at all.
+    N454_RC=0
+    "${WORK}/n454-${label}.sh" >"$DRIVE_OUT" 2>&1 || N454_RC=$?
+}
+
+n454_exits() {
+    if [ "$N454_RC" = "$1" ]; then
+        echo "  ok       ${CURRENT} — exit ${N454_RC}"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — wanted exit $1, got ${N454_RC}"
+        sed 's/^/             | /' "$DRIVE_OUT" | tail -20
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+case_a_peers_merge_into_main_does_not_convict_a_drive() {
+    CURRENT="a peer's merge into main"
+    # THE PEER'S ACT, NOT THE DRIVE'S. `commit-tree` + `update-ref` moves
+    # `main` and nothing else — no HEAD, no index, no working tree — which is
+    # what a PM merge looks like from inside a worktree that is not the one
+    # merging. The drive itself touches nothing at all.
+    run_fake_drive "peer-merge" '
+NEW=$(git commit-tree "HEAD^{tree}" -p HEAD -m "the PM merge that landed mid-drive")
+git update-ref refs/heads/main "$NEW"
+echo "a peer moved main to $NEW while this drive ran"'
+    n454_exits 0
+    says_not "MUTATED THE REAL REPOSITORY"
+}
+
+case_the_escape_itself_is_still_caught() {
+    # THE OTHER DIRECTION, and it is the one that matters: the incident this
+    # whole preamble is made of pointed HEAD at refs/heads/main and committed
+    # onto it. Both halves move HEAD and HEAD-ref, which are this checkout's
+    # own and which no peer can touch — so removing main's SHA takes nothing
+    # away from the escape. Asserted rather than argued.
+    CURRENT="the escape is still caught"
+    run_fake_drive "escape" '
+git checkout -q main
+echo escaped >>a.txt
+git commit -qam "only on main"'
+    n454_exits 2
+    says "MUTATED THE REAL REPOSITORY"
+
+    # And the scenario branches, which is how the escape was actually FOUND —
+    # `stale`, `safe` and `clash` appearing in the real repository's refs.
+    CURRENT="a drive that creates branches is still caught"
+    run_fake_drive "branches" '
+git branch stale
+git branch safe
+git branch clash'
+    n454_exits 2
+    says "refs/heads/clash"
+
+    # And `core.bare`, which `git init` under an inherited GIT_DIR sets and
+    # which nothing legitimate in this repository ever does.
+    CURRENT="a drive that sets core.bare is still caught"
+    run_fake_drive "core-bare" 'git config core.bare true'
+    n454_exits 2
+    says "core.bare"
+}
+
 case_the_real_script_refuses_a_foreign_checkout() {
     fresh_repo
     local before
@@ -441,6 +591,35 @@ case_a_clean_merge_prints_the_proof_line() {
     holds "clean merge: the new tip has two parents" "2" \
         "$(git -C "$REPO" log -1 --format=%P | wc -w | tr -d ' ')"
     holds "clean merge: the gate ran once, with --fast" "--fast" "$(cat "$GATE_LOG")"
+}
+
+case_bank_runs_the_full_gate_instead_of_fast() {
+    # THE FLAG THAT WAS ONLY PROSE. This script printed a paragraph telling the
+    # reader to bank a verdict for the merged tree, and then ran `--fast`
+    # unconditionally — the tier was a sentence, not a choice. Both halves are
+    # asserted here: what the gate was HANDED (the stub records its own argv,
+    # so this is the argument itself and not a message about it) and what the
+    # operator was TOLD before it ran.
+    fresh_repo
+    drive "merge with --bank" 0 -- in_repo ./scripts/pm_merge.sh safe --bank
+    says "MERGED. Proof of merge"
+    says "STUB GATE ran with: --bank"
+    says "THE FULL GATE, asked for with --bank"
+    says_not "NOT run here: pytest"
+    holds "--bank: the gate ran once, with --bank" "--bank" "$(cat "$GATE_LOG")"
+    holds "--bank: the merge still happened and has two parents" "2" \
+        "$(git -C "$REPO" log -1 --format=%P | wc -w | tr -d ' ')"
+}
+
+case_the_default_tier_is_still_fast() {
+    # The other direction, and it is the one that protects every ordinary
+    # merge: a flag that changed the DEFAULT would put an eight-minute gate in
+    # front of every returned branch.
+    fresh_repo
+    drive "merge without --bank" 0 -- in_repo ./scripts/pm_merge.sh safe
+    says "STUB GATE ran with: --fast"
+    says_not "STUB GATE ran with: --bank"
+    holds "no flag: the gate ran once, with --fast" "--fast" "$(cat "$GATE_LOG")"
 }
 
 case_a_merge_message_file_is_used() {
@@ -506,9 +685,13 @@ case_a_dirty_tree_is_refused
 case_a_piped_stdout_is_refused
 case_the_ci_exemption_lets_a_piped_run_through
 case_the_pipe_guard_reads_only_what_the_preamble_strips
+case_a_peers_merge_into_main_does_not_convict_a_drive
+case_the_escape_itself_is_still_caught
 case_the_real_script_refuses_a_foreign_checkout
 case_a_conflicting_merge_surfaces_the_conflict
 case_a_clean_merge_prints_the_proof_line
+case_bank_runs_the_full_gate_instead_of_fast
+case_the_default_tier_is_still_fast
 case_a_merge_message_file_is_used
 case_a_merge_message_on_stdin_is_used
 case_an_unreadable_message_file_is_refused

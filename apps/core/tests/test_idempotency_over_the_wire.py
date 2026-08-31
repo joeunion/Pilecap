@@ -124,8 +124,14 @@ async def post_widget(
     session: str | None = None,
     bearer: str | None = None,
     tenant_slug: str | None = None,
+    page_token: bool = True,
 ) -> httpx.Response:
-    """One write, spelled the way a real client spells it."""
+    """One write, spelled the way a real client spells it.
+
+    `page_token=False` is the broken-credential spelling this module is about: a real
+    session cookie and no `X-CSRFToken`, which is what a browser client sends
+    when its token has rotated or its page was served before the cookie was.
+    """
     headers: dict[str, str] = {HEADER: key}
     if tenant_slug is not None:
         headers[TENANT_HEADER] = tenant_slug
@@ -133,7 +139,9 @@ async def post_widget(
         headers["Authorization"] = f"Bearer {bearer}"
     if session is not None:
         client.cookies.set(settings.SESSION_COOKIE_NAME, session)
-        headers["X-CSRFToken"] = await csrf_token(client)
+        token = await csrf_token(client)
+        if page_token:
+            headers["X-CSRFToken"] = token
     return await client.post(WIDGETS_URL, json={"name": name}, headers=headers)
 
 
@@ -304,3 +312,55 @@ async def test_a_bearer_token_switching_hats_by_header_gets_two_answers(
     assert again.json() == first.json()
     assert await widgets_in(tenant) == 1
     assert await widgets_in(other_tenant) == 1
+
+
+async def test_a_fixed_credential_reaches_the_write_its_key_was_refused_for(
+    session_cookie: str,
+    owner: User,
+    tenant: Tenant,
+    recorded_workflow_starts: None,
+) -> None:
+    """The poisoned-key case reproduced over the wire — **ADR core-23**.
+
+    A signed-in browser write with no `X-CSRFToken` is refused
+    `403 page_token_missing` (`apps/accounts/auth.py`), before any route runs and
+    with nothing written. The client fixes the credential and retries with the
+    identical key and body — the exact retry `Idempotency-Key` exists to make
+    safe.
+
+    **The red, on the baseline:** the second call came back `403` with
+    `Idempotent-Replayed: true`, and the widget could not be created under that
+    key for the record's whole TTL. The credential is outside the fingerprint
+    (`method + path + raw body`), so the key never named the thing that was
+    wrong; the refusal was the door's, and the door refused before the key was
+    spent.
+    """
+    async with wire() as client:
+        refused = await post_widget(
+            client,
+            name="After the fix",
+            key="wire-fixed-fault",
+            session=session_cookie,
+            page_token=False,
+        )
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["code"] == "page_token_missing"
+        assert refused.headers.get(REPLAYED_HEADER) is None
+
+        retried = await post_widget(
+            client, name="After the fix", key="wire-fixed-fault", session=session_cookie
+        )
+
+    assert retried.status_code == 201, retried.text
+    assert retried.headers.get(REPLAYED_HEADER) is None
+    assert await widgets_in(tenant) == 1
+
+    # And the key now holds the answer it should always have held: the write.
+    async with wire() as client:
+        again = await post_widget(
+            client, name="After the fix", key="wire-fixed-fault", session=session_cookie
+        )
+    assert again.status_code == 201, again.text
+    assert again.headers[REPLAYED_HEADER] == "true"
+    assert again.json() == retried.json()
+    assert await widgets_in(tenant) == 1

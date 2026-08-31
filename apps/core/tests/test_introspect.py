@@ -307,8 +307,15 @@ def test_the_refusals_section_reports_the_registry(payload: dict[str, Any]) -> N
     # is what they can do about it, structured so a screen and an assistant
     # render the same offer. `remedy` stays what it was — the developer's
     # advice, reported here and never on the wire.
+    #
+    # AMENDED AGAIN (ADR core-23): `status` is the fifth. It is the number the
+    # HTTP door answers this code with, derived off the registry rather than off
+    # the hand-appended table `config/api.py` used to carry — which this
+    # instrument could not see at all. `None` is a declaration, not a gap: a
+    # machine-door code has no HTTP status because the machine door has none.
     for code, row in rows.items():
-        assert set(row) == {"code", "boundary", "fact", "remedies", "remedy"}
+        assert set(row) == {"code", "boundary", "status", "fact", "remedies", "remedy"}
+        assert row["status"] is None or row["status"] in range(400, 600), code
         assert row["boundary"] in BOUNDARIES, code
         assert row["remedy"].strip(), code
         assert row["fact"].strip(), code
@@ -450,3 +457,125 @@ def test_two_invocations_of_an_unchanged_tree_are_sha_identical() -> None:
     first = hashlib.sha256(_document().encode()).hexdigest()
     second = hashlib.sha256(_document().encode()).hexdigest()
     assert first == second, "two runs of an unchanged tree produced two different documents"
+
+
+# --- the published keys a criteria-writer leans on ------------------------------
+#
+# An acceptance criterion is written against this document before the code
+# exists — "every route the census names reports `paginated: true`", "the marker
+# is visible in `introspect`" — and the criterion is then verified by somebody
+# who reads the key back out. So a key here is a PUBLISHED INTERFACE, and the two
+# ways it rots are the two ways an interface rots: it gets RENAMED, and the
+# criterion silently reads `None` forever; or its POPULATION GOES VACUOUS, and
+# the criterion passes over an empty set.
+#
+# The peer's D1 shipped an instrument that read `route["path"]` — a key this
+# document has never had — and nothing anywhere refused it. Every assertion below
+# is canary-shaped against exactly that: it names the key, and it demands the key
+# be about something.
+
+
+def test_the_route_keys_a_criteria_writer_reads_are_present_and_populated(
+    payload: dict[str, Any],
+) -> None:
+    """`pattern` and `paginated` — named, and non-vacuous.
+
+    `pattern` is the one D1 got wrong (it read `path`). `paginated` is the one
+    that was confidently WRONG rather than absent, which is worse: it reported
+    `false` for three routes that answer the cursor envelope until the seam
+    landed (ADR core-24, `apps/core/tests/test_pagination_seam.py`).
+    """
+    routes = payload["routes"]
+    assert routes, "the routes section is empty; every route criterion is now vacuous"
+    for route in routes:
+        assert set(route) >= {"pattern", "methods", "name", "view", "auth", "paginated"}, route
+        assert str(route["pattern"]).startswith("/"), route
+
+    paginated = [route for route in routes if route["paginated"]]
+    assert len(paginated) >= 20, (
+        f"only {len(paginated)} of {len(routes)} routes report `paginated: true`. "
+        "This tree mounts twenty-odd lists; a number this low means the column has "
+        "stopped seeing them and every criterion phrased over it is now vacuous."
+    )
+
+
+def test_the_marker_key_is_present_and_names_the_three_declarations(
+    payload: dict[str, Any],
+) -> None:
+    """`markers` — the declarations `bases` cannot tell you about.
+
+    Every model carries the key (an empty dict is an answer: this model declares
+    nothing), and the population is held from below so a derivation that stopped
+    reading the classes fails here rather than reporting a tree in which nobody
+    declares anything.
+
+    THE BLIND SPOT, stated: this is pinned to today's three marker KINDS. A
+    fourth marker is one line in `_markers_payload` and one line here, and until
+    somebody writes both it is invisible — the discovery shape makes that cheap,
+    it does not make it automatic.
+    """
+    models = payload["models"]
+    assert models, "the models section is empty"
+    for model in models:
+        assert "markers" in model, f"{model['app']}.{model['name']} carries no `markers` key"
+        assert isinstance(model["markers"], dict)
+        assert set(model["markers"]) <= {
+            "append_only",
+            "inherited_downward",
+            "derive_org_from",
+        }, model["markers"]
+
+    declared = {
+        f"{model['app']}.{model['name']}": model["markers"] for model in models if model["markers"]
+    }
+    kinds = {kind for markers in declared.values() for kind in markers}
+    assert kinds == {"append_only", "inherited_downward", "derive_org_from"}, (
+        f"the tree declares only {sorted(kinds)}. Each of the three marker kinds has "
+        "at least one member on main — a kind with no members means the derivation "
+        "has stopped reading that declaration, and a criterion about it is vacuous."
+    )
+    # The three worked examples, by name, so a rename or a deletion is loud.
+    assert declared["core.AuditEntry"] == {"append_only": True}
+    assert declared["example.WidgetPolicy"] == {"inherited_downward": True}
+    assert declared["example.WidgetEntry"] == {"append_only": True, "derive_org_from": "widget"}
+
+
+def test_the_marker_key_agrees_with_the_declarations_it_claims_to_read(
+    payload: dict[str, Any],
+) -> None:
+    """Derived, not listed: `markers` IS the registry, model for model.
+
+    An equality against `core.models.append_only_models()` rather than a copy of
+    its answer — a product that declares a further append-only model sees it here
+    without editing `introspect`, and a model that quietly stopped declaring one
+    fails here rather than shortening a list nobody counts.
+    """
+    from apps.core.models import append_only_models
+
+    reported = {
+        f"{model['app']}.{model['name']}"
+        for model in payload["models"]
+        if model["markers"].get("append_only")
+    }
+    assert reported == {model._meta.label for model in append_only_models()}
+
+
+def test_the_refusal_keys_a_criteria_writer_reads_are_present_and_populated(
+    payload: dict[str, Any],
+) -> None:
+    """`fact`, `remedies` and `status` — each named, each about something.
+
+    The equality against the registry is asserted above; what this adds is the
+    non-vacuity, one key at a time, because the failure mode a criterion meets is
+    a key that still exists and has stopped carrying anything.
+    """
+    rows = payload["refusals"]
+    assert rows, "the refusals section is empty"
+    assert all(row["fact"].strip() for row in rows)
+    assert all(row["remedies"] for row in rows)
+    with_status = [row for row in rows if row["status"] is not None]
+    assert len(with_status) >= 8, (
+        f"only {len(with_status)} of {len(rows)} refusals report an HTTP status. "
+        "`status` is derived off the registry (ADR core-23); a number this low "
+        "means the derivation broke, not that the doors went quiet."
+    )

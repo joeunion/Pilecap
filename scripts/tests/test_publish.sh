@@ -1,4 +1,36 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # The refusal-and-property drive for `scripts/publish.sh`.
 #
 # Exit: 0 every case held · 1 a refusal did not fire or a property did not hold
@@ -22,12 +54,12 @@
 # bare machine, provided detect-secrets is installed (the secrets leg's own
 # dependency, and its absence is honestly a could-not-look).
 #
-# NOT WIRED INTO `scripts/check.sh` YET, and that is a declared debt rather than
-# a decision: the selftest leg's drive list lives in `scripts/check.sh`, which
-# was another rung's exclusive territory in the wave that wrote this file.
-# Wiring it is one `set +e` block beside the eight
-# already there. **BY HAND IS A PROMISE; A LEG IS A MEASUREMENT** — the same
-# sentence check.sh uses about the two drives that spent a cycle unwired.
+# WIRED INTO `scripts/check.sh`'s selftest leg. It was a declared debt for one
+# cycle rather than a decision — the drive list lives in `scripts/check.sh`,
+# which was another rung's exclusive territory in the wave that wrote this file
+# — and the rung that next owned that file paid it. **BY HAND IS A PROMISE; A
+# LEG IS A MEASUREMENT** — the same sentence check.sh uses about every drive
+# that spent a cycle unwired.
 set -euo pipefail
 
 if [ -z "${CI:-}" ] && { [ -p /dev/fd/1 ] || [ -p /dev/stdout ]; }; then
@@ -36,6 +68,39 @@ if [ -z "${CI:-}" ] && { [ -p /dev/fd/1 ] || [ -p /dev/stdout ]; }; then
 fi
 
 cd "$(dirname "$0")/../.."
+
+# --- the drive preamble, and it comes before anything asks git a question ----
+#
+# THIS DRIVE IS THE INCIDENT'S OWN SHAPE. `scripts/tests/drive_preamble.sh`
+# exists because a drive that builds throwaway repositories and talks to them
+# with `git -C "$SCRATCH" ...` writes into the REAL repository instead whenever
+# it inherits an absolute `GIT_DIR` — which it does when it is run from the
+# pre-push hook. Everything below builds fixtures exactly that way, and the
+# release cases go further still: they tag, reset and clone. A stray
+# `git -C "$PUB" tag -a v0.1.0` under an inherited `GIT_DIR` is a release tag
+# in this repository's own refs.
+#
+# It was the last drive under `scripts/tests/` not sourcing this file, and the
+# EXIT trap it carried instead was a bare one — so it had no registered
+# cleanups, no real-repository tripwire and no died-before-reporting check,
+# which the plant runs for the release cases demonstrated by ending at git's
+# own exit 128 with the `passed · failed` line never printed.
+[ -r scripts/tests/drive_preamble.sh ] || {
+    echo "!! test_publish: scripts/tests/drive_preamble.sh is not in this tree." >&2
+    echo "   It carries the neutralisation that keeps every fixture repository" >&2
+    echo "   below out of the real one. Refusing to run without it." >&2
+    exit 2
+}
+. scripts/tests/drive_preamble.sh
+
+# AFTER the source, never before: the preamble assigns this variable 0 itself
+# itself (drive_preamble.sh, `DRIVE_OPTED_IN_TO_FINISH=0`), so an opt-in written above the source line is
+# silently overwritten and the death check never arms. Caught by planting an
+# unbound variable before the summary and watching the drive exit 0 anyway —
+# which is the exact failure the check exists to prevent, wearing the check's
+# own clothes.
+DRIVE_OPTED_IN_TO_FINISH=1
+
 ROOT=$(pwd -P)
 PUBLISH="$ROOT/scripts/publish.sh"
 [ -x "$PUBLISH" ] || {
@@ -61,7 +126,11 @@ command -v detect-secrets >/dev/null 2>&1 || {
 }
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/djb-test-publish.XXXXXX") || exit 2
-trap 'rm -rf "$WORK"' EXIT
+# The scratch belt, then the cleanup REGISTERED rather than trapped: the
+# preamble owns the EXIT trap so the real-repository tripwire runs last on
+# every exit path, and a bare `trap ... EXIT` here would silently remove it.
+drive_require_scratch WORK "${WORK:-}"
+drive_at_exit 'rm -rf "$WORK"'
 
 PASS=0
 FAIL=0
@@ -411,7 +480,205 @@ run "$FIX" --to "$ART"
 [ "$RC" = 0 ] && ok "and the plants restore: the fixture is clean again (exit 0)" ||
     bad "after restoring every plant the fixture is still exit $RC"
 
+# =============================================================================
+# RELEASE MODE — the child-commit publish, driven against a SCRATCH published
+# repository this drive builds and throws away.
+#
+# NOTHING HERE GOES NEAR A REAL PUBLISHED REPOSITORY, and that is a property of
+# the drive rather than a promise about the operator: `$PUB` below is a
+# directory under `mktemp -d`, created by this script's own default publish and
+# then tagged, which is exactly the shape the real one has (a root cut once,
+# releases as children after that). The reason to insist is that this is the one
+# mode whose mistakes cannot be taken back — a release commit a consumer has
+# merged is in their history forever — so THE PUBLISH must not be the first time
+# any of it runs.
+#
+# THE FIXTURE'S VERSIONS ARE 0.x ON PURPOSE. They are the fixture's own numbers
+# and resemble nothing in this repository's TEMPLATE_VERSION, so a reader can
+# never mistake a line of this drive's output for a statement about the real
+# template's releases.
+# =============================================================================
+PUB="$WORK/published"
+CONS="$WORK/consumer"
+
+gitq() { # gitq <dir> <args...> — git with a fixture identity and no signing
+    local d=$1
+    shift
+    git -C "$d" -c user.name=t -c user.email=t@t \
+        -c commit.gpgsign=false -c tag.gpgsign=false "$@"
+}
+fixture_release() { # fixture_release <version> [with-changelog-section]
+    printf '%s\n' "$1" >"$FIX/TEMPLATE_VERSION"
+    if [ "${2:-}" = with-section ]; then
+        printf '# changelog\n\n## [%s]\n\n- the fixture drop\n' "$1" >"$FIX/CHANGELOG.md"
+    else
+        printf '# changelog\n' >"$FIX/CHANGELOG.md"
+    fi
+    (cd "$FIX" && git add -A && git -c user.name=t -c user.email=t@t commit -q -m "v$1")
+}
+pub_commits() { git -C "$PUB" rev-list --count HEAD 2>/dev/null || echo none; }
+printed_tree() { awk '/^   tree +[0-9a-f]{40}$/ {print $2; exit}' "$OUT"; }
+
+echo ""
+echo "-- release mode (scratch published repository)"
+
+# The published repository as it really is: a root cut once, then tagged. Every
+# case below builds on this and nothing below re-cuts it — which is the point.
+run "$FIX" --to "$PUB"
+if [ "$RC" = 0 ]; then
+    gitq "$PUB" tag -a v0.1.0 -m v0.1.0 HEAD
+    ok "the scratch published repository exists at v0.1.0 (one root commit, tagged)"
+else
+    bad "the scratch published repository would not build: exit $RC"
+    sed 's/^/         /' "$OUT"
+fi
+PUB_ROOT=$(git -C "$PUB" rev-parse HEAD)
+
+# --- criterion 3: the root re-cut door is shut -------------------------------
+run "$FIX" --to "$PUB"
+if [ "$RC" = 2 ] && grep -q "ROOT RE-CUT DOOR IS CLOSED" "$OUT" &&
+    [ "$(pub_commits)" = 1 ] && git -C "$PUB" rev-parse -q --verify refs/tags/v0.1.0 >/dev/null; then
+    ok "the root re-cut is REFUSED against a repository carrying release tags, untouched"
+else
+    bad "root re-cut door: exit $RC, commits $(pub_commits), want 2 and 1"
+fi
+
+# --- the CHANGELOG contract: exit 1, and nothing is committed ----------------
+fixture_release 0.2.0
+run "$FIX" --release "$PUB" --to "$ART"
+if [ "$RC" = 1 ] && grep -q "VIOLATION  changelog" "$OUT" &&
+    [ "$(pub_commits)" = 1 ] && ! git -C "$PUB" rev-parse -q --verify refs/tags/v0.2.0 >/dev/null; then
+    ok "a release whose CHANGELOG has no section for the version is exit 1 — no commit, no tag"
+else
+    bad "changelog leg: exit $RC, commits $(pub_commits), want 1 and 1"
+fi
+
+# --- the happy path, and the equality that is the whole claim ----------------
+fixture_release 0.2.0 with-section
+run "$FIX" --release "$PUB" --to "$ART"
+REL_TREE=$(printed_tree)
+NEW_TIP=$(git -C "$PUB" rev-parse HEAD 2>/dev/null || echo none)
+if [ "$RC" = 0 ] && [ "$(pub_commits)" = 2 ]; then
+    ok "the release publishes: exit 0, the published repository gained exactly one commit"
+else
+    bad "release happy path: exit $RC, commits $(pub_commits), want 0 and 2"
+    sed 's/^/         /' "$OUT"
+fi
+if [ "$(git -C "$PUB" rev-parse 'HEAD^' 2>/dev/null)" = "$PUB_ROOT" ]; then
+    ok "the release commit is a CHILD of the published tip, not a new root"
+else
+    bad "the release commit's parent is not the previous tip"
+fi
+if [ "$(git -C "$PUB" rev-list -n 1 v0.2.0 2>/dev/null)" = "$NEW_TIP" ]; then
+    ok "the release is tagged v<TEMPLATE_VERSION>, on the release commit"
+else
+    bad "v0.2.0 does not point at the release commit"
+fi
+# The criterion the whole mode turns on: the committed tree IS the tree the
+# census verified and the run printed — read back off the commit, not believed.
+if [ -n "$REL_TREE" ] && [ "$(git -C "$PUB" rev-parse 'HEAD^{tree}' 2>/dev/null)" = "$REL_TREE" ]; then
+    ok "the release commit's tree IS the census-verified tree ($REL_TREE)"
+else
+    bad "tree equality: printed $REL_TREE, committed $(git -C "$PUB" rev-parse 'HEAD^{tree}' 2>/dev/null)"
+fi
+if [ -z "$(git -C "$PUB" status --porcelain)" ] &&
+    [ "$(tr -d '[:space:]' <"$PUB/TEMPLATE_VERSION")" = 0.2.0 ]; then
+    ok "the published working tree is clean and holds the released content"
+else
+    bad "the published tree is dirty, or does not hold the release"
+fi
+
+# --- refusal: the version is already out ------------------------------------
+run "$FIX" --release "$PUB" --to "$ART"
+if [ "$RC" = 2 ] && grep -q "v0.2.0 already exists" "$OUT" && [ "$(pub_commits)" = 2 ]; then
+    ok "re-releasing a version already tagged is exit 2 — a released tree never changes"
+else
+    bad "tag-exists refusal: exit $RC, commits $(pub_commits), want 2 and 2"
+fi
+
+# --- refusal: the published tip is not the last release ----------------------
+echo "a hand commit somebody made on the published branch" >"$PUB/README.md"
+gitq "$PUB" add README.md
+gitq "$PUB" commit -q -m "by hand"
+HAND_TIP=$(git -C "$PUB" rev-parse HEAD)
+fixture_release 0.3.0 with-section
+run "$FIX" --release "$PUB" --to "$ART"
+if [ "$RC" = 2 ] && grep -q "tip is NOT its last release" "$OUT" &&
+    grep -q "$HAND_TIP" "$OUT" && grep -q "$NEW_TIP" "$OUT"; then
+    ok "a published tip that is not the last release is exit 2, naming BOTH shas"
+else
+    bad "tip-mismatch refusal: exit $RC, want 2 naming $HAND_TIP and $NEW_TIP"
+fi
+# Fixture housekeeping, and REPORTED rather than assumed: under `set -e` a bare
+# restore that cannot find its tag kills the drive with git's own exit 128 and
+# takes the `passed · failed` count with it, which is how a red run stops being
+# readable exactly when somebody needs to read it. (Found by planting a wrong
+# tree into the release commit and watching this line, not the guard, end the
+# run.)
+gitq "$PUB" reset -q --hard v0.2.0 || bad "could not restore the published fixture to v0.2.0"
+
+# --- refusal: the published tree is dirty ------------------------------------
+echo "uncommitted work in the published clone" >"$PUB/SOMEBODYS-WORK.txt"
+run "$FIX" --release "$PUB" --to "$ART"
+if [ "$RC" = 2 ] && grep -q "release target's working tree is dirty" "$OUT" &&
+    [ -f "$PUB/SOMEBODYS-WORK.txt" ]; then
+    ok "a dirty published clone is exit 2, and the uncommitted work is still there"
+else
+    bad "dirty-target refusal: exit $RC, want 2 with the file kept"
+fi
+rm -f "$PUB/SOMEBODYS-WORK.txt"
+
+# --- refusal: the target is not a repository at all --------------------------
+run "$FIX" --release "$WORK/no-such-published-dir"
+[ "$RC" = 2 ] && ok "--release naming no directory is exit 2" ||
+    bad "--release absent dir: exit $RC, want 2"
+
+run "$FIX" --census --release "$PUB"
+[ "$RC" = 2 ] && ok "--census with --release is exit 2 — one exports nothing, the other commits" ||
+    bad "--census --release: exit $RC, want 2"
+
+# --- the second release, which is what makes the next case meaningful --------
+run "$FIX" --release "$PUB" --to "$ART"
+if [ "$RC" = 0 ] && [ "$(pub_commits)" = 3 ] &&
+    [ "$(git -C "$PUB" rev-list -n 1 v0.3.0 2>/dev/null)" = "$(git -C "$PUB" rev-parse HEAD)" ]; then
+    ok "a second release chains onto the first: three commits, v0.3.0 on the tip"
+else
+    bad "second release: exit $RC, commits $(pub_commits), want 0 and 3"
+    sed 's/^/         /' "$OUT"
+fi
+
+# --- THE CUMULATIVE MERGE: a consumer skips an intermediate release ----------
+# The property the owner's ruling is FOR, and the one THE PUBLISH must not be
+# the first test of: a product sitting on v0.1.0, carrying a local patch,
+# merges v0.3.0 ONCE and lands on the released tree — v0.2.0 is in the chain and
+# is never merged separately, which is what "skip intermediates for free" means.
+if git clone -q "$PUB" "$CONS" 2>/dev/null &&
+    gitq "$CONS" reset -q --hard v0.1.0; then
+    printf '# a local patch this product carries\n' >"$CONS/PATCHED.md"
+    gitq "$CONS" add PATCHED.md
+    gitq "$CONS" commit -q -m "our own change"
+    set +e
+    gitq "$CONS" merge -q --no-edit v0.3.0 >"$WORK/merge.out" 2>&1
+    MERGE_RC=$?
+    set -e
+    DRIFT=$(git -C "$CONS" diff --name-only v0.3.0 HEAD)
+    MERGES=$(git -C "$CONS" rev-list --count --merges HEAD)
+    if [ "$MERGE_RC" = 0 ] && [ "$DRIFT" = "PATCHED.md" ] && [ "$MERGES" = 1 ] &&
+        [ "$(tr -d '[:space:]' <"$CONS/TEMPLATE_VERSION")" = 0.3.0 ]; then
+        ok "cumulative merge: v0.1.0 + a local patch merges v0.3.0 ONCE, keeps the patch, lands on the released tree"
+    else
+        bad "cumulative merge: exit $MERGE_RC, merges $MERGES, drift '$DRIFT'"
+        sed 's/^/         /' "$WORK/merge.out"
+    fi
+else
+    bad "the consumer clone would not build at v0.1.0 — could not drive the cumulative merge"
+fi
+
 echo ""
 echo "== $PASS passed · $FAIL failed"
+# Said out loud, because bash hands the EXIT trap a status of 0 when `set -u`
+# kills the shell: without this the epilogue cannot tell a run that finished
+# from one that died before reaching this line.
+drive_finished
 [ "$FAIL" -eq 0 ] || exit 1
 exit 0

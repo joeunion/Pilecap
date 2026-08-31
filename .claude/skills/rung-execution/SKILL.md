@@ -105,8 +105,10 @@ checklist, each item with its rule id and its worked example in the tree
   `manage.py`). One tag per operation, declared in the app's `TAGS`.
 - **Refusals declared and reaching the document** (rule 47). Every refusal a
   route can answer is in its `@refuses(...)` set; every code is registered in
-  `core.exceptions`; a NEW code needs its `CODE_STATUS` line in the same rung
-  or it silently drops from `x-refusal-codes`.
+  `core.exceptions`; a NEW code declares `status=` at its own
+  `register_refusal` site (ADR core-23 — `CODE_STATUS` is derived from the
+  registry; there is no table to append) or it silently drops from
+  `x-refusal-codes`.
 - **Door pairs born with the parity test** (rule 46). An app with a REST door
   beside an `mcp.py` owes a `tests/` module with `DOOR_PAIR = ("rest", "mcp")`
   proving the two doors answer identically over the wire — the worked example
@@ -157,6 +159,30 @@ safe it looks.
   once at the PM's push; do not run it by hand — with two exceptions where it
   uniquely binds: rungs touching `quality/**` (the canary self-test is their
   point) and rungs touching dependencies (the supply-chain leg).
+- **A by-hand full gate TYPES ITS SANCTION, and the valve COVERS the two
+  exceptions above** — it does not close them. The gate now refuses an
+  unsanctioned full run (exit 2, taking no lease and no slot): a full run is the
+  most expensive thing on the machine and every other full gate queues behind
+  it, so an unaccountable one spends everybody's minutes and not only its own.
+  In a rung worktree the sanction is the whole ceremony, and it is one line:
+
+  ```bash
+  DJB_GATE_SANCTION="<your rung id>: quality/** rung — the canary self-test is the point" \
+    ./scripts/check.sh > "$PWD/gate-<rung>.log" 2>&1
+  ```
+
+  The shape is `<rung-id>: <reason>` and it is checked — an empty or shapeless
+  value is exit 2, never a silent default. What you type is printed in the
+  gate's header and written into the verdict row (`sanction=`), so the
+  population of hand-run fulls is readable afterwards instead of inferred.
+  `--fast` and `--loop` are untouched by the valve and need no sanction, ever.
+  `--bank` is the PM's ritual flag, legal only from the primary checkout or
+  `pm-push` — from a rung worktree it exits 2 and points you at the line above.
+- **A `quality/**` rung COMMITS before its full gate** — the canary self-test
+  refuses a dirty plant path, so an uncommitted tree turns the rung's own
+  proof into exit 2. Commit first, then run; a hook-bypassed commit made for
+  this reason states it in the commit message and is covered by the clean
+  gate that follows.
 - **Run it unpiped, redirected to a file, and read the file:**
 
   ```bash

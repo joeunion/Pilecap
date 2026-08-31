@@ -437,6 +437,49 @@ def create_order(*, tenant: Tenant, actor: Actor, customer: Customer, lines: lis
   raise domain exceptions; doors map them. Tests call services for set-up;
   doors are tested through the door.
 
+### The valves — the cheap way out, and where each one has to be written
+
+A house-rule finding on a service usually has two remedies, and violation
+messages tend to name only the expensive one. Rule 16's message, for instance,
+says "add the verb to `service_verbs` in rules.yaml"
+(`quality/checks.py:1576-1578`) — which widens the lexicon for the whole
+template, forever, to excuse one function. The two cheap roads it does not
+mention: a **counted override** on the line, and, when the thing is not a
+capability at all, the **underscore-prefix road** — rule 16 skips a
+`services.py` function whose name starts with `_` outright
+(`quality/checks.py:1569-1570`, "a private helper is the inside of a service,
+not a capability"). A private helper called only by services in the same module
+should be `_`-prefixed and is then not the rule's subject at all. Reach for the
+lexicon only when the verb genuinely names something a product DOES.
+
+Every valve is a comment somebody wrote and a reviewer can disagree with. Four
+of the five are **counted and printed** (a suppressed finding is never a silent
+one) and need **≥ 12 characters of reason** — a bare marker becomes its own
+finding rather than an off switch. What differs, and what costs merge cycles to
+rediscover, is **where each has to sit**:
+
+| Valve | Whose | Where it counts | Where it is invisible |
+|---|---|---|---|
+| `# rule-<id>: <reason>` | any rule, the universal override (`quality/gate.py:70`, `override_at` `:91-110`) | on the **flagged line itself**, or in the **contiguous `#` block directly above it** | anywhere a non-comment line intervenes. Rule 13 reports at the `def` line, so a valve **above the `@service` decorator is invisible** — the decorator breaks the block — while one **between the decorator and `def` counts** |
+| `# authz: <reason>` | rule 13, a `@service` taking `actor` that never calls `authz.require` (`quality/checks.py:1221`; rule 41's refusal census reads it the same way, `:5978-5997`) | **anywhere inside the function**, `def` line through its last line (the check reads `ast.get_source_segment` of the `FunctionDef`) | above the decorator, **and** between the decorator and `def` — `FunctionDef.lineno` is the `def` line, so neither is in the segment |
+| `# reach: <reason>` | rule 26, an org-scoped parameter not passed through `may_be_named` (`quality/checks.py:3359`, `_reach_reason` `:3391-3410`) | on the **parameter's own line** (or the block above it) for that one parameter; or, for the whole function, on the **`def` line or the first decorator line** — either with its contiguous block above (`:3536-3537`) | anywhere else |
+| `# door: <reason>` | rule 42 — and since R6 (P15) the valve carries **two claims, told apart by the finding class it suppresses**: *no door reaches this service* (the original), or *only this tree's own hands reach it* (a service called by management commands/admin only); write the reason to say WHICH (`quality/checks.py:5215`, `_door_reason` `:5231-5248`) | on the **`def` line or the first decorator line**, each with its contiguous block above (`:5453-5454`) | anywhere else |
+| `# role-bound: <reason>` | rule 29, a role value written without bounding it against the granter's ceiling (`quality/checks.py:2018`, `_role_bound_reason` `:2022`) | on the **`def` line**, or on **any parameter's line**, each with its contiguous block above (`:2114-2118`) | anywhere else |
+
+Three of the five read the decorator line and two do not, which is the whole
+reason this table exists: if a valve you wrote did not take, check its position
+before you conclude the rule is broken.
+
+**`# authz:` is the exception to the counting, and knowing that is the point.**
+The other four carry a 12-character reason floor
+(`quality/gate.py:71`, `quality/checks.py:2019`, `:3361`, `:5216`), count their
+uses (`reach_overrides`, `door_overrides`, `role_bound_comments`, and the
+gate's own override census) and turn a bare marker into a finding of its own.
+Rule 13's `# authz:` does neither: `quality/checks.py:1221` is a substring test,
+so a bare `# authz:` with no sentence after it silently suppresses. Write the
+sentence anyway. It is the only thing standing between "this service does not
+authorize" and nobody ever asking why again.
+
 ### Refusals — the three-move grammar, spoken once
 
 A refusal is a `code` (what a client branches on), a **`fact`** (what is
@@ -801,6 +844,46 @@ ACTIVITIES: list[Callable[..., Any]] = [send_welcome]
 Read `apps/example/activities.py` before writing your first one — it is the
 shape above, in full, with the reasons in its docstring.
 
+**What a workflow argument may hold.** *A workflow argument may hold only what
+survives the sandbox's import wall — `str`/`int`/`float`/`bool`/`UUID`/nested
+dataclasses; never a type from a module `temporalio` restricts (today:
+`datetime`); `date`/`Decimal`/`timedelta` refused by the writer everywhere.
+Three failure modes, one error message.* That sentence is the settled boundary,
+and it is worth knowing why the three modes look alike, because two agents
+already read the same error two different ways:
+
+- **The converter is innocent.** On the pinned `temporalio` 1.31.0
+  `value_to_type` handles `hint is datetime`
+  (`converter/_payload_converter.py:852`) and `UUID` (`:1048`), and
+  `AdvancedJSONEncoder.default` writes both (`:678`, `:691`). A plain
+  round-trip through the converter passes for both types. Do **not** write a
+  doc line saying `datetime` cannot be serialised: on this library it can.
+- **The sandbox is where `datetime` dies.** `datetime` is a restricted module
+  inside the workflow sandbox
+  (`worker/workflow_sandbox/_restrictions.py:604-608` — the entry that lets
+  `datetime.datetime.now()` be refused), so the class a workflow ARGUMENT is
+  decoded against is a `_RestrictedProxy` and the converter's identity dispatch
+  (`hint is datetime`) falls through. The proxy forwards `__repr__`, so the
+  error names the very class it failed to recognise — which is exactly why the
+  message reads as a converter bug and is not one. `sandboxed=False` decodes
+  the identical shape.
+- **`date` / `Decimal` / `timedelta` die at the writer**, in the client,
+  loudly: `AdvancedJSONEncoder.default` (`:672-693`) has no branch for any of
+  them and `json` raises `TypeError: Object of type date is not JSON
+  serializable` before anything is dispatched. Note the asymmetry in what the
+  two modes cost you: the writer's refusal is immediate and named, while
+  `datetime` fails on the argument decode *inside* the worker — a workflow-task
+  failure Temporal retries forever, silently, with the `WorkflowRun` row still
+  reading `running`.
+
+The practical rule that falls out: keep `types.py` dataclasses to
+`str`/`int`/`float`/`bool`/`UUID` and nested dataclasses. An instant crosses as
+an ISO `str` the activity parses, or as an `int` epoch; money crosses as an
+integer of minor units or a decimal `str` the activity re-reads — never a
+`float`, which house rule 15 already forbids on the field it came from; a
+duration crosses as `int` seconds and becomes a `timedelta` inside the
+workflow, where `timedelta` is an allowed import.
+
 - **`system_actor(...)` is the right actor for an activity's own writes — but
   the files seam refuses it: `store_bytes`/`store_stream` need a
   person-carrying actor** (`actor.user` set), because a document records who
@@ -848,6 +931,20 @@ shape above, in full, with the reasons in its docstring.
   workflow only the id accessors are safe.
 - **Schedules**, not cron or beat: periodic work is a Temporal Schedule that
   starts a workflow; where schedules are declared is `apps/workflows`' business.
+- **A workflow that needs one instant spells it `workflow.now()`** — the
+  `workflow` in `from temporalio import workflow`, which is the blessed
+  spelling and not a workaround. Rule 9's allow-list already carries
+  `temporalio` (`quality/rules.yaml:626`, `quality/checks.py:915`), and the
+  determinism check treats a call whose chain ROOT is the literal name
+  `workflow` as sanctioned (`quality/checks.py:948-956`), so `workflow.now()`,
+  `workflow.uuid4()`, `workflow.random().randint(...)` and `workflow.time()`
+  all pass while the bare `now`/`uuid4`/`random`/`time`/`hash` they replace are
+  banned outright (`quality/checks.py:917-935`). Two traps, both the rule's own
+  declared blind spots: **the receiver has to be spelled `workflow`** — `from
+  temporalio import workflow as wf` then `wf.now()` is read as a clock and
+  reported, correct code and all; and what you USE the instant for is review's
+  job, not the gate's. Anything the clock is only *carried* for — a timestamp
+  a row wants — belongs in an activity, where the real clock lives.
 - **Activities are plain `def`**, and every activity in this repository is
   (`apps/events/activities.py`, `apps/example/activities.py`). The ORM is
   synchronous; the worker
@@ -1010,10 +1107,36 @@ async def test_onboard_waits_for_confirmation(tenant, owner):
         async with build_worker(client, queue="t"):               # the real discovery, not a hand-built list
             run = await start_workflow(workflow="OnboardTenant", arg=OnboardIn(email="a@b.c"),
                                        tenant=tenant, user=owner, id="onboard-1", client=client, task_queue="t")
-            handle = client.get_workflow_handle(run.workflow_id)
-            await handle.signal("confirm")
-            result = await handle.result()
-            assert result.confirmed_at is not None                # seven simulated days, milliseconds of wall clock
+            handle = client.get_workflow_handle(run.workflow_id)  # NOT auto-skipping — see below
+            await handle.signal("confirm")                        # this test finishes because the signal preempts
+            result = await handle.result()                        # the wait, not because the clock moved
+            assert result.confirmed_at is not None
+```
+
+**Auto-skip rides only on a handle `start_workflow` RETURNED.** The environment
+installs a client interceptor whose `start_workflow` re-classes the handle it
+returns into a `_TimeSkippingWorkflowHandle`
+(`temporalio/testing/_workflow.py:600-605`), and it is *that* class's `result()`
+that unlocks time skipping (`:610-620`). A handle you build yourself with
+`client.get_workflow_handle(...)` — which is what you must do when the run was
+started by a service's on-commit hook, as it is here — is a plain
+`WorkflowHandle`: awaiting its `result()` moves no clock at all. The snippet
+above survives only because the signal arrives before the seven-day timer
+matters; take the signal away and it waits seven real days.
+
+The tree's worked example is the shape to copy when nothing preempts the wait —
+`apps/example/tests/test_workflows.py:119-131` says it in its own comment and
+advances the clock explicitly, in day-sized steps rather than one leap, because
+the timer is created a moment after the first activity finishes and a single
+jump can land before it exists:
+
+```python
+handle = client.get_workflow_handle(onboarding_id(tenant, widget), result_type=WidgetOnboarded)
+for _ in range(APPROVAL_DAYS + 3):
+    if (await handle.describe()).status is not WorkflowExecutionStatus.RUNNING:
+        break
+    await env.sleep(timedelta(days=1))          # the clock the hand-built handle does not move for you
+result = await handle.result()
 ```
 
 - pytest-django + pytest-asyncio; `@pytest.mark.django_db` (`transaction=True`
@@ -1038,7 +1161,9 @@ async def test_onboard_waits_for_confirmation(tenant, owner):
 - **Workflows** under `WorkflowEnvironment.start_time_skipping()`, the worker
   from `config.temporal.build_worker` (the real discovery) on a client with
   `attach_interceptors` applied, so the tenant rides along (a seven-day wait
-  takes milliseconds); decision logic with fake activities; activities awaited
+  takes milliseconds — on a handle `start_workflow` returned, or on `env.sleep`
+  when you built the handle yourself; the snippet above says why);
+  decision logic with fake activities; activities awaited
   directly against the database. Never point a test at the dev server.
 - **An org-scoped model needs the sibling test, not just the second-tenant
   one.** "Another tenant's rows are absent" no longer proves the scoping: build
@@ -1049,6 +1174,22 @@ async def test_onboard_waits_for_confirmation(tenant, owner):
   name their hat (`actor_for(user=…, tenant=…, org=…)`) for the same reason they
   name their role: an actor with `org=None` reads nothing, so a test that forgot
   would pass or fail for a reason it never stated.
+- **A test that reads a paginated door to assert about a whole POPULATION owes
+  `assert body["has_more"] is False`, or it walks the cursor.** A list route
+  answers one page — `API_PAGE_SIZE`, 50 by default
+  (`config/settings/base.py:1041`) — and `{items, has_more, next_cursor, count}`
+  is the whole envelope (`apps/core/api/pagination.py:203`, `:661`). A test that
+  derives a population from `body["items"]` and never looks at `has_more` is
+  asserting about the first 50 rows while claiming to assert about all of them:
+  it passes, and then it goes quietly vacuous on the 51st row somebody adds —
+  no failure, no red, just a claim that stopped being true. Assert the flag
+  when you expect one page (`apps/core/tests/test_pagination.py:158` is the
+  worked line), and walk `next_cursor` when you do not
+  (`test_pagination.py:110-120`, the `_walk` helper, is the worked loop — note
+  its hop bound, so a broken walk fails rather than hangs). The same applies to a test
+  pinning a whole response body: `apps/core/tests/test_resource_first_urls.py`
+  pins `"has_more": false` inside the bodies it fixes, which is what makes those
+  pins mean what they say.
 - One query pin per list route at seeded scale × k. `settings` via the
   `settings` fixture, never by mutating `django.conf.settings`. Tests live in
   `apps/<name>/tests/`, one module per surface (`test_api.py`, `test_mcp.py`,
@@ -1073,6 +1214,23 @@ each is for, are in `build-contract.md`. Run the script rather than the legs by
 hand: the ones you would forget — the house-rules engine, the canary self-test,
 the second pytest pass — are the ones that catch the most.
 
+- **`mypy` reads `INSTALLED_APPS`, so a disabled app changes what type-checks.**
+  django-stubs' plugin builds its model knowledge from the resolved app
+  registry, and the `<fk>_id` shadow attributes it synthesises for a foreign key
+  exist only for models in that registry. Disable an app and every reference to
+  one of its `_id` attributes — from inside the app itself included — becomes
+  an `[attr-defined]` error. Measured on this tree: `mypy --strict` clean is
+  **exit 0, "Success: no issues found in 495 source files"**; the same command
+  under `DJB_DISABLED_APPS=example` is **exit 1, 5 `[attr-defined]` errors in 5
+  files** (`apps/example/models.py:441` on `WidgetEntry.widget_id`, and
+  `Widget.owner_id` in `test_services.py:71`, `test_admin.py:85`,
+  `test_mcp.py:268`, `test_api.py:105`). Nothing is wrong with that code; the
+  app it belongs to is simply not installed in the world mypy was pointed at.
+  So: **a rung that touches the optional-app machinery states which world it
+  measured in**, because "mypy is green" is a claim about a configuration and
+  not about the tree. `apps/example` is the one app a deployment may leave out
+  and it says so itself (`apps/example/apps.py:19`, `optional = True`);
+  everything else is non-optional by omission.
 - Run `--loop` per rung. **Do not run the full gate by hand** — pre-push
   consults the verdict ledger and runs it once, on the tree you push.
 - **Never pipe it** — you replace its exit status with the pipe's. **Exit 2
@@ -1103,7 +1261,7 @@ If you find yourself typing one, stop.
 | `Model.objects.create(...)` / `.save()` in a route, tool, consumer or activity | a service |
 | editing `config/api.py` / `asgi.py` / `temporal.py` / `mcp.py` / `settings` / `pyproject.toml` to register an app | an `apps.py` with `depends_on`; drop `api.py` / `consumers.py` / `workflows.py` / `mcp.py` in the app — discovery |
 | `from apps.<x>.activities import …` inside `workflows.py` (even under `imports_passed_through`) | `workflow.execute_activity("<name>", …)` — by name |
-| a `def` activity · `sync_to_async(...)` in an activity, tool or consumer | `async def` + `apps.core.asyncdb.run_db(fn, …)` |
+| an `async def` activity reached for by default · `sync_to_async(...)` in an activity, tool or consumer | a plain `def` activity with `close_old_connections()` at both ends (§7 — every activity in this tree is one); `async def` + `apps.core.asyncdb.run_db(fn, …)` is the exception, for work that is genuinely async I/O |
 | `makemigrations --merge` | stop; it is an ordering failure |
 | `CheckConstraint(check=…)` · `index_together` · `unique_together` | `CheckConstraint(condition=…)` · `Meta.indexes` · `Meta.constraints` |
 | `from django.conf.urls import url` · `ugettext*` · `force_text` · `django.utils.timezone.utc` | `django.urls.path` · `gettext*` · `force_str` · `datetime.timezone.utc` |

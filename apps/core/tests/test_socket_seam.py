@@ -50,7 +50,7 @@ def unreachable_channel_layer(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_a_failing_kick_does_not_cancel_the_hooks_queued_behind_it(
     unreachable_channel_layer: None,
 ) -> None:
-    """**What `robust=True` was chosen for — proven, not assumed. P3-SEC-R3.**
+    """**What `robust=True` was chosen for — proven, not assumed.**
 
     The registration used to be a `functools.partial`, and Django's robust
     branch reports a failing hook with

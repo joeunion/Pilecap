@@ -1,9 +1,46 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # publish.sh — export the template as a product would inherit it.
 #
 #   ./scripts/publish.sh                 census + export + verify (default target)
 #   ./scripts/publish.sh --to <dir>      census + export + verify into <dir>
 #   ./scripts/publish.sh --census        the census ALONE — no export, no target touched
+#   ./scripts/publish.sh --release <dir> all of the above, then ONE squashed release
+#                                        commit as a child of <dir>'s tip, tagged
+#                                        v<TEMPLATE_VERSION>. <dir> is a clone of the
+#                                        PUBLISHED repository; `--to` still names the
+#                                        scratch artifact this mode verifies first.
 #
 # Exit: 0 clean · 1 the artifact was built and a verification leg found violations
 #       · 2 ENFORCEMENT BROKEN (the census could not place a path, a derivation
@@ -58,6 +95,36 @@
 # tree hash") is only falsifiable if the source is a commit. A working tree is
 # not a source anyone can re-derive. Commit first; publish measures a commit.
 #
+# RELEASE MODE, AND THE DOOR IT CLOSES. Until the first consumer merged a
+# release, publishing was a ROOT RE-CUT: a fresh `git init` and one initial
+# commit, and yesterday's published history simply ceased to exist. That is a
+# legal way to publish a template nobody has taken yet, and an unforgivable one
+# the moment somebody has: their merge base disappears, so their next pull sees
+# the entire template as new work and conflicts with every local patch they
+# carry. The owner's ruling of 2026-08-30 is therefore that a release is a
+# FORWARD COMMIT — one squashed child of the published tip per publish, tagged
+# `v<TEMPLATE_VERSION>` — and consumers merge the tag they want, skipping any
+# number of intermediates for free because the chain is linear and each release
+# commit carries the WHOLE tree rather than a delta.
+#
+# THE RELEASE COMMIT'S TREE IS THE CENSUS-VERIFIED TREE, and that is asserted
+# rather than arranged. This mode changes nothing about steps 1–4: the census
+# runs, the artifact is exported into a scratch target, and every verification
+# leg reads that artifact. Only then are the artifact's objects fetched into the
+# published repository and `git commit-tree` writes a commit whose tree is the
+# very hash step 2 printed — after which this script re-reads the new commit's
+# tree and refuses (exit 2) unless the two hashes are equal. The idempotence
+# line at step 2 is consequently DOUBLY load-bearing now: it is both the
+# repeatability claim and the release commit's identity.
+#
+# AND SO THE PER-PUBLISH CENSUS BECOMES LOAD-BEARING FOREVER. History that
+# cannot be re-cut cannot be cleaned up later: a private name, a dangling
+# pointer or a secret that ships in a release commit is in every consumer's
+# history the moment they merge it. Every leg below used to be a wall in front
+# of a mistake that could be undone by re-cutting. None of them is that any
+# more. This is stated here because the reason a check exists is the only thing
+# that keeps it from being weakened by somebody in a hurry.
+#
 # WHAT THIS INSTRUMENT CANNOT SEE, declared rather than discovered:
 #   - It censuses TRACKED files. A load-bearing untracked file is invisible to
 #     it (none known). The fresh-clone gate drive on the artifact is the belt.
@@ -96,10 +163,14 @@ ROOT=$(pwd -P)
 # --- arguments: strict, because a mistyped flag must never mean a quiet run ---
 MODE=full
 TARGET=""
+PUB=""
+WANT_CENSUS=0
+WANT_RELEASE=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --census)
         MODE=census
+        WANT_CENSUS=1
         shift
         ;;
     --to)
@@ -110,12 +181,27 @@ while [ "$#" -gt 0 ]; do
         TARGET=$2
         shift 2
         ;;
+    --release)
+        [ "$#" -ge 2 ] || {
+            echo "!! --release needs the published repository's directory" >&2
+            exit 2
+        }
+        MODE=release
+        WANT_RELEASE=1
+        PUB=$2
+        shift 2
+        ;;
     *)
-        echo "!! unknown argument '$1': publish.sh takes nothing, --census, or --to <dir>" >&2
+        echo "!! unknown argument '$1': publish.sh takes nothing, --census, --to <dir>, or --release <dir>" >&2
         exit 2
         ;;
     esac
 done
+if [ "$WANT_CENSUS" = 1 ] && [ "$WANT_RELEASE" = 1 ]; then
+    echo "!! --census and --release are opposites: one exports nothing, the other" >&2
+    echo "   commits what was exported. Pick one." >&2
+    exit 2
+fi
 if [ "$MODE" = census ] && [ -n "$TARGET" ]; then
     echo "!! --census takes no target: it exports nothing" >&2
     exit 2
@@ -126,6 +212,16 @@ step() {
     say ""
     say "== $*"
 }
+
+# The run is five steps, six when it also writes a release commit. The count is
+# derived from the mode rather than spelled twice, so a reader never sees a
+# "step 5/5" followed by another step.
+STEPS=5
+VERDICT_STEP=5
+if [ "$MODE" = release ]; then
+    STEPS=6
+    VERDICT_STEP=6
+fi
 
 VIOLATIONS=0
 violation() {
@@ -251,11 +347,138 @@ if [ -n "$DIRT" ]; then
     exit 2
 fi
 
+# ---------------------------------------------------------------------------
+# RELEASE COORDINATES. `release_tags <dir>` echoes the release tags a repository
+# carries, newest first. The SHAPE is the recogniser and there is deliberately
+# no second opinion about it anywhere in this file: `v<major>.<minor>.<patch>`,
+# which is what this script itself writes and what `TEMPLATE_VERSION` spells.
+# It is used for two different questions — "is this the published repository?"
+# (the closed-door refusal below) and "what was the previous release?" (the
+# tip check) — and using one reader for both is what keeps those two answers
+# from ever disagreeing.
+# ---------------------------------------------------------------------------
+release_tags() {
+    git -C "$1" tag --list --sort=-v:refname 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null
+}
+# A repository ROOT, never merely a path inside one. `git -C <dir> rev-parse`
+# walks UPWARDS, so a scratch target that happens to sit inside somebody's
+# checkout would otherwise answer for that checkout's tags — the recogniser
+# would then read a repository it was never pointed at.
+is_repo_root() { [ -e "$1/.git" ] && git -C "$1" rev-parse --git-dir >/dev/null 2>&1; }
+
+TEMPLATE_VERSION_VALUE=$(tr -d '[:space:]' <"$ROOT/TEMPLATE_VERSION" 2>/dev/null || true)
+case "$TEMPLATE_VERSION_VALUE" in
+[0-9]*.[0-9]*.[0-9]*) ;;
+*)
+    echo "!! TEMPLATE_VERSION does not read as <major>.<minor>.<patch>:" >&2
+    echo "   \"$TEMPLATE_VERSION_VALUE\" — the release tag is derived from it and a" >&2
+    echo "   derivation that cannot be read is a could-not-look, never a default." >&2
+    exit 2
+    ;;
+esac
+REL_TAG="v$TEMPLATE_VERSION_VALUE"
+
 say "== publish · $ROOT"
 say "   source     $(git log -1 --format='%h  %s' HEAD)"
 
 # ---------------------------------------------------------------------------
-step "step 1/5 · the census — every tracked path in exactly one bucket"
+# THE RELEASE PRE-FLIGHT, RUN BEFORE ANYTHING IS EXPORTED. Every refusal here is
+# about the PUBLISHED repository rather than about this one, and each is exit 2
+# for the reason the dirty-source refusal is: they are all "this reader cannot
+# establish the ground it is about to build on", never "the artifact is bad".
+# They run first because an operator who typed the wrong directory should learn
+# it in a second rather than after a full census, and because a refusal that
+# fires only at the end is a refusal that has already done work it must undo.
+# ---------------------------------------------------------------------------
+PUB_TIP=""
+PUB_BRANCH=""
+if [ "$MODE" = release ]; then
+    case "$PUB" in
+    /*) ;;
+    *) PUB="$PWD/$PUB" ;;
+    esac
+    [ -d "$PUB" ] || {
+        echo "!! --release names no directory: $PUB" >&2
+        echo "   It must be a CLONE of the published repository — the release commit is" >&2
+        echo "   a child of its tip." >&2
+        exit 2
+    }
+    git -C "$PUB" rev-parse --git-dir >/dev/null 2>&1 || {
+        echo "!! --release target is not a git checkout: $PUB" >&2
+        exit 2
+    }
+    if [ "$(git -C "$PUB" rev-parse --is-bare-repository)" = true ]; then
+        echo "!! --release target is a BARE repository: $PUB" >&2
+        echo "   The release lands on a branch and its working tree is left holding the" >&2
+        echo "   released content, so a bare clone has nowhere to put it." >&2
+        exit 2
+    fi
+    if [ "$(git -C "$PUB" rev-parse --show-toplevel)" != "$(cd "$PUB" && pwd -P)" ]; then
+        echo "!! --release target is inside a checkout but is not its root: $PUB" >&2
+        echo "   sits under $(git -C "$PUB" rev-parse --show-toplevel)." >&2
+        echo "   git walks upwards, so releasing here would move a branch in a" >&2
+        echo "   repository nobody pointed this at." >&2
+        exit 2
+    fi
+    PUB_BRANCH=$(git -C "$PUB" symbolic-ref -q --short HEAD) || {
+        echo "!! --release target has a detached HEAD: $PUB" >&2
+        echo "   A release moves a branch. Check out the published branch first." >&2
+        exit 2
+    }
+    PUB_DIRT=$(git -C "$PUB" status --porcelain)
+    if [ -n "$PUB_DIRT" ]; then
+        echo "!! the --release target's working tree is dirty: $PUB" >&2
+        echo "   The release commit REPLACES that tree with the exported one, so anything" >&2
+        echo "   uncommitted there is work this script would destroy. Nothing was touched." >&2
+        printf '%s\n' "$PUB_DIRT" | sed 's/^/     /' >&2
+        exit 2
+    fi
+    PUB_TIP=$(git -C "$PUB" rev-parse HEAD 2>/dev/null) || {
+        echo "!! the --release target has no commits: $PUB" >&2
+        echo "   A release is a CHILD of the published tip; there is no tip here." >&2
+        exit 2
+    }
+    if [ "$(git -C "$PUB" cat-file -t "$PUB_TIP" 2>/dev/null)" != commit ]; then
+        echo "!! the --release target's HEAD does not resolve to a commit: $PUB_TIP" >&2
+        exit 2
+    fi
+    PUB_LAST_TAG=$(release_tags "$PUB" | head -1)
+    if [ -z "$PUB_LAST_TAG" ]; then
+        echo "!! the --release target carries no release tag at all: $PUB" >&2
+        echo "   This mode's whole safety is that it builds on a KNOWN published release," >&2
+        echo "   and with no tag there is nothing to compare the tip against — a guess" >&2
+        echo "   about what is already out there is the one thing this refuses to make." >&2
+        echo "   If that tip IS a release, say so once and re-run:" >&2
+        echo "     git -C $PUB tag -a v<its version> -m 'v<its version>' $PUB_TIP" >&2
+        exit 2
+    fi
+    PUB_LAST_SHA=$(git -C "$PUB" rev-list -n 1 "$PUB_LAST_TAG")
+    if [ "$PUB_LAST_SHA" != "$PUB_TIP" ]; then
+        echo "!! the --release target's tip is NOT its last release." >&2
+        echo "   tip                    $PUB_TIP" >&2
+        echo "   last release           $PUB_LAST_SHA  ($PUB_LAST_TAG)" >&2
+        echo "   Somebody committed onto the published branch by hand, or the clone is" >&2
+        echo "   behind its remote. One squashed release commit per publish is the whole" >&2
+        echo "   contract; a release built on an unreleased tip would bury that commit" >&2
+        echo "   inside a release nobody can name. Fetch, or reconcile that commit first." >&2
+        exit 2
+    fi
+    if git -C "$PUB" rev-parse -q --verify "refs/tags/$REL_TAG" >/dev/null; then
+        echo "!! $REL_TAG already exists in $PUB" >&2
+        echo "   A version is published once. Either this drop is already out, or" >&2
+        echo "   TEMPLATE_VERSION was not bumped for it — bump TEMPLATE_VERSION and give" >&2
+        echo "   CHANGELOG.md the matching section, then re-run. Retagging a released" >&2
+        echo "   version silently changes what a consumer already merged." >&2
+        exit 2
+    fi
+    say "   released   $PUB"
+    say "   branch     $PUB_BRANCH"
+    say "   tip        $PUB_TIP  ($PUB_LAST_TAG)"
+    say "   releasing  $REL_TAG"
+fi
+
+# ---------------------------------------------------------------------------
+step "step 1/$STEPS · the census — every tracked path in exactly one bucket"
 # ---------------------------------------------------------------------------
 SHIP_LIST=$(mktemp "${TMPDIR:-/tmp}/djb-publish-ship.XXXXXX")
 TRIM_LIST=$(mktemp "${TMPDIR:-/tmp}/djb-publish-trim.XXXXXX")
@@ -379,7 +602,7 @@ if [ "$MODE" = census ]; then
 fi
 
 # ---------------------------------------------------------------------------
-step "step 2/5 · export — the ship-set into a fresh init, no platform history"
+step "step 2/$STEPS · export — the ship-set into a fresh init, no platform history"
 # ---------------------------------------------------------------------------
 if [ -z "$TARGET" ]; then
     # Derived from the checkout, exactly as `scripts/db.sh` derives a database
@@ -395,6 +618,27 @@ case "$TARGET" in
 *) TARGET="$PWD/$TARGET" ;;
 esac
 say "   target     $TARGET"
+
+# THE ROOT RE-CUT DOOR, AND WHY IT IS SHUT. Before the destruction guard,
+# because this is a stronger refusal than "I cannot prove I wrote this": the
+# guard protects a directory, and this protects every consumer's merge base.
+# It runs in EVERY mode that exports, including `--release`, whose scratch
+# artifact must never be a published clone either.
+if [ -d "$TARGET" ] && is_repo_root "$TARGET" && [ -n "$(release_tags "$TARGET")" ]; then
+    echo "!! THE ROOT RE-CUT DOOR IS CLOSED, and this target is what closed it." >&2
+    echo "   $TARGET carries release tags, so it is the published repository — and a" >&2
+    echo "   published release is something a product has merged. Re-cutting the root" >&2
+    echo "   here would destroy the merge base every consumer shares with us: their" >&2
+    echo "   next pull would see the WHOLE template as new work and conflict with every" >&2
+    echo "   local patch they carry, which is the one cost the child-commit ruling of" >&2
+    echo "   2026-08-30 exists to make impossible." >&2
+    echo "   Releases are forward commits from here on:" >&2
+    echo "     ./scripts/publish.sh --release $TARGET" >&2
+    echo "   builds one squashed child of the published tip and tags it. The scratch" >&2
+    echo "   mode is untouched — a fresh or previously-stamped directory still exports" >&2
+    echo "   normally, which is how the verification drives run." >&2
+    exit 2
+fi
 
 # THE DESTRUCTION GUARD. This path is removed and rebuilt on every run, so it
 # refuses to touch anything it cannot recognise as a previous artifact of its
@@ -494,7 +738,7 @@ say "   exported   $(git -C "$TARGET" ls-files | wc -l | tr -d ' ') files"
 say "   tree       $TREE"
 
 # ---------------------------------------------------------------------------
-step "step 3/5 · leg file-set — the artifact is exactly the census's ship-set"
+step "step 3/$STEPS · leg file-set — the artifact is exactly the census's ship-set"
 # ---------------------------------------------------------------------------
 ACTUAL=$(mktemp "${TMPDIR:-/tmp}/djb-publish-actual.XXXXXX")
 git -C "$TARGET" ls-files | LC_ALL=C sort >"$ACTUAL"
@@ -510,7 +754,7 @@ rm -f "$ACTUAL"
 say "   ok — $(wc -l <"$EXPECTED" | tr -d ' ') paths, nothing added and nothing lost"
 
 # ---------------------------------------------------------------------------
-step "step 4/5 · the verification legs, against the ARTIFACT"
+step "step 4/$STEPS · the verification legs, against the ARTIFACT"
 # ---------------------------------------------------------------------------
 
 # --- leg byte-identity (invariant 1) ----------------------------------------
@@ -675,7 +919,18 @@ arch_class() { # arch_class <label> <ere> [scrub-noqa]
 #     skeleton — so every one of them resolves nowhere in the artifact.
 arch_class finding-id '\bN[0-9]{2,3}\b' scrub-noqa
 # 2 · rung and cycle tokens. The plan's own coordinates, and cycle plans trim.
-arch_class rung-token '\bP[0-9]{1,2}-[0-9]+\b'
+#     THE SUFFIX IS ALPHANUMERIC, and that is the whole of what this pattern
+#     learned. It required a DIGIT after the hyphen until 2026-08-31, so it
+#     denied the minority spelling and passed the majority one: the lane and
+#     wave forms a plan actually uses carry a letter there, and a census that
+#     reported zero was reading a tree with dozens of them. Found by a verifier
+#     reading the pattern rather than its output, which is the only way a
+#     false green like this is ever found — the leg's own count cannot see the
+#     shape it was never given. `[A-Za-z0-9]` rather than `[A-Z0-9]` because
+#     the trailing lower-case forms are the same coordinate in the same plans,
+#     and a class that stopped at upper-case would have left a second, smaller
+#     version of exactly this hole behind it.
+arch_class rung-token '\bP[0-9]{1,2}-[A-Za-z0-9]+\b'
 # 3 · the NARRATIVE forms of the method's vocabulary, and only those. A named
 #     verification pass is an instance of a run nobody outside this repository
 #     watched; the bare stage name is shipped vocabulary and stays (below).
@@ -762,6 +1017,19 @@ rm -f "$ARCHHITS"
 #     openly carries.
 #   · Anything outside the exported ship-set is out of scope BY CONSTRUCTION.
 #     It reads only what actually ships.
+#   · PATTERN 2 KNOWS ONE PREFIX LETTER AND ONE PUNCTUATION MARK, and both
+#     halves are a real residue rather than a rounding. It anchors on `P`
+#     followed by one or two digits and a hyphen, so a plan that coins a
+#     different prefix, or spells its coordinate with a dot, a slash or a
+#     space instead of a hyphen, addresses nothing here. That is the closed-set
+#     limitation this whole leg carries, stated for this pattern specifically
+#     because it is the one that was WRONG rather than merely narrow: it
+#     required a digit after the hyphen until 2026-08-31 and therefore reported
+#     zero over a tree carrying ninety-five letter-suffixed tokens. A pattern
+#     that has been wrong once has earned an explicit blind-spot line, and this
+#     is it. The lesson generalises past this leg: a deny-list's COUNT is not
+#     evidence its SHAPE is right, and only reading the pattern against the
+#     population it claims to cover can tell the two apart.
 #   · Pattern 6 knows exactly two environment names. An environment coined
 #     later — a `-preview`, a `-sandbox` — is invisible to it until somebody
 #     adds the word, which is the same closed-list limitation the deny-list
@@ -829,12 +1097,165 @@ else
     violation "secrets: detect-secrets exited $SEC_RC over the artifact (output above)"
 fi
 
+# --- leg changelog (release mode only) --------------------------------------
+# THE RELEASE'S READING MATERIAL IS PART OF THE RELEASE. A version tag with no
+# entry behind it asks a consumer to merge a tree on trust: they can diff it,
+# but a diff answers "what changed" and never "would I want this, and what does
+# it change under me", which is the one question `CHANGELOG.md`'s own header
+# says an entry answers. So the section is a LEG rather than a habit.
+#
+# EXIT 1, NOT 2, and the difference is the whole classification this file uses:
+# the instrument looked, understood what it saw, and the artifact was found
+# wanting. That is a violation of a content rule. Nothing here is a
+# could-not-look — an absent CHANGELOG.md cannot happen (R6 ships it and the
+# file-set leg above already proved the artifact is exactly the ship-set), and
+# an unreadable one is reported as the violation it is rather than promoted.
+#
+# IT READS THE ARTIFACT, like every other leg, and the version it looks for is
+# the ARTIFACT's TEMPLATE_VERSION — then asserts that value is the one the tag
+# was derived from at pre-flight. Two readers of one number that could disagree
+# is exactly the split-brain this file refuses everywhere else.
+if [ "$MODE" = release ]; then
+    say ""
+    say "-- changelog: the artifact's CHANGELOG.md carries this release's section"
+    ART_VERSION=$(tr -d '[:space:]' <"$TARGET/TEMPLATE_VERSION" 2>/dev/null || true)
+    if [ "$ART_VERSION" != "$TEMPLATE_VERSION_VALUE" ]; then
+        echo "!! the artifact's TEMPLATE_VERSION is not the source's:" >&2
+        echo "   source \"$TEMPLATE_VERSION_VALUE\"  artifact \"$ART_VERSION\"" >&2
+        echo "   R6 ships that file verbatim, so a disagreement means the export is not" >&2
+        echo "   the derivation it claims to be. Could-not-look, not a violation." >&2
+        exit 2
+    fi
+    if grep -qE "^## \[$TEMPLATE_VERSION_VALUE\]" "$TARGET/CHANGELOG.md" 2>/dev/null; then
+        say "   ok — ## [$TEMPLATE_VERSION_VALUE] is in the published CHANGELOG.md"
+    else
+        violation "changelog: the artifact's CHANGELOG.md has no \`## [$TEMPLATE_VERSION_VALUE]\` section — $REL_TAG would ship with nothing to read"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
-step "step 5/5 · the verdict"
+if [ "$MODE" = release ]; then
+    step "step 5/$STEPS · the release commit — one squashed child of the published tip"
+    # ---------------------------------------------------------------------------
+    # A VIOLATION WRITES NOTHING. The step prints anyway, so that "nothing was
+    # committed" is a line somebody read rather than an absence they inferred.
+    if [ "$VIOLATIONS" -gt 0 ]; then
+        say "   SKIPPED — $VIOLATIONS violation(s) above. Nothing was committed, nothing"
+        say "   was tagged, and $PUB is exactly as this run found it."
+    else
+        # THE OBJECTS MOVE, THE TREE DOES NOT CHANGE. `git fetch` from the scratch
+        # artifact copies the export's commit and everything under it — which is
+        # the tree $TREE and every blob in it — into the published repository's
+        # object database. Nothing is re-derived here and nothing is re-read from
+        # disk: the release commit is written against the SAME object the census
+        # verified, which is what makes the equality assertion below meaningful
+        # rather than circular.
+        IMPORT_REF="refs/publish/import-$$"
+        if ! git -C "$PUB" fetch --no-tags -q "$TARGET" "+HEAD:$IMPORT_REF"; then
+            echo "!! the artifact's objects could not be fetched into $PUB." >&2
+            echo "   Nothing was committed. Could-not-look, not a violation." >&2
+            exit 2
+        fi
+        if ! git -C "$PUB" cat-file -e "$TREE^{tree}" 2>/dev/null; then
+            echo "!! the census-verified tree $TREE is not in $PUB after the fetch." >&2
+            echo "   The release commit would have to be built from something else, and" >&2
+            echo "   something else is precisely what this mode exists to refuse." >&2
+            git -C "$PUB" update-ref -d "$IMPORT_REF" 2>/dev/null || true
+            exit 2
+        fi
+
+        # The identity the release commit is written under. A published clone
+        # usually has one configured; when it does not, this script names itself
+        # rather than inheriting whatever a global config happens to say, and
+        # prints which of the two happened.
+        REL_WHO=$(git -C "$PUB" config user.name 2>/dev/null || true)
+        REL_MAIL=$(git -C "$PUB" config user.email 2>/dev/null || true)
+        if [ -n "$REL_WHO" ] && [ -n "$REL_MAIL" ]; then
+            say "   identity   $REL_WHO <$REL_MAIL>  (the published clone's own)"
+        else
+            REL_WHO=publish
+            REL_MAIL=publish@localhost
+            say "   identity   $REL_WHO <$REL_MAIL>  (this clone configures none)"
+        fi
+
+        REL_MSG=$(
+            printf 'Pilecap %s\n\n' "$REL_TAG"
+            printf 'The template'"'"'s system layer at %s, as one squashed commit: this\n' "$REL_TAG"
+            printf 'release carries the whole tree, not a delta.\n\n'
+            printf 'What changed and whether you want it: CHANGELOG.md, section [%s].\n\n' "$TEMPLATE_VERSION_VALUE"
+            printf 'Merging %s into a product brings it up to date from ANY earlier\n' "$REL_TAG"
+            printf 'release — the chain is linear, so intermediates cost nothing and\n'
+            printf 'need not be merged one at a time.\n'
+        )
+        NEW=$(printf '%s\n' "$REL_MSG" |
+            git -C "$PUB" -c "user.name=$REL_WHO" -c "user.email=$REL_MAIL" \
+                -c commit.gpgsign=false commit-tree "$TREE" -p "$PUB_TIP") || {
+            echo "!! git commit-tree failed in $PUB — nothing was tagged." >&2
+            git -C "$PUB" update-ref -d "$IMPORT_REF" 2>/dev/null || true
+            exit 2
+        }
+
+        # THE EQUALITY IS ASSERTED, NOT ASSUMED. `commit-tree` was handed $TREE,
+        # so this can only fail if git itself or this script's plumbing is not
+        # what it is believed to be — which is exactly the class of thing an
+        # assertion is for, and the class a comment saying "it must be equal"
+        # never catches.
+        NEW_TREE=$(git -C "$PUB" rev-parse "$NEW^{tree}")
+        say "   census tree  $TREE"
+        say "   commit tree  $NEW_TREE"
+        if [ "$NEW_TREE" != "$TREE" ]; then
+            echo "!! the release commit's tree is NOT the census-verified tree." >&2
+            echo "   census $TREE" >&2
+            echo "   commit $NEW_TREE" >&2
+            echo "   The commit was written and is unreferenced; no branch moved and no" >&2
+            echo "   tag was created. Enforcement broken, not a violation." >&2
+            git -C "$PUB" update-ref -d "$IMPORT_REF" 2>/dev/null || true
+            exit 2
+        fi
+        say "   equal — the release commit ships exactly what the census verified"
+
+        git -C "$PUB" -c "user.name=$REL_WHO" -c "user.email=$REL_MAIL" \
+            -c tag.gpgsign=false tag -a "$REL_TAG" -m "Pilecap $REL_TAG" "$NEW" || {
+            echo "!! the tag $REL_TAG could not be written in $PUB — the commit exists" >&2
+            echo "   ($NEW) and no branch was moved. Reconcile by hand." >&2
+            git -C "$PUB" update-ref -d "$IMPORT_REF" 2>/dev/null || true
+            exit 2
+        }
+        # The branch moves LAST, and the import ref is dropped now that the tree
+        # is reachable from the release commit itself.
+        git -C "$PUB" update-ref -d "$IMPORT_REF" 2>/dev/null || true
+        git -C "$PUB" reset -q --hard "$NEW" || {
+            echo "!! $PUB_BRANCH could not be moved to $NEW in $PUB — the commit and the" >&2
+            echo "   tag $REL_TAG both exist. Reconcile by hand." >&2
+            exit 2
+        }
+        REL_DIRT=$(git -C "$PUB" status --porcelain)
+        if [ -n "$REL_DIRT" ]; then
+            echo "!! $PUB is not clean after the release commit — the released tree and" >&2
+            echo "   its working tree disagree, which is this instrument failing to leave" >&2
+            echo "   its own output in the state it promises." >&2
+            printf '%s\n' "$REL_DIRT" | sed 's/^/     /' >&2
+            exit 2
+        fi
+        say "   parent     $PUB_TIP"
+        say "   commit     $NEW"
+        say "   tag        $REL_TAG"
+        say "   branch     $PUB_BRANCH moved, working tree clean"
+        say ""
+        say "   Nothing has left this machine. Push when you mean it:"
+        say "     git -C $PUB push origin $PUB_BRANCH $REL_TAG"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+step "step $VERDICT_STEP/$STEPS · the verdict"
 # ---------------------------------------------------------------------------
 say "   artifact   $TARGET"
 say "   source     $SRC_SHA"
 say "   tree       $TREE"
+if [ "$MODE" = release ] && [ "$VIOLATIONS" -eq 0 ]; then
+    say "   released   $REL_TAG  ->  $NEW  (child of $PUB_TIP)"
+fi
 if [ "$VIOLATIONS" -gt 0 ]; then
     say ""
     say "== $VIOLATIONS VIOLATION(S) — the artifact was built and is NOT publishable."

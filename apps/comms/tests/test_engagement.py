@@ -617,7 +617,7 @@ def test_the_next_send_after_a_stop_is_refused(
     """The comms-8 chain, re-proven over SMS. The suppression has teeth.
 
     *Absent:* a STOP that records a preference row nothing reads, which is the
-    finding P2-R1 made about hard bounces one channel over.
+    finding made about hard bounces one channel over.
     """
     an_sms_template(tenant=tenant, actor=owner_actor)
     recipient = an_sms_recipient(tenant=tenant, actor=owner_actor)

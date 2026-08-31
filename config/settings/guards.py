@@ -34,8 +34,8 @@ from __future__ import annotations
 # production` calls `refuse_development_defaults()` while it is being read, and
 # the process does not start if it raises. These never reach that moment —
 # `compose.yaml` hands them straight to the `postgres`, `zitadel`, `minio` and
-# `meilisearch` containers, and no settings module reads any of them (P4-D1
-# puts the belt on them at the deployment, where the values are in hand — see
+# `meilisearch` containers, and no settings module reads any of them (the deploy
+# layer puts the belt on them, where the values are in hand — see
 # WHERE THE REAL FENCE BELONGS, below, which is now a dispatched job rather
 # than a promise):
 #

@@ -25,17 +25,28 @@ Without that section, the one door the people running
 this product sign in through was the one thing rule 27's blind spot covered
 completely, since the row-by-row walk had nothing to start from.
 
-**What it cannot see**, said out loud rather than left to be discovered: it
-compares what our rows *declare*. A class of Zitadel configuration this product
-never writes — a login policy nobody set through us, a second organisation, an
-IdP created by hand under a name no row claims — is invisible to it, except for
-the one summary line counting IdPs Zitadel has that no row names. That is the
-declared blind spot on rule 27 and it is repeated here because the person
-reading a clean report is the person who most needs to know what "clean" covers.
-The workforce section narrows that blind spot by one door and does not close it:
-the domain list itself is not in Zitadel to compare against (ADR ident-6), so
-what is reconciled there is the door's existence and the Google project it
-points at.
+**And a third section that reaches no verdict at all.** The org's login policy
+and the instance's SMTP sender are *observed and printed*, never judged
+(`_report_console`): no product manages either through services, so no intent
+row exists to disagree with, and reaching a drift verdict on them would mean
+inventing that machinery to guard a surface nothing writes. They are GETs like
+everything else here, so the change-nothing property covers them unchanged, and
+they add nothing to the exit status. ADR ident-2's amendment records the
+decision and the trigger that would revisit it — the first product managing
+login policy or SMTP through services.
+
+**What it cannot see is now PRINTED beside the verdict** (`_report_blind_spot`),
+rather than left in this docstring where only a maintainer would find it: it
+compares what our rows *declare*, and a class of Zitadel configuration this
+product never writes — a second organisation, an instance-level policy, an IdP
+created by hand under a name no row claims — is invisible to it, except for the
+one summary line counting IdPs Zitadel has that no row names. That is the
+declared blind spot on rule 27, and the person reading a clean report is the
+person who most needs to know what "clean" covers, which is why it prints on
+every run and under both verdicts. The workforce section narrows that blind spot
+by one door and does not close it: the domain list itself is not in Zitadel to
+compare against (ADR ident-6), so what is reconciled there is the door's
+existence and the Google project it points at.
 
 Exit status is the report's verdict: **0 when the two agree, 1 when they do
 not**, so `zitadel_audit` can be a cron line or a deploy step rather than
@@ -114,6 +125,8 @@ class Command(BaseCommand):
         except zitadel.ZitadelError as error:
             raise CommandError(str(error)) from error
 
+        self.stdout.write("")
+        self._report_blind_spot()
         self.stdout.write("")
         if drift:
             self.stdout.write(self.style.WARNING(f"{drift} disagreement(s). Nothing was changed."))
@@ -208,7 +221,143 @@ class Command(BaseCommand):
                 f"unclaimed   {len(unclaimed)} idp(s) in Zitadel that no row of ours names: "
                 + ", ".join(sorted(str(row.get("name", "?")) for row in unclaimed))
             )
+
+        # Two surfaces with no row behind them at all. They add nothing to
+        # `drift` and they are the last thing before the blind-spot paragraph,
+        # because what they narrow is exactly what that paragraph declares.
+        self._report_console()
         return drift
+
+    def _report_console(self) -> None:
+        """The console's own surfaces: printed, and deliberately **not judged**.
+
+        **Why observed rather than reconciled.** Every other line in this report
+        starts from an intent — a `SsoConnection` row, or the environment the
+        workforce door is switched by. The org's login policy and the instance's
+        SMTP sender have neither: no product on this instance manages them
+        through services, so there is nothing to disagree with. Reaching a drift
+        VERDICT on them would mean inventing an intent row first, which is rule
+        27's whole materialisation machinery built to guard a surface nothing
+        writes. The ADR names the trigger that would change that (ADR ident-2's
+        amendment: the first product managing login policy or SMTP through
+        services). Until then the honest report is the value and who owns it.
+
+        **So this section cannot change the exit status**, and that is the
+        property, not a promise: it returns nothing, and `_report`'s caller adds
+        nothing from it to `drift`. A reader who has automated on `zitadel_audit`
+        exiting 0 sees new lines and the same exit.
+
+        **And it cannot change Zitadel either.** Both calls are GETs
+        (`apps/accounts/zitadel.py`, "the console's own surfaces"), so the
+        mutate-then-assert-byte-identical discipline the rest of the audit is
+        held to covers these unchanged.
+
+        **Failure is a sentence, not an exception.** An unreadable surface says
+        it could not look, because "could not look" and "nothing there" are
+        different facts and the second one is what a person would wrongly read
+        off a missing line.
+        """
+        self.stdout.write("")
+        self.stdout.write(
+            "observed    the console's own surfaces — printed, not judged; no row "
+            "states an intent for either, so neither can be drift"
+        )
+
+        try:
+            policy = zitadel.login_policy()
+        except zitadel.ZitadelError as error:
+            self.stdout.write(f"  login-policy could not be read — {error}")
+        else:
+            self.stdout.write(f"  login-policy {self._login_policy_line(policy)}")
+
+        try:
+            smtp = zitadel.smtp_configuration()
+        except zitadel.ZitadelError as error:
+            self.stdout.write(f"  smtp         could not be read — {error}")
+        else:
+            self.stdout.write(f"  smtp         {self._smtp_line(smtp)}")
+
+    @staticmethod
+    def _login_policy_line(policy: dict[str, Any]) -> str:
+        """One line for the org's login policy, whose-is-it first.
+
+        `isDefault` is the field that carries the news: Zitadel sends it when the
+        org has no policy of its own and the instance default is answering, and
+        omits it once somebody has set one. So "somebody changed this org's login
+        policy" is readable off a single GET, and it is the first thing on the
+        line because it is the only part a reader can act on.
+        """
+        if not policy:
+            return "no policy in the answer"
+        owner = (policy.get("details") or {}).get("resourceOwner", "?")
+        whose = (
+            "the instance default (no policy of this org's own)"
+            if policy.get("isDefault")
+            else "set on this org (not the instance default)"
+        )
+        switches = ", ".join(
+            name
+            for name, on in (
+                ("username+password", policy.get("allowUsernamePassword")),
+                ("self-registration", policy.get("allowRegister")),
+                ("external idp", policy.get("allowExternalIdp")),
+                ("domain discovery", policy.get("allowDomainDiscovery")),
+                ("unknown usernames ignored", policy.get("ignoreUnknownUsernames")),
+                ("phone login disabled", policy.get("disableLoginWithPhone")),
+            )
+            if on
+        )
+        factors = ", ".join(str(one) for one in (policy.get("secondFactors") or []))
+        return (
+            f"{whose}, resourceOwner {owner}; on: {switches or 'nothing'}; "
+            f"passwordless {policy.get('passwordlessType', '?')}; "
+            f"second factors {factors or 'none'}"
+        )
+
+    @staticmethod
+    def _smtp_line(smtp: dict[str, Any]) -> str:
+        """One line for the instance's SMTP sender.
+
+        Instance-wide, so on a shared development instance this names whoever
+        configured it last — which is the fact worth printing and the reason this
+        read is here at all. **No credential is on this line**: the API does not
+        return the SMTP password, so there is none to leak into a report somebody
+        will paste into a ticket.
+        """
+        if not smtp:
+            return "no SMTP configuration on this instance"
+        description = str(smtp.get("description", "") or "").strip()
+        return (
+            f"instance-wide — {smtp.get('senderName', '?')} "
+            f"<{smtp.get('senderAddress', '?')}> via {smtp.get('host', '?')}, "
+            f"{smtp.get('state', '?')}, id {smtp.get('id', '?')}"
+            + (f"; described as {description!r}" if description else "")
+        )
+
+    def _report_blind_spot(self) -> None:
+        """What a clean verdict does **not** cover, printed beside the verdict.
+
+        This paragraph used to live in this module's docstring, where the person
+        who most needs it — somebody reading a green report — never sees it. A
+        blind spot declared only where the maintainer looks is a blind spot the
+        operator does not have. So it prints, every run, both verdicts, in the
+        one place a reader is already looking: immediately above the line that
+        says whether the two agree.
+        """
+        self.stdout.write("does not cover")
+        for line in (
+            "  This compares what our ROWS declare, plus the workforce door the",
+            "  environment declares. The observed section above is printed and not",
+            "  judged: no row states an intent for a login policy or an SMTP sender,",
+            "  so neither can disagree with anything and neither moves the exit code.",
+            "  Still invisible: a second organisation, instance-level policy, actions,",
+            "  machine keys, and any project or application no row of ours names — the",
+            "  stranger IdPs are only counted, above, never inspected. So is anything",
+            "  changed and changed back between two runs: this is a point-in-time read,",
+            "  and running it again is the only diff there is.",
+            "  House rule 27 fences this codebase. It cannot fence the console.",
+        ):
+            self.stdout.write(line)
 
     def _report_workforce(self, providers: list[dict[str, Any]]) -> tuple[int, str]:
         """The deployment's own door. Returns (disagreements, the idp id we claimed).

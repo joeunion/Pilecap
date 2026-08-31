@@ -981,6 +981,61 @@ counter-example**. And the operator trio (`suspend_tenant` /
 building the operator surface is booked separately, and the valve's stale claim is
 corrected in that work.
 
+**ADR core-23 · the refusal registry carries the per-code facts; the replay
+boundary is derived from it.** *Context*: `CODE_STATUS` and
+the idempotency replay split both needed a per-code fact the refusal registry
+already almost carried — and the registry was the only place a new code is
+*discovered* rather than appended. *Decision*: `register_refusal` gains
+`status=` — **optional, not required**, for three live reasons: rule 47's two
+canaries would exit-2 at import if a status were demanded of them;
+`invalid_arguments` is a MACHINE-door code with no HTTP status to declare; and
+absence-is-a-declaration keeps the drop path reachable. `CODE_STATUS` and
+`envelope_codes()` are derived off the registry, and the one-line status joins
+each existing registration at its declaring site across apps. The replay
+boundary is `boundary == "door"` — **boundary-as-door is doctrine, not
+convenience**: a door refusal (bad credential, addressing header, CSRF, rate
+limit) is decided in *front* of every service, on material the body
+fingerprint does not name, and it ran nothing — the key was never spent.
+Remembering one poisons the key for its whole TTL: the client that fixed its
+credential and retried got the stale refusal back with `Idempotent-Replayed:
+true` and could never reach its write — the exact poisoned-key class, and the 429
+rate-limit second instance found in-rung. The door set is the only set
+coherent with the middleware's own key-reuse arm, and it is a **closed
+question over a discoverable population** — a code registered
+`boundary="door"` next month joins by being registered and by nothing else.
+*Rejected*: a second code→status registry in `config/api.py` (the append tax
+re-created one file over); an envelope column on `IdempotencyRecord` (schema
+with no reader; the 5xx drop-the-claim arm already exists); a hand list of
+envelope codes (the set is open; the checklist forbids it); the plan's
+original *fingerprint framing* of the boundary — the R2 builder found
+`invalid_body`/`method_not_allowed` differ between the two framings, which is
+this ADR's own revisit-trigger firing in-rung; the ruled `boundary=="door"`
+derivation was implemented and ratified. *Deliberate residual*: a domain `403
+forbidden` for an actor promoted between two calls still replays — a policy
+decision is a decision about this fingerprinted request, made below the
+doors; a client that wants the new answer says so with a new key. *Trigger to
+revisit*: a code whose replay class differs from its boundary. Long forms:
+`apps/core/idempotency.py` (module docstring + `REPLAYABLE_BELOW`),
+`apps/core/exceptions.py` (`status` grammar + `envelope_codes`).
+
+**ADR core-24 · one predicate answers "does this route answer the cursor
+envelope", and every instrument reads it.** *Context*: three
+instruments answered "is this route paginated?" for themselves off two
+different private ninja attributes — rule 3's census, the docs derivation and
+`introspect` — and all three were wrong about the same three direct-cursor
+routes, because every marker they read says "`@paginate` was applied", not
+what a caller experiences. The failure that matters is not the wrong column:
+it is that fixing one leaves two blind — three private re-derivations of one
+fact drift apart silently and nothing fails when they do. *Decision*: one
+predicate in `apps/core/api/pagination.py`, beside the envelope it is about,
+reads the RESPONSE MODEL; the census, the docs derivation and `introspect`
+all read it — sever it and all three go red at once
+(`apps/core/tests/test_pagination_seam.py` plants and proves this).
+*Rejected*: fixing `introspect` alone (leaves rule 3 and the docs blind — the
+carried criterion's exact ban); declaring the blind spot in three places
+(three declarations of one fact drift). *Trigger to revisit*: a fourth reader
+appears.
+
 ## The platform the template ships
 
 | Area | Ruling |
@@ -1001,7 +1056,7 @@ corrected in that work.
 | Contracts & DX | Pydantic schemas per socket message type, listed by `introspect`; `scripts/gen_client.sh` (openapi-typescript) optional; `.editorconfig`. |
 | i18n | English only by default (`USE_I18N=False`); `Tenant.timezone`/`locale` present for display; a product turns i18n on as a recorded decision. |
 | The product's name | **ADR platform-1 · context:** the repository was renamed to `example.invalid` and the old name was still a literal in seven places — settings, two compose env defaults, `.env.example`, the devcontainer's display name, the README heading — so a product renamed by editing each surface it happened to find, and Zitadel had already materialised the ones it missed · **decision:** ONE canonical env-backed setting, `PRODUCT_NAME` in `config/settings/base.py` (default `"Pilecap"` — the template's own name, so a fresh clone is honest about being the template), and every surface that *shows* or *materialises* a name derives from it: `ZITADEL_PROJECT_NAME` defaults to it, and `compose.yaml` interpolates `${PRODUCT_NAME:-Pilecap}` into the first instance's org name and its service account's display name. A product sets it once in `.env` · **rejected:** hardcoding the name per surface (what was there — every rename is a survey, and the surface you miss is the one a console shows a customer six months later); deriving it from the directory or the git remote (a worktree and a fork are different directories with the same product) · **exception, deliberate:** `compose.yaml`'s `name: djangobootstrap` does NOT derive — it is infrastructure identity, containers and volumes key on it, and changing it orphans a running stack and its data. Neither do the Zitadel *logins* (`ZITADEL_ADMIN_USERNAME`, `ZITADEL_DEV_USER_EMAIL`, `ZITADEL_MACHINE_USERNAME`): they are account identifiers already created, and renaming one is a migration, not a setting · **renaming an instance that already materialised the old name:** teardown + fresh bootstrap (drop the `zitadel` database and the `zitadel_bootstrap` volume, re-run `./scripts/setup.sh`), which re-materialises from these defaults and doubles as the from-zero rebuild test — NOT a rename against the management API. `zitadel_seed` finds-or-creates by name (`accounts.zitadel.ensure_project`), so a changed name on a live instance makes a SECOND project with fresh client ids while `.env`'s `ZITADEL_CLIENT_ID` still points at the old one (owner ruling) · **not covered:** `README.md`'s heading and `.devcontainer/devcontainer.json`'s `name` are text no variable reaches, so a product edits those two by hand; each now says so at the line · **amended 2026-08-26 (owner ruling):** the identity a stranger reads becomes **Pilecap**, so the default value above moves from the template's former name to `"Pilecap"` — the *mechanism* is untouched and is exactly how that rename executed (one setting, derived surfaces, two hand-edited lines). The infrastructure namespace stays: the compose project name quoted in the deliberate exception above, the `DJB_` environment prefix and the `djb_` database prefix are covered by this row's own deliberate exception, because renaming them orphans running stacks and their data, staging included. This supersedes the earlier census recommendation to keep the former name (its leak argument was put to the owner verbatim and overruled) · **wire identifiers are not display identity:** the MCP `serverInfo` name (`config/mcp.py`) and the outbound `User-Agent` tokens (`apps/connections/client.py`, `apps/accounts/zitadel.py`) were renamed as lowercase **literals** and do NOT derive from `PRODUCT_NAME` — a display name may legally carry spaces and mixed case, and a wire token derived from one is malformed the day a product sets it · **trigger to revisit:** a third surface needing the name at *runtime* (an admin site header, an email from-name) — then it reads `settings.PRODUCT_NAME`, and this row is where that is already decided. Read *display* surface there: the wire-identifier clause above is the boundary that trigger stops at. |
-| Template updates | No sync tooling yet: `TEMPLATE_VERSION` + `CHANGELOG.md`; products cherry-pick system-layer commits; trigger: three products exist → build `scripts/template_sync.sh`. |
+| Template updates | `TEMPLATE_VERSION` + `CHANGELOG.md`; a release is ONE squashed child commit cut by `scripts/publish.sh --release` and tagged, and **products merge the tag** — never cherry-pick — adjudicating what the merge deletes against their local patches (owner ruling 2026-08-30, cycle P17; supersedes the earlier cherry-pick line; root re-cut permanently retired). Trigger unchanged: three products exist → revisit sync tooling. |
 | Left to products | Specific providers, SSO/SAML/SCIM, search beyond Postgres FTS, notifications beyond email, admin theming, PgBouncer, Temporal self-hosting, multi-region. |
 
 ## The gate
@@ -1514,8 +1569,10 @@ names validated against no vocabulary, so a typo reads as a claim.
 
 47. **A declared refusal reaches the document.**
 `config/api.py::_document_operation` turns a route's refusal codes into responses
-through `CODE_STATUS.get(code)` guarded by `if status is not None`, so a code with
-no line in that table leaves the published document **without a word** — the route
+through `CODE_STATUS.get(code)` guarded by `if status is not None` — and since ADR
+core-23 that table is **derived from the refusal registry** (`CODE_STATUSES` in
+`apps/core/exceptions.py`, published by `config/api.py`), so a code whose
+registration declares no `status=` leaves the published document **without a word** — the route
 still refuses that way on the wire, and the `x-refusal-codes` a generated client
 switches on has no branch for it. The live instance is
 `apps/accounts/api.py::create_token`, which declares `session_required`: real,
@@ -1523,8 +1580,10 @@ registered, and invisible. Nothing before this asked the question — rule 41 as
 whether every declared code is *registered*, and this one is. So for every bound
 operation the gate compares the set the route declares with `@refuses(...)` (or
 the set the shape derivation produces, plus the authenticated 401) against what
-the document carries. A missing code **absent** from `CODE_STATUS` names the table
-line to add and the `if status is not None` that drops it — the one path this rule
+the document carries. A missing code **absent** from `CODE_STATUS` names the
+`status=` to declare at the code's own `register_refusal` site (never a table
+line — the append path is gone, ADR core-23) and the `if status is not None`
+that drops it — the one path this rule
 has proven. A missing code **present** in `CODE_STATUS` is reported as an
 undiagnosed drop, in those words: a violation that says what it has not
 established rather than one that names a cause it guessed. **Production
@@ -2036,6 +2095,49 @@ as "ADR gate-4".
   ZITADEL_MASTERKEY · ZITADEL_DATABASE_PASSWORD · POSTGRES_PASSWORD ·
   ZITADEL_ADMIN_PASSWORD (the script's header is the mechanism's own
   record).
+- **ADR deploy-4 (2026-08-31) — build once, promote by digest** ·
+  context: **one tree was built three times.** CI built `web` and `worker`
+  single-arch, tagged them locally, checked the `USER` line, and let both die
+  with the runner — so nothing CI built ever reached a box, and "CI-tested
+  image" was a phrase with no referent. `deploy/compose.yaml` carried a
+  `build:`, and runbook step 33 built the same tree a **third** time, arm64, on
+  the Graviton box: the slowest and least debuggable machine in the system, at
+  the moment of a deploy. Three builds of "the same" tree is three chances to
+  differ — a base image that moved, a transient mirror, a wheel rebuilt — and
+  nothing anywhere could say whether the amd64 thing CI proved and the arm64
+  thing the box ran were the same software. · decision: **(a)** the image for a
+  tree is built **once**, in CI's images job, `linux/amd64` **and**
+  `linux/arm64` in one manifest, pushed to a registry under the derived tree tag
+  `tree-<12hex>`; **(b)** that job runs `needs: gate` — a registry tag is a
+  promotable artefact and `release.sh` will deploy anything the registry has, so
+  an ungated tree must have no tag; **(c)** `deploy/compose.yaml` declares no
+  `build:` anywhere and every app image is `${DJB_IMAGE_REGISTRY}/djb-<service>:
+  ${DJB_IMAGE_TAG}`, both required and neither defaulted; **(d)** `release.sh`
+  resolves the tag to an immutable **digest** before its first act — a tag the
+  registry lacks is exit 2 naming the reference, a registry/pin disagreement is
+  exit 1 naming both — and pins the released digest into the box's `TREE` marker
+  **after** act 6's recreate; **(e)** `TREE`'s grammar becomes line-oriented
+  (line 1 the tag, later lines `<key> <value>`) so it can carry that pin, which
+  a legacy one-line marker still satisfies; **(f)** **promotion staging→prod is
+  neither a re-tag nor a rebuild** — both environments point `DJB_IMAGE_TAG` at
+  the same tree, resolve the same digest, and run the same bytes. · rejected:
+  **moving environment tags (`:staging`, `:prod`)** — the industry-default shape,
+  and it makes "which image is prod running" unanswerable *from the box*, which
+  is the exact class of lie the `TREE` mechanism was built to remove; **keeping
+  the box build as a fallback for a registry outage** — a fallback that only
+  runs on the worst day is a path nothing exercises, and it re-opens the
+  divergence the whole ruling closes (the honest trade is stated instead: the
+  registry is now a deploy-time dependency, named in `docs/runbooks/deploy.md`
+  step 33); **pushing from the laptop** — then the deployed artefact's
+  provenance is a person's machine; **content-addressed tags only, no tree tag**
+  — a digest a human cannot derive from a checkout makes every runbook step a
+  copy-paste of an opaque string. · triggers, and both are cheap to notice:
+  **base-image drift between releases** — two trees a month apart resolve
+  different base layers and nothing here compares them, so the first product
+  that needs reproducible builds re-opens this with a pinned base digest; and
+  **a second architecture or a second registry** (a product deploying to
+  something other than one ECR account) — `DJB_IMAGE_REGISTRY` is one prefix
+  today and that is deliberate, not permanent.
 - **ADR events-1 — ERRATUM, not a decision.** This id is cited exactly
   once, in a fan-out totals note reading "the fan-out's total
   `1 + endpoints_for(t) x 5` — grows with subscribers — ADR events-1's
@@ -2067,6 +2169,28 @@ as "ADR gate-4".
   for dev (the loop must run on a laptop, V3's lesson generalized),
   CockroachDB (Zitadel's other backend; heavier for zero gain) · trigger:
   production deployment → its own managed Postgres, recorded then.
+- **ADR ident-2, amended (2026-08-30) — the console's own surfaces
+  are observed, not reconciled** · context: `zitadel_audit` compared what
+  our *rows* declare, so two classes of configuration no product manages
+  through services — the org's **login policy** and the instance's **SMTP
+  sender** — sat entirely inside rule 27's declared blind spot. Both were
+  changed on the shared development instance by a sibling product and the
+  audit still printed "Zitadel agrees with every row." · decision: **read
+  them, print them, judge neither.** `zitadel.login_policy()` and
+  `zitadel.smtp_configuration()` are GETs in the reads section;
+  `zitadel_audit` prints an `observed` section that adds nothing to the
+  drift count and cannot move the exit status, and the residual — what a
+  clean verdict does *not* cover — now prints **beside the verdict** on
+  every run under both verdicts, rather than living in a module docstring
+  only a maintainer reads · rejected: **full intent-row machinery** (rule
+  27's whole materialisation path — rows, services, an activity — built to
+  guard drift only one actor can cause, and that actor is a person in a
+  console we would still not be fencing: shop-the-price), and **a report
+  line only** (names the blind spot without narrowing it, leaving the two
+  changed surfaces invisible to the person reading the report) · trigger:
+  **the first product that manages login policy or SMTP through services**
+  — at that point an intent row exists, the comparison becomes possible,
+  and these two move from observed to reconciled.
 - **ADR ident-5 — TWO decisions share this id**; both stand, both cited.
   **(a) test posture for Zitadel** · the settled decision: test posture
   for Zitadel mirrors the posture already settled for Temporal (ADR

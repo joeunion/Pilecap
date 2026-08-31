@@ -1,6 +1,6 @@
 """The wall at the transport edge, and the census that keeps it the only path.
 
-P2-R1's finding 2: the consent wall ran at `send()` time while the transport
+The seam finding: the consent wall ran at `send()` time while the transport
 ran later, so a suppression or a consent revocation landing **between queue and
 delivery** was ignored at the one moment that decides whether a human is
 mailed. `send_step` had honoured that seam since ADR comms-7 — the authors knew

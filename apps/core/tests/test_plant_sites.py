@@ -58,7 +58,13 @@ EXEMPT_APPS = {"zzz_canary", "example"}
 #: 13 -> 11: rule 5 dropped the two plants into
 #: `quality/perf-realtime-measurement.md` and `quality/perf-ledgers-measurement.md`
 #: (see `TOTAL_PLANTS` above).
-OUTSIDE_APPS_PLANTS = 11
+#:
+#: 11 -> 13 (P15 R7): rule 41's top-level-key census plants its canary and its
+#: negative into `config/api.py`, the module whose `ContractAPI.get_openapi_schema`
+#: builds the document the census is about. A canary for a document key planted
+#: anywhere else would be proving the check against a document nothing serves —
+#: the same reasoning that puts rule 3's third clause into `config/urls.py`.
+OUTSIDE_APPS_PLANTS = 13
 
 #: Measured once, then re-measured every time a rule arrived. Rule 43 added
 #: five product-app plants across three entries. Rule 44 added six — four in the
@@ -142,9 +148,32 @@ OUTSIDE_APPS_PLANTS = 11
 #: negative that plant into `quality/perf-realtime-measurement.md` and
 #: `quality/perf-ledgers-measurement.md` — the citation-doc verification they
 #: proved was retired along with the docs it read.
-TOTAL_PLANTS = 349
-SCAFFOLD_PLANTS = 93
-EXAMPLE_PLANTS = 195
+#:
+#: **349 -> 362, and NINE OF THE THIRTEEN ARE ARREARS.** Measured at P15 R7;
+#: recorded here in two parts because they are two different facts.
+#:
+#: The earlier pass (193fa86) landed nine plants and moved no number: rule 42's
+#: four into the scaffold (93 -> 97), rule 26's one into the worked example
+#: (195 -> 196), and rule 17's FOUR into two real product apps (48 -> 52), which
+#: also put four entries past `PRODUCT_APP_PLANT_ENTRIES` with no dated
+#: MOVE-TRIGGER between them. The whole module was red on main at d13bdc2 —
+#: three failures, this assertion among them — and it stayed red because
+#: `--loop` runs the fast tier plus the rung's OWN app, and R6's rung touched
+#: only `quality/`, which owns none of these tests. That is worth more than the
+#: arithmetic: **a census in `apps/core/tests/` cannot see a plant added in
+#: `quality/`** until somebody's rung happens to widen the tier. R7's did.
+#: The four rule-17 entries are added to `PRODUCT_APP_PLANTS` below with their
+#: trigger written into `rules.yaml`, which is the repair R6 owed.
+#:
+#: R7's own four are the remaining ones and they are the cheap kind: two into
+#: the scaffold (97 -> 99 — rule 3's envelope-without-controls canary and its
+#: direct-cursor negative) and two outside `apps/` (11 -> 13 — rule 41's
+#: top-level-key census, planted into `config/api.py`, which is the module that
+#: OWNS the document and the only place a canary about it would be proving
+#: anything). No product app, no worked example.
+TOTAL_PLANTS = 362
+SCAFFOLD_PLANTS = 99
+EXAMPLE_PLANTS = 196
 
 #: The judgement: every plant into a real product app, by rule and site. Each
 #: one carries a dated MOVE-TRIGGER beside it in `quality/rules.yaml`; the test
@@ -227,6 +256,19 @@ PRODUCT_APP_PLANTS = {
     # healthy: the day `core` no longer needs its own client to report on the
     # organ.
     ("48", "negatives", "apps/core/health.py"),
+    # Rule 17's four (R6's, recorded by R7 — see `TOTAL_PLANTS`). The move
+    # detection reads a GIT DIFF, so showing a class LEAVE a module needs a
+    # module git already knows: `apps/zzz_canary` is created by the plant and
+    # tracked by nothing, so there is no scaffold file a class could leave.
+    # `mode: create` over `apps/workflows/schemas.py` is what stands in for the
+    # deletion, because a plant may create or append and never remove. The
+    # arrival lands in a second real app for the same reason — the check
+    # searches `apps/*/schemas.py`, and both ends of a move have to be somewhere
+    # it looks.
+    ("17", "canaries", "apps/workflows/schemas.py"),
+    ("17", "canaries", "apps/realtime/schemas.py"),
+    ("17", "negatives", "apps/workflows/schemas.py"),
+    ("17", "negatives", "apps/realtime/schemas.py"),
 }
 
 #: Three counts, and rule 43 is what pulled them apart — before it all three
@@ -239,8 +281,13 @@ PRODUCT_APP_PLANTS = {
 #:   * the ENTRY count is what the move-trigger check walks, one comment block
 #:     per entry;
 #:   * the FILE count is what the bucket census counts.
-PRODUCT_APP_PLANT_ENTRIES = 46
-PRODUCT_APP_PLANT_FILES = 48
+#:
+#: 46 -> 48 and 48 -> 52 (P15 R7, recording R6's arrears): rule 17's move
+#: detection is TWO entries — a canary and a negative — and each plants TWO
+#: files, a source and an arrival, which is exactly the split these two counts
+#: exist to keep apart.
+PRODUCT_APP_PLANT_ENTRIES = 48
+PRODUCT_APP_PLANT_FILES = 52
 
 #: A trigger is DATED and says the word. Both halves matter: a condition with no
 #: date is a note somebody wrote once, and a date with no condition is a

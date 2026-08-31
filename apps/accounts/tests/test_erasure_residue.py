@@ -1,6 +1,6 @@
 """ER1-1/ER1-2/ER1-4: what erasure leaves behind, measured over the whole schema.
 
-**This file is a probe before it is a test.** P5-R1 found that `erase_user`
+**This file is a probe before it is a test.** A sweep found that `erase_user`
 anonymised the `User` row and left the person in four other tables, and it found
 it with a DB-level sweep rather than by reading the service — which is the only
 way that class of defect is ever found, because the service says nothing about

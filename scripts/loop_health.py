@@ -94,12 +94,30 @@ WHAT THIS READER DOES NOT SEE (declared, not discovered):
     a verdict that reads like a disaster. One writer, one judgment, no arithmetic
     over it.
 
+THE SIZE TRIPWIRE — A FINDING, NOT A SIGNAL. Every run also stats
+`docs/product/in-flight.md` and says its size out loud. Over 16,384 bytes it
+prints a FINDING naming the size and the diet rule the black box carries in its
+own Writing rules ("over 16KB, the next session's first act is a prune"). It is
+deliberately NOT a sixth signal and deliberately does NOT move the exit code:
+the five signals are arithmetic over closed cycles and the threshold is
+`NEEDED`, so folding a file size into that population would change what "two
+signals hold" means. A fat black box is not a reason to stop the loop; it is a
+reason the next session prunes before it does anything else. The tooth is the
+selftest, which plants an oversize scratch file and fails if the finding does
+not fire — a printed line nobody asserts about is decoration.
+
+If the file is missing or cannot be stat'd, the line says COULD NOT LOOK and
+names the error. A tripwire that silently skipped an unreadable file would read
+exactly like a thin ledger.
+
 `--selftest` runs the canaries: two deliberately bad rows must fire all five
 signals and exit 1; a legal pair must exit 0; an empty board must exit 2; a
 board holding only EXAMPLE rows must exit 2; a heading with no row must exit 2;
 an out-of-vocabulary persona cell must exit 2; `worse` must be legal and fire
-signal 2; `better` must be legal and be silent. A check that cannot demonstrably
-fail is decoration.
+signal 2; `better` must be legal and be silent; a planted oversize in-flight
+file must produce the FINDING, a planted small one must not, and a path that is
+not there must say COULD NOT LOOK. A check that cannot demonstrably fail is
+decoration.
 
 Stdlib only. Python 3.12. Run as `python3 scripts/loop_health.py`.
 """
@@ -109,9 +127,16 @@ from __future__ import annotations
 import pathlib
 import re
 import sys
+import tempfile
 
 BOARD = pathlib.Path(__file__).resolve().parent.parent / "docs/product/readouts.md"
 NEEDED = 2  # signals that must hold before we stop
+
+# The black box, and the ceiling its own Writing rules declare. Both live in
+# docs/product/in-flight.md; the number is repeated here because a stat needs an
+# integer, and the finding text points back at the file that owns the rule.
+IN_FLIGHT = pathlib.Path(__file__).resolve().parent.parent / "docs/product/in-flight.md"
+IN_FLIGHT_CEILING = 16_384
 
 COLUMNS = (
     "cycle",
@@ -384,7 +409,34 @@ def evaluate(text: str) -> tuple[int, list[str]]:
     return 0, out
 
 
-def run(path: pathlib.Path) -> int:
+def in_flight_line(path: pathlib.Path = IN_FLIGHT) -> str:
+    """One line about the black box's size. Never silent; never exit-bearing.
+
+    A FINDING over the ceiling, a COULD NOT LOOK when the file cannot be
+    stat'd, and the measured size otherwise — so a run that says nothing about
+    in-flight.md is a run of a build that has no tripwire, not a thin ledger.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        return (
+            f"  COULD NOT LOOK  {path}: {error.strerror or error}. The size tripwire "
+            "did not run — that is not a pass, it is an unmeasured ledger."
+        )
+    if size > IN_FLIGHT_CEILING:
+        return (
+            f"  FINDING  in-flight.md is {size:,} bytes, over the "
+            f"{IN_FLIGHT_CEILING:,}-byte tripwire — the diet rule in its own Writing "
+            "rules says the NEXT SESSION'S FIRST ACT is a prune. Not a signal: this "
+            "does not move the exit code."
+        )
+    return f"  in-flight.md {size:,} bytes — under the {IN_FLIGHT_CEILING:,}-byte tripwire"
+
+
+def run(path: pathlib.Path, in_flight: pathlib.Path = IN_FLIGHT) -> int:
+    # Said before anything else, and on every path out of here: whether the
+    # board can be read has nothing to do with whether the black box is fat.
+    print(in_flight_line(in_flight))
     if not path.exists():
         print(f"loop_health: CANNOT JUDGE — no scoreboard at {path}", file=sys.stderr)
         return 2
@@ -520,6 +572,50 @@ def selftest() -> int:
         if name.startswith("two deliberately") and len(fired) != 5:
             ok = False
             print(f"FAIL  expected all five signals to fire on the bad pair, got {len(fired)}")
+
+    # The size tripwire's canaries. The oversize file is PLANTED in a scratch
+    # directory — never the live in-flight.md, which is on its diet and would
+    # make this canary pass or fail for a reason it never stated.
+    with tempfile.TemporaryDirectory() as scratch:
+        fat = pathlib.Path(scratch) / "in-flight-fat.md"
+        fat.write_bytes(b"x" * (IN_FLIGHT_CEILING + 1))
+        thin = pathlib.Path(scratch) / "in-flight-thin.md"
+        thin.write_bytes(b"x" * IN_FLIGHT_CEILING)
+        absent = pathlib.Path(scratch) / "in-flight-not-here.md"
+
+        for name, probe, want_start, want_in in (
+            (
+                f"a PLANTED in-flight of {IN_FLIGHT_CEILING + 1:,} bytes fires the FINDING",
+                fat,
+                "  FINDING",
+                f"{IN_FLIGHT_CEILING + 1:,} bytes",
+            ),
+            (
+                f"a PLANTED in-flight of exactly {IN_FLIGHT_CEILING:,} bytes is silent",
+                thin,
+                "  in-flight.md",
+                "under the",
+            ),
+            (
+                "an in-flight that is not there says COULD NOT LOOK",
+                absent,
+                "  COULD NOT LOOK",
+                str(absent),
+            ),
+        ):
+            line = in_flight_line(probe)
+            bad = []
+            if not line.startswith(want_start):
+                bad.append(f"line does not start {want_start!r}")
+            if want_in not in line:
+                bad.append(f"{want_in!r} not named")
+            if bad:
+                ok = False
+            print(
+                f"{'ok  ' if not bad else 'FAIL'}  {name}: "
+                + ("; ".join(bad) if bad else line.strip())
+            )
+
     verdict = "every canary behaved" if ok else "A CANARY DID NOT BEHAVE — the check is decoration"
     print("selftest: " + verdict)
     return 0 if ok else 2

@@ -4,7 +4,7 @@
 the reason** (house rule 17's `accounts` exemption). Minting a token over MCP is
 circular — the machine door authenticates *with* a token — and the SSO
 configuration surface is an identity-provider credential surface that stays
-behind the session door. What is left, and what P5-B-ACCT adds, is the pair of
+behind the session door. What is left, and what this module adds, is the pair of
 acts an agent has a legitimate reason to perform on behalf of the person holding
 the token: deactivate them, or erase them.
 

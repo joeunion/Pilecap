@@ -1,7 +1,7 @@
 
 
 class CanaryStrandedJob(OrgScopedModel):
-    """A row with a retry clock and no relay — P1-R1's HIGH, planted back.
+    """A row with a retry clock and no relay — the HIGH finding, planted back.
 
     The column will be written the moment a job is enqueued, and the index will
     make the query fast. There is no query. A job whose dispatch dies holds its

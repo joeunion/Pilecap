@@ -37,5 +37,11 @@ fi
 echo "pre-push: no verdict for this tree — running the full gate"
 # The wall names itself. This is the doctrine's own case — one full gate
 # per push — and it is the baseline every other caller is counted against.
+#
+# IT IS ALSO THE SANCTION. `scripts/check.sh` refuses an unsanctioned full run,
+# and `push-wall` is the first of the three things that make one legal (THE FULL
+# GATE IS SANCTIONED, in that file). Nothing is typed here and nothing needs to
+# be: the wall is the case the valve exists to leave alone. Deleting this export
+# would not merely lose a measurement any more — every push would refuse.
 export DJB_GATE_CALLER=push-wall
 exec ./scripts/check.sh

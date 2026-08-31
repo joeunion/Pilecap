@@ -7,6 +7,7 @@ would have — and a reader of what it says. Every assertion lives in the drive.
 
     uv run python scripts/tests/runbook_receiver.py serve <env-file>
     uv run python scripts/tests/runbook_receiver.py facts
+    uv run python scripts/tests/runbook_receiver.py world
 
 WHY A SERVER AND NOT THE TEST CLIENT. The recipes in `docs/runbooks/deploy.md`
 are `curl` and `urllib.request` against a URL. Driving them through Django's
@@ -225,6 +226,31 @@ def _facts() -> None:
         print(f"engagement {handle} {engagement.kind} {engagement.url or '-'}")
 
 
+def _world() -> None:
+    """Where this harness's work lands, in shell, so the drive can `.` the output.
+
+    THE DRIVE HAS TO CLEAN UP AFTER THIS FILE, and to do that it has to know two
+    things it must not derive for itself: the Temporal TASK QUEUE the seeded
+    sends dispatch onto, and the TENANT SLUG every workflow id starts with.
+
+    Both are read here rather than recomputed in the shell, and that is the
+    no-second-copy discipline the whole drive is built on, applied to its own
+    cleanup. The queue is `settings.TEMPORAL_TASK_QUEUE` — the one seam
+    `config/settings/base.py` derives it at — so a deployment that pins the
+    queue outright, or a change to how the name is derived from the database,
+    moves the drive's cleanup with it. A shell copy of that arithmetic would
+    have gone on terminating a queue nothing uses and stranding the real one,
+    silently, which is the exact defect this reports against.
+
+    Printed as shell assignments for the reason `serve` writes an env file: the
+    drive sources it.
+    """
+    from django.conf import settings
+
+    print(f"DRIVE_QUEUE={settings.TEMPORAL_TASK_QUEUE}")
+    print(f"DRIVE_SLUG={SLUG}")
+
+
 def _digest(value: str) -> None:
     """The same sha256 prefix `facts` prints, for a secret the drive holds.
 
@@ -240,6 +266,9 @@ def main(argv: list[str]) -> int:
         return 0
     if len(argv) == 2 and argv[1] == "facts":
         _facts()
+        return 0
+    if len(argv) == 2 and argv[1] == "world":
+        _world()
         return 0
     if len(argv) == 3 and argv[1] == "digest":
         _digest(argv[2])

@@ -46,6 +46,13 @@ the cycles are too small to be interesting or the proving stage is not real.
 that is general goes to the skill; only what is specific to this product stays
 here.)*
 
+- **2026-08-30 · the checklist readout** ("during your updates print out the
+  checklist plan and mark whats done, whats in progress, and whats pending…
+  every time" → "make this a standard for the builders PM too"): every PM
+  status update prints the cycle checklist with ✅/🔄/⬜ marks. Promoted to
+  the PM skill the same day (the general half lives there); this line is the
+  product's record of adopting it.
+
 ---
 
 > ## EXAMPLE — delete when the first real entry lands

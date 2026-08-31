@@ -288,7 +288,7 @@ def test_a_hard_bounce_still_suppresses_exactly_as_it_did(
 
     The negative the soft-bounce test would pass without: a wall that stopped
     suppressing altogether would satisfy "a soft bounce suppresses nobody" and
-    would have re-opened P2-R1's finding 1 — the product cheerfully mailing
+    would have re-opened the dead-address finding — the product cheerfully mailing
     addresses that are provably dead.
 
     Absent: ADR comms-9 traded the widening for the wall.
@@ -379,7 +379,7 @@ def test_an_unclassified_bounce_takes_the_conservative_direction(
     service call, and a wrongly-mailed dead address is a sender reputation.
 
     Absent: the split becomes a bypass — every real ESP that reports a bare
-    `bounced` stops suppressing, and P2-R1's finding 1 is back for the majority
+    `bounced` stops suppressing, and the dead-address finding is back for the majority
     of traffic rather than closed.
     """
     assert post_status(api, esp, tracking_event(message, "bounced")).status_code == 202

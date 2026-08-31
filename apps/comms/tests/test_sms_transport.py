@@ -333,8 +333,8 @@ def test_the_next_send_after_a_wire_stop_is_refused(
 ) -> None:
     """The comms-8 chain, re-proven over the wire rather than at the service.
 
-    *Absent:* a STOP that records a preference row nothing reads — P2-R1's
-    finding, which is the whole reason the suppression is consulted inside
+    *Absent:* a STOP that records a preference row nothing reads — the
+    unread-preference finding, which is the whole reason the suppression is consulted inside
     `send()` rather than reported in a dashboard.
     """
     sid = "SM" + "2" * 32

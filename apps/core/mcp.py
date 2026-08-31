@@ -917,6 +917,12 @@ register_refusal(
         Remedy("Read the failing arguments and resend", "field:errors"),
         Remedy("Read the arguments this tool accepts", "introspect:tools"),
     ),
+    # NO `status=`, and that is the declaration (ADR core-23). This refusal is
+    # only ever made at the MACHINE door, and the machine door has no status
+    # codes at all — a tool answers a refusal as one line of text through
+    # `refusal_message`. A number here would be a fact invented to fill a column,
+    # published into `x-refusal-codes` for an HTTP operation that can never make
+    # this refusal. The registry's `status` is optional exactly for this.
 )
 
 

@@ -112,14 +112,27 @@ Two minutes each on a first start: Temporal migrates two schemas and Zitadel
 bootstraps its first instance.
 
 ```bash
+# The images first, ONCE, and shared by both stacks — deploy/compose.yaml has no
+# `build:` any more (ADR deploy-4: one image per tree, built in CI, pulled
+# everywhere). On a laptop the two names are local and no registry is consulted;
+# `--build` on the `up` below would now be an unknown-service error, not a build.
+export DJB_IMAGE_TAG="$(./deploy/provision.sh image-tag)"
+docker build --target web    -t "$(./deploy/provision.sh image-ref web)" .
+docker build --target worker -t "$(./deploy/provision.sh image-ref worker)" .
+
 DJB_HTTP_PORT=8080 DJB_HTTPS_PORT=8443 \
   docker compose -p djb-b1a --env-file deploy/.env.b1a \
-  -f deploy/compose.yaml -f deploy/compose.second.yaml --profile laptop up -d --build
+  -f deploy/compose.yaml -f deploy/compose.second.yaml --profile laptop up -d
 
 DJB_HTTP_PORT=9080 DJB_HTTPS_PORT=9443 \
   docker compose -p djb-b1b --env-file deploy/.env.b1b \
-  -f deploy/compose.yaml -f deploy/compose.second.yaml --profile laptop up -d --build
+  -f deploy/compose.yaml -f deploy/compose.second.yaml --profile laptop up -d
 ```
+
+**Both `.env.b1a`/`.b1b` carry `DJB_IMAGE_REGISTRY='local'`** (the generator
+writes it for the `laptop` environment), so both stacks resolve the *same* two
+local image names — which is the point of a restore drill: two stacks, one
+tree, and any difference between them is the drill's and not the image's.
 
 Confirm they are two stacks and not one:
 

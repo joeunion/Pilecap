@@ -34,6 +34,39 @@
 # unbound scope/floor, consistency failure, negative-corpus hit, unknown flag).
 # 2 outranks a pass.
 
+# `needs_app: <label>` on a canary or negative entry — the app whose world that
+# FORM needs. Derived from the plant path by default (`apps/<label>/…`) and
+# declared only where the derivation cannot see it: rule 41's
+# `undeclared_example_route` plants into the probe app and asserts about the
+# EXAMPLE census, so its world is the example's and no path says so. A form
+# whose app this deployment disabled is not planted, the rule's expectation
+# falls by exactly that many, and the self-test line names the app that paid.
+# The whole argument is in quality/worlds.py.
+
+# `registry_floors: {<floor>: <basis>}` on a rule that carries a `registry:` —
+# what each floor's number COUNTS, so the expectation can be derived from the
+# apps a deployment actually holds rather than pinned to the tree that measured
+# it. Required only of a registry an OPTIONAL app feeds; without it the
+# self-test refuses, naming the registry. Bases: `members`, `probed_members`,
+# `lookup_column_members`, and `opaque` for a number the registry cannot count
+# (which carries its reason on the rule and is printed, never silent).
+
+# THE SELF-TEST'S OWN BACKLOG. A rule whose EVERY canary form plants into
+# an app declaring `optional = True` keeps running and stops being able to
+# demonstrate a failure the moment a product ships without that app — a rule an
+# environment variable deleted. Eighteen of this tree's rules are in that state
+# today, measured 2026-08-29 at tree 7a2da23: the worked example is where almost
+# every fixture has always been planted, because it is the app with one of
+# everything. The number is a RATCHET in the same grammar as `ratchets:` — the
+# members are printed by name on every self-test run, it may shrink and never
+# grow, one over it turns the whole census into exit 2, and a human commits the
+# lower number in a diff somebody reads. The repair per member is one canary
+# form re-homed into an app the product cannot remove; it is deliberately left
+# to a rung of its own, because re-homing eighteen plans is eighteen judgements
+# about what each rule's subject really is, and doing them in a batch is how a
+# canary comes to prove the fixture rather than the rule.
+selftest_residence_backlog: 18
+
 rules:
   - id: "1"
     name: no-auth-user-import
@@ -247,13 +280,37 @@ rules:
       deployment-specific number. And it says nothing about what an open view
       DISCLOSES — that `/readyz` answers three booleans and not a stack trace
       is held by that view's own tests, not here.
+      ON THE LIST CLAUSE, WIDENED IN P15 R7: the population is now `list[X]` OR
+      the cursor envelope (`apps.core.api.pagination.answers_cursor_envelope`,
+      ADR core-24) and the demand is that a caller can WALK — `@paginate`, or
+      `cursor` and `limit` in the signature. What it does NOT see: whether the
+      controls a route declares are WIRED to anything, so a route that takes
+      `cursor` and ignores it passes here and is caught only by the derived
+      drives in `apps/core/tests/test_pagination.py`; whether an envelope a
+      route builds by hand is HONEST, since `has_more` and `next_cursor` are
+      fields it fills itself; and any list surface that is not a REST route —
+      the socket and MCP doors answer collections too and neither is in this
+      population, which is REST-only, declared rather than assumed. Nor does it
+      see a list with no response model at all: both halves read the 2xx model,
+      so a route that declared none is invisible to the clause entirely.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 4, negatives: 2 }
+    selftest_floor: { canaries: 5, negatives: 3 }
     canaries:
       - { fixture: open_route.py, plant_at: apps/zzz_canary/api.py, mode: create,
           via: django, expect: { id: djb.E003, contains: canary-open } }
       - { fixture: flat_list_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
           via: django, expect: { id: djb.E030, contains: canary-flat-list } }
+      # THE SECOND SHAPE OF THE SAME CLAUSE. The one above is a
+      # BARE list; this one ANSWERS THE CURSOR ENVELOPE and offers no `?cursor=`
+      # to spend the `next_cursor` it publishes. It is planted because the bare
+      # form was proving nothing about this tree: the `list[` string-match
+      # `_is_list_response` used to be saw ZERO of the twenty-five mounted lists,
+      # every one of which answers the envelope — so E030 fired only ever
+      # against its own canary. `answers_cursor_envelope` (ADR core-24) is what
+      # widened the population, and this is the plant that holds it widened.
+      - { fixture: envelope_route_without_controls.py, plant_at: apps/zzz_canary/api.py,
+          mode: append, via: django,
+          expect: { id: djb.E030, contains: canary-envelope-list } }
       - { fixture: diff_unproven_route.py, plant_at: apps/example/api.py, mode: append,
           via: diff, expect: { contains: canary-unproven } }
       # This clause, planted where the check applies: `config/urls.py` is the
@@ -266,6 +323,13 @@ rules:
     negatives:
       - { fixture: good_routes.py, plant_at: apps/zzz_canary/api.py, mode: create,
           via: django, expect: { id: djb.E003 } }
+      # The OTHER legal road to a paged list, and the one the widened population
+      # made it possible to get wrong: `cursor` and `limit` in the signature, no
+      # decorator. Three mounted routes are this shape. A clause that fired here
+      # would have decided the decorator is the only way to page, which would
+      # make the seam a tax instead of a contract.
+      - { fixture: direct_cursor_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
+          via: django, expect: { id: djb.E030 } }
       # The recorded set, unmoved: a second mount of a view the key already
       # holds, under the name it already holds. `urlpatterns` grew and the
       # census did not, so silence is the whole assertion — a clause that fired
@@ -652,7 +716,7 @@ rules:
     canaries:
       - { fixture: httpx_in_workflow.py, plant_at: apps/example/workflows.py, mode: append }
       - { fixture: orm_in_workflow.py, plant_at: apps/example/workflows.py, mode: append }
-      # P1-R0 F4: `hash()` needs no import, so an import-watching rule never saw
+      # `hash()` needs no import, so an import-watching rule never saw
       # it — and PYTHONHASHSEED is per-process, so a hash-keyed branch replays
       # down the other leg in a different worker.
       - { fixture: hash_in_workflow.py, plant_at: apps/example/workflows.py, mode: append,
@@ -689,10 +753,10 @@ rules:
       - { fixture: save_in_api.py, plant_at: apps/example/api.py, mode: append }
       - { fixture: create_in_mcp.py, plant_at: apps/example/mcp.py, mode: append }
       # consumers.py was in the scanned set from birth and never probed — the
-      # named-but-never-probed door P3-R0 found, closed by E1 (cycle P3): a
+      # named-but-never-probed door an early probe found, since closed: a
       # write planted into the real consumer module must fire, both shapes.
       # MOVE-TRIGGER 2026-08-24: the plant is the REAL consumer module
-      # deliberately (P3-R0's named-but-never-probed door), and a write in a
+      # deliberately (that named-but-never-probed door), and a write in a
       # consumer is never legal, so no feature can absorb it. Move both forms the
       # day `apps/realtime/consumers.py` is renamed or split.
       - { fixture: save_in_consumer.py, plant_at: apps/realtime/consumers.py, mode: append }
@@ -788,7 +852,7 @@ rules:
         # decided" a thing a check can see — and because it decides WHAT
         # travels where `selectors.py` decides WHICH ROWS a hat may read: two
         # questions with two answers, and a hand-written list of tables is the
-        # exact defect the module exists not to be (P5-R1's four unlisted
+        # exact defect the module exists not to be (the erasure rung's four unlisted
         # tables, in the other direction).
         exports: [census]
         realtime: [bridge, lifecycle, middleware]  # the push bridge; socket auth middleware
@@ -1014,8 +1078,8 @@ rules:
       No FloatField on money/quantity/rate names (Decimal 19,4 + currency);
       DateTimeFields end _at, DateFields end _on; on_delete is explicit and
       never DO_NOTHING; no is_deleted booleans. Read off the live field
-      registry. AND SECRETS ARE ENCRYPTED AT REST (the secret-at-rest clause,
-      P1-R1): a field whose name is secret-shaped — secret, token, password,
+      registry. AND SECRETS ARE ENCRYPTED AT REST (the secret-at-rest
+      clause): a field whose name is secret-shaped — secret, token, password,
       credentials, signing_key, api_key, private_key, access_token,
       refresh_token, client_secret, or any of those as a _suffix — is an
       encrypted field type (core.fields.EncryptedCharField /
@@ -1416,7 +1480,10 @@ rules:
       two registries are diffed (introspect's own sources). A removed or
       re-typed field on a published Out schema blocks unless the change DECLARES
       the version move: the mount's `API_PREFIX` rising, or an
-      `# api-version: <N>` marker line in a door module (diff layer).
+      `# api-version: <N>` marker line in a door module (diff layer). A class
+      that LEAVES one `schemas.py` and ARRIVES, field for field identical, in
+      another one in the same change has moved rather than been deleted, and is
+      not a wire change at all.
     check: null
     django_check_ids: [djb.E017]
     floor_proxy: count_routes
@@ -1466,7 +1533,18 @@ rules:
     does_not_cover: >
       a tool that exists but answers with a different shape or narrower rows
       than its REST twin — the example app's parity TEST proves behaviour, this
-      proves existence; whether an exemption above is still deserved. SOCKET
+      proves existence; whether an exemption above is still deserved. A MOVE
+      SPLIT ACROSS TWO COMMITS is a deletion here and cannot be anything else
+      (closed one commit at a time, 2026-08-29): the diff layer sees one
+      change, so a class removed in commit A and re-added in commit B reads as a
+      removal in A, and the message says so rather than leaving the reader to
+      work it out. A move WITHIN one module — a class renamed in place — is a
+      removal and an addition to this check and always was; the population is
+      keyed by class NAME, so a rename is a wire change and is meant to read as
+      one. AND ONLY `apps/*/schemas.py` IS SEARCHED for the arrival: an `Out`
+      promoted into `apps/core/schemas.py` is seen, one promoted into a module
+      rule 11 does not know about is not, which is the same file-shape
+      assumption the rest of this layer makes. SOCKET
       PARITY IS NOT THIS RULE'S AND CANNOT BE (ADR realtime-3): this check
       diffs two REGISTRIES, and the socket door has no
       second registry to diff against — one consumer, one person, one `X-Org`,
@@ -1494,7 +1572,7 @@ rules:
       clause does not; the trigger is the first commit that legitimately moves
       one app to v2 while another ships an accidental break.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 3, negatives: 2 }
+    selftest_floor: { canaries: 4, negatives: 3 }
     canaries:
       - { fixture: unpaired_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
           via: django, expect: { id: djb.E017, contains: thing-detail } }
@@ -1502,6 +1580,28 @@ rules:
           via: django, expect: { id: djb.E017, contains: thing-void } }
       - { fixture: diff_breaking_out.py, plant_at: apps/example/schemas.py, mode: create,
           via: diff, expect: { contains: WidgetOut } }
+      # The split-move clause's live half: a class that LEAVES one module and ARRIVES in
+      # another with a field re-typed. A name-only move test would go silent
+      # here — which is why the branch compares the whole field map — and the
+      # message names where it went as well as what broke.
+      #
+      # MOVE-TRIGGER 2026-08-29: the day the probe scaffold carries a TRACKED
+      # `schemas.py`. This pair plants into two REAL apps and it cannot do
+      # otherwise today: the check reads a git diff, so showing a class LEAVE a
+      # module requires a module git already knows, and `apps/zzz_canary` is
+      # created by the plant and known to nothing. `mode: create` over
+      # `apps/workflows/schemas.py` is what stands in for a deletion, since a
+      # plant may create or append and never remove. Recorded by R7's plant
+      # census (P15), which is where the omission surfaced — not by the rung
+      # that planted them.
+      - fixture: diff_moved_out_source.py
+        plant_at: apps/workflows/schemas.py
+        mode: create
+        via: diff
+        expect: { contains: "different fields" }
+        extra_files:
+          - { fixture: diff_moved_out_arrival_retyped.py, plant_at: apps/realtime/schemas.py,
+              mode: append }
     negatives:
       - fixture: paired_route.py
         plant_at: apps/zzz_canary/api.py
@@ -1517,6 +1617,23 @@ rules:
         expect: { contains: WidgetOut }
         extra_files:
           - { fixture: v2_router_marker.py, plant_at: apps/example/api.py, mode: append }
+      # THE MOVE ITSELF, silent. The same class leaves one module and
+      # arrives, field for field, in another in the same change. Firing here
+      # would answer the SAFEST change class with "declare a breaking change",
+      # which is how a version marker gets learned as a way past the gate.
+      #
+      # MOVE-TRIGGER 2026-08-29: the same day as its canary twin above — the day
+      # the probe scaffold carries a TRACKED `schemas.py` a class can be shown
+      # leaving. The pair moves together or the negative stops being the
+      # canary's negative.
+      - fixture: diff_moved_out_source.py
+        plant_at: apps/workflows/schemas.py
+        mode: create
+        via: diff
+        expect: { contains: WorkflowRunOut }
+        extra_files:
+          - { fixture: diff_moved_out_arrival.py, plant_at: apps/realtime/schemas.py,
+              mode: append }
 
   - id: "18"
     name: deterministic-workflow-ids
@@ -2131,7 +2248,10 @@ rules:
       annotation IS the declaration: which keyword arguments are foreign-key
       targets is an open set (ADR core-4 rejects generic enforcement inside
       @service for exactly that reason), and an annotation naming a model in
-      the tree is the closed half of it.
+      the tree is the closed half of it. The abstract `OrgScopedModel` base is
+      itself one of those annotations: `row: OrgScopedModel` says "any row one
+      part of a tenant owns" and is the most honest thing a parameter can
+      declare, so it is in the population rather than out of it.
     check: service_reach
     doc:
       file: docs/product/architecture.md
@@ -2144,7 +2264,7 @@ rules:
     # write no org-scoped row from a @service at all, so the first one any of
     # them grows is a violation from the first one.
     ratchets:
-      # comms: 12 -> 0 (P2-R3, coupled to the adoption commit). All twelve rows
+      # comms: 12 -> 0 (coupled to the adoption commit). All twelve rows
       # took the real check rather than a `# reach:` sentence: every one of them
       # already receives its row from a `.visible_to(hat)` read, so the check is
       # free today and is the fence the second caller meets. Zero here means the
@@ -2154,11 +2274,18 @@ rules:
     # Each floor is a little under its measured population, so the check is
     # bound without being brittle about one function: files_scanned 7,
     # writing_services 18, fk_target_kwargs 15, org_scoped_models 4.
+    #
+    # `org_scoped_annotations` is the base-included population and it
+    # is `org_scoped_models` plus exactly one, always: the day the two stop
+    # differing by one, the abstract seed has stopped being counted and the
+    # blindness this closed has come back. Floored one above its sibling for
+    # that reason and no other.
     floors:
       files_scanned: 6
       writing_services: 10
       fk_target_kwargs: 10
       org_scoped_models: 2
+      org_scoped_annotations: 3
     does_not_cover: >
       a target laundered through a local variable — `row = resolve(id)` then a
       write reads as two clean halves, because this rule reads annotations and
@@ -2172,9 +2299,17 @@ rules:
       standing lens, not this check's; whether a may_be_named call actually
       REFUSES on False (the call is seen, the branch after it is review's);
       a service whose write happens in a helper in another module; and every
-      door and activity, which reach a service and are judged there.
+      door and activity, which reach a service and are judged there. THE
+      ABSTRACT BASE IS NOW IN THE POPULATION (closed 2026-08-29): a
+      parameter annotated `OrgScopedModel` used to be structurally invisible
+      here, because the model walk discards its own seed — the honest
+      annotation was the one annotation nobody asked about. What is still
+      outside: an annotation naming a base a PRODUCT introduced between
+      `OrgScopedModel` and its models is in (the walk is transitive), but an
+      annotation naming a protocol, a `TypeVar` or `Any` is not, and no
+      annotation-reading rule can make it be.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 4, negatives: 4 }
+    selftest_floor: { canaries: 5, negatives: 4 }
     canaries:
       # (1) the ordinary shape: a new service takes an org-scoped row and never
       # asks whether the actor could have reached it. Planted into an app that
@@ -2200,6 +2335,14 @@ rules:
       # question about a different row. Direct Name arguments only; the blind
       # spot came out of does_not_cover in this same diff.
       - { fixture: laundered_attribute_kwarg.py, plant_at: apps/example/services.py, mode: append,
+          expect: { contains: "may_be_named" } }
+      # (5) the parameter annotated with the ABSTRACT BASE. Before
+      # 2026-08-29 this plant produced nothing at all — `_transitive` discards
+      # its seed, so `OrgScopedModel` was not in the population and the most
+      # honest annotation a service can write was the one the rule could not
+      # see. It fires now, and it is the form that dies if anybody re-narrows
+      # the population to concrete models.
+      - { fixture: base_annotated_kwarg.py, plant_at: apps/example/services.py, mode: append,
           expect: { contains: "may_be_named" } }
     negatives:
       - { fixture: checked_kwarg.py, plant_at: apps/example/services.py, mode: append }
@@ -2333,7 +2476,7 @@ rules:
   - id: "28"
     name: workflows-close-their-runs
     enabled: true
-    # ADR workflows-5, P1-W1/W3. MEASURED BEFORE ENFORCED:
+    # ADR workflows-5. MEASURED BEFORE ENFORCED:
     # quality/run-closing-measurement.md, over tree
     # dfdb0c922be7fbf8ed520a8983f587852e514d78 (main @ b93e318, "Ledger: W1
     # merged") — 9 workflow classes in 5 apps; 7 pass by reaching the seam, 1
@@ -2556,7 +2699,7 @@ rules:
   - id: "30"
     name: retry-clocks-have-readers
     enabled: true
-    # P1-R1's HIGH, generalised (ADR events-3). MEASURED BEFORE ENFORCED:
+    # An early HIGH finding, generalised (ADR events-3). MEASURED BEFORE ENFORCED:
     # quality/b1-enforcement-measurement.md — 1 clock field in the tree,
     # `events.Outbox.next_attempt_at`, with W5's relay reader in
     # apps/events/selectors.py. 0 stranded. Before W5 this same measurement
@@ -2589,7 +2732,7 @@ rules:
       runtime's finding); whether the reader's WINDOW is right (a relay that
       sweeps with the wrong grace leaves the same rows stranded and this cannot
       tell); a clock read only from a management command a human must remember
-      to run, which is the state P1-R1 found and which this rule DOES accept —
+      to run, which is the state that finding described and which this rule DOES accept —
       the command is production code; the rule's floor is that somebody can
       find the row at all, and "a human runs it" is review's escalation, not
       the scanner's; and READERS ARE MATCHED BY FIELD NAME, not by model — the
@@ -3389,6 +3532,16 @@ rules:
         # the one declared here. There is no separate EXPLAIN for this read.
       - path: apps.core.models.ScopedQuerySet.governing
         pin: probe
+        # THE PATH LIES ABOUT THIS ENTRY'S WORLD, so the world is declared.
+        # `governing` is core's, but the only model on this tree that
+        # declares `InheritedDownward` — the marker `governing()` refuses to run
+        # without — is the worked example's `WidgetPolicy`, which is what
+        # quality/hotpaths.py::probe_governing reads. A deployment without the
+        # example cannot execute this entry however core its path reads, and a
+        # floor derived off the path alone would expect one probe more than the
+        # world can supply. The trigger to delete this line: the first
+        # `InheritedDownward` model outside the worked example.
+        needs_app: example
         clauses: {}
         # NO plan clause, deliberately: FINDING M1-C — the same one-query read
         # legitimately answers two ways on either side of a planner cost
@@ -3562,13 +3715,44 @@ rules:
         pin: harness
       - path: "apps.example.api.list_widgets#token-warm"
         pin: harness
-    # `lookup_columns_declared` is floored at the measured population (5
-    # declarations over 5 index_served tables): a declaration that quietly
+    # `lookup_columns_declared` is floored at the measured population (6
+    # declarations over 6 index_served tables): a declaration that quietly
     # disappears is the rule going back to sleep, and that is exit 2 rather
     # than a pass. Its companion, `index_served_untyped`, is floored at nothing
     # — it may fall to zero and should — and is held from ABOVE by the ratchet
     # in quality/budgets.yaml (`hot_path_lookup_columns`), which is the shape a
     # declared blind spot needs: it may shrink, never grow.
+    # WHAT EACH FLOOR COUNTS. Six of the twenty-one registry entries
+    # below are the worked example's, and `apps/example` declares
+    # `optional = True` — so every number here is a fact about a world a
+    # product may legally not have. Pinning them to the measured tree makes a
+    # deployment without the example read as a broken gate; lowering them for
+    # everybody would be a slack the rising-floor grammar refuses. The basis is
+    # declared instead, and quality/worlds.py derives the expectation per run
+    # from the apps this deployment actually holds.
+    #
+    # `hot_paths` is `declared_members` and therefore does NOT move: it is
+    # `len(registry)`, counted off this file before any probe runs, and a
+    # deployment that omits the worked example still has twenty-one rows here.
+    # Declaring it is not ceremony — a basis that lowered it would have hidden a
+    # registry silently losing six entries behind an absent app.
+    #
+    # Two of the six are `opaque`, said plainly rather than fudged.
+    # `explained_statements` counts EXPLAINed statements, which is a property of
+    # what each probe executed and not of the registry; `lookup_columns_proven`
+    # counts the declarations whose probe world was big enough for the planner
+    # to have had a choice, which is a property of the probe database. Neither
+    # can be derived by counting registry members, and a basis that pretended
+    # otherwise would produce a wrong number silently. The consequence is
+    # recorded in the blind-spot list: the FULL gate under `DJB_DISABLED_APPS`
+    # is not asserted here, only the self-test.
+    registry_floors:
+      hot_paths: declared_members
+      probed_paths: probed_members
+      explained_statements: opaque
+      lookup_columns_declared: lookup_column_members
+      lookup_columns_proven: opaque
+      lookup_world_reported: lookup_column_members
     floors:
       hot_paths: 21
       probed_paths: 11
@@ -3577,14 +3761,34 @@ rules:
       # EXPLAINed with nothing saying so — the same slack the rest of the
       # rising-floor grammar refuses everywhere else.
       explained_statements: 14
-      lookup_columns_declared: 5
+      # RE-COMMITTED AT THE MEASUREMENT (2026-08-29).
+      # Recorded 5 against a measured 6, and `lookup_world_reported` recorded 5
+      # against a measured 6 beside it — the gate printed both numbers on every
+      # run and neither said anything, which is exactly the slack the
+      # rising-floor grammar refuses everywhere else. The sixth declaration is
+      # real (`core_organization.path`, the subtree read); the floor now says
+      # so. Proof pasted in the rung report.
+      lookup_columns_declared: 6
       # The world half (b)). At least one declaration has to be proven in
       # a world the planner had a choice in, or the whole subject-column form is
-      # an assertion about `enable_seqscan = off`. Floored at the measured 1 and
-      # printed per column; its companion `lookup_columns_unproven` is held from
-      # ABOVE by the ratchet in quality/budgets.yaml and may only shrink.
-      lookup_columns_proven: 1
-      lookup_world_reported: 5
+      # an assertion about `enable_seqscan = off`. Two are proven today —
+      # `example_widget.tenant_id` (520 rows) and `core_organization.path`
+      # (404) — and this is that number; its companion
+      # `lookup_columns_unproven` is held from ABOVE by the ratchet in
+      # quality/budgets.yaml and may only shrink.
+      #
+      # NOT LOWERED BY AN ABSENT APP, and that is the honest consequence rather
+      # than a surprise: the basis is `opaque` (no registry count can derive
+      # "the planner had a choice"), and one of the two proven columns is the
+      # worked example's. In a `DJB_DISABLED_APPS=example` world this floor
+      # reports UNBOUND — alongside `explained_statements`, which is the same
+      # opaque-basis shape pinned the same way at 14 and already reports UNBOUND
+      # in that world on the tree before this change. The rule's blind-spot list
+      # below already records that the FULL gate under `DJB_DISABLED_APPS` is
+      # not asserted; this floor sits inside that declaration and does not
+      # widen it.
+      lookup_columns_proven: 2
+      lookup_world_reported: 6
     does_not_cover: >
       ADR gate-2's two declared blind spots, verbatim: planner choice at
       scale; queries not in the registry. The first is declared with measured
@@ -3727,7 +3931,7 @@ rules:
       instruction to hang up, never a payload). A group_send whose group is a
       direct tenant_group(...) call and whose message carries an organization
       (an "organization_id" key, or a serialised envelope) is the org-blind
-      push P3-R0 found, priced by M4 at 495 wrong-branch frames per 500
+      push the socket probe found, priced by M4 at 495 wrong-branch frames per 500
       sockets.
     check: socket_group_discipline
     doc: { file: docs/product/architecture.md, contains: "never pushed to a bare tenant group" }
@@ -4057,7 +4261,7 @@ rules:
       # do not own.
 
       # THE WRITE SIDE ASKS A DIFFERENT QUESTION, and the old sentence here
-      # conflated the two (P5-20b's carried note, corrected in QB-R2): it said
+      # conflated the two (a carried note, since corrected): it said
       # of `Retry-After` that "no `*_HEADER` constant declares it and none
       # should", which was already false in the tree — HDR-A declared
       # `RETRY_AFTER_HEADER` in `apps/core/api/docs.py` and had to, because the
@@ -4176,8 +4380,8 @@ rules:
       deliberate. And on the remedies: the rule validates that a `header:`
       destination EXISTS, never that it is the RIGHT remedy for that refusal —
       label aptness is review's (E9). STAMPING WITHOUT DECLARING is unseen, and
-      it is the write side's own blind spot (P5-20b's carried note, declared
-      here in QB-R2): population A is INBOUND reads, so a middleware that writes
+      it is the write side's own blind spot (the same carried note, declared
+      here): population A is INBOUND reads, so a middleware that writes
       a response header from a literal — `response["X-Whatever"] = ...` — names
       no constant and nothing here notices. What holds the write side instead is
       that the documentation is DERIVED from the declarations
@@ -4308,6 +4512,11 @@ rules:
       and the remedies are the registry's own text, never written per route.
       Every component schema carries an example, and the count of fields with no
       DECLARED example is a ratchet that may shrink and never grow.
+      AND THE DOCUMENT'S OWN TOP-LEVEL KEYS ARE A DECLARED CENSUS, held by SET
+      EQUALITY in both directions: a key the document carries that
+      `openapi_top_level_keys` does not declare is a contract element nobody
+      decided, and a key declared there that the document no longer carries is a
+      reason describing something that is not published.
       X-Tenant/X-Org/Idempotency-Key/Idempotent-Replayed are documented on the
       operations that read them.
       AND THE BLOCK IS TRUE OF THE CODE BENEATH IT: a route that narrows
@@ -4332,7 +4541,7 @@ rules:
     # are born together, and a blind spot closed elsewhere is a second rule
     # about one subject that will drift from the first.
     check: refusal_block_census
-    django_check_ids: [djb.E041]
+    django_check_ids: [djb.E041, djb.E042]
     floor_proxy: count_contract_surface
     doc:
       file: docs/product/architecture.md
@@ -4375,6 +4584,19 @@ rules:
       # this number is re-pinned at the new measurement with headroom for the
       # next list door. Until then: 266.
 
+      # **THE ONE LINE WAS TAKEN.** `_is_shape` now reads the
+      # array road, and the paragraph above is left standing because it is the
+      # argument that was executed rather than a stale note. What it predicted
+      # and what happened: it said ~249 off 17 fields; the tree had grown to 21
+      # `Paged<X>.items` plus 4 other arrays of `$ref`, and `declared` fell by 3
+      # as well — three array-of-`$ref` fields that HAD hand-written examples
+      # are now counted at the component they point at, once, which is the whole
+      # point of the shape test. Measured with `apps.core.api.docs.example_census`
+      # over the live document: declared 268 -> 265, undeclared 258 -> 233.
+      # Re-pinned AT the measurement and not above it: this rule has been burned
+      # once by a ratchet with headroom in it, and the structural entries that
+      # justified headroom are exactly the ones that just left.
+
       # 266 -> 268, (F3, ADR files-2), and it is the SAME RAISE for the SAME
       # STRUCTURAL REASON the paragraph above already booked. F3 opened the files
       # doors: two paginated lists (`GET /files/`, `GET /files/{id}/versions/`),
@@ -4394,7 +4616,51 @@ rules:
       # re-measures at merge rather than picking a number. The real fix is still
       # the one line in `core.api.docs._is_shape` the paragraph above names, and
       # it is still not a door rung's file.
-      undeclared_example_fields: 258  # ratcheted down: MeasuredOut's value and MeasuredBasisOut's formula/inputs gained hand-written examples, so three fields left the backlog; measured with apps.core.api.docs.example_census over the live document
+      undeclared_example_fields: 233  # ratcheted down 258 -> 233: `_is_shape` learned the array-of-$ref road, so 21 ninja-synthesised `Paged<X>.items` plus 4 other component arrays left the backlog for the components they point at; measured with apps.core.api.docs.example_census over the live document
+      # THE DOCUMENT'S OWN TOP LEVEL — the census `djb.E042` holds by SET
+      # EQUALITY, in both directions (`apps.core.checks.top_level_key_faults`).
+      # Every entry is a key a client meets before it reads a route, and the
+      # reason is the thing that was missing: an undeclared key is something the
+      # mount grew that nobody decided, and a declared key that has vanished is
+      # a reason still sitting here describing something the document no longer
+      # publishes.
+      openapi_top_level_keys:
+        - key: "openapi"
+          reason: >
+            the specification version the rest of the document is written in;
+            ninja pins it at 3.1.0 and every generated client branches on it
+            before it parses anything else.
+        - key: "info"
+          reason: >
+            title, version and the overview a stranger with an API key reads
+            first — `description` here is `docs.overview()`, the guides half of
+            ADR api-1, and the one place in the document that is prose rather
+            than derivation.
+        - key: "paths"
+          reason: >
+            the operations. Everything else in rule 41 is about what is INSIDE
+            this key; it is declared here so that the day it goes missing the
+            failure says "the document has no paths" rather than "every route
+            lost its docstring".
+        - key: "components"
+          reason: >
+            the schemas, plus the one refusal shape `docs.refusal_component()`
+            adds. The example census and the `$ref` graph both live in here.
+        - key: "servers"
+          reason: >
+            WHERE THIS API IS, and it ships EMPTY on purpose — this is a
+            template, it has no deploy URL, and an invented one is worse than
+            silence because a client would try it. The judgement is recorded
+            rather than shipped silently: a product that clones this and DOES
+            have a URL should fail here until it says so, which an unwatched
+            key could never make it do. `apps/core/tests/test_contract_docs.py`
+            asserts the empty value beside this reason.
+        - key: "tags"
+          reason: >
+            the tag descriptions and display names each app declared in its own
+            `TAGS`, collected by discovery and stamped on in
+            `config.api.ContractAPI.get_openapi_schema`. It is the navigation a
+            person reads, and rule 41's tag clause judges its contents.
     # THE FLOORS ARE PINNED AT THE MEASUREMENT, and that is a departure from
     # the conservative "is the check watching anything" floors everywhere else
     # in this file — recorded here because it is a judgement, not an oversight
@@ -4544,8 +4810,20 @@ rules:
       And the divider is a convention, not a wall: a workshop half that
       contains something a caller needed is a mistake this rule will happily
       keep out of the document.
+      THE TOP-LEVEL CENSUS IS A SET AND NOT A SHAPE. It watches which keys the
+      document carries and reads not one byte of what is inside any of them: a
+      `servers` list that grew a wrong URL, an `info.version` that stopped
+      moving, a `paths` that lost half its operations are all invisible here and
+      all belong to other clauses (the route floors above hold the last of
+      those). Its reasons are prose a reviewer agrees or disagrees with, never
+      anything a check can verify — the `servers` entry says the emptiness is
+      deliberate, and nothing mechanical could tell that from an accident, which
+      is exactly why the reason had to be written down. And it sees THIS
+      PROCESS's document: a key added under a settings flag that is off here is
+      absent from the census and from the key list at once, the same
+      deployment-shaped blindness rule 3's third clause records.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 12, negatives: 7 }
+    selftest_floor: { canaries: 13, negatives: 8 }
     canaries:
       # (1) The ordinary miss, and the one the measurement found eleven of: a
       # route born with no docstring at all.
@@ -4582,8 +4860,22 @@ rules:
       # (8) THE RATCHET, proven from above: a new schema whose fields declare no
       # example pushes the census past the recorded number. This is the clause
       # that makes "new schemas must declare" a fact rather than an intention.
+      # THE PLANT PATH LIES ABOUT THIS FORM'S WORLD. It plants into the
+      # probe app, but what it proves is that the DECLARED-EXAMPLE CENSUS goes
+      # past its ceiling — and that ceiling
+      # (`scope.undeclared_example_fields`, read in apps/core/checks.py) counts
+      # fields over the mounted document, which the worked example's schemas
+      # fill a share of. Disable `apps/example` and the census starts below the
+      # ceiling, this plant no longer pushes it past, and the canary dies
+      # NAMING NOTHING — one of the fifteen dead forms the residence backlog
+      # above was raised for. Its
+      # world is the example's, so it says so and is not planted without it.
+      # The ceiling itself is the same class of world-dependent number as rule
+      # 35's floors, one layer out of this file's territory (it is read in
+      # apps/core/checks.py, not in quality/); recorded, not smuggled.
       - { fixture: undeclared_example_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
-          via: django, expect: { id: djb.E041, contains: "example census" } }
+          via: django, needs_app: example,
+          expect: { id: djb.E041, contains: "example census" } }
       # (9) ONE OPERATION, TWO SECTIONS — the owner's second review finding
       # (2026-08-24). A renderer lists an operation under every tag it carries,
       # so a second tag is the same operation printed twice in the navigation.
@@ -4624,6 +4916,16 @@ rules:
         expect: { contains: list_doohickeys_route }
         extra_files:
           - { fixture: probe_app_config.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (13), THE DOCUMENT ITSELF: a top-level key nobody
+      # declared. Everything above is about what is INSIDE `paths` and
+      # `components`; the document's own top level — which specification version
+      # it speaks, who it is, WHERE IT CAN BE REACHED — was governed by nothing,
+      # and `openapi_extra` is ninja's own supported road to adding to it. The
+      # plant is into `config/api.py` because that is the module that owns the
+      # document (`ContractAPI.get_openapi_schema`), and a canary anywhere else
+      # would be proving the check against a document nothing serves.
+      - { fixture: undeclared_top_level_key.py, plant_at: config/api.py, mode: append,
+          via: django, expect: { id: djb.E042, contains: x-canary-undeclared } }
     negatives:
       # The right shape. A rule that fired here would be a tax on writing a route.
       - { fixture: documented_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
@@ -4642,6 +4944,19 @@ rules:
       # a schema be to add debt, which is a ratchet turned into a tax.
       - { fixture: declared_example_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
           via: django }
+      # THE TOP-LEVEL CENSUS'S RESTRAINT: the document grows INSIDE a key the
+      # census already declares. `djb.E042` watches the SET of contract
+      # elements; what is inside each one is every other clause's business, and
+      # a census that fired here would be a tax on saying anything new at all.
+      #
+      # `expect.contains` is what makes this negative real, and it is the same
+      # reasoning rule 3's `config/urls.py` negative records: the django
+      # negative probe recognises a fired negative by finding the PROBE APP in
+      # the line, and a plant into `config/api.py` names no app — so the
+      # signature is declared. `top-level key` is E042's own wording and nothing
+      # else in the tree emits it.
+      - { fixture: inside_a_declared_top_level_key.py, plant_at: config/api.py, mode: append,
+          via: django, expect: { id: djb.E042, contains: "top-level key" } }
       # its restraint, first half: THE UNNARROWED SUPERSET. A route with no
       # `@refuses(...)` whose callee raises `not_found` — a code the door-shape
       # derivation already produces. Firing here would mean the clause had
@@ -4713,13 +5028,39 @@ rules:
     # classed by app: it may shrink and never grow. `example` has no entry and is
     # therefore ratcheted at zero — the worked example already has doors on
     # everything, and the first one it loses is a violation from the first one.
+
+    # WHAT "REACHED" WAS HIDING (2026-08-29). The census
+    # answered one bit, and a bit cannot tell `list_widgets` — which a person
+    # with a session can call — from `close_outbox`, which only this tree's own
+    # worker ever calls. Both read "reachable". A management command is a shell
+    # and an activity is a workflow step; each is a legitimate way to be
+    # reached and neither is a door somebody OUTSIDE this tree can knock on,
+    # and the peer's report is right that the two blurred.
+    #
+    # So the door KIND is derived off the same glob list (never a second
+    # opinion about what a door is) and printed per class on every run, and a
+    # service reached only by this tree's own hands lands in its own finding
+    # class, `<app>:internal-only`, with its own recorded backlog. Separate
+    # from `<app>` because the repairs differ and because a doorless service
+    # paid for by a workflow-only one is exactly the accounting this rule
+    # refuses everywhere else.
+    #
+    # MEASURED BEFORE ENFORCED, again, on main @ 8804983: 27 services are
+    # reached only from an activity or a management command, across nine apps.
+    # Every `:internal-only` number below is that measurement. Nothing in
+    # `apps/` was edited to record it — the backlog is printed, line by line,
+    # on every run, and the first workflow-only service any app grows past its
+    # number is a violation.
     statement: >
       Every `@service` is reachable through a door: some module the mounts
       discover — api.py, mcp.py, consumers.py, activities.py, receivers.py or a
       management command — calls it by name. A service that deliberately has no
       door carries `# door: <reason>` on its definition, counted and printed
-      like every other valve in this engine. A mechanism nobody outside this
-      tree can call is not a capability.
+      like every other valve in this engine. A service reached ONLY by this
+      tree's own hands — an activity, a management command — is reached and is
+      still not a door anybody outside can knock on, so it carries the same
+      marker saying which it is, counted in its own class. A mechanism nobody
+      outside this tree can call is not a capability.
     check: door_reachability
     doc:
       file: docs/product/architecture.md
@@ -4735,11 +5076,41 @@ rules:
       core: 0
       events: 0
       workflows: 0
+      # The internal-only backlog, measured on main @ 8804983 and recorded per
+      # app so one app's workflow-only work cannot pay for another's. These are
+      # not defects — an activity's own step and an operator act are both
+      # legitimate — they are UNDECLARED: nobody has written the sentence
+      # saying which. Each falls to zero as its app records `# door: <reason>`
+      # on the members, and the gate prints "a human may commit N" when it does.
+      accounts:internal-only: 3
+      comms:internal-only: 4
+      connections:internal-only: 1
+      core:internal-only: 3
+      events:internal-only: 5
+      example:internal-only: 2
+      exports:internal-only: 4
+      # 2, not 3: `files.store_stream` is internal-only AND already carries a
+      # `# door:` sentence written for the old unreached case, which the
+      # reached case now reads too. It is the first member of
+      # `internal_only_declared` and the shape the other twenty-six are asked
+      # for.
+      files:internal-only: 2
+      workflows:internal-only: 2
     floors:
       service_files: 6
       services_censused: 60
       door_modules: 20
       reachable_services: 40
+      # The reach classes, floored where the population is a fact about the
+      # template's own shape rather than about one deployment. `reached_by_route`
+      # and `reached_by_tool` are the two doors every product has (measured 60
+      # and 49); `reached_by_activity` is the workflow door (measured 24). The
+      # other three — socket, receiver, command — are floored at nothing on
+      # purpose: a product may legally have none of them, and a floor over a
+      # door a product need not open is a gate that refuses a legal deployment.
+      reached_by_route: 40
+      reached_by_tool: 30
+      reached_by_activity: 15
     does_not_cover: >
       WHETHER A `# door:` REASON IS A GOOD ONE — the gate counts them
       (`door_overrides` on this rule's status line) and prints the total;
@@ -4779,9 +5150,20 @@ rules:
       service, it is an absence, and an absence is not in the population. The
       census reported accounts at zero while the from-zero arc had no way to
       make a person at all. What stands there is the field test walking a
-      persona end to end, not this rule.
+      persona end to end, not this rule. AND THE REACH CLASSES ARE THE MODULE'S
+      KIND, NOT THE CALLER'S INTENT (2026-08-29): a service called
+      from `activities.py` counts as activity-reached whether the call is a
+      real workflow step or a helper that happens to live there, and a
+      management command that a person runs daily and one nobody has run since
+      2024 are one class. What the census CAN now say is that no route, tool,
+      consumer or receiver reaches it — which is the half that decides whether
+      a credential-holder outside this tree can call it, and the half that was
+      invisible while "reached" was one bit. WHETHER A `# door:` REASON IS THE
+      RIGHT ONE for the internal-only case is review's, exactly as it is for
+      the doorless case, and the two are told apart by the finding's CLASS
+      rather than by two marker spellings.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 4, negatives: 4 }
+    selftest_floor: { canaries: 5, negatives: 5 }
     canaries:
       # (1) The ordinary miss: a mechanism built, tested, audited and never given
       # a door. Planted into an app ratcheted at zero, where the first one is a
@@ -4817,6 +5199,19 @@ rules:
         extra_files:
           - { fixture: name_collision_door.py, plant_at: apps/zzz_canary/activities.py, mode: create }
           - { fixture: name_collision_vendor.py, plant_at: apps/zzz_canary/vendor.py, mode: create }
+      # (5) REACHED, and only by this tree's own hands. Two files,
+      # because "reached only from an activity" is a relation and a one-file
+      # plant could not express it. Before 2026-08-29 this produced no finding
+      # at all — the census counted one bit and the bit said "reachable".
+      # Planted into the probe app, which carries no `:internal-only` ratchet,
+      # so the first finding is a violation.
+      - fixture: workflow_only_service.py
+        plant_at: apps/zzz_canary/services.py
+        mode: create
+        expect: { contains: sweep_probe_rows }
+        extra_files:
+          - { fixture: workflow_only_activity.py, plant_at: apps/zzz_canary/activities.py,
+              mode: create }
     negatives:
       # The right shape: a service and the route that calls it. Two files,
       # because "reachable" is a relation and a one-file negative could not
@@ -4841,8 +5236,22 @@ rules:
         plant_at: apps/zzz_canary/services.py
         mode: create
         extra_files:
-          - { fixture: the_door_that_calls_the_real_one.py, plant_at: apps/zzz_canary/activities.py, mode: create }
+          # A ROUTE, not an activity, since the reach classes landed: a service reached only
+          # from an activity is now the `:internal-only` class, and this
+          # negative would have fired for a reason that has nothing to do with
+          # the name resolution it exists to prove. The CANARY twin keeps its
+          # activity — that one replays a live incident that happened in one.
+          - { fixture: the_door_that_calls_the_real_one.py, plant_at: apps/zzz_canary/api.py, mode: create }
           - { fixture: name_collision_vendor.py, plant_at: apps/zzz_canary/vendor.py, mode: create }
+      # The internal-only case with its sentence written. Firing here would say
+      # that a workflow's own step may not be declared as one, which would make
+      # the marker an instruction nobody can follow.
+      - fixture: workflow_only_declared.py
+        plant_at: apps/zzz_canary/services.py
+        mode: create
+        extra_files:
+          - { fixture: workflow_only_activity.py, plant_at: apps/zzz_canary/activities.py,
+              mode: create }
 
   - id: "43"
     name: one-outbound-signer-and-the-scheme-census
@@ -5692,7 +6101,7 @@ rules:
     #, from its find. THE DEFECT, and it is one instance of a class:
     # `config/api.py::_document_operation` turns a route's refusal codes into
     # responses through `CODE_STATUS.get(code)` guarded by `if status is not
-    # None`, so a code with no line in that table leaves the document WITHOUT A
+    # None`, so a code with no status leaves the document WITHOUT A
     # WORD. `apps/accounts/api.py::create_token` declares `session_required` —
     # registered, real, and the refusal a bearer token gets there — and the
     # published `x-refusal-codes` a generated client switches on has no branch
@@ -5706,21 +6115,32 @@ rules:
     # at import, the checks reading the mounted api, and every rule's canary dying
     # at once on the one malady they exist to report. The gate is the right time.
 
+    # WHERE THE STATUS COMES FROM MOVED (ADR core-23, 2026-08-29), and
+    # this rule's two messages moved with it. `CODE_STATUS` was a hand-appended
+    # block in `config/api.py`; it is now DERIVED — `CODE_STATUSES` in
+    # `apps/core/exceptions.py`, fed by `status=` on each `register_refusal(...)`
+    # call at its declaring site (`apps/core/exceptions.py:300`; the derived
+    # binding at `config/api.py:879`). The finding therefore names the DECLARING
+    # SITE, not a table to append to. A rule message that sends a builder to a
+    # table the tree no longer has is a rule teaching an edit that cannot land.
+
     # TWO BRANCHES, AND THE DIFFERENCE BETWEEN THEM IS THE WHOLE OF . A
-    # missing code ALSO absent from `CODE_STATUS` is the one drop this rule has
-    # proven, and the finding names the table line to add. A missing code that IS
-    # in `CODE_STATUS` went somewhere else, and the finding says exactly that —
-    # a violation that admits what it has not established rather than one that
-    # names a cause it guessed. Nothing takes the second branch today; it exists
-    # so that the day something does, the message is honest.
+    # missing code that ALSO carries no registered status is the one drop this
+    # rule has proven, and the finding names the `register_refusal` call to give
+    # a `status=` to. A missing code that DOES carry one went somewhere else,
+    # and the finding says exactly that — a violation that admits what it has
+    # not established rather than one that names a cause it guessed. Nothing
+    # takes the second branch today; it exists so that the day something does,
+    # the message is honest.
     statement: >
       Every refusal a bound operation can answer with reaches the published
       document. For each of the eighty-seven operations the mount holds, the set
       a route DECLARES with `@refuses(...)` — or the set the shape derivation
       produces for it, plus the authenticated 401 — appears complete in that
-      operation's `x-refusal-codes`. A code that is missing AND has no line in
-      `CODE_STATUS` names the table line to add and the `if status is not None`
-      that drops it. A code that is missing and IS in the table is reported as an
+      operation's `x-refusal-codes`. A code that is missing AND carries no
+      registered status names the `register_refusal(...)` site to give a
+      `status=` to, and the `if status is not None` that drops it. A code that is
+      missing and DOES carry one is reported as an
       undiagnosed drop, in those words: a violation that says what it has not
       proven. The mount never raises for any of this — a document that refuses to
       build takes the API down with it, and the gate is the right time.
@@ -5752,7 +6172,9 @@ rules:
       documented_codes: 12
     # The one live drop this rule was born against (`create_token` /
     # `session_required`, measured 2026-08-24) was fixed by in the same
-    # merge window — `CODE_STATUS[SessionRequired.code]` at config/api.py:720 —
+    # merge window — the status published for `SessionRequired.code`, then a
+    # hand-written `CODE_STATUS` line at config/api.py:720 and today a `status=`
+    # at its own `register_refusal` —
     # so `unmapped` was tightened to zero at the merge before the slack
     # could read as a dead ratchet. `undiagnosed` stays at zero: nothing takes
     # that branch today and the first thing that does is a violation, because a
@@ -5787,9 +6209,9 @@ rules:
     canaries:
       # (i) THE CANARY CARRIES ITS OWN DISEASE. It registers its own refusal
       # code (`canary_unpublished`) and declares THAT — registered the way every
-      # real code is, so rule 41 stays silent on it, and unkeyable in
-      # `CODE_STATUS` by construction, because nothing outside the fixture has
-      # ever heard of it. Appended to a real `api.py` on a real mounted router,
+      # real code is, so rule 41 stays silent on it, and statusless by
+      # construction, because its own `register_refusal` passes no `status=`.
+      # Appended to a real `api.py` on a real mounted router,
       # because the subject is the DOCUMENT and a route the mount never binds
       # has none.
 

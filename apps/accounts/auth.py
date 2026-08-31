@@ -150,6 +150,13 @@ register_refusal(
         ),
         Remedy("Mint a fresh token — the operation is under API tokens", "docs:openapi"),
     ),
+    # 401, declared here rather than appended to a table under `config/` (ADR
+    # core-23). `config/api.py` used to restate this and `page_token_missing`'s
+    # 403 by hand for a reason that has gone: its table was built by a dict
+    # comprehension over CLASSES, so two classes sharing 403 kept whichever came
+    # last. A table keyed on the CODE, derived from the declarations, cannot
+    # lose one to the other.
+    status=401,
 )
 
 
@@ -195,6 +202,12 @@ register_refusal(
             f"header:{AUTHORIZATION_HEADER}",
         ),
     ),
+    # 403 and NOT `Forbidden`'s — the tie-break `config/api.py`'s
+    # `REFUSAL_FOR_STATUS` still records from the other direction: a bare
+    # `HttpError(403, …)` in a route means `forbidden`, never this. Declaring the
+    # number here is what makes the two independent of which class a dict
+    # comprehension happened to visit last.
+    status=403,
 )
 
 
@@ -265,6 +278,12 @@ register_refusal(
             "introspect:refusals",
         ),
     ),
+    # 403, its base class's. This is the code whose missing `CODE_STATUS` line
+    # was the live defect rule 47 was born against: registered, refusable,
+    # declared by the mint route — and dropped from that route's own
+    # `x-refusal-codes` because `config/api.py` had not heard of it. It is
+    # published by this line now, in the file that raises it.
+    status=403,
 )
 # The SECOND way out — somebody with a shell on this deployment mints it for
 # you — is deliberately not a remedy here, and the reason is rule 40's: a

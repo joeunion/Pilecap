@@ -127,19 +127,46 @@ gate_measured_tree() {
     printf '%s\n' "$tree"
 }
 
-# gate_ledger_record <tree> <legs-csv> — one line, appended, schema first.
+# ---- what sanctioned the run -------------------------------------------
 #
-# `caller=` is APPENDED, at the end, on purpose: `gate_ledger_lookup` matches
-# `" <tree> full "` and `^v1 `, and `gate_run_lookup` reads field 4, so every
-# line written before this field existed goes on being read exactly as it was.
-# The schema tag stays `v1` because nothing that could already parse a line
-# stopped being able to.
+# THE SECOND HALF OF "WHO ASKED", and the half that turns a measurement into an
+# audit. `caller=` says which of four kinds a run was. It cannot say WHY a
+# `quality-rung` full gate was run, and once `scripts/check.sh` began REFUSING
+# unsanctioned full runs, the reason stopped being optional: every full gate now
+# arrives with one, and a reason that is not written down is a reason that
+# existed for the length of one terminal session.
+#
+# So the sanction rides into the verdict row beside the caller. It is free text
+# by construction — `<rung-id>: <reason>` is a shape, not a vocabulary, and
+# whether the reason was a good one is a PM's read rather than a check. It goes
+# LAST on the line, after `caller=`, for two reasons: it is the only field that
+# can contain spaces, and appending keeps every pre-existing line parsing
+# exactly as it did (`gate_ledger_lookup` matches `" <tree> full "` and `^v1 `;
+# `gate_run_lookup` reads field 4). The schema tag stays `v1` because nothing
+# that could already parse a line stopped being able to.
+#
+#: Set by `scripts/check.sh` before it records: one phrase naming what made this
+#: full run legal. Empty means nothing said, which is what every line written
+#: before the valve existed says.
+GATE_RUN_SANCTION=""
+
+# gate_ledger_record <tree> <legs-csv> — one line, appended, schema first.
 gate_ledger_record() {
-    local tree=$1 legs=$2 path
+    local tree=$1 legs=$2 path sanction
     path=$(gate_ledger_path) || return 1
-    printf '%s %s full %s %s caller=%s\n' \
-        "$GATE_LEDGER_SCHEMA" "$tree" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$legs" \
-        "$(gate_caller)" >>"$path"
+    # Newlines would make one row into two, and a row nothing can parse is worse
+    # than a row that says nothing. check.sh's shape check already refuses them
+    # at the door; this is the ledger refusing to be the place it matters.
+    sanction=$(printf '%s' "${GATE_RUN_SANCTION:-}" | tr '\n' ' ')
+    if [ -n "$sanction" ]; then
+        printf '%s %s full %s %s caller=%s sanction=%s\n' \
+            "$GATE_LEDGER_SCHEMA" "$tree" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$legs" \
+            "$(gate_caller)" "$sanction" >>"$path"
+    else
+        printf '%s %s full %s %s caller=%s\n' \
+            "$GATE_LEDGER_SCHEMA" "$tree" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$legs" \
+            "$(gate_caller)" >>"$path"
+    fi
 }
 
 # gate_ledger_lookup <tree> → most recent matching line on stdout, exit 0;
@@ -326,6 +353,12 @@ gate_run_announce() {
         echo "- caller: unstated (set DJB_GATE_CALLER to one of: $GATE_CALLER_KINDS)"
     else
         echo "- caller: $GATE_RUN_CALLER (DJB_GATE_CALLER)"
+    fi
+    # And what made this run legal at all, said before the first leg for the
+    # same reason: a field nobody can see at the time it is written is a field
+    # nobody notices going wrong.
+    if [ -n "${GATE_RUN_SANCTION:-}" ]; then
+        echo "- sanction: $GATE_RUN_SANCTION"
     fi
     if [ -n "$GATE_RUN_TREE" ] && prior=$(gate_run_lookup "$GATE_RUN_TREE"); then
         case "$prior" in

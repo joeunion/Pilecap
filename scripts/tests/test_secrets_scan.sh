@@ -1,4 +1,36 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # The drive for `scripts/secrets_scan.sh` — the `--loop` secret scan's
 # changed-file derivation, its edge cases and the sentence it prints.
 #
@@ -32,10 +64,40 @@
 #
 # WHAT IT DOES NOT COVER, declared rather than discovered:
 #
-#   * WHETHER `detect-secrets` FINDS SECRETS. That is detect-secrets' business
-#     and its baseline's. This drives which FILES it is handed and what the leg
-#     SAYS about them; the one planted case proves the scanner is still wired to
-#     the derivation at all, not that its detectors are any good.
+#   * WHETHER `detect-secrets` FINDS SECRETS, with ONE declared exception. That
+#     is detect-secrets' business and its baseline's; this drives which FILES it
+#     is handed and what the leg SAYS about them, and the one planted case proves
+#     the scanner is still wired to the derivation at all rather than that its
+#     detectors are any good. THE EXCEPTION is the baseline's own
+#     `should_exclude_secret` opinion about Zitadel's `PASSWORDLESS_TYPE_*` enum
+#     (see the two cases at the bottom of this file). That opinion is a
+#     suppression this repository wrote, so this repository owes both halves of
+#     it: the four shapes it must silence, and the plant on a `PASSWORDLESS_`
+#     line that must still fire. It is asserted against the REAL baseline, which
+#     is where the filter lives and therefore the one place all three scan sites
+#     — `--loop`, the push-side full-tree leg, and `publish.sh`'s artifact scan —
+#     inherit the same opinion.
+#
+# WHAT THE `PASSWORDLESS_` FILTER ITSELF DOES NOT COVER, declared here because a
+# suppression's blind spots belong beside the suppression:
+#
+#   * A LINE WHERE THE ENUM IS FOLLOWED BY MORE TEXT. The filter matches the
+#     extracted secret VALUE, anchored at both ends. In prose — a markdown
+#     sentence, a `#` comment — the keyword detector can swallow the rest of the
+#     line into the value, which then is not the enum and is not filtered. The
+#     remedy is the inline `pragma: allowlist secret` on that line, and it is
+#     already the precedent this tree uses for prose ABOUT detectors
+#     (`docs/product/queue.md`, where a row carries an HTML-comment pragma for
+#     exactly this reason). Widening the
+#     anchor to cover it would suppress every value that merely STARTS with the
+#     enum name, which is a hole rather than a filter.
+#   * A `printf 'KEY=…\nOTHER=\n'` LITERAL READ AS BASE64 HIGH ENTROPY. Priced
+#     and declined: the flagged string is an artifact of the `\n` escapes inside
+#     a shell literal, it carries no `PASSWORDLESS_` identifier to tie a filter
+#     to, and any pattern broad enough to catch it would also blind a real
+#     credential written into a fixture `.env` — which is exactly the place a
+#     real one would appear. `scripts/tests/test_verify_start.sh` carries the
+#     inline pragma for the one instance in this tree.
 #   * THE PUSH-SIDE FULL-TREE SCAN. It is one unchanged line in check.sh's
 #     supply-chain leg and it reads `git ls-files`. Nothing here touches it, and
 #     nothing here would notice if it were deleted — that is the census's and
@@ -155,6 +217,22 @@ run_leg_in() {
     DERIVE_RC=0
     secrets_scan_loop >"$OUT" 2>&1 || DERIVE_RC=$?
     cd "$here"
+}
+
+# Aim the REAL baseline at ONE scratch file and keep its verdict. The subject is
+# the baseline's opinion, not the derivation's, so this deliberately bypasses the
+# change-set machinery above: a filter in `.secrets.baseline` is what all three
+# scan sites read, and asserting it here asserts it for all three.
+hook_on() {
+    local label="$1" name="$2" path
+    CURRENT="$label"
+    N=$((N + 1))
+    OUT="${WORK}/out${N}.log"
+    path="${WORK}/${name}"
+    cat >"$path"
+    DERIVE_RC=0
+    (cd "$ROOT" && uv run detect-secrets-hook --baseline .secrets.baseline "$path") \
+        >"$OUT" 2>&1 || DERIVE_RC=$?
 }
 
 ok() {
@@ -472,6 +550,56 @@ case_a_planted_secret_in_a_changed_file_fails_the_leg() {
     exits 0
 }
 
+case_the_zitadel_passwordless_enum_is_not_a_secret() {
+    # THE FALSE POSITIVE, in the four shapes it was reproduced in. Zitadel's
+    # login policy answers `passwordlessType` with a `PASSWORDLESS_TYPE_*`
+    # constant; the keyword detector sees `password` in the key and reports the
+    # enum name as the secret. It is an enum in a public API, it is the same four
+    # letters in every deployment, and it is not a credential in any of them.
+    command -v uv >/dev/null 2>&1 || cannot_look "no uv on PATH — detect-secrets cannot be run"
+    [ -f "$ROOT/.secrets.baseline" ] || cannot_look ".secrets.baseline is not in this tree"
+
+    hook_on "the enum in a python dict literal" "policy.py" <<'EOF'
+ORG_OWN_POLICY = {
+    "passwordlessType": "PASSWORDLESS_TYPE_ALLOWED",
+}
+EOF
+    exits 0
+
+    hook_on "the enum as a python constant" "constant.py" <<'EOF'
+PASSWORDLESS_TYPE_ALLOWED = "PASSWORDLESS_TYPE_ALLOWED"
+EOF
+    exits 0
+
+    hook_on "the enum in a json fixture" "policy.json" <<'EOF'
+{"policy": {"passwordlessType": "PASSWORDLESS_TYPE_NOT_ALLOWED"}}
+EOF
+    exits 0
+
+    hook_on "the enum in a yaml document" "policy.yaml" <<'EOF'
+passwordlessType: PASSWORDLESS_TYPE_ALLOWED
+EOF
+    exits 0
+}
+
+case_a_real_secret_on_a_passwordless_line_still_fires() {
+    # THE CANARY, and the reason the filter above is a filter and not a hole. A
+    # suppression is only defensible while something proves it did not suppress
+    # the thing it was aimed near. The key is ASSEMBLED from two halves for the
+    # same reason the private-key marker above is: no line of this file may
+    # contain a credential, and two scanners in this repository would say so.
+    local akia='AKIA' rest='IOSFODNN7EXAMPLE'
+    hook_on "a real key on a PASSWORDLESS_ line" "canary.py" <<EOF
+PASSWORDLESS_TYPE_SIGNING_KEY = "${akia}${rest}"
+EOF
+    if [ "$DERIVE_RC" -eq 0 ]; then
+        bad "a planted key on a PASSWORDLESS_ line did NOT fire — the filter is a hole"
+    else
+        ok "exit ${DERIVE_RC} — the planted key still fired"
+    fi
+    says "AWS Access Key"
+}
+
 case_a_committed_change_on_a_branch_is_in_the_set
 case_a_file_the_rung_did_not_touch_is_absent
 case_a_change_only_on_main_is_absent
@@ -488,6 +616,8 @@ case_a_linked_worktree_derives_against_the_shared_main
 case_an_empty_change_set_says_nothing_was_scanned
 case_a_directory_that_is_no_repository_cannot_look
 case_a_planted_secret_in_a_changed_file_fails_the_leg
+case_the_zitadel_passwordless_enum_is_not_a_secret
+case_a_real_secret_on_a_passwordless_line_still_fires
 
 echo "test_secrets_scan: ${PASSED} passed · ${FAILED} failed"
 if [ "$FAILED" -gt 0 ]; then

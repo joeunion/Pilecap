@@ -131,6 +131,9 @@ register_refusal(
         ),
         Remedy("See which scope each operation needs, beside the operation", "docs:openapi"),
     ),
+    # 403, its base class's, declared here rather than under `config/` (ADR
+    # core-23) — the ceiling's refusal is this module's fact.
+    status=403,
 )
 
 

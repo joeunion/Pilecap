@@ -1014,7 +1014,7 @@ def send_step(
     single place to be true. The interpreter is the only orchestrator.
     """
     require(actor, "message.send", message.recipient)
-    # House rule 26, judged (P2-R3). The anchor arrives from the `send_step`
+    # House rule 26, judged. The anchor arrives from the `send_step`
     # activity, which resolved it through `get_message(... org=)` — a
     # `.visible_to(org)` read, so the row is already in this hat's subtree and
     # this call cannot refuse a legitimate escalation. That is the argument for
@@ -1329,7 +1329,7 @@ def record_message_sent(
     landing after it must not turn "it arrived" back into "we handed it over".
     """
     require(actor, "message.send", message.recipient)
-    # House rule 26, judged (P2-R3). `finish_message` resolved this row through
+    # House rule 26, judged. `finish_message` resolved this row through
     # `get_message(... org=)` before calling; the check restates that guarantee
     # where a second caller would have to satisfy it too.
     if not may_be_named(actor, message):
@@ -1364,7 +1364,7 @@ def record_message_failed(*, tenant: Tenant, actor: Actor, message: Message, err
     a delivered message would make the log say something that did not happen.
     """
     require(actor, "message.send", message.recipient)
-    # House rule 26, judged (P2-R3). The `record_message_sent` argument, on the
+    # House rule 26, judged. The `record_message_sent` argument, on the
     # other branch of the same activity.
     if not may_be_named(actor, message):
         raise NotFound()
@@ -2122,7 +2122,7 @@ def close_suppression_surge(
 # redundant and the second is the one the hierarchy needs. A branch admin is
 # privileged, so `channel_preference.update` says yes to them everywhere in the
 # tenant; the row they were handed may belong to a sibling branch they hold no
-# membership over, and until house rule 26 was adopted here (P2-R3) nothing
+# membership over, and until house rule 26 was adopted here nothing
 # between the wire and the write asked about it. The doors happen to resolve
 # their ids through `get_recipient`, which scopes — but "our one caller is
 # careful" is a property of the caller, and the second caller inherits none of

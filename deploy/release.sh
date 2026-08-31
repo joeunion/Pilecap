@@ -360,6 +360,89 @@ compose() { docker compose --env-file "$HERE/.env" -f "$HERE/compose.yaml" "$@";
 PROJECT="$(project_name)" || exit 2
 PSQL_IMAGE="$(psql_image)" || exit 2
 
+# --- THE IMAGE THIS RELEASE IS RELEASING, RESOLVED TO A DIGEST ----------------
+# BUILD ONCE, PROMOTE BY DIGEST (ADR deploy-4). The box does not build. The
+# image for this tree was built once, in CI, multi-arch, and pushed under the
+# tree tag; act 6 recreates the two containers onto it. Which means this script
+# is releasing something it has never checked exists — and compose's answer to a
+# missing image arrives at act 6, AFTER the migrate, with the schema already
+# moved and the containers still on the previous tree. "Nothing was released" is
+# then false and the operator is in the worst state the ordering exists to
+# prevent.
+#
+# So the question is asked HERE, before act 1, where the honest answer is still
+# "no act ran":
+#
+#   * THE REGISTRY HAS NO SUCH TAG → exit 2. Could not get as far as releasing.
+#     Either this tree never reached a green CI run or the box is pointed at the
+#     wrong registry, and both are "nothing was attempted".
+#   * THE REGISTRY AND THE BOX'S PIN DISAGREE → exit 1, NAMING BOTH. This is not
+#     "could not look": it is a verification that RAN AND FAILED, which is
+#     `deploy/ship.sh`'s exit-1 meaning exactly. A tree tag is derived from
+#     content, so the same tag resolving to a different digest than the one this
+#     box last released means somebody re-pushed over an immutable name. That is
+#     a supply-chain event, and the one thing it must never be is a quiet
+#     re-pull.
+#   * NEITHER → the digests are carried to act 6, which pins them into `TREE`
+#     once the containers are actually on them.
+#
+# A box with no pin yet (a freshly shipped tree, never released here) is not a
+# mismatch — `tree-digest` prints nothing and this compares nothing.
+IMAGE_TAG="$("$HERE/provision.sh" image-tag)" || die "could not derive this tree's image tag; deploy/provision.sh image-tag is the one function that owns it"
+case "$IMAGE_TAG" in
+untracked | "")
+    die "the image tag reads '${IMAGE_TAG:-<empty>}' — this box cannot say which tree it is holding, so it cannot say which image to release. Re-ship (deploy/ship.sh), which writes the TREE marker."
+    ;;
+esac
+
+RELEASE_SERVICES=(web worker)
+RELEASE_REFS=()
+RELEASE_DIGESTS=()
+for release_service in "${RELEASE_SERVICES[@]}"; do
+    release_ref="$("$HERE/provision.sh" image-ref "$release_service" "$IMAGE_TAG")" || exit 2
+
+    set +e
+    release_digest="$("$HERE/provision.sh" image-digest "$release_service" "$IMAGE_TAG" 2>&1)"
+    release_rc=$?
+    set -e
+    if [ "$release_rc" != "0" ]; then
+        echo "!! release: REFUSED — the registry does not have $release_ref" >&2
+        printf '   %s\n' "$release_digest" >&2
+        echo "" >&2
+        echo "   THE BOX DOES NOT BUILD (ADR deploy-4). The image for a tree is built" >&2
+        echo "   once, in CI, and pushed under the tree tag; there is nothing here to" >&2
+        echo "   fall back to. Either this tree never reached a green CI run, or this" >&2
+        echo "   box is pointed at the wrong registry:" >&2
+        echo "" >&2
+        echo "     ./deploy/provision.sh image-ref $release_service" >&2
+        echo "     grep DJB_IMAGE_REGISTRY $HERE/.env" >&2
+        echo "" >&2
+        echo "   Nothing was released; no act ran." >&2
+        exit 2
+    fi
+
+    release_pin="$("$HERE/provision.sh" tree-digest "$release_service")" || exit 2
+    if [ -n "$release_pin" ] && [ "$release_pin" != "$release_digest" ]; then
+        echo "" >&2
+        echo "!! release: THE REGISTRY AND THIS BOX DISAGREE about $release_ref" >&2
+        echo "   the registry says   $release_digest" >&2
+        echo "   this box pinned     $release_pin" >&2
+        echo "" >&2
+        echo "   A tree tag is derived from content, so one tag naming two digests" >&2
+        echo "   means somebody pushed over it. The pin is what this box last" >&2
+        echo "   RELEASED (deploy/TREE); the registry is what it would pull now." >&2
+        echo "   Releasing would silently swap the running software under a name" >&2
+        echo "   that says it did not change." >&2
+        echo "" >&2
+        echo "   Nothing was released; no act ran. Find out which image is the one" >&2
+        echo "   you meant before re-running anything." >&2
+        exit 1
+    fi
+
+    RELEASE_REFS+=("$release_ref")
+    RELEASE_DIGESTS+=("$release_digest")
+done
+
 READYZ_ATTEMPTS="${DJB_READYZ_ATTEMPTS:-24}"
 READYZ_INTERVAL="${DJB_READYZ_INTERVAL:-5}"
 READYZ_TARGET="${PROBE_TARGET:-https://${SITE_ADDRESS}/readyz}"
@@ -371,6 +454,11 @@ if [ -n "$DRY_RUN" ]; then
     say "database     ${DATABASE_NAME} on ${DATABASE_HOST}:${DATABASE_PORT}"
     say "app role     ${DATABASE_USER} (created if absent; the password never leaves the environment)"
     say "psql client  ${PSQL_IMAGE}  (read from $HERE/compose.yaml)"
+    say "tree tag     ${IMAGE_TAG}"
+    for release_i in "${!RELEASE_REFS[@]}"; do
+        say "image        ${RELEASE_REFS[$release_i]}"
+        say "             ${RELEASE_DIGESTS[$release_i]}  (the registry's answer; act 6 pins it into TREE)"
+    done
     say "readyz       ${READYZ_TARGET}  (up to ${READYZ_ATTEMPTS} attempts, ${READYZ_INTERVAL}s apart)"
     if [ "$ACCEPTED_COUNT" -gt 0 ]; then
         say "accepted     ${ACCEPTED_COUNT} fake(s) named in DJB_ACCEPTED_FAKES: ${ACCEPTED_KEYS[*]}"
@@ -646,11 +734,39 @@ fi
 # `web` that was never started still fails here with compose's own error, which
 # remains the correct answer to "you have not deployed yet".
 act
+for release_i in "${!RELEASE_REFS[@]}"; do
+    say "  ${RELEASE_REFS[$release_i]}"
+    say "  ${RELEASE_DIGESTS[$release_i]}"
+done
 set +e
 compose up -d --no-deps web worker
 rc=$?
 set -e
 [ "$rc" = "0" ] || stopped "$rc"
+
+# THE PIN, and it belongs INSIDE this act rather than beside it. `TREE` records
+# what this box RELEASED — so it is written after the containers are actually on
+# the image and never before, or the file would be recording an intention as a
+# fact. It is also why this is not an eighth act: nothing else in a release
+# happens between the recreate and the pin, and an act count that moved would
+# make every `[n/7]` in the runbooks and the drive a lie for no gain.
+#
+# ONLY WHERE THERE IS A `TREE` MARKER TO PIN INTO, i.e. on a shipped box. A
+# laptop checkout has git, `image-tag` derives from the tree itself, and there is
+# nothing a pin could add — so the absence is announced rather than treated as a
+# failure.
+if [ -f "$HERE/../TREE" ]; then
+    for release_i in "${!RELEASE_SERVICES[@]}"; do
+        set +e
+        "$HERE/provision.sh" pin-digest "${RELEASE_SERVICES[$release_i]}" "${RELEASE_DIGESTS[$release_i]}"
+        rc=$?
+        set -e
+        [ "$rc" = "0" ] || stopped "$rc"
+    done
+    say "  pinned both digests into $(cd "$HERE/.." && pwd)/TREE"
+else
+    say "  no TREE marker beside $HERE — this is a checkout, not a shipped box; nothing pinned"
+fi
 
 # =============================================================================
 # 7 · readyz

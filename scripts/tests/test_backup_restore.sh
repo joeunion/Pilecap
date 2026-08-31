@@ -1,11 +1,43 @@
 #!/usr/bin/env bash
+# THIS FILE IS EXECUTED, AND IT IS BASH — not POSIX sh, and not zsh. The
+# shebang above is honoured by `./this`; `sh this` and `zsh this` IGNORE it,
+# and neither of them fails where the mistake was made. Measured on this tree:
+#
+#   zsh scripts/queue_cited.sh   exit 2 blaming the TREE ("this is not a
+#                                checkout root") for zsh's word-splitting
+#   zsh scripts/kill_mine.sh     an ordinary-looking census of nothing
+#   sh  scripts/sweep.sh         "lifecycle.sh: line 152: syntax error"
+#
+# A wrong shell here does not crash. It ANSWERS, and the answer looks like the
+# tree's fault.
+#
+# TWO TESTS, because on macOS `/bin/sh` IS bash: BASH_VERSION is set under
+# `sh x.sh` and only POSIX MODE tells the two apart (SHELLOPTS carries
+# `posix`). On Linux `/bin/sh` is dash and the first test is the one that
+# fires. Neither test alone covers both machines.
+#
+# A SOURCED library must never carry this. There the interpreter is the
+# caller's ON PURPOSE and an `exit` would kill the caller's shell — the
+# argument is scripts/db.sh's, at scripts/db.sh:50-57, and it is why db.sh is
+# the one executable in this tree deliberately without a belt.
+[ -n "${BASH_VERSION:-}" ] || {
+    echo "${0##*/}: must run under bash — not sh, not zsh. Try \`bash ${0}\`." >&2
+    exit 2
+}
+case ":${SHELLOPTS:-}:" in
+*:posix:*)
+    echo "${0##*/}: bash is in POSIX mode — which is what \`sh ${0}\` does on a" >&2
+    echo "  machine whose /bin/sh is bash. Try \`bash ${0}\`." >&2
+    exit 2
+    ;;
+esac
 # The refusal drive for scripts/backup.sh and scripts/restore_drill.sh.
 #
 #   ./scripts/tests/test_backup_restore.sh          run every case
 #   ./scripts/tests/test_backup_restore.sh --list   name them and stop
 #
 # WHY IT EXISTS. Both scripts are made of refusals, and every one of them was
-# proven exactly once, by hand, on the day it was written (P4-B1′). A refusal
+# proven exactly once, by hand, on the day it was written. A refusal
 # nothing drives is a refusal that can be deleted by accident and stay deleted:
 # the code goes on running, the happy path goes on passing, and the first
 # person to find out is whoever aimed a restore at the stack it came from. So
@@ -46,11 +78,24 @@
 #     is proven against a faithful file, and the file's own production is not.
 #     A change to the sidecar's format is invisible here, which is why the
 #     shape is quoted from `scripts/backup.sh`'s header rather than invented.
-#   * A COMPLETED RESTORE. Every `restore_drill.sh` case here stops at a
-#     refusal — the refusals are declared to fire "before anything is created
-#     or dropped" (`scripts/restore_drill.sh`), and that is the property this
-#     driver relies on and never violates. The drill's happy path is
-#     `restore_drill.sh` itself, run by a human against a dump they made.
+#   * A COMPLETED RESTORE — still not driven, and now for a narrower reason.
+#     Most `restore_drill.sh` cases here stop at a refusal, which is declared
+#     to fire "before anything is created or dropped"
+#     (`scripts/restore_drill.sh`). The two DEATH-GUARD cases deliberately go
+#     past that line, into the scratch-mode region where the drill creates and
+#     restores — one dies on `set -e` against a broken dump, one is killed
+#     mid-drill — because a guard about dying cannot be driven from outside the
+#     region where dying is possible. Both assert the scratch database is gone
+#     afterwards, so the property the refusal cases relied on is now proven
+#     rather than assumed. What is STILL not driven is a drill that reaches
+#     `RESTORE DRILL PASSED`: neither death case may, and one that did would be
+#     reported as a failure to drive its own path. The happy path remains
+#     `restore_drill.sh` run by a human against a dump they made.
+#   * `--into-project`'s death. Both death cases run in SCRATCH mode. The live-
+#     stack branch of `cleanup` (which deliberately drops nothing) is reasoned
+#     about and not exercised — driving it would need a second deployment stack
+#     up on a shared machine, which is the same line this driver already
+#     declines to cross for `--stack`.
 #   * WHETHER A REFUSAL IS THE RIGHT REFUSAL. This asserts that the script
 #     refuses and says a particular thing. That the thing is TRUE is the
 #     reader's judgement, exactly as it is for every row in the census.
@@ -148,6 +193,11 @@ fi
 WORK="$(mktemp -d)"
 drive_require_scratch WORK "${WORK:-}"
 drive_at_exit 'rm -rf "$WORK"'
+# The death-guard cases put the drill's own scratch database on the machine.
+# The drill drops it itself on every path — that is half of what those cases
+# assert — but this driver is the one that started it, so it owns the belt for
+# the run that dies before the drill can.
+drive_at_exit 'db_exists "${DATABASE_NAME}_drill" && db_drop "${DATABASE_NAME}_drill" >/dev/null'
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -188,6 +238,19 @@ says() {
         echo "  FAILED   ${CURRENT} — does not say \"${needle}\""
         sed 's/^/             | /' "$DRIVE_OUT" | tail -12
         FAILED=$((FAILED + 1))
+    fi
+}
+
+# A database assertion, for the death-guard cases: the scratch database the
+# drill created must be gone, however the drill ended.
+db_absent() {
+    local name="$1"
+    if db_exists "$name"; then
+        echo "  FAILED   ${CURRENT} — ${name} was left behind"
+        FAILED=$((FAILED + 1))
+    else
+        echo "  ok       ${CURRENT} — ${name} was dropped"
+        PASSED=$((PASSED + 1))
     fi
 }
 
@@ -314,6 +377,68 @@ case_restore_target_differs_and_the_check_moves_on() {
     says "--into-project needs the target stack's own env"
 }
 
+case_restore_a_broken_dump_dies_and_says_so() {
+    # THE DEATH GUARD, deterministically. A garbage dump gets past every refusal
+    # (all three are about `--into-project`), reaches `pg_restore` in scratch
+    # mode and trips `set -e`. On the baseline the transcript ended at
+    # pg_restore's own complaint — which is exactly what a killed drill and a
+    # drill still running both look like. Two halves, on the same run: the
+    # sentinel naming the code, and the scratch database gone anyway.
+    local dump="${WORK}/broken.dump"
+    printf 'not a dump at all\n' >"$dump"
+    drive "restore: a broken dump dies and says so" 1 -- ./scripts/restore_drill.sh "$dump"
+    says "RESTORE DRILL DID NOT FINISH (exit 1)"
+    db_absent "${DATABASE_NAME}_drill"
+}
+
+case_restore_killed_mid_drill_says_so_and_drops_the_scratch() {
+    # THE SIGNAL PATH, which the case above cannot reach: a trap on EXIT alone
+    # never runs for a drill somebody kills, so INT/TERM/HUP each become an exit
+    # first. Driven against the REAL dump `--to-dir` produced, because a signal
+    # has to land while the drill is genuinely working.
+    #
+    # NOT A KNIFE-EDGE RACE. The signal is sent the moment the scratch database
+    # appears — the earliest instant the drill has started — which leaves the
+    # whole of pg_restore, the table assertions and `migrate --check` (seconds
+    # of Django start-up alone) as the window for it to land. If the drill
+    # nevertheless got all the way to PASSED, this case FAILS saying so rather
+    # than skipping: a case that quietly did not drive its path is worse than
+    # no case.
+    local dump="${WORK}/laptop.dump" log="${WORK}/killed.log" pid polls=0
+    CURRENT="restore: killed mid-drill"
+    if [ ! -f "$dump" ]; then
+        echo "  FAILED   ${CURRENT} — no real dump at ${dump}; the --to-dir case owes it"
+        FAILED=$((FAILED + 1))
+        return
+    fi
+    ./scripts/restore_drill.sh "$dump" >"$log" 2>&1 &
+    pid=$!
+    while [ "$polls" -lt 120 ]; do
+        db_exists "${DATABASE_NAME}_drill" && break
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.25
+        polls=$((polls + 1))
+    done
+    kill -TERM "$pid" 2>/dev/null
+    wait "$pid"
+    DRIVE_EXIT=$?
+    DRIVE_OUT="$log"
+    if grep -qF "RESTORE DRILL PASSED" "$log"; then
+        echo "  FAILED   ${CURRENT} — the drill reached PASSED before the signal landed;"
+        echo "             this run did not drive the signal path at all"
+        FAILED=$((FAILED + 1))
+    elif [ "$DRIVE_EXIT" -eq 143 ]; then
+        echo "  ok       ${CURRENT} — exit ${DRIVE_EXIT} (128 + SIGTERM)"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — wanted exit 143, got ${DRIVE_EXIT}"
+        sed 's/^/             | /' "$log" | tail -12
+        FAILED=$((FAILED + 1))
+    fi
+    says "RESTORE DRILL DID NOT FINISH (exit 143)"
+    db_absent "${DATABASE_NAME}_drill"
+}
+
 echo "test_backup_restore: driving scripts/backup.sh and scripts/restore_drill.sh"
 echo "  database: ${DATABASE_NAME} (this checkout's, scripts/db.sh)"
 
@@ -328,6 +453,8 @@ case_restore_no_origin_at_a_live_stack
 case_restore_origin_without_a_project_line
 case_restore_target_is_the_source
 case_restore_target_differs_and_the_check_moves_on
+case_restore_a_broken_dump_dies_and_says_so
+case_restore_killed_mid_drill_says_so_and_drops_the_scratch
 
 echo "test_backup_restore: ${PASSED} passed · ${FAILED} failed"
 if [ "$FAILED" -gt 0 ]; then

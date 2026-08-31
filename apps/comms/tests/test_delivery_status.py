@@ -621,7 +621,7 @@ def test_normalize_status_translates_and_refuses_to_guess() -> None:
     assert channel.normalize_status(payload={"event_type": "delivered"}) is None
 
 
-# --- P2-R2, ADR comms-8: what the bounce is FOR ----------------------------------
+# --- ADR comms-8: what the bounce is FOR -----------------------------------------
 #
 # Everything above proves the record is **kept**. These prove it is
 # **consulted**: the three provider words that mean "this address must stop
@@ -673,7 +673,7 @@ def test_the_bounce_set_suppresses_the_address_it_came_from(
     for — is identical for all three, which is why all three stayed in the
     parametrize rather than the complaint being moved out of it.
 
-    Absent: P2-R1's finding 1 — the product keeps mailing addresses that told it
+    Absent: the dead-address finding — the product keeps mailing addresses that told it
     to stop, which is the consent wall leaking at the feedback seam and
     eventually an ESP reputation fact.
     """
