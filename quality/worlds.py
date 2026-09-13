@@ -36,6 +36,14 @@ census, and `quality/gate.py` refuses past the recorded backlog.
 Nothing here imports Django's app registry or boots anything: `discover_apps` is
 a static AST read, and the self-test runs long before any settings module is
 loaded.
+
+THE SECOND AXIS, added when the engine grew a rule about a language that is not
+Python: **which trees this checkout holds**. An app can be removed from a
+deployment; a whole tree can be absent from a template that never grew one. The
+answer has the same shape as the first — declarations (`scope_kinds:` and
+`needs_tree:` in `quality/rules.yaml`), a derivation per run, and counts that
+fall while the verdict does not — and it is at the foot of this file under
+"scope kinds".
 """
 
 from __future__ import annotations
@@ -238,15 +246,169 @@ def registry_contribution(rule: dict, basis: str, apps: frozenset[str]) -> int:
     return total
 
 
-def derived_floor(rule: dict, key: str, recorded: int, disabled: frozenset[str]) -> int:
+def derived_floor(
+    rule: dict,
+    key: str,
+    recorded: int,
+    disabled: frozenset[str],
+    *,
+    absent_tree: bool = False,
+) -> int:
     """A registry-fed floor, lowered by exactly what this run's absent apps contributed.
 
     A floor with no declared basis, an `opaque` one, or one counted off the
     registry rows themselves is returned unchanged — `quality/gate.py` is where
     a MISSING declaration becomes a refusal, so that a reader meets it once, in
     the place that can name the registry.
+
+    `absent_tree` is the second, larger world subtraction and it is total: a
+    rule whose declared tree is not on this checkout scanned nothing, so every
+    floor it carries derives to zero. The alternative — holding the recorded
+    number over a tree that is not there — turns "this product has no frontend"
+    into UNBOUND on every run, which is a broken gate reported for a legal
+    shape. The counts fall; the verdict does not.
     """
+    if absent_tree:
+        return 0
     basis = str((rule.get("registry_floors") or {}).get(key, ""))
     if basis not in LOWERING_BASES:
         return recorded
     return max(0, recorded - registry_contribution(rule, basis, disabled))
+
+
+# --- scope kinds: which language a rule is written about -------------------------
+#
+# THE SECOND AXIS THIS MODULE HAD TO GROW. Everything above answers *which apps
+# this run holds*; a rule about a language that is not Python needs the sibling
+# fact — *which TREES this run holds, and what a valve looks like in them*. Both
+# are worlds, both are read off declarations rather than typed here, and both
+# lower counts without ever moving a verdict.
+#
+# A scope kind is three facts and no more: the ROOTS its rules are about, the
+# SUFFIXES that belong to it, and the COMMENT token a valve is written with.
+# `quality/rules.yaml` declares them under `scope_kinds:`; the engine's override
+# walk and its runner invocations both read them, which is what keeps
+# "the roots this rule scans" and "the roots this rule's valves are found in"
+# from being two lists that can disagree.
+
+#: The kind a rule belongs to when it declares none — the tree's first language,
+#: and the one every rule was written about before there was a second.
+DEFAULT_KIND = "py"
+
+
+def scope_kind(rule: dict, kinds: dict) -> dict:
+    """The kind declaration a rule runs in.
+
+    A rule names its kind by key. A SYNTHETIC rule — the ones the engine's own
+    self-test builds to prove the seam can fail — may carry the declaration
+    inline instead, because a probe that had to add a row to `rules.yaml` in
+    order to be run would be a probe that changed the population it is
+    measuring.
+    """
+    declared = rule.get("kind") or DEFAULT_KIND
+    if isinstance(declared, dict):
+        return declared
+    return dict(kinds.get(str(declared)) or {})
+
+
+def kind_roots(rule: dict, kinds: dict) -> list[str]:
+    """The roots a rule's runner may report about, and its valves are found in."""
+    return [str(r) for r in (scope_kind(rule, kinds).get("roots") or [])]
+
+
+def kind_of_path(rel_path: str, kinds: dict) -> dict:
+    """The kind a file belongs to, by suffix — for reading a valve out of it.
+
+    Resolved from the FILE rather than from the rule on purpose. A valve is
+    written by whoever owns the line, in the comment syntax that line's language
+    has, and a rule that one day reports across two languages must find both
+    without either becoming a special case. A suffix no kind claims falls back
+    to the default, which is what every path did before kinds existed.
+    """
+    suffix = Path(str(rel_path)).suffix
+    for kind in kinds.values():
+        if suffix in [str(s) for s in (kind.get("suffixes") or [])]:
+            return dict(kind)
+    return dict(kinds.get(DEFAULT_KIND) or {})
+
+
+def comment_token(kind: dict) -> str:
+    """The line-comment token a valve is written with in this kind."""
+    return str(kind.get("comment") or "#")
+
+
+def kind_skip_dirs(kind: dict) -> frozenset[str]:
+    """Directory names this kind's walk skips — never descended, by either half.
+
+    ONE declaration read by BOTH the engine's override walk (`quality/gate.py`'s
+    `_kind_walk`/`all_overrides`) and every kind's runner subprocess
+    (`quality/runners/_kindscope.py` mirrors this over the identical six lines
+    of `quality/rules.yaml`, for a process that must not import Django's world
+    just to learn a skip-dir list). The defect this closes: the `js` kind's own
+    runner once carried its own `SKIP_DIRS` literal while the engine's walk knew
+    only `__pycache__` — two lists that could disagree, and did the moment a
+    12k-file `node_modules` showed up on one side and not the other.
+    """
+    return frozenset(str(d) for d in (kind.get("skip_dirs") or []))
+
+
+# --- needs_tree: the tri-state a language-less checkout has to survive -----------
+
+
+def needs_tree(rule: dict, kinds: dict) -> str | None:
+    """The tree whose absence makes this rule's live scan a printed skip.
+
+    Declared on the rule, or inherited from its kind when every rule of that
+    kind is about the same tree. `None` means the rule is about a tree the
+    template always has, which is every rule that existed before this key did.
+    """
+    declared = rule.get("needs_tree") or scope_kind(rule, kinds).get("needs_tree")
+    return str(declared) if declared else None
+
+
+def tree_verdict(root: Path, rule: dict, kinds: dict) -> tuple[str, str]:
+    """(`run` | `skip` | `broken`, the sentence that says why) for one rule.
+
+    THE THREE CELLS, and the argument for each:
+
+    * **tree absent** -> `skip`. A template that ships no frontend is the
+      steady state, not a defect, and a rule about a tree nobody has must not
+      cost that product a red gate forever. The sentence is returned rather
+      than swallowed because A SKIP THAT PRINTS NOTHING IS INDISTINGUISHABLE
+      FROM A PASS — the printed line is the whole difference between a rule
+      that legally looked at nothing and a rule that quietly stopped working.
+    * **tree present, toolchain absent** -> `broken`. There IS something to
+      look at and nothing looked. That is could-not-look, which outranks a
+      pass, and it is the cell that makes the first one safe: skipping is only
+      honest while there is genuinely nothing there.
+    * **both present** -> `run`.
+
+    The fourth cell — tree absent, toolchain installed — is a `skip` too, and
+    deliberately so: the tree is what decides whether there is a subject, and a
+    box that happens to have the interpreter installed has not thereby acquired
+    one.
+    """
+    wanted = needs_tree(rule, kinds)
+    if wanted is None:
+        return "run", ""
+    if not (root / wanted).exists():
+        return (
+            "skip",
+            f"{wanted}/ is not on this tree (needs_tree: {wanted}), so the live scan looked "
+            "at nothing and every floor this rule carries derives to 0 — counts fall, the "
+            "verdict does not",
+        )
+    argv = [str(a) for a in ((rule.get("runner") or {}).get("argv") or [])]
+    if not argv:
+        return "run", ""
+    from quality.check_v1 import RunnerRefused, resolve_runner
+
+    try:
+        resolve_runner(root, argv)
+    except RunnerRefused as exc:
+        return (
+            "broken",
+            f"{wanted}/ IS on this tree and its instrument is not: {exc.detail}. A tree with "
+            "a subject and no instrument is could-not-look, never a clean scan",
+        )
+    return "run", ""

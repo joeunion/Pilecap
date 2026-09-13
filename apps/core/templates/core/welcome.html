@@ -1,0 +1,55 @@
+{% extends "account/base_entrance.html" %}
+{% comment %}
+The last screen of the first minute.
+
+It extends the ENTRANCE shell rather than carrying a style block of its own,
+which is the whole argument: the page somebody lands on after signing in is the
+last frame of the sign-in chain, not the first frame of a product, so it should
+look like the page they just left. A landing page with its own styling is one
+more styling regime in a chain that should have exactly one.
+
+It is written in the else-branch voice — finished, not broken. It does not
+apologise for being a placeholder and it does not pretend to be a dashboard: it
+reports the four facts a session actually consists of here, which is genuinely
+useful on day zero and is honestly nothing on day one hundred, by which time a
+product has mounted its own route at this path and this file is unreachable.
+
+Every value on it came off the request. Nothing here computes, resolves or
+guesses; `apps/core/views.py::welcome` says where each one was already decided.
+{% endcomment %}
+{% load entrance %}
+{% block head_title %}Signed in to {% product_name %}{% endblock head_title %}
+{% block content %}
+    <h1>You are signed in</h1>
+    <p class="lede">
+        This is {% product_name %}'s placeholder landing page. It reports what
+        this session resolved to; a product replaces it by mounting its own
+        route at this path.
+    </p>
+
+    <h2>This session</h2>
+    <dl>
+        <dt>Signed in as</dt>
+        <dd>{{ actor_email }}</dd>
+
+        <dt>Tenant &mdash; whose data you are in, from <code>{{ tenant_header }}</code> or your default membership</dt>
+        <dd>
+            {% if tenant %}{{ tenant.name }} <code>{{ tenant.slug }}</code>
+            {% else %}<em>None resolved.</em> Every tenant-scoped read is empty until one is.{% endif %}
+        </dd>
+
+        <dt>Acting organization &mdash; which hat, from <code>{{ org_header }}</code>, revalidated this request</dt>
+        <dd>
+            {% if org %}{{ org.name }} <code>{{ org.slug }}</code>
+            {% else %}<em>None resolved.</em> Every org-scoped read is empty until one is.{% endif %}
+        </dd>
+
+        <dt>Effective role over that organization</dt>
+        <dd>{% if role %}{{ role }}{% else %}<em>None.</em>{% endif %}</dd>
+    </dl>
+
+    <h2>Doors</h2>
+    <ul>
+        {% for door in doors %}<li><a href="{{ door.href }}">{{ door.label }}</a> <code>{{ door.href }}</code></li>{% endfor %}
+    </ul>
+{% endblock content %}

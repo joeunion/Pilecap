@@ -147,7 +147,7 @@ bad() {
 # One tracked file per bucket rule, and no more: the census's job is to place
 # every tracked path, so the smallest tree that exercises every rule is also the
 # clearest statement of what the rules are.
-LEDGERS="north-star queue readouts misses in-flight goal-posts design-agreements pilot-readiness rep-day"
+LEDGERS="north-star queue queue-detail readouts misses in-flight goal-posts design-agreements pilot-readiness rep-day"
 
 # THE PATHS BELOW ARE ASSEMBLED, NEVER SPELLED. This drive is a shipped file
 # (bucket R3), and `publish.sh`'s `dangling-docs` leg counts `docs/**.md`
@@ -172,10 +172,32 @@ build_fixture() {
     local d=$1
     rm -rf "$d"
     mkdir -p "$d/apps/example" "$d/config" "$d/quality" "$d/scripts" \
-        "$d/$CY" "$d/$SK" "$d/docs/runbooks"
+        "$d/frontend" "$d/$CY" "$d/$SK" "$d/docs/runbooks"
     cp "$PUBLISH" "$d/scripts/publish.sh"
     chmod +x "$d/scripts/publish.sh"
+    # publish.sh sources this — the bucket rules and the archaeology-census
+    # scan, shared with scripts/check.sh's `archaeology` leg. Without
+    # it in the fixture, every run here would die at the `.` line rather than
+    # exercising the census this drive is testing.
+    cp "$ROOT/scripts/archaeology_lib.sh" "$d/scripts/archaeology_lib.sh"
+    # AND THE SEAM THAT LIBRARY ITSELF SOURCES. `archaeology_lib.sh` opens with
+    # `. "${BASH_SOURCE[0]%/*}/gate_refuse.sh"`, so a fixture that hand-copies
+    # the library WITHOUT this file dies at that line — every case here exited 1
+    # with `scripts/archaeology_lib.sh: line 46: .../gate_refuse.sh: No such
+    # file or directory` the night the seam landed. The library is deliberately
+    # NOT tolerant of an absent seam (a tolerant library would hide exactly this
+    # class), so the copy list is what has to stay honest: a fixture copies a
+    # seam library WITH its seam. The population is pinned by
+    # case_every_fixture_that_copies_a_seam_library_copies_the_seam in
+    # scripts/tests/test_gate_lease.sh.
+    cp "$ROOT/scripts/gate_refuse.sh" "$d/scripts/gate_refuse.sh"
     echo "# a model" >"$d/apps/example/models.py"
+    # R11's one member. The rule is a GLOB over the whole client directory, so
+    # one file inside it is the whole arm: without this the rule's row prints 0
+    # and every green run of this drive says nothing about the client layer's
+    # disposition. It is a scaffold manifest rather than a source file because
+    # that is the member the rule's own comment names first.
+    echo '{"name":"scaffold"}' >"$d/frontend/package.json"
     echo "# settings" >"$d/config/settings.py"
     echo "# manage" >"$d/manage.py"
     echo "rules: []" >"$d/quality/rules.yaml"
@@ -248,6 +270,25 @@ set -e
 
 run "$FIX" --nonsense
 [ "$RC" = 2 ] && ok "an unknown flag is exit 2, never a quietly different run" || bad "unknown flag: exit $RC, want 2"
+
+# --- every bucket rule fires on something ------------------------------------
+# THE FIXTURE IS THE PROOF, AND AN ARM WITH NO MEMBER PROVES NOTHING. The rule
+# ids are DERIVED now (publish.sh reads them out of `bucket_for_rule`'s own
+# source rather than carrying a typed list), which closed the gap where a rule
+# added to the bucket table got no row in the printed census. It did not close
+# the other one: a rule can have its row, print `0`, and be as untested as a
+# rule that is missing — the arm is reached by no tracked path in this tree, so
+# nothing here would notice if its disposition changed or its clause was
+# deleted. R11 is the live instance: it sends the client layer to SHIP, and this
+# fixture had no client layer at all, so the arm was decoration in every green
+# run of this drive.
+run "$FIX" --census
+if [ "$RC" = 0 ] && grep -E '^ +R11 +SHIP +[1-9]' "$OUT" >/dev/null; then
+    ok "R11 places the client layer in SHIP, and the fixture has one for it to place"
+else
+    bad "R11's row is not a nonzero SHIP in the census — the arm is reached by no path in the fixture, so a green here asserts nothing about it. Census rows:
+$(grep -E '^ +R[0-9]+' "$OUT" | sed 's/^/             /')"
+fi
 
 run "$FIX" --census --to "$WORK/x"
 [ "$RC" = 2 ] && ok "--census with a target is refused (it exports nothing)" || bad "--census --to: exit $RC, want 2"

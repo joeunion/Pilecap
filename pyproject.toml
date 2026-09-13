@@ -214,7 +214,20 @@ django_settings_module = "config.settings.test"
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
-addopts = "--strict-markers -p no:cacheprovider"
+# `-p no:cacheprovider` USED TO BE HERE AND IS GONE, because it disabled
+# `--lf`, `--ff` and `--sw` for everybody and no measured reason for it was ever
+# recorded (it arrived with the line and no comment). Without the cache plugin
+# pytest does not refuse `--lf` — it accepts the flag and SILENTLY collects
+# everything, which is the worst shape a narrowing flag can have: a builder
+# narrowing to one failure gets the whole module and no line saying why.
+#
+# THE TWO THINGS THAT MADE IT LOOK NECESSARY, both checked here rather than
+# assumed: `.pytest_cache/` is ignored (`.gitignore:9`), and the gate's verdict
+# key is a tree written through `git add -A` over a scratch index
+# (`scripts/gate_ledger.sh`'s `gate_measured_tree`) — `git add -A` without `-f`
+# skips an ignored path, so the cache directory cannot move a key and cannot
+# turn a green run into "the tree changed while the gate ran".
+addopts = "--strict-markers"
 python_files = ["test_*.py"]
 # `testpaths = ["apps"]` is also the perf boundary (ADR perf-1): the seeded-
 # scale harness lives in `perf/`, outside these paths, so the default suite —

@@ -1,0 +1,39 @@
+{% extends "account/base_entrance.html" %}
+{% comment %}
+The page a federated sign-in lands on when the round trip itself failed —
+a state mismatch, an expired authorization code, a provider that answered an
+error, a callback that did not verify.
+
+allauth's own copy says "An error occurred while attempting to login via your
+third-party account." and stops. That is a sentence with no fact and no move in
+it: the person cannot tell whether they mistyped something, whether they are
+not allowed in, or whether the deployment is broken, so the only thing left to
+do is press the same button again. This page says which of those it is not, and
+gives them the one move that is theirs.
+
+It is deliberately the SIBLING of `accounts/sso_refused.html` and not a
+duplicate of it, because the two are different facts: that page is *we declined
+to make your successful sign-in a session here*, this one is *the sign-in did
+not complete at all*. Both are reachable by anybody, so neither names a tenant,
+a connection, or whether an account exists.
+
+The `<a>` back to the sign-in page is safe here where `sso_refused.html`
+deliberately has none: nothing was decided about this person, so trying again
+is a reasonable move rather than an invitation to repeat a refusal.
+{% endcomment %}
+{% load i18n allauth %}
+{% block head_title %}Sign-in did not complete{% endblock head_title %}
+{% block content %}
+    <h1>Sign-in did not complete</h1>
+    <p>
+        The sign-in was not finished, so you have not been signed in and
+        nothing about your account was changed. This is usually a link that was
+        opened twice, or one that sat unused for too long.
+    </p>
+    <p><a href="{% url 'account_login' %}">Start again</a></p>
+    <p class="note">
+        If starting again lands here a second time, ask whoever administers
+        your account: something on the identity platform's side needs
+        attention, and nothing you can do here will fix it.
+    </p>
+{% endblock content %}

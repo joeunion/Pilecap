@@ -73,7 +73,8 @@ here.)*
 
 Before dispatching a wave, run `./scripts/sweep.sh --roots <the directory
 holding clones of this repository>`, read the FOREIGN list, and sweep it with
-`--sweep --force-foreign` (add `--hot-path`/`--perf` only if you also mean
+`--roots <the same directory> --sweep --force-foreign` — `--force-foreign`
+without `--roots` is refused (add `--hot-path`/`--perf` only if you also mean
 the warm caches). This is the operator's job and it is not in the gate:
 FOREIGN is an absence of evidence rather than a finding, and a gate reddened
 by a deleted checkout's leftovers teaches people to override the gate. The

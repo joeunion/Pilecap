@@ -601,3 +601,140 @@ class SsoIdentity(TenantScopedModel):
 
     def __str__(self) -> str:
         return f"{self.subject} at {self.connection_id}"
+
+
+# --- The deployment's own look, as a row ------------------------------------
+#
+# WHY THIS IS NOT TENANT-SCOPED, decided by the lead and confirmed here against
+# `manage.py introspect` rather than assumed. Every other row in this module a
+# customer owns inherits `TenantScopedModel`; this one inherits `BaseModel`
+# directly, beside `ApiToken`, because it is **the deployment's** configuration
+# and no customer's. There is exactly one Zitadel instance and one login screen,
+# and a tenant-scoped table would promise per-tenant branding that the single
+# shared LabelPolicy cannot deliver — a schema making a promise the API cannot
+# keep. Per-tenant branding is the RECORDED TRIGGER (ADR ident-2's amendment),
+# not something built here: it needs Zitadel organisations per tenant, which is
+# a different shape and a different rung.
+#
+# (The stage-2 criteria said "deployment-level platform config like
+# SsoConnection"; `SsoConnection` is `TenantScopedModel`, so it is the wrong
+# example for the scoping half even though it is the right family. The
+# unambiguous half of the ruling — NOT tenant-scoped — is what is built, and the
+# introspect dump that settles it is in the rung's report.)
+
+
+class IdentityBranding(BaseModel):
+    """What the hosted identity screen should look like: the intent, as a row.
+
+    **The row is the intent; the console is a window, not a door** (house rule
+    27). Somebody with console access can repaint Zitadel's login page in
+    thirty seconds and nothing in this codebase would know — which is exactly
+    the regime the entrance survey measured: a person crossed from a styled
+    sign-in page onto a purple Zitadel screen and back, and the two had never
+    been told about each other. This table is the half that can be told.
+    `set_identity_branding` writes it, `apply_identity_config` materialises it,
+    and `zitadel_audit` reports a console edit that disagrees with it as drift.
+
+    **One active row, enforced in the database.** A deployment has one login
+    screen, so a second active branding row would be two intents for one
+    surface, and whichever ran last would win silently. The partial unique index
+    below makes that unrepresentable rather than merely discouraged; superseding
+    is `is_active=False` on the old row and a new one, so what the screen used
+    to look like stays answerable.
+
+    **The defaults are DERIVED, never typed here.** `product_name` and `accent`
+    default to the same `PRODUCT_NAME`/`BRAND_ACCENT` the entrance templates
+    read (`apps/accounts/templatetags/entrance.py`, `templates/account/
+    base_entrance.html`), which is the one-declared-value law: one source, two
+    consumers, so the page before the hosted step and the page after it match by
+    construction instead of because somebody kept two values in step. The
+    service is where that derivation happens — a model default reading settings
+    at import time would freeze the value into the migration.
+    """
+
+    #: ADR core-13. **UNBOUNDED, not `bounded`** — this row has no owning FK to
+    #: CASCADE from, so nothing structural ever caps or clears its population,
+    #: which is exactly what `bounded` means everywhere else it is declared in
+    #: this module (`ApiToken`, `SsoConnection`, `SsoDomain`, `SsoIdentity`: a
+    #: key CASCADEs and the row dies with its parent). This row's shape — one
+    #: active plus an ever-growing history of superseded ones, never deleted —
+    #: is `apps/comms/models.py`'s `MessageTemplate` shape exactly, and that one
+    #: is declared `unbounded` with the same reasoning: superseding is a state
+    #: change and never a delete, because "what did the login screen look like
+    #: in March" is a question an incident review asks. Growth is merely SLOW
+    #: — a human act measured in years — which is the reason, not the kind.
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(
+        kind=LifecycleKind.UNBOUNDED,
+        reason=(
+            "one active row per deployment, plus every superseded one behind it, "
+            "kept forever so 'what did the login screen look like in March' stays "
+            "answerable. Growth is one row per restyle, which is a human act "
+            "measured in years — bounded in PRACTICE, not by any owning row."
+        ),
+        trigger=(
+            "2026-08-31 — the first deployment whose branding history is large "
+            "enough to be a cost, or a ruling that a superseded row nothing "
+            "references may be purged; either turns this into a `purged` "
+            "declaration with a callable and a `ScheduleDeclaration` behind it."
+        ),
+    )
+
+    #: Shown on the hosted screen, and the same string the entrance templates
+    #: print. Not a foreign key to anything: the deployment is not a row here.
+    product_name = models.CharField(max_length=200)
+
+    #: The ONE colour, as a CSS hex string — the value `BRAND_ACCENT` declares
+    #: and the entrance token block consumes. Zitadel calls it `primaryColor`;
+    #: the translation lives in `zitadel.py`, where every other name Zitadel
+    #: uses is translated, so this column stays in our vocabulary.
+    accent = models.CharField(max_length=9)
+
+    #: The surface pair, light and dark, mirroring the entrance token block's
+    #: `--surface`/`--ink`. Blank means "let Zitadel keep its own", which is the
+    #: honest default for a deployment that has only set an accent.
+    background_color = models.CharField(max_length=9, blank=True, default="")
+    font_color = models.CharField(max_length=9, blank=True, default="")
+    background_color_dark = models.CharField(max_length=9, blank=True, default="")
+    font_color_dark = models.CharField(max_length=9, blank=True, default="")
+
+    #: A URL Zitadel can fetch the logo from, or empty. Deliberately a reference
+    #: and not an upload: the logo endpoints are a multipart asset API, and
+    #: putting file bytes through the identity seam would give `zitadel.py` a
+    #: second job (ADR files-2 owns bytes; this owns configuration).
+    logo_url = models.URLField(blank=True, default="")
+
+    #: `is_` because the naming grammar says a boolean says so (house rule 16).
+    #: The criteria called this field `disable_watermark`; the grammar wins, and
+    #: `zitadel.py` maps it onto Zitadel's own `disableWatermark` at the edge.
+    is_watermark_disabled = models.BooleanField(default=False)
+
+    #: Exactly one row is the live intent. See the class docstring.
+    is_active = models.BooleanField(default=True)
+
+    # --- the materialisation, written back by `apply_identity_config` --------
+    # `SsoConnection`'s pair, one field lighter: a LabelPolicy is a SINGLETON on
+    # the org and has no id of its own to record, so there is nothing to hold
+    # where `zitadel_idp_id` sits. `sync_state` still answers "has this intent
+    # reached Zitadel", which is the question the audit and the operator ask.
+    sync_state = models.CharField(
+        max_length=16,
+        choices=SsoConnection.SyncState.choices,
+        default=SsoConnection.SyncState.UNMANAGED,
+    )
+
+    class Meta(BaseModel.Meta):
+        verbose_name = "identity branding"
+        verbose_name_plural = "identity branding"
+        constraints = [
+            # A partial unique index: any number of superseded rows, at most one
+            # live one. `is_active` is the column and the condition both, which
+            # is the standard shape for "one of these is current".
+            models.UniqueConstraint(
+                fields=["is_active"],
+                condition=models.Q(is_active=True),
+                name="identitybranding_one_active",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.product_name} ({self.accent})"

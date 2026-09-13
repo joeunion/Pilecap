@@ -22,6 +22,7 @@ import os
 import pathlib
 import signal
 import subprocess
+import sys
 import time
 import warnings
 from collections.abc import Callable, Iterator
@@ -457,6 +458,126 @@ DJB_TEMPORAL_ENTRY_POINT = "WorkflowEnvironment"
 #: seeing the KIND at all.
 DJB_ORGAN_FLOORS: dict[str, int] = {"minio": 1, "meili": 1, DJB_TEMPORAL_ORGAN: 1}
 
+# --- the ALWAYS-ON set: cross-app tripwires, derived ------------------------
+#
+# WHAT THIS IS FOR. `scripts/loop_tier.sh` derives a SCOPE — the apps the active rung
+# changed, plus the reverse-transitive `depends_on` closure over them — and
+# `--loop` deselects everything outside it. That narrowing is sound for a test
+# that lives inside one app and reads one app. It is NOT sound for a test that
+# quantifies over the whole tree: a census that walks `get_app_configs()` and
+# asserts something of every app is broken by a change in ANY app, including one
+# no scope will ever contain. Deselecting those is how a scope stops being a
+# narrowing and starts being a hole.
+#
+# So a module that READS A WHOLE POPULATION runs unconditionally, whatever the
+# scope is. The population is DERIVED by the same source-reach technique the
+# organ tier above already uses (`_module_organs`), for the same reason: a
+# hand-marked list of cross-app tests is right on the day it is written and
+# wrong on the day somebody adds a census.
+#
+# TWO PREDICATES WERE REJECTED and are recorded here so nobody re-tries them:
+#
+#   * "a module that imports two or more apps" — that is IMPORT TOPOLOGY, not
+#     population reach. Half the suite imports `apps.core` beside its own app
+#     and reaches no population at all; the predicate would make the always-on
+#     set most of the tree and the scope worth nothing.
+#   * "a module that imports `config.api`" — the same class, one hop narrower.
+#     Reaching the router registry is not reaching the app registry, and the
+#     modules it catches are mostly ordinary door tests that a scope already
+#     covers through their own app.
+#
+# THE FLOORS COME IN TWO LAYERS, and the second layer is the point.
+#
+#   LAYER 1, per REACH KIND: at least one module must derive as reaching each
+#   kind. This catches the whole derivation going blind — a renamed token, a
+#   source read that started failing.
+#
+#   LAYER 2, per NAMED POPULATION: each named population must still hold the
+#   number of members this tree has. Layer 1 alone is satisfied by EITHER of two
+#   populations that share a reach kind, so either one can empty completely
+#   while the floor stays green — a masking gap inside the floors themselves,
+#   which is the one place nobody re-reads. Measured on this tree: five modules
+#   derive `app_registry` reach and nine derive `model_registry`, and the
+#   `lifecycle_registry_walkers` population is a subset of both — so
+#   `app_registry >= 1` would survive the total disappearance of every lifecycle
+#   walker. Naming the population and its count is what makes emptying one
+#   member a floor failure rather than an arithmetic coincidence.
+#
+# WHAT A LAYER-2 FLOOR IS NOT: an identity check. It counts members; it cannot
+# see a census gutted in place. The full gate's canary self-test and review are
+# the cover for that, and no instrument here pretends otherwise.
+#
+# THE FLOORS ASSERT BEFORE ANYTHING IS DESELECTED. An unmet floor is a
+# `pytest.UsageError`, which pytest reports as exit 4 and `scripts/check.sh`
+# maps to exit 2; raised inside an xdist worker during collection it surfaces as
+# INTERNALERROR and exit 3, which that same mapping treats identically. An
+# underived population is not an empty one.
+#
+# THE SENTINEL BLOCK BELOW IS READ BY `scripts/loop_tier.sh`. It digests exactly
+# these bytes into the loop ledger's key, so changing which tests are
+# unconditional invalidates every banked `--loop` verdict rather than silently
+# letting one vouch for a selection it never saw. Moving a declaration out of
+# the block is therefore not a refactor — it is a verdict that stops being keyed
+# on its own rules.
+
+# >>> always-on-derivation >>>
+#: Reach kind -> the source tokens that mean "this module reads that whole
+#: population". Tokens, not imports: some readers reach the registry inside a
+#: test body rather than at module scope, exactly as the Temporal organ
+#: derivation above found.
+DJB_REACH_TOKENS: dict[str, tuple[str, ...]] = {
+    "app_registry": ("get_app_configs",),
+    "model_registry": ("get_models(",),
+    "introspect_registry": ("management.commands.introspect",),
+    "absent_world": ("DJB_DISABLED_APPS",),
+    "door_parity": ("DOOR_PAIR",),
+}
+
+#: LAYER 1. One each, deliberately: what has to be caught here is a derivation
+#: that stopped seeing the KIND at all.
+DJB_REACH_FLOORS: dict[str, int] = {kind: 1 for kind in DJB_REACH_TOKENS}
+
+#: LAYER 2. Named populations and the number of MODULES this tree must still
+#: hold for each — every one of these five integers was DERIVED by collecting
+#: this suite, never chosen. A legitimate deletion reddens them and that is the
+#: trade: the alternative is a floor that cannot tell a deletion from a
+#: derivation going blind, which is the gap this layer exists to close.
+#:
+#: THE DERIVATION IS A COMMAND, NOT A WORD — pasted here because "derived" was
+#: true of four of these and false of the fifth for long enough that a reader
+#: had no way to tell which. It counts MODULES over the WHOLE collection: the
+#: populations are built in `pytest_collection_modifyitems` below BEFORE
+#: anything is deselected, so the scope a run was asked for does not move these
+#: numbers. Two of the five are a path shape and three are `DJB_REACH_TOKENS`
+#: above, matched as FIXED strings (an unescaped `.` in the introspect token
+#: also matches `management/commands/introspect.py` and reads 5):
+#:
+#:   uv run pytest --collect-only -q | sed -n 's/::.*//p' | sort -u > /tmp/m
+#:   grep -c '^apps/test_[^/]*\.py$'      /tmp/m                      # apps_root_modules
+#:   xargs grep -lF 'DOOR_PAIR'         < /tmp/m | wc -l              # door_parity_census
+#:   xargs grep -lF 'DJB_DISABLED_APPS' < /tmp/m | wc -l              # absent_world_consumers
+#:   xargs grep -lF 'management.commands.introspect' < /tmp/m | wc -l # introspect_registry_readers
+#:   grep -c 'tests/test_lifecycle\.py$'  /tmp/m                      # lifecycle_registry_walkers
+#:
+#: RUN 2026-09-07 on tree 08c4120e9fb1a982370ee6a337a566ae28c686bf (main
+#: 185df7b), N = 3382 items collected over 234 modules → 3 · 10 · 3 · 4 · 8,
+#: which are the five integers below in order. `lifecycle_registry_walkers`
+#: read 6 against that derived 8 from 016a5c0 until this line was written: two
+#: modules of slack under a comment claiming nothing here was chosen. The
+#: floor is RE-DERIVED, not reworded, so the sentence above stays a fact.
+DJB_POPULATION_FLOORS: dict[str, int] = {
+    "apps_root_modules": 3,
+    "door_parity_census": 10,
+    "absent_world_consumers": 3,
+    "introspect_registry_readers": 4,
+    "lifecycle_registry_walkers": 8,
+}
+# <<< always-on-derivation <<<
+
+#: Per-module reach verdicts, cached beside the organ verdicts and for the same
+#: reason: a 2600-test collection reads each module once.
+_DJB_MODULE_REACH: dict[str, frozenset[str]] = {}
+
 _FixtureFunction = TypeVar("_FixtureFunction", bound=Callable[..., Any])
 
 #: Set by `pytest_collection_modifyitems`, printed by
@@ -541,6 +662,124 @@ def _app_label(nodeid: str) -> str | None:
     return None
 
 
+def _module_of(nodeid: str) -> str:
+    """`apps/x/tests/test_y.py::test_z[p]` -> `apps/x/tests/test_y.py`.
+
+    The populations below are counts of MODULES, so the split has to happen in
+    one place: counting `::`-qualified nodeids instead multiplies a population
+    by its parametrisation and turns a floor into a number nobody can predict.
+    """
+    return nodeid.split("::")[0]
+
+
+def _module_reach(path: str) -> frozenset[str]:
+    """The whole-population reach kinds this test MODULE has, by its own source.
+
+    The same tolerant-read failure mode as `_module_organs`, and the same
+    answer: a module pytest has just imported and this cannot read is a refusal,
+    never an empty answer.
+    """
+    cached = _DJB_MODULE_REACH.get(path)
+    if cached is not None:
+        return cached
+    try:
+        source = pathlib.Path(path).read_text(encoding="utf-8")
+    except OSError as exc:  # pragma: no cover - a module pytest just imported
+        raise pytest.UsageError(
+            f"the --loop scope could not read {path} to derive its cross-app reach "
+            f"({exc}). An underived population is not an empty one: nothing was "
+            "classified, so this is neither a scoped run nor a whole one."
+        ) from exc
+    reach = frozenset(
+        kind
+        for kind, tokens in DJB_REACH_TOKENS.items()
+        if any(token in source for token in tokens)
+    )
+    _DJB_MODULE_REACH[path] = reach
+    return reach
+
+
+#: Per-module cross-TEST import verdicts, beside the reach ones. Keyed on the
+#: module path alone: the labels asked about are fixed for the whole run, so a
+#: second question with a different set cannot reach this cache.
+_DJB_MODULE_TEST_IMPORTS: dict[str, frozenset[str]] = {}
+
+
+def _is_app_tests_module(module: str) -> bool:
+    """`apps/<x>/tests/…` -> True — the shell's tests-only row, asked of a module.
+
+    The app-root `apps/<x>/conftest.py` is deliberately not this shape, for the
+    reason `scripts/loop_tier.sh` gives: it is a fixture every module of `<x>`
+    stands on.
+    """
+    parts = module.split("/")
+    return len(parts) >= 4 and parts[0] == "apps" and parts[2] == "tests"
+
+
+def _module_test_imports(path: str, labels: frozenset[str]) -> frozenset[str]:
+    """The tests-only labels whose TEST PACKAGE this module's source names.
+
+    THE COUPLING A TESTS-ONLY CHANGE CAN ACTUALLY BREAK. A change under
+    `apps/x/tests/` cannot break another app's code, but it can break another
+    app's TEST that imports `apps.x.tests.<something>` — a census helper, a
+    shared fixture module. Derived by the same source-token technique as
+    `_module_reach`, over the collected modules, so it is a closed question with
+    no list to keep in step.
+
+    The same tolerant-read failure mode as its neighbours, and the same answer:
+    a module pytest has just imported and this cannot read is a refusal.
+    """
+    if not labels:
+        return frozenset()
+    cached = _DJB_MODULE_TEST_IMPORTS.get(path)
+    if cached is not None:
+        return cached
+    try:
+        source = pathlib.Path(path).read_text(encoding="utf-8")
+    except OSError as exc:  # pragma: no cover - a module pytest just imported
+        raise pytest.UsageError(
+            f"the --loop scope could not read {path} to derive its cross-test imports "
+            f"({exc}). An underived population is not an empty one: a tests-only "
+            "narrowing that could not read a module would deselect it silently."
+        ) from exc
+    found = frozenset(label for label in labels if f"apps.{label}.tests" in source)
+    _DJB_MODULE_TEST_IMPORTS[path] = found
+    return found
+
+
+def _population_members(path: str, nodeid: str) -> frozenset[str]:
+    """The LAYER-2 populations this test module belongs to."""
+    reach = _module_reach(path)
+    module = _module_of(nodeid)
+    members: set[str] = set()
+    # `apps/test_*.py` — a test module at the apps root, owned by no app. No
+    # scope can ever contain it, so it is always-on by construction; the floor
+    # is what notices one of them being moved aside.
+    parts = module.split("/")
+    if len(parts) == 2 and parts[0] == "apps" and parts[1].startswith("test_"):
+        members.add("apps_root_modules")
+    if "door_parity" in reach:
+        members.add("door_parity_census")
+    if "absent_world" in reach:
+        members.add("absent_world_consumers")
+    if "introspect_registry" in reach:
+        members.add("introspect_registry_readers")
+    if module.endswith("tests/test_lifecycle.py"):
+        members.add("lifecycle_registry_walkers")
+    return frozenset(members)
+
+
+def _is_always_on(item: pytest.Item, reach: frozenset[str]) -> bool:
+    """Whether this item runs whatever the scope is.
+
+    Two ways in, and the first is structural rather than derived: an item that
+    belongs to NO app can never be inside any scope, so deselecting it would
+    need a positive decision nobody has made. The second is the derivation
+    above.
+    """
+    return _app_label(item.nodeid) is None or bool(reach)
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("djb", "Pilecap gate tiers")
     group.addoption(
@@ -565,6 +804,66 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         ),
     )
     group.addoption(
+        "--djb-scope-narrow",
+        action="store_true",
+        default=False,
+        help=(
+            "narrow the run to the apps named by --djb-scope, plus the DERIVED "
+            "always-on cross-app set. Without this flag nothing is narrowed. "
+            "`--loop` derives the scope in scripts/loop_tier.sh; no flag names an "
+            "app INTO it."
+        ),
+    )
+    group.addoption(
+        "--djb-scope",
+        action="append",
+        default=[],
+        metavar="LABEL",
+        help=(
+            "an app label inside the active rung's scope: it is NOT deselected under "
+            "--djb-scope-narrow. Distinct from --djb-own-app, which is the stronger "
+            "claim that an app runs IN FULL including its organ tests. The rung's "
+            "TOUCHED apps are own-apps; the apps its depends_on closure pulled in are "
+            "merely in scope, and promoting those too would make an apps/core touch "
+            "run every organ test in the tree."
+        ),
+    )
+    group.addoption(
+        "--djb-tests-only",
+        action="append",
+        default=[],
+        metavar="LABEL",
+        help=(
+            "an app whose ONLY changed files are under apps/<label>/tests/. Its test "
+            "tree runs at the fast tier and it seeds NO closure — a test edit cannot "
+            "break another app's code. Repeatable. `--loop` derives these in "
+            "scripts/loop_tier.sh; no flag names an app INTO the closure."
+        ),
+    )
+    group.addoption(
+        "--djb-changed-test",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "a test module the rung actually edited, repo-relative. It runs whatever "
+            "tier it is in — an organ-reaching module the rung CHANGED is the one "
+            "organ test a per-rung gate has a reason to run. Repeatable."
+        ),
+    )
+    group.addoption(
+        "--djb-scope-counts",
+        action="store",
+        default="",
+        metavar="DIR",
+        help=(
+            "every collector writes its OWN counts file into DIR, named for its "
+            "xdist worker. The caller RECONCILES them and never sums them: each "
+            "worker performs its own full collection, so a sum multiplies by the "
+            "worker count. What scripts/check.sh's scope banner reads."
+        ),
+    )
+    group.addoption(
         "--djb-tier-manifest",
         action="store",
         default="",
@@ -573,6 +872,108 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "write the derived classification (one `<tier>\\t<organs>\\t<nodeid>` line "
             "per collected test) to PATH. What the census drive reads."
         ),
+    )
+
+
+# --- the worker ceiling: a typed `-n` cannot exceed this box's slot share -----
+#
+# THE DEFECT THIS CLOSES. The gate splits this machine's cores into pytest
+# SLOTS and every slot holder runs its share (`scripts/gate_lease.sh`,
+# `gate_slot_workers`; `scripts/check.sh` runs `-n $GATE_SLOT_WORKERS`). A
+# direct `uv run pytest … -n 10` holds no slot and read no ceiling, so it ran
+# ten workers beside two gates running five each and minted ten
+# `test_<db>_gwN` databases on the way — the shared-box contention that put a
+# sibling platform's Postgres into recovery. `scripts/test.sh` now refuses
+# `-n auto`; this is the belt for every other way a number gets typed,
+# including a bare `uv run pytest`, because the runner is not the only door.
+#
+# ONE NUMBER, AND WHERE IT COMES FROM. An inherited `DJB_GATE_SLOT_WORKERS` or
+# `DJB_PYTEST_MAX_WORKERS` wins outright — that is the caller handing down the
+# share it already took, and this must never second-guess it. Only when nothing
+# was handed down is the share DERIVED, and then it is derived exactly as
+# `scripts/gate_lease.sh` derives it (cores ÷ slots, slots = cores ÷ 5 or
+# `DJB_GATE_SLOTS`). That derivation is a SECOND copy of a shell constant and it
+# is named as one: `scripts/tests/test_loop_scope.sh`'s
+# `case_the_python_clamp_and_the_shell_share_are_the_same_number` runs both and
+# asserts they agree, so the copy cannot drift in silence.
+#
+# THE ESCAPE IS TYPED: `DJB_PYTEST_UNCAPPED=1`. A ceiling with no way past it
+# gets worked around by leaving the runner, which is the one place nobody can
+# see the number at all.
+_DJB_GATE_SLOT_CORES_PER_SLOT = 5  # scripts/gate_lease.sh: GATE_SLOT_CORES_PER_SLOT
+
+
+def _djb_positive_int(raw: str) -> int | None:
+    text = raw.strip()
+    return int(text) if text.isdigit() and int(text) >= 1 else None
+
+
+def _djb_slot_share() -> int | None:
+    """This run's worker ceiling, or None when nobody can say what it is."""
+    for name in ("DJB_GATE_SLOT_WORKERS", "DJB_PYTEST_MAX_WORKERS"):
+        handed_down = _djb_positive_int(os.environ.get(name, ""))
+        if handed_down is not None:
+            return handed_down
+    cores = os.cpu_count() or 0
+    if cores < 1:
+        # A ceiling nobody can derive is no ceiling: refusing here would turn an
+        # unreadable core count into a failed test run, and the gate's own
+        # derivation falls back the same way rather than guessing small.
+        return None
+    declared = os.environ.get("DJB_GATE_SLOTS", "").strip()
+    if declared:
+        slots = _djb_positive_int(declared)
+        if slots is None:
+            return None
+    else:
+        slots = max(cores // _DJB_GATE_SLOT_CORES_PER_SLOT, 1)
+    return max(cores // slots, 1)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Lower a typed `-n` to the slot share, and say so on one line."""
+    typed = getattr(config.option, "numprocesses", None)
+    if os.environ.get("DJB_PYTEST_UNCAPPED", "").strip():
+        # THE ESCAPE PRINTS, AND THAT IS THE HALF THAT MAKES IT AN ESCAPE RATHER
+        # THAN A HOLE. A ceiling with a silent override is a ceiling nobody can
+        # tell they are outside: the transcript of an uncapped run and the
+        # transcript of a capped one differed nowhere, so `-n 10` on a five-share
+        # box read exactly like `-n 5` to every later reader of the log.
+        #
+        # It says the number that was TYPED and the share it is running past, so
+        # the line answers both questions a reader has — how many workers this
+        # box is about to carry, and how many it would have carried. An
+        # underivable share says so rather than printing a guess.
+        if isinstance(typed, int) and typed >= 1:
+            share = _djb_slot_share()
+            basis = (
+                f"the slot share on this box is {share}"
+                if share is not None
+                else "the slot share on this box could not be derived"
+            )
+            sys.stderr.write(f"uncapped: -n {typed} (DJB_PYTEST_UNCAPPED=1 — {basis})\n")
+        return
+    # `auto`/`logical` are still strings here on the bare-pytest path (xdist
+    # resolves them in its own `pytest_cmdline_main`, which has already run);
+    # scripts/test.sh refuses those outright, and a run that reaches here with
+    # one has no number to compare.
+    if not isinstance(typed, int) or typed < 1:
+        return
+    share = _djb_slot_share()
+    if share is None or typed <= share:
+        return
+    config.option.numprocesses = share
+    # xdist builds one `tx` entry per worker in `pytest_cmdline_main`, BEFORE
+    # this hook, and `NodeManager` reads that list rather than the number — so
+    # lowering the number alone would print a clamp and still start every
+    # worker. Measured, not assumed: the drive asserts the worker count.
+    spec = getattr(config.option, "tx", None)
+    if isinstance(spec, list) and len(spec) > share:
+        config.option.tx = spec[:share]
+    sys.stderr.write(
+        f"clamped -n {typed} → {share} (DJB_PYTEST_UNCAPPED=1 to override)\n"
+        f"  this box's cores are shared between the gate's pytest slots; "
+        f"{share} is one slot's share (scripts/gate_lease.sh, gate_slot_workers).\n"
     )
 
 
@@ -596,11 +997,23 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
         where += ", which are in scope and run IN FULL"
     else:
         where = "everywhere — no app is in scope under apps/<x>/, so there is no own app"
+    scope_line: list[str] = []
+    if bool(config.getoption("--djb-scope-narrow")):
+        scoped = sorted(set(str(label) for label in config.getoption("--djb-scope")) | set(own))
+        scope_line = [
+            "djb scope: NARROWED — every app outside "
+            + (", ".join(f"apps/{label}" for label in scoped) or "(an empty scope)")
+            + " is DESELECTED except the derived always-on cross-app set. The scope "
+            "is the active rung's touched apps plus the reverse-transitive depends_on "
+            "closure (scripts/loop_tier.sh); a regression in a deselected app "
+            "surfaces at the wave bank, not at the active rung."
+        ]
     return [
         *_DJB_ABSENT_REPORT,
         "djb tier: FAST — organ-reaching tests (real MinIO, a real Temporal server, "
         f"real Meili) are DESELECTED {where}. The full gate at push runs every one "
         "of them, twice.",
+        *scope_line,
     ]
 
 
@@ -611,13 +1024,26 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     _withhold_the_absent_world(items)
     tier = str(config.getoption("--djb-tier"))
     manifest = str(config.getoption("--djb-tier-manifest"))
+    narrow = bool(config.getoption("--djb-scope-narrow"))
+    counts_dir = str(config.getoption("--djb-scope-counts"))
     _DJB_TIER_REPORT.clear()
-    if tier == "all" and not manifest:
+    if tier == "all" and not manifest and not narrow:
         # The full gate's two passes take this branch and pay nothing: no source
         # read, no closure walk, no deselection, no behaviour change at all.
         return
 
     own_apps = frozenset(str(label) for label in config.getoption("--djb-own-app"))
+    # The rung's OWN apps are always inside its scope — it edited them. Stated
+    # as a union rather than assumed, so a caller that named an own app and
+    # forgot the scope flag narrows nothing it should have kept.
+    scope_apps = frozenset(str(label) for label in config.getoption("--djb-scope")) | own_apps
+    # THE TESTS-ONLY SET, which is neither of the two above and must not be
+    # folded into either: an app here is NOT own (its organ tests stay
+    # push-side) and NOT in scope (nothing widened to it through the
+    # declarations). It brings its own test tree, the modules the rung edited,
+    # and the modules that import its test package — and nothing else.
+    tests_only = frozenset(str(label) for label in config.getoption("--djb-tests-only"))
+    changed_tests = frozenset(str(path) for path in config.getoption("--djb-changed-test"))
     classified = [(item, _item_organs(item)) for item in items]
 
     reached: dict[str, int] = {}
@@ -642,6 +1068,54 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             "alone — it defaults to `all`."
         )
 
+    # THE ALWAYS-ON DERIVATION AND ITS TWO LAYERS OF FLOORS, asserted BEFORE a
+    # single item is deselected. Derived whenever narrowing is asked for, so the
+    # refusal cannot be dodged by a scope that happens to be empty.
+    always_on: set[str] = set()
+    if narrow:
+        reached_kinds: dict[str, set[str]] = {}
+        populations: dict[str, set[str]] = {}
+        for item in items:
+            path = str(getattr(item, "path", "") or "")
+            reach = _module_reach(path) if path else frozenset()
+            module = _module_of(item.nodeid)
+            for kind in reach:
+                reached_kinds.setdefault(kind, set()).add(module)
+            for name in _population_members(path, item.nodeid):
+                populations.setdefault(name, set()).add(module)
+            if _is_always_on(item, reach):
+                always_on.add(item.nodeid)
+
+        unmet_reach = sorted(
+            f"{kind} (floor {floor}, derived {len(reached_kinds.get(kind, ()))} module(s))"
+            for kind, floor in DJB_REACH_FLOORS.items()
+            if len(reached_kinds.get(kind, ())) < floor
+        )
+        unmet_population = sorted(
+            f"{name} (floor {floor}, derived {len(populations.get(name, ()))} module(s))"
+            for name, floor in DJB_POPULATION_FLOORS.items()
+            if len(populations.get(name, ())) < floor
+        )
+        if unmet_reach or unmet_population:
+            raise pytest.UsageError(
+                "the --loop scope's always-on derivation is not answering, so "
+                "NOTHING was deselected. "
+                + ("LAYER 1 (reach kind): " + "; ".join(unmet_reach) + ". " if unmet_reach else "")
+                + (
+                    "LAYER 2 (named population): " + "; ".join(unmet_population) + ". "
+                    if unmet_population
+                    else ""
+                )
+                + "A scope narrows the suite to the active rung's apps and leans on the "
+                "always-on set for everything that quantifies over the whole tree. "
+                "A derivation that stopped seeing a kind reads exactly like a tree "
+                "that no longer has one, and an EMPTIED population reads exactly "
+                "like a smaller suite — so this refuses instead of running a "
+                "narrowed tier nobody can trust. The declaration and the floors are "
+                "the sentinel block in apps/conftest.py; the scope that asked for "
+                "this is scripts/loop_tier.sh."
+            )
+
     if manifest and not hasattr(config, "workerinput"):
         lines = []
         for item, organs in classified:
@@ -649,34 +1123,95 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             lines.append(f"{where}\t{','.join(sorted(organs)) or '-'}\t{item.nodeid}")
         pathlib.Path(manifest).write_text("\n".join(sorted(lines)) + "\n", encoding="utf-8")
 
-    if tier != "fast":
+    if tier != "fast" and not narrow:
         return
 
     keep: list[pytest.Item] = []
     dropped: list[pytest.Item] = []
+    n_in_scope = 0
+    n_always_on = 0
+    n_tests_only = 0
+    importer_modules: set[str] = set()
+    always_on_modules = {_module_of(nodeid) for nodeid in always_on}
     for item, organs in classified:
-        if organs and _app_label(item.nodeid) not in own_apps:
+        label = _app_label(item.nodeid)
+        module = _module_of(item.nodeid)
+        in_scope = label in scope_apps
+        is_own = label in own_apps
+        # THE THREE WAYS A TESTS-ONLY APP REACHES AN ITEM, each its own claim.
+        in_tests_tree = label in tests_only and _is_app_tests_module(module)
+        is_changed_test = module in changed_tests
+        imports_tests = (
+            _module_test_imports(str(getattr(item, "path", "") or ""), tests_only)
+            if tests_only
+            else frozenset()
+        )
+        if imports_tests and not in_tests_tree:
+            importer_modules.add(module)
+        tests_only_keeps_it = in_tests_tree or is_changed_test or bool(imports_tests)
+        if narrow and not in_scope and item.nodeid not in always_on and not tests_only_keeps_it:
+            # Outside the scope and not a cross-app tripwire: the active rung's change
+            # cannot reach it, by the declarations the closure walked.
             dropped.append(item)
+            continue
+        if tier == "fast" and organs and not is_own and not is_changed_test:
+            # Organ-reaching outside the rung's OWN apps — the organ tier's rule,
+            # unchanged, and still push-time. It applies to an in-scope app the
+            # closure pulled in and to an always-on member alike: neither being
+            # reachable nor being unconditional earns a test a real MinIO in a
+            # per-rung gate. THE ONE EXEMPTION is a module the rung EDITED: a
+            # test somebody just changed is the one organ test this gate has a
+            # reason to run, and it is named by path, not by app.
+            dropped.append(item)
+            continue
+        keep.append(item)
+        if in_scope:
+            n_in_scope += 1
+        elif tests_only_keeps_it and item.nodeid not in always_on:
+            n_tests_only += 1
         else:
-            keep.append(item)
+            n_always_on += 1
     if dropped:
         config.hook.pytest_deselected(items=dropped)
         items[:] = keep
 
+    if counts_dir:
+        _write_scope_counts(
+            config,
+            counts_dir,
+            own_apps,
+            scope_apps,
+            tests_only,
+            n_in_scope,
+            n_always_on,
+            n_tests_only,
+            len(always_on_modules),
+            len(importer_modules),
+            len(keep),
+            len(dropped),
+        )
+
     census = ", ".join(f"{kind}={reached[kind]}" for kind in sorted(reached)) or "none"
-    _DJB_TIER_REPORT.append(
-        f"djb tier: FAST — {len(dropped)} organ-reaching test(s) deselected, "
-        f"{len(keep)} running (derived reach: {census})."
-    )
+    if narrow:
+        _DJB_TIER_REPORT.append(
+            f"djb scope: {len(dropped)} test(s) deselected, {len(keep)} running "
+            f"({n_in_scope} in scope, {n_always_on} always-on) — derived organ "
+            f"reach: {census}."
+        )
+    else:
+        _DJB_TIER_REPORT.append(
+            f"djb tier: FAST — {len(dropped)} organ-reaching test(s) deselected, "
+            f"{len(keep)} running (derived reach: {census})."
+        )
     if own_apps:
         _DJB_TIER_REPORT.append(
-            "  own app(s) in scope, run IN FULL: " + ", ".join(sorted(own_apps))
+            "  own app(s), run IN FULL including organ tests: " + ", ".join(sorted(own_apps))
         )
     else:
         _DJB_TIER_REPORT.append(
             "  no app is in scope under apps/, so there is NO own app: the rule for "
-            "that case is the fast tier alone, and it is declared here rather than "
-            "chosen silently."
+            "that case is the always-on set alone, and it is declared here rather "
+            "than chosen silently."
         )
     _DJB_TIER_REPORT.append(
         "  the deselected tests are NOT skipped forever — the FULL gate at push runs "
@@ -684,8 +1219,159 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     )
 
 
+def _write_scope_counts(
+    config: pytest.Config,
+    counts_dir: str,
+    own_apps: frozenset[str],
+    scope_apps: frozenset[str],
+    tests_only: frozenset[str],
+    in_scope: int,
+    always_on: int,
+    tests_only_tests: int,
+    always_on_modules: int,
+    importer_modules: int,
+    selected: int,
+    deselected: int,
+) -> None:
+    """One counts file per COLLECTOR, named for the collector.
+
+    RECONCILE, NEVER SUM. Under xdist every worker performs its own full
+    collection and then runs its share, so all N workers derive the SAME three
+    counts and a sum multiplies them by N. The caller compares the files and
+    refuses on disagreement — a disagreement means two collectors saw different
+    suites, and a verdict banked under a scope one of them disowned is a verdict
+    about nothing.
+    """
+    worker = getattr(config, "workerinput", {}).get("workerid", "controller")
+    target = pathlib.Path(counts_dir)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        (target / str(worker)).write_text(
+            f"in_scope={in_scope}\n"
+            f"always_on={always_on}\n"
+            f"tests_only_tests={tests_only_tests}\n"
+            f"always_on_modules={always_on_modules}\n"
+            f"importers={importer_modules}\n"
+            f"selected={selected}\n"
+            f"deselected={deselected}\n"
+            f"own={','.join(sorted(own_apps)) or '-'}\n"
+            f"scope={','.join(sorted(scope_apps)) or '-'}\n"
+            f"tests_only={','.join(sorted(tests_only)) or '-'}\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:  # pragma: no cover - the caller turns absence into 2
+        raise pytest.UsageError(
+            f"the --loop scope could not write its counts file into {counts_dir} "
+            f"({exc}). The banner reconciles those files; a missing one is a "
+            "collector whose scope nobody can read."
+        ) from exc
+
+
 def pytest_report_collectionfinish(config: pytest.Config) -> list[str]:
     return list(_DJB_TIER_REPORT)
+
+
+# --- the PRE-RUN banner, and why it can exist at all --------------------------
+#
+# The counts are known only once something has COLLECTED, and under xdist the
+# WORKERS collect — which is why this banner used to print after the run, beside
+# the verdict, where a reader asking "did it even run my test?" had already
+# waited for the whole leg to find out.
+#
+# THE ORDERING IS A FACT, NOT A BET. A worker writes its counts file in
+# `pytest_collection_modifyitems` (above); pytest runs that BEFORE
+# `pytest_collection_finish`, which is what sends the worker's `collectionfinish`
+# event (xdist/remote.py:236,257). The controller answers that event in
+# `worker_collectionfinish`, whose FIRST act is to call
+# `pytest_xdist_node_collection_finished` (xdist/dsession.py:287) — so the file
+# this reads is complete — and which schedules no test at all until EVERY node
+# has reported (`sched.collection_is_completed`, :297-305). Waiting for the last
+# node therefore still lands before the first test runs, and it is what lets the
+# banner say `reconciled across N collectors` and mean it.
+#
+# RECONCILE, NEVER SUM, here as in the after-run banner: every collector
+# performs its own full collection, so the files must be identical. A
+# disagreement is `scripts/check.sh`'s refusal (exit 2) and NOT a second one
+# here — a banner that refused would refuse before the leg it is describing.
+_DJB_PRERUN_NODES: set[str] = set()
+_DJB_PRERUN_PRINTED: list[bool] = [False]
+
+
+def _djb_prerun_banner(config: pytest.Config, counts_dir: str, collectors: int) -> None:
+    """Print one line per selection decision, before the first test runs."""
+    _DJB_PRERUN_PRINTED[0] = True
+    reporter = config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is None:  # pragma: no cover - -p no:terminal
+        return
+    try:
+        files = sorted(path for path in pathlib.Path(counts_dir).iterdir() if path.is_file())
+        texts = {path.read_text(encoding="utf-8") for path in files}
+    except OSError:  # pragma: no cover - the after-run reconciliation is the refusal
+        return
+    if not texts:
+        return
+    if len(texts) > 1:
+        reporter.write_line(
+            "scope   THE COLLECTORS DISAGREE — the counts are not printed here; "
+            "the after-run reconciliation in scripts/check.sh is the refusal."
+        )
+        return
+    fields = dict(line.split("=", 1) for line in next(iter(texts)).splitlines() if "=" in line)
+    lines: list[str] = []
+    labels = fields.get("tests_only", "-")
+    if labels and labels != "-":
+        lines.append(
+            f"scope   tests-only: {labels.replace(',', ', ')} — their test trees at the "
+            "FAST tier, the edited module(s) whatever tier they are in, and every "
+            "collected module naming one of those test packages; NO closure walked"
+        )
+        lines.append(
+            f"scope   importers: {fields.get('importers', '?')} module(s) outside those "
+            "test trees name one of those test packages (derived from the modules' own "
+            "source, never a list)"
+        )
+    lines.append(
+        f"scope   always-on: {fields.get('always_on', '?')} test(s) in "
+        f"{fields.get('always_on_modules', '?')} module(s) — the cross-app tripwires, "
+        "floors met"
+    )
+    lines.append(
+        f"scope   selected {fields.get('selected', '?')} · deselected "
+        f"{fields.get('deselected', '?')}    (reconciled across {collectors} collectors)"
+    )
+    for line in lines:
+        reporter.write_line(line)
+
+
+def pytest_xdist_node_collection_finished(node: Any, ids: Any) -> None:
+    """The controller's seam — the only place the counts exist before the run."""
+    config = getattr(node, "config", None)
+    if config is None or _DJB_PRERUN_PRINTED[0]:
+        return
+    counts_dir = str(config.getoption("--djb-scope-counts", "") or "")
+    if not counts_dir:
+        return
+    gateway = getattr(node, "gateway", None)
+    _DJB_PRERUN_NODES.add(str(getattr(gateway, "id", None) or len(_DJB_PRERUN_NODES)))
+    expected = int(getattr(config.option, "numprocesses", 0) or 0)
+    if expected and len(_DJB_PRERUN_NODES) < expected:
+        return
+    _djb_prerun_banner(config, counts_dir, max(len(_DJB_PRERUN_NODES), 1))
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """The serial seam. Under xdist the controller collects nothing and the hook
+    above is the one that fires; this is the `-p no:xdist` / `-n 0` path, and the
+    one the drives' `--collect-only` invocations take."""
+    config = session.config
+    if hasattr(config, "workerinput") or _DJB_PRERUN_PRINTED[0]:
+        return
+    if int(getattr(config.option, "numprocesses", 0) or 0) > 0:
+        return
+    counts_dir = str(config.getoption("--djb-scope-counts", "") or "")
+    if not counts_dir:
+        return
+    _djb_prerun_banner(config, counts_dir, 1)
 
 
 # --- the test databases come down clean ---------------------------------------

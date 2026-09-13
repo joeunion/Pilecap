@@ -109,6 +109,18 @@
 #:   DJB_GATE_LEASE_MAX_WAIT  seconds a full gate will wait before refusing.
 #:   DJB_GATE_LEASE_POLL      seconds between attempts while waiting.
 #:   DJB_GATE_LEASE_ANNOUNCE  seconds between "still waiting" lines.
+# THE REFUSAL SEAM — scripts/gate_refuse.sh, sourced by this library's own
+# directory and guarded against a second source. The lease and slot refusals
+# below go through `gate_refuse` so the two `no pytest slot — see above.` banners in
+# scripts/check.sh can name which of them fired.
+# shellcheck source=scripts/gate_refuse.sh
+if [ -z "${GATE_REFUSE_SOURCED:-}" ]; then
+    case "${BASH_SOURCE[0]:-}" in
+    */*) . "${BASH_SOURCE[0]%/*}/gate_refuse.sh" ;;
+    *) . scripts/gate_refuse.sh ;;
+    esac
+fi
+
 GATE_LEASE_DEFAULT_DIR="/tmp"
 GATE_LEASE_DEFAULT_MAX_WAIT=3600
 GATE_LEASE_DEFAULT_POLL=5
@@ -143,14 +155,14 @@ gate_lease_path() {
     case "$dir" in
     /*) ;;
     *)
-        echo "!! DJB_GATE_LEASE_DIR is relative ('$dir'). The full-gate lease needs an" >&2
+        gate_refuse "DJB_GATE_LEASE_DIR is relative ('$dir'). The full-gate lease needs an"
         echo "   absolute machine-wide directory; a relative one resolves against" >&2
         echo "   whatever directory the caller left behind." >&2
         return 1
         ;;
     esac
     [ -d "$dir" ] || {
-        echo "!! DJB_GATE_LEASE_DIR ('$dir') is not a directory — no lease can be taken there." >&2
+        gate_refuse "DJB_GATE_LEASE_DIR ('$dir') is not a directory — no lease can be taken there."
         return 1
     }
     printf '%s\n' "$dir/djb-gate-lease"
@@ -201,6 +213,94 @@ gate_lease_estimate() {
     left=$((GATE_LEASE_NOMINAL_FULL - (now - started)))
     [ "$left" -ge 0 ] || left=0
     printf '%s\n' "$(((left + 59) / 60))"
+}
+
+# ---- THE HOLDER, IN WORDS ----------------------------------------------
+#
+# WHY THIS EXISTS. Both wait loops already printed the holder's RECORD, and a
+# record is six space-separated fields ending in a path: everything a parser
+# needs and nothing a reader can act on. The question an agent watching a wait
+# actually has is "how much longer, and is this even the kind of run I think it
+# is" — and the three facts that answer it (the holder's MODE, the time it
+# STARTED, the arithmetic between that and the nominal for its mode) were all
+# already IN the record and none of them was legible. A wait line that a reader
+# has to decode by hand is most of the way back to a silent one.
+#
+# ONE FORMATTER, TWO RECORD SHAPES. The lease record is
+# `pid mode started-utc host started-epoch checkout`; a `gate_slot_holders` line
+# is that with `slot-N` in front. The two wrappers below differ only in which
+# field number each fact sits at, so the phrasing cannot drift apart between the
+# exclusive lease's wait and the semaphore's.
+#
+# AN OLD RECORD LOSES THE CLAUSE AND NOTHING ELSE — the contract
+# `gate_lease_estimate` already keeps. A record written before the epoch field
+# existed carries the checkout PATH at position 5, so it prints the start time
+# alone and no arithmetic; a line that is not a holder record at all (the
+# `slot-N (starting — no holder record yet)` shape) comes back verbatim.
+
+# gate_holder_note <started-utc> <started-epoch> <nominal-seconds> — the human
+# half of a holder record as ONE appendable clause, on stdout:
+#     , started 14:02Z (~9 min of a nominal 15 left)
+gate_holder_note() {
+    local utc=$1 epoch=$2 nominal=$3 hhmm left now
+    case "$utc" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:*) ;;
+    *) return 0 ;;
+    esac
+    hhmm=${utc#*T}
+    hhmm="${hhmm%:*}Z"
+    printf ', started %s' "$hhmm"
+    case "$epoch" in
+    '' | *[!0-9]*) return 0 ;;
+    esac
+    now=$(date +%s)
+    left=$((nominal - (now - epoch)))
+    [ "$left" -ge 0 ] || left=0
+    printf ' (~%s min of a nominal %s left)' \
+        "$(((left + 59) / 60))" "$(((nominal + 59) / 60))"
+}
+
+# gate_lease_holder_phrase <lease record> — `pid 4123 full, started 14:02Z
+# (~9 min of a nominal 15 left)`.
+gate_lease_holder_phrase() {
+    local line=$1 pid mode utc epoch
+    pid=$(awk '{print $1}' <<<"$line")
+    case "$pid" in
+    '' | *[!0-9]*)
+        printf '%s' "$line"
+        return 0
+        ;;
+    esac
+    mode=$(awk '{print $2}' <<<"$line")
+    utc=$(awk '{print $3}' <<<"$line")
+    epoch=$(awk '{print $5}' <<<"$line")
+    printf 'pid %s %s%s' "$pid" "$mode" \
+        "$(gate_holder_note "$utc" "$epoch" "$GATE_LEASE_NOMINAL_FULL")"
+}
+
+# gate_slot_holder_phrase <gate_slot_holders line> — the same, one field over,
+# and with the nominal chosen by the holder's own mode: a `--loop` holder is a
+# four-minute wait and a `full` holder is a fifteen-minute one, and telling a
+# waiter which it is waiting behind is most of the value of the line.
+gate_slot_holder_phrase() {
+    local line=$1 slot pid mode utc epoch nominal
+    slot=$(awk '{print $1}' <<<"$line")
+    pid=$(awk '{print $2}' <<<"$line")
+    case "$pid" in
+    '' | *[!0-9]*)
+        printf '%s' "$line"
+        return 0
+        ;;
+    esac
+    mode=$(awk '{print $3}' <<<"$line")
+    utc=$(awk '{print $4}' <<<"$line")
+    epoch=$(awk '{print $6}' <<<"$line")
+    case "$mode" in
+    full) nominal=$GATE_SLOT_NOMINAL_FULL ;;
+    *) nominal=$GATE_SLOT_NOMINAL_LOOP ;;
+    esac
+    printf 'pid %s %s (%s)%s' "$pid" "$mode" "$slot" \
+        "$(gate_holder_note "$utc" "$epoch" "$nominal")"
 }
 
 # gate_lease_holder — the holder line, or empty when there is none and none is
@@ -279,7 +379,9 @@ gate_lease_acquire() {
     max=${DJB_GATE_LEASE_MAX_WAIT:-$GATE_LEASE_DEFAULT_MAX_WAIT}
     poll=${DJB_GATE_LEASE_POLL:-$GATE_LEASE_DEFAULT_POLL}
     announce=${DJB_GATE_LEASE_ANNOUNCE:-$GATE_LEASE_DEFAULT_ANNOUNCE}
-    path=$(gate_lease_path) || return 2
+    # F7, as above: the path refusal happens in a subshell and the cause would
+    # otherwise be the previous refusal's, or nothing.
+    gate_capture path gate_lease_path || return 2
 
     next=$announce
     while :; do
@@ -320,16 +422,18 @@ gate_lease_acquire() {
             fi
             echo "   Ceiling: ${max}s, after which this run REFUSES (exit 2) rather than overlapping."
         elif [ "$GATE_LEASE_WAITED" -ge "$next" ]; then
-            if est=$(gate_lease_estimate "$held"); then
-                echo "  ... still waiting for the full-gate lease (${GATE_LEASE_WAITED}s of ${max}s, ~${est} min left) — holder: $held"
-            else
-                echo "  ... still waiting for the full-gate lease (${GATE_LEASE_WAITED}s of ${max}s) — holder: $held"
-            fi
+            # THE RE-ANNOUNCEMENT IS THE LINE A READER ACTUALLY WATCHES — the
+            # first one scrolls away — so it is the one that has to answer
+            # "behind what, since when, how much longer" on its own. It used to
+            # print the raw record and a bare "~N min left"; it now says whose
+            # run it is, what KIND of run, when it started and how much of that
+            # kind's nominal is left.
+            echo "  ... still waiting for the full-gate lease: ${GATE_LEASE_WAITED}s of ${max}s — holder $(gate_lease_holder_phrase "$held")"
             next=$((GATE_LEASE_WAITED + announce))
         fi
 
         if [ "$GATE_LEASE_WAITED" -ge "$max" ]; then
-            echo "!! REFUSING: waited ${GATE_LEASE_WAITED}s for the machine-wide full-gate lease and it is still held." >&2
+            gate_refuse "REFUSING: waited ${GATE_LEASE_WAITED}s for the machine-wide full-gate lease and it is still held."
             echo "   holder: $held  (pid mode started-utc host started-epoch checkout)" >&2
             echo "   lease:  $path" >&2
             echo "   Nothing was judged. This is could-not-look, not a red tree." >&2
@@ -488,14 +592,14 @@ gate_slots_total() {
     if [ -n "$want" ]; then
         case "$want" in
         *[!0-9]*)
-            echo "!! DJB_GATE_SLOTS='$want' is not a positive whole number." >&2
+            gate_refuse "DJB_GATE_SLOTS='$want' is not a positive whole number."
             echo "   A ceiling this cannot read is a ceiling that would silently become the" >&2
             echo "   default, which is the unbounded run the semaphore exists to stop." >&2
             return 2
             ;;
         esac
         if [ "$want" -lt 1 ]; then
-            echo "!! DJB_GATE_SLOTS='$want' — a box with no slots can run no suite at all." >&2
+            gate_refuse "DJB_GATE_SLOTS='$want' — a box with no slots can run no suite at all."
             echo "   Set it to at least 1, or unset it and take the derived default." >&2
             return 2
         fi
@@ -524,7 +628,11 @@ gate_slot_workers() {
 # re-stated: two opinions about a machine-wide directory is one too many.
 gate_slots_dir() {
     local p
-    p=$(gate_lease_path) || return 1
+    # F7: `gate_lease_path` refuses in a SUBSHELL here, so its cause reaches the
+    # global only through the capture. See scripts/gate_refuse.sh — and note
+    # that this function is itself called under `$(...)` by `gate_slot_try`,
+    # which is why that call site captures too: one broken link loses the chain.
+    gate_capture p gate_lease_path || return 1
     printf '%s\n' "${p%/*}/djb-gate-slots"
 }
 
@@ -589,12 +697,12 @@ gate_slot_holders() {
 # slots are directories and the lease one file over is not.
 gate_slot_try() {
     local mode=$1 dir total i slot
-    dir=$(gate_slots_dir) || return 2
+    gate_capture dir gate_slots_dir || return 2
     mkdir -p "$dir" 2>/dev/null || {
-        echo "!! the gate slot directory ('$dir') could not be created — no slot can be taken there." >&2
+        gate_refuse "the gate slot directory ('$dir') could not be created — no slot can be taken there."
         return 2
     }
-    total=$(gate_slots_total) || return 2
+    gate_capture total gate_slots_total || return 2
     i=0
     while [ "$i" -lt "$total" ]; do
         i=$((i + 1))
@@ -655,13 +763,14 @@ gate_slot_estimate() {
 # outranks a pass everywhere in this gate.
 gate_slot_acquire() {
     local mode=${1:-loop} rc max poll announce next holders est total
+    local hfirst hrest hline
     GATE_SLOT_WAITED=0
 
     # THE LOCK ORDER, mechanically. A full run that reached here without its
     # exclusive lease could sit on a slot while waiting for the lease that a
     # slot-waiting gate is holding — the cycle. Refused rather than documented.
     if [ -n "${GATE_SLOT_LEASE_FIRST:-}" ] && [ -z "${GATE_LEASE:-}" ]; then
-        echo "!! LOCK ORDER BROKEN: a FULL gate reached the pytest slot without holding the" >&2
+        gate_refuse "LOCK ORDER BROKEN: a FULL gate reached the pytest slot without holding the"
         echo "   machine-wide exclusive lease. The order is LEASE FIRST, THEN SLOT — always," >&2
         echo "   on every path — so that no slot holder is ever waiting for the lease and the" >&2
         echo "   deadlock cycle cannot be formed (scripts/gate_lease.sh, THE LOCK ORDER)." >&2
@@ -669,7 +778,7 @@ gate_slot_acquire() {
         return 2
     fi
 
-    total=$(gate_slots_total) || return 2
+    gate_capture total gate_slots_total || return 2
     GATE_SLOT_TOTAL=$total
     GATE_SLOT_WORKERS=$(gate_slot_workers "$total")
 
@@ -718,13 +827,27 @@ gate_slot_acquire() {
             echo "   Ceiling: ${max}s, after which this run REFUSES (exit 2) rather than"
             echo "   oversubscribing the box."
         elif [ "$GATE_SLOT_WAITED" -ge "$next" ]; then
-            echo "  ... still waiting for a pytest slot (${GATE_SLOT_WAITED}s of ${max}s)"
-            echo "$holders" | sed 's/^/   holder: /'
+            # The lease's re-announcement reason, one guard over, with one
+            # difference: the semaphore can have N holders, so the FIRST one
+            # rides on the headline (which is the whole line in the ordinary
+            # one-slot-behind case) and the rest follow it, each phrased the
+            # same way. No `sed`, no pipeline: a holder list is small and
+            # parameter expansion cannot hand this loop somebody's exit status.
+            hfirst=${holders%%$'\n'*}
+            hrest=${holders#*$'\n'}
+            [ "$hrest" != "$holders" ] || hrest=""
+            echo "  ... still waiting for a pytest slot: ${GATE_SLOT_WAITED}s of ${max}s — holder $(gate_slot_holder_phrase "$hfirst")"
+            if [ -n "$hrest" ]; then
+                while IFS= read -r hline; do
+                    [ -n "$hline" ] || continue
+                    echo "   holder $(gate_slot_holder_phrase "$hline")"
+                done <<<"$hrest"
+            fi
             next=$((GATE_SLOT_WAITED + announce))
         fi
 
         if [ "$GATE_SLOT_WAITED" -ge "$max" ]; then
-            echo "!! REFUSING: waited ${GATE_SLOT_WAITED}s for one of ${total} pytest slots and the box is still full." >&2
+            gate_refuse "REFUSING: waited ${GATE_SLOT_WAITED}s for one of ${total} pytest slots and the box is still full."
             echo "$holders" | sed 's/^/   holder: /' >&2
             echo "   slots:  $(gate_slots_dir 2>/dev/null || echo '<unknown>')" >&2
             echo "   Nothing was judged. This is could-not-look, not a red tree." >&2

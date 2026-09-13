@@ -107,22 +107,59 @@ mirror lens, for every criterion over a stateful flow: *which state or
 population member did this criterion NOT drive?* — an undriven live path is a
 finding against the criteria.
 
+**And three demands the PROVE brief makes of the verifier's own hands**, because
+evidence lifted from a builder's report is a claim to re-derive, never an
+artifact — the builder deciding done by proxy:
+
+- **RED re-measured on the BASELINE.** Reproduce the builder's red yourself, on
+  the baseline tree, in a scratch worktree or clone
+  (`git worktree add <tmp> <baseline sha>`) and **never by `git stash`** —
+  agents do not stash here (the standing rule, bought by F1b's shared-stash
+  race), so the sibling's "stash or checkout" lands here as *checkout only*.
+- **The canary shown red BY NAME** — the drive case name, or the planted
+  `file:line`, pasted from your own run. "The red reproduces" is prose; the
+  named failure is the artifact.
+- **The drive on the verifier's own pair** — the verifier's own clone and its
+  own derived database, which is exactly what `verify_start.sh` exists to
+  build. A drive run against the builder's transcript has verified a story.
+
 **And the prohibition, pasted in verbatim — this clause is the brief's, not a
 paraphrase of it:**
 
-> *Verify a green full verdict exists in the ledger for the exact tree under
-> test — one grep of the measured tree against the verdict ledger that
-> `scripts/gate_ledger.sh` maintains (its `gate_measured_tree` is the key:
-> HEAD's tree plus untracked non-ignored files — `git rev-parse HEAD^{tree}`
-> matches it only on a checkout with no untracked files; docs-or-ledger-only
-> commits after the banked tree are not a fail). One grep; that is
-> observation. Then drive the criteria through the doors and the UI. Running
-> `check.sh`, `test.sh` or any suite is out of scope and a criteria-writing
-> error — if a criterion asks you to, say so and stop.*
+> *Consult the verdict for the exact tree under test by running
+> `./scripts/check.sh --loop` in your OWN clone — unpiped, redirected to a
+> `*.log`, and exactly **one `--loop`, once**. That run IS the consult,
+> performed by the instrument that owns the key, and it is strictly more than
+> a grep: a grep vouches for the BUILDER's tree, while the clone is the UNION
+> of that branch and main, which is what `verify_start.sh` exists to build. A
+> `VERDICT REUSED` banner is the observation and the gate. A miss is not a
+> failure and not something to force or dodge: let the run **complete** —
+> never killed, never a byte added to change the key — and record the reason,
+> because the completed run is the union's verdict, which the grep never was.
+> Then drive the criteria through the doors and the UI. A second `--loop`,
+> `test.sh`, any other suite, and the full gate are all out of scope and a
+> criteria-writing error — if a criterion asks you to, say so and stop.*
+>
+> *Your ledger row carries the result as one typed cell,
+> `loop: hit|miss(<reason>) <s>`: `hit` when the `VERDICT REUSED` banner
+> printed, `<s>` being the `--loop`'s own wall clock; otherwise
+> `miss(<reason>)` with `<reason>` one of `tree` (the measured bytes moved),
+> `env:<component>[,<component>]` (an identical tree, one or more of the
+> fingerprint's five parts moved — `env:env-file`, `env:excluded`, `env:dists`,
+> `env:head`, `env:merge-base`, the last two being an amend or a rebase over
+> the same bytes), `env` (the environment line moved and the banked row is too
+> old to say which part), `scope` (a different selection over the same tree),
+> `no-ledger`, `unmatched` (the tree moved AND something the suite stands on
+> moved with it, so neither vouches), `ledger unmerged` — read off the banners,
+> never inferred — and `<s>` the completed run's wall clock. When the token is
+> `tree` the banner prints a second line, `since banked head <short>: N path(s)
+> changed; docs-only: yes|no`; copy it into the cell after the reason when it
+> says `yes`, because a re-measure bought by files no test reads is the thing
+> the round is counting.*
 
-Why a prohibition rather than a preference: the gate is deterministic on a tree,
+Why a cap rather than a preference: the gate is deterministic on a tree,
 so re-running it is not a second opinion, it is the same opinion bought again —
-and a criterion that tells the verifier to run the gate buys it a third time.
+which is why the consult is one run and a miss is recorded rather than re-run.
 The separation survives intact: the builder still never decides done. A
 machine's recorded verdict decides *green*, the verification decides *meets
 criteria*, and its evidence is the product under its own hands, which no gate
@@ -181,6 +218,15 @@ getting stronger), "a permission row exists" (whose absence nothing can detect),
 catches). **If answering the question needs a code path that does not exist,
 the criterion is describing a mechanism.**
 
+**And a brief never forbids a rule's own valve — it demands the reason.**
+`# door:`, `# reach:`, `# authz:` and their kin are the declared escape a rule
+was designed with, counted and printed; a criterion that bans one sends the
+builder to fight the census instead of writing the sentence that justifies the
+case. The case that bought this line, 2026-09-07: a criteria set forbade
+`# door:` outright where rule 42's activity-only census made that valve the
+remedy, and the builder met the census twice over instead. Every valve is
+sited and reasoned in `quality/rules.yaml`; demand the reason in the valve.
+
 **Name the instrument, and what it returns when the thing is ABSENT.** A
 criterion may not say *"`X` reports true"* without stating what `X` answers in
 the negative case. A check that returns the same value whether or not the
@@ -215,6 +261,25 @@ before the work started, whatever the brief says about how safe it looks. The
 canonical way this goes wrong is worth stating plainly, because it is nearly
 comic and entirely real: the agent fixing a broom that dropped live databases
 drops two live databases while demonstrating the warning about it.
+
+**And the plant is sited where the partition can still see it.** A criterion
+whose demonstration plants its canary in a **platform** app is invisible to a
+run that skipped that partition: the plant lands inside the skipped half, the
+drive looks at nothing, and it reports green. A planted-miss demonstration
+therefore sites its plant in a **product app outside the touched closure** —
+and the qualifying condition is **re-derived from `quality/partition.yaml` at
+drive time**, never carried as a hand-written app list, which goes stale the
+first time an app is added and turns the siting rule back into a comment. On
+**this template's** tree the condition bites hardest, because every app
+`partition.yaml` names is a platform app and the product set is empty: here
+the drive **creates a throwaway product app** to site its plant in, and drops
+it again in its cleanup census — the previous paragraph's own rule, applied to
+the world the plant needed. *Prose today; **PART-1** promotes it where its
+instrument lands — its "born non-vacuous" criterion plants exactly that
+scratch product app (an `apps.py` directory absent from `platform_apps`), which
+is the first thing here to make the siting rule checkable rather than
+advisory.* How the closure itself is drawn, and which classes cover what, is
+`docs/product/partition-closure.md` beside its skip table.
 
 **For every rung the lead marks risky or expensive, the brief demands: the
 cheaper alternative, what it gives up, and the condition under which the
@@ -269,7 +334,8 @@ gate measures the tree, and a brief is not in the tree.
 
 ```bash
 # never piped — the exit status is the verdict
-./scripts/seam_check.sh --claims <file> > "$PWD/seam-<rung>.log" 2>&1; echo "exit=$?"
+./scripts/seam_check.sh --claims <file> > "$PWD/seam-<rung>.log" 2>&1
+echo "exit=$?"
 ```
 
 Each claim is `module.path:callable(signature-fragment)`, one per line, and the
@@ -325,7 +391,11 @@ code"** · and the standing conventions it will otherwise rediscover.
 **Gate economics, which nobody works out unprompted.** Tell them:
 
 - **`./scripts/check.sh --loop` per rung** — the fast legs, `check --deploy`,
-  and ONE pytest pass. That is the builder's gate.
+  and ONE pytest pass. That is the builder's gate, and the only other agent
+  who runs it is the verifier, once, as its consult (§ Field test) — never as
+  a second gate. Fold main in at your last boundary, run it after that fold,
+  and paste the `banked:` key it printed, so the verifier's consult has a tree
+  to hit.
 - **The full gate runs once, at push, and the builder does not run it by hand.**
   Pre-push consults the verdict ledger, so a tree already measured passes in
   seconds; a confirmatory full run before committing buys nothing and costs the
@@ -377,6 +447,47 @@ them will need `--merge`, which is forbidden. Say both halves: a flat "run rungs
 in parallel" is the failure mode, and so is a flat "never". One agent holding
 the whole product alone while nothing else moves is the default, and it is not
 a good one.
+
+**A client fan-out NAMES ALL THREE SERIAL POPULATIONS, every time.** `SKILL.md`
+owns the batching rules and they are unchanged here — fan-out is argued and is
+the default, every parallel leg carries its independence argument, and a leg
+whose argument cannot be stated serializes. What a fan-out over the client
+layer owes on top is the same debt the schema discipline pays two paragraphs
+above: the populations where the independence argument **cannot** be stated,
+named in the brief, so that a plan omitting one has not argued its parallelism
+— it has assumed it. There are exactly three, and a fan-out brief naming fewer
+is returned.
+
+- **(i) Dependency rungs are EXCLUSIVE — the `makemigrations --merge`
+  analogue.** The lockfile — `pnpm-lock.yaml` under the pinned manager — is the
+  client's `max_migration.txt`, and it is the worse of the two: two branches
+  editing it merge **textually clean** into a lockfile that no longer satisfies
+  its `package.json`, and stay silent until an install with the lockfile frozen
+  runs. There is no leaf file whose conflict announces it at the moment it
+  happens, which is why the law has to be typed into the brief instead. Any
+  rung touching `package.json` or `pnpm-lock.yaml` holds the wave alone. The
+  belt underneath it is a gate leg that installs with the lockfile frozen; a
+  product that has not built one yet has the exclusivity law and nothing else,
+  and the brief says which of the two it is standing on.
+- **(ii) Client-regeneration rungs are SERIAL.** A generated client is a build
+  artifact of one tree and one contract. Two rungs regenerating it produce two
+  artifacts of two different contracts, and the merge silently keeps one —
+  schedule them one at a time, exactly as migrations are scheduled, for
+  exactly the same reason.
+- **(iii) Frozen-layer edits BATCH, the way `core` does.** The root layout, the
+  shared providers, the request middleware, the design tokens and the framework
+  config are the client's `apps/core`: a rung touching one serializes the line
+  behind it. It states its reason in the plan and batches with the other
+  frozen-layer work into a rare, deliberate rung — the clause above, one layer
+  over.
+
+**And say what no fence dissolves.** Those three are where parallel is illegal.
+Holistic visual coherence is **not** one of them, because it is not a
+build-time question at all: it is answered at verification, which is serial by
+nature and by design — build parallel, verify serial, which is already how the
+Python side works. A plan promising coherence as an output of the fan-out has
+promised something a fan-out cannot deliver, and the honest form says where it
+is actually paid for.
 
 **Must NOT include:** any invitation to judge whether the result is good. That
 belongs to stage 6, with someone else.

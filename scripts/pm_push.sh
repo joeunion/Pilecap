@@ -81,6 +81,39 @@ die() {
 }
 
 BANK=0
+
+# --- --no-fold, LIFTED OUT BEFORE THE MAIN PARSER, AND NEVER SILENTLY --------
+#
+# WHY IT IS LIFTED. `--bank` enforces `[ "$#" -eq 1 ]` below — a bank measures
+# THIS checkout's tree, so it takes no commit argument — and `--no-fold` would
+# land in that count and be rejected as a commit-ish. So it is taken out of the
+# argument list here, before anything counts.
+#
+# AND WHY THE REFUSAL BELOW EXISTS. The sibling product lifts it out exactly
+# like this and then consults it ONLY inside the `--bank` block, which makes
+# `./scripts/pm_push.sh --no-fold` an ORDINARY PUSH OF HEAD with the flag
+# accepted, inert, and nothing printed (a defect confirmed by reading their
+# tree). The effect is benign — a plain push regenerates nothing, so there is
+# nothing there for a fold to skip — but the LEGIBILITY is not: an operator
+# typed a flag, this script took it, and it did nothing. That is the
+# never-silent class, and this repository does not inherit it. Outside `--bank`
+# the flag is a loud refusal, and `pm_merge.sh` carries the identical semantic
+# at its own parser: `--no-fold` is legal only where a fold would otherwise run,
+# which in both scripts is the bank.
+NO_FOLD=0
+_pm_push_total=$#
+_pm_push_i=0
+while [ "$_pm_push_i" -lt "$_pm_push_total" ]; do
+    _pm_push_arg="$1"
+    shift
+    case "$_pm_push_arg" in
+    --no-fold) NO_FOLD=1 ;;
+    *) set -- ${@+"$@"} "$_pm_push_arg" ;;
+    esac
+    _pm_push_i=$((_pm_push_i + 1))
+done
+unset _pm_push_arg _pm_push_total _pm_push_i
+
 case "${1:-}" in
 --dry-run)
     DRY_RUN=1
@@ -123,6 +156,18 @@ case "${1:-}" in
     ;;
 esac
 [ "$#" -le 1 ] || die "one commit at most; got: $*"
+
+# The never-silent half of the lift above. A flag that was accepted and did
+# nothing is the defect; a flag that is refused with its reason is not.
+if [ "$NO_FOLD" = "1" ] && [ "$BANK" != "1" ]; then
+    die "--no-fold is only meaningful with --bank, and this is not a --bank run.
+   The fold runs at the BANK: it regenerates the derived files and commits them
+   BEFORE the gate measures the tree, so that the verdict vouches for the tree
+   the push carries. A plain push pins and pushes a commit that already exists
+   and regenerates nothing, so there is nothing here for --no-fold to skip.
+   Accepting it silently would be a flag that did nothing with no line printed.
+   scripts/pm_merge.sh refuses the same combination in the same words."
+fi
 
 ROOT="$(git rev-parse --show-toplevel)" || die "not inside a git checkout"
 
@@ -178,6 +223,62 @@ fi
 if [ "$BANK" = "1" ]; then
     GATE="$ROOT/scripts/check.sh"
     [ -x "$GATE" ] || die "no executable gate at ${GATE} — there is nothing to bank with"
+
+    # --- THE FOLD, FIRST, AND THE BANK IS OF THE POST-FOLD HEAD --------------
+    #
+    # WHERE IT SITS, AND WHY IT CANNOT SIT ANYWHERE ELSE. The fold regenerates
+    # this checkout's derived files and COMMITS them. The gate below keys its
+    # verdict on the working tree it measures. So the fold must run BEFORE the
+    # gate: folding after it would be worse than not folding at all, because the
+    # verdict would vouch for a tree the fold then changed — a banked green over
+    # content nobody measured, which is the one failure the ledger exists to
+    # prevent.
+    #
+    # It also sits before the cleanliness check below, which is what lets the
+    # fold's own commit land and the bank still see a clean tree. A fold that
+    # ran after that check would leave the tree dirty at exactly the moment the
+    # bank refuses a dirty tree.
+    #
+    # AND THE SHA IS RE-READ AFTERWARDS. `SHA` was resolved above, before any of
+    # this, and `--bank` takes no commit argument — so it is pre-fold HEAD. The
+    # fold may add a commit. Re-reading it here is what makes "bank the
+    # post-fold HEAD" true rather than intended: the INTENDED TIP line, the
+    # RANGE, the pin and the push all read the re-resolved value.
+    #
+    # It also closes the byte-pin's missing tooth by construction: nothing in
+    # `check.sh` or `fe_gate.sh` compares the committed generated client to a
+    # fresh regeneration, so a stale contract banks green today. The fold
+    # regenerates it and either commits the shift under its own subject or
+    # refuses — never a silent green bank over a stale contract.
+    if [ "$NO_FOLD" = "1" ]; then
+        echo "pm_push --bank: ** --no-fold — THE DERIVED FILES WERE NOT REGENERATED. **"
+        echo "  The contract, the secret baseline and the budget floors are whatever is"
+        echo "  committed. If the gate below reddens on a stale client or on a budget,"
+        echo "  that is THIS FLAG and not the tree."
+        echo ""
+    else
+        FOLD="$ROOT/scripts/pm_fold.sh"
+        [ -x "$FOLD" ] ||
+            die "no executable fold at ${FOLD} — pass --no-fold to bank without one"
+        echo "pm_push --bank: folding ${ROOT} before the gate — ${FOLD}"
+        echo "  It regenerates the derived files and commits AT MOST the paths on its own"
+        echo "  typed list; anything it modifies outside that list is its own exit 2 naming"
+        echo "  the file, with nothing committed."
+        FOLD_RC=0
+        "$FOLD" || FOLD_RC=$?
+        if [ "$FOLD_RC" != "0" ]; then
+            echo "!! pm_push --bank: the fold exited ${FOLD_RC}." >&2
+            echo "   2 is 'could not fold' — a dirty tree, a generator that failed, or a" >&2
+            echo "   file modified outside the derived list. Read its output above." >&2
+            echo "   Nothing was banked, nothing was pinned and nothing was pushed." >&2
+            exit "$FOLD_RC"
+        fi
+        SHA="$(git -C "$ROOT" rev-parse --verify "HEAD^{commit}")" ||
+            die "could not re-read HEAD after the fold"
+        echo "pm_push --bank: banking the POST-FOLD HEAD $(git -C "$ROOT" rev-parse --short "$SHA")."
+        echo ""
+    fi
+
     if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
         echo "!! pm_push --bank: ${ROOT} has uncommitted changes." >&2
         git -C "$ROOT" status --short >&2

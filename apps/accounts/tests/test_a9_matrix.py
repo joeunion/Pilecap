@@ -828,6 +828,11 @@ def test_row_21_the_changed_set_is_exactly_what_the_plan_named(
         # `erase_user`'s half, kept private so that the revocation cannot be
         # asked for except by erasing somebody.
         "_revoke_identity_platform_access",
+        # The branding starter (landed 2026-09-04): the sixth, and the first one
+        # the deployment's own look rides on. Added here rather than left for
+        # this census to catch by silently reddening — a fourth (now fifth)
+        # caller added quietly is exactly what W2R5-21 exists to refuse.
+        "set_identity_branding",
     }
 
     before = WorkflowRun.objects.count()
@@ -856,6 +861,13 @@ ACCOUNTS_SCOPE_ENTRIES = {
     ("27", "allow_import", "apps/accounts/activities.py"),
     ("27", "allow_import", "apps/accounts/management/commands/zitadel_seed.py"),
     ("27", "allow_import", "apps/accounts/management/commands/zitadel_audit.py"),
+    # Added 2026-09-07 with the first-identity door (ADR ident-9), deliberately
+    # and as the conversation this census exists to force. The command mints the
+    # deployment's first Zitadel human before any tenant exists, so there is no
+    # service to route it through and no persona a runtime door could
+    # authenticate — the fourth member of the `zitadel_*` shell-door family, and
+    # the reason is beside the entry in `quality/rules.yaml`.
+    ("27", "allow_import", "apps/accounts/management/commands/zitadel_first_admin.py"),
 }
 
 

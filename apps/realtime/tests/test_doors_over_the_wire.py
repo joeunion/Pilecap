@@ -58,11 +58,19 @@ PATH = "/ws/events/"
 # Past `channels_redis.core.RedisChannelLayer.brpop_timeout` (5s), which is the
 # window a connection used to die in, with enough margin that a loaded machine
 # does not make this test lie either way.
+#
+# **The one duration SENT-1 deliberately left alone.** Every other wait
+# in this app became an ordering fact; this one is genuinely temporal — the
+# claim IS that the socket outlives a blocking-read window, so the number is the
+# property rather than a bet on the machine, and the header above says why.
 IDLE = 7.0
 
-# The push has to cross Redis, so it is worth more than the module default —
-# and still far short of the idle above, so a failure says which half broke.
-PUSH_TIMEOUT = 5.0
+# `PUSH_TIMEOUT = 5.0` was here, and SENT-1 deleted it rather than widening it.
+# It was margin, not meaning: it bought the push five seconds instead of the
+# harness default's two, which is the same bet at a different price. The push
+# now waits on the application task's own sentinel — `receive_json()` returns
+# the frame or names why nothing is coming — so a Redis round trip that is slow
+# is no longer a failure and a bridge that is broken is no longer a wait.
 
 REDIS_CONNECT_TIMEOUT = 0.5
 
@@ -157,7 +165,7 @@ async def test_a_socket_on_the_real_channel_layer_survives_an_idle_window(
             assert socket.alive, f"the socket died while idle: {socket.failure()!r}"
 
             await push_event(tenant_id=tenant.pk, event=an_event())
-            received = await socket.receive_json(timeout=PUSH_TIMEOUT)
+            received = await socket.receive_json()
 
     assert received["name"] == "example.widget.created"
     assert received["payload"]["name"] == "A widget"

@@ -22,6 +22,24 @@
 #      the name readable at a glance; the path hash is what makes it this
 #      checkout's and nobody else's.
 #
+# THE DECLARATION BELOW IS READ BY `scripts/gate_ledger.sh`. The `--loop`
+# ledger's environment fingerprint hashes `.env` so that a verdict earned under
+# one configuration cannot vouch for another. A key this file DERIVES from the
+# checkout's own path would put every checkout's directory into that hash and no
+# verdict would ever be reused anywhere — so the deriver declares what it
+# derives, beside the derivation, in the file whoever changes it already has
+# open. A list in the ledger would be right on the day it was written.
+# `loop_env_derived_keys` finds zero declarations only when this convention is
+# gone, and answers that by hashing the whole file — a miss, never a hit on an
+# exclusion nobody could verify.
+#
+# >>> derived-env-keys >>>
+# DATABASE_NAME — derived per checkout as djb_<branch>_<8 hex of the SHA-256 of
+#   the checkout's absolute top-level path> by db_name_for_checkout below, and
+#   written into .env by scripts/rung_start.sh and scripts/verify_start.sh. It
+#   is a property of WHERE this tree is, never of what is in it.
+# <<< derived-env-keys <<<
+#
 # Identifier arithmetic — Postgres allows 63 bytes, and it TRUNCATES rather
 # than refusing, so two names that differ only past byte 63 become one database.
 # The budget now has a fourth term: djb_(4) + branch(<=38) + _(1) + hash(8) =

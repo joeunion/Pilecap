@@ -6,9 +6,10 @@ description: >-
   logic lives, adding an app, adding a door, adding a workflow. It is the long
   form of house rules 11–26 in docs/product/architecture.md: what shape each
   thing takes, why, and how the gate or the criteria enforce it. NOT for
-  writing the code (load django-conventions for that) and NOT for deciding
-  what gets built (that is product-manager's). The architect says what shape
-  and why; the builder's skill says how to write it.
+  writing the code (load django-conventions for that, or fe-conventions for the
+  client layer) and NOT for deciding what gets built (that is
+  product-manager's). The architect says what shape and why; the builder's
+  skill says how to write it.
 ---
 
 # The architect's rules — what shape, and why
@@ -36,18 +37,21 @@ Where this file sits:
   dispatches you (`references/dispatch-briefs.md`, "Engineering lead —
   stage 4").
 
-Every rule below is stated as **statement · why · enforced · wrong → right**.
-"Enforced" names the house rule id the gate runs, or says *criterion* (you
-write it into the rung) or *review* (the lead checks it before returning
-criteria; nothing automatic catches it yet). **Every module this file marks
-`[main]` or `[A7a]` is on main today** — `core.service`, `core.authz`,
-`core.audit`, `core.context`, `core.exceptions`, `core.actor`, `core.log`,
-`core.observability`, and `selectors.py` / `policies.py` / `events.py` per app
-all exist. The two markers now mean only *which shape a snippet shows*:
-`[A7a]` is the contract's form, which is what the code does; `[main]` beside an
-older snippet is kept where it names a real file, and where the snippet itself
-predates the contract it says so. **Read the module, not this file** — the
-markers are provenance, and the tree is the authority.
+**The long form sits beside this file.** What follows is the imperative core —
+each rule as a statement with what enforces it. The provenance markers, the
+worked snippets, the long rationales and the formats you copy live in
+`references/`:
+
+| When you need | Load |
+|---|---|
+| what `[main]` and `[A7a]` mean, and how to read a snippet's provenance | `references/provenance.md` |
+| A5a (visibility is down only) and A5c (`governing()`, the link gate) in full | `references/boundaries.md` |
+| the app-map table to copy, its worked example, and the ADR line format | `references/app-map-and-adr.md` |
+| C1's contract snippet, C3–C5, C7's `policies.py`, C8 (`may_be_named`), C9 (`derive_org_from`) | `references/service-contract.md` |
+| D1a, and D8–D11: ledgers, versioned config, immutable keys, the snapshot | `references/models-and-ledgers.md` |
+| E3, E4, E6, E9 (the refusal grammar), E10 (`MeasuredOut`) | `references/door-contracts.md` |
+| the client layer — the transfer map and the DO-NOT-APPLY list | `references/client-layer.md` |
+| G2 (what every service, door and workflow carries) · §H · §J | `references/observability.md`, `references/platform-decisions.md`, `references/rejected-shapes.md` |
 
 ## A · Boundaries
 
@@ -97,28 +101,11 @@ difference is a leak in one direction and a `visible_to(root)` in the other.
 *Enforced:* house rule **24** enforces the *read* once the base is chosen; the
 choice itself is review's, which is why it is written down.
 
-- **Cost of getting it wrong safely** (org-scoping something everyone may see):
-  every read carries `.visible_to(root)`. Recoverable in one rung.
-- **Cost of getting it wrong the other way** (tenant-scoping something a seller
-  owns): every member of the tenant reads every seller's rows, and the fix is a
-  migration plus a rewrite of every door. Not recoverable in one rung.
-- **So the default under uncertainty is `OrgScopedModel`.** A flat product pays
-  nothing for it: the tenant is a depth-one tree, every membership sits on the
-  root, and `visible_to(root)` is the whole table.
-
-**A5a — The direction of visibility is fixed: down only.** A membership sees
-its own node and everything beneath it; roles inherit downwards
-(`core.authz.effective_role`). Upward or sideways visibility — a sub-seller
-seeing its parent's rows, a branch seeing a sibling's — is **not** a
-configuration flag and is never added by widening `visible_to`. It is a
-**named policy with a recorded reason** in the product's `architecture.md`
-(context · what business fact demands it · what is exposed · trigger to
-revisit), implemented as an explicit predicate in the owning app's
-`policies.py` and a selector that says so in its name. *Why:* every deviation
-anybody has ever wanted turns out to be one report for one role, and a
-selector for that report is a hole with edges; widening the primitive is a hole
-without any. *Enforced:* review — house rule 24 sees the shape of the read, not
-its direction, and says so in its `does_not_cover`.
+**Getting A5 wrong is recoverable in one direction only** — org-scoping
+something everyone may see costs a `.visible_to(root)` on every read;
+tenant-scoping something a seller owns is a migration plus a rewrite of every
+door. **So the default under uncertainty is `OrgScopedModel`**, and a flat
+product pays nothing for it. The two costs in full: `references/boundaries.md`.
 
 **A5b — A grant is bounded by the granter.** No membership may be created or
 promoted above the granter's own effective role, or outside their subtree
@@ -126,57 +113,15 @@ promoted above the granter's own effective role, or outside their subtree
 support agent to act above that line does it as a **`system` actor through a
 service**, which is audited and named, never by exempting a person.
 
-**A5c — Inherited configuration resolves upward through `governing()`;
-nothing else ever looks up.** A model whose rows are configuration a parent
-sets for its descendants — a policy, a template choice, a quiet-hours window —
-declares **`InheritedDownward`** (`apps.core.models`), and only then is
-`Model.objects.for_tenant(t).governing(org)` legal: the rows on `org`'s
-**ancestor chain**, nearest first, in one query — the chain is decomposed out
-of `org.path` in Python (`ancestor_paths`), never a tree walk. *Why:* "the
-nearest ancestor's policy wins" is one algorithm that repeats per product (ADR
-core-3 counted three identical call sites in the product this was lifted
-from), and the alternative — widening `visible_to` — is A5a's hole without
-edges. **Upward config resolution, never upward visibility**: `visible_to` is
-untouched and stays downward-only; a branch *resolves* the policy it was
-already governed by whether it could see it or not, and it still cannot list
-its parent's rows. `governing()` on an unmarked model raises `TypeError`
-naming the marker; `governing(None)` returns nothing — the same fail-closed
-shape as `for_tenant(None)` and `visible_to(None)`. The declaration also
-widens `core.authz.may_be_named` by exactly the marked population — the **link
-gate** (§C8): a branch may *name* ancestor config it could never list,
-because the edge on the hole is that the caller must already hold the
-reference, so it discovers nothing. Sideways is not this and never becomes
-this — a sibling share is A5a's named policy with a recorded reason.
-*Enforced:* the model refuses (`TypeError`); house rule **24** as amended — a
-`governing()` on a model that has not declared `InheritedDownward` is a
-violation, so the widening and its fence are born together; the marker
-decision itself is review's, made in the app map beside the A5 choice.
-*Wrong:* `visible_to` widened to "and ancestors" for one resolver. *Right:*
-`class WidgetPolicy(InheritedDownward, OrgScopedModel)`, a `get_` selector
-calling `.for_tenant(t).governing(actor.org).first()` — and the **list**
-selector still `visible_to`: a list never widens upward.
-
-### The app-map template
-
-One table in the product's `architecture.md`, owned by the lead, edited only
-by the lead, one row per app. A rung's brief carries the delta to this table.
-
-| app | noun (aggregate) | depends_on | doors exposed | workflows owned | events emitted / consumed |
-|---|---|---|---|---|---|
-| `<label>` | `<Noun>` (+ children) | `core, accounts, …` | REST `/api/v1/<prefix>/` · MCP `<nouns>.*` · socket · webhook in/out | `<WorkflowName>` | `<app>.<noun>.<past-verb>` / consumed ones |
-
-A worked example for a generic domain (never any real product):
-
-| app | noun (aggregate) | depends_on | doors exposed | workflows owned | events emitted / consumed |
-|---|---|---|---|---|---|
-| `orders` | `Order` (+ `OrderLine`) | `core, accounts, events, workflows` | REST `/api/orders/` · MCP `orders.create`, `orders.cancel` · socket push | `FulfilOrder` | emits `orders.order.placed`, `orders.order.cancelled` |
-| `invoices` | `Invoice` (+ `InvoiceLine`) | `core, accounts, events, workflows, orders` | REST `/api/v1/invoices/` · MCP `invoices.issue` · webhook out | `CollectInvoice` | emits `invoices.invoice.issued`, `invoices.invoice.paid`; consumes `orders.order.placed` |
-
-The `orders` entry in `invoices.depends_on` is an ADR line: *context:* an
-invoice is built from an order's lines · *decision:* `invoices` reads `orders`
-through its selectors · *rejected:* duplicating the lines onto `Invoice` at
-placement (two truths), an event carrying every line (a payload that grows
-with the order) · *trigger to revisit:* `orders` needs to read `invoices` back.
+**A5a — visibility is fixed: down only.** Upward or sideways is a named policy
+with a recorded reason in the product's `architecture.md`, implemented as a
+predicate in `policies.py` — never a widened `visible_to`. **A5c — inherited
+configuration resolves upward through `governing()`**, and only on a model that
+declared `InheritedDownward`; it widens `may_be_named` by exactly that population
+(the link gate, §C8) and touches visibility not at all. Both in full, with what
+they reject: `references/boundaries.md`. **The app-map table the lead owns**, its
+worked example and the delta a rung brief carries:
+`references/app-map-and-adr.md`.
 
 ## B · Shape
 
@@ -217,20 +162,8 @@ the transaction boundary and the authorization check can live; a positional or
 untyped service is a door nobody can reason about. *Enforced:* house rule
 **13**.
 
-```python
-# the shape before the decorator existed — kept as the WRONG form; nothing on
-# main looks like this any more (apps/example/services.py is @service today)
-@transaction.atomic
-def create_widget(*, tenant: Tenant, owner: User, name: str, notes: str = "") -> Widget: ...
-
-# [A7a] the same service under the contract — @service opens the span, writes
-# the AuditEntry, logs .called/.failed with the bound context
-@service
-def create_widget(*, tenant: Tenant, actor: Actor, name: str, notes: str = "") -> Widget:
-    authz.require(actor, "widget.create", tenant)
-    with transaction.atomic():
-        ...
-```
+The contract's worked snippet — what `@service` opens, writes and logs, beside
+the shape that predates it: `references/service-contract.md`.
 
 **C2 — One transaction boundary per service; events and workflow starts ride
 `on_commit`.** `emit()` is called inside the `atomic()` (it writes the outbox
@@ -243,29 +176,6 @@ call to commit. *Why:* a rolled-back write must leave no event and no run.
 user=None, org=actor.org, id=workflow_id(...))` — `org` is the acting hat the
 run is started under, and omitting it makes every activity in the run act for
 the whole tenant.
-
-**C3 — A service calls another app's *services and selectors*, never its
-models.** *Why:* the other app's invariants live in its services; writing its
-table from outside is the sideways import with a worse failure mode.
-*Enforced:* house rule **10** (the door side), **7** (the import side); review.
-
-**C4 — A service reachable from a workflow, a webhook or an MCP tool is
-idempotent, keyed on `idempotency_key`.** *Why:* Temporal retries activities,
-webhook senders redeliver, agents repeat calls; a second identical call must
-return the first result, not a second row. *Enforced:* criterion ("calling `X`
-twice with the same key yields one row and the same return"); the REST side
-is E7.
-
-**C5 — Services raise `core.exceptions.*`; `HttpError`, `Http404` and status
-codes never appear in `services.py` or `selectors.py`; the one mapper is
-`config/api.py`.** *Why:* the service serves five doors; a status code is one
-door's vocabulary. *Enforced:* house rule **14**. **[main]** `config/api.py`
-maps `ValidationError` → 400, `IntegrityError` → 409, `PermissionDenied` →
-403, `ObjectDoesNotExist` / `Http404` → 404, body
-**`{detail, code, errors?, remedies?}`** — `code` is always present, and the
-body is not composed there: `core.exceptions.wire_refusal` builds it and
-`on_domain_error` sends it (§E9), so `core.exceptions` is the hierarchy *and*
-the composer both doors share.
 
 **C6 — Reads live in selectors.** `get_<noun>(...)` raises the domain
 not-found; `list_<nouns>_for_tenant(...)` returns the scoped queryset with its
@@ -288,61 +198,16 @@ door half). *Wrong:* `if request.user.is_staff:` in a route; a tool that
 checks a role. *Right:* the route resolves `request.tenant` and calls the
 service; the service calls `authz.require(actor, "invoice.void", invoice)`.
 
-```python
-# [A7a] apps/invoices/policies.py — the code half; the role comes from Membership.role
-def can(actor: Actor, action: str, obj: object) -> bool:
-    if action == "invoice.void":
-        return (isinstance(obj, Invoice)
-                and obj.status == Invoice.Status.ISSUED
-                and actor.role in {"owner", "admin"})
-    ...
-```
-
-**C8 — A reference handed to a service must have been reachable:
-`may_be_named`, and the `# reach:` valve.** `require` answers "may you do this
-kind of thing here"; the scoped manager answers "whose rows are these";
-neither answers **"could you have got hold of *that* reference"** — the FK
-handed over by id that resolves to a row in a branch the caller holds no
-membership over. A `@service` that writes an `OrgScopedModel` passes each
-FK-target keyword argument through **`core.authz.may_be_named(actor, obj)`**:
-True only downward (the actor's hat covers `obj.organization`'s subtree — the
-same direction `visible_to` reads in) or through the **link gate** (`obj`'s
-model declared `InheritedDownward` and `obj.organization` is on the hat's
-ancestor chain — §A5c); everything else is False, including everything
-unresolved — no hat, no tenant, another tenant's row — and there is **no
-`system` exemption** inside the helper. The refusal is `NotFound()`, never
-`Forbidden`: not-there and not-yours are one answer on purpose (§E9). A call
-site that genuinely acts tenant-wide — a platform workflow holding no hat —
-writes a **`# reach: <reason>`** comment on the line it excuses: a sentence a
-reviewer can disagree with, which the gate counts and prints — a backlog that
-may shrink and never grow. *Enforced:* house rule **26** — AST over
-`services.py`, gate-tier, ratcheted over the measured backlog; whether a
-`# reach:` reason is a *good* one is review's and the surveyor's, a declared
-`does_not_cover`. *Wrong:* `set_preference(recipient=recipient, ...)` writing
-against whatever row the client's id resolved to. *Right:* the form in
-`apps/core/authz.py`'s own docstring — `if not may_be_named(actor, recipient):
-raise NotFound()` — or the recorded `# reach:` line.
-
-**C9 — An org-scoped row that inherits its organization declares it:
-`derive_org_from`.** Some rows do not *choose* their branch — a preference
-belongs wherever its recipient belongs, a line wherever its order does. The
-model says so (`derive_org_from = "<fk-name>"`, a `ClassVar` on
-`core.models.OrgScopedModel`), and `clean()` then refuses a **final**
-`organization` that disagrees with the FK-target's, on insert and on update
-alike. *Why:* the class this closes is a write that derived the organization
-from the *actor's hat* while the row it hangs off belongs somewhere else — the
-row lands in a branch its own parent cannot see, silently, a leak in whichever
-direction the mismatch went, and no read afterwards can tell you it happened.
-It is an invariant on the row's own fields-by-reference, which is the kind of
-rule `clean()` is for — D3 stands: a database constraint cannot reach across a
-row to read the parent's column, and a service that remembers to check is a
-service somebody will one day write without. *Enforced:* the landing gate runs
-where a service calls `full_clean()` (house style:
-`with as_invalid(): row.full_clean()` — conv §4), which is a **declared blind
-spot**, with rule **26** the belt; the declaration itself is review's, placed
-when the lead places the model. *Wrong:* `organization=actor.org` stamped on
-a child row whose parent lives elsewhere. *Right:* the declaration, and an
-`organization` left to agree with the target's.
+**C3 — a service calls another app's services and selectors, never its models**
+(house rules 10 and 7). **C4 — a service reachable from a workflow, a webhook or
+an MCP tool is idempotent, keyed on `idempotency_key`.** **C5 — services raise `core.exceptions.*`; `HttpError`, `Http404` and status
+codes never appear in `services.py` or `selectors.py`** (house rule 14; the one
+mapper is `config/api.py`). **C7's code half** — roles are data, policies are
+code. **C8 — a reference handed to a service must have been reachable**:
+`may_be_named`, the `# reach:` valve, `NotFound()` and never `Forbidden` (house
+rule 26). **C9 — a row that inherits its organization declares
+`derive_org_from`**, and `clean()` refuses a final `organization` that disagrees.
+All six: `references/service-contract.md`.
 
 ## D · Models
 
@@ -352,16 +217,6 @@ index well and leak no count; the scoped base is what house rule 8 can see.
 *Enforced:* house rules **2**, **8**. **[main]** `apps.core.models` ships both
 bases, and the pk default is UUIDv7 today (`apps/core/models.py` via
 `apps/core/ids.py`) — the ruling landed. Form: conv §2.
-
-**D1a — An org-scoped model inherits `OrgScopedModel`, which is
-`TenantScopedModel` plus an `organization` FK.** Uniqueness on one still names
-`tenant` (a slug is unique per tenant, not per branch) unless the product means
-"unique within this branch", which is a decision worth a comment. Services take
-the acting organization from **`actor.org`** and never as a parameter — a
-service with an `organization=` argument is a door that can write into a branch
-it holds no membership over, which is the tenancy hole one level down.
-*Enforced:* house rule **24** (the read); review (the write's shape). Form:
-conv §2.
 
 **D2 — `on_delete` is explicit: `PROTECT` by default; `CASCADE` only for owned
 children of the aggregate; `SET_NULL` with a reason comment.** *Why:* a
@@ -399,80 +254,12 @@ nothing about when or by whom; an `_at` is an audit fact. *Enforced:* house
 rule **15**; criterion (the archived row is absent from every list door and
 present in the audit trail).
 
-**D8 — A ledger declares itself: `append_only = True`; mistakes are
-superseded, never edited.** A model whose rows are witnessed history — an
-audit entry, a witnessed fact, an accrual, a stage-transition log — declares
-`append_only: ClassVar[bool] = True` (`apps.core.models`;
-`is_append_only` / `append_only_models` read the population off the registry;
-`core.audit.AuditEntry` is the first member). A service may `.create()` a
-member's rows; nothing anywhere updates or deletes one. **The correction
-convention is a superseding row**: a wrong entry is answered by a new row that
-names the row it supersedes (an FK or a recorded id) and states why — the
-ledger then holds the mistake *and* the correction, which is what makes it
-evidence rather than a table someone tidied. *Why:* the promise used to be a
-rule about one model's *name*, and a promise about a name does not survive a
-product; discovered off the registry, a product adds a member by declaring it
-and the rule covers it in the same commit with no gate edit. A base class was
-rejected (ADR core-6): MRO churn to buy a property the attribute already has.
-*Enforced:* house rule **20**, generalized over the declaring population;
-criterion (introspect shows no update or delete door for a member). Trigger:
-first production deploy → DB-grant enforcement (revoke UPDATE/DELETE) as the
-belt. *Wrong:* `entry.amount = corrected; entry.save()`. *Right:* a `record_*`
-service creating the superseding row.
-
-**D9 — Config a process consumes is versioned: create / revise / retire,
-never edited in place.** A template, a policy, a rule set: `name` + `version`,
-unique per `(tenant, name, version)`; `revise_*` writes a **new row at
-`version + 1`**; `retire_*` moves `is_active` and nothing else; resolution
-picks the latest active row; a retired version stays readable because every
-row that ran under it points at it. **[main]** `apps/comms/models.py`
-(`MessageTemplate`, `DeliveryPolicy`) is the worked shape and
-`revise_template` / `retire_policy` in `apps/comms/services.py` the services.
-*Why:* config edited in place rewrites history — every row that recorded "sent
-under v2" now points at different words — and changes the rules under
-processes mid-flight (D11 is that half). A shared versioned-config base class
-is **deferred, with its trigger recorded** (the second template-side
-consumer); the shape is doctrine now. *Enforced:* review + criterion
-("revising yields a new row; rows that ran under the old version still render
-it"). *Wrong:* `template.body = new_body; template.save()`. *Right:*
-`revise_template(...)` → v+1.
-
-**D10 — Immutable keys under renamable names.** A config row that a snapshot,
-a ledger or another row will reference carries an immutable **`key`** slug,
-separate from any display name; references — snapshots, event payloads,
-foreign records — hold the key (plus the version where D9 applies), and the
-display name is free to change without rewriting anybody's history. *Why:*
-reference-by-display-name makes every rename either a migration of other
-people's data or a silent break of it; reference-by-pk alone loses the
-human-legible answer to "what was this sent under" months later. A model may
-let one column serve both jobs — comms' `name` does — but then that column is
-**immutable by contract** and a renamable label is a separate field added the
-day somebody wants renames. *Enforced:* review (the lead names the key column
-when placing a referenced config model); criterion ("renaming the config
-changes no stored reference and breaks no replay"). *Wrong:* a snapshot
-storing `policy="Gold tier escalation"` that a rename orphans. *Right:*
-`key="gold-escalation"` immutable, `label` renamable, the snapshot holding
-the key.
-
-**D11 — A process judges against the snapshot it started under; moving to
-current rules is an explicit service.** When a long-running process starts
-under a policy, the policy's material content is **snapshotted into the run's
-input** — **[main]** `apps/comms/types.py`: the run carries the *steps*, not
-the policy id — and the run finishes under that snapshot; revising the policy
-never reaches into a run already waiting (comms proved the semantics over the
-wire; this line promotes them to doctrine). A run that *should* pick up the
-new rules is moved by a **named, audited service that says so** — never by the
-revision silently re-judging in-flight work. *Why:* judging in-flight work
-against the live row turns every config edit into an unreviewed bulk action
-over everything currently waiting — invisible in the diff, unanswerable in
-the audit trail; the snapshot makes "which rules was this decided under" a
-recorded fact. It is also what rule 9 already requires: a workflow that
-re-read the live row would have history that no longer explains its own
-decisions. *Enforced:* house rule **9** (the workflow half); criterion ("a
-policy revised mid-wait does not change the waiting run; the mover service
-exists and is audited"). *Wrong:* an activity re-reading the policy row at
-each step. *Right:* the plan in the run's input, and an explicit `move_*`
-service for the deliberate case.
+**D1a — an org-scoped model inherits `OrgScopedModel`**, and a service takes the
+acting organization from `actor.org`, never as a parameter. **D8 — a ledger
+declares itself (`append_only = True`); mistakes are superseded, never edited.
+D9 — config a process consumes is versioned: create / revise / retire. D10 —
+immutable keys under renamable names. D11 — a process judges against the snapshot
+it started under.** All five: `references/models-and-ledgers.md`.
 
 ## E · Contracts across the doors
 
@@ -492,55 +279,6 @@ what a user can, or the agent falls back to scraping. *Enforced:* house rule
 **17** (introspect registries diffed). The lead names each exemption in the
 rung brief with its reason; the builder records it in `rules.yaml`.
 
-**E3 — Events are `<app>.<noun>.<past-verb>`, declared in the app's
-`events.py`, carry `v` in the payload, and are emitted only from services,
-inside the transaction; payloads are the `Out` schema.** *Why:* a name
-declared once is greppable and reviewable; a version lets a subscriber survive
-the next field; an emit from anywhere but a service is a write nobody audited.
-*Enforced:* house rule **16** (name + declaration); **4** (no signal emits);
-criterion (the event row exists after the write, with `v`). Form: conv §8.
-*Wrong:* `emit("OrderCreated", ...)` from a `post_save`. *Right:* **[A7a]**
-`events.py`: `ORDER_PLACED = "orders.order.placed"  # v=1`, and in the service
-`emit(name=ORDER_PLACED, tenant=tenant, payload={"v": 1,
-**OrderOut.from_orm(order).model_dump(mode="json")}, actor=actor)`.
-
-**E4 — Workflows: one workflow per long-running process; deterministic ids via
-`workflow_id()`; activities idempotent, with retries and timeouts declared at
-the call site; workflow code deterministic.** *Why:* a process that waits or
-retries must survive a restart and be findable by name; a random id makes a
-retried service start a second run. *Enforced:* house rules **9**
-(determinism), **18** (ids — `<tenant>:<app>:<noun>:<key>`;
-`start_workflow_on_commit` never receives a random id); criterion (the run's
-end state, read in the Temporal UI or `WorkflowRun`, is the instrument).
-**[main]** `apps.workflows.services.workflow_id(*, tenant, app, noun, key)`;
-`start_workflow_on_commit(..., id=)` refuses any other shape. Form: conv §7.
-*Wrong:* one `ProcessOrder` workflow that fulfils, invoices and collects.
-*Right:* `FulfilOrder` in `orders`, `CollectInvoice` in `invoices`, joined by
-events.
-
-**E5 — API versioning is additive: `/api/v1/` from day one
-(`NinjaAPI(version="1")`); a breaking change is a `v2` router beside `v1`,
-declared by the lead.** *Why:* a renamed field breaks every client at once;
-two routers let clients move. *Enforced:* review; criterion ("`v1` responses
-unchanged for the fixture set"). **[main]** `config/api.py` carries
-`version="1"`. A new field, a new route, a new optional filter: additive. A
-removed field, a changed type, a changed status: `v2`.
-
-**E6 — The list standard.** Every list `@paginate(CursorPagination)` —
-`?cursor=` and `?limit=` ≤ 200, envelope `{items, has_more, next_cursor,
-count}`, `count` computed only for `?include_count=true` (ADR core-18;
-`page`/`page_size` retired outright, and the cursor
-lives in ONE seam that no app duplicates); filters via a `FilterSchema`;
-`ordering=` from a per-route allow-list; `q=` for search; errors `{detail,
-code, errors?}` from the single mapper; UUIDs in paths. *Why:* the field test
-and the MCP client learn one list shape once — and an offset page silently
-skips or repeats a row under a concurrent write, which a cursor cannot.
-*Enforced:* house rule **3** (`auth=`, `@paginate`); **5** (query pin at seeded
-scale — the default list issues no `COUNT`, and the pin is what makes that
-observable); criterion (each filter, ordering and `q` named, with its
-absent-case result). **[main]** the example router, `apps/core/api/pagination.py`
-and `API_PAGE_SIZE` in settings. Form: conv §6.
-
 **E7 — Idempotency keys at the door: `Idempotency-Key` on every write route,
 stored response replayed, tenant-scoped; idempotent activities behind it.**
 *Why:* retrying clients and agents are the normal case. *Enforced:* criterion
@@ -553,64 +291,23 @@ must serialize; an optimistic column is a per-product decision with a trigger.
 *Enforced:* criterion (two concurrent transitions yield one success and one
 domain refusal). Form: conv §5.
 
-**E9 — Every refusal speaks the three-move grammar — fact, structured
-remedies, one composer — and the parts are required at import.** A refusal
-code is declared beside the class that raises it with
-`core.exceptions.register_refusal(code=, boundary=, remedy=, fact=,
-remedies=)`, and the declaration is refused **at import time** — the
-strongest tier the tree has — when the `fact` is missing or a remedy is a
-string rather than a `Remedy`; `DomainError.__init_subclass__` refuses an
-unregistered `code` the same way. The moves: **`fact`** is what is *true*,
-said to whoever is refused (`not_found`'s fact states that not-there and
-not-yours are one answer on purpose — a refusal that told them apart would
-confirm the row exists); **`remedies`** are what they can *do*, as frozen
-`Remedy(label, destination)` — a label a screen puts on a button and an
-assistant says out loud; the internal `remedy` prose survives for whoever
-holds the refusal and **never reaches the wire**. `destination` is **opaque
-in the template** (`<kind>:<name>` tokens — `header:X-Org`,
-`introspect:refusals`): there is no navigation manifest to validate it
-against here, so the first product that grows one grows the rule that checks
-its remedies name real destinations — the product validates, never this
-layer. **One composer**: `core.exceptions.wire_refusal(exc)` builds
-`{detail, code, errors?, remedies?}` — additive on a body that already
-carried the first three keys — and both mappers call it: `config/api.py`
-sends it as JSON, `core.mcp.tool_call` renders it through `refusal_message`
-as one line, code first. A raise site that knows something better than the
-registry may pass contextual `remedies=` (typed; overriding the default
-entirely, never appended). *Why:* remedies composed per door are how the
-screen and the assistant come to offer different ways out of the same
-refusal — the drift the grammar exists to close; parts enforced at import
-are the difference between a grammar and a set of optional parameters.
-*Enforced:* import-time (`register_refusal`,
-`DomainError.__init_subclass__`); criterion (the MCP rendering
-string-compares against the REST body's fields — one composer, two doors,
-rule **17**'s spirit); `introspect`'s refusals section shows every code's
-fact and remedies. *Wrong:* a route catching `NotFound` and shaping its own
-body; a remedy as a sentence. *Right:* `raise NotFound()` anywhere, and the
-composer speaks for every door.
+**E5 — API versioning is additive**: `/api/v1/` from day one, a breaking change
+is a `v2` router beside `v1`, declared by the lead. **E3 — events are `<app>.<noun>.<past-verb>`, declared in the app's `events.py`,
+carrying `v`, emitted only from services inside the transaction. E4 — one workflow
+per long-running process, deterministic ids via `workflow_id()`, activities
+idempotent with retries and timeouts declared at the call site. E6 — the list
+standard: `@paginate(CursorPagination)`, `?cursor=` and `?limit=` ≤ 200, the
+`{items, has_more, next_cursor, count}` envelope, `count` only on request. E9 —
+every refusal speaks the three-move grammar and the parts are required at import.
+E10 — a computed aggregate travels as `MeasuredOut` with an honest basis.** All
+six: `references/door-contracts.md`.
 
-**E10 — A computed aggregate travels as `MeasuredOut`: a number the UI never
-computes, with its basis attached.** `core.schemas.MeasuredOut`
-(`value: Decimal`,
-`basis: MeasuredBasisOut(formula: str, inputs: dict[str, Decimal])`): the
-server ships the number *and how it was arrived at*, so a person can check
-the arithmetic without a second request and no door ever adds the parts up
-for itself. `Decimal` at both levels (rule **15**), rendered as strings on
-the wire, so the value that arrives is the value that was computed. ADR
-core-7 writes the pair unsuffixed in prose; the classes carry the suffix
-every schema carries (rule **16**) — cite them suffixed. *Why:* ship the
-parts and let each door sum them, and the dashboard, the export and the
-assistant disagree about revenue while reading the same rows; the contract
-was honored 104 times by convention in the product this was lifted from,
-which is a convention worth a type. *Enforced:* **criteria-tier, honestly**
-(ADR core-7): "any endpoint returning a computed aggregate" is an open set no
-closed question can scope, so there is no AST rule pretending to recognise an
-aggregate — this checklist carries the line, and the blind spot is declared
-rather than disguised as a rule. The criterion's shape: the value equals the
-recomputation from `inputs` (the basis is honest, *checked*), and the MCP
-twin's fields are byte-equal (rule **17**). *Wrong:* `{"count": 42}`.
-*Right:* a `*StatsOut` whose aggregate field is `MeasuredOut`, with a
-`formula` and `inputs` a reader can re-add.
+**§E+ — a user interface is a CLIENT, never a sixth door**, because every door law
+is vacuous over it. The category, the five-clause shape, coverage rather than
+parity, the transfer map (TRANSFER as-is · TRANSLATE · DO NOT APPLY) and the one
+declared shadow: `references/client-layer.md`. A rung touching the client layer is
+briefed from there, and points the builder at
+`.claude/skills/fe-conventions/SKILL.md` for the how.
 
 ## F · Naming
 
@@ -644,81 +341,17 @@ reconstructs an incident goes to die. *Enforced:* house rule **19**. *Wrong:*
 `LOGGING` dict in an app. *Right:* `log = core.log.get_logger()`;
 `log.info("invoice.issued", invoice_id=...)`.
 
-**G2 — What every service, door and workflow carries.** Every door binds
-context (`request_id`, `session_id`, `tenant_id`, `user_id`, `correlation_id`,
-`causation_id`, `trace_id`) **before** calling a service (**[A7a]**
-`core.context`); `@service` opens a span `<app>.<service>`, logs `.called` /
-`.failed` with the bound context and writes the **[A7a]**
-`core.audit.AuditEntry` — actor (`actor_user`, `actor_token`, `actor_kind` =
-human|agent|system), action (the service name), object type + id, door
-(rest|mcp|socket|workflow|webhook|admin|shell), outcome, redacted input per
-`LOG_KEYS`, and the three ids. `correlation_id` is minted at the door and
-never below it; `causation_id` is the immediate parent; both ride every
-`Event`, `WorkflowRun`, `Delivery` and `AuditEntry`, the Temporal memo and
-`X-Correlation-Id`; `traceparent` propagates into outbound webhook headers.
-`AuditEntry` is append-only — the first member of the declared `append_only`
-population (§D8) — no update or delete path anywhere. *Enforced:*
-house rule **20**; **13** (the decorator is what writes it). *Wrong:* a
-service that mints a `correlation_id`; an admin action that updates an
-`AuditEntry`. *Right:* the door binds, the service inherits.
+**G2 — what every service, door and workflow carries**: the context every door
+binds before calling a service, what `@service` opens and writes, and how
+`correlation_id` and `causation_id` ride every row. **G3 — what the lead
+specifies per rung**: which events, which audit actions with their `door` values,
+which metric the criterion reads. Both: `references/observability.md`.
 
-**G3 — What the lead specifies per rung.** For every rung: *which events* it
-emits (names from `events.py`, with `v`); *which audit actions* must exist
-afterwards (service names and expected `door` values — a rung touching MCP
-produces `door=mcp` rows); *which metrics matter* (route latency/status for
-the new routes, service count/duration/failures, workflow/activity outcomes,
-outbox lag, delivery failures) and which one the criterion reads. The shape of
-such a criterion: "an `AuditEntry` with `action=issue_invoice, door=rest`
-exists for the created row, and none exists for the refused one."
-
-## H · Platform decisions the lead applies
-
-From "The platform the template ships" in `architecture.md`. When a rung
-touches the area, the rule is applied and cited; none is re-argued.
-
-- **Email** — sent from a workflow activity (retries), never from a service or
-  a route; Mailpit in compose for dev; a provider via `connections` in
-  production.
-- **Invitations & tenant lifecycle** — `core.services.invite_member(email,
-  tenant, role)`; `create_tenant / suspend_tenant / close_tenant` are
-  services; allauth signup joins the membership.
-- **Rate limiting** — ninja throttling per token and per tenant, defaults in
-  settings; MCP tools share the same limiter; a new door names its limit.
-- **CORS / CSRF / CSP** — `django-cors-headers` with an env allow-list;
-  session + CSRF for a same-site front end, token auth for everything else;
-  `django-csp` in production settings; a route is never `@csrf_exempt`.
-- **MCP auth** — bearer tokens now; the MCP OAuth 2.1 flow is the recorded
-  upgrade when a third-party client must connect; sockets gain the same
-  bearer path.
-- **File storage** — `apps/files` (ADR files-2, which supersedes the
-  django-storages design that used to sit here): the **boto3-backed storage
-  seam** — `apps/files/storage.py` is the one module under `apps/` that
-  imports boto3, names a bucket setting, signs a URL or reads an object's
-  bytes (MinIO in dev, S3 in production, one seam; **not**
-  django-storages) — keys immutable per version, shaped
-  `t/<tenant_pk>/f/<file_pk>/v/<n>` (pks only, never tenant slugs or
-  filenames); bytes never transit Django (presigned URLs both directions,
-  TTLs declared in settings); uploads two-phase through services, and
-  "replace" is a new `FileVersion`, never an overwrite.
-- **Tenant settings & flags** — `Tenant.settings` JSON (schema-validated) +
-  `core.flags.is_enabled(tenant, name)`; no third-party flag service; a flag
-  is named in the rung that adds it and removed by a named later rung.
-- **Events** — `v` on every payload; the outbox is retained;
-  `manage.py replay_events` is the recovery path, so a consumer must be
-  replay-safe.
-- **Erasure & retention** — `accounts.services.erase_user`; audit/outbox
-  archival is a dated residual with a trigger in the product's queue.
-- **Seed, backup, restore** — `manage.py seed` is dev data only (the method
-  still drives from zero); `scripts/backup.sh`, `scripts/restore_drill.sh`
-  exist so the restore tripwire has something to fire.
-- **Runtime** — `/healthz` (liveness) and `/readyz` (db, redis, temporal); a
-  rung that adds a runtime dependency adds it to `/readyz`.
-- **CI** — GitHub Actions runs `./scripts/check.sh` (full) on every PR; the
-  gate is the only CI; a rung never adds a second pipeline.
-- **i18n** — off by default (`USE_I18N=False`); `Tenant.timezone` / `locale`
-  are present for display; a product turns i18n on as a recorded decision.
-- **Template updates** — no sync tooling yet: `TEMPLATE_VERSION` +
-  `CHANGELOG.md`; products cherry-pick system-layer commits.
+**§H — the platform decisions the lead applies.** Email, invitations and tenant
+lifecycle, rate limiting, CORS/CSRF/CSP, MCP auth, file storage, tenant settings
+and flags, events, erasure and retention, seed/backup/restore, runtime, CI, i18n,
+template updates: applied and cited when a rung touches the area, never re-argued
+— `references/platform-decisions.md`.
 
 ## I · The architect's deliverables per rung
 
@@ -746,16 +379,9 @@ Every rung brief the lead returns carries, in this order:
 9. **The blind-spot list** — what could go wrong that these criteria would
    not catch.
 
-### The ADR line
-
-```
-ADR <app>-<n> · <date> · context: <one sentence> · decision: <one sentence> ·
-rejected: <alt 1> (<why>), <alt 2> (<why>) · trigger to revisit: <the observable event>
-```
-
-It lives in the product's `architecture.md` under the app map. An ADR without
-a rejected alternative is a note, not a decision; one without a trigger is a
-decision nobody can reopen honestly.
+**The ADR line format** — and why an ADR without a rejected alternative is a
+note, and one without a trigger is a decision nobody can reopen honestly:
+`references/app-map-and-adr.md`.
 
 ### Checklist the lead runs before returning criteria
 
@@ -839,9 +465,13 @@ decision nobody can reopen honestly.
       clock (rule 30's shape): an early phase once built the whole hierarchy,
       invitations, erasure and the event spine with no REST/MCP door, and no
       persona could notice (rule 42's class).
+- [ ] A rung touching the client layer is briefed as a **consumer of the REST
+      door, not a door** (§E+1): its criteria cite the transfer map by rule id
+      (§E+4), state coverage rather than parity (§E+3), and point the builder
+      at `.claude/skills/fe-conventions/SKILL.md` for the how. A criterion that
+      transplants a rule from the DO-NOT-APPLY list is returned.
 - [ ] The blind-spot list is written, and is honest.
 - [ ] The rules applied are cited by id at the top of the criteria set.
-
 
 ### I+ · Seams between parallel rungs are code, not prose
 
@@ -853,32 +483,8 @@ not a seam — it is the defect that has merged multiple green trees into a red
 main before. The lead's fan-out deliverable names each seam and the file that
 carries it.
 
-## J · Rejected shapes
-
-Each is settled in `architecture.md` ("Rejected, and why", and the stack
-table); a brief that proposes one is returned, not argued.
-
-- **Fat models only** — logic scatters into 2,000-line models and signals; an
-  explicit services layer is the one that can be house-ruled (rules **4**,
-  **13**).
-- **Signals for events** — logic nobody finds; `emit()` from the service,
-  inside the transaction (rule **4**; §E3).
-- **DRF beside ninja** — two API layers drift with a countdown; ninja's
-  schemas serve every door (stack table, "API layer").
-- **Celery (+ beat, + an FSM on a model)** — a queue with retries; state,
-  resumption and "where is this process" rebuilt per product; Temporal
-  replaces it rather than joining it (stack table, "Background work &
-  workflows").
-- **Schema-per-tenant** — not a template option; a heavily-considered
-  exception only for a named business requirement (stack table, "Tenancy").
-- **Authorization only at the door** — a new door forgets the check; a
-  service cannot be called without it (§C7; rule **13**).
-- **`dict` across doors** — no contract, no OpenAPI, no parity check; one
-  schema per shape (§E1; rule **16**; conv §13).
-- **Random workflow ids** — a retried service starts a second run;
-  `workflow_id()` (rule **18**; `apps.workflows.services` on main refuses
-  anything else).
-- **Inbound webhooks processed inline** — a slow or failing handler loses the
-  event; verify → store → workflow (stack table, "Webhooks & events").
-- **SQLite anywhere** — hides the Postgres behaviour the product depends on
-  ("Rejected, and why").
+**§J — the rejected shapes.** Fat models, signals for events, DRF beside ninja,
+Celery, schema-per-tenant, authorization only at the door, `dict` across doors,
+random workflow ids, inbound webhooks processed inline, SQLite anywhere: each is
+settled in `architecture.md`, and a brief that proposes one is returned, not
+argued — `references/rejected-shapes.md`.

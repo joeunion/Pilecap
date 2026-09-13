@@ -374,8 +374,12 @@ case_the_lease_wait_prints_an_estimate_too() {
     says "Rough estimate from the holder's elapsed time: ~10 min"
     says "not a promise — nothing here decides anything on it"
     # And on the re-announcement too, which is the line a reader actually
-    # watches: the first one scrolls away.
-    says "~10 min left) — holder:"
+    # watches: the first one scrolls away. Its WORDING moved when the holder
+    # started being named in words — the estimate is now stated against the
+    # nominal it came from, which is the fact the bare "~10 min left" left the
+    # reader to guess — and the claim this line makes is unchanged: the
+    # re-announcement carries the estimate, not only the first announcement.
+    says "~10 min of a nominal 15 left)"
     kill "$holder" 2>/dev/null || true
 
     # THE OLD RECORD STILL PARSES. A lease written before the epoch field
@@ -596,6 +600,342 @@ case_a_relative_lease_directory_is_refused() {
     RC=0
     DJB_GATE_LEASE_DIR="some/relative/dir" gate_lease_acquire >"$OUT" 2>&1 || RC=$?
     exits 2
+    # B4.2. The refusal above is what the two `no pytest slot — see above.`
+    # banners in scripts/check.sh stand behind, and those banners now print the
+    # cause as their second line. That is only possible if the refusal RECORDED
+    # its first line — and it can only be asserted here because this call is a
+    # redirect and an environment prefix rather than a `( … )`, so the global
+    # survives it (the lock-order case one file down runs in a subshell on
+    # purpose, and deliberately does not make this claim).
+    CURRENT="and it RECORDED its cause for check.sh's no-slot banner to print"
+    case "${GATE_LAST_REFUSAL:-}" in
+    "")
+        bad "GATE_LAST_REFUSAL is empty — the no-pytest-slot banner would have to say the callee set none"
+        ;;
+    *"DJB_GATE_LEASE_DIR is relative"*) ok "cause: ${GATE_LAST_REFUSAL}" ;;
+    *) bad "the recorded cause is not this refusal's first line: '${GATE_LAST_REFUSAL}'" ;;
+    esac
+}
+
+case_every_in_process_banner_names_its_cause() {
+    # THE CENSUS, so the property cannot be true today and quietly false after
+    # the next leg is added. Every line `scripts/check.sh` PRINTS containing
+    # `see above` is one of two families:
+    #
+    #   * a DRIVE banner — a `./scripts/tests/*.sh` run whose stderr is
+    #     contiguous and short, left as is by the architect's contract. Derived,
+    #     never listed: its next line is the sentence every one of them shares.
+    #   * an IN-PROCESS banner — a sourced callee, or a subprocess of this gate's
+    #     own. Those must carry `cause: ${GATE_LAST_REFUSAL}`.
+    #
+    # WITHIN THREE LINES rather than exactly the next one, because at two sites
+    # the headline SENTENCE wraps across two `echo`s (the db-pin leg and the
+    # archaeology census), and a cause line inserted between the halves would cut
+    # a sentence in two to satisfy a census. The rule is "the cause is printed
+    # with the banner", and three lines is what that costs.
+    CURRENT="every in-process banner names its cause"
+    local gate="${ROOT}/scripts/check.sh" report
+    report=$(awk '
+        { line[NR] = $0 }
+        END {
+            total = 0; drives = 0; inproc = 0
+            for (n = 1; n <= NR; n++) {
+                if (line[n] !~ /echo .*see above/) continue
+                total++
+                kind = "inproc"; cause = 0
+                for (i = n + 1; i <= n + 3 && i <= NR; i++) {
+                    if (index(line[i], "A driver that could not run its cases has not cleared them.")) kind = "drive"
+                    if (index(line[i], "cause: ${GATE_LAST_REFUSAL}")) cause = 1
+                }
+                if (kind == "drive") { drives++; continue }
+                inproc++
+                if (cause == 0) print "MISSING " n
+            }
+            print "TOTAL " total " DRIVE " drives " INPROC " inproc
+        }
+    ' "$gate")
+    local missing counts
+    missing=$(printf '%s\n' "$report" | awk '/^MISSING/ {print $2}' | tr '\n' ' ')
+    counts=$(printf '%s\n' "$report" | awk '/^TOTAL/ {print}')
+    if [ -z "$counts" ]; then
+        bad "the census produced no totals — it has lost its subject"
+        return 0
+    fi
+    if [ -z "$missing" ]; then
+        ok "$counts — every in-process banner carries a cause line"
+    else
+        bad "these in-process banners print 'see above' and no cause: lines ${missing}— a reader without the scrollback is told nothing"
+    fi
+
+    # AND THE POPULATION IS NOT EMPTY. A census that found nothing to judge is
+    # the shape that goes green after somebody deletes the thing it judges.
+    CURRENT="the in-process family is not empty, and the cause lines match it"
+    local inproc declared
+    inproc=$(printf '%s\n' "$counts" | awk '{print $6}')
+    declared=$(grep -cF -e 'cause: ${GATE_LAST_REFUSAL}' "$gate" || true)
+    if [ "${inproc:-0}" -lt 1 ]; then
+        bad "the census found NO in-process banners — either they are gone or the drive-family discriminator now matches everything"
+    elif [ "$inproc" = "$declared" ]; then
+        ok "${inproc} in-process banners, ${declared} cause lines"
+    else
+        bad "${inproc} in-process banners but ${declared} cause lines — one of them is somewhere the census cannot see it"
+    fi
+}
+
+# --- the seam census ----------------------------------------------------------
+#
+# `scripts/gate_refuse.sh` is the refusal seam, and every library that uses it
+# sources it at its own top: `. "${BASH_SOURCE[0]%/*}/gate_refuse.sh"`. Those
+# libraries are DELIBERATELY intolerant of its absence — a library that shrugged
+# at a missing seam would hide this whole class — so the cost lands on the
+# drives, and several of them build a scratch repository by HAND-COPYING one
+# library and nothing else.
+#
+# MEASURED, the night the seam landed: `test_publish.sh` went entirely red, all
+# 44 cases exit 1, its fixture printing
+# `fixture/scripts/archaeology_lib.sh: line 46: .../gate_refuse.sh: No such file
+# or directory`; `test_pm_fold.sh` lost five assertions in its
+# bank-through-pm_push case, because the stub gate that case writes sources the
+# ledger library. Neither red was about anything either drive measures, and the
+# merge train's full gate died on the second of them.
+#
+# DERIVED, NEVER LISTED. The population is every `scripts/*.sh` that sources the
+# seam, read out of the tree — a typed list of names is the shape that goes
+# stale the next time a library takes the seam. The audit is every `cp` of one
+# of those into a drive's scratch `scripts/` directory, and each such copy owes
+# one of two dispositions in the SAME drive: the seam copied beside it, or the
+# whole tree brought in at once (a clone, a `cp -R`, an `rsync`). A copy whose
+# destination is NOT inside a `scripts/` directory is a TEXT TARGET — a file
+# handed to `grep`, which nothing can source — and owes nothing.
+#
+# `$1` the tree to read the population from · `$2` the file to write the
+# dispositions to · `$3...` the drives to audit.
+seam_census() {
+    local root=$1 report=$2
+    shift 2
+    : >"$report"
+
+    # NO PIPELINE WHERE THE ANSWER MATTERS. `sed … | grep -q` puts a reader that
+    # stops at the first match at the tail of a pipeline: the producer dies of
+    # SIGPIPE and `pipefail` reports the failure as the answer. The header case
+    # below argues the same scar at length.
+    local stripped="${report}.stripped"
+    local f base libs="" re=""
+    for f in "$root"/scripts/*.sh; do
+        [ -f "$f" ] || continue
+        base="${f##*/}"
+        [ "$base" = "gate_refuse.sh" ] && continue
+        # Comments stripped first: the seam's own header paragraph names the file
+        # in every library that uses it, and a prose mention is not a source.
+        sed 's/#.*$//' "$f" >"$stripped" 2>/dev/null || continue
+        grep -qE '(^|[^[:alnum:]_/])\.[[:space:]][^;]*gate_refuse\.sh' "$stripped" || continue
+        libs="${libs} ${base}"
+        case "$re" in
+        "") re="${base%.sh}" ;;
+        *) re="${re}|${base%.sh}" ;;
+        esac
+    done
+    if [ -z "$libs" ]; then
+        printf 'POPULATION 0\n' >>"$report"
+        return 0
+    fi
+    printf 'POPULATION %s\n' "$(printf '%s' "$libs" | wc -w | tr -d ' ')" >>"$report"
+    printf 'LIBS%s\n' "$libs" >>"$report"
+
+    rm -f "$stripped"
+
+    local hits="${report}.hits"
+    local wide="${report}.wide"
+    local drive line lineno text dest prefix
+    for drive in "$@"; do
+        [ -f "$drive" ] || continue
+        grep -nE "cp .*/(${re})\.sh" "$drive" >"$hits" 2>/dev/null || true
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            lineno="${line%%:*}"
+            text="${line#*:}"
+            # The destination is the `cp`'s last word. Quotes are stripped so the
+            # prefix below is the literal text a sibling line in the same drive
+            # would spell — `$d`, `$REPO`, `$plant` — which is what makes the two
+            # dispositions readable without evaluating a line of the drive.
+            dest="${text##* }"
+            dest="${dest%\"}"
+            dest="${dest#\"}"
+            case "$dest" in
+            */scripts/*)
+                prefix="${dest%/scripts/*}"
+                if grep -qF "${prefix}/scripts/gate_refuse.sh" "$drive"; then
+                    printf 'SEAM %s:%s %s\n' "$drive" "$lineno" "$dest" >>"$report"
+                elif grep -E '(git clone|cp -[aRr]|rsync)' "$drive" >"$wide" 2>/dev/null &&
+                    grep -qF -- "$prefix" "$wide"; then
+                    printf 'WHOLE-TREE %s:%s %s\n' "$drive" "$lineno" "$dest" >>"$report"
+                else
+                    printf 'OFFENDER %s:%s %s\n' "$drive" "$lineno" "$dest" >>"$report"
+                fi
+                ;;
+            *)
+                printf 'TEXT-TARGET %s:%s %s\n' "$drive" "$lineno" "$dest" >>"$report"
+                ;;
+            esac
+        done <"$hits"
+        rm -f "$hits" "$wide"
+    done
+}
+
+case_every_fixture_that_copies_a_seam_library_copies_the_seam() {
+    N=$((N + 1))
+    local report="${WORK}/seam-report-${N}.txt"
+    local plantdir="${WORK}/seam-plant-${N}"
+    local population hits offenders
+
+    CURRENT="the seam census has a population to judge"
+    seam_census "$ROOT" "$report" "$ROOT"/scripts/tests/*.sh "$ROOT"/deploy/tests/*.sh
+    OUT="$report"
+    population=$(awk '/^POPULATION/ {print $2}' "$report")
+    if [ "${population:-0}" -lt 1 ]; then
+        bad "NO library in scripts/ sources the refusal seam — either the seam is gone or the derivation stopped finding it, and every verdict below would be vacuous"
+        return 0
+    fi
+    ok "${population} librar(ies) source the seam:$(awk '/^LIBS/ {sub(/^LIBS/, ""); print}' "$report")"
+
+    CURRENT="the census found copies of them to judge"
+    hits=$(grep -c -E '^(SEAM|WHOLE-TREE|TEXT-TARGET|OFFENDER) ' "$report" || true)
+    if [ "${hits:-0}" -lt 1 ]; then
+        bad "the census found NO drive copying a seam library — the drives that do are in scripts/tests and deploy/tests, so this is the discriminator having lost its subject, not a clean tree"
+        return 0
+    fi
+    ok "${hits} copy site(s) disposed — $(grep -c '^SEAM ' "$report" || true) with the seam beside it, $(grep -c '^WHOLE-TREE ' "$report" || true) whole-tree, $(grep -c '^TEXT-TARGET ' "$report" || true) text target(s)"
+
+    CURRENT="every fixture that copies a seam library copies the seam"
+    offenders=$(awk '/^OFFENDER / {printf "%s ", $2}' "$report")
+    if [ -z "$offenders" ]; then
+        ok "no scratch scripts/ directory gets a seam library without its seam"
+    else
+        bad "these copy a seam library into a scratch scripts/ directory with no seam beside it — the library dies at its own source line: ${offenders}"
+    fi
+
+    # THE RED-FIRST CONTROL, and it creates its own victim rather than reading a
+    # found one: a scratch copy of the drive that copies the ledger library
+    # ALONE, with every seam line stripped back out of it — which is exactly the
+    # shape that was on this tree before it was fixed. A census that cannot name
+    # it is a census that would have stayed green through the failure it exists
+    # to catch.
+    CURRENT="the census NAMES a fixture that copies a seam library without the seam"
+    drive_require_scratch plantdir "${plantdir:-}"
+    mkdir -p "$plantdir"
+    if ! sed '/gate_refuse\.sh/d' "$ROOT/scripts/tests/test_pm_fold.sh" >"${plantdir}/planted_drive.sh"; then
+        bad "could not write the planted drive — nothing below was measured"
+        return 0
+    fi
+    if grep -q 'gate_refuse' "${plantdir}/planted_drive.sh"; then
+        bad "the plant still names the seam — it is not the pre-fix shape and asserts nothing"
+        return 0
+    fi
+    N=$((N + 1))
+    local plant_report="${WORK}/seam-report-${N}.txt"
+    seam_census "$ROOT" "$plant_report" "${plantdir}/planted_drive.sh"
+    OUT="$plant_report"
+    if grep -q "^OFFENDER ${plantdir}/planted_drive.sh:" "$plant_report"; then
+        ok "named: $(awk '/^OFFENDER / {print $2}' "$plant_report")"
+    else
+        bad "the census did NOT name the planted fixture — it cannot see the class it is for. Its dispositions: $(awk '/^(SEAM|WHOLE-TREE|TEXT-TARGET|OFFENDER) /' "$plant_report" | tr '\n' ' ')"
+    fi
+    OUT=""
+    rm -rf "$plantdir"
+}
+
+case_the_usage_header_and_the_parser_agree() {
+    # B4.6. `scripts/check.sh` opens with a prose header naming the forms it
+    # takes, and that header is the first thing every reader of this gate meets.
+    # It had drifted in both directions at once: it described `--loop`'s pytest
+    # leg as one worker per core forty lines above the paragraph that says the
+    # gate NEVER does that any more, and it named none of `--census`,
+    # `--loop --mine` or `--pr --base` — three forms the parser's own refusal
+    # message lists. A header that names a mode the parser refuses sends a reader
+    # to an exit 2; a mode the header omits is a mode nobody finds. Both are
+    # silent, and both are cheap to catch by comparing the two SETS.
+    #
+    # DERIVED BOUNDARIES, NOT TYPED LINE NUMBERS. The header is everything above
+    # `set -euo pipefail` and the parser is the mode `case` through the
+    # extra-arguments check; a case pinned to "lines 1-108" would start reading
+    # shell as prose the first time either grew.
+    CURRENT="the usage header and the parser agree"
+    local gate="${ROOT}/scripts/check.sh"
+    local hdr_end parser_start parser_end header_set parser_set tok missing extra
+    # NO PIPELINE, AND THAT IS THE POINT. The house idiom for "first matching
+    # line number" feeds a grep into an early-exiting head and slices the
+    # result, which puts a reader that stops at the first line at the tail of a
+    # pipeline: under `pipefail` the producer dies
+    # of SIGPIPE and, over the 64 KiB pipe buffer, the pipeline reports the
+    # WRONG ANSWER every run (scripts/tests/test_sweep.sh's presence-probe
+    # census, and the reproduction in scripts/tests/test_loop_ledger.sh). One
+    # `awk` reading the file DIRECTLY has no producer to kill, so `exit` on the
+    # first hit is free rather than a race. Exact-line matches, so the wanted
+    # text is compared as a string and nothing has to be escaped as a regex.
+    hdr_end="$(awk -v want='set -euo pipefail' '$0 == want {print NR; exit}' "$gate")"
+    parser_start="$(awk -v want='case "$MODE" in' '$0 == want {print NR; exit}' "$gate")"
+    parser_end="$(awk -v want='if [ "$#" -gt 0 ]; then' '$0 == want {print NR; exit}' "$gate")"
+    if [ -z "$hdr_end" ] || [ -z "$parser_start" ] || [ -z "$parser_end" ]; then
+        bad "the header (ends at '${hdr_end:-<none>}') or the parser ('${parser_start:-<none>}'..'${parser_end:-<none>}') could not be located — this case has lost its subject"
+        return 0
+    fi
+    ok "header lines 1-${hdr_end}, parser lines ${parser_start}-${parser_end}"
+
+    header_set="$(sed -n "1,${hdr_end}p" "$gate" | grep -oE '\-\-[a-z][a-z-]*' | sort -u | tr '\n' ' ')"
+    parser_set="$(sed -n "${parser_start},${parser_end}p" "$gate" | grep -oE '\-\-[a-z][a-z-]*' | sort -u | tr '\n' ' ')"
+
+    CURRENT="every form the parser accepts is in the header"
+    missing=""
+    for tok in $parser_set; do
+        case " $header_set " in
+        *" $tok "*) ;;
+        *) missing="${missing}${missing:+ }$tok" ;;
+        esac
+    done
+    if [ -z "$missing" ]; then
+        ok "the header names all of: ${parser_set% }"
+    else
+        bad "the parser accepts ${missing} and the header never mentions it — a mode nobody can find"
+    fi
+
+    CURRENT="and the header names no form the parser refuses"
+    extra=""
+    for tok in $header_set; do
+        case " $parser_set " in
+        *" $tok "*) ;;
+        *) extra="${extra}${extra:+ }$tok" ;;
+        esac
+    done
+    if [ -z "$extra" ]; then
+        ok "nothing in the header is outside the parser's set"
+    else
+        bad "the header names ${extra}, which the parser refuses — a reader following the header meets an exit 2"
+    fi
+
+    # THE SECOND CONTRADICTION, AND IT IS ABOUT A NUMBER RATHER THAN A FLAG. The
+    # header may describe the pytest leg's worker count in exactly one place —
+    # the paragraph that says the gate never takes one worker per core any more.
+    # A second mention in the header describing it as what `--loop` DOES is the
+    # drift this criterion was written from.
+    CURRENT="the header mentions the rejected worker count once, in the line that rejects it"
+    local auto_hits auto_n
+    auto_hits="$(sed -n "1,${hdr_end}p" "$gate" | grep -n 'n auto' || true)"
+    auto_n="$(printf '%s\n' "$auto_hits" | awk 'NF {n++} END {print n + 0}')"
+    if [ "$auto_n" != "1" ]; then
+        bad "the header mentions it ${auto_n} time(s): $(printf '%s' "$auto_hits" | tr '\n' ' ')"
+    else
+        # A `case`, NOT a quiet grep reading a printf. That tail is the shape
+        # the presence census refuses: a quiet reader stops at the first match,
+        # kills its own producer under `pipefail`, and over 64 KiB reports the
+        # wrong answer EVERY run. It is not valvable either — the census admits
+        # only a reader that genuinely runs to EOF, and a quiet one by
+        # definition does not. The subject here is ONE line already sitting in a
+        # variable, so the honest form streams nothing at all.
+        case "$auto_hits" in
+        *NEVER*) ok "once, on the NEVER line: ${auto_hits#*:}" ;;
+        *) bad "the one mention is not the NEVER line: ${auto_hits}" ;;
+        esac
+    fi
 }
 
 # --- the counting semaphore ---------------------------------------------
@@ -1368,7 +1708,7 @@ case_the_wiring_in_check_sh() {
     fi
 
     # Exit semantics: an unusable or unavailable lease is could-not-look.
-    if grep -q 'LEASE_RC' "$gate" && sed -n "${acquire_line},$((acquire_line + 12))p" "$gate" | grep -q 'exit 2'; then
+    if grep -q 'LEASE_RC' "$gate" && sed -n "${acquire_line},$((acquire_line + 12))p" "$gate" | grep 'exit 2' >/dev/null; then
         ok "a lease that cannot be taken exits 2 (could-not-look), never 1"
     else
         bad "the acquire's failure path does not exit 2 — a gate that never ran must not be readable as a red tree"
@@ -1432,8 +1772,12 @@ case_the_slot_wiring_in_check_sh() {
     else
         bad "only ${release_hits} gate_slot_release site(s) — a finished leg would hold a slot"
     fi
-    if grep -q "trap 'gate_slot_release' EXIT" "$gate"; then
-        ok "the --loop pytest leg installs an EXIT trap for its slot"
+    # The trap gained a second callee (the pass heartbeat's stop), so the
+    # assertion is that `gate_slot_release` is IN the loop leg's EXIT trap —
+    # never that it is the trap's whole text. What matters is that a killed loop
+    # gate gives its slot back; what else the trap tidies is free to grow.
+    if grep -qE "^ *trap '[^']*gate_slot_release[^']*' EXIT" "$gate"; then
+        ok "the --loop pytest leg installs an EXIT trap that releases its slot"
     else
         bad "the --loop slot has no EXIT trap — a killed loop gate would shrink the box"
     fi
@@ -1646,6 +1990,382 @@ case_list_mode_is_not_a_run_that_died() {
     says "IT DISARMS ONE CHECK AND NOTHING ELSE"
 }
 
+# --- the holder, in words -----------------------------------------------------
+
+case_the_slot_wait_names_its_holder_in_words() {
+    # WHAT THE RE-ANNOUNCEMENT USED TO SAY was the waited/ceiling pair and then
+    # the holder's RECORD — six fields ending in a path. Everything a parser
+    # needs and nothing a reader can act on, on the ONE line a reader actually
+    # watches (the first announcement scrolls away). The three facts that answer
+    # "how much longer" — the holder's MODE, its START, and the arithmetic
+    # against the nominal for that mode — were all already IN the record and
+    # none of them was legible.
+    CURRENT="the slot re-announcement names its holder"
+    fresh_slot_dir
+    local holder
+    live_pid
+    holder=$LIVE_PID
+    mkdir -p "$SLOTS_DIR"
+    plant_slot 1 "$holder" "$(hostname -s 2>/dev/null || echo host)" full
+    out_file
+    RC=0
+    DJB_GATE_SLOTS=1 DJB_GATE_SLOT_MAX_WAIT=3 DJB_GATE_LEASE_POLL=1 DJB_GATE_LEASE_ANNOUNCE=1 \
+        gate_slot_acquire loop >"$OUT" 2>&1 || RC=$?
+    exits 2
+    says "... still waiting for a pytest slot: "
+    says "— holder pid ${holder} full (slot-1)"
+    says ", started 00:00Z"
+    # The nominal is chosen by the HOLDER's mode, not the waiter's: a waiter
+    # behind a full gate is behind a fifteen-minute run even when it is itself a
+    # four-minute one, and telling it which is most of the line's value.
+    says "of a nominal 15 left)"
+    kill "$holder" 2>/dev/null || true
+
+    # A `--loop` holder is the other nominal, and the same line says so.
+    CURRENT="the holder's own mode picks the nominal"
+    fresh_slot_dir
+    live_pid
+    holder=$LIVE_PID
+    mkdir -p "$SLOTS_DIR"
+    plant_slot 1 "$holder" "$(hostname -s 2>/dev/null || echo host)" loop
+    out_file
+    RC=0
+    DJB_GATE_SLOTS=1 DJB_GATE_SLOT_MAX_WAIT=3 DJB_GATE_LEASE_POLL=1 DJB_GATE_LEASE_ANNOUNCE=1 \
+        gate_slot_acquire loop >"$OUT" 2>&1 || RC=$?
+    exits 2
+    says "— holder pid ${holder} loop (slot-1)"
+    says "of a nominal 4 left)"
+    kill "$holder" 2>/dev/null || true
+
+    # AND A RECORD THAT IS NOT ONE COMES BACK VERBATIM. The `slot-N (starting —
+    # no holder record yet)` shape is a real line this loop prints, and a
+    # formatter that tried to read a pid out of it would print arithmetic from a
+    # word.
+    CURRENT="a non-record holder line survives the formatter"
+    out_file
+    gate_slot_holder_phrase "slot-2 (starting — no holder record yet)" >"$OUT" 2>&1
+    says "slot-2 (starting"
+    says_not "pid "
+}
+
+case_the_lease_wait_names_its_holder_in_words() {
+    # The same line, one guard over, and the lease's is the LONGER wait by
+    # construction: it has no second slot to free early.
+    CURRENT="the lease re-announcement names its holder"
+    fresh_lease_dir
+    local holder started
+    live_pid
+    holder=$LIVE_PID
+    started=$(($(date +%s) - 300))
+    printf '%s full 2026-08-25T14:02:00Z %s %s /some/other/checkout\n' \
+        "$holder" "$(hostname -s 2>/dev/null || echo host)" "$started" >"$LEASE_FILE"
+    out_file
+    RC=0
+    DJB_GATE_LEASE_MAX_WAIT=3 DJB_GATE_LEASE_POLL=1 DJB_GATE_LEASE_ANNOUNCE=1 \
+        gate_lease_acquire >"$OUT" 2>&1 || RC=$?
+    exits 2
+    says "... still waiting for the full-gate lease: "
+    says "— holder pid ${holder} full, started 14:02Z (~10 min of a nominal 15 left)"
+    kill "$holder" 2>/dev/null || true
+}
+
+# --- the pass heartbeat -------------------------------------------------------
+#
+# THE FUNCTIONS LIVE IN `check.sh`, NOT IN THE LIBRARY THIS DRIVE SOURCES, and
+# that is deliberate: `gate_lease.sh` is sourced by drives that start no suite,
+# and a sourced library must not fork a writer onto its caller's stdout. So the
+# gate marks the block with sentinels — the shape `gate_ledger.sh`'s derived-env
+# declaration already uses — and this drive extracts exactly that block. If the
+# sentinels go, this is could-not-look and says so, rather than a case that
+# quietly stopped driving anything.
+HB_LIB=""
+source_heartbeat() {
+    [ -z "$HB_LIB" ] || return 0
+    HB_LIB="${WORK}/heartbeat-block.sh"
+    awk '
+        /^# >>> gate-heartbeat >>>$/ { on = 1; next }
+        /^# <<< gate-heartbeat <<<$/ { on = 0 }
+        on
+    ' "${ROOT}/scripts/check.sh" >"$HB_LIB"
+    [ -s "$HB_LIB" ] ||
+        cannot_look "scripts/check.sh carries no '# >>> gate-heartbeat >>>' block — the pass heartbeat cannot be driven"
+    # shellcheck source=/dev/null
+    . "$HB_LIB"
+    command -v heartbeat_start >/dev/null 2>&1 ||
+        cannot_look "the extracted heartbeat block defines no heartbeat_start"
+    command -v heartbeat_stop >/dev/null 2>&1 ||
+        cannot_look "the extracted heartbeat block defines no heartbeat_stop"
+}
+
+case_a_heartbeat_prints_during_a_pass_and_dies_with_it() {
+    # THE SILENCE THIS EXISTS FOR: the full gate's second pass is captured whole
+    # and printed only when it ends, so a green run presents as a long stretch of
+    # nothing at all — and an agent that cannot tell a slow suite from a hang
+    # kills the gate. Two runs have been killed exactly that way, each having
+    # judged nothing.
+    CURRENT="a heartbeat prints while a pass runs"
+    source_heartbeat
+    fresh_slot_dir
+    mkdir -p "${SLOTS_DIR}/slot-1"
+    # A slot record for THIS drive's pid, started two minutes ago — the ticker
+    # reads its start from the record rather than inheriting it, so the elapsed
+    # figure is arithmetic this case can predict.
+    printf '%s full 2026-08-30T00:00:00Z %s %s /some/other/checkout\n' \
+        "$$" "$(hostname -s 2>/dev/null || echo host)" "$(($(date +%s) - 120))" \
+        >"${SLOTS_DIR}/slot-1/holder"
+    out_file
+    local pidfile ticks hb
+    pidfile="${WORK}/hb-pid-${N}"
+    (
+        DJB_GATE_HEARTBEAT=1
+        DJB_GATE_LEASE_ANNOUNCE=1
+        export DJB_GATE_HEARTBEAT DJB_GATE_LEASE_ANNOUNCE
+        heartbeat_start "pass 2" 900 typed
+        printf '%s\n' "${GATE_HB_PID}" >"$pidfile"
+        sleep 3
+        heartbeat_stop
+    ) >"$OUT" 2>&1
+    ticks=$(grep -c 'elapsed' "$OUT" || true)
+    if [ "${ticks:-0}" -ge 2 ]; then
+        ok "${ticks} elapsed lines in three seconds at a one-second interval"
+    else
+        bad "${ticks:-0} elapsed lines, want at least 2"
+    fi
+    says "pass 2: 2m elapsed, nominal 15m (typed)"
+
+    CURRENT="and the ticker dies with the pass"
+    hb=$(cat "$pidfile" 2>/dev/null || true)
+    if [ -z "$hb" ]; then
+        bad "the ticker never recorded a pid, so this case cannot say whether it died"
+    elif kill -0 "$hb" 2>/dev/null; then
+        bad "ticker pid ${hb} is still running after heartbeat_stop — a poller outliving its gate fires into somebody else's run"
+        kill "$hb" 2>/dev/null || true
+    else
+        ok "ticker pid ${hb} is gone"
+    fi
+}
+
+case_the_ticker_is_silent_until_the_slot_is_held() {
+    # A TICKER FORKED AT THE LEG'S START CANNOT SEE A SLOT TAKEN AFTER IT: a
+    # subshell captures its environment AT FORK. That is why each tick READS the
+    # slot record instead of inheriting anything — and why no record means NO
+    # LINE. Before the slot is held the wait loop above is already announcing,
+    # and two announcers disagreeing about one wait is worse than one.
+    CURRENT="no slot record, no heartbeat line"
+    source_heartbeat
+    fresh_slot_dir
+    mkdir -p "$SLOTS_DIR"
+    out_file
+    (
+        DJB_GATE_HEARTBEAT=1
+        DJB_GATE_LEASE_ANNOUNCE=1
+        export DJB_GATE_HEARTBEAT DJB_GATE_LEASE_ANNOUNCE
+        heartbeat_start "pass 1" 900 typed
+        sleep 3
+        heartbeat_stop
+    ) >"$OUT" 2>&1
+    local ticks
+    ticks=$(grep -c 'elapsed' "$OUT" || true)
+    if [ "${ticks:-0}" = "0" ]; then
+        ok "zero lines while no slot is held — the wait loop owns that window"
+    else
+        bad "${ticks} elapsed lines with no slot record, want 0"
+    fi
+}
+
+case_heartbeat_stop_after_the_ticker_died_is_not_an_error() {
+    # UNDER `set -e` A KILL OF AN ALREADY-DEAD TICKER WOULD RED THE GATE, which
+    # would mean a progress instrument could fail a tree it was only watching.
+    # The ticker dies on its own in exactly the case this matters — a killed
+    # pass, a reclaimed slot — so the stop has to be a no-op twice over.
+    CURRENT="heartbeat_stop over a ticker that is already gone"
+    source_heartbeat
+    fresh_slot_dir
+    mkdir -p "$SLOTS_DIR"
+    out_file
+    RC=0
+    (
+        set -e
+        DJB_GATE_HEARTBEAT=1
+        DJB_GATE_LEASE_ANNOUNCE=1
+        export DJB_GATE_HEARTBEAT DJB_GATE_LEASE_ANNOUNCE
+        heartbeat_start "pass 1" 900 typed
+        kill "$GATE_HB_PID" 2>/dev/null || true
+        wait "$GATE_HB_PID" 2>/dev/null || true
+        heartbeat_stop
+        # And again, over nothing at all: the EXIT trap calls it after the leg
+        # already did.
+        heartbeat_stop
+        echo "heartbeat_stop returned twice and set -e did not fire"
+    ) >"$OUT" 2>&1 || RC=$?
+    exits 0
+    says "heartbeat_stop returned twice and set -e did not fire"
+}
+
+case_a_killed_gate_leaves_no_ticker() {
+    # THE ORDERLY END IS THE ONE THAT NEVER HAPPENS WHEN IT MATTERS.
+    # `heartbeat_stop` and the EXIT trap both cover a gate that finishes or
+    # exits; NEITHER runs when a gate is SIGKILLed at a harness ceiling, which
+    # is how full runs die routinely here. A ticker left behind by that would
+    # print into a log nobody is reading for as long as the box is up, and turn
+    # up in somebody else's poller census as a process they did not start — the
+    # exact class the standing cleanup rule exists for.
+    #
+    # SO THE TICKER CHECKS ITS PARENT, and this case kills the parent the way a
+    # harness does: with a signal it has no handler for.
+    CURRENT="a ticker whose gate was killed outright"
+    source_heartbeat
+    fresh_slot_dir
+    mkdir -p "${SLOTS_DIR}/slot-1"
+    local runner pidfile parent hb waited
+    pidfile="${WORK}/killed-hb-pid-${N}"
+    runner="${WORK}/killed-runner-${N}.sh"
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf '. %q\n' "${ROOT}/scripts/gate_lease.sh"
+        printf '. %q\n' "$HB_LIB"
+        printf 'export DJB_GATE_HEARTBEAT=1 DJB_GATE_LEASE_ANNOUNCE=1\n'
+        printf 'printf "%%s %%s 2026-08-30T00:00:00Z %%s %%s /some/other/checkout\\n" "$$" full "$(hostname -s 2>/dev/null || echo host)" "$(date +%%s)" >%q/slot-1/holder\n' "$SLOTS_DIR"
+        printf 'heartbeat_start "pass 2" 900 typed\n'
+        printf 'printf "%%s\\n" "$GATE_HB_PID" >%q\n' "$pidfile"
+        printf 'sleep 120\n'
+    } >"$runner"
+    chmod +x "$runner"
+    DJB_GATE_LEASE_DIR="$LEASE_DIR" "$runner" >/dev/null 2>&1 &
+    parent=$!
+    SLEEPERS="${SLEEPERS} ${parent}"
+    disown "$parent" 2>/dev/null || true
+    # Let it fork the ticker and record the pid before the kill.
+    waited=0
+    while [ ! -s "$pidfile" ] && [ "$waited" -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    hb=$(cat "$pidfile" 2>/dev/null || true)
+    if [ -z "$hb" ]; then
+        kill -9 "$parent" 2>/dev/null || true
+        bad "the runner never recorded a ticker pid, so this case proves nothing"
+        return 0
+    fi
+    # SIGKILL, not SIGTERM: no trap of any kind can run, which is the whole
+    # point — the ticker has to end itself.
+    kill -9 "$parent" 2>/dev/null || true
+    # The ticker notices at its next tick. The announce interval is 1s; ten is
+    # a ceiling, not an expectation.
+    waited=0
+    while kill -0 "$hb" 2>/dev/null && [ "$waited" -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if kill -0 "$hb" 2>/dev/null; then
+        kill -9 "$hb" 2>/dev/null || true
+        bad "ticker pid ${hb} outlived its killed gate by more than ${waited}s — a poller nobody started"
+    else
+        ok "ticker pid ${hb} ended itself within ${waited}s of the gate being killed outright"
+    fi
+}
+
+case_the_pytest_leg_prints_its_nominal_and_where_it_came_from() {
+    # A TYPED NUMBER AND A MEASURED ONE ARE DIFFERENT CLAIMS. A typed 900s
+    # printed beside a suite that really takes half an hour is prose wearing a
+    # number, and the only thing that keeps it honest is the line saying which
+    # kind it is.
+    CURRENT="a typed nominal, with no history to read"
+    source_heartbeat
+    local ledger
+    ledger="${WORK}/ledger-empty-${N}"
+    : >"$ledger"
+    out_file
+    gate_pytest_nominal 240 GATE_SLOT_NOMINAL_LOOP "$ledger" >"$OUT" 2>&1
+    says "nominal:    4m (typed, gate_lease.sh GATE_SLOT_NOMINAL_LOOP)"
+
+    CURRENT="a measured nominal, once a row carries one"
+    N=$((N + 1))
+    ledger="${WORK}/ledger-took-${N}"
+    {
+        printf 'v1 deadbeef full 2026-09-01T00:00:00Z ruff caller=push-wall waited=0 took=600\n'
+        printf 'v1 cafebabe full 2026-09-02T00:00:00Z ruff caller=push-wall waited=12 took=1380\n'
+    } >"$ledger"
+    out_file
+    gate_pytest_nominal 900 GATE_SLOT_NOMINAL_FULL "$ledger" >"$OUT" 2>&1
+    says "nominal:    23m (this checkout's last banked took=)"
+
+    # A ledger with rows and no `took=` anywhere is the tree on the day this
+    # ships, and it must fall back rather than read 0 out of nothing.
+    CURRENT="rows without the field fall back to the typed number"
+    N=$((N + 1))
+    ledger="${WORK}/ledger-pre-${N}"
+    printf 'v1 deadbeef full 2026-08-20T10:00:00Z ruff,mypy caller=push-wall\n' >"$ledger"
+    out_file
+    gate_pytest_nominal 900 GATE_SLOT_NOMINAL_FULL "$ledger" >"$OUT" 2>&1
+    says "nominal:    15m (typed, gate_lease.sh GATE_SLOT_NOMINAL_FULL)"
+}
+
+case_the_full_verdict_row_records_what_the_run_COST() {
+    # "THE GATE IS SLOW" AND "THE GATE QUEUED BEHIND SOMEBODY ELSE'S PUSH" are
+    # different complaints with different answers, and the ledger could answer
+    # neither: the wait was announced to a terminal that scrolled away and the
+    # suite's wall was printed by the leg and thrown away.
+    CURRENT="waited= and took= on the full verdict row"
+    scratch_repo
+    local here tree line
+    here="$PWD"
+    cd "$REPO"
+    tree="$(gate_measured_tree)" || {
+        cd "$here"
+        bad "gate_measured_tree could not measure a scratch checkout"
+        return 0
+    }
+    GATE_LEASE_WAITED=7
+    GATE_SLOT_WAITED=5
+    GATE_PYTEST_TOOK=613
+    gate_ledger_record "$tree" "ruff,mypy"
+    line="$(gate_ledger_lookup "$tree")" || line=""
+    local has_green=1
+    gate_has_green "$tree" || has_green=0
+    GATE_LEASE_WAITED=0
+    GATE_SLOT_WAITED=0
+    GATE_PYTEST_TOOK=0
+    cd "$here"
+    out_file
+    printf '%s\n' "$line" >"$OUT"
+    # The wait is the SUM of the two guards: a full gate queues for the
+    # exclusive lease and then for a pytest slot, and a reader asking "how long
+    # was this run not running" wants both.
+    says "waited=12"
+    says "took=613"
+    if [ "$has_green" = "1" ]; then
+        ok "a row carrying the cost fields is still a hit — every banked tree goes on being honoured"
+    else
+        bad "the cost fields broke the lookup, so every banked tree would be re-measured"
+    fi
+
+    CURRENT="a run that took neither guard records zeroes, not silence"
+    cd "$REPO"
+    tree="feedfacefeedfacefeedfacefeedfacefeedface"
+    gate_ledger_record "$tree" "ruff"
+    line="$(gate_ledger_lookup "$tree")" || line=""
+    cd "$here"
+    out_file
+    printf '%s\n' "$line" >"$OUT"
+    says "waited=0 took=0"
+
+    CURRENT="and the sanction is still readable beside them"
+    cd "$REPO"
+    tree="0123456789012345678901234567890123456789"
+    GATE_RUN_SANCTION="gate-rung: quality/** rung — the canary self-test is the point"
+    GATE_PYTEST_TOOK=42
+    DJB_GATE_CALLER=quality-rung gate_ledger_record "$tree" "ruff"
+    line="$(gate_ledger_lookup "$tree")" || line=""
+    GATE_RUN_SANCTION=""
+    GATE_PYTEST_TOOK=0
+    cd "$here"
+    out_file
+    printf '%s\n' "$line" >"$OUT"
+    says "sanction=gate-rung: quality/** rung"
+    says "took=42"
+}
+
 case_an_uncontended_lease_is_taken_at_once
 case_a_second_gate_WAITS_and_SAYS_SO
 case_the_lease_wait_prints_an_estimate_too
@@ -1680,7 +2400,18 @@ case_the_slot_wiring_in_check_sh
 case_the_sanction_valve_wiring_in_check_sh
 case_the_declared_limit_is_written_down
 case_gate_lease_sh_is_a_library_not_an_instrument
+case_the_slot_wait_names_its_holder_in_words
+case_the_lease_wait_names_its_holder_in_words
+case_a_heartbeat_prints_during_a_pass_and_dies_with_it
+case_the_ticker_is_silent_until_the_slot_is_held
+case_heartbeat_stop_after_the_ticker_died_is_not_an_error
+case_a_killed_gate_leaves_no_ticker
+case_the_pytest_leg_prints_its_nominal_and_where_it_came_from
+case_the_full_verdict_row_records_what_the_run_COST
 case_list_mode_is_not_a_run_that_died
+case_every_in_process_banner_names_its_cause
+case_every_fixture_that_copies_a_seam_library_copies_the_seam
+case_the_usage_header_and_the_parser_agree
 
 echo
 echo "test_gate_lease: ${PASSED} passed, ${FAILED} failed"

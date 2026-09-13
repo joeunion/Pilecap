@@ -1,0 +1,4 @@
+:root {
+  --gate-ok: #ffffff;
+  color: var(--gate-ok);
+}

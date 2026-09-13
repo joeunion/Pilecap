@@ -1,0 +1,38 @@
+{% extends "account/base_entrance.html" %}
+{% comment %}
+Sign-out, in the house voice.
+
+allauth's own copy extends `account/base_manage.html` — the MANAGEMENT layout,
+not the entrance one — which is how a page every single person sees on their
+way OUT ended up in a different family from the page they came IN through. The
+re-parent at `templates/allauth/layouts/base.html` already makes it render in
+register; this file is here for the words, because "Are you sure you want to
+sign out?" is a question with no consequence attached and the person asking it
+usually wants to know what happens to the OTHER thing they are signed in to.
+
+It says so. This deployment signs people in through an identity platform, so
+signing out here ends the session HERE and leaves the platform session alone —
+which is exactly why the sign-in page after this is still a page and not a
+redirect (see `apps/accounts/templates/account/login_doors.html`: an
+auto-redirecting sign-in page turns this button into a loop).
+
+The form, the method and the hidden redirect field are allauth's, unchanged:
+sign-out is a POST because it is a state change, and a GET that ends a session
+is something any other site can point an image tag at.
+{% endcomment %}
+{% load i18n allauth %}
+{% block head_title %}Sign out{% endblock head_title %}
+{% block content %}
+    <h1>Sign out</h1>
+    <p>
+        This ends your session here. You will stay signed in to the identity
+        platform itself, so signing back in may not ask for your password
+        again.
+    </p>
+    {% url 'account_logout' as action_url %}
+    <form method="post" action="{{ action_url }}">
+        {% csrf_token %}
+        {{ redirect_field }}
+        <button type="submit">Sign out</button>
+    </form>
+{% endblock content %}

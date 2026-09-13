@@ -45,7 +45,7 @@ esac
 #
 # IT CREATES ITS OWN MACHINERY AND SWEEPS THAT. Every destructive case here acts
 # on a SCRATCH IDENTITY this file invents, owns and tears down —
-# `djb_lc2scratch_0badc0de`, derivation-shaped so the frame judges it exactly as
+# `djb_lc2scratch_<this checkout's 8 hex>`, derivation-shaped so the frame judges it exactly as
 # it judges a real one, and derived by no checkout that has ever existed, so it
 # reads FOREIGN. Every destructive call carries `--only "$SCRATCH_BASE"`, so a
 # `--force-foreign` in this file can reach nothing but what this file made. That
@@ -67,11 +67,30 @@ esac
 #   * A REAL MACHINE-WIDE SWEEP. Never, from here. `--force-foreign` without
 #     `--only` is the owner's explicit step after reading a census, and a test
 #     that took it would be deciding for them.
-#   * `IN USE` END TO END. A live `pg_stat_activity` session or a live
-#     `DescribeTaskQueue` poller needs another process holding one, which this
-#     driver has no business starting on a shared server. The verdict FUNCTION is
-#     driven directly instead (`case_verdict_grammar_answers_all_four`), which is
-#     where the ordering between the four actually lives.
+#   * A LIVE `DescribeTaskQueue` POLLER. Still never, from here: it needs a
+#     worker process on the SHARED Temporal server, which this driver has no
+#     business starting. The verdict FUNCTION is driven directly instead
+#     (`case_verdict_grammar_answers_all_four`), which is where the ordering
+#     between the four actually lives.
+#
+#     THE SESSION HALF IS NOW COVERED, and the split is deliberate rather than
+#     inconsistent. `--assert-none`'s working-set exemption (its queue row)
+#     turns on POSITIVE live-use evidence, and an exemption nothing exercises is
+#     a branch that can be deleted by accident and stay deleted. A live
+#     `pg_stat_activity` session on THIS CHECKOUT'S OWN database costs one
+#     short-lived child of this driver, creates no server-side durable object,
+#     touches nothing another agent can see, and reaches the identical branch of
+#     `scripts/sweep.sh`. A poller costs a worker on a server every checkout on
+#     the machine shares. The two are not the same risk and are not treated the
+#     same way; the poller half is DECLARED by the case that cannot reach it.
+#
+#   * WHICH WORLD A CONSUMER IS IN, except where a case ASKS. Three cases in this
+#     repository's drives carried the premise "nothing polls this checkout's
+#     queue" — true on this workerless template, false on a product running its
+#     local build, and found by a consumer rather than by us (its queue row).
+#     The two here now fork on `our_pollers` and print the world they proved and
+#     the one they skipped. That is a model of a product's machine, not a
+#     product's machine: what this file can see is a poller count on one queue.
 #   * `test-server-process`. Planting one means starting a real
 #     `temporal-test-server` and orphaning it, which is the exact leak the
 #     census exists to stop. Its census read is exercised by every unfiltered run;
@@ -116,6 +135,7 @@ cd "$(dirname "$0")/../.."
 
 PASSED=0
 FAILED=0
+SKIPPED=0
 
 cannot_look() {
     echo "!! test_sweep: $*" >&2
@@ -152,17 +172,70 @@ lc_temporal operator cluster health >/dev/null 2>&1 ||
 
 # --- the scratch identity, and the guard that makes it safe -------------------
 
-SCRATCH_BASE="djb_lc2scratch_0badc0de"
-SCRATCH_QUEUE="djb-lc2scratch_0badc0de"
+# THE SCRATCH IDENTITY IS DERIVED FROM THIS CHECKOUT, the way this repository
+# derives every other identity that must not be shared.
+#
+# IT USED TO BE A CONSTANT — derivation-SHAPED (`djb_<word>_<8 hex>`) but derived
+# from nothing, so every checkout on the machine invented the SAME one. Two
+# checkouts running this drive at once therefore planted and destroyed each
+# OTHER's machinery: ten spurious reds in one pass, reproduced twice, and a red
+# `test_sweep` is unreadable on a shared box. The precondition below could not
+# see it either — it asks whether a checkout it can SEE derives the name, and a
+# concurrent peer's plant is not a derivation.
+#
+# `db_path_hash` is `scripts/db.sh`'s, sourced through `scripts/lifecycle.sh`
+# above, and it is the same function `db_name` uses — never a second hash, so
+# there is one answer to "which checkout is this" in the whole tree. The input is
+# this checkout's absolute top level PLUS this drive's own name, so a checkout
+# running two drives that both plant does not collide with itself either.
+SCRATCH_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+SCRATCH_HASH="$(db_path_hash "${SCRATCH_TOPLEVEL}|test_sweep")"
+case "$SCRATCH_HASH" in
+[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+*)
+    cannot_look "db_path_hash returned '${SCRATCH_HASH}' for this checkout, which is not
+   eight hex digits. Every name this driver plants and later DESTROYS is built
+   from it; a short or empty one would aim --force-foreign at a prefix"
+    ;;
+esac
+SCRATCH_BASE="djb_lc2scratch_${SCRATCH_HASH}"
+SCRATCH_QUEUE="djb-lc2scratch_${SCRATCH_HASH}"
 SCRATCH_TEST_DB="test_${SCRATCH_BASE}_gw0"
 SCRATCH_HP_DB="${SCRATCH_BASE}_hp"
-SCRATCH_FAKE_DB="djb_zzz_deadbeef_lc2fake"
+SCRATCH_FAKE_DB="djb_zzz_${SCRATCH_HASH}_lc2fake"
+# The foreign-but-ours-shaped database `case_new_classes_are_censused_as_foreign`
+# creates and drops: `djb_<word>_<8 hex>` is the shape that says this repository
+# made it, and the hex are this checkout's so a peer's run cannot drop it
+# mid-assertion.
+SCRATCH_FOREIGN_DB="djb_zzz_${SCRATCH_HASH}"
 SCRATCH_SCHEDULE="lc2scratch-probe:${SCRATCH_QUEUE}"
-SCRATCH_EXECUTION="lc2scratch:probe:open:key"
+SCRATCH_SCHEDULE_WORKFLOW="lc2scratch:probe:noun:${SCRATCH_HASH}"
+SCRATCH_EXECUTION="lc2scratch:probe:open:${SCRATCH_HASH}"
 # A schedule keyed to a queue with NO path digest in it — the shape an
 # undigested name or a hand-pinned `TEMPORAL_TASK_QUEUE` produces. It must read REFUSED and
-# survive even a `--force-foreign`.
-SCRATCH_UNDERIVED_SCHEDULE="lc2scratch-probe:djb-lc2scratchnohash"
+# survive even a `--force-foreign`. The QUEUE is the digest-less half and stays
+# so; the schedule and workflow ids carry this checkout's hash, because a
+# Temporal id is unique per namespace and two checkouts would otherwise be
+# writing one another's.
+SCRATCH_UNDERIVED_QUEUE="djb-lc2scratchnohash"
+SCRATCH_UNDERIVED_SCHEDULE="lc2scratch-probe-${SCRATCH_HASH}:${SCRATCH_UNDERIVED_QUEUE}"
+SCRATCH_UNDERIVED_WORKFLOW="lc2scratch:probe:noun:underived:${SCRATCH_HASH}"
+# The strand this driver plants ON THE SIBLING when a worker is up on this
+# checkout's own queue and the gate-leg's own scope therefore cannot hold one
+# (the fork-on-the-worker pattern; see the remedy case).
+SCRATCH_STRAND="lc2scratch:probe:strand:${SCRATCH_HASH}"
+# The stray run planted on THIS checkout's queue to prove --assert-none keeps
+# its teeth: owned, and polled by nothing, which is a strand and never a working
+# set. Prefixed so it is attributable to this driver on a shared server, and
+# hashed for the same reason every name above is.
+OWN_STRAY_PROBE="lc2probe:stray:${SCRATCH_HASH}"
+# Its mirror: an owned run on this checkout's queue WHILE A WORKER IS POLLING IT
+# — the consumer's own scenario, planted only in the world that already has the
+# worker (see the exemption case's fork).
+OWN_WORKING_SET_PROBE="lc2probe:workingset:${SCRATCH_HASH}"
+# The live-execution probe and the strand the gate-census remedy case clears.
+OWN_LIVE_PROBE="lc2probe:live:${SCRATCH_HASH}"
+OWN_REMEDY_STRAND="lc2probe:remedystrand:${SCRATCH_HASH}"
 
 # THIS CHECKOUT'S OWN IDENTITY, AND IT IS THE DERIVATION — never `$DATABASE_NAME`.
 # `scripts/db.sh` rule 1 lets an exported name WIN over the
@@ -188,22 +261,79 @@ if lc_owning_checkout "$SCRATCH_BASE" >/dev/null; then
    aim --force-foreign at an identity somebody owns"
 fi
 
+# THE SIBLING REFUSAL, and the two answer different questions. The one above asks
+# whether somebody OWNS the name. This one asks whether the name is already
+# THERE — a database under this checkout's own scratch identity, standing at the
+# moment this run starts, which nothing can have left but a killed earlier run of
+# this same file in this same checkout.
+#
+# WHY IT IS A REFUSAL AND NOT A SILENT DROP. Every destructive case below aims
+# `--force-foreign` at this identity, and the cases that assert what was
+# destroyed are assertions about what THIS RUN planted. Starting on top of a
+# leftover makes the first plant's "created" a lie and the first destroy's
+# "gone" an accident, and it does it silently. Dropping it here instead would be
+# this driver quietly destroying a database nobody asked it to — the exact
+# licence the whole file exists to keep narrow.
+#
+# So it names the broom and stops. `scripts/db_sweep.sh --name <it>` is the one
+# that takes a name, and the operator who runs it is the one accountable for it.
+if [ "$(db_query "SELECT 1 FROM pg_database WHERE datname = :'name'" -tA -v name="$SCRATCH_BASE" 2>/dev/null)" = "1" ]; then
+    cannot_look "a database named ${SCRATCH_BASE} already exists and no checkout derives it.
+   Nothing but a KILLED earlier run of this file in this checkout can have left it,
+   and every destructive case below aims --force-foreign at that identity: starting
+   on top of it would make this run's 'created' and 'destroyed' assertions about
+   somebody else's residue. This driver will not drop a database it did not plant.
+   The broom is:  ./scripts/db_sweep.sh --name ${SCRATCH_BASE}"
+fi
+
 WORK="$(mktemp -d)"
 drive_require_scratch WORK "${WORK:-}"
 
-teardown() {
-    # Idempotent, and it runs on every exit path including a failed case: a
-    # driver that leaks its own scratch machinery is the leak it is testing for.
-    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_BASE" >/dev/null 2>&1
-    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_TEST_DB" >/dev/null 2>&1
-    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_HP_DB" >/dev/null 2>&1
-    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_FAKE_DB" >/dev/null 2>&1
-    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="djb_zzz_deadbeef" >/dev/null 2>&1
+# THE EVIDENCE THIS DRIVE NAMES when it authorises a destroy. `--force-foreign`
+# is refused without `--roots <dir>`, and what a root MEANS is "I scanned
+# here for checkouts of this repository". This one is empty on purpose: the
+# scratch identity every destructive case below is aimed at is derived by no
+# checkout anywhere, so a root holding none is the honest evidence to name — and
+# an empty scan cannot promote anything to `live` by accident, which keeps the
+# destroy cases proving what they always proved.
+SCRATCH_ROOT="${WORK}/scratch-root"
+mkdir -p "$SCRATCH_ROOT"
+
+# The Temporal half of the teardown, as its own function so the required-empty
+# case can reuse it to REPAIR residue from a killed earlier run rather than
+# growing a second list of the same deletions — a second list is a list that
+# stops matching the day a plant is added to only one of them.
+teardown_scratch_temporal() {
     lc_temporal schedule delete --schedule-id "$SCRATCH_SCHEDULE" >/dev/null 2>&1
     lc_temporal schedule delete --schedule-id "$SCRATCH_UNDERIVED_SCHEDULE" >/dev/null 2>&1
     lc_temporal workflow terminate --workflow-id "$SCRATCH_EXECUTION" \
         --reason "test_sweep teardown" >/dev/null 2>&1
-    lc_temporal workflow terminate --workflow-id "liveprobe:this:checkout:open" \
+    lc_temporal workflow terminate --workflow-id "$SCRATCH_STRAND" \
+        --reason "test_sweep teardown" >/dev/null 2>&1
+}
+
+teardown() {
+    # Idempotent, and it runs on every exit path including a failed case: a
+    # driver that leaks its own scratch machinery is the leak it is testing for.
+    #
+    # THE HELD SESSION FIRST. The --assert-none exemption fixture holds a real
+    # connection to this checkout's own database; a leaked one would also block
+    # the `DROP DATABASE` at the foot of this function for as long as it lived.
+    drop_the_session >/dev/null 2>&1
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_BASE" >/dev/null 2>&1
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_TEST_DB" >/dev/null 2>&1
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_HP_DB" >/dev/null 2>&1
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_FAKE_DB" >/dev/null 2>&1
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_FOREIGN_DB" >/dev/null 2>&1
+    teardown_scratch_temporal
+    lc_temporal workflow terminate --workflow-id "$OWN_LIVE_PROBE" \
+        --reason "test_sweep teardown" >/dev/null 2>&1
+    # The stray probe: this checkout's OWN queue, planted to prove
+    # --assert-none keeps its teeth on a run nothing is polling. Its own case
+    # ends it — this line only fires when that case did not get that far.
+    lc_temporal workflow terminate --workflow-id "$OWN_STRAY_PROBE" \
+        --reason "test_sweep teardown" >/dev/null 2>&1
+    lc_temporal workflow terminate --workflow-id "$OWN_WORKING_SET_PROBE" \
         --reason "test_sweep teardown" >/dev/null 2>&1
     # The strand `case_the_gate_census_remedy_actually_clears_a_strand` plants on
     # THIS checkout's queue. Its own body ends it by running the gate's printed
@@ -211,11 +341,20 @@ teardown() {
     # remedy did not work, i.e. exactly when the case has just gone red. A
     # driver that leaked a strand while proving strands get cleared would be
     # funny once.
-    lc_temporal workflow terminate --workflow-id "g3fixprobe:this:checkout:strand" \
+    lc_temporal workflow terminate --workflow-id "$OWN_REMEDY_STRAND" \
         --reason "test_sweep teardown" >/dev/null 2>&1
     # ONLY IF THIS RUN CREATED IT. See plant_our_checkout_database.
     if [ "$PLANTED_OUR_DATABASE" -eq 1 ]; then
         db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$OUR_BASE" >/dev/null 2>&1
+    fi
+    # The rooted-clone case's decoy, dropped here only when that case did not get
+    # as far as dropping it itself. A decoy that outlives its drive is a leak of
+    # exactly the shape the census exists to find.
+    if [ -n "${ROOTED_CLONE_DECOY:-}" ]; then
+        db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$ROOTED_CLONE_DECOY" >/dev/null 2>&1
+    fi
+    if [ -n "${SECOND_ROOT_DECOY:-}" ]; then
+        db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SECOND_ROOT_DECOY" >/dev/null 2>&1
     fi
     rm -rf "$WORK"
 }
@@ -247,14 +386,60 @@ plant_databases() {
     db_query 'CREATE DATABASE :"name"' -v name="$SCRATCH_HP_DB" >/dev/null 2>&1
 }
 
+# THE SIBLING'S DEADNESS, ASKED EVERY PLANT AND ANNOUNCED ONCE.
+#
+# Asked every time because the property is what the plant means; announced once
+# because four identical lines in a transcript teach a reader to skip all four.
+# A poller on this queue would be a finding in its own right — something is
+# polling an identity no checkout on this machine derives — and it is reported
+# as a failure of the PREMISE rather than silently degrading every case that
+# rests on it into a green that proves nothing.
+SCRATCH_DEADNESS_SAID=0
+require_dead_scratch_queue() {
+    local pollers
+    pollers="$(lc_queue_pollers "$SCRATCH_QUEUE" 2>/dev/null)"
+    case "${pollers:-}" in
+    '' | *[!0-9]*) pollers=0 ;;
+    esac
+    if [ "$pollers" != "0" ]; then
+        echo "  FAILED   premise: ${SCRATCH_QUEUE} has ${pollers} poller(s) and must have none"
+        echo "             the dead-queue cases below rest on this sibling identity being polled"
+        echo "             by nothing in any world. Something is polling an identity no checkout"
+        echo "             derives; that is the finding, and no case here may be read as green."
+        FAILED=$((FAILED + 1))
+        return 1
+    fi
+    if [ "$SCRATCH_DEADNESS_SAID" -eq 0 ]; then
+        SCRATCH_DEADNESS_SAID=1
+        echo "  ok       premise: ${SCRATCH_QUEUE} has 0 pollers — the dead queue every"
+        echo "             dead-queue case below is proved on, REQUIRED here rather than assumed,"
+        echo "             and true in both worlds because no checkout derives this sibling"
+        PASSED=$((PASSED + 1))
+    fi
+    return 0
+}
+
 plant_temporal() {
     # Paused, and an interval a year long: nothing must ever actually start from
     # this schedule on a shared server. The execution is started deliberately and
     # stays Running forever because no worker polls the scratch queue — which is
     # exactly the "sweep-start stranded on a dead queue" shape being proven.
+    #
+    # THE DEAD QUEUE IS REQUIRED, NOT ASSUMED (its queue row, the third pattern:
+    # prove on a pollerless, required-empty SIBLING). "No worker polls the
+    # scratch queue" was a sentence in this comment and nothing else, and a
+    # sentence in a comment is exactly the shape of premise a consumer found for
+    # us on the other two cases. It happens to be true here for a structural
+    # reason — `djb_lc2scratch_<hash>` is a SIBLING identity no checkout has
+    # ever derived, so no worker in any world has a reason to poll it, which is
+    # what makes it the right place to prove a dead-queue property in BOTH the
+    # workerless template and a product running its local build. Structural or
+    # not, it is now ASKED and PRINTED on every plant: a premise this whole file
+    # rests on may not be the one thing nobody checks.
+    require_dead_scratch_queue || return 1
     lc_temporal schedule create --schedule-id "$SCRATCH_SCHEDULE" \
         --interval 8760h --paused \
-        --workflow-id "lc2scratch:probe:noun:key" \
+        --workflow-id "$SCRATCH_SCHEDULE_WORKFLOW" \
         --task-queue "$SCRATCH_QUEUE" --type "Lc2ScratchNeverRuns" >/dev/null 2>&1
     lc_temporal workflow start --workflow-id "$SCRATCH_EXECUTION" \
         --task-queue "$SCRATCH_QUEUE" --type "Lc2ScratchNeverRuns" >/dev/null 2>&1
@@ -363,6 +548,100 @@ db_present() {
     [ "$(db_query "SELECT count(*) FROM pg_database WHERE datname = :'name'" -v name="$1" -tA 2>/dev/null)" = "1" ]
 }
 
+# --- THE BELT FOR THE TWO UNNARROWED REFUSALS, and it is load-bearing ---------
+#
+# Two refusals in this file can only be driven by TYPING THE MACHINE-WIDE FORM:
+# `sweep.sh --sweep --force-foreign` with no `--roots` and no `--only`, and
+# `db_sweep.sh --all-checkouts --orphans --sweep --force-foreign` with no
+# `--roots`. That is the exact sentence that destroyed 1,472 databases on a
+# consumer's box in one run, a live builder's among them, and it is the sentence
+# these two cases exist to prove is now REFUSED.
+#
+# A DRIVE MAY NOT AIM THAT AT FOUND STATE — not even at a subject it believes
+# refuses, because the subject is the thing under test and a regression that
+# removed the refusal would be discovered by this file ENACTING the loss. So the
+# belt does not come from the subject: every path from either script to a
+# destroy runs through `docker compose exec` (`scripts/db.sh:446`,
+# `scripts/lifecycle.sh:656-663` — there is no psql and no temporal CLI on the
+# host), so a `docker` that cannot execute is a hard wall in front of every
+# server, and a `python3` that cannot run is a second one in front of the
+# Temporal JSON. With both shimmed, a run that got PAST the refusal enumerates an
+# empty world and destroys nothing — which is exactly what it does on the
+# baseline tree, where these two cases are red for the reason that matters (the
+# status and the sentence) rather than for a reason that cost something.
+#
+# The refusals under test fire at FLAG PARSE, before `command -v docker` and
+# before any scope is printed — so on the fixed tree the belt is never reached,
+# and each case asserts that too (`says_not` on the could-not-look text): a
+# refusal that fired only because the shim was there would be no refusal at all.
+NO_SERVER_BIN=""
+no_server_bin() {
+    if [ -z "$NO_SERVER_BIN" ]; then
+        NO_SERVER_BIN="${WORK}/no-server-bin"
+        mkdir -p "$NO_SERVER_BIN"
+        printf '#!/bin/sh\necho "test_sweep belt: docker is shimmed unreachable" >&2\nexit 127\n' \
+            >"${NO_SERVER_BIN}/docker"
+        printf '#!/bin/sh\necho "test_sweep belt: python3 is shimmed unreachable" >&2\nexit 127\n' \
+            >"${NO_SERVER_BIN}/python3"
+        chmod +x "${NO_SERVER_BIN}/docker" "${NO_SERVER_BIN}/python3"
+    fi
+    printf '%s' "$NO_SERVER_BIN"
+}
+
+# --- WHICH WORLD THIS RUN IS IN, and why the question has to be asked ---------
+#
+# THE PREMISE CLASS A CONSUMER FOUND FOR US (its queue row). Three cases in
+# this repository's drives carried a premise that is true on THIS TEMPLATE and
+# false on a product built from it: "nothing polls this checkout's queue". The
+# template runs no worker, so a run planted on `$OUR_QUEUE` sits there for ever
+# and every strand assertion built on it holds. A product running its local
+# build has `./scripts/worker.sh` up, and on that machine an open run on that
+# queue is WORK — the census says so, the gate's own leg says so
+# (`scripts/check.sh`, the poller read before the open-execution assertion), and
+# now `--assert-none` says so too by exempting this checkout's own working set.
+# So a case that needs a STRAND cannot get one there, and one that pretends
+# otherwise is green on the template and red on every real consumer.
+#
+# THE ANSWER IS NOT TO ASSUME EITHER WORLD. It is to ASK, once, and then either
+# prove the property in the world this run is actually in or DECLARE the world
+# it could not reach and PRINT the skip. A premise silently assumed is the
+# defect; a premise printed beside the case that rests on it is a fact a reader
+# can check.
+#
+# POSITIVE ONLY, exactly as `scripts/lifecycle.sh` declares this liveness:
+# pollers ARE proof a worker is up; their absence proves nothing except that
+# this run could not see one, which is precisely the template's world and the
+# world every strand case needs.
+OUR_POLLERS=""
+our_pollers() {
+    if [ -z "$OUR_POLLERS" ]; then
+        OUR_POLLERS="$(lc_queue_pollers "$OUR_QUEUE" 2>/dev/null)"
+        case "${OUR_POLLERS:-}" in
+        '' | *[!0-9]*) OUR_POLLERS=0 ;;
+        esac
+    fi
+    printf '%s' "$OUR_POLLERS"
+}
+
+# A world this run could NOT reach, named, counted and printed. It is neither a
+# pass nor a failure: a case that says "I did not prove this, and here is why"
+# is the honest third answer, and the summary line carries the count so a
+# transcript full of skips cannot read as a clean run.
+#
+#   skipped <label> <the world not proved> <why this run cannot reach it>
+skipped() {
+    SKIPPED=$((SKIPPED + 1))
+    echo "  SKIPPED  $1"
+    echo "             world NOT proved: $2"
+    echo "             why:              $3"
+}
+
+# The mirror: the world this case IS proving, said out loud so a green line is
+# never mistaken for a green in the other world.
+proving() {
+    echo "  ...      $1 — proving in the world: $2"
+}
+
 # --- the presence probes, and why they are not `| grep -q` pipelines ---------
 #
 # THEY WERE, AND IT WAS A LATENT BUG THAT WENT OFF. The shape was
@@ -382,9 +661,11 @@ db_present() {
 # over a long one it does not. The shared dev server's open-execution list has
 # grown to ~308 (its graveyard of past executions), and `workflow list` returns NEWEST FIRST —
 # so the scratch execution this drive has just planted is line ONE of three
-# hundred, which is the worst case for this bug and hits every single run. The
-# graveyard is the TRIGGER; the defect is this file's, and sweeping the
-# graveyard would only hide it until the list grew again.
+# hundred, which is the worst case for this bug: 189 runs in 200 on this box read
+# the wrong answer at that size (the GQ-1 verifier's re-measurement, 2026-09-05 — the numbers are
+# in the sweep's own header below, with the 1-in-500 that also fails BELOW the
+# buffer). The graveyard is the TRIGGER; the defect is this file's, and sweeping
+# the graveyard would only hide it until the list grew again.
 #
 # THE SCHEDULE PROBE HAD THE IDENTICAL SHAPE and is fixed with it. It has not
 # fired yet only because there are few schedules, which is not a property anyone
@@ -537,6 +818,46 @@ case_sweep_refuses_an_unknown_class() {
 
 # --- CRITERION 3: the two NEW classes, against scratch machinery --------------
 
+# THE SIBLING IS REQUIRED EMPTY BEFORE ANYTHING IS PLANTED IN IT.
+#
+# The other half of that third pattern. Deadness (no poller) says the plants
+# will sit still; EMPTINESS says that what the census reports afterwards is what
+# THIS run planted and not what a killed earlier run left behind. Both halves
+# were assumed and neither was asked, which is how a case can go on passing over
+# somebody else's residue.
+#
+# RESIDUE IS REPAIRED AND PRINTED, NOT REDDENED. Anything under this identity
+# prefix is by construction this driver's own — no checkout derives
+# `djb_lc2scratch_<hash>`, and nothing else in the repository writes it — so a
+# leftover is a killed run of THIS FILE, not a defect in the subject. A red for
+# it would train a reader to ignore reds. It is removed, said out loud, and the
+# premise is then re-asserted; only a scope that is still not empty after the
+# repair is a failure.
+case_the_dead_queue_sibling_is_required_empty_before_anything_is_planted() {
+    local rc
+    CURRENT="the dead-queue sibling starts empty"
+    DRIVE_OUT="${WORK}/sibling_empty.log"
+
+    ./scripts/sweep.sh --only "$SCRATCH_BASE" --assert-none >"$DRIVE_OUT" 2>&1
+    rc=$?
+    if [ "$rc" != "0" ]; then
+        echo "  ...      ${CURRENT} — the sibling scope was NOT empty (exit ${rc}); that is"
+        echo "             residue from a killed earlier run of this driver, since nothing else"
+        echo "             in this repository writes ${SCRATCH_BASE}. Removing it and re-asking."
+        teardown_scratch_temporal
+        db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_BASE" >/dev/null 2>&1
+        db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_TEST_DB" >/dev/null 2>&1
+        db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_HP_DB" >/dev/null 2>&1
+        ./scripts/sweep.sh --only "$SCRATCH_BASE" --assert-none >"$DRIVE_OUT" 2>&1
+        rc=$?
+    fi
+    holds "sibling: the scratch scope is empty before the first plant" "0" "$rc"
+    [ "$rc" = "0" ] || sed 's/^/             | /' "$DRIVE_OUT" | tail -20
+    # And the deadness half, established here so the pair is asked together
+    # rather than discovered one plant at a time. It prints and counts itself.
+    require_dead_scratch_queue || true
+}
+
 case_new_classes_are_censused_as_foreign() {
     plant_databases
     plant_temporal
@@ -565,12 +886,83 @@ case_sweep_alone_leaves_foreign_alone() {
         "$(db_present "$SCRATCH_BASE" && echo yes || echo no)"
 }
 
+# --- FOREIGN IS AN ABSENCE OF EVIDENCE, NEVER A LICENCE ---------------------
+#
+# The loss this pair pins: `--sweep --force-foreign` with no `--roots` once ran
+# on a consumer's box as a verifier's teardown and reported
+# `1709 found · 1472 destroyed` — a live builder's checkout database among them.
+# Nothing was wrong with the census: every one of those names WAS FOREIGN to a
+# run that had been pointed at no root. The defect is that an absence of
+# evidence was accepted as authorisation.
+#
+# Both halves are now a refusal at flag parse, BEFORE the scope is printed and
+# before anything is enumerated, so the transcript of a refused run contains no
+# census at all — which is what the `says_not` assertions below are for.
+case_force_foreign_without_roots_is_refused_and_drops_nothing() {
+    # The machine-wide sentence itself, behind the belt (see `no_server_bin`):
+    # this is the one command in this repository that must never be allowed to
+    # reach a server from inside a drive, and the belt is what makes typing it
+    # here legitimate rather than reckless.
+    drive "sweep: --sweep --force-foreign with no --roots is REFUSED" 2 -- \
+        env PATH="$(no_server_bin):${PATH}" ./scripts/sweep.sh --sweep --force-foreign
+    says "REFUSED: --force-foreign needs --roots <dir>"
+    says "Nothing was destroyed"
+    # It refused BEFORE it looked, which is the whole property: no scope banner,
+    # no verdict — and NOT the could-not-look the belt produces one step later
+    # (`pg_catalog could not be read`), which is what a run that got past the
+    # refusal says instead, and what this case saw on the baseline tree.
+    says_not "the checkout-machinery census"
+    says_not "pg_catalog could not be read"
+    says_not "DESTROYED"
+    # And the decoy this driver made is still there — the assertion the consumer
+    # did not get to make.
+    holds "sweep: the scratch database survived the refused run" "yes" \
+        "$(db_present "$SCRATCH_BASE" && echo yes || echo no)"
+}
+
+case_only_does_not_license_force_foreign_without_roots() {
+    # NARROWING IS NOT EVIDENCE. `--only` says where to look; it never says who
+    # owns what is found there, so it cannot stand in for a root. This one needs
+    # no belt: it is aimed at this driver's own scratch identity, so a regression
+    # that let it through would destroy this file's decoy and nothing else —
+    # which is what the `db_present` assertion below reads.
+    drive "sweep: --only does not license --force-foreign without --roots" 2 -- \
+        ./scripts/sweep.sh --sweep --force-foreign --only "$SCRATCH_BASE"
+    says "REFUSED: --force-foreign needs --roots <dir>"
+    says "narrowing is not evidence"
+    says_not "DESTROYED"
+    holds "sweep: --only did not license the destroy" "yes" \
+        "$(db_present "$SCRATCH_BASE" && echo yes || echo no)"
+}
+
+case_db_sweep_force_foreign_without_roots_is_refused() {
+    # The reaper says the same thing, because it is the same mistake: its mode is
+    # every checkout's database on the server, and `--force-foreign` there with
+    # no root is the exact command the consumer ran. Belted for the same reason
+    # as the first case — the reaper has no `--only` to narrow it with.
+    drive "db_sweep: the reaper refuses --force-foreign with no --roots" 2 -- \
+        env PATH="$(no_server_bin):${PATH}" \
+        ./scripts/db_sweep.sh --all-checkouts --orphans --sweep --force-foreign
+    says "REFUSED: --force-foreign needs --roots <dir>"
+    says "Nothing was dropped"
+    says_not "scope: every derived-shaped name"
+    says_not "DROPPING"
+    holds "db_sweep: the scratch database survived the refused run" "yes" \
+        "$(db_present "$SCRATCH_BASE" && echo yes || echo no)"
+}
+
 case_force_foreign_prints_then_acts() {
     # The promise the header makes: every name and its reason BEFORE the
     # consequence, so an operator can stop at the first surprise. Asserted by
     # LINE ORDER, not merely by both lines existing.
+    #
+    # `--roots` is now REQUIRED beside `--force-foreign` and the scratch
+    # root is this drive's own empty one: the evidence named is "I scanned there
+    # and found no checkout", which is true, and which leaves the scratch
+    # identity FOREIGN exactly as it was before.
     drive "sweep: --force-foreign destroys the scratch machinery" 0 -- \
-        ./scripts/sweep.sh --sweep --force-foreign --hot-path --only "$SCRATCH_BASE"
+        ./scripts/sweep.sh --sweep --force-foreign --roots "$SCRATCH_ROOT" \
+        --hot-path --only "$SCRATCH_BASE"
     says "--force-foreign given: DESTROYING it on the operator's word"
     says "DESTROYED ${SCRATCH_SCHEDULE}"
     says "DESTROYED ${SCRATCH_EXECUTION} (queue ${SCRATCH_QUEUE})"
@@ -604,14 +996,15 @@ case_a_refused_shape_survives_force_foreign() {
     # The other side of the case above, and the one that keeps it honest: a
     # driver that only proved "it destroys" would still pass if somebody made it
     # destroy everything. This schedule is keyed to a queue with no path digest —
-    # `djb-lc2scratchnohash` — so nothing can say whose it is, and REFUSED means
+    # `$SCRATCH_UNDERIVED_QUEUE` — so nothing can say whose it is, and REFUSED means
     # never touched however loud the flags.
     lc_temporal schedule create --schedule-id "$SCRATCH_UNDERIVED_SCHEDULE" \
         --interval 8760h --paused \
-        --workflow-id "lc2scratch:probe:noun:underived" \
-        --task-queue "djb-lc2scratchnohash" --type "Lc2ScratchNeverRuns" >/dev/null 2>&1
+        --workflow-id "$SCRATCH_UNDERIVED_WORKFLOW" \
+        --task-queue "$SCRATCH_UNDERIVED_QUEUE" --type "Lc2ScratchNeverRuns" >/dev/null 2>&1
     drive "sweep: a schedule with no path digest is REFUSED" 0 -- \
-        ./scripts/sweep.sh --class schedule --sweep --force-foreign --only "djb_lc2scratchnohash"
+        ./scripts/sweep.sh --class schedule --sweep --force-foreign \
+        --roots "$SCRATCH_ROOT" --only "djb_lc2scratchnohash"
     says "REFUSED  ${SCRATCH_UNDERIVED_SCHEDULE}"
     says_not "DESTROYED"
     holds "sweep: the undeclared-identity schedule survived --force-foreign" "yes" \
@@ -619,15 +1012,161 @@ case_a_refused_shape_survives_force_foreign() {
     lc_temporal schedule delete --schedule-id "$SCRATCH_UNDERIVED_SCHEDULE" >/dev/null 2>&1
 }
 
+# --- the other half: a worktree somebody's `worktree list` names is LIVE -----
+#
+# The consumer's loss had two ingredients and the refusal above is only the
+# first. The second: a LIVE builder's database read FOREIGN because its checkout
+# was a linked worktree of a clone that no `--roots` had been pointed at. So the
+# question this case asks is the one the operator is really asking when they type
+# `--roots <dir>`: does the evidence reach a worktree that is NOT under the root,
+# and is named only by a rooted clone's own `git worktree list`?
+#
+# IT IS A KEEP IF IT IS ALREADY TRUE, and it was: `lc_bases_for_repo`
+# (`scripts/lifecycle.sh`) derives from `git worktree list --porcelain` run in
+# each found clone, so a worktree anywhere on disk is named by the clone that
+# owns it, and nothing about the refusal above changed that. What did not exist
+# is a case that would notice the day it stopped being true — which, given what
+# it cost once, is not a case this file should be without.
+ROOTED_CLONE_DECOY=""
+case_a_rooted_clones_linked_worktree_database_reads_live() {
+    local roots="${WORK}/roots" clone="${WORK}/roots/clone-a" wtb="${WORK}/elsewhere/wt-b"
+    local base
+    mkdir -p "$roots" "${WORK}/elsewhere"
+    if ! git clone --quiet "$(pwd)" "$clone" >"${WORK}/clone.log" 2>&1; then
+        echo "  FAILED   rooted clone: could not clone this repository into the scratch root"
+        sed 's/^/             | /' "${WORK}/clone.log"
+        FAILED=$((FAILED + 1))
+        return 0
+    fi
+    # OUTSIDE the root, deliberately: the walk cannot find it, so only the
+    # clone's own worktree list can vouch for it. That is the consumer's shape.
+    if ! git -C "$clone" worktree add --quiet -b o2decoy "$wtb" >"${WORK}/wtadd.log" 2>&1; then
+        echo "  FAILED   rooted clone: could not add a linked worktree outside the root"
+        sed 's/^/             | /' "${WORK}/wtadd.log"
+        FAILED=$((FAILED + 1))
+        return 0
+    fi
+    # THE NAME IS DERIVED FROM INSIDE THE WORKTREE, by `scripts/db.sh` — the
+    # producer — and then handed to the frame, the consumer. Deriving it with the
+    # frame's own function would be the frame agreeing with itself.
+    base="$(cd "$wtb" && env -u DATABASE_NAME bash -c '. scripts/db.sh >/dev/null 2>&1 && db_name')"
+    if ! db_valid_name "${base:-}"; then
+        echo "  FAILED   rooted clone: db.sh derived no name inside the linked worktree ('${base:-}')"
+        FAILED=$((FAILED + 1))
+        return 0
+    fi
+    echo "  ok       rooted clone: the linked worktree derives ${base}"
+    PASSED=$((PASSED + 1))
+    # THE DECOY THIS CASE CREATES, and the only thing it ever aims at.
+    db_query 'CREATE DATABASE :"name"' -v name="$base" >/dev/null 2>&1
+    ROOTED_CLONE_DECOY="$base"
+    holds "rooted clone: the decoy database exists to begin with" "yes" \
+        "$(db_present "$base" && echo yes || echo no)"
+
+    # THE CONTROL, and it is a census so it destroys nothing: with no root, this
+    # run cannot see the clone, and the honest verdict is FOREIGN.
+    drive "rooted clone: with no --roots the worktree's database reads FOREIGN" 0 -- \
+        ./scripts/sweep.sh --class checkout-database --only "$base"
+    says "FOREIGN  ${base}"
+
+    # THE PROPERTY: pointed at the root, the evidence reaches through the clone's
+    # worktree list to a worktree the walk never saw.
+    drive "rooted clone: with --roots the same database reads live" 0 -- \
+        ./scripts/sweep.sh --class checkout-database --only "$base" --roots "$roots"
+    says "live     ${base}"
+    says_not "FOREIGN  ${base}"
+
+    # AND THE DESTROY PATH AGREES WITH THE PRINTED LINE — the half that was
+    # actually paid for. Narrowed to this case's own decoy, rooted, so the only
+    # database in scope is the one this case created.
+    drive "rooted clone: --force-foreign spares it because it is live" 0 -- \
+        ./scripts/sweep.sh --sweep --force-foreign --roots "$roots" \
+        --class checkout-database --only "$base"
+    says_not "DESTROYED"
+    holds "rooted clone: the live worktree's database is still there afterwards" "yes" \
+        "$(db_present "$base" && echo yes || echo no)"
+
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$base" >/dev/null 2>&1
+    ROOTED_CLONE_DECOY=""
+    git -C "$clone" worktree remove --force "$wtb" >/dev/null 2>&1
+}
+
+# --- TWO ROOTS, AND BOTH OF THEM DO WORK -------------------------------------
+#
+# `--roots` is repeatable: `LC_ROOTS` is an array, the flag appends to it, and
+# the scope banner prints one `scanned` line per entry. Nothing drove more than
+# one, so "the second root is read" rested on the array being an array — which
+# is true until somebody replaces the append with an assignment, and a single
+# `scanned` line for the last root typed is a transcript nobody re-reads.
+#
+# THE ASSERTION IS NOT THE TWO PRINTED LINES. A case that only counted banner
+# lines would pass over a frame that printed both and scanned one. So the
+# evidence lives under the SECOND root and the property is that it reached: a
+# database a checkout under root B derives reads `live` only when root B was
+# among the roots — and the control, root A alone, reads FOREIGN.
+SECOND_ROOT_DECOY=""
+case_two_roots_are_both_scanned_and_printed() {
+    local roots_a="${WORK}/roots-a" roots_b="${WORK}/roots-b"
+    local clone="${WORK}/roots-b/clone-b" base
+    mkdir -p "$roots_a" "$roots_b"
+    if ! git clone --quiet "$(pwd)" "$clone" >"${WORK}/clone-b.log" 2>&1; then
+        echo "  FAILED   two roots: could not clone this repository into the second root"
+        sed 's/^/             | /' "${WORK}/clone-b.log"
+        FAILED=$((FAILED + 1))
+        return 0
+    fi
+    base="$(cd "$clone" && env -u DATABASE_NAME bash -c '. scripts/db.sh >/dev/null 2>&1 && db_name')"
+    if ! db_valid_name "${base:-}"; then
+        echo "  FAILED   two roots: db.sh derived no name inside the second root's clone ('${base:-}')"
+        FAILED=$((FAILED + 1))
+        return 0
+    fi
+    # THE GUARD THE SCRATCH IDENTITY GETS AT THE TOP OF THIS FILE, applied here
+    # too. The clone INHERITS this checkout's branch, so only the path hash
+    # separates its derived name from a real one — and this case creates that
+    # name and drops it again. A collision would mean dropping somebody's
+    # database to prove a banner line, so it is asked rather than assumed.
+    if [ "$base" = "$OUR_BASE" ] || lc_owning_checkout "$base" >/dev/null; then
+        echo "  FAILED   two roots: ${base} is derived by a checkout this run can see —"
+        echo "             refusing to create and drop a name somebody owns (nothing was touched)"
+        FAILED=$((FAILED + 1))
+        return 0
+    fi
+    db_query 'CREATE DATABASE :"name"' -v name="$base" >/dev/null 2>&1
+    SECOND_ROOT_DECOY="$base"
+    holds "two roots: the decoy under root B exists to begin with" "yes" \
+        "$(db_present "$base" && echo yes || echo no)"
+
+    # THE CONTROL: root A alone. It is a real directory and legal evidence, and
+    # it holds nothing — so the answer is the honest FOREIGN, and the case below
+    # cannot pass by the frame being generous.
+    drive "two roots: root A alone leaves root B's checkout FOREIGN" 0 -- \
+        ./scripts/sweep.sh --class checkout-database --only "$base" --roots "$roots_a"
+    says "scanned         ${roots_a}"
+    says "FOREIGN  ${base}"
+
+    # BOTH. Two banner lines AND the verdict only the second root can produce.
+    drive "two roots: both are scanned, both are printed" 0 -- \
+        ./scripts/sweep.sh --class checkout-database --only "$base" \
+        --roots "$roots_a" --roots "$roots_b"
+    says "scanned         ${roots_a}"
+    says "scanned         ${roots_b}"
+    says "live     ${base}"
+    says_not "FOREIGN  ${base}"
+
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$base" >/dev/null 2>&1
+    SECOND_ROOT_DECOY=""
+}
+
 # --- CRITERION 4: an unrecognized shape is exit 2, naming it ------------------
 
 case_an_unrecognized_shape_is_exit_2() {
     # A PLANTED FAKE, in the shape the design named: derivation-shaped
-    # (`djb_zzz_deadbeef`), so this repository demonstrably made it — and wearing
+    # (`djb_zzz_<hash>`), so this repository demonstrably made it — and wearing
     # a suffix no declared class claims. Could-not-judge outranks a pass.
     db_query 'CREATE DATABASE :"name"' -v name="$SCRATCH_FAKE_DB" >/dev/null 2>&1
     drive "census: a derived-shaped name no class claims is exit 2" 2 -- \
-        ./scripts/sweep.sh --only "djb_zzz_deadbeef"
+        ./scripts/sweep.sh --only "$SCRATCH_FOREIGN_DB"
     says "UNRECOGNIZED database: ${SCRATCH_FAKE_DB}"
     says "Declare the class there"
     says "machinery class N+1 exists and the registry"
@@ -638,12 +1177,12 @@ case_a_declared_shape_is_not_unrecognized() {
     # The negative that keeps the case above from passing vacuously: the same
     # census, over the same identity prefix, with only DECLARED shapes present,
     # is exit 0 and says nothing about an unrecognized anything.
-    db_query 'CREATE DATABASE :"name"' -v name="djb_zzz_deadbeef" >/dev/null 2>&1
+    db_query 'CREATE DATABASE :"name"' -v name="$SCRATCH_FOREIGN_DB" >/dev/null 2>&1
     drive "census: the same prefix with only declared shapes is exit 0" 0 -- \
-        ./scripts/sweep.sh --only "djb_zzz_deadbeef"
+        ./scripts/sweep.sh --only "$SCRATCH_FOREIGN_DB"
     says_not "UNRECOGNIZED"
-    says "FOREIGN  djb_zzz_deadbeef"
-    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="djb_zzz_deadbeef" >/dev/null 2>&1
+    says "FOREIGN  ${SCRATCH_FOREIGN_DB}"
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_FOREIGN_DB" >/dev/null 2>&1
 }
 
 # --- --assert-none: the census as an assertion (the gate's own-tree-census leg reads it) ------
@@ -679,6 +1218,181 @@ case_assert_none_refuses_to_be_a_broom() {
     drive "assert-none: refused with --sweep" 2 -- \
         ./scripts/sweep.sh --class schedule --only "$SCRATCH_BASE" --assert-none --sweep
     says "--assert-none and --sweep are opposites"
+}
+
+# --- --assert-none EXEMPTS THIS CHECKOUT'S OWN WORKING SET (its queue row) ---
+#
+# THE FALSE RED, found by a consumer on their product and not on this template:
+# `--assert-none` failed them for a parked deal's return timer that was open on
+# their own queue with two workers polling it. The census had already excused
+# that row one line above — `live … (THIS CHECKOUT)`, then `kept — … it is a
+# WORKING SET, not a leftover` — and the assertion counted it anyway, because it
+# counted every row the census printed.
+#
+# THE FIXTURE IS A DATABASE AND NOT AN EXECUTION, deliberately, and the reason is
+# this file's own declared limit two hundred lines up: a live DescribeTaskQueue
+# POLLER needs a worker process, and this driver has no business starting one on
+# a shared Temporal server. A live `pg_stat_activity` SESSION on this checkout's
+# OWN database costs one short-lived child of this driver, touches no server-side
+# durable object and reaches the identical branch of `scripts/sweep.sh` — the
+# `live` + mine + not-disposable arm, with positive evidence. So the exemption is
+# proved end to end here through the session half, and the poller half is
+# DECLARED rather than claimed (the case prints which world it proved).
+SESSION_PID=""
+SESSION_BACKEND=""
+SESSION_PIDFILE=""
+hold_a_session_on_our_database() {
+    # A real connection to this checkout's own database, held by a child of this
+    # driver, so `pg_stat_activity` carries positive evidence the frame can read.
+    #
+    # IT REPORTS ITS OWN BACKEND PID FIRST, and that is not decoration.
+    # `docker compose exec -T` puts a client between this driver and the server:
+    # killing the CLIENT closes a socket the server does not look at again until
+    # the running statement finishes, so a `kill` alone leaves the session
+    # standing for the whole `pg_sleep` and the negative case below skips itself
+    # for a reason that is this fixture's fault rather than the machine's
+    # (measured: the first run of this case did exactly that). The backend pid
+    # makes the drop server-side and immediate.
+    SESSION_PIDFILE="${WORK}/held_session.pid"
+    : >"$SESSION_PIDFILE"
+    db_psql -d "$OUR_BASE" -tAc 'SELECT pg_backend_pid()' -c 'SELECT pg_sleep(25)' \
+        >"$SESSION_PIDFILE" 2>/dev/null &
+    SESSION_PID=$!
+    local tries=0
+    while [ "$tries" -lt 40 ]; do
+        SESSION_BACKEND="$(tr -dc '0-9' <"$SESSION_PIDFILE" 2>/dev/null)"
+        if [ -n "$SESSION_BACKEND" ] &&
+            [ "$(lc_sessions_on "$OUR_BASE" 2>/dev/null || echo 0)" != "0" ]; then
+            return 0
+        fi
+        sleep 0.5
+        tries=$((tries + 1))
+    done
+    return 1
+}
+
+drop_the_session() {
+    [ -n "$SESSION_PID" ] || return 0
+    # SERVER-SIDE FIRST, by the backend pid this fixture was told, so the
+    # evidence is really gone rather than merely disconnected-from.
+    if [ -n "$SESSION_BACKEND" ]; then
+        db_query "SELECT pg_terminate_backend(:'pid'::int)" -v pid="$SESSION_BACKEND" -tA \
+            >/dev/null 2>&1
+    fi
+    # Then the client, BY PID and never by name (rung-execution §5; `pkill -f`
+    # has killed other agents' gates twice).
+    kill "$SESSION_PID" >/dev/null 2>&1
+    wait "$SESSION_PID" >/dev/null 2>&1
+    SESSION_PID=""
+    SESSION_BACKEND=""
+    local tries=0
+    while [ "$tries" -lt 40 ]; do
+        [ "$(lc_sessions_on "$OUR_BASE" 2>/dev/null || echo 1)" = "0" ] && return 0
+        sleep 0.5
+        tries=$((tries + 1))
+    done
+    return 1
+}
+
+case_assert_none_exempts_this_checkouts_own_working_set_in_use() {
+    plant_our_checkout_database
+    if ! hold_a_session_on_our_database; then
+        drop_the_session
+        skipped "assert-none: the owned working set is exempt" \
+            "an owned, not-disposable instance WITH positive live-use evidence" \
+            "no session on ${OUR_BASE} became visible in pg_stat_activity within 15s"
+        return 0
+    fi
+    proving "assert-none: the owned working set is exempt" \
+        "positive evidence = SESSIONS on this checkout's own database"
+    drive "assert-none: this checkout's working set, in use, is exempt" 0 -- \
+        ./scripts/sweep.sh --class checkout-database --only "$OUR_BASE" --assert-none
+    says "(THIS CHECKOUT)"
+    says "it is a working set, not a leftover"
+    says "exempt from --assert-none — in use right now"
+    # The exemption is not merely applied, it is REPORTED — what was exempted,
+    # who owns it, which declaration excuses it and what the evidence was.
+    says "instance(s) EXEMPT — this checkout's own working set"
+    says "session(s) on it"
+    says "is declared NOT disposable"
+    drop_the_session || true
+
+    # THE OTHER HALF, PROVED WHERE IT EXISTS AND DECLARED WHERE IT DOES NOT.
+    # The consumer's own case was POLLERS on their queue, not sessions on their
+    # database. This driver will not START a worker on a shared server — but a
+    # product running its local build ALREADY HAS ONE, and on that machine the
+    # exact scenario is one plant away. So the case forks: where a worker is up,
+    # the poller half is proved for real, on the same queue the consumer met it
+    # on; where none is, the world is named and skipped.
+    if [ "$(our_pollers)" = "0" ]; then
+        skipped "assert-none: the same exemption through POLLERS" \
+            "an owned open execution exempted because a worker is polling its queue" \
+            "no poller on ${OUR_QUEUE}: this driver does not start a worker on the shared Temporal server, and a product running its local build already has one"
+        return 0
+    fi
+    proving "assert-none: the same exemption through POLLERS" \
+        "$(our_pollers) poller(s) on ${OUR_QUEUE} — a product running its local build"
+    lc_temporal workflow start --workflow-id "$OWN_WORKING_SET_PROBE" --task-queue "$OUR_QUEUE" \
+        --type "N466WorkingSetProbeNeverRuns" >/dev/null 2>&1
+    holds "exempt: the owned running work is really there" "yes" \
+        "$(execution_present "$OWN_WORKING_SET_PROBE" && echo yes || echo no)"
+    drive "assert-none: an owned run a worker IS polling is exempt" 0 -- \
+        ./scripts/sweep.sh --class open-execution --only "$OUR_BASE" --assert-none
+    says "$OWN_WORKING_SET_PROBE"
+    says "exempt from --assert-none — in use right now"
+    says "poller(s) on ${OUR_QUEUE}"
+    lc_temporal workflow terminate --workflow-id "$OWN_WORKING_SET_PROBE" \
+        --reason "test_sweep: working-set probe teardown" >/dev/null 2>&1
+}
+
+case_assert_none_keeps_its_teeth_on_an_owned_instance_nothing_is_using() {
+    # THE NEGATIVE THAT KEEPS THE EXEMPTION FROM BEING A HOLE, on the SAME
+    # instance the case above exempted. Ownership alone must never excuse
+    # anything: an owned instance with nothing using it is indistinguishable
+    # from a leftover, and the whole open-execution leg of the gate rests on
+    # that being a finding.
+    if [ "$(lc_sessions_on "$OUR_BASE" 2>/dev/null || echo 1)" != "0" ]; then
+        skipped "assert-none: teeth on an owned instance nobody is using" \
+            "the same owned instance failing the assertion once the evidence is gone" \
+            "something else on this machine still holds a session on ${OUR_BASE}"
+        return 0
+    fi
+    drive "assert-none: the same working set, with nothing using it, is exit 1" 1 -- \
+        ./scripts/sweep.sh --class checkout-database --only "$OUR_BASE" --assert-none
+    says "NOT exempt from --assert-none"
+    says "is a strand, not a working set"
+    says "instance(s) are in scope and none should be"
+}
+
+case_assert_none_still_fails_on_a_stray_run_this_checkout_owns() {
+    # THE TEETH ON THE CLASS THAT ACTUALLY MATTERS. This is the population the
+    # gate's own-tree census leg reddens on: a RUNNING execution this checkout
+    # owns on a queue nothing is polling. It is `live` and it is `mine` and its
+    # class is declared NOT disposable — every condition the exemption reads
+    # except the one that counts — and it must still be exit 1.
+    #
+    # IT NEEDS THE STRAND WORLD, so it forks on the worker exactly as the remedy
+    # case does: where a worker IS up on this checkout's queue, an open run there
+    # is work and no strand can be planted to prove anything about.
+    if [ "$(our_pollers)" != "0" ]; then
+        skipped "assert-none: teeth on a stray run this checkout owns" \
+            "an owned open execution with NO poller failing the assertion" \
+            "$(our_pollers) poller(s) on ${OUR_QUEUE}: a run planted there is work, not a strand"
+        return 0
+    fi
+    proving "assert-none: teeth on a stray run this checkout owns" \
+        "no worker on ${OUR_QUEUE} — a run planted there really is stranded"
+    lc_temporal workflow start --workflow-id "$OWN_STRAY_PROBE" --task-queue "$OUR_QUEUE" \
+        --type "N466StrayProbeNeverRuns" >/dev/null 2>&1
+    holds "teeth: the stray run is really there to begin with" "yes" \
+        "$(execution_present "$OWN_STRAY_PROBE" && echo yes || echo no)"
+    drive "assert-none: an owned run nothing is polling is still exit 1" 1 -- \
+        ./scripts/sweep.sh --class open-execution --only "$OUR_BASE" --assert-none
+    says "$OWN_STRAY_PROBE"
+    says "NOT exempt from --assert-none"
+    says "instance(s) are in scope and none should be"
+    lc_temporal workflow terminate --workflow-id "$OWN_STRAY_PROBE" \
+        --reason "test_sweep: teeth probe teardown" >/dev/null 2>&1
 }
 
 # --- live is never destroyed, and owning is not a licence ----------------
@@ -776,11 +1490,12 @@ case_this_checkouts_running_work_survives_force_foreign() {
     # It also narrows the one destructive call in this file that is not aimed at
     # the scratch identity: the scope is now this checkout's own derived base
     # whatever the environment says, instead of whatever an operator exported.
-    local wid="liveprobe:this:checkout:open"
+    local wid="$OWN_LIVE_PROBE"
     lc_temporal workflow start --workflow-id "$wid" --task-queue "$OUR_QUEUE" \
         --type "LiveProbeNeverRuns" >/dev/null 2>&1
     drive "live: my own running execution survives --sweep --force-foreign" 0 -- \
-        ./scripts/sweep.sh --sweep --force-foreign --class open-execution --only "$OUR_BASE"
+        ./scripts/sweep.sh --sweep --force-foreign --roots "$SCRATCH_ROOT" \
+        --class open-execution --only "$OUR_BASE"
     says "(THIS CHECKOUT)"
     says "declared NOT disposable"
     says_not "DESTROYED ${wid}"
@@ -904,17 +1619,58 @@ gate_strand_remedy() {
     ' scripts/check.sh
 }
 
+# THE PREMISE THIS CASE CARRIED, AND THE FORK THAT REPLACES IT (its queue row).
+#
+# It planted a run on `$OUR_QUEUE` and asserted that the gate leg's own
+# assertion went RED on it and re-GREENED after the remedy. Both halves rest on
+# ONE unwritten premise: that nothing polls this checkout's queue. That is true
+# on this template, which runs no worker, and FALSE on a product running its
+# local build — where a worker is up, an open run on that queue is WORK rather
+# than a strand, the census says so, the gate's own leg says so before it
+# asserts anything, and `--assert-none` now says so too by exempting this
+# checkout's working set (its queue row). On that machine the case would either
+# plant a workflow type a live worker cannot run, or fail its re-green on the
+# product's own legitimate open runs.
+#
+# SO IT ASKS WHICH WORLD IT IS IN, once, and proves what that world can prove:
+#
+#   NO POLLER  — the strand world. Exactly the case as it always was, end to
+#                end, on `$OUR_BASE`: `live` AND `mine`, which is the pair the
+#                remedy has to work against.
+#   A POLLER   — the gate-leg's own scope cannot hold a strand at all, so that
+#                world is SKIPPED and PRINTED, and the remedy is proved instead
+#                on the pollerless sibling this file already owns. What survives
+#                is the thing the case was bought for: the printed line is RUN
+#                VERBATIM and the run it names is really gone afterwards. What
+#                is declared lost is the `live`-and-`mine` pair — on the sibling
+#                the verdict is FOREIGN — and the case says so rather than
+#                letting a green stand for a property it did not reach.
 case_the_gate_census_remedy_actually_clears_a_strand() {
     # THE RED. This checkout's own identity, because that is the only way to be
     # `live` AND `mine` at once — the pair the remedy has to work against. The
     # id is prefixed so it is attributable to this driver on a shared server.
-    local wid="g3fixprobe:this:checkout:strand" remedy remedy_rc
-    lc_temporal workflow start --workflow-id "$wid" --task-queue "$OUR_QUEUE" \
+    local wid="$OWN_REMEDY_STRAND" scope="$OUR_BASE" queue="$OUR_QUEUE"
+    local remedy remedy_rc
+    if [ "$(our_pollers)" != "0" ]; then
+        skipped "remedy: the strand world on this checkout's own queue" \
+            "the gate leg's own scope (live AND mine) going red on a strand and re-greening" \
+            "$(our_pollers) poller(s) on ${OUR_QUEUE}: an open run there is WORK, not a strand — planting one would also hand a live worker a workflow type it does not know"
+        wid="$SCRATCH_STRAND"
+        scope="$SCRATCH_BASE"
+        queue="$SCRATCH_QUEUE"
+        require_dead_scratch_queue || return 0
+        proving "remedy: the printed remedy really clears a run" \
+            "the pollerless sibling ${SCRATCH_QUEUE} — FOREIGN, not live-and-mine"
+    else
+        proving "remedy: the printed remedy really clears a strand" \
+            "this checkout's own queue ${OUR_QUEUE}, which nothing is polling — live AND mine"
+    fi
+    lc_temporal workflow start --workflow-id "$wid" --task-queue "$queue" \
         --type "GateStrandProbeNeverRuns" >/dev/null 2>&1
     holds "remedy: the strand is really there to begin with" "yes" \
         "$(execution_present "$wid" && echo yes || echo no)"
     drive "remedy: the leg's own assertion is RED on it" 1 -- \
-        ./scripts/sweep.sh --class open-execution --only "$OUR_BASE" --assert-none
+        ./scripts/sweep.sh --class open-execution --only "$scope" --assert-none
     says "$wid"
 
     remedy="$(gate_strand_remedy)"
@@ -949,7 +1705,7 @@ case_the_gate_census_remedy_actually_clears_a_strand() {
     holds "remedy: the strand is GONE after it" "no" \
         "$(execution_present "$wid" && echo yes || echo no)"
     drive "remedy: the leg's own assertion RE-GREENS" 0 -- \
-        ./scripts/sweep.sh --class open-execution --only "$OUR_BASE" --assert-none
+        ./scripts/sweep.sh --class open-execution --only "$scope" --assert-none
 }
 
 # --- CRITERION 5: the Redis answer is written down ----------------------------
@@ -1122,15 +1878,433 @@ case_a_presence_probe_survives_a_long_scan() {
         FAILED=$((FAILED + 1))
     fi
 
-    # The probes must not go back to a short-circuiting reader. Read as TEXT,
-    # because the failure is invisible at every scan size but the large one.
-    if grep -qE '^\s*(lc_scan_open_executions|lc_scan_schedules) \| .*grep -q' "$0"; then
-        echo "  FAILED   ${CURRENT} — a presence probe is a \`| grep -q\` pipeline again; under pipefail that reports ABSENT for something present"
+    # The readers must not go back to short-circuiting. Read as TEXT, because
+    # the failure is invisible at every scan size but the large one — and read
+    # over the WHOLE instrument tree, not just this file's two probes. See
+    # `quiet_tail_sites` above for the shape, the measurement and the
+    # allow-list.
+    quiet_tail_guard
+}
+
+# --- the pipeline-tail quiet-consumer sweep -----------------------------------
+#
+# THE DEFECT, GENERALISED FROM THIS FILE'S OWN. The two presence probes above
+# were the first member found; the sweep below is the population. A reader that
+# stops at its first match, at the tail of a pipeline, in a file under
+# `pipefail`, leaves the producer writing into a closed pipe. The producer takes
+# SIGPIPE and dies 141, `pipefail` hands the pipeline 141, and 141 is not zero —
+# so the probe reports FALSE for something that is TRUE.
+#
+# A STEEP PROBABILITY STEP ON THIS BOX, NOT A WALL — and the numbers are here
+# because the sentence that used to stand in their place claimed more than had
+# been measured (comment-accuracy finding, 2026-09-05). Measured at rung time
+# rather than reasoned
+# (BSD grep 2.6.0-FreeBSD, macOS, this box):
+#
+#     producer wrote  32,906 bytes   ->   0/50 runs read the wrong answer
+#     producer wrote  83,906 bytes   ->  50/50 runs read the wrong answer
+#
+# and re-measured at greater n by the GQ-1 verifier (V-GQ1), on the same box,
+# which is what turned the wall into a step:
+#
+#     above the 64 KiB buffer         -> 189/200 runs read the wrong answer
+#     above it, all on ONE line       ->   0/200 runs read the wrong answer
+#     below the buffer                ->   1/500 runs read the wrong answer
+#
+# — the wrong answers reporting the pipeline's stages as `PIPESTATUS 141 0`.
+# The step is the 64 KiB pipe buffer: under it the producer's whole write
+# usually fits and it never blocks, so it usually never sees the closed pipe;
+# over it the producer usually blocks mid-write and usually loses. Note the
+# 1/500 BELOW the buffer — macOS pipes start at 16 KiB and grow, so "under the
+# buffer" is not a guarantee, and neither end of the step is a wall. What the
+# numbers do support is the conversion decision, unchanged: at 189/200 the
+# defect is not a flake somebody will eventually see, it is the normal answer,
+# on a size nobody checks when they add a line to the producer.
+#
+# TWO CONDITIONS, NOT ONE — re-measured when this branch folded main, and the
+# second one is the argument for sweeping on SHAPE instead of measuring per
+# site. The reader is line-oriented: it cannot decide a line it does not yet
+# hold, so a producer that writes past the buffer WITHOUT a newline in it is
+# read to EOF and never strangled at all. Same bytes, same box, same reader:
+#
+#     84,016 bytes on one line       ->   0/50 runs read the wrong answer
+#     84,016 bytes over 2,101 lines  ->  50/50 runs read the wrong answer
+#
+# — the second one reporting the pipeline's stages as "141 0" every time. So
+# the member is "over the buffer AND the match completes a line early", and
+# NEITHER half is visible where the call is written: a producer grows past
+# 64 KiB when somebody adds a field, and it grows a newline the day somebody
+# pretty-prints it. A per-site measurement answers for the producer as it
+# stands this morning; the shape answers for the producer as it will be.
+#
+# WHAT IS AND IS NOT THE SHAPE. The member is a quiet reader fed BY A PIPE with
+# no file operand. A quiet reader given a FILE reads that file directly, has no
+# producer to strangle, and stays — which is why the `||`-list forms in
+# `test_serve_port.sh` are silent here rather than allow-listed. The fix form is
+# uniform: let the reader run to EOF and redirect its output, flags preserved.
+#
+# THE ALLOW-LIST IS A CENSUS OF SITES, NOT OF FILES (guard-reach finding,
+# 2026-09-05). Every entry carries
+# the reason it is still here, and an entry with no reason is a bug in this
+# guard, not a pass. It used to be keyed on (path-suffix, needle-in-line-or-next)
+# — which admitted one FILE, not one site: a new member added to a censused file
+# whose text happened to contain the needle was admitted silently, and the GQ-1
+# verifier proved it by planting a second `PARTITION_KEY_RE` pipeline in
+# `gate_ledger.sh` and watching the guard stay green. The key is now EQUALITY on
+# the site's own normalised text, so a census row admits the one pipeline it
+# quotes and nothing else. The canary below plants exactly that second pipeline
+# and requires it to be reported.
+#
+# ROW FORMAT: `path|site-text|reason`, one row per site.
+#   * `path` is read from the LEFT (up to the first `|`) and `reason` from the
+#     RIGHT (after the last `|`), and the site text is everything between —
+#     because the site text is a PIPELINE and therefore always contains `|`.
+#     That is why the free-form field cannot be last, and why a reason may not
+#     contain a `|`: one that did would silently annex part of the text, and the
+#     row would then stop matching its own site and the guard would go red. It
+#     is self-detecting, which is the property this format was chosen for.
+#   * `site-text` is what `quiet_tail_sites` prints after the `path:line:`
+#     prefix, put through `quiet_tail_normalise` (`tr -s '[:space:]' ' '`, then
+#     the leading and trailing space trimmed so a row can be pasted without an
+#     invisible blank). Re-derive a row rather than typing it:
+#
+#       quiet_tail_files | quiet_tail_sites
+#
+# WHAT THE FIVE ROWS ARE, and the two that are debt rather than decisions. Rows
+# 1-3 are not the shape at all — a case label and a report sentence that QUOTE
+# the shape, and the deliberate reproduction of the defect inside the drive
+# whose job is to prove it. Rows 4-5 ARE real members, unconverted, and they are
+# here because they sit outside TIDY-1a's territory (the brief named
+# `test_sweep.sh`, `pm_fold.sh`, `test_pm_fold.sh` and `instruments.md`), not
+# because anybody decided they should stay. A builder does not edit outside its
+# territory to make its own guard green; it says so where the next reader will
+# find it, and the reason field is that saying-so.
+#
+# The two rows that stood here until 2026-09-07 — `check.sh|^#!.*sh$` and
+# `gate_ledger.sh|PARTITION_KEY_RE` — are GONE, and not because the sites were
+# excused: both were converted to `>/dev/null` in the same GQ-1 rung that wrote
+# the census, and today the only text matching those needles in either file sits
+# in whole-line comments this scanner drops. Two census rows covering zero live
+# sites is an allow-list that has stopped meaning anything, and under equality
+# keying it is provable rather than arguable.
+
+# quiet_tail_files — the population, DERIVED rather than rooted (guard-root
+# finding, 2026-09-05). Every
+# TRACKED shell file in the repository: the `.sh` extension, membership of a
+# `githooks/` directory, or an `sh` shebang on the first line. That is exactly
+# the derivation `scripts/check.sh`'s `mktemp_selfline_files` already makes for
+# its own sweep, widened from that function's `-- scripts deploy` pathspec to
+# the whole index, because `frontend/scripts/pin_client.sh` is a tracked shell
+# file too and a root of `scripts` never sees it.
+#
+# TWO DERIVATIONS STAND FOR NOW, and that is a decision rather than an oversight:
+# `scripts/tests/drive_preamble.sh` has no shared shell-file enumerator to call,
+# and adding one is an edit to a file every drive in this directory sources —
+# which is a rung of its own, not a line in this one. Named here so the next
+# reader inherits the choice instead of rediscovering the duplication.
+quiet_tail_files() {
+    local f
+    git ls-files 2>/dev/null | while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        case "$f" in
+        *.sh | */githooks/*) printf '%s\n' "$f" ;;
+        # `grep PATTERN >/dev/null` and never a quiet reader at a pipeline tail:
+        # this function is inside the population its own guard sweeps, and a
+        # sweep that could not survive its own rule would be a rule nobody keeps.
+        *) head -n 1 "$f" 2>/dev/null | grep -E '^#!.*sh$|^#!.*sh[[:space:]]' >/dev/null && printf '%s\n' "$f" ;;
+        esac
+    done
+}
+
+# quiet_tail_sites — every pipeline-tail quiet-consumer site in the files named
+# on STDIN, one `path:line:text` per hit. It takes the file list rather than a
+# root, so the population is derived once, by `quiet_tail_files`, and the
+# canary can hand it a scratch tree instead. Whole-line comments are dropped
+# before matching (the house rule is that prose does not spell a censused
+# marker, so prose that does is reworded rather than exempted here);
+# continuation lines are joined to the pipe that feeds them, so a reader on its
+# own line is seen and is reported at the line where its pipeline STARTS.
+quiet_tail_sites() {
+    tr '\n' '\0' |
+        xargs -0 awk '
+            FNR == 1 { buf = ""; bufline = 0 }
+            /^[[:space:]]*#/ { next }
+            {
+                line = $0
+                if (buf == "") { bufline = FNR; buf = line }
+                else { sub(/^[[:space:]]+/, " ", line); buf = buf line }
+                if (buf ~ /(\||\\)[[:space:]]*$/) next
+                print FILENAME ":" bufline ":" buf
+                buf = ""
+            }
+            END { if (buf != "") print FILENAME ":" bufline ":" buf }
+        ' |
+        grep -E '(^|[^|])\|[[:space:]]*grep[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet)'
+}
+
+# quiet_tail_normalise <text> — the census key. One run of whitespace becomes one
+# space; the leading and trailing space go. Nothing else is touched: quoting,
+# flags and operands are the identity of the site.
+quiet_tail_normalise() {
+    local t
+    t="$(printf '%s' "$1" | tr -s '[:space:]' ' ')"
+    t="${t# }"
+    t="${t% }"
+    printf '%s' "$t"
+}
+
+# quiet_tail_census — one line per SITE that stays, and why. Format
+# `path|site-text|reason`; see the block above for how the three fields are split
+# and why the reason is last. It is a FUNCTION printing a quoted heredoc, not a
+# variable holding one, for two reasons: the heredoc carries a site's own quotes,
+# `$` and backticks verbatim rather than escaped into unreadability, and
+# `x=$(cat <<'EOF' ... )` mis-parses an unbalanced quote inside the body on bash
+# 3.2 — which is what `#!/usr/bin/env bash` resolves to on this box, so it is the
+# shell this drive actually runs under.
+#
+# THE ROWS ARE ASSEMBLED, NEVER SPELLED — the same rule the canary plants below
+# obey, and for a sharper reason: a census row QUOTES the very shape the scanner
+# hunts, this file is inside the population it sweeps, and a row written out
+# longhand therefore becomes a site of its own. Five rows spelled longhand made
+# five new unallowed sites on the first run of this block, which would then need
+# five rows, which would be five more sites. So the reader's quiet flag is
+# written `@Q@` in the heredoc and substituted at run time: what is on the page
+# is not the shape, and what `quiet_tail_unallowed` compares against is.
+quiet_tail_census() {
+    cat <<'CENSUS' | sed "s/@Q@/-$(printf 'q')/g"
+scripts/tests/test_loop_ledger.sh|CURRENT="no '| grep @Q@' at a pipeline tail in the selection machinery"|NOT THE SHAPE: a case label that quotes the shape it is about. The scanner reads text and cannot tell a pipeline from a sentence describing one; the equality key means this row admits this one label and no other line of that file.
+scripts/tests/test_loop_ledger.sh|} | grep @Q@ MATCH|NOT DEBT, THE PROOF: the deliberate reproduction of this very defect, inside the drive whose job is to show it returns the wrong answer under pipefail. Converting it would delete the evidence the conversion rests on.
+scripts/tests/test_loop_ledger.sh|ok "reproduced: '| grep @Q@' under pipefail returned ${red} on a MATCH"|NOT THE SHAPE: the sentence that reports the reproduction above. Prose, in a string, quoting the marker.
+scripts/tests/test_loop_scope.sh|if sed 's/#.*$//' "$ROOT/scripts/loop_tier.sh" | grep @Q@ 'apps/core'; then|A REAL MEMBER, UNCONVERTED, out of TIDY-1a territory (the brief names test_sweep.sh, pm_fold.sh, test_pm_fold.sh, instruments.md) and flagged to the PM as a follow-up. Producer is one comment-stripped copy of loop_tier.sh, 33 KiB today: under the 64 KiB buffer this morning, which the 1/500 measurement above says is not a guarantee, and which nobody re-measures when loop_tier.sh grows.
+scripts/tests/test_secrets_baseline_guard.sh|if grep -n 'detect-secrets scan --baseline' "$f" | grep @Q@vE '^[0-9]+:[[:space:]]*(#|echo |printf )'; then|A REAL MEMBER, UNCONVERTED, out of TIDY-1a territory and flagged to the PM as a follow-up. Producer is one file's matching lines, short today; the guard it sits in is the one that catches a baseline being silently truncated, so a false ABSENT here is expensive.
+CENSUS
+}
+
+# quiet_tail_unallowed <census-file> — the sites (`quiet_tail_sites` output on
+# STDIN) that no census row covers. A row covers a site when the path
+# suffix-matches AND the normalised site text is EQUAL to the row's, which is
+# the whole of the guard-reach finding: one site, not one file. The census
+# arrives as a FILE rather
+# than a global so the canary below can hand it a census of its own making —
+# a canary reading found state proves whatever the tree did last week.
+quiet_tail_unallowed() {
+    local census=$1 site path line text allowed entry rest ent_path ent_text
+    while IFS= read -r site; do
+        [ -n "$site" ] || continue
+        path=${site%%:*}
+        rest=${site#*:}
+        line=${rest%%:*}
+        text="$(quiet_tail_normalise "${rest#*:}")"
+        allowed=no
+        while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            ent_path=${entry%%|*}
+            rest=${entry#*|}
+            ent_text=${rest%|*}
+            case "$path" in
+            *"$ent_path") ;;
+            *) continue ;;
+            esac
+            if [ "$text" = "$ent_text" ]; then
+                allowed=yes
+                break
+            fi
+        done <"$census"
+        [ "$allowed" = yes ] || printf '%s\n' "${path}:${line}"
+    done
+}
+
+quiet_tail_guard() {
+    local scanned files unallowed canary_dir canary_hits negative_hits reasoned rows census
+
+    # FLOOR FIRST. A scan that reached no files is could-not-look wearing a
+    # green, and it is the only way this guard can lie.
+    #
+    # THE FLOOR IS RE-DERIVED, NOT REMEMBERED. The population is now
+    # every tracked shell file rather than everything under `scripts`, so the
+    # old floor of 30 — set against a root of 56 — would have gone on passing
+    # while two thirds of the tree fell out. Derived today with
+    #
+    #     git ls-files | grep -E '\.sh$|/githooks/' | wc -l
+    #
+    # which reads 71: scripts/ 56 (31 + 22 in tests/ + 3 githooks), deploy/ 14
+    # (7 + 6 in tests/ + 1 under observability/alerts), frontend/scripts/ 1, and
+    # 0 files reached only by the shebang sniff. The floor is 60 — eleven files
+    # of slack, which is room for a tidy-up round to retire a handful of drives
+    # without turning a real deletion into a false could-not-look, and nowhere
+    # near enough room to lose a whole directory unnoticed.
+    census="${WORK}/quiet-tail-census"
+    quiet_tail_census >"$census"
+    files="$(quiet_tail_files)"
+    scanned="$(printf '%s\n' "$files" | grep -c .)"
+    if [ "$scanned" -lt 60 ]; then
+        echo "  FAILED   ${CURRENT} — the sweep reached ${scanned} tracked shell files; the population cannot have shrunk below 60 (71 today), so this scan looked at a fraction of the tree and proves nothing"
+        FAILED=$((FAILED + 1))
+        return
+    fi
+
+    unallowed="$(printf '%s\n' "$files" | quiet_tail_sites | quiet_tail_unallowed "$census")"
+    if [ -n "$unallowed" ]; then
+        echo "  FAILED   ${CURRENT} — a reader short-circuits its own producer at the tail of a pipeline under pipefail; over 64 KiB that reports the wrong answer EVERY run. Let the reader run to EOF and redirect its output instead (flags preserved), or add a census row with its reason:"
+        printf '%s\n' "$unallowed" | sed 's/^/             /'
         FAILED=$((FAILED + 1))
     else
-        echo "  ok       ${CURRENT} — neither presence probe short-circuits its own reader"
+        echo "  ok       ${CURRENT} — ${scanned} tracked shell files swept (every root, derived — not just scripts/): no pipeline-tail reader short-circuits its producer outside the census"
         PASSED=$((PASSED + 1))
     fi
+
+    # THE CENSUS SAYS WHY, or it is an off switch. Every row must carry a reason
+    # field, and a row whose reason is empty is a failure of this guard. Counted
+    # against the row TOTAL rather than a remembered constant, so a row added
+    # without a reason is caught by the same arithmetic that catches a row
+    # deleted — and the count itself is printed, because a census that shrinks
+    # silently is the failure this whole block is about.
+    reasoned=0
+    rows=0
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        rows=$((rows + 1))
+        # `path|site-text|reason`: the reason is what follows the LAST `|`, and
+        # the site text always contains at least one of its own (it is a
+        # pipeline). A row with fewer than three fields therefore has a reason
+        # equal to the whole row, which is how a missing reason is detected.
+        case "${entry##*|}" in
+        "" | "$entry") ;;
+        *) reasoned=$((reasoned + 1)) ;;
+        esac
+    done <"$census"
+    if [ "$rows" -gt 0 ] && [ "$reasoned" -eq "$rows" ]; then
+        echo "  ok       ${CURRENT} — all ${rows} census rows carry their reason (a valve with no reason is an off switch)"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — ${reasoned} of ${rows} census rows carry a reason; a row without one is an off switch wearing an allow-list"
+        FAILED=$((FAILED + 1))
+    fi
+
+    # THE CANARY, planted through the real scanner in a scratch tree of its own
+    # making — never against found state. If this does not fire, the guard above
+    # is decorative and its green means nothing.
+    canary_dir="${WORK}/quiet-tail-canary"
+    mkdir -p "${canary_dir}/scripts/tests"
+    # THE PLANTS ARE ASSEMBLED, NEVER SPELLED. A guard that counts a shape
+    # wherever it appears counts it in the line that plants it too, and a canary
+    # that trips its own scanner from this file would make the sweep above
+    # permanently red for a defect nobody wrote. So the flag is built at run
+    # time: what is on this line is not the shape, and what lands in the scratch
+    # file is.
+    local q
+    q="-$(printf 'q')"
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -o pipefail'
+        echo "if printf \"%s\" \"\$body\" | grep ${q} \"NEEDLE\"; then :; fi"
+    } >"${canary_dir}/scripts/planted.sh"
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -o pipefail'
+        echo 'if printf "%s" "$body" |'
+        echo "    grep ${q}E \"NEEDLE\"; then :; fi"
+    } >"${canary_dir}/scripts/tests/planted_continuation.sh"
+    canary_hits="$(find "${canary_dir}" -type f -name '*.sh' | quiet_tail_sites | wc -l | tr -d ' ')"
+    if [ "$canary_hits" -eq 2 ]; then
+        echo "  ok       ${CURRENT} — the canary fires: both planted shapes are seen, the one-liner and the one whose reader is on its own line"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — the canary found ${canary_hits} of 2 planted sites; a scanner that cannot see a planted defect cannot see a real one"
+        FAILED=$((FAILED + 1))
+    fi
+
+    # THE NEGATIVE. A quiet reader handed a FILE has no producer to strangle and
+    # must stay silent, or this guard converts the whole tree to buy nothing.
+    rm -rf "${canary_dir:?}"
+    mkdir -p "${canary_dir}/scripts"
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -o pipefail'
+        echo 'if grep -q "NEEDLE" "$file"; then :; fi'
+        echo 'if grep -qF -- "$1" "$ERR" || grep -qF -- "$1" "$OUT"; then :; fi'
+        echo 'lc_scan | awk "/NEEDLE/ { f = 1 } END { exit !f }"'
+    } >"${canary_dir}/scripts/negatives.sh"
+    negative_hits="$(find "${canary_dir}" -type f -name '*.sh' | quiet_tail_sites | wc -l | tr -d ' ')"
+    if [ "$negative_hits" -eq 0 ]; then
+        echo "  ok       ${CURRENT} — the negatives stay silent: a file-argument reader, an ||-list of them, and a full-stream reader are all correctly not the shape"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — the sweep claimed ${negative_hits} hit(s) on shapes that are not the defect; a guard that cries wolf gets an allow-list entry per false alarm and then gets deleted"
+        FAILED=$((FAILED + 1))
+    fi
+    rm -rf "${canary_dir:?}"
+
+    # THE SECOND CANARY, and it is the guard-reach finding's whole argument made
+    # executable: a
+    # census row admits ONE SITE, not one file. The GQ-1 verifier planted a
+    # second `PARTITION_KEY_RE` pipeline in `gate_ledger.sh` — a file the census
+    # covered — and the guard stayed 6 ok / 0 failed, because the old key was
+    # (path-suffix, needle-in-line-or-next) and the planted line carried the
+    # needle too. So this plant reproduces exactly that: a scratch
+    # `gate_ledger.sh` holding the censused pipeline AND a second, different one
+    # that shares its distinctive token. Under substring keying the second is
+    # admitted silently; under equality it must be reported by `path:line`.
+    #
+    # IT BRINGS ITS OWN CENSUS. The row it is admitted against is local to this
+    # block (bash locals are dynamically scoped, so `quiet_tail_unallowed` reads
+    # this one), which keeps the canary independent of whatever the real census
+    # happens to hold — a canary whose subject is found state proves whatever
+    # the tree did last week.
+    local planted_line planted_at plant_hits plant_census
+    canary_dir="${WORK}/quiet-tail-census-canary"
+    mkdir -p "${canary_dir}/scripts"
+    q="-$(printf 'q')"
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -o pipefail'
+        echo "printf '%s' \"\$key\" | grep ${q}E \"\$PARTITION_KEY_RE\""
+        echo 'other_thing'
+        echo "printf '%s' \"\$other\" | grep ${q} \"\$PARTITION_KEY_RE\" && :"
+    } >"${canary_dir}/scripts/gate_ledger.sh"
+    plant_census="${canary_dir}/census"
+    printf '%s\n' "scripts/gate_ledger.sh|$(quiet_tail_normalise "printf '%s' \"\$key\" | grep ${q}E \"\$PARTITION_KEY_RE\"")|the censused site, and the ONLY one this row may admit" >"$plant_census"
+
+    # THE PLANT PRINTS THAT IT TOOK, before anything is measured. A plant that
+    # did not land makes the guard below green for the wrong reason, and a green
+    # for the wrong reason is worse than a red. `grep -c` reads the copy on
+    # disk, not the variable that wrote it.
+    planted_line="$(grep -n "grep ${q} " "${canary_dir}/scripts/gate_ledger.sh" | head -n 1 | cut -d: -f1)"
+    plant_hits="$(grep -c "grep ${q} " "${canary_dir}/scripts/gate_ledger.sh")"
+    if [ "$plant_hits" != "1" ] || [ -z "$planted_line" ]; then
+        rm -rf "${canary_dir:?}"
+        cannot_look "the census canary's second pipeline did not land in the scratch gate_ledger.sh (${plant_hits} occurrence(s)); nothing below was measured"
+    fi
+    planted_at="scripts/gate_ledger.sh:${planted_line}"
+    echo "  PLANT TOOK at ${planted_at} — a second pipeline sharing the censused row's token, in a file the census covers"
+
+    plant_hits="$(cd "${canary_dir}" && find . -type f -name '*.sh' | sed 's|^\./||' | quiet_tail_sites | quiet_tail_unallowed "$plant_census")"
+    if [ "$plant_hits" = "$planted_at" ]; then
+        echo "  ok       ${CURRENT} — the census admits one SITE, not one file: the planted second pipeline is reported at ${planted_at} while the row's own site stays admitted"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — wanted exactly ${planted_at} unallowed, got \"${plant_hits}\"; a census keyed loosely enough to admit a line nobody wrote is an off switch with a reason field"
+        FAILED=$((FAILED + 1))
+    fi
+
+    # AND THE SAME PLANT AGAINST THE OLD KEY, which is the half that goes red on
+    # the shape replaced here. The row carries the SHORT NEEDLE the
+    # census used to be keyed on — the token both pipelines share — and it must
+    # now admit NEITHER of them: under substring matching it admitted both, which
+    # is precisely how the verifier's plant went unseen. Restore the substring
+    # test in `quiet_tail_unallowed` and this case fails; the one above does not,
+    # which is why both are here.
+    printf '%s\n' 'scripts/gate_ledger.sh|$PARTITION_KEY_RE|an OLD-STYLE short needle: the key this census is no longer allowed to be' >"$plant_census"
+    plant_hits="$(cd "${canary_dir}" && find . -type f -name '*.sh' | sed 's|^\./||' | quiet_tail_sites | quiet_tail_unallowed "$plant_census")"
+    if [ "$plant_hits" = "scripts/gate_ledger.sh:3
+${planted_at}" ]; then
+        echo "  ok       ${CURRENT} — a short needle admits nothing: both planted pipelines are reported, where the old (path, needle-in-line) key admitted both"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — a census row carrying only a shared token still admits a site; got \"${plant_hits}\". The key is not the site's own text, and one row is covering a file again"
+        FAILED=$((FAILED + 1))
+    fi
+    rm -rf "${canary_dir:?}"
 }
 
 case_the_frame_has_exactly_one_temporal_parser() {
@@ -1183,6 +2357,115 @@ case_the_ownership_of_the_machine_state_layer_is_argued() {
     holds "ownership: it names why a create-side self-clean cannot cover this" "1" "$hits"
 }
 
+# --- the two cases about the DERIVATION itself --------------------------------
+#
+# Both of them spawn a CHILD run of this same file, so both are disarmed inside
+# one: a drive that ran itself inside itself would never stop. The guard is an
+# environment variable the child carries, and it disarms nothing else — a nested
+# run drives every other case exactly as a hand-run one does, which is what makes
+# the concurrency case's two children real runs rather than a rehearsal.
+
+case_a_leftover_plant_from_a_killed_run_is_a_refusal_naming_the_broom() {
+    if [ -n "${DJB_SWEEP_DRIVE_NESTED:-}" ]; then
+        skipped "leftover plant: the startup refusal names the broom" \
+            "a killed run's residue refused rather than silently dropped" \
+            "this is a nested run; it would spawn a third and never stop"
+        return
+    fi
+    CURRENT="leftover plant: the startup refusal names the broom"
+    # ITS OWN VICTIM: the database this driver would itself have planted, created
+    # here on purpose so the child meets residue that is unmistakably ours.
+    db_query 'CREATE DATABASE :"name"' -v name="$SCRATCH_BASE" >/dev/null 2>&1
+    DRIVE_OUT="${WORK}/leftover-child.log"
+    DRIVE_EXIT=0
+    DJB_SWEEP_DRIVE_NESTED=1 ./scripts/tests/test_sweep.sh >"$DRIVE_OUT" 2>&1 || DRIVE_EXIT=$?
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_BASE" >/dev/null 2>&1
+    holds "leftover plant: a child meeting its own residue is could-not-look" "2" "$DRIVE_EXIT"
+    says "already exists and no checkout derives it"
+    says "./scripts/db_sweep.sh --name ${SCRATCH_BASE}"
+}
+
+case_two_checkouts_run_the_sweep_drive_concurrently_and_both_stay_green() {
+    if [ -n "${DJB_SWEEP_DRIVE_NESTED:-}" ]; then
+        skipped "two concurrent checkouts: both stay green" \
+            "two checkouts planting at once do not destroy each other's machinery" \
+            "this is a nested run; it would spawn two more and never stop"
+        return
+    fi
+    CURRENT="two concurrent checkouts: both stay green"
+    # TWO CLONES, so the two derivations differ the only way they can: by path.
+    # `--local` hardlinks the object store, so this costs seconds rather than a
+    # copy of the repository.
+    local a="${WORK}/clone-a" b="${WORK}/clone-b"
+    if ! git clone --quiet --local "$SCRATCH_TOPLEVEL" "$a" 2>"${WORK}/clone-a.err" ||
+        ! git clone --quiet --local "$SCRATCH_TOPLEVEL" "$b" 2>"${WORK}/clone-b.err"; then
+        skipped "two concurrent checkouts: both stay green" \
+            "two checkouts planting at once do not destroy each other's machinery" \
+            "git clone --local refused: $(cat "${WORK}/clone-a.err" "${WORK}/clone-b.err" 2>/dev/null | tr '\n' ' ')"
+        return
+    fi
+    # THE WORKING TREE, NOT THE COMMIT. A clone carries what is COMMITTED, so a
+    # change to this very file would be measured in its previous state and the
+    # case would pass about code nobody is shipping — which is exactly what it
+    # did the first time it ran. The scripts directory is the subject; it is
+    # overlaid so each clone runs the tree under test at its own path.
+    cp -R "${SCRATCH_TOPLEVEL}/scripts/." "${a}/scripts/"
+    cp -R "${SCRATCH_TOPLEVEL}/scripts/." "${b}/scripts/"
+    local log_a="${WORK}/concurrent-a.log" log_b="${WORK}/concurrent-b.log"
+    local pid_a pid_b rc_a=0 rc_b=0
+    # BACKGROUNDED AND WAITED ON IN THE FOREGROUND, never detached: a run this
+    # case does not wait for is a run this case did not measure.
+    (cd "$a" && DJB_SWEEP_DRIVE_NESTED=1 ./scripts/tests/test_sweep.sh) >"$log_a" 2>&1 &
+    pid_a=$!
+    (cd "$b" && DJB_SWEEP_DRIVE_NESTED=1 ./scripts/tests/test_sweep.sh) >"$log_b" 2>&1 &
+    pid_b=$!
+    wait "$pid_a" || rc_a=$?
+    wait "$pid_b" || rc_b=$?
+
+    local base_a base_b
+    base_a="$(sed -n 's/^  scratch identity \([^ ]*\) .*/\1/p' "$log_a" | sed -n '1p')"
+    base_b="$(sed -n 's/^  scratch identity \([^ ]*\) .*/\1/p' "$log_b" | sed -n '1p')"
+    if [ -z "$base_a" ] || [ -z "$base_b" ]; then
+        DRIVE_OUT="$log_a"
+        holds "two concurrent checkouts: both runs printed a scratch identity" "yes" "no"
+        return
+    fi
+    if [ "$base_a" = "$base_b" ]; then
+        holds "two concurrent checkouts: the two identities differ" "different" "both ${base_a}"
+    else
+        echo "  ok       two concurrent checkouts: the two identities differ — ${base_a} vs ${base_b}"
+        PASSED=$((PASSED + 1))
+    fi
+
+    local which
+    for which in a b; do
+        local log rc other
+        if [ "$which" = a ]; then
+            log="$log_a"
+            rc="$rc_a"
+            other="$base_b"
+        else
+            log="$log_b"
+            rc="$rc_b"
+            other="$base_a"
+        fi
+        DRIVE_OUT="$log"
+        CURRENT="two concurrent checkouts: clone ${which}"
+        holds "two concurrent checkouts: clone ${which} exited 0" "0" "$rc"
+        says_not "MUTATED THE REAL REPOSITORY"
+        # The shape the shared constant produced: one run's sweep naming — and
+        # destroying — the other's plant.
+        if grep -qF -- "$other" "$log"; then
+            echo "  FAILED   two concurrent checkouts: clone ${which} named the OTHER run's identity ${other}"
+            grep -nF -- "$other" "$log" | sed 's/^/             | /' | sed -n '1,10p'
+            FAILED=$((FAILED + 1))
+        else
+            echo "  ok       two concurrent checkouts: clone ${which} never named ${other}"
+            PASSED=$((PASSED + 1))
+        fi
+    done
+}
+
 echo "test_sweep: driving scripts/sweep.sh and scripts/lifecycle.sh"
 echo "  this checkout   ${OUR_BASE} (the derivation; ownership is never the pin)"
 [ "$DATABASE_NAME" = "$OUR_BASE" ] ||
@@ -1199,11 +2482,25 @@ case_sweep_refuses_force_foreign_without_sweep
 case_sweep_refuses_an_empty_only
 case_sweep_refuses_a_root_that_is_not_there
 case_sweep_refuses_an_unknown_class
+# BEFORE the first plant, because it plants the scratch database itself and
+# drops it again: a child of this file must meet residue and nothing else.
+case_a_leftover_plant_from_a_killed_run_is_a_refusal_naming_the_broom
+# BEFORE the first plant: the sibling this file proves every dead-queue property
+# on is REQUIRED pollerless and empty, not assumed to be (that third pattern).
+case_the_dead_queue_sibling_is_required_empty_before_anything_is_planted
 case_new_classes_are_censused_as_foreign
 case_sweep_alone_leaves_foreign_alone
+# The two refusals, run while the decoy is still planted: they have to be
+# asked with something in scope to lose, or "nothing was destroyed" is a sentence
+# about an empty world.
+case_force_foreign_without_roots_is_refused_and_drops_nothing
+case_only_does_not_license_force_foreign_without_roots
+case_db_sweep_force_foreign_without_roots_is_refused
 case_force_foreign_prints_then_acts
 case_the_scratch_machinery_is_actually_gone
 case_a_refused_shape_survives_force_foreign
+case_a_rooted_clones_linked_worktree_database_reads_live
+case_two_roots_are_both_scanned_and_printed
 case_an_unrecognized_shape_is_exit_2
 case_a_declared_shape_is_not_unrecognized
 case_a_dot_env_pin_does_not_decide_who_owns_what
@@ -1215,6 +2512,11 @@ case_assert_none_fails_on_a_populated_scope
 case_assert_none_refuses_to_be_a_broom
 case_the_gate_census_asserts_open_executions_too
 case_the_gate_census_remedy_actually_clears_a_strand
+# AFTER the remedy case, on purpose: this one plants a run on this checkout's own
+# queue, and the remedy case's re-green assertion is over exactly that scope.
+case_assert_none_exempts_this_checkouts_own_working_set_in_use
+case_assert_none_keeps_its_teeth_on_an_owned_instance_nothing_is_using
+case_assert_none_still_fails_on_a_stray_run_this_checkout_owns
 case_the_redis_answer_is_recorded
 case_the_parser_reads_both_of_temporals_time_formats
 case_a_stamp_the_parser_cannot_read_is_unknown_and_never_zero
@@ -1226,8 +2528,20 @@ case_the_census_says_what_a_schedule_is_doing
 case_the_graveyard_rollup_counts_what_nothing_polls
 case_the_rollup_is_silent_about_what_it_did_not_look_at
 case_the_ownership_of_the_machine_state_layer_is_argued
+# LAST, and the most expensive: it runs this whole file twice more, from two
+# clones, at once. Everything above has torn its own plants down by now, so the
+# two children meet a machine in the state a hand-run would leave it in.
+case_two_checkouts_run_the_sweep_drive_concurrently_and_both_stay_green
 
-echo "test_sweep: ${PASSED} passed · ${FAILED} failed"
+echo "test_sweep: ${PASSED} passed · ${FAILED} failed · ${SKIPPED} skipped"
+if [ "$SKIPPED" -gt 0 ]; then
+    # NOT a footnote. A skip here means a WORLD this run could not reach — a
+    # poller it may not start, a strand it may not plant on a polled queue — and
+    # each one is named above with the property it did not prove. A count in the
+    # summary is what keeps a transcript full of skips from reading as a clean
+    # run (its queue row: a premise silently assumed is the defect).
+    echo "            each skip names the world it did not prove and why; a skip is not a pass"
+fi
 if [ "$FAILED" -gt 0 ]; then
     echo "!! a property did not hold. Both halves of a refusal are load-bearing: the" >&2
     echo "   status a caller branches on and the sentence a human acts on." >&2

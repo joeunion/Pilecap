@@ -355,6 +355,31 @@ def check_route_auth(app_configs: Any = None, **kwargs: Any) -> list[CheckMessag
 # exemption, which is the other way an allow-list rots.
 
 
+def authenticated_view_names() -> set[str]:
+    """Rule 3's third key: plain Django views that DEMAND a credential.
+
+    THE ONE-LINE AMENDMENT rule 3's `does_not_cover` named in advance, arriving
+    with the view that triggered it. The clause cannot tell an authenticated
+    plain view from an open one — there is no `auth=` on a Django view to read
+    and no registry that knows — so it demanded that every first-party plain
+    view be recorded, and until now every one of them was genuinely open and one
+    key was enough. `apps.core.views.welcome` is the first that is not: it is
+    `@login_required`, an anonymous request to it is a redirect, and putting it
+    in `allow_unauthenticated_views` would have recorded a reason that is false.
+
+    A separate key rather than a flag on the existing entries, for the reason
+    the existing entries are separate from the ninja allow-list: the two
+    populations are asserted about differently, the reasons answer different
+    questions ("why may anybody read this" against "what does this demand"), and
+    a name in both keys is itself a finding.
+    """
+    return {
+        str(entry["url_name"])
+        for entry in _scope("3").get("authenticated_views") or []
+        if entry.get("url_name")
+    }
+
+
 def unauthenticated_view_names() -> set[str]:
     """Rule 3's second allow-list: plain Django views that answer without one.
 
@@ -409,12 +434,25 @@ def first_party_plain_views() -> dict[str, str]:
 def check_plain_view_auth(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
     found: list[CheckMessage] = []
     live = first_party_plain_views()
-    recorded = unauthenticated_view_names()
+    open_names = unauthenticated_view_names()
+    credentialed = authenticated_view_names()
+    recorded = open_names | credentialed
     views = {
         str(entry["url_name"]): str(entry.get("view", ""))
-        for entry in _scope("3").get("allow_unauthenticated_views") or []
+        for key in ("allow_unauthenticated_views", "authenticated_views")
+        for entry in _scope("3").get(key) or []
         if entry.get("url_name")
     }
+    for name in sorted(open_names & credentialed):
+        found.append(
+            Error(
+                f"rule 3 records `{name}` in BOTH `allow_unauthenticated_views` and "
+                "`authenticated_views` — a view either demands a credential or it does not, "
+                "and two reasons for one view means one of them is now false (house rule 3).",
+                obj=name,
+                id="djb.E031",
+            )
+        )
     for name, where in sorted(live.items()):
         if name in recorded:
             if views.get(name) and views[name] != where:
@@ -431,10 +469,10 @@ def check_plain_view_auth(app_configs: Any = None, **kwargs: Any) -> list[CheckM
         found.append(
             Error(
                 f"plain Django view {name or '(unnamed)'} ({where}) is mounted outside the API "
-                "and is not recorded in rule 3's `allow_unauthenticated_views` — a view that "
-                "answers without a credential is a decision somebody writes down, with the "
-                "reason, in quality/rules.yaml. If it authenticates, it needs its own key and "
-                "this clause needs the one-line amendment its does_not_cover names "
+                "and is recorded in neither of rule 3's plain-view keys — put it in "
+                "`allow_unauthenticated_views` with the reason it may be read without a "
+                "credential, or in `authenticated_views` with what it demands. Which of the two "
+                "it is is a decision somebody writes down, in quality/rules.yaml "
                 "(house rule 3).",
                 obj=name or where,
                 id="djb.E031",
@@ -443,9 +481,9 @@ def check_plain_view_auth(app_configs: Any = None, **kwargs: Any) -> list[CheckM
     for name in sorted(recorded - set(live)):
         found.append(
             Error(
-                f"rule 3 records `{name}` in `allow_unauthenticated_views` and this deployment "
-                "mounts no first-party plain view by that name — a stale exemption outlives the "
-                "thing it excused and reads as a judgement somebody still holds (house rule 3).",
+                f"rule 3 records `{name}` in its plain-view keys and this deployment mounts no "
+                "first-party plain view by that name — a stale entry outlives the thing it "
+                "described and reads as a judgement somebody still holds (house rule 3).",
                 obj=name,
                 id="djb.E031",
             )

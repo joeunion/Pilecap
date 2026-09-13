@@ -265,7 +265,7 @@ $(printf '%s\n' "$hits" | sed 's/^/             | /')"
     # And the tooth has a tooth: the pattern must actually match the shape it
     # is looking for, or a green case means nothing.
     if printf '    local name="$1" t0 path=fallback\n' |
-        grep -qE '^[[:space:]]*(local|typeset|declare|export|readonly)[[:space:]].*[[:space:]](path|status|options|fignore)='; then
+        grep -E '^[[:space:]]*(local|typeset|declare|export|readonly)[[:space:]].*[[:space:]](path|status|options|fignore)=' >/dev/null; then
         ok "the audit pattern fires on the exact line the rename removed"
     else
         bad "the audit pattern does not match the original defect — a green above asserts nothing"

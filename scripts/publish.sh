@@ -160,6 +160,13 @@ fi
 cd "$(dirname "$0")/.."
 ROOT=$(pwd -P)
 
+# The bucket rules (`rules_for`, `bucket_for_rule`, `archaeology_rule_ids`) and
+# the archaeology-census patterns + scan (`archaeology_scan_tree`) — shared
+# with `scripts/check.sh`'s per-rung `archaeology` leg so the two never carry
+# two copies of "is this file SHIP" that agree today and drift tomorrow. See
+# that file's header.
+. "$ROOT/scripts/archaeology_lib.sh"
+
 # --- arguments: strict, because a mistyped flag must never mean a quiet run ---
 MODE=full
 TARGET=""
@@ -242,92 +249,16 @@ violation() {
 # refuse. Adding a skeleton file is therefore the whole act of converting one;
 # no edit here is needed, and a skeletons/ file naming a NON-ledger is exit 2.
 # ---------------------------------------------------------------------------
-LEDGERS="north-star queue readouts misses in-flight goal-posts design-agreements pilot-readiness rep-day"
+LEDGERS="north-star queue queue-detail readouts misses in-flight goal-posts design-agreements pilot-readiness rep-day"
 MARKER='<!-- worked example — replace with your product'"'"'s first real entry -->'
 
 # ---------------------------------------------------------------------------
-# THE BUCKET RULES (manifest § Bucket rules). `rules_for <path>` echoes every
-# rule id the path matches. Exactly one is the contract; the caller enforces it.
-# The rules are written to be mutually exclusive BY CONSTRUCTION, and the
-# double-match refusal is what proves they still are.
+# THE BUCKET RULES (manifest § Bucket rules): `rules_for`, `bucket_for_rule`
+# and `archaeology_rule_ids` now live in `scripts/archaeology_lib.sh`, sourced
+# above, so this script and `scripts/check.sh`'s `archaeology` leg read the
+# identical classification. See that file for the rules themselves and the
+# reason the R8S/R8 pair is one `case` with two arms rather than two blocks.
 # ---------------------------------------------------------------------------
-rules_for() {
-    local p=$1 hit="" _cy=""
-    case "$p" in
-    apps/* | config/* | manage.py) hit="$hit R1" ;;
-    esac
-    case "$p" in
-    quality/* | docs/product/instruments.md) hit="$hit R2" ;;
-    esac
-    case "$p" in
-    scripts/* | deploy/* | perf/* | compose.yaml | compose/* | Dockerfile | .dockerignore | .devcontainer/* | .github/*) hit="$hit R3" ;;
-    esac
-    case "$p" in
-    pyproject.toml | uv.lock | .python-version | .env.example | .gitignore | .editorconfig | .secrets.baseline | vendor/* | templates/*) hit="$hit R4" ;;
-    esac
-    case "$p" in
-    .claude/skills/* | CLAUDE.md | README.md | docs/runbooks/* | docs/standards.md) hit="$hit R5" ;;
-    esac
-    case "$p" in
-    TEMPLATE_VERSION | CHANGELOG.md) hit="$hit R6" ;;
-    esac
-    case "$p" in
-    docs/product/north-star.md | docs/product/queue.md | docs/product/readouts.md | docs/product/misses.md | docs/product/in-flight.md | docs/product/goal-posts.md | docs/product/design-agreements.md | docs/product/pilot-readiness.md | docs/product/rep-day.md) hit="$hit R7" ;;
-    esac
-    # R8S BEFORE R8's GLOB. `case` takes the FIRST matching pattern, so the two
-    # format-teaching files under cycles/ are mutually exclusive with the
-    # archaeology glob BY CONSTRUCTION rather than by care — the same property
-    # every other rule pair here has, and the double-match refusal still proves
-    # it. They ship because four shipped files (the primer, the PM skill, this
-    # script and its drive) call cycles/ the contract's home, and a home with no
-    # example and no README is a pointer at an empty room.
-    #
-    # THE TWO PATHS ARE ASSEMBLED, NEVER SPELLED — the manifest's BUILT item 3,
-    # "R8's dated-handoff clause is a GLOB, not a filename". This file
-    # ships (R3) and leg `dangling-docs` counts `docs/**.md` strings wherever
-    # they appear, INCLUDING inside this script when it runs against somebody
-    # else's tree: `scripts/tests/test_publish.sh` copies this file into a
-    # fixture, and every path R9 spells is a path that fixture must carry or the
-    # drive reddens on the instrument citing itself. Naming the pieces costs the
-    # fixture nothing.
-    #
-    # ONE `case`, TWO ARMS — not two blocks. Every other rule here is its own
-    # block because the rules are disjoint across blocks and `hit` accumulates;
-    # these two OVERLAP by design, and only a shared block's first-match rule
-    # separates them. Split them and every R8S path double-matches into exit 2.
-    _cy=docs/product/cycles
-    case "$p" in
-    "$_cy"/EXAMPLE-cycle-plan.md | "$_cy"/README.md) hit="$hit R8S" ;;
-    "$_cy"/* | docs/product/archive/* | docs/product/retro/* | docs/product/drafts/* | docs/product/proposals/* | docs/product/pm-handoff-*.md) hit="$hit R8" ;;
-    esac
-    case "$p" in
-    docs/product/adrs-ingredients.md | docs/product/api-editorial-standard.md | docs/product/architecture.md | docs/product/build-contract.md | docs/product/operating-protocol.md | docs/product/partition-closure.md | docs/product/scale-envelope.md | docs/product/publication-manifest.md) hit="$hit R9" ;;
-    esac
-    case "$p" in
-    docs/product/skeletons/*) hit="$hit R10" ;;
-    esac
-    printf '%s' "${hit# }"
-}
-
-bucket_for_rule() {
-    case "$1" in
-    R1 | R2 | R3 | R4 | R5 | R6 | R9) printf 'SHIP' ;;
-    # R8S: the two format-teaching files inside an otherwise-trimmed directory.
-    # They are FORMAT, not archaeology — the plan template and the directory's
-    # own contract — and four shipped files send a first PM there.
-    R8S) printf 'SHIP' ;;
-    R7) printf 'SKELETON' ;;
-    # R8's last clause is a GLOB, not the dated filename it replaced, and that
-    # is load-bearing rather than tidy: leg `dangling-docs` below counts
-    # `docs/**.md` strings wherever they appear — a rule that SPELLED a trimmed
-    # path would make this file cite a pointer its own artifact cannot resolve.
-    # A marker spelled in the thing that defines the marker is a phantom, and
-    # the fix is always to name the class rather than the instance.
-    R8) printf 'TRIM' ;;
-    R10) printf 'SKELETON-SOURCE' ;;
-    *) printf 'UNKNOWN' ;;
-    esac
-}
 
 # --- the source must be a commit --------------------------------------------
 git rev-parse --git-dir >/dev/null 2>&1 || {
@@ -442,7 +373,13 @@ if [ "$MODE" = release ]; then
         echo "!! the --release target's HEAD does not resolve to a commit: $PUB_TIP" >&2
         exit 2
     fi
-    PUB_LAST_TAG=$(release_tags "$PUB" | head -1)
+    # READ WHOLE, THEN SLICE. `release_tags … | head -1` under this file's
+    # `set -o pipefail` orphans the producer on a repository with enough release
+    # tags to fill a 64 KiB pipe buffer, and the status becomes 141 with the tag
+    # already read. With no pipe the producer's own status is what reaches
+    # `set -e`, which is the status this line actually wants.
+    PUB_LAST_TAG=$(release_tags "$PUB")
+    PUB_LAST_TAG=${PUB_LAST_TAG%%$'\n'*}
     if [ -z "$PUB_LAST_TAG" ]; then
         echo "!! the --release target carries no release tag at all: $PUB" >&2
         echo "   This mode's whole safety is that it builds on a KNOWN published release," >&2
@@ -497,7 +434,16 @@ trap cleanup EXIT
 # associative arrays. The per-rule tally is therefore a file the loop writes and
 # `grep -c` reads, which is also the more auditable of the two — the census's
 # own working is on disk for the duration rather than in shell state.
-RULE_IDS="R1 R2 R3 R4 R5 R6 R7 R8 R8S R9 R10"
+#
+# DERIVED, NOT TYPED (see scripts/archaeology_lib.sh's header): a hand-typed
+# list here had to be kept in step with `bucket_for_rule`'s `case` by hand,
+# and a rule added there and not here is a SILENT missing row in the printed
+# table below — the exact shape the scaffold rung hit live when it added R11
+# to `bucket_for_rule` and nothing here noticed. `archaeology_rule_ids` reads
+# the ids straight out of `bucket_for_rule`'s own source, so there is now one
+# place to add a rule id rather than two to keep in step.
+RULE_IDS=$(archaeology_rule_ids | tr '\n' ' ')
+RULE_IDS=${RULE_IDS% }
 n_total=0
 
 while IFS= read -r p; do
@@ -865,97 +811,28 @@ rm -f "$DOCREFS"
 # join.
 say ""
 say "-- archaeology-census: the platform's build history is not in the product's tree"
-_ru=rung
-_at=icus
-_ac=us-crm
-_jo=union
-_pd='\.dev'
-_bs=Bootstrap
-_ev='[-/](staging|prod)'
-ARCHHITS=$(mktemp "${TMPDIR:-/tmp}/djb-publish-arch.XXXXXX")
-arch_bad=0
+# THE SIX PATTERNS AND THE SCAN THEMSELVES NOW LIVE IN scripts/archaeology_lib.sh
+# (sourced above), shared with `scripts/check.sh`'s per-rung `archaeology` leg
+# — one implementation of "is this a finding id / rung token / narrative
+# instance / private name / former brand / deployment coordinate", not two.
 arch_read=$(wc -l <"$SHIP_LIST" | tr -d ' ')
 if [ "${arch_read:-0}" -eq 0 ]; then
     echo "!! archaeology-census had no ship-set to read. A tree nobody looked at is" >&2
     echo "   not a clean tree — could-not-look, not a pass." >&2
-    rm -f "$ARCHHITS"
     exit 2
 fi
-arch_class() { # arch_class <label> <ere> [scrub-noqa]
-    local label=$1 pat=$2 scrub=${3:-} rc=0 hit file line text matched
-    set +e
-    (cd "$TARGET" && grep -rInE "$pat" --exclude-dir=.git .) >"$ARCHHITS" 2>/dev/null
-    rc=$?
-    set -e
-    if [ "$rc" -gt 1 ]; then
-        echo "!! archaeology-census: the scan for '$label' could not read the artifact" >&2
-        echo "   (grep exited $rc). A tree nobody looked at is not a clean tree." >&2
-        rm -f "$ARCHHITS"
-        exit 2
-    fi
-    while IFS= read -r hit; do
-        [ -n "$hit" ] || continue
-        hit=${hit#./}
-        file=${hit%%:*}
-        hit=${hit#*:}
-        line=${hit%%:*}
-        text=${hit#*:}
-        if [ -n "$scrub" ]; then
-            # ALLOW-LIST, with its reason: a linter rule id inside a `noqa:`
-            # directive is a ruff/flake8 code and not a finding id — the two
-            # share a shape and nothing else. The directive is scrubbed from
-            # the LINE before the pattern is applied, so the code stays legible
-            # in the tree where the linter needs it.
-            text=$(printf '%s' "$text" |
-                sed -E 's/noqa:[[:space:]]*[A-Z]+[0-9]+([[:space:]]*,[[:space:]]*[A-Z]+[0-9]+)*//g')
-        fi
-        matched=$(printf '%s' "$text" | grep -oE "$pat" | head -1 || true)
-        [ -n "$matched" ] || continue
-        violation "archaeology-census: $file:$line  $label  \"$matched\""
-        arch_bad=$((arch_bad + 1))
-    done <"$ARCHHITS"
-}
-# 1 · finding ids. The queue's row ids, which live in a ledger that ships as a
-#     skeleton — so every one of them resolves nowhere in the artifact.
-arch_class finding-id '\bN[0-9]{2,3}\b' scrub-noqa
-# 2 · rung and cycle tokens. The plan's own coordinates, and cycle plans trim.
-#     THE SUFFIX IS ALPHANUMERIC, and that is the whole of what this pattern
-#     learned. It required a DIGIT after the hyphen until 2026-08-31, so it
-#     denied the minority spelling and passed the majority one: the lane and
-#     wave forms a plan actually uses carry a letter there, and a census that
-#     reported zero was reading a tree with dozens of them. Found by a verifier
-#     reading the pattern rather than its output, which is the only way a
-#     false green like this is ever found — the leg's own count cannot see the
-#     shape it was never given. `[A-Za-z0-9]` rather than `[A-Z0-9]` because
-#     the trailing lower-case forms are the same coordinate in the same plans,
-#     and a class that stopped at upper-case would have left a second, smaller
-#     version of exactly this hole behind it.
-arch_class rung-token '\bP[0-9]{1,2}-[A-Za-z0-9]+\b'
-# 3 · the NARRATIVE forms of the method's vocabulary, and only those. A named
-#     verification pass is an instance of a run nobody outside this repository
-#     watched; the bare stage name is shipped vocabulary and stays (below).
-arch_class narrative "PROVE-[A-Za-z0-9]+|this $_ru"
-# 4 · the private-name deny-list: the sibling product, its repository slug, the
-#     owner's account handle, and the platform's own deployment domain.
-arch_class private-name "Att$_at|attic$_ac|joe$_jo|pilecap$_pd"
-# 5 · the template's FORMER name, in the TitleCase form the brand carried,
-#     matched CASE-SENSITIVELY — which is the whole mechanism. The owner's
-#     ruling of 2026-08-26 moved the brand and kept the infrastructure
-#     namespace, and every surviving site of the old name is lowercase by
-#     construction (the compose project, the `DJB_`/`djb_` prefixes, the
-#     Zitadel logins — the allow-list below closes that set). So case IS the
-#     discriminator between the identity that moved and the namespace that did
-#     not, and a case-insensitive scan here could only ever be born red.
-arch_class former-brand "Django$_bs"
-# 6 · deployment coordinates of the account this platform is developed in: the
-#     slug joined to an environment by `-` (IAM roles, S3 buckets, EC2 tags) or
-#     by `/` (the secrets-manager prefix). The slug ALONE is the product name
-#     and ships; it is the JOIN that names somebody's real resources, which is
-#     why the shape rather than the word is what is denied. The deploy scripts
-#     compose these from one refuse-unset variable, so a clone that carries no
-#     value addresses nothing at all — this leg is the belt on that.
-arch_class deploy-coordinate "pilecap$_ev"
-rm -f "$ARCHHITS"
+ARCHOUT=$(mktemp "${TMPDIR:-/tmp}/djb-publish-arch.XXXXXX")
+if ! archaeology_scan_tree "$TARGET" >"$ARCHOUT"; then
+    rm -f "$ARCHOUT"
+    exit 2
+fi
+arch_bad=0
+while IFS= read -r arch_line; do
+    [ -n "$arch_line" ] || continue
+    violation "$arch_line"
+    arch_bad=$((arch_bad + 1))
+done <"$ARCHOUT"
+rm -f "$ARCHOUT"
 #
 # THE ALLOW-LIST, each entry with the reason it is allowed. Most of them match
 # no pattern above and are recorded here so that nobody ADDS them by

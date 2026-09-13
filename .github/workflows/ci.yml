@@ -266,6 +266,44 @@ jobs:
           POSTGRES_DB="$DATABASE_NAME" \
             docker compose up -d --wait db redis temporal minio meilisearch
 
+      - name: the frontend toolchain — node
+        # THE TOOLCHAIN SHIPS IN THE SAME COMMIT AS THE TREE IT SERVES, and
+        # that is a criterion rather than a convenience. The gate's frontend
+        # leg reads a tri-state: **tree absent + toolchain absent** is a printed
+        # skip (a Python-only product pays nothing and is never told it is
+        # broken); **tree present + toolchain absent** is exit 2 naming it —
+        # could-not-look, which outranks a pass everywhere here. So a `frontend/`
+        # that merged without these two steps would redden CI by construction,
+        # and it would redden it in the one way that is hardest to read: an
+        # instrument saying it could not look, on a runner nobody is watching.
+        #
+        # `node-version-file` and NOT a version typed here. `frontend/.nvmrc`
+        # names the one interpreter the checkout is proven green on, and a
+        # second copy of that number in this file is a second answer to "which
+        # Node is this". `engines.node` in `frontend/package.json` is the
+        # supported FLOOR, which is a different question and is enforced by
+        # pnpm (`engine-strict=true` in `frontend/.npmrc` — without it,
+        # `engines` is a comment and a broken pin ships unnoticed for days).
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: frontend/.nvmrc
+
+      - name: the frontend toolchain — pnpm
+        # THE VERSION IS READ OUT OF `packageManager`, never typed. That field
+        # is the frontend's own declaration and this action honours it, so the
+        # pnpm CI runs is the pnpm a laptop runs.
+        #
+        # WHAT THIS STEP DELIBERATELY DOES NOT DO: install. `pnpm install
+        # --frozen-lockfile` is a gate LEG, and the leg — with its own
+        # tri-state and its own frozen-lockfile assertion — belongs to the rung
+        # that owns `scripts/check.sh`. Installing here would put a second,
+        # unmeasured copy of that leg in this file, which is the exact drift
+        # this workflow's header exists to refuse: CI does not have its own list
+        # of legs. CI runs the gate.
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+
       - name: the gate (./scripts/check.sh, full)
         # THE step. Not piped, not wrapped, not summarised: its exit status is
         # the job's. Which leg failed is printed by the script, with its wall

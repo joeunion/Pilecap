@@ -305,8 +305,10 @@ is the current list; four of them matter to an arrival:
 - `test_workflows.py` — the run under Temporal's time-skipping test
   environment: the week-long wait, both endings.
 
-The builder's loop is `./scripts/check.sh --loop` per rung, in a worktree with
-its own database (`scripts/db.sh`); the full gate self-tests the enforcement —
+`./scripts/check.sh --loop` is run by the builder, per rung, in a worktree with
+its own database (`scripts/db.sh`); and by the verifier, once, as the consult —
+a `VERDICT REUSED` banner is the gate, a miss completes and is recorded. The
+full gate self-tests the enforcement —
 every canary planted through the real scope must fire, every negative must
 stay silent, and a dead canary is exit 2, not a pass. Run the gate **bare, or
 redirected to a file — never piped**: it detects a piped stdout and refuses

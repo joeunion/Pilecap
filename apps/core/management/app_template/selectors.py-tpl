@@ -1,0 +1,24 @@
+"""How `{{ app_name }}` is READ. Nothing here ever writes (house rule 12).
+
+Every function is `get_` or `list_` (house rule 16) and hands back a queryset
+or a row, scoped both ways:
+
+    def list_things(*, tenant: Tenant, org: Organization | None) -> ScopedQuerySet[Thing]:
+        return (
+            Thing.objects.for_tenant(tenant)
+            .visible_to(org)
+            .select_related("owner")
+            .order_by("-created_at")
+        )
+
+`for_tenant` answers "whose data" and `visible_to` "which part of their
+network". Both fail closed — an unresolved tenant or an unresolved hat reads an
+empty table rather than the table — and on an org-scoped model the second half
+is NOT optional (house rule 24).
+
+A list route pins its query count at seeded scale (house rule 5), so the
+`select_related` / `prefetch_related` that keeps it flat belongs here, where
+every door inherits it.
+"""
+
+from __future__ import annotations

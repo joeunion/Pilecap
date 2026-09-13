@@ -1,0 +1,39 @@
+"""What `{{ app_name }}` DOES — and the one place it writes.
+
+Every door calls a function here and none of them touch a model directly: a
+REST route, an MCP tool, a socket consumer, a Temporal activity and a webhook
+receiver all import `services`, `selectors` and `schemas` (house rule 10). A
+disagreement between two doors is a finding; one service behind both is how
+that stays impossible.
+
+    from django.db import transaction
+
+    from apps.core.actor import Actor
+    from apps.core.authz import require
+    from apps.core.service import service
+
+
+    @service
+    def create_thing(*, tenant: Tenant, actor: Actor, name: str) -> Thing:
+        require(actor, "thing.create")
+        with transaction.atomic():
+            thing = Thing.objects.create(tenant=tenant, organization=actor.org, name=name)
+            emit(name=THING_CREATED, tenant=tenant, payload=..., actor=actor)
+        return thing
+
+* `@service`, keyword-only, typed, returning the object (house rule 13); a
+  service that resolves an actor authorizes, with `authz.require` or a written
+  `# authz: <reason>`;
+* `emit()` INSIDE the transaction, after the write it describes (house rule 8's
+  reason: the relay is outside the boundary, the row is inside it);
+* the verb is one from the declared lexicon in `quality/rules.yaml` (house
+  rule 16). A private helper starts with `_` and is not a capability at all;
+* anything that waits or retries is `start_workflow_on_commit(...)`, never a
+  thread, a task queue or a cron entry;
+* HTTP vocabulary never appears here — raise `core.exceptions.*` and let the
+  one mapper in `config/api.py` speak status codes (house rule 14).
+
+Reads live next door in `selectors.py` and never here (house rule 12).
+"""
+
+from __future__ import annotations

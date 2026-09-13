@@ -38,8 +38,9 @@ from django.db import close_old_connections
 from temporalio import activity
 
 from apps.accounts import services, zitadel
-from apps.accounts.models import SsoConnection, User
+from apps.accounts.models import IdentityBranding, SsoConnection, User
 from apps.accounts.types import (
+    KIND_IDENTITY_BRANDING,
     KIND_IDENTITY_REVOCATION,
     KIND_SSO_CONNECTION,
     KIND_WORKFORCE_PROVIDER,
@@ -92,6 +93,9 @@ def apply_identity_config(payload: IdentityConfigSync) -> IdentityConfigApplied:
         if payload.kind == KIND_IDENTITY_REVOCATION:
             _platform_scope(payload.kind)
             return _apply_identity_revocation(payload)
+        if payload.kind == KIND_IDENTITY_BRANDING:
+            _platform_scope(payload.kind)
+            return _apply_identity_branding(payload)
         if payload.kind != KIND_SSO_CONNECTION:
             raise ValueError(
                 f"apply_identity_config does not know the config kind {payload.kind!r}. "
@@ -232,6 +236,72 @@ def _apply_workforce_provider(payload: IdentityConfigSync) -> IdentityConfigAppl
         resource_id=resource.id,
         created=resource.created,
     )
+
+
+def _apply_identity_branding(payload: IdentityConfigSync) -> IdentityConfigApplied:
+    """The hosted sign-in screen's look, made to agree with the intent row.
+
+    **A platform run** (ADR workflows-3): one instance, one login screen,
+    belonging to no customer, so it is started with `tenant=None` under a
+    `platform:` id and `_platform_scope` has already refused a tenant-stamped
+    invocation.
+
+    **Unlike the workforce door, this one HAS a row**, and that asymmetry is the
+    point of the whole rung. `_apply_workforce_provider` writes nothing back
+    because its intent is the environment; here the intent is
+    `IdentityBranding`, so the run reads it, materialises it, and records that
+    it landed — which is what gives `zitadel_audit` something to disagree with
+    when somebody repaints the screen in the console.
+
+    A row deleted or deactivated while the run was queued raises `NotFound`.
+    Temporal retries, it keeps raising, and the run fails saying so — the same
+    honest outcome `apply_identity_config` documents for every other kind,
+    rather than quietly succeeding at nothing.
+
+    **The write-back is not through a service, and that is the existing shape.**
+    `_apply_sso_connection` records its own materialisation the same way, for
+    the reason recorded there: this is the activity recording what it itself
+    just did to somebody else's API, not a caller asking for a state change.
+    """
+    row = IdentityBranding.objects.filter(pk=UUID(payload.key), is_active=True).first()
+    if row is None:
+        raise NotFound(
+            f"identity branding {payload.key} is gone or no longer active; nothing to materialise."
+        )
+    resource = zitadel.ensure_label_policy(
+        accent=row.accent,
+        background_color=row.background_color,
+        font_color=row.font_color,
+        background_color_dark=row.background_color_dark,
+        font_color_dark=row.font_color_dark,
+        is_watermark_disabled=row.is_watermark_disabled,
+    )
+    applied = IdentityConfigApplied(
+        kind=payload.kind,
+        key=payload.key,
+        resource_id=resource.id,
+        created=resource.created,
+    )
+    # The write-back goes through the service, like every other write in this
+    # repository (house rule 10) and exactly as `_apply_sso_connection` above
+    # does it. The activity learned a fact; the service is what is allowed to
+    # record it, audit it and log it.
+    #
+    # `tenant=None` and a hatless actor: this is the deployment's own screen, a
+    # platform run by construction, and `_platform_scope` has already refused an
+    # invocation carrying either.
+    services.set_identity_branding(
+        actor=system_actor(),
+        tenant=None,
+        branding=row,
+        applied=applied,
+    )
+    log.info(
+        "accounts.identity_branding.materialised",
+        resource_id=resource.id,
+        created=resource.created,
+    )
+    return applied
 
 
 def _apply_identity_revocation(payload: IdentityConfigSync) -> IdentityConfigApplied:

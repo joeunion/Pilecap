@@ -232,6 +232,47 @@ services:
       # nothing to an instance that already exists; `scripts/setup.sh` repairs
       # those through the feature API.
       ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: ${ZITADEL_LOGIN_V2_REQUIRED:-false}
+      # --- SIGN-IN POSTURE, AT INSTANCE CREATION (ADR ident-8) -------------
+      # THE SPELLING WAS READ OUT OF THE IMAGE, not recalled — the embedded
+      # `defaults.yaml` in ghcr.io/zitadel/zitadel:v4.17.1 carries, verbatim:
+      #
+      #     AllowRegister: true # ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER
+      #     MaxPasswordAttempts: 0 # ZITADEL_DEFAULTINSTANCE_LOCKOUTPOLICY_MAXPASSWORDATTEMPTS
+      #     DisallowPublicOrgRegistration: # ZITADEL_DEFAULTINSTANCE_RESTRICTIONS_DISALLOWPUBLICORGREGISTRATION
+      #
+      # A key this image does not know is IGNORED SILENTLY, which is why the
+      # spelling is quoted here rather than merely typed.
+      #
+      # THE SHARP EDGE, in the file's own words: `DefaultInstance` applies WHEN
+      # THE INSTANCE IS CREATED. On a fresh volume these three lines are the
+      # whole fix; on a Zitadel whose instance already exists they do NOTHING,
+      # and `manage.py zitadel_seed` is what closes the doors there
+      # (`apps/accounts/zitadel.py`, "the deployment's sign-in posture").
+      # These are the belt; the seed is the mechanism.
+      #
+      # The `:-` defaults are the SAME posture `config/settings/base.py` reads
+      # from the same variable names — the one-declared-value law, pinned by
+      # `apps/accounts/tests/test_zitadel_posture.py`, which reads both files.
+      #
+      # THE THIRD KEY IS INVERTED, and that is the image's spelling, not a
+      # choice: it is `DISALLOW`PublicOrgRegistration, while the seed's knob is
+      # ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION. Compose has no `!` in `${…:-…}`,
+      # so this key takes its own polarity and gets its OWN documented variable,
+      # `ZITADEL_DISALLOW_PUBLIC_ORG_REGISTRATION`, which `.env.example` and
+      # `deploy/env.staging.example` ship beside the other three with the
+      # polarity spelled out. Two variables rather than one inverted meaning,
+      # because a `false` that means "closed" three lines below a `false` that
+      # means "open" is a line somebody sets wrong once.
+      #
+      # It defaults CLOSED, deliberately: a fresh instance is created closed
+      # even for a deployment that wants org registration open, and
+      # `zitadel_seed` — which runs seconds later in ./scripts/setup.sh and IS
+      # the mechanism — opens it. The belt can be tighter than the mechanism;
+      # it must never be looser, and the test pins that direction as well as
+      # pinning that every key here interpolates a variable the examples carry.
+      ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER: ${ZITADEL_ALLOW_SELF_REGISTRATION:-false}
+      ZITADEL_DEFAULTINSTANCE_LOCKOUTPOLICY_MAXPASSWORDATTEMPTS: ${ZITADEL_MAX_PASSWORD_ATTEMPTS:-100}
+      ZITADEL_DEFAULTINSTANCE_RESTRICTIONS_DISALLOWPUBLICORGREGISTRATION: ${ZITADEL_DISALLOW_PUBLIC_ORG_REGISTRATION:-true}
     ports:
       # Loopback only, like every other service here. 8081 rather than
       # Zitadel's own 8080, which the ClickStack UI already publishes: two
@@ -283,9 +324,21 @@ services:
     #
     # Pinned to the release, like Temporal, Mailpit and Zitadel are: a store
     # whose S3 dialect moved between two worktrees would be a debugging
-    # session nobody asked for. 2025-09-07 is the newest release published to
-    # Docker Hub.
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # session nobody asked for.
+    #
+    # SERVED FROM QUAY.IO, NOT DOCKER HUB, and the registry is the only thing
+    # that moved: the tag is the same release this tree has always pinned. On
+    # 2026-09-12 `docker manifest inspect minio/minio:RELEASE.2025-09-07T16-13-09Z`
+    # started answering "denied: requested access to the resource is denied"
+    # — Docker Hub stopped serving the tag — while the same tag on quay.io
+    # (MinIO's own registry, and the one their own quickstart names) resolves.
+    # A fresh clone could not pull the files store at all, which is the first
+    # thing a stranger runs. Pinning a NEWER Hub release was the other option
+    # and was rejected: same registry, same failure mode, and it would move the
+    # S3 dialect for no reason. A registry can drop a tag again — the tripwire
+    # for the next time is `scripts/setup.sh`'s pull step, which refuses with
+    # COULD NOT LOOK and names the image rather than timing out inside `up`.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -406,8 +459,19 @@ services:
       # The UI only. OTLP stays on the internal network: the app talks to the
       # collector, and the collector is the only thing that talks to the sink.
       - "127.0.0.1:8080:8080"
+    # THREE PATHS, BECAUSE THE ALL-IN-ONE HOLDS THREE DIFFERENT THINGS —
+    # HyperDX's own metadata at /data/db, the ClickHouse column store every
+    # span and log line actually lands in, and the ClickHouse server's logs.
+    # Only the first was named here, so a `docker compose down -v`, a prune, or
+    # any recreate that renews anonymous volumes kept the dashboards and
+    # dropped everything they query. deploy/compose.yaml carries the same three
+    # under the same names and the whole argument: the loss class does not care
+    # which machine it is on, and a laptop is where somebody first learns that
+    # their traces from this morning are gone.
     volumes:
       - clickstack_data:/data/db
+      - clickstack_data_clickhouse:/var/lib/clickhouse
+      - clickstack_data_clickhouse_logs:/var/log/clickhouse-server
 
 volumes:
   db_data:
@@ -417,7 +481,13 @@ volumes:
   # Zitadel's own state is in the `zitadel` database on `db`; this volume holds
   # only the machine user's PAT, written once by the first-instance bootstrap.
   zitadel_bootstrap:
+  # The sink's three (the reason is beside the service): HyperDX's metadata,
+  # the column store, and the ClickHouse server's own logs. Rebuildable is not
+  # the word for any of them — telemetry is the one thing that cannot be
+  # regenerated from the rows, because the rows are not where it lives.
   clickstack_data:
+  clickstack_data_clickhouse:
+  clickstack_data_clickhouse_logs:
   # Uploaded objects on a laptop. The only copy — a laptop's uploads are not
   # backed up, the way a laptop's database is not.
   minio_data:

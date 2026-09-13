@@ -266,12 +266,22 @@ SCRATCH_DB=""
 # THE DRIVE TERMINATES WHAT IT STARTS. Seeding two messages through `send()`
 # and posting three webhooks at the receiver starts Temporal executions — a
 # `DeliverMessageWorkflow` per message and a `DispatchEventWorkflow` per emitted
-# event — onto the queue this checkout's scratch DATABASE derives. Nothing ever
-# polls that queue: the drive runs no worker, and the queue name dies with the
-# scratch database at exit. So every one of those executions stayed RUNNING for
-# ever, fifteen per run, and a machine's dev namespace had accumulated over a
-# thousand of them by the time anybody counted. The database was always dropped;
-# the executions were the half nobody owned.
+# event — onto the queue this checkout's scratch DATABASE derives. On this
+# template nothing polls that queue: the drive runs no worker, and the queue name
+# dies with the scratch database at exit. So every one of those executions stayed
+# RUNNING for ever, fifteen per run, and a machine's dev namespace had
+# accumulated over a thousand of them by the time anybody counted. The database
+# was always dropped; the executions were the half nobody owned.
+#
+# THAT SENTENCE IS ABOUT THIS TEMPLATE AND NOT ABOUT EVERY CONSUMER, which is a
+# correction a consumer bought for us (its queue row). `TEMPORAL_TASK_QUEUE`
+# wins outright over the derivation (`config/settings/base.py`), so a product
+# that pins it hands this drive a queue its own worker is polling — where the
+# seeded runs COMPLETE instead of stranding. Nothing about the cleanup changes:
+# terminating a run that has already finished is a no-op, and the terminator is
+# still right. What changed is the CASE that asserts it, which used to read the
+# incidental population as its positive half and now supplies its own probe —
+# see `case_the_drive_terminates_the_runs_it_started`.
 #
 # THE SCOPE IS BOTH HALVES AT ONCE and it is deliberately narrow: the task queue
 # THIS checkout derived, AND a workflow id starting with the harness's own
@@ -924,19 +934,65 @@ SH
 # than against a promise. Positive half FIRST, as the no-copy cases do it: if
 # nothing was running, the negative half below would pass because there was
 # nothing to terminate, which is the shape of a green that proves nothing.
+#
+# THE PREMISE THIS CASE CARRIED, AND THE PROBE THAT REPLACES IT (its queue row).
+# The positive half used to be satisfied by INCIDENTAL population: the two
+# seeded sends and the three posted webhooks start a `DeliverMessageWorkflow`
+# and a `DispatchEventWorkflow` each, and they stay Running because — in this
+# drive's own words, one screen up — "nothing ever polls that queue". That is
+# true on this workerless template, where `DRIVE_QUEUE` is derived from a
+# scratch database nobody has a worker for. It is NOT a property of the drive:
+# `TEMPORAL_TASK_QUEUE` wins outright over that derivation
+# (`config/settings/base.py`), so a product running its local build with that
+# pinned hands this drive a queue its own worker IS polling — every seeded run
+# then completes in a second or two, `before` is 0, and the case reports
+# "nothing of this drive's was running" on a drive that behaved perfectly.
+#
+# SO IT SUPPLIES ITS OWN PROBE. One execution this case starts itself, under the
+# same task queue and the same tenant slug the terminator's query selects on, so
+# the positive half is guaranteed by construction in BOTH worlds instead of by
+# the absence of a worker. A workflow type nothing registers stays OPEN whether
+# or not anybody is polling — a worker that meets one fails the workflow task
+# and retries it, which is an open execution either way — so the probe is
+# exactly as present in a polled world as in a dead one. The terminator ends it
+# along with everything else, because it matches the same query; nothing here
+# leaks a probe it planted.
+DRIVE_PROBE=""
 case_the_drive_terminates_the_runs_it_started() {
     CURRENT="the drive terminates the Temporal runs it started"
     N=$((N + 1))
     OUT="${WORK}/ourruns${N}.log"
 
-    local before after
+    local before after pollers
+    # THE WORLD, PRINTED. Positive evidence only, exactly as
+    # `scripts/lifecycle.sh` declares this liveness: a poller is proof a worker
+    # is up, and its absence proves nothing except that this run saw none.
+    pollers="$(lc_queue_pollers "$DRIVE_QUEUE" 2>/dev/null)"
+    case "${pollers:-}" in
+    '' | *[!0-9]*) pollers=0 ;;
+    esac
+    if [ "$pollers" = "0" ]; then
+        echo "  ...      ${CURRENT} — world: nothing polls ${DRIVE_QUEUE} (the workerless template)"
+    else
+        echo "  ...      ${CURRENT} — world: ${pollers} poller(s) on ${DRIVE_QUEUE} (a product running its local build)"
+        echo "             the seeded runs may already have completed here; the probe below is"
+        echo "             what makes the positive half true in this world too"
+    fi
+
+    # THE PROBE, supplied rather than assumed. Both halves of the terminator's
+    # query — the task queue and the slug prefix — because a probe outside that
+    # conjunction would be planted and never cleaned.
+    DRIVE_PROBE="${DRIVE_SLUG}:rbkprobe:terminator:own"
+    lc_temporal workflow start --workflow-id "$DRIVE_PROBE" --task-queue "$DRIVE_QUEUE" \
+        --type "RunbookDriveProbeNeverRuns" >/dev/null 2>&1
+
     before="$(our_running_ids | wc -l | tr -d ' ')" ||
         cannot_look "could not ask Temporal what this drive left running — is the compose stack up? (scripts/setup.sh)"
 
     if [ "${before:-0}" -gt 0 ]; then
-        ok "this drive has ${before} executions running on ${DRIVE_QUEUE}, which nothing polls"
+        ok "this drive has ${before} execution(s) running on ${DRIVE_QUEUE}, one of them the probe it planted"
     else
-        bad "nothing of this drive's was running — the assertion below would pass for the wrong reason"
+        bad "not even this case's own probe is running — the assertion below would pass for the wrong reason"
         return 0
     fi
 
@@ -959,7 +1015,7 @@ case_the_drive_terminates_the_runs_it_started() {
     # passing if somebody deleted the call from the exit cleanup, and then only
     # a drive that FINISHED would clean up — which is most of them, and not the
     # ones that matter. The live function body is what is read, never this file.
-    if declare -f teardown | grep -q 'terminate_the_runs_this_drive_started'; then
+    if declare -f teardown | grep 'terminate_the_runs_this_drive_started' >/dev/null; then
         ok "the registered exit cleanup calls the terminator, so a drive that dies here still cleans"
     else
         bad "teardown does not call the terminator — only a drive that reaches this case would clean up"

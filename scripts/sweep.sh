@@ -44,7 +44,12 @@ esac
 #
 #   ./scripts/sweep.sh --sweep                      destroy THIS CHECKOUT's disposable leftovers
 #   ./scripts/sweep.sh --sweep --hot-path --perf    ...its warm caches too
-#   ./scripts/sweep.sh --sweep --force-foreign      ...and what nobody can vouch for
+#   ./scripts/sweep.sh --sweep --force-foreign --roots <dir>
+#                                                   ...and what nobody under <dir>
+#                                                   can vouch for. --roots is
+#                                                   REQUIRED here: without it,
+#                                                   "nobody can vouch for it"
+#                                                   means "nobody was asked".
 #
 # WHAT IT IS. `scripts/lifecycle.sh` declares the machinery classes, the one
 # live-checkout enumerator and the four verdicts; this is the entry point that
@@ -64,10 +69,13 @@ esac
 #     the identity, AND the instance's CLASS is declared `disposable` in
 #     `scripts/lifecycle.sh` — a test database, a warm cache, a restore-drill
 #     scratch, a schedule the worker re-declares at startup.
-#   * WHAT NOBODY CAN VOUCH FOR, by hand. `--sweep --force-foreign` adds the
-#     FOREIGN residue, and prints every name with its reason BEFORE acting, so
-#     an operator reading the transcript sees the claim first and can stop at
-#     the first surprise.
+#   * WHAT NOBODY UNDER A NAMED ROOT CAN VOUCH FOR, by hand.
+#     `--sweep --force-foreign --roots <dir>` adds the FOREIGN residue, and
+#     prints every name with its reason BEFORE acting, so an operator reading
+#     the transcript sees the claim first and can stop at the first surprise.
+#     `--roots` is not optional there: it is the evidence the operator is
+#     claiming to have, and without it FOREIGN means only that nothing was
+#     asked (the refusal, and what it cost, are beside the flag parsing below).
 #
 # OWNING A THING IS NOT A LICENCE TO DESTROY IT, and that sentence once cost a
 # real database. `--sweep` used to reach EVERYTHING this checkout owned,
@@ -108,8 +116,11 @@ esac
 #   timidity, it is the same lesson's bill: this run cannot tell a dead checkout's leftovers
 #   from a sibling clone's working set, only that nothing here can vouch for
 #   either (FOREIGN). So the instrument enumerates, attributes, dates and prints
-#   — and `--sweep --force-foreign` is a sentence a person types after reading
-#   what it is about to do.
+#   — and `--sweep --force-foreign --roots <dir>` is a sentence a person types
+#   after reading what it is about to do, with the root naming the evidence they
+#   looked at. Typed without the root it is refused, because then it is not a
+#   judgement about a machine; it is a judgement about the part of the machine
+#   this run happened to be standing in.
 #
 # WHICH IS WHY THE CENSUS CARRIES CLOCKS. A verdict says WHOSE a thing is.
 # The clocks say WHAT IT IS DOING: when a schedule last fired and when it fires
@@ -142,9 +153,10 @@ esac
 #     death proof, still does, and the gate still runs it directly.
 #   * `--only` narrows the POPULATION, including the unrecognized-shape check.
 #     A class N+1 instance outside the filter is not looked at, and a narrowed
-#     run therefore vouches for nothing outside its own scope. That is what
-#     makes `--only` safe to aim a `--force-foreign` at, and it is why the
-#     unscoped census is the one that gets read.
+#     run therefore vouches for nothing outside its own scope — which is why the
+#     unscoped census is the one that gets read. `--only` DOES NOT license a
+#     `--force-foreign`: a smaller blast radius is not evidence about who owns
+#     what is inside it, and the refusal below counts it as none.
 #
 # DECLARED BLIND SPOTS.
 #
@@ -164,6 +176,20 @@ esac
 #   4. THE DERIVED NAME CANNOT BE INVERTED. A checkout that MOVED on disk derives
 #      a new identity and its old machinery is a true orphan — and reads FOREIGN,
 #      indistinguishable from a sibling clone's. Correct, and correctly humble.
+#   5. `--roots` IS DELIBERATENESS, NOT PROOF — and the refusal that requires it
+#      beside `--force-foreign` buys exactly that and no more. The test is that
+#      at least one root was named and is a directory; it is not, and cannot be,
+#      a test that the root is the RIGHT one. So an EMPTY directory is legal
+#      evidence — it says "I looked there and found no checkout", which is true,
+#      and which promotes nothing — and this repository's own drive
+#      (`scripts/tests/test_sweep.sh`) uses that shape deliberately, so the
+#      population it acts on stays FOREIGN. At the other end, `--roots /`
+#      vouches for the whole machine at the bounded scan depth and this frame
+#      believes it. What the refusal closes is the operator who never thought
+#      about roots at all; what it cannot close is the operator who thought
+#      about them and named the wrong one. Read the census the root produced
+#      before authorising anything — that reading is the actual evidence, and
+#      the flag is only what forces it to exist.
 #
 # --assert-none TURNS THE CENSUS INTO AN ASSERTION, for a caller that has
 # already decided nothing should be in scope: exit 1 when the scope is not empty,
@@ -171,6 +197,47 @@ esac
 # run that destroyed and then reported on what it destroyed could always make its
 # own assertion true. It fires AFTER the unrecognized refusal, because "I found
 # nothing" and "I could not tell what I found" are different answers.
+#
+# AND IT EXEMPTS THIS CHECKOUT'S OWN WORKING SET, NAMED AND PRINTED.
+#
+# THE FALSE RED THIS CLOSES, which a consumer of this template met on their own
+# product and not on this template. Their product had a parked deal's return
+# timer open on their own queue with TWO WORKERS POLLING IT, and
+# `--assert-none` failed them for it. The census had already judged that row
+# correctly one line above: `live … (THIS CHECKOUT)`, then
+# `kept — … it is a WORKING SET, not a leftover`. The assertion then counted the
+# very row the verdict had just excused, because it counted `FOUND` and `FOUND`
+# is every row the census printed. An instrument that says "this is your working
+# set" and fails you for having one is an instrument a product turns off.
+#
+# THE EXEMPT POPULATION IS THREE CONDITIONS AT ONCE, and each is load-bearing:
+#
+#   1. THIS CHECKOUT OWNS IT — verdict `live` and the owner is our own derived
+#      base. Another checkout's is not ours to excuse.
+#   2. ITS CLASS IS DECLARED NOT DISPOSABLE — `lc_destroy_decision` hands out no
+#      licence precisely because the class says the instance IS the working set
+#      (a checkout database, a running execution, the queue they ride on). A
+#      class declared disposable is a LEFTOVER by its own declaration and is
+#      never exempt: this checkout's leaked Schedule stays a finding, which is
+#      the gate's schedule leg (ADR platform-lifecycle-1).
+#   3. THERE IS POSITIVE EVIDENCE IT IS IN USE RIGHT NOW — sessions on the
+#      database, pollers on the queue. THE SAME positive-only liveness this
+#      file's blind spot 3 declares, read at the same moment the verdict is.
+#
+# WHY CONDITION 3 IS NOT OPTIONAL, and it is the whole difference between this
+# and a hole. Ownership alone would have exempted every open execution on this
+# checkout's own queue — which is exactly the population the gate's
+# open-execution leg exists to redden, and 1,061 stranded runs accumulated
+# under a census that could not see them. An owned run with NOTHING POLLING is
+# not a working set; it is a strand, and it is indistinguishable from a leftover
+# by construction. Absence of evidence is never an exemption here, exactly as it
+# is never a licence to destroy anywhere else in this file.
+#
+# AND IT IS PRINTED, per row and in a block before the verdict: what was
+# exempted, which checkout owns it, which declaration excuses it and what the
+# evidence was. An exemption nobody can read is an assertion quietly weakened,
+# and the reviewer's job is to disagree with the exemption, which they can only
+# do if it is on the page.
 #
 # EXIT (the house semantics):
 #   0  the census was taken, or the sweep completed
@@ -192,7 +259,7 @@ PERF=0
 ONLY=""
 ONE_CLASS=""
 ASSERT_NONE=0
-USAGE="sweep.sh takes --sweep, --force-foreign, --hot-path, --perf, --roots <dir>, --only <prefix>, --class <name>, --assert-none, --list-classes, --registry"
+USAGE="sweep.sh takes --sweep, --force-foreign (only with --roots <dir>), --hot-path, --perf, --roots <dir>, --only <prefix>, --class <name>, --assert-none, --list-classes, --registry"
 
 cannot_look() {
     echo "!! sweep: $*" >&2
@@ -230,11 +297,14 @@ while [ "$#" -gt 0 ]; do
         ONLY="${1:-}"
         if [ -z "$ONLY" ]; then
             # An empty --only would narrow nothing while reading as a narrowing,
-            # which is the one way a scoped --force-foreign becomes a machine-wide
-            # one without anybody typing that.
+            # and a scope an operator believes is small is a scope they read
+            # less carefully. (It is no longer the thing that makes a
+            # --force-foreign safe to aim — nothing but --roots is, and the
+            # refusal below says so — but a flag that silently means its
+            # opposite is a defect in its own right.)
             echo "!! --only needs an identity prefix. An empty one narrows nothing while" >&2
-            echo "   reading like a narrowing, and this flag is what makes --force-foreign" >&2
-            echo "   safe to aim." >&2
+            echo "   reading like a narrowing, and a scope you believe is small is a scope" >&2
+            echo "   you read less carefully." >&2
             exit 2
         fi
         ;;
@@ -277,6 +347,47 @@ if [ "$FORCE_FOREIGN" -eq 1 ] && [ "$SWEEP" -eq 0 ]; then
     echo "!! --force-foreign is a licence to DESTROY and means nothing without --sweep." >&2
     echo "   Run the census first, read which instances come back FOREIGN, and only" >&2
     echo "   then decide." >&2
+    exit 2
+fi
+
+# --force-foreign NEEDS --roots, AND THIS REFUSAL IS THE EXPENSIVE ONE.
+#
+# FOREIGN is an absence of evidence, never a licence. A run pointed at no root
+# can see only this repository's own worktrees, so EVERY other checkout on the
+# machine — a sibling clone, a verifier's tree, another agent's rung — reads
+# FOREIGN, and `--force-foreign` then reads that silence as permission for all of
+# them. This was a WARNING here until it was a loss: one unrooted run on a
+# consumer's box reported `1709 found · 1472 destroyed` and took a live builder's
+# checkout database with it. A warning is a sentence somebody reads afterwards.
+#
+# BEFORE ANYTHING IS LOOKED AT, deliberately: no scope banner, no census, no
+# docker, no registry — so the transcript of a refused run cannot be mistaken for
+# a run that judged something, and so the refusal cannot depend on a server being
+# reachable. It also fires AFTER the --sweep refusal above, so the narrower
+# complaint (a licence with nothing to license) still comes first.
+#
+# --only DOES NOT LIFT IT. A prefix says where to look; it never says who owns
+# what is found there. The old reasoning — that `--only` made a --force-foreign
+# safe to aim — is what this refusal replaces: it made it SMALLER, which is not
+# the same thing, and the operator still had to be right about a population they
+# had been given no evidence about.
+if [ "$FORCE_FOREIGN" -eq 1 ] && [ "${#LC_ROOTS[@]}" -eq 0 ]; then
+    echo "!! REFUSED: --force-foreign needs --roots <dir>, and this run was given none." >&2
+    echo "   Nothing was destroyed and nothing was looked at." >&2
+    echo "" >&2
+    echo "   FOREIGN means this run could not say whose a thing is — an absence of" >&2
+    echo "   evidence, never a licence. With no --roots, every checkout of this" >&2
+    echo "   repository that is not one of THIS one's worktrees is FOREIGN: a sibling" >&2
+    echo "   clone, a verifier's tree, another agent's rung. One such run destroyed" >&2
+    echo "   1,472 databases in a single pass, a live builder's among them." >&2
+    echo "" >&2
+    echo "   Point --roots at wherever clones of this repository live (repeatable)," >&2
+    echo "   read the census it gives you, and only then authorise:" >&2
+    echo "     ./scripts/sweep.sh --roots <dir>                        the census, first" >&2
+    echo "     ./scripts/sweep.sh --sweep --force-foreign --roots <dir>" >&2
+    echo "" >&2
+    echo "   --only <prefix> does not stand in for it: narrowing is not evidence. It" >&2
+    echo "   says where to look, never who owns what is found there." >&2
     exit 2
 fi
 
@@ -371,18 +482,10 @@ if [ "$SWEEP" -eq 1 ]; then
 else
     echo "  MODE            census — nothing is destroyed"
 fi
-if [ "$SWEEP" -eq 1 ] && [ "$FORCE_FOREIGN" -eq 1 ] && [ "${#LC_ROOTS[@]}" -eq 0 ] && [ -z "$ONLY" ]; then
-    # The exact combination that once produced a real finding, said out loud
-    # instead of discovered afterwards. Not a refusal: an operator who knows their machine
-    # holds no other checkout is entitled to say so, and that assertion is what
-    # --force-foreign IS. But it is an assertion about a whole machine made from a
-    # run that looked at one repository.
-    echo ""
-    echo "WARNING: --force-foreign, no --roots, no --only. This run can see only this"
-    echo "         repository's own worktrees, so every OTHER checkout on this machine"
-    echo "         is FOREIGN and is about to be destroyed. If any other checkout of"
-    echo "         this repository exists here, stop and re-run with --roots <dir>."
-fi
+# The WARNING that used to stand here is gone, and its absence is the fix: the
+# combination it described — --force-foreign with no --roots — is now REFUSED at
+# flag parse, above, long before this line. A warning printed on the way past is
+# read after the destroy; a refusal is read instead of it.
 echo ""
 
 # --- the walk -----------------------------------------------------------------
@@ -399,6 +502,11 @@ FOREIGN_COUNT=0
 UNRECOGNIZED=0
 FAILED=0
 WOULD=0
+# The --assert-none exemption: this checkout's own working set, in use right now.
+# See --assert-none in the header for the three conditions and why the third one
+# is what keeps this from being a hole.
+EXEMPT=0
+: >"${WORK}/exempt"
 
 wanted_class() {
     [ -z "$ONE_CLASS" ] || [ "$ONE_CLASS" = "$1" ]
@@ -413,6 +521,22 @@ say_evidence() {
     [ -n "$_EV" ] || return 0
     echo "                     ${_EV}"
 }
+
+# THE LIVE-USE COUNT the verdict was computed from, and the noun for it. Set by
+# the caller immediately before `judge`, exactly as `EVIDENCE` is, and consumed
+# and cleared in the same move for the same reason: a caller that forgets to set
+# one must not be able to excuse this row on the previous row's evidence.
+#
+# IT IS THE COUNT, NOT THE PHRASE. `EVIDENCE` above is a sentence for a human;
+# this is the number `lc_verdict` was handed, and the --assert-none exemption
+# turns on it being POSITIVE. Two fields rather than one because the noun
+# differs by kind — sessions on a database, pollers on a queue — and an
+# exemption that could not say WHICH evidence it rested on would be an exemption
+# nobody can check.
+LIVE_EVIDENCE=0
+LIVE_EVIDENCE_WHAT=""
+_LIVE=0
+_LIVE_WHAT=""
 
 # Every queue's `<pollers>|<backlog>|<backlog age>`, asked once. Two hundred open
 # executions on twenty queues is twenty questions, not two hundred:
@@ -569,6 +693,19 @@ judge() {
     _EV="$EVIDENCE"
     EVIDENCE=""
 
+    # The live-use count, taken and cleared in the same one move and for the same
+    # reason. Sanitised here rather than trusted: a non-numeric value must read
+    # as NO evidence, because this number is what the --assert-none exemption
+    # turns on and "I could not read the evidence" is not "it is in use".
+    _LIVE="$LIVE_EVIDENCE"
+    _LIVE_WHAT="$LIVE_EVIDENCE_WHAT"
+    LIVE_EVIDENCE=0
+    LIVE_EVIDENCE_WHAT=""
+    case "${_LIVE:-}" in
+    '' | *[!0-9]*) _LIVE=0 ;;
+    esac
+    [ -n "$_LIVE_WHAT" ] || _LIVE_WHAT="live-use evidence"
+
     # THE ONE DECISION. Asked here, once, and consulted again — not
     # re-derived — at the act. It used to be implicit: the `live` arm printed a
     # line and fell out of the `case` into the destroy path, so "this checkout
@@ -612,6 +749,25 @@ judge() {
         # class has to have declared it disposable as well, and most have not.
         if [ "$licence" != "own" ]; then
             echo "           kept — ${why}"
+            # THE --assert-none EXEMPTION, recorded exactly here and nowhere
+            # else: this is the one branch that has already said, in the line
+            # above, that the instance IS a working set. The third condition —
+            # positive evidence it is in use right now — is asked here, because
+            # an owned instance with NOTHING using it is a strand and the whole
+            # point of the assertion (see --assert-none in the header).
+            if [ "$_LIVE" -gt 0 ]; then
+                EXEMPT=$((EXEMPT + 1))
+                printf '%s\t%s\t%s %s\n' "$class" "$display" "$_LIVE" "$_LIVE_WHAT" >>"${WORK}/exempt"
+                if [ "$ASSERT_NONE" -eq 1 ]; then
+                    echo "           exempt from --assert-none — in use right now (${_LIVE} ${_LIVE_WHAT})"
+                fi
+            elif [ "$ASSERT_NONE" -eq 1 ]; then
+                # Said out loud, because this is the row a reader will expect to
+                # have been excused and it was not. The reason is the whole
+                # difference between the exemption and a hole.
+                echo "           NOT exempt from --assert-none — nothing is using it right now,"
+                echo "           and an owned instance nobody is using is a strand, not a working set"
+            fi
             LEFT=$((LEFT + 1))
             return 0
         fi
@@ -637,12 +793,12 @@ judge() {
         # --force-foreign with no mention that it is a warm cache at all, and the
         # promise is that warm is never reachable by accident.
         if ! warm_open "$class"; then
-            echo "  warm     ${display} — ${class}; --sweep --force-foreign $(warm_flag_of "$class") destroys it"
+            echo "  warm     ${display} — ${class}; --sweep --force-foreign --roots <dir> $(warm_flag_of "$class") destroys it"
             LEFT=$((LEFT + 1))
             return 0
         fi
         if [ "$SWEEP" -eq 0 ] || [ "$FORCE_FOREIGN" -eq 0 ]; then
-            echo "                     --roots <dir> to prove it live; --sweep --force-foreign to destroy"
+            echo "                     --roots <dir> to prove it live; --sweep --force-foreign to destroy (also needs --roots)"
             WOULD=$((WOULD + 1))
             printf 'FOREIGN\t%s\t%s\n' "$class" "$display" >>"${WORK}/would"
             LEFT=$((LEFT + 1))
@@ -773,6 +929,11 @@ if [ "$DB_WANTED" -eq 1 ]; then
             shown=1
             verdict="$(lc_verdict "$identity" "${sessions:-0}")"
             owner="$(lc_owning_checkout "$identity" || true)"
+            # The same count the verdict was computed from, handed to `judge` for
+            # the --assert-none exemption. Set beside the verdict on purpose:
+            # two reads a few lines apart is two answers about one instance.
+            LIVE_EVIDENCE="${sessions:-0}"
+            LIVE_EVIDENCE_WHAT="session(s) on it"
             case "$class" in
             test-database)
                 judge "$class" "$verdict" "$identity" "$name" "$owner" \
@@ -864,6 +1025,8 @@ if wanted_class schedule; then
         verdict="$(lc_verdict "$identity" "${pollers:-0}")"
         owner="$(lc_owning_checkout "$identity" || true)"
         EVIDENCE="$(schedule_phrase "${last:--1}" "${nxt:--1}" "${wtype:--}" "${status:--}" "$queue")"
+        LIVE_EVIDENCE="${pollers:-0}"
+        LIVE_EVIDENCE_WHAT="poller(s) on ${queue}"
         judge schedule "$verdict" "$identity" "$sid" "$owner" \
             lc_temporal schedule delete --schedule-id "$sid"
     done <"${WORK}/schedules"
@@ -924,6 +1087,8 @@ if wanted_class open-execution; then
         verdict="$(lc_verdict "$identity" "${pollers:-0}")"
         owner="$(lc_owning_checkout "$identity" || true)"
         EVIDENCE="${wtype:--} · running $(lc_duration "${age:--1}") · queue $(queue_phrase "$queue")"
+        LIVE_EVIDENCE="${pollers:-0}"
+        LIVE_EVIDENCE_WHAT="poller(s) on ${queue}"
         judge open-execution "$verdict" "$identity" "${wid} (queue ${queue})" "$owner" \
             lc_temporal workflow terminate --workflow-id "$wid" --reason "scripts/sweep.sh: the checkout that owns ${queue} is gone"
     done <"${WORK}/executions"
@@ -950,6 +1115,8 @@ if wanted_class task-queue; then
             verdict="$(lc_verdict "$identity" "${pollers:-0}")"
             owner="$(lc_owning_checkout "$identity" || true)"
             EVIDENCE="$(queue_phrase "$queue") · $(open_runs_phrase "$queue")"
+            LIVE_EVIDENCE="${pollers:-0}"
+            LIVE_EVIDENCE_WHAT="poller(s) on it"
             judge task-queue "$verdict" "$identity" "$queue" "$owner"
         done < <(sort -u "${WORK}/queues")
     fi
@@ -1042,7 +1209,7 @@ if [ -z "$ONE_CLASS" ] || [ "$ONE_CLASS" = "task-queue" ]; then
             echo "  This run was a --sweep; the rows above say what it reached and what it left."
         else
             echo "  This census TOUCHED NOTHING. Read the verdicts above, then decide by hand:"
-            echo "    ./scripts/sweep.sh --class schedule --only <identity> --sweep --force-foreign"
+            echo "    ./scripts/sweep.sh --class schedule --only <identity> --sweep --force-foreign --roots <dir>"
         fi
     fi
     echo ""
@@ -1081,7 +1248,8 @@ echo "census: ${FOUND} found · ${DESTROYED} destroyed · ${LEFT} left alone · 
 if [ "$FOREIGN_COUNT" -gt 0 ]; then
     echo "        ${FOREIGN_COUNT} FOREIGN — this run could not say whose they are. That is an"
     echo "        absence of evidence, not a finding: point --roots at wherever clones of"
-    echo "        this repository live, or --sweep --force-foreign to destroy them by hand."
+    echo "        this repository live — and only then, having read what that census says,"
+    echo "        --sweep --force-foreign --roots <dir> to destroy what is left by hand."
 fi
 if [ "$SWEEP" -eq 0 ] && [ -s "${WORK}/would" ]; then
     echo ""
@@ -1089,7 +1257,7 @@ if [ "$SWEEP" -eq 0 ] && [ -s "${WORK}/would" ]; then
     while IFS="$(printf '\t')" read -r why class display; do
         case "$why" in
         own) echo "  --sweep                  ${class}  ${display}" ;;
-        FOREIGN) echo "  --sweep --force-foreign  ${class}  ${display}" ;;
+        FOREIGN) echo "  --sweep --force-foreign --roots <dir>  ${class}  ${display}" ;;
         esac
     done <"${WORK}/would"
 fi
@@ -1114,16 +1282,44 @@ fi
 # could not tell what I found" are different answers, and the second one may not
 # be reported as the first. Exit 1 is deliberate and distinct from exit 2 — the
 # population is a finding about the tree, not a broken instrument.
-if [ "$ASSERT_NONE" -eq 1 ] && [ "$FOUND" -gt 0 ]; then
-    echo ""
-    echo "!! --assert-none: ${FOUND} instance(s) are in scope and none should be." >&2
-    if [ -n "$ONE_CLASS" ]; then
-        echo "   scope: class ${ONE_CLASS}${ONLY:+, identity prefix ${ONLY}}" >&2
-    else
-        echo "   scope: every declared class${ONLY:+, identity prefix ${ONLY}}" >&2
+if [ "$ASSERT_NONE" -eq 1 ]; then
+    # THE EXEMPTION, PRINTED BEFORE THE VERDICT AND WHETHER OR NOT IT CHANGED IT.
+    # It is on stdout with the rest of the census because it is a census
+    # statement, not an error, and because the caller that reads this instrument's
+    # STATUS (the gate's own-tree census leg) puts this transcript in front of a
+    # human either way. An exemption that only printed when it rescued a run
+    # would be invisible on exactly the runs a reviewer wants to audit it on.
+    if [ "$EXEMPT" -gt 0 ]; then
+        echo ""
+        echo "--assert-none: ${EXEMPT} instance(s) EXEMPT — this checkout's own working set,"
+        echo "  in use right now. Named here with the evidence, because an exemption nobody"
+        echo "  can read is an assertion quietly weakened:"
+        while IFS="$(printf '\t')" read -r ex_class ex_display ex_evidence; do
+            [ -n "${ex_class:-}" ] || continue
+            printf '  exempt   %s\n' "$ex_display"
+            printf '           %s owns it · %s is declared NOT disposable — it is a working\n' "$OUR_BASE" "$ex_class"
+            printf '           set, not a leftover · in use right now: %s\n' "$ex_evidence"
+        done <"${WORK}/exempt"
+        echo "  Absence of that evidence is NEVER an exemption: an owned instance nothing is"
+        echo "  using is indistinguishable from a leftover, and that is the strand the gate's"
+        echo "  open-execution leg exists to catch."
     fi
-    echo "   They are listed above with their verdicts. This is exit 1 — a finding about" >&2
-    echo "   the tree, not a broken instrument." >&2
-    exit 1
+
+    IN_SCOPE=$((FOUND - EXEMPT))
+    if [ "$IN_SCOPE" -gt 0 ]; then
+        echo ""
+        echo "!! --assert-none: ${IN_SCOPE} instance(s) are in scope and none should be." >&2
+        if [ -n "$ONE_CLASS" ]; then
+            echo "   scope: class ${ONE_CLASS}${ONLY:+, identity prefix ${ONLY}}" >&2
+        else
+            echo "   scope: every declared class${ONLY:+, identity prefix ${ONLY}}" >&2
+        fi
+        if [ "$EXEMPT" -gt 0 ]; then
+            echo "   (${FOUND} found · ${EXEMPT} exempt as this checkout's working set, named above)" >&2
+        fi
+        echo "   They are listed above with their verdicts. This is exit 1 — a finding about" >&2
+        echo "   the tree, not a broken instrument." >&2
+        exit 1
+    fi
 fi
 exit 0

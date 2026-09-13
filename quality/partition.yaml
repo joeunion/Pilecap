@@ -141,6 +141,26 @@ closure_classes:
       platform test's answer — a banked skip over any of them was a stale green.
       `docs/**` is deliberately NOT here: no platform test builds a path into
       it, and that is where a product's churn lives.
+  - id: C9
+    what: the template tree the entrance chain censuses
+    members: ["templates/**"]
+    why: >-
+      FOUND BY `read_census` AFTER C8 LANDED, and it is the same finding class:
+      `apps/accounts/tests/test_entrance_chain.py` walks
+      `BASE_DIR / "templates"` with `rglob("*.html")` (its
+      `test_the_census_covers_pages_this_tree_never_wrote`) and asserts about
+      the SET it finds — which page this tree authored and which four it
+      deliberately never wrote, overriding allauth's base instead. Adding,
+      renaming or deleting a file under `templates/` therefore changes that
+      platform test's answer with no other file in the tree moving, which is
+      exactly the stale-green a banked skip would license. Its siblings in the
+      module read the same tree through the rendered chain: the entrance pages
+      are the auth door's own surface, and the door tests are platform tests.
+      NOT AN EXEMPTION, deliberately: an exemption would leave a platform test's
+      outcome movable by a file outside the skip key — the lie the partition
+      exists to refuse (design §3). In a clone, a product's own templates live
+      under its app's `templates/` directory inside `apps/{app}/**`, which C1
+      already covers; this class is the platform's shared root tree.
 
 # --- §3 · the ONE enumerated exclusion ----------------------------------------
 
@@ -331,6 +351,16 @@ does_not_cover:
     a discovery seam written in a shape the AST seam census does not recognize
     (it looks for `importlib.util.find_spec` / `import_module` over an app
     config's own dotted name).
+  - >-
+    BEHAVIORAL coupling between a platform test and a product app — the import
+    census's residue, declared where the sibling platform's import-census ruling
+    declares it (their blind spot 1). `partition.py::import_census` reads NAMES:
+    a platform test that reaches a product app without naming it is invisible
+    to it — through a database row the product's migrations created, a fixture
+    the product registered, a registry entry discovered at run time, or an event
+    payload consumed by shape. So is an import assembled at run time from a
+    computed string (`import_module(name)`). The two censuses close the
+    file-read and the import doors; this one has no door to close.
   - >-
     the canaries prove the INSTRUMENT — that the hash and the digest move when
     they must. They do not prove the banked verdict was honest when it was

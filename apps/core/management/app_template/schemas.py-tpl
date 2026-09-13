@@ -1,0 +1,30 @@
+"""The one contract language for `{{ app_name }}` — Pydantic schemas.
+
+The same class serves the REST body, the MCP tool, the webhook payload and the
+socket frame. That is not tidiness: it is what stops two doors coming to
+disagree about the shape of one row.
+
+    from apps.core.schemas import StrictIn
+
+
+    class ThingIn(StrictIn):
+        name: str
+
+
+    class ThingOut(Schema):
+        model_config = ConfigDict(from_attributes=True)
+
+        id: UUID
+        name: str
+        created_at: datetime
+
+* names end `In` / `Out` / `Patch` / `Filter` / `Page` (house rule 16);
+* every `In` and `Patch` inherits `apps.core.schemas.StrictIn`, so an unknown
+  field is a refusal naming the field rather than a silent drop — the direction
+  where silence cannot be told from success. `Out` stays open on purpose;
+* explicit field lists, never `fields = "__all__"`;
+* a number the server computed travels as `MeasuredOut`, with the basis it was
+  arrived at, and the UI never computes one.
+"""
+
+from __future__ import annotations

@@ -1,24 +1,68 @@
 {% comment %}
-The sign-in page's body: **a button, or a sentence — never nothing**.
+The sign-in page's body: **a button, or a sentence — never nothing**, and at
+one provider never a chooser.
 
-WHAT WAS WRONG. `SOCIALACCOUNT_ONLY = True` removes allauth's local login form,
-which is correct — this deployment signs people in through Zitadel and there is
-no password of ours to type. But allauth's own `account/login.html` renders the
-provider list only `{% if socialaccount_providers %}`, and a fresh clone has
-none until `./scripts/setup.sh` has run and put a client id in `.env`. So the
-page came back 200 with a heading and nothing under it. Measured on the tree
-this landed against: 895 bytes whose entire visible text was
-"Sign In Menu: Sign In Sign In". A person following an invitation arrived
-there and had no next move, and nothing on the page said why.
+WHAT WAS WRONG, TWICE.
 
-The fix is the `{% else %}`. A page that cannot let you in should say what is
-missing and who fixes it — the operator, with one command — rather than look
-broken.
+(1) `SOCIALACCOUNT_ONLY = True` removes allauth's local login form, which is
+correct — this deployment signs people in through Zitadel and there is no
+password of ours to type. But allauth's own `account/login.html` renders the
+provider list only `{% templatetag openblock %} if socialaccount_providers
+{% templatetag closeblock %}`, and a fresh clone has none until
+`./scripts/setup.sh` has run and put a client id in `.env`. So the page came
+back 200 with a heading and nothing under it. Measured on the tree that landed
+against: 895 bytes whose entire visible text was "Sign In Menu: Sign In Sign
+In". A person following an invitation arrived there and had no next move, and
+nothing on the page said why. The fix is the `{% templatetag openblock %} else
+{% templatetag closeblock %}` at the bottom: a page that cannot let you in says
+what is missing and who fixes it.
+
+(2) And then, once setup HAD run, the page rendered a CHOOSER FOR ONE DOOR — a
+bulleted list with a single link in it, because allauth's provider-list snippet
+is a loop and a loop over one thing is still a loop. Measured: 1038 bytes whose
+whole body was `<ul><li><a title="Zitadel" ...>Zitadel</a></li></ul>`. Asking
+somebody to CHOOSE between one option is the interface telling them there is a
+decision to make where there is none. The chooser was never wrong as a
+mechanism; it was wrong as a default at n=1.
+
+THE THREE-STATE RULE, and the count behind it.
+
+The count is the LIVE POPULATION, not a setting and not a number written here:
+`{% templatetag openblock %} get_providers {% templatetag closeblock %}` is
+allauth's own tag over `SocialAppManager.on_site` plus the apps
+`SOCIALACCOUNT_PROVIDERS` declares — that is, exactly the set this page is
+about to render a link for. Counting anything else would be counting one thing
+and drawing another.
+
+  0  the operator sentence, kept verbatim from the fix above.
+  1  ONE full-width primary action. No list, no bullet, no "choose".
+  2+ the list returns, restyled.
+
+AND AT ONE IT IS STILL A PAGE, NOT A REDIRECT. Sending a lone provider straight
+to the IdP on GET is the obvious next idea and it is wrong three times over.
+`SOCIALACCOUNT_LOGIN_ON_GET` — allauth's own name for it, and the setting that
+really exists on the pinned 65.19.1; there is no `ACCOUNT_LOGIN_ON_GET` and a
+security decision recorded against a name nobody can look up is a declaration
+with no reader — stays `False` because (a) a GET that starts an authentication
+flow is login-CSRF: any page anywhere can point an `<img>` at it and begin a
+sign-in the person did not ask for; (b) sign-out redirects here, and a page
+that immediately bounces to the IdP signs you straight back in — the logout
+loop, from which the only escape is clearing cookies; and (c) the error
+and cancellation returns land back on this URL, so an auto-redirect swallows
+the very page that was about to say what went wrong, and retries the failure
+instead of reporting it. The interstitial is the consent gesture, styled as one
+action.
+
+The hosted step is NAMED in small print rather than smoothed over. Until the
+identity platform's own screen carries this deployment's name and colour
+(the `IdentityBranding` row is what states them), the person is about to cross
+a visible seam, and telling them where they are going costs one sentence and is
+the cheapest honest thing available.
 
 WHY THIS FILE IS INCLUDED RATHER THAN BEING `account/login.html` ITSELF.
 Django's app-directories loader walks `INSTALLED_APPS` in order, and
-`config/settings/base.py` builds that list as DJANGO + THIRD_PARTY + LOCAL —
-so `allauth`'s templates are found before any app under `apps/`, and an
+`config/settings/base.py` builds that list as DJANGO + THIRD_PARTY + LOCAL — so
+`allauth`'s templates are found before any app under `apps/`, and an
 `account/login.html` here would never be reached. Measured, not assumed:
 `get_template("account/login.html")` resolved to allauth's copy with this
 directory present. The override therefore sits in `templates/`, the
@@ -26,18 +70,27 @@ project-level directory `TEMPLATES["DIRS"]` already declares and which is
 searched before every app — and it is four lines, so that everything worth
 reading is here, in the app that owns the doors.
 {% endcomment %}
-{% load allauth socialaccount %}
+{% load socialaccount entrance %}
 {% get_providers as socialaccount_providers %}
-{% if socialaccount_providers %}
+{% if socialaccount_providers|length == 1 %}
+    {% for provider in socialaccount_providers %}
+        {% provider_login_url provider process="login" as door_href %}
+        <a class="button" href="{{ door_href }}">Continue with {{ provider.name }}</a>
+    {% endfor %}
+    <p class="note">
+        You will finish signing in on {% product_name %}'s identity platform,
+        then come back here.
+    </p>
+{% elif socialaccount_providers %}
     {% comment %}
-    allauth's own snippet, unchanged. Measured on the served stack: it renders
-    one link per configured provider with the provider's name as the link text
-    (`<a title="Zitadel" href="/accounts/oidc/zitadel/login/?process=login">Zitadel</a>`),
-    which is a button a person can see and click. There is nothing wrong with
-    this half — the bug was only ever the missing `{% else %}` below — so it is
-    included rather than reimplemented, and a product restyling its sign-in page
-    overrides allauth's element templates the way allauth documents.
+    allauth's own snippet, unchanged, exactly as the n=1 fix left the rest of
+    this file alone: it knows about sub-providers and OpenID brands and there is
+    nothing wrong with this half. What it renders through is
+    `templates/allauth/elements/provider_list.html`, our two-line override of
+    allauth's element seam, which adds the class the entrance token block
+    styles and touches nothing else.
     {% endcomment %}
+    <p>Sign in with the provider your organisation uses.</p>
     {% include "socialaccount/snippets/provider_list.html" with process="login" %}
     {% include "socialaccount/snippets/login_extra.html" %}
 {% else %}

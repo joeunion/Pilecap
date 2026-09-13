@@ -323,7 +323,7 @@ zitadel_carry() {
         # prefix, then letters, digits and underscores, and nothing else gets
         # in. A carry that grows a second category grows it into every worktree
         # on the machine at once.
-        printf '%s' "$key" | grep -qE '^ZITADEL_[A-Za-z0-9_]+$' || continue
+        printf '%s' "$key" | grep -E '^ZITADEL_[A-Za-z0-9_]+$' >/dev/null || continue
         # A blank in the primary is not a credential. Copying it would rewrite
         # a line for nothing and announce a carry that carried nothing.
         [ -n "${line#*=}" ] || continue
@@ -376,11 +376,21 @@ fi
 
 usage() {
     cat <<'USAGE'
-usage: rung_start.sh [--resume] [-h]
+usage: rung_start.sh [--resume] [--expect <sha>] [-h]
 
   Takes THIS worktree to a ready state: baseline reset to main, venv, database,
   object-storage bucket, introspect dump. With no flag every step is
   unconditional, which is the whole point of it.
+
+  --expect  The baseline the brief NAMED, as either a COMMIT sha
+            or a TREE sha — a brief may cite whichever it has, and this flag
+            takes both rather than making the reader convert one. A commit is
+            resolved to its tree (`<sha>^{tree}`) before the comparison and the
+            run PRINTS which of the two it was handed. When step 1's baseline
+            does not carry that tree the run REFUSES (exit 2) before the venv,
+            the database or the introspect dump: a rung built on a tree its
+            criteria never saw is the whole failure this flag exists to catch,
+            and it is cheapest to catch before anything has been written.
 
   --resume  The same five steps with STEP 1'S RESET REMOVED. For a worktree
             that is ALREADY on the right baseline and has lost its environment
@@ -400,6 +410,9 @@ USAGE
 }
 
 RESUME=""
+#: The `--expect` argument exactly as it was typed, kept so every line that
+#: reports on it quotes the caller rather than a resolution of their input.
+EXPECT_ARG=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -411,11 +424,30 @@ while [ $# -gt 0 ]; do
         RESUME=1
         shift
         ;;
+    --expect)
+        EXPECT_ARG=${2:-}
+        if [ -z "$EXPECT_ARG" ]; then
+            echo "!! --expect takes a sha (a commit OR a tree) and was given nothing." >&2
+            usage >&2
+            exit 2
+        fi
+        shift
+        shift
+        ;;
+    --expect=*)
+        EXPECT_ARG=${1#--expect=}
+        if [ -z "$EXPECT_ARG" ]; then
+            echo "!! --expect takes a sha (a commit OR a tree) and was given nothing." >&2
+            usage >&2
+            exit 2
+        fi
+        shift
+        ;;
     *)
         # Not a usage nit: a mistyped flag falling through to a silently
         # different run is enforcement misfiring, and that is an exit 2
         # (scripts/check.sh:71-76).
-        echo "!! rung_start takes no arguments other than --resume; got '$1'." >&2
+        echo "!! rung_start takes no arguments other than --resume and --expect <sha>; got '$1'." >&2
         usage >&2
         exit 2
         ;;
@@ -597,6 +629,80 @@ BEHIND=$(git rev-list --count HEAD..main)
 say "branch     $BRANCH"
 say "before     $(git log -1 --format='%h  %s' "$BEFORE")"
 say "main       $(git log -1 --format='%h  %s' "$MAIN_SHA")"
+
+# --- --expect: the baseline the BRIEF named, checked against the one we have --
+#
+# THE ONE THING STEP 1 CANNOT DECIDE FOR ITSELF. The reset makes this worktree
+# current with `main`; it has no opinion about whether `main`'s tip is the tree
+# the criteria were written against, and `rung-execution` §0 has had to say so in
+# prose — "a brief naming a baseline sha that is neither HEAD nor main → flag it
+# and hold" — because there was nothing to type. This is the thing to type.
+#
+# A COMMIT OR A TREE, BECAUSE A BRIEF CARRIES WHICHEVER IT HAS. A dispatch cites
+# a commit ("A4 is at 1412f86"); a gate verdict, a `banked:` key and this
+# script's own `--resume` output talk in trees. Resolving the commit here — once,
+# with `^{tree}` — is a line of shell, and making every reader convert by hand is
+# how a check gets skipped. The run says WHICH it was handed, so a reader can see
+# that the resolution happened rather than assume it.
+#
+# THE COMPARISON IS ON TREES AND NEVER ON COMMITS, and that is the point of
+# resolving rather than of merely accepting two formats: two commits with
+# different parents, messages or authors but identical content are the same tree,
+# and a rung built on either has been built on the bytes the criteria saw.
+# Comparing commits would refuse a legitimate fold, rebase or cherry-pick for a
+# difference no test can observe.
+#
+# AGAINST THE TREE STEP 1 IS ABOUT TO LAND ON, and asked BEFORE it lands. Under
+# `--resume` that is HEAD, which is not moving; otherwise it is `main`, because
+# the reset below is unconditional. Asking first is what lets the refusal keep
+# this script's standing promise — nothing was reset, installed, created or
+# written — and it costs the caller the seconds already spent rather than the
+# minutes about to be.
+if [ -n "$EXPECT_ARG" ]; then
+    EXPECT_KIND=""
+    EXPECT_TREE=""
+    if EXPECT_COMMIT=$(git rev-parse --verify --quiet "${EXPECT_ARG}^{commit}" 2>/dev/null) &&
+        [ -n "$EXPECT_COMMIT" ]; then
+        EXPECT_KIND="a COMMIT"
+        EXPECT_TREE=$(git rev-parse --verify --quiet "${EXPECT_COMMIT}^{tree}" 2>/dev/null || echo "")
+    elif EXPECT_TREE=$(git rev-parse --verify --quiet "${EXPECT_ARG}^{tree}" 2>/dev/null) &&
+        [ -n "$EXPECT_TREE" ]; then
+        EXPECT_KIND="a TREE"
+    fi
+    if [ -z "$EXPECT_TREE" ]; then
+        refuse "--expect was handed '${EXPECT_ARG}', which this repository cannot resolve to a commit or a tree." \
+            "It is neither object, so there is nothing to compare the baseline against." \
+            "A baseline check that silently could not look is worse than no check at all."
+    fi
+    if [ -n "$RESUME" ]; then
+        EXPECT_AGAINST="HEAD"
+        EXPECT_AGAINST_WHY="HEAD — --resume does not move it"
+    else
+        EXPECT_AGAINST="$MAIN_SHA"
+        EXPECT_AGAINST_WHY="main — the reset below is unconditional, so main's tree IS the baseline"
+    fi
+    BASELINE_TREE=$(git rev-parse --verify --quiet "${EXPECT_AGAINST}^{tree}" 2>/dev/null || echo "")
+    [ -n "$BASELINE_TREE" ] ||
+        cannot_verify "${EXPECT_AGAINST_WHY%% *} has no tree this repository can resolve." \
+            "--expect was asked for and the thing it compares against cannot be read."
+    printf '\n'
+    say "--expect   handed ${EXPECT_KIND}: ${EXPECT_ARG}"
+    if [ "$EXPECT_KIND" = "a COMMIT" ]; then
+        say "           resolved to tree ${EXPECT_TREE}"
+    fi
+    say "           compared against ${EXPECT_AGAINST_WHY}"
+    say "           this baseline's tree ${BASELINE_TREE}"
+    if [ "$EXPECT_TREE" != "$BASELINE_TREE" ]; then
+        refuse "THE BASELINE IS NOT THE ONE THE BRIEF NAMED." \
+            "expected tree  ${EXPECT_TREE}  (from ${EXPECT_KIND}: ${EXPECT_ARG})" \
+            "this baseline  ${BASELINE_TREE}  (${EXPECT_AGAINST_WHY})" \
+            "A rung built on a tree its criteria never saw is the class step 1 exists" \
+            "to close, and this is the half step 1 cannot decide: whether the baseline" \
+            "is the tree the brief was written against. Flag it and hold — do not reset" \
+            "by hand to make this line agree."
+    fi
+    say "           MATCH — this baseline carries the tree the brief named"
+fi
 
 if [ -n "$RESUME" ]; then
     # WHAT IT SKIPPED, printed. A flag that quietly does less is a flag whose
@@ -866,6 +972,19 @@ step_end
 #
 # NOT FATAL, AND NOT SILENT — the header's 3b. It joins the footer instead of
 # replacing the verdict.
+#
+# THE DECLARATION BELOW IS READ BY `scripts/gate_ledger.sh`, for the reason
+# `scripts/db.sh` states beside its own: the `--loop` ledger hashes `.env` to
+# key a verdict on the configuration it was earned under, and a key DERIVED from
+# this checkout would tie every verdict to one directory. The deriver declares
+# what it derives, beside the derivation.
+#
+# >>> derived-env-keys >>>
+# AWS_STORAGE_BUCKET_NAME — derived per checkout by `manage.py ensure_bucket`
+#   (apps/files/storage.py::derived_bucket_name) from the same checkout identity
+#   DATABASE_NAME uses, and written into .env by the step below. A property of
+#   WHERE this tree is, never of what is in it.
+# <<< derived-env-keys <<<
 step_begin "storage — this checkout's own bucket, created and named"
 
 if grep -qE '^AWS_STORAGE_BUCKET_NAME=.+' "$ROOT/.env"; then

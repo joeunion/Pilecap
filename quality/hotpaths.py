@@ -50,7 +50,8 @@ RAW_TOKEN = "gate-hotpaths-probe-token"  # noqa: S105 # probe credential, probe 
 #
 # So the tenant gets FILLER_ORGS siblings of the probed branch.
 #
-# WHAT THE MARGIN ACTUALLY IS, MEASURED (corrected by (d), from ).
+# WHAT THE MARGIN ACTUALLY IS, MEASURED — the paragraph below corrects the
+# earlier reasoning.
 # This paragraph used to justify the size as a SHARE: 2 of 403 rows is 0.5%, an
 # order of magnitude below `perf/measure_realtime.py::PREFIX_INDEX_SHARE_CEILING`
 # (5%), the share below which the harness asserts a path-index narrowing. That
@@ -83,8 +84,8 @@ RAW_TOKEN = "gate-hotpaths-probe-token"  # noqa: S105 # probe credential, probe 
 # WIDGETS exists for the same reason one level up: `probe_list_widgets` renders
 # every row it fetched through `WidgetOut` (see its docstring), and a page of
 # zero rows renders nothing — a stripped `select_related` would cost the probe
-# nothing at all, which is exactly what 's done-line item 2(c)
-# found.
+# nothing at all, which is exactly the shape a prior audit's done-line item
+# 2(c) found.
 # --- and why there is now a SECOND TENANT (CORE-11, ADR core-11) -------------
 #
 # `list_widgets`' page statement pins `lookup_columns: {example_widget:

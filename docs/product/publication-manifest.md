@@ -51,6 +51,7 @@ Two invariants outrank any per-file preference:
 | R8S | two named files inside `cycles/` (dispositions table below) | SHIP | the format-teaching pair in an otherwise-trimmed directory |
 | R9 | the remaining `docs/product/*.md` (dispositions table below) | per-file | the one genuinely mixed directory |
 | R10 | `docs/product/skeletons/**` | SKELETON-SOURCE | the directory holding the committed skeletons; consumed at export and never shipped at its own path, and a skeleton naming no ledger is exit 2 — the export would otherwise ignore it in silence |
+| R11 | `frontend/**` | SHIP | the client layer: the one-journey worked example, its lockfile, the committed OpenAPI document and the generated client the byte-pin compares. It ships for the same reason `apps/example` does — a rule that never fired anywhere is decoration by the engine's own doctrine, and the standing subjects of every frontend rule (the byte-pin, `SurfaceState` in anger, the rendered census's live scan) need a tree to be proven against. **One glob, because the directory is one artefact**; `.gitignore` decides which of its files are build output and the census then never sees them |
 
 **R8S is an arm of R8, not a rule beside it.** It and R8's glob live in ONE
 `case` in `publish.sh`, so first-match separates them and the census's
@@ -75,7 +76,8 @@ the dangling-pointer leg's own class. Name the class, never the instance.
 | `scale-envelope.md` | SHIP | platform scale doctrine |
 | `instruments.md` | SHIP | invariant 1 (gate-read) |
 | `north-star.md` | SKELETON | the file a product fills first — CLAUDE.md's own sentence |
-| `queue.md` | SKELETON + one row-shape | |
+| `queue.md` | SKELETON + one row-shape | the GENERATED index half of the pair — a clone inherits the two-file shape, not this platform's rows |
+| `queue-detail.md` | SKELETON + one row-shape | the record half. It is the same ledger, split: shipping the live file would hand every product this platform's whole construction history, and `queue.md` alone would hand it an index over rows it does not have. `scripts/queue_index.py --check` is green on the skeleton pair the day the clone is made, because the skeleton index is GENERATED from the skeleton record with the live paths |
 | `readouts.md` | SKELETON + one cycle-row | |
 | `misses.md` | SKELETON + one promoted entry | |
 | `in-flight.md` | SKELETON (the empty contract) | |
@@ -171,6 +173,18 @@ committed onto the published branch by hand, or the clone is behind); and a
 target that **already carries this version's tag**, because a released tree
 never changes. A run with violations prints the release step and commits
 nothing.
+
+**Bumping `TEMPLATE_VERSION` is the whole act of declaring a release.**
+Release mode reads that one file to decide what it is publishing, and three
+separate gates key on the value it finds: the tag it writes is
+`v<TEMPLATE_VERSION>`, the already-released refusal above is a check for that
+same tag on the target, and leg `changelog` below refuses unless the
+artifact's `CHANGELOG.md` carries a `## [<TEMPLATE_VERSION>]` section. One
+typed value, three readers, no second place to keep it in step — so a release
+is declared by bumping the file rather than by weakening a refusal, and a
+version published once can never quietly be published again over a different
+tree. The value itself is not repeated here: `cat TEMPLATE_VERSION` is what
+knows, and `CHANGELOG.md`'s top entry is what says why it moved.
 
 **Leg `changelog` (release mode, exit 1):** the artifact's `CHANGELOG.md` must
 carry a `## [<version>]` section for the version being released. A tag with no

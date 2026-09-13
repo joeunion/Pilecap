@@ -35,6 +35,18 @@ better than the only alternative anybody has otherwise (delete the application,
 take a new id, and re-register everything). The previous secret stops working
 the moment it runs, and nothing anywhere stores the new one.
 
+**And it sets this deployment's SIGN-IN POSTURE** (ADR ident-8):
+whether a stranger may register themselves an account, whether a stranger may
+create an organisation, and how many wrong passwords lock one. Those three are
+not objects, they are instance-wide policy, and until this command wrote them
+every environment shipped with self-registration on, org registration open and
+no lockout at all — against `architecture.md` §H, where open signup was
+rejected. The `ZITADEL_DEFAULTINSTANCE_*` keys in `compose.yaml` carry the same
+values and apply only WHEN AN INSTANCE IS CREATED, so on every Zitadel that
+already exists these three calls are the only thing that closes the doors. They
+are idempotent the same way everything else here is: compare first, and say
+`exists` on the second run.
+
 **It is a door** (house rule 10), so it goes through `apps.accounts.zitadel`
 like the activity does, and house rule 27 names this file as one of the three
 places that may. It writes no rows of ours at all: the objects it makes are
@@ -151,6 +163,8 @@ class Command(BaseCommand):
             )
             self._say("mcp client", settings.ZITADEL_MCP_CLIENT_NAME, mcp_client)
 
+            self._posture(org_name=str(org.get("name", "?")))
+
             if options["rotate_web_secret"]:
                 self._rotate_web_secret(project_id=project.id, app_id=browser.id)
 
@@ -175,6 +189,135 @@ class Command(BaseCommand):
                 "secret and prints it, leaving the project and every application "
                 "id untouched."
             )
+        )
+
+    def _posture(self, *, org_name: str) -> None:
+        """The deployment's sign-in posture, applied to the live instance.
+
+        **The shell door for ADR ident-8**, and the only one: a deployment's
+        sign-in posture is set once by an operator editing `.env`, so there is no
+        REST route and no MCP tool for it — no runtime persona holds this value
+        (rule 17 has no member here; recorded, not exempted). `scripts/setup.sh`
+        runs this command on every setup, which is what gets a laptop and a
+        deploy the same three answers for free.
+
+        **Why the seed and not the compose keys.** `compose.yaml` and
+        `deploy/compose.yaml` carry the same three values as
+        `ZITADEL_DEFAULTINSTANCE_*` keys, and those apply WHEN THE INSTANCE IS
+        CREATED. Every Zitadel that already exists — this box's, and every
+        sibling's — was created before those keys existed and would stay open
+        forever. So the compose keys are the belt and these three calls are the
+        mechanism.
+
+        **Three doors, not one.** Self-registration and public ORGANISATION
+        registration are different doors and closing the first does not close
+        the second: measured on the shared development instance, the
+        org-registration page answered `200` with a working form while the
+        org's own login policy already refused self-registration. Lockout is a
+        third: zero attempts is not "unset", it is unlimited.
+
+        **And a fourth door, one level down: the org's OWN login policy.** The
+        three above are instance-wide. Zitadel resolves an org's login policy to
+        the org's own when it has one and to the instance's when it does not, so
+        on any org somebody has already given a policy the instance write above
+        governs nothing the hosted page reads. Measured on the shared
+        development instance: with the instance policy closed, the org's own
+        `allowRegister` alone decided whether `/ui/login/register` served a
+        working `<h1>Registration</h1>` form (5690 bytes) or an error page (1762
+        bytes). `_org_posture` below is the half that reaches it.
+
+        Each writer compares before it writes, so a second run prints `exists`
+        and sends no `PUT` — the same readable idempotence every other line of
+        this command has.
+        """
+        self.stdout.write("")
+        login = zitadel.ensure_login_policy(allow_register=settings.ZITADEL_ALLOW_SELF_REGISTRATION)
+        self._say(
+            "login policy",
+            f"self-registration {'on' if settings.ZITADEL_ALLOW_SELF_REGISTRATION else 'OFF'}",
+            login,
+        )
+
+        self._org_posture(org_name=org_name)
+
+        lockout = zitadel.ensure_lockout_policy(
+            max_password_attempts=settings.ZITADEL_MAX_PASSWORD_ATTEMPTS
+        )
+        self._say(
+            "lockout policy",
+            f"max password attempts {settings.ZITADEL_MAX_PASSWORD_ATTEMPTS}",
+            lockout,
+        )
+
+        limits = zitadel.ensure_restrictions(
+            is_public_org_registration_disallowed=(
+                not settings.ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION
+            )
+        )
+        self._say(
+            "restrictions",
+            f"public org registration "
+            f"{'on' if settings.ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION else 'OFF'}",
+            limits,
+        )
+
+    def _org_posture(self, *, org_name: str) -> None:
+        """This org's OWN login policy — reconciled where it has one, never forked.
+
+        **Only where the org already has a policy of its own.** Zitadel serves
+        one endpoint for two states, and `isDefault` is the discriminator: the
+        flag is present when the instance default is answering and absent once
+        somebody has set an org policy (`zitadel.login_policy`'s docstring
+        records how that was measured). So this reads first and writes only in
+        the second state.
+
+        **An inheriting org is left inheriting, and that is a decision rather
+        than a limitation.** Creating an org policy for an org that has none
+        would fork one value into two owners: from that moment the instance
+        write above governs every org EXCEPT this one, and a future
+        instance-level change would silently not apply here — with nothing
+        anywhere saying so. One value, one owner (first principles 9).
+
+        MEASURED on the pinned build, which is why this is a branch and not a
+        try/except: `PUT /management/v1/policies/login` against an org with no
+        policy of its own answers **404 `Org-M0sif`, "Login Policy not
+        found"** — the update endpoint refuses outright, and the only way to
+        write one would be the CREATE endpoint, which is exactly the fork this
+        branch exists to refuse. (Measured against a throwaway org made and
+        left inactive on the shared development instance for the purpose.)
+
+        Full body, like every other writer here: `ensure_login_policy` reads the
+        live policy and sends all seventeen fields back with our one changed, so
+        the five lifetimes and both factor lists survive byte-identical. A
+        partial `PUT` here would zero another product's `passwordCheckLifetime`
+        on a shared instance, which is the class of accident the full-body
+        convention was written for.
+        """
+        # The same columns `_say` writes in — an eight-character verb slot and a
+        # fifteen-character kind — so the org's line reads down the page with
+        # the three above it rather than beside them.
+        policy = zitadel.login_policy()
+        if not policy:
+            self.stdout.write(
+                f"unknown  {'login policy':<15} org {org_name}: the answer carried no "
+                "policy — nothing reconciled"
+            )
+            return
+        if policy.get("isDefault"):
+            self.stdout.write(
+                f"{'':<8} {'login policy':<15} org {org_name} inherits the instance policy "
+                "(reconciled above)"
+            )
+            return
+        org_login = zitadel.ensure_login_policy(
+            allow_register=settings.ZITADEL_ALLOW_SELF_REGISTRATION,
+            prefix=zitadel.MANAGEMENT,
+        )
+        self._say(
+            "login policy",
+            f"org {org_name}: self-registration "
+            f"{'on' if settings.ZITADEL_ALLOW_SELF_REGISTRATION else 'OFF'}",
+            org_login,
         )
 
     def _rotate_web_secret(self, *, project_id: str, app_id: str) -> None:

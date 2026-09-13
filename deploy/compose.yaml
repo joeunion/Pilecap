@@ -64,6 +64,42 @@
 # structurally could not see, which is why `assert_not_published.sh` reads the
 # same file before anything starts. The belt is at the deployment because the
 # deployment is where the values are in hand.
+#
+# EVERY SERVICE ROTATES ITS LOGS, from the one anchor below. Docker's default
+# `json-file` driver is UNCAPPED: it writes
+# /var/lib/docker/containers/<id>/<id>-json.log until the disk is full, and
+# nothing in a compose file says so. On this box Caddy writes a JSON access line
+# per request and the app writes a structured line per request on top of it,
+# while Zitadel, Temporal and the ClickStack sink share the same root volume —
+# so the first organ to fill the disk takes the database, the workflow history
+# and the telemetry down with it, and the failure reads as "everything broke at
+# once" rather than as a log that grew. 50m × 5 files is 250 MB per container:
+# enough rotation to hold a normal incident's worth of history, and a bounded
+# worst case across the whole stack that a 20 GB root absorbs.
+#
+# THE CAP IS IN THE COMPOSE FILE, NOT IN THE DAEMON. A `daemon.json` with
+# `log-opts` would cap every container on the machine in one line — and it is
+# invisible in this file's diff, it does not reach a box that is already
+# provisioned without re-provisioning it, and `deploy/release.sh` recreates
+# containers FROM THIS FILE, so the cap an operator reads here is the cap the
+# containers actually get. A daemon default would also be silently overridden by
+# any future per-service `logging:` block; the anchor cannot be, because there is
+# only one of it. A container outside this file on the same box is the case a
+# daemon default would still cover, and it is the declared trigger for adding
+# one beside this anchor rather than instead of it.
+#
+# THE DRIVER STAYS `json-file`. The `local` driver compresses and caps by
+# default, and it is what upstream recommends for new stacks — but everything on
+# this box that reads container logs (`docker logs`, `deploy/release.sh`'s
+# waits, an operator following a boot) reads them through a driver that
+# `docker logs` can replay, and `json-file` is the one every runbook here was
+# written against. A cap changes nothing any of those readers do; a driver
+# change would.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 50m
+    max-file: "5"
 
 services:
   # --- Postgres, for the laptop proof ONLY ------------------------------------
@@ -89,6 +125,7 @@ services:
     # latest minor — minors are the safe-by-policy kind.
     image: postgres:18.6
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required — see deploy/env.staging.example}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
@@ -117,6 +154,7 @@ services:
   redis:
     image: redis:7.4.5
     restart: unless-stopped
+    logging: *default-logging
     # `--appendonly yes` because the channel layer and the cache both live here
     # and a restart that silently empties both looks like an application bug.
     command: ["redis-server", "--appendonly", "yes"]
@@ -157,6 +195,7 @@ services:
   meilisearch:
     image: getmeili/meilisearch:v1.53.1
     restart: unless-stopped
+    logging: *default-logging
     environment:
       # Generated per environment by `provision.sh env-file` and read from
       # `deploy/.env` by BOTH sides — this container and the app — so there is
@@ -189,6 +228,7 @@ services:
   temporal:
     image: temporalio/auto-setup:1.29.0
     restart: unless-stopped
+    logging: *default-logging
     environment:
       DB: postgres12
       DB_PORT: ${DATABASE_PORT:-5432}
@@ -320,6 +360,42 @@ services:
       # image's 1h lifetime is fine once the COUNT is bounded, and a second
       # knob doing the same job is how two settings come to disagree.
       #
+      # --- HOW LONG A CLOSED WORKFLOW'S HISTORY SURVIVES --------------------
+      # THE IMAGE'S OWN DEFAULT IS 24h, AND IT IS NOT A SETTING ANYBODY CHOSE.
+      # Read out of this exact tag rather than recalled, the same discipline the
+      # TLS and pool spellings above record — /etc/temporal/auto-setup.sh inside
+      # temporalio/auto-setup:1.29.0:
+      #
+      #   line  63  : "${DEFAULT_NAMESPACE_RETENTION:=24h}"
+      #   line 371  temporal operator namespace create --retention "${DEFAULT_NAMESPACE_RETENTION}" ...
+      #
+      # With nothing set, every closed execution's history — inputs, results,
+      # the activity attempts, the failure that mattered — is deleted a day
+      # after it closes. The laptop hides it completely: the root compose.yaml
+      # runs the CLI's dev server, which is a different program with different
+      # defaults, so the first place this is visible is an incident on the box
+      # where the run somebody wants to read closed the day before.
+      #
+      # 30 days (720h), and substituted rather than hard-coded, the same shape
+      # as the pool bounds above: an environment may raise or lower it by name
+      # in `deploy/.env` (the slot is `TEMPORAL_NAMESPACE_RETENTION`, named in
+      # `deploy/env.staging.example` so the generator fills it) without editing
+      # this file. Retention is paid for in the visibility store's rows, which
+      # is why it is a knob and not a constant.
+      #
+      # THE ONE THING THIS LINE CANNOT DO, said plainly: auto-setup applies
+      # `--retention` when it REGISTERS the namespace and leaves an existing one
+      # exactly as it found it (`register_default_namespace` only creates when
+      # `describe` fails). A box that has already been up has a `default`
+      # namespace at 24h and this variable will never touch it. That is an
+      # operator act, once, per environment:
+      #
+      #   temporal operator namespace update --retention 720h default
+      #
+      # No check in this repository can see a box, so this comment is the record
+      # (the compose-floor drive asserts the comment is here; it cannot assert
+      # the box).
+      DEFAULT_NAMESPACE_RETENTION: ${TEMPORAL_NAMESPACE_RETENTION:-720h}
       # DYNAMIC_CONFIG_FILE_PATH is deliberately NOT set. The path everybody
       # copies from Temporal's own docker-compose examples
       # (`config/dynamicconfig/development-sql.yaml`) is not in the auto-setup
@@ -344,20 +420,87 @@ services:
       start_period: 20s
 
   # --- Zitadel: the identity system (ADR ident-1) -----------------------------
-  # Same image the laptop runs, same `start-from-init`, pointed at the
-  # deployment's Postgres and told it lives behind TLS at the `auth.` name.
-  # ZITADEL_EXTERNALSECURE=true is not cosmetic: the issuer, every redirect and
-  # every token audience in the discovery document are built from these three,
-  # and getting them wrong is a login loop nobody can debug from the outside.
+  # Same image the laptop runs, pointed at the deployment's Postgres and told it
+  # lives behind TLS at the `auth.` name. ZITADEL_EXTERNALSECURE=true is not
+  # cosmetic: the issuer, every redirect and every token audience in the
+  # discovery document are built from these three, and getting them wrong is a
+  # login loop nobody can debug from the outside.
+  #
+  # THREE CONTAINERS, AND THE REASON IS PRIVILEGE. `start-from-init` — which is
+  # what this file ran, and what the laptop's still runs — does three jobs in one
+  # process: create the database and the role (which needs the DATABASE'S ADMIN
+  # credentials), migrate and bootstrap the first instance (which needs to write
+  # the machine user's PAT into the bootstrap volume, which the distroless
+  # image's own user cannot, which is why it ran as root), and then serve the
+  # login page to the internet forever. The first two are bounded work that
+  # happens once; the third is the life of the box. Fusing them means the
+  # network-facing process holds the master credential in its environment — in
+  # `docker inspect`, in `/proc/<pid>/environ`, in every support dump — and
+  # answers as uid 0, for months, for a reason that expired at first boot
+  # (principle 18: least privilege).
+  #
+  # So the privileged work moves into containers that EXIT, and `zitadel` waits
+  # for them. Reading order below is `zitadel` first, then the two one-shots,
+  # because the shared environment is anchored on the long-lived service and the
+  # one-shots ADD the master credential to it — YAML aliases must follow their
+  # anchor, and "everything the running one has, plus the credential it must not
+  # keep" is the sentence worth being able to read. The boot order is the other
+  # way round and `depends_on` states it: init → setup → start.
+  #
+  # WHY TWO ONE-SHOTS AND NOT ONE. Read out of the pinned image rather than
+  # recalled, the discipline the rest of this file's spellings keep:
+  #
+  #   docker run --rm --network none ghcr.io/zitadel/zitadel:v4.17.1 --help
+  #     → init · setup · start · start-from-init · start-from-setup
+  #       (there is no verb that does init AND setup and then stops)
+  #   docker run --rm --network none --entrypoint sh ghcr.io/zitadel/zitadel:v4.17.1
+  #     → exec: "sh": executable file not found in $PATH
+  #       (so `init && setup` in one container is not available either)
+  #
+  # Two containers, therefore, and not a preference. The flags come from the
+  # same reading: `init --help` takes no masterkey and no tlsMode at all, while
+  # `setup` and `start` take both — which is exactly the pair `start-from-init`
+  # was passing through to its own internal phases.
+  #
+  # IDEMPOTENT, WHICH IS WHY `provision.sh up` MAY RUN THEM EVERY TIME. `init`
+  # creates what is absent and leaves what is there; `setup` runs the migration
+  # steps that have not run. A re-deploy re-runs both, they exit 0 having done
+  # nothing, and `zitadel` starts behind them. (`release.sh` touches neither: it
+  # owns `web` and `worker` and passes `--no-deps`.)
   zitadel:
     image: ghcr.io/zitadel/zitadel:v4.17.1
     restart: unless-stopped
-    command: start-from-init --masterkeyFromEnv --tlsMode external
-    # Root, for the same reason the laptop's is: the first-instance bootstrap
-    # writes the machine user's PAT into the bootstrap volume and the distroless
-    # image's default user cannot.
-    user: "0"
-    environment:
+    logging: *default-logging
+    # `start`, not `start-from-init`: by the time this runs, the database, the
+    # role and the first instance all exist, because the two one-shots below
+    # have exited 0.
+    command: start --masterkeyFromEnv --tlsMode external
+    # NO `user:` AT ALL, and that is the point rather than an omission. The
+    # image ships its own non-root user —
+    #
+    #   docker image inspect ghcr.io/zitadel/zitadel:v4.17.1 \
+    #     --format '{{json .Config.User}}'   → "zitadel"
+    #
+    # — and the only reason this service ever overrode it was the bootstrap
+    # write, which now happens in a container that exits. A file that says
+    # nothing here gets the image's answer; a file that said `user: "0"` would
+    # get root no matter what the image intended.
+    depends_on:
+      # The LAST of the one-shots. `service_completed_successfully` is a
+      # container that ran and exited 0 — not one that started, and not one that
+      # is healthy — so this is the whole of the ordering guarantee: nothing
+      # serves until the migration that the serving code assumes has finished.
+      zitadel-setup:
+        condition: service_completed_successfully
+    # ANCHORED, and what it holds is the boundary. Everything below is what a
+    # SERVING Zitadel needs: its own database role, the masterkey it decrypts
+    # with, the externally visible identity, the instance policy defaults.
+    # TWO credential sets are NOT here — the database's ADMIN credentials and
+    # the FIRSTINSTANCE bootstrap set, both of which are consumed once and then
+    # never again. They are added, by name, in the two one-shots that alias this
+    # block, and nowhere else in this file. The test of whether a key belongs
+    # here is not "is it a secret" but "does `start` read it on every boot".
+    environment: &zitadel-service-env
       ZITADEL_MASTERKEY: ${ZITADEL_MASTERKEY:?ZITADEL_MASTERKEY is required}
       ZITADEL_EXTERNALDOMAIN: ${ZITADEL_EXTERNALDOMAIN:?ZITADEL_EXTERNALDOMAIN is required}
       ZITADEL_EXTERNALPORT: ${ZITADEL_EXTERNALPORT:-443}
@@ -371,10 +514,13 @@ services:
       ZITADEL_DATABASE_POSTGRES_USER_USERNAME: ${ZITADEL_DATABASE_USER:?ZITADEL_DATABASE_USER is required}
       ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${ZITADEL_DATABASE_PASSWORD:?ZITADEL_DATABASE_PASSWORD is required}
       ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: ${DATABASE_SSLMODE:-disable}
-      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: ${POSTGRES_USER:?POSTGRES_USER is required}
-      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: ${DATABASE_SSLMODE:-disable}
-      ZITADEL_DATABASE_POSTGRES_ADMIN_EXISTINGDATABASE: ${ZITADEL_ADMIN_EXISTING_DATABASE:-postgres}
+      # ZITADEL_DATABASE_POSTGRES_ADMIN_* IS DELIBERATELY ABSENT HERE. It is the
+      # database's master credential — on a real environment, the RDS master —
+      # and `start` has no use for it: the role it connects as was created by
+      # `zitadel-init` and granted everything it needs. Leaving it here "because
+      # start ignores it" is the rejected alternative: an environment variable a
+      # process ignores is still a secret in `docker inspect` on a
+      # network-facing container for the life of the box.
       # --- THE POOL, BOUNDED -----------------------------------------------
       # ONE TOP-LEVEL POOL, not one per User/Admin pair — read out of the
       # `defaults.yaml` embedded in ghcr.io/zitadel/zitadel:v4.17.1, which
@@ -394,14 +540,21 @@ services:
       ZITADEL_DATABASE_POSTGRES_MAXIDLECONNS: ${ZITADEL_DATABASE_MAX_IDLE_CONNS:-2}
       # MAXCONNLIFETIME (30m) and MAXCONNIDLETIME (5m) keep the image's
       # defaults: once the COUNT is bounded the lifetimes are not the problem.
-      ZITADEL_FIRSTINSTANCE_ORG_NAME: ${ZITADEL_ORG_NAME:-Pilecap}
-      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: ${ZITADEL_ADMIN_USERNAME:?ZITADEL_ADMIN_USERNAME is required}
-      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${ZITADEL_ADMIN_PASSWORD:?ZITADEL_ADMIN_PASSWORD is required}
-      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: false
-      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: ${ZITADEL_MACHINE_USERNAME:-djb-platform}
-      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: Pilecap platform service account
-      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: ${ZITADEL_MACHINE_PAT_EXPIRES_AT:-2099-01-01T00:00:00Z}
-      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/machine.pat
+      # ZITADEL_FIRSTINSTANCE_* IS DELIBERATELY ABSENT HERE, and it moved for
+      # the same reason the ADMIN_* block above did. Every key under that prefix
+      # is an input to the FIRST-INSTANCE BOOTSTRAP, which runs inside `setup`
+      # and has never run again since: the organisation's name, the human
+      # administrator's username and PASSWORD, the machine user, and the path
+      # the PAT is written to. `start` reads none of them — and one of them
+      # opens the identity system's own console, so a serving container holding
+      # the set is the `docker inspect` exposure the master credential was,
+      # pointed at the console instead of the database. They live in
+      # `&zitadel-bootstrap-env`, on the two containers that exit.
+      #
+      # ZITADEL_MASTERKEY STAYS, and the distinction is the whole rule: it is
+      # not a bootstrap input but the key `start` DECRYPTS WITH, on every boot,
+      # for the life of the process. Moving it would not be tightening the
+      # blast radius, it would be breaking the service.
       # --- CLASSIC LOGIN, PINNED -------------------------------------------
       # Zitadel v4 routes OIDC `authorize` to Login V2 by default, and Login V2
       # is a SEPARATE CONTAINER this deployment does not ship. So the browser
@@ -436,7 +589,50 @@ services:
       # and the product that needs Login V2's features is the one that should pay
       # for them.
       ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: ${ZITADEL_LOGIN_V2_REQUIRED:-false}
+      # --- SIGN-IN POSTURE, AT INSTANCE CREATION (ADR ident-8) -------------
+      # THE SPELLING WAS READ OUT OF THE IMAGE, not recalled — exactly as the
+      # Login V2 key above was, and for the same reason: a key this image does
+      # not know is ignored SILENTLY, so a typo here is a door left open with
+      # nothing saying so. `defaults.yaml` inside
+      # ghcr.io/zitadel/zitadel:v4.17.1 carries, verbatim:
+      #
+      #     AllowRegister: true # ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER
+      #     MaxPasswordAttempts: 0 # ZITADEL_DEFAULTINSTANCE_LOCKOUTPOLICY_MAXPASSWORDATTEMPTS
+      #     DisallowPublicOrgRegistration: # ZITADEL_DEFAULTINSTANCE_RESTRICTIONS_DISALLOWPUBLICORGREGISTRATION
+      #
+      # and beside the third one, its own description of what it does: "defines
+      # if ZITADEL should expose the endpoint /ui/login/register/org. If it is
+      # true, the endpoint returns the HTTP status 404 on GET requests, and 409
+      # on POST requests."
+      #
+      # WHEN IT TAKES, same sharp edge as the Login V2 key: `DefaultInstance` is
+      # applied WHEN THE INSTANCE IS CREATED. Every Zitadel that already exists
+      # keeps whatever it was created with, which is `AllowRegister: true` and
+      # `MaxPasswordAttempts: 0` — a password guessable forever and an open
+      # org-registration form. `manage.py zitadel_seed` is what closes those,
+      # through the management API, on every run of ./scripts/setup.sh and every
+      # deploy. These three lines are the belt; the seed is the mechanism.
+      #
+      # The third key is INVERTED (`DISALLOW…`) while the seed's knob is
+      # ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION, and compose has no `!` in
+      # `${…:-…}` — so it takes its own polarity and its own documented
+      # variable, `ZITADEL_DISALLOW_PUBLIC_ORG_REGISTRATION`, which
+      # `deploy/env.staging.example` and `.env.example` both ship with the
+      # polarity spelled out. It defaults CLOSED: a fresh instance is created
+      # closed even where the deployment wants org registration open, and the
+      # seed opens it seconds later. Tighter than the mechanism is safe; looser
+      # is the bug, and the tests pin the direction AND that every key here
+      # interpolates a variable the env examples actually carry.
+      ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER: ${ZITADEL_ALLOW_SELF_REGISTRATION:-false}
+      ZITADEL_DEFAULTINSTANCE_LOCKOUTPOLICY_MAXPASSWORDATTEMPTS: ${ZITADEL_MAX_PASSWORD_ATTEMPTS:-100}
+      ZITADEL_DEFAULTINSTANCE_RESTRICTIONS_DISALLOWPUBLICORGREGISTRATION: ${ZITADEL_DISALLOW_PUBLIC_ORG_REGISTRATION:-true}
     volumes:
+      # STILL MOUNTED ON THE SERVING CONTAINER, and it is not the writer. The
+      # runbook's identity step reads the machine PAT back with
+      # `docker compose cp zitadel:/zitadel/bootstrap/machine.pat`, and a `cp`
+      # needs a container that is still there — which the one-shot that WROTE
+      # the file, by design, is not. The volume is a volume; nothing in it is a
+      # credential this process holds in its environment.
       - zitadel_bootstrap:/zitadel/bootstrap
     healthcheck:
       test: ["CMD", "/app/zitadel", "ready"]
@@ -444,6 +640,78 @@ services:
       timeout: 5s
       retries: 60
       start_period: 20s
+
+  # --- The privileged half of Zitadel, in containers that exit ----------------
+  # Both of these hold the database's ADMIN credentials and both run as root.
+  # Both are `restart: "no"`, which is what makes that acceptable: they do the
+  # bounded work, exit, and are not on the box holding anything between deploys.
+  #
+  # `init` FIRST: it is the one that needs a credential that can CREATE — the
+  # database if it is absent, the `zitadel` role if it is absent, and the grants
+  # that role then lives on. Everything after it connects as that role.
+  zitadel-init:
+    image: ghcr.io/zitadel/zitadel:v4.17.1
+    restart: "no"
+    logging: *default-logging
+    # No masterkey and no tlsMode: `zitadel init --help` on the pinned image
+    # takes neither. It is the one phase that is purely database plumbing.
+    command: init
+    # Root, for the reason the serving container no longer is: this is the half
+    # of the old `start-from-init` that has to write into the bootstrap volume,
+    # and the distroless image's own user cannot.
+    user: "0"
+    environment: &zitadel-bootstrap-env
+      # Everything the serving container has, PLUS the master credential. The
+      # merge is the whole point: there is one place where the instance's
+      # identity, policy and pool bounds are written, and the difference between
+      # the privileged containers and the serving one is exactly the four keys
+      # spelled out below.
+      <<: *zitadel-service-env
+      # (1) THE DATABASE'S MASTER CREDENTIAL. `init` creates the database and
+      #     the role with it; nothing afterwards needs it.
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: ${POSTGRES_USER:?POSTGRES_USER is required}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: ${DATABASE_SSLMODE:-disable}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_EXISTINGDATABASE: ${ZITADEL_ADMIN_EXISTING_DATABASE:-postgres}
+      # (2) THE FIRST-INSTANCE BOOTSTRAP, and it is the console's credential set
+      #     rather than the database's. `setup` consumes these once, when it
+      #     creates the instance: the organisation, the human administrator
+      #     (username AND password), the machine user the platform then
+      #     authenticates as, and the path its PAT is written to. On every later
+      #     boot they are inert — Zitadel creates a first instance once — so
+      #     they belong with the containers that exit, beside the credential
+      #     above. `manage.py zitadel_seed` is what changes an instance that
+      #     already exists; these lines only ever make one.
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: ${ZITADEL_ORG_NAME:-Pilecap}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME: ${ZITADEL_ADMIN_USERNAME:?ZITADEL_ADMIN_USERNAME is required}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${ZITADEL_ADMIN_PASSWORD:?ZITADEL_ADMIN_PASSWORD is required}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: false
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: ${ZITADEL_MACHINE_USERNAME:-djb-platform}
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: Pilecap platform service account
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: ${ZITADEL_MACHINE_PAT_EXPIRES_AT:-2099-01-01T00:00:00Z}
+      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/machine.pat
+    volumes:
+      - zitadel_bootstrap:/zitadel/bootstrap
+
+  # `setup` SECOND: the migration steps, and the first-instance bootstrap that
+  # writes ZITADEL_FIRSTINSTANCE_PATPATH into the volume above. The flags are
+  # the pair `start-from-init` used to pass into this phase — read off
+  # `zitadel setup --help` in the pinned image, which takes both.
+  zitadel-setup:
+    image: ghcr.io/zitadel/zitadel:v4.17.1
+    restart: "no"
+    logging: *default-logging
+    command: setup --masterkeyFromEnv --tlsMode external
+    user: "0"
+    depends_on:
+      zitadel-init:
+        condition: service_completed_successfully
+    # The SAME environment as `zitadel-init`, aliased whole rather than merged
+    # again: two privileged containers disagreeing about which database they are
+    # setting up is a class of failure worth making unspellable.
+    environment: *zitadel-bootstrap-env
+    volumes:
+      - zitadel_bootstrap:/zitadel/bootstrap
 
   # --- The sink: collector -> ClickStack, both on the box (ADR obs-2) ---------
   # No profile here, unlike the laptop's: an environment with no observability
@@ -454,6 +722,7 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.140.0
     restart: unless-stopped
+    logging: *default-logging
     # TWO CONFIGS, MERGED LEFT TO RIGHT. The first is the pipeline, shared with
     # the laptop's development stack. The second is this
     # DEPLOYMENT's one addition: it publishes the collector's own Prometheus
@@ -477,10 +746,39 @@ services:
   clickstack:
     image: docker.hyperdx.io/hyperdx/hyperdx-all-in-one:2.10.0
     restart: unless-stopped
+    logging: *default-logging
     environment:
       HYPERDX_API_KEY: ${CLICKSTACK_API_KEY:?CLICKSTACK_API_KEY is required}
+    # THREE PATHS, BECAUSE THE ALL-IN-ONE HOLDS THREE DIFFERENT THINGS. This
+    # image is HyperDX's UI, its Mongo metadata store AND ClickHouse in one
+    # container, and each keeps its state somewhere else:
+    #
+    #   /data/db                   HyperDX's own metadata — dashboards, saved
+    #                              searches, sources, the API key.
+    #   /var/lib/clickhouse        the column store. EVERY span, log line and
+    #                              metric point that was ever ingested.
+    #   /var/log/clickhouse-server the server's own logs, which are the only
+    #                              place a "why did ingestion stop" question is
+    #                              answerable after a restart.
+    #
+    # Only the first was a named volume. The second is declared as a VOLUME by
+    # the image itself (`docker image inspect` on this exact tag), which is
+    # worse than it sounds rather than better: an anonymous volume has no name,
+    # appears in no backup, cannot be found by an operator and is what
+    # `--renew-anon-volumes`, a `down -v` and every prune take away. The third
+    # was in the container's writable layer and died with the container.
+    #
+    # So a recreate — which is what a release IS — kept the dashboards and
+    # dropped the data behind them. The failure is invisible in exactly the
+    # wrong direction: the UI comes back up, every saved search is where it
+    # was, and every one of them is empty.
+    #
+    # The laptop's compose.yaml carries the same three, under the same names.
+    # The loss class does not care which machine it is on.
     volumes:
       - clickstack_data:/data/db
+      - clickstack_data_clickhouse:/var/lib/clickhouse
+      - clickstack_data_clickhouse_logs:/var/log/clickhouse-server
 
   # --- The product ------------------------------------------------------------
   # Both PULLED, never built here. THIS FILE HAS NO `build:` AND THAT IS THE
@@ -505,6 +803,7 @@ services:
     # guessed registry pulls somebody else's image and succeeds.
     image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
     restart: unless-stopped
+    logging: *default-logging
     entrypoint: ["/deploy/entrypoint.sh"]
     command: ["uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
     environment:
@@ -568,6 +867,7 @@ services:
     # Pulled, never built — `web`'s paragraph above, same reason.
     image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-worker:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
     restart: unless-stopped
+    logging: *default-logging
     entrypoint: ["/deploy/entrypoint.sh"]
     command: ["python", "-m", "apps.workflows.worker"]
     environment:
@@ -621,6 +921,7 @@ services:
   oneoff:
     image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
     restart: "no"
+    logging: *default-logging
     entrypoint: ["/deploy/entrypoint.sh"]
     command: ["python", "-c", "raise SystemExit('oneoff is a compose-run door, not a service')"]
     environment:
@@ -640,6 +941,7 @@ services:
   caddy:
     image: caddy:2.10.2
     restart: unless-stopped
+    logging: *default-logging
     ports:
       # 80 is open for ONE reason: Let's Encrypt HTTP-01 (the ratified choice,
       # environments contract). `auto_https disable_redirects` in the Caddyfile
@@ -702,6 +1004,7 @@ services:
     # two performances of it.
     image: curlimages/curl:8.11.1
     restart: unless-stopped
+    logging: *default-logging
     entrypoint: ["/bin/sh", "/alerts/prober.sh"]
     environment:
       # The public URL, so DNS, TLS and Caddy are in the tested path. On a
@@ -741,7 +1044,15 @@ volumes:
   # so a restart is not a cold index.
   meili_data:
   zitadel_bootstrap:
+  # The sink's three, and they are three because the all-in-one image keeps
+  # three different things in three different places (the reason is beside the
+  # service). `clickstack_data` is HyperDX's metadata; the two below are the
+  # column store every span lands in and the ClickHouse server's own logs.
+  # Losing either of those is losing the telemetry while the dashboards that
+  # query it come back up looking perfectly well.
   clickstack_data:
+  clickstack_data_clickhouse:
+  clickstack_data_clickhouse_logs:
   caddy_data:
   caddy_config:
   # Uploads. In a real environment `AWS_STORAGE_BUCKET_NAME` is set and this

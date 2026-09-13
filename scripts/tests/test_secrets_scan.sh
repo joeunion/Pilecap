@@ -254,7 +254,7 @@ exits() {
 }
 
 listed() {
-    if tr '\0' '\n' <"$LIST" | grep -qxF -- "$1"; then
+    if tr '\0' '\n' <"$LIST" | grep -xF -- "$1" >/dev/null; then
         ok "the set contains ${1}"
     else
         bad "the set does NOT contain ${1} — it is $(tr '\0' '\n' <"$LIST" | tr '\n' ' ')"
@@ -262,7 +262,7 @@ listed() {
 }
 
 not_listed() {
-    if tr '\0' '\n' <"$LIST" | grep -qxF -- "$1"; then
+    if tr '\0' '\n' <"$LIST" | grep -xF -- "$1" >/dev/null; then
         bad "the set contains ${1} and must not — it is $(tr '\0' '\n' <"$LIST" | tr '\n' ' ')"
     else
         ok "the set does not contain ${1}"
@@ -513,6 +513,19 @@ case_a_directory_that_is_no_repository_cannot_look() {
     fi
     derive_in "$bare" "a directory that is not a repository"
     exits 2
+    # B4.2. `derive_in` runs the derivation in THIS shell, so the global
+    # `gate_refuse` sets survives the call — which is what makes this assertable at
+    # all, and what the `secret scan COULD NOT DERIVE … — see above.` banner in
+    # scripts/check.sh depends on. Without it that banner prints
+    # `(the callee set none …)` and the reader is back to scrolling.
+    CURRENT="the refusal RECORDED its cause for the leg banner to print"
+    case "${GATE_LAST_REFUSAL:-}" in
+    "")
+        bad "GATE_LAST_REFUSAL is empty — check.sh's secret-scan banner would have to say the callee set none"
+        ;;
+    *"could not read a git directory here"*) ok "cause: ${GATE_LAST_REFUSAL}" ;;
+    *) bad "the recorded cause is not this refusal's first line: '${GATE_LAST_REFUSAL}'" ;;
+    esac
 }
 
 case_a_planted_secret_in_a_changed_file_fails_the_leg() {

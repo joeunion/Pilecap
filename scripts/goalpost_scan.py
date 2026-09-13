@@ -730,6 +730,24 @@ def census(text: str) -> tuple[int, list[str]]:
             thin.append(f"  {path}: column 5 (finding) is blank — write `none` if there was none")
     out.extend(thin)
 
+    # THE 755-MODE GAP, PRINTED RATHER THAN LEFT IN THE MODULE DOCSTRING ONLY.
+    # `population()` derives an instrument from the working tree's execute
+    # bit; a reporting surface invoked as `python3 thing.py` or `bash thing.sh`
+    # without `+x` — a future package-manager script wrapper is the shape
+    # named when this gap was raised — is invisible to it however loudly it
+    # reports. That was already declared in this module's own docstring
+    # (`scripts/goalpost_scan.py:84-89`); it did not used to be said in the
+    # OUTPUT of a `--census` run, so a reader of a green census log had to
+    # already know to go read the source to learn the derivation has this
+    # hole. Printed every run, clean or not, exactly like every other
+    # declared blind spot in this gate: a skip that prints nothing is
+    # indistinguishable from a pass.
+    out.append(
+        "  blind spot: a script with no +x, invoked as `bash x.sh` or `python x.py` "
+        "(mode 644), is NOT derived — population() reads the working tree's mode bit "
+        "and nothing else (scripts/goalpost_scan.py:84-89)"
+    )
+
     if uncensused or ghost or thin:
         out.append("")
         out.append(

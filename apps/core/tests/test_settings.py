@@ -34,6 +34,7 @@ from django.test import RequestFactory, override_settings
 
 from apps.core.models import Tenant
 from apps.core.tests.tree_census import TRANSIENT_APP_MODULES, without_transient_apps
+from config.settings.base import DEFAULT_BRAND_ACCENT
 from config.settings.discovery import DEFAULT_ORDER, discover_apps, discover_local_apps
 from config.settings.guards import (
     DEV_CONNECTIONS_ENCRYPTION_KEY,
@@ -389,6 +390,85 @@ def test_whitenoise_sits_immediately_after_the_security_middleware() -> None:
     security = order.index("django.middleware.security.SecurityMiddleware")
 
     assert order[security + 1] == "whitenoise.middleware.WhiteNoiseMiddleware"
+
+
+def test_a_product_base_url_moves_where_sign_in_lands() -> None:
+    """The landing seam, ALL THREE branches, by importing settings under each one.
+
+    `LOGIN_REDIRECT_URL` is DERIVED from `PRODUCT_BASE_URL`: unset, it
+    is the shipped placeholder at `/welcome/` and a clone with no front end pays
+    nothing; set, the same completed sign-in lands at the product instead, with
+    nothing in `apps/` or `templates/` changed. Only importing the module under
+    the environment can see those branches — asserting on the live value would
+    only assert that today's environment is today's environment.
+
+    **THE THIRD BRANCH IS THE ONE THAT SHIPPED BROKEN, AND IT IS THE REASON THIS
+    TEST HAS THREE.** `PRODUCT_BASE_URL` is not absent on a fresh clone: it is
+    PRESENT AND EMPTY, because `.env.example` ships the line and every entry
+    point copies that file to `.env`. `env.str(..., default=PUBLIC_BASE_URL)`
+    fires its default only on ABSENCE, so the value came out `""` and
+    `LOGIN_REDIRECT_URL` derived to `""` — every completed sign-in in a fresh
+    clone redirected to nowhere, and the two-branch version of this test was
+    green throughout because the worktree it ran in had a `.env` predating the
+    line. Present-but-empty defeating a `default=` is a twice-evidenced
+    cross-product class; the branch below is what makes this seam's version of
+    it fail loudly instead of shipping again.
+    """
+    with _settings_module("config.settings.base") as base:
+        assert base.PRODUCT_BASE_URL == base.PUBLIC_BASE_URL
+        assert base.LOGIN_REDIRECT_URL == "/welcome/"
+
+    with _settings_module(
+        "config.settings.base", PRODUCT_BASE_URL="https://app.example.test/"
+    ) as base:
+        assert base.PRODUCT_BASE_URL == "https://app.example.test"
+        assert base.LOGIN_REDIRECT_URL == "https://app.example.test"
+
+    # The fresh clone: the variable is SET, to the empty string, exactly as
+    # `cp .env.example .env` leaves it.
+    with _settings_module("config.settings.base", PRODUCT_BASE_URL="") as base:
+        assert base.PRODUCT_BASE_URL == base.PUBLIC_BASE_URL
+        assert base.LOGIN_REDIRECT_URL == "/welcome/"
+
+
+def test_an_empty_brand_accent_falls_back_rather_than_shipping_nothing() -> None:
+    """The seam's other variable, given the same treatment for the same reason.
+
+    `.env.example` ships a real colour here, so this branch is not broken today
+    — it is pinned so that an operator clearing the line gets the shipped
+    neutral rather than an empty custom property.
+    """
+    with _settings_module("config.settings.base", BRAND_ACCENT="") as base:
+        assert base.BRAND_ACCENT == base.DEFAULT_BRAND_ACCENT
+
+    with _settings_module("config.settings.base", BRAND_ACCENT="#abcdef") as base:
+        assert base.BRAND_ACCENT == "#abcdef"
+
+
+def test_the_env_example_lines_this_seam_ships_are_really_what_a_clone_gets() -> None:
+    """Read the FILE, not the environment: the empty line is the thing under test.
+
+    `_env_example()` parses `.env.example` the way `cp .env.example .env` then
+    `read_env` would, so this asserts about the shape a clone is handed rather
+    than about the shape this worktree happens to have.
+    """
+    example = _env_example()
+    assert example["PRODUCT_BASE_URL"] == "", (
+        "the seam's design is that this line ships EMPTY and the derivation "
+        "treats empty as absent — if it ever ships a value, the derivation's "
+        "empty branch stops being the one a clone takes"
+    )
+    assert example["BRAND_ACCENT"] == DEFAULT_BRAND_ACCENT
+
+
+def test_the_landing_seam_is_documented_where_an_operator_looks() -> None:
+    """Both new variables are in `.env.example`.
+
+    A setting a clone cannot find is a setting a clone does not have.
+    """
+    example = _env_example()
+    assert "PRODUCT_BASE_URL" in example
+    assert "BRAND_ACCENT" in example
 
 
 def test_files_are_stored_on_disk_until_a_bucket_is_named() -> None:
@@ -857,8 +937,16 @@ def test_setup_tightens_the_env_file_to_owner_only() -> None:
     script = _setup_sh()
 
     assert "chmod 600 .env" in script
-    # Before the copy would be a chmod on a file that does not exist yet.
-    assert script.index("cp .env.example .env") < script.index("chmod 600 .env")
+    # THE ORDER IS WHAT IS PINNED, NOT THE SPELLING. A chmod before the file
+    # exists is a chmod on nothing. The bare `cp` this used to look for moved
+    # inside `env_sync_from_example` when the environment step stopped leaving
+    # an existing `.env` alone and started regenerating it from `.env.example`,
+    # so the assertion now names the STEP and its call rather than one line of
+    # the copy — which is the thing that was always meant.
+    step = script.index('step "environment file"')
+    chmod = script.index("chmod 600 .env")
+    assert step < chmod
+    assert "\nenv_sync_from_example\n" in script[step:chmod]
 
 
 def test_the_kind_of_value_setup_writes_arms_the_oauth_door() -> None:

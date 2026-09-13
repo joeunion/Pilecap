@@ -39,14 +39,23 @@ esac
 # knowing (ADR gate-1):
 #
 #   ./scripts/test.sh                       serial, RANDOM order, fresh seed
-#   ./scripts/test.sh -n auto               one worker per core — what both
-#                                           gate legs in check.sh run
+#   ./scripts/test.sh -n <share>            the slot share — what both gate legs
+#                                           in check.sh run (`-n $GATE_SLOT_WORKERS`,
+#                                           check.sh:48-50); `-n auto` is REFUSED
 #   ./scripts/test.sh --randomly-seed=N     replay the order a red run printed
 #   ./scripts/test.sh -p no:randomly        declared collection order
 #
-# `-n auto` is deliberately NOT a default here or in pyproject's `addopts`: each
-# xdist worker creates and migrates its own test database, so a ten-core machine
-# would pay ten database creations to run `./scripts/test.sh apps/core/tests/
+# `-n auto` IS REFUSED HERE, and the sentence it used to carry — "one worker per
+# core, what both gate legs run" — was stale: the gate legs run `-n
+# $GATE_SLOT_WORKERS`, the SHARE of this box's cores that one pytest slot owns
+# (check.sh:48-50, scripts/gate_lease.sh's `gate_slot_workers`). `auto` takes
+# every core, beside gates that are each holding a share, and mints one
+# `test_$DATABASE_NAME_gwN` database per worker while it does it — the
+# shared-box contention this refusal exists to stop.
+#
+# Workers are also not a default here or in pyproject's `addopts`: each xdist
+# worker creates and migrates its own test database, so a ten-core machine would
+# pay ten database creations to run `./scripts/test.sh apps/core/tests/
 # test_ids.py`. The gate wants the workers; a builder narrowing one failure does
 # not. Per-worker databases nest inside this checkout's own: pytest-django
 # suffixes the derived name, giving `test_$DATABASE_NAME_gw0..gwN`.
@@ -70,6 +79,72 @@ if [ -f scripts/db.sh ]; then
     # shellcheck source=scripts/db.sh
     source scripts/db.sh
 fi
+
+# --- the slot share: one number, derived where the gate derives it -----------
+#
+# WHAT THIS CLOSES. A direct `uv run pytest … -n auto` takes no pytest slot and
+# reads no ceiling, so on a ten-core box it starts ten workers beside two gates
+# that are each running their five — load that put a sibling platform's Postgres
+# into recovery, and ten `_gwN` databases created to run one module. The slot
+# semaphore is the mechanism; the only thing missing was that a builder's own
+# run never asked it anything.
+#
+# ONE DERIVATION, NEVER A SECOND OPINION: `gate_slots_total` and
+# `gate_slot_workers` are `scripts/gate_lease.sh`'s own functions over
+# `scripts/gate_lease.sh`'s own constants, and they are the same two calls
+# `gate_slot_acquire` makes. An inherited value wins over deriving one, which is
+# what lets a caller that already took a slot hand its share down rather than
+# have this re-answer the question.
+DJB_PYTEST_SHARE=""
+if [ -n "${DJB_GATE_SLOT_WORKERS:-}" ]; then
+    DJB_PYTEST_SHARE="$DJB_GATE_SLOT_WORKERS"
+elif [ -n "${DJB_PYTEST_MAX_WORKERS:-}" ]; then
+    DJB_PYTEST_SHARE="$DJB_PYTEST_MAX_WORKERS"
+elif [ -f scripts/gate_lease.sh ]; then
+    # shellcheck source=scripts/gate_lease.sh
+    source scripts/gate_lease.sh
+    DJB_PYTEST_SLOTS=$(gate_slots_total 2>/dev/null || true)
+    if [ -n "$DJB_PYTEST_SLOTS" ]; then
+        DJB_PYTEST_SHARE=$(gate_slot_workers "$DJB_PYTEST_SLOTS" 2>/dev/null || true)
+    fi
+    unset DJB_PYTEST_SLOTS
+fi
+if [ -n "$DJB_PYTEST_SHARE" ]; then
+    DJB_PYTEST_MAX_WORKERS="$DJB_PYTEST_SHARE"
+    export DJB_PYTEST_MAX_WORKERS
+fi
+
+# `-n auto` (and `logical`, its bigger sibling) is REFUSED — exit 2, naming the
+# derivation and the number it would have used. Exit 2 and not 1: nothing was
+# judged, and a refusal that reads as a test failure is a refusal somebody
+# re-runs instead of reading. Every spelling pytest-xdist accepts is checked,
+# because a refusal that only knows `-n auto` teaches `-nauto`.
+DJB_PREV_ARG=""
+DJB_REFUSE_AUTO=""
+for DJB_ARG in "$@"; do
+    case "$DJB_ARG" in
+    -nauto | -nlogical | --numprocesses=auto | --numprocesses=logical)
+        DJB_REFUSE_AUTO=1
+        ;;
+    auto | logical)
+        case "$DJB_PREV_ARG" in
+        -n | --numprocesses) DJB_REFUSE_AUTO=1 ;;
+        esac
+        ;;
+    esac
+    DJB_PREV_ARG="$DJB_ARG"
+done
+if [ -n "$DJB_REFUSE_AUTO" ]; then
+    echo "!! REFUSING '-n auto': this box's cores are already shared." >&2
+    echo "   The gate splits them into pytest SLOTS and each slot holder runs its share:" >&2
+    echo "   gate_slot_workers (scripts/gate_lease.sh) says ${DJB_PYTEST_SHARE:-(underivable: scripts/gate_lease.sh could not be read)} on this box." >&2
+    echo "   'auto' takes every core beside them and mints one" >&2
+    echo "   test_\$DATABASE_NAME_gwN database per worker." >&2
+    echo "   Run it with the share:  ./scripts/test.sh -n ${DJB_PYTEST_SHARE:-<share>} \"\$@\"" >&2
+    echo "   Nothing ran." >&2
+    exit 2
+fi
+unset DJB_ARG DJB_PREV_ARG DJB_REFUSE_AUTO
 
 # --- the per-worker test databases CLONE a template when one exists ---
 #

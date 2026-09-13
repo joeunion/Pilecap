@@ -444,10 +444,15 @@ def test_the_counts_this_report_states(capsys: Any) -> None:
     # together by construction, and a diff that moved only one would be the
     # thing to look at).
     # 43 -> 44: `comms.Device`, the push address book.
-    assert concrete == 44, (
+    # 44 -> 45: `accounts.IdentityBranding`, the hosted sign-in screen's intent
+    # row. Only THIS number moves, unlike every entry above: it carries no
+    # `tenant`, so it never joins `scoped_models()` and the other two counts
+    # below are untouched — the deployment's own login-screen intent has no
+    # tenant to be a customer's.
+    assert concrete == 45, (
         "the review's 38, plus exports.Export, usage.UsageEntry, "
-        "comms.MessageEngagement, the two files models and "
-        "comms.Device"
+        "comms.MessageEngagement, the two files models, "
+        "comms.Device and accounts.IdentityBranding"
     )
     assert len(not_a_product_model(scoped_models())) == 29
     assert len(platform_only(dispositions())) == 26

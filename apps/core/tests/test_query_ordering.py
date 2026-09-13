@@ -21,6 +21,8 @@ the selector said still holds after the door has spoken.
 
 from __future__ import annotations
 
+import ast
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +30,7 @@ import pytest
 
 from apps.core.api.query import ordered_by
 from apps.core.exceptions import Invalid
-from apps.core.tests.tree_census import source_text
+from apps.core.tests.tree_census import source_text, source_tree
 from apps.example.models import Widget
 
 pytestmark = pytest.mark.django_db
@@ -200,63 +202,117 @@ def test_every_current_caller_shape_keeps_what_its_selector_promised(
     assert ordering_of(result) == expected
 
 
+# Two globs, because a door module is not always `apps/<app>/api.py`: core's
+# routes live in the `api/` PACKAGE, and a census that only looked one level
+# down would have reported "no new callers" while four new lists went past it
+# (found by the census below failing when they did, which is it working).
+DOOR_GLOBS = ("apps/*/*.py", "apps/*/api/*.py")
+DOOR_NAMES = frozenset({"api.py", "mcp.py", "routes.py"})
+
+#: The shape the table above drives, written out so a refusal can name it: the
+#: promised queryset and what the client asked for, positionally, and the
+#: route's own allow-list by keyword. `default=` is optional — a route's default
+#: is a request the client did not have to make, which is the same shape.
+CALL_SHAPE = "ordered_by(<queryset>, <ordering>, allowed=…[, default=…])"
+SHAPE_KEYWORDS = frozenset({"allowed", "default"})
+
+
+@dataclass(frozen=True)
+class OrderedByCall:
+    """One `ordered_by(...)` call site, as the SHAPE the table above is about."""
+
+    caller: str
+    line: int
+    positional: int
+    keywords: tuple[str, ...]
+
+    @property
+    def is_a_shape_the_table_drives(self) -> bool:
+        named = set(self.keywords)
+        return self.positional == 2 and "allowed" in named and named <= SHAPE_KEYWORDS
+
+
+def ordered_by_call_sites(root: Path) -> list[OrderedByCall]:
+    """Every `ordered_by(...)` call in every door module under `root` — DERIVED.
+
+    This used to be a hand-typed set of file names, and the cost of that was
+    paid by somebody else: a new app with a list door reddened a test in
+    `apps/core` that its rung was not allowed to edit. The seeds come off the
+    tree now, so a new door joins the census by existing.
+
+    What is pinned instead is each call site's SHAPE, which is the thing the
+    parametrized table above actually drives. A call of any other shape has
+    never been run against that table, and it fails by name rather than
+    silently widening the blast radius.
+
+    `root` is a parameter rather than a constant so the same derivation can be
+    pointed at a generated app in a temp tree — which is how
+    `apps/core/tests/test_newapp.py` proves a generated list door lands in this
+    census without anybody editing this file.
+    """
+    found: list[OrderedByCall] = []
+    candidates = [
+        path for pattern in DOOR_GLOBS for path in root.glob(pattern) if path.name in DOOR_NAMES
+    ]
+    for path in sorted(candidates):
+        if "ordered_by(" not in source_text(path):
+            continue
+        caller = path.relative_to(root).as_posix()
+        for node in ast.walk(source_tree(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            called = node.func
+            name = called.attr if isinstance(called, ast.Attribute) else getattr(called, "id", "")
+            if name != "ordered_by":
+                continue
+            found.append(
+                OrderedByCall(
+                    caller=caller,
+                    line=node.lineno,
+                    positional=len(node.args),
+                    keywords=tuple(kw.arg or "**" for kw in node.keywords),
+                )
+            )
+    return found
+
+
 def test_the_shapes_above_are_the_shapes_the_tree_actually_uses() -> None:
     """The parametrize list is a claim about other files; this reads them.
 
     Without this, the table above is a list somebody typed once and nothing
     would notice when a sixth call site appeared with a shape nobody had
-    thought about. It counts the call sites rather than pinning their fields:
-    the fields are those apps' business, the existence of the promise is this
-    rung's.
+    thought about. It does not pin their FIELDS — those are those apps'
+    business — it pins that every call site in the tree has a shape the table
+    has actually been run against.
+
+    THE FLOORS ARE TWO-LAYERED, and deliberately. Layer 1 is "the census
+    reached something at all": an underived population is not an empty one, and
+    a glob that stopped matching would otherwise leave this test green over
+    nothing. Layer 2 names the populations the two globs exist for separately —
+    the REST doors, the MCP doors, and the `api/` PACKAGE — because a single
+    `>= 1` would be satisfied by either glob alone, which is exactly how one of
+    them could go blind without anybody noticing.
     """
     root = Path(__file__).resolve().parents[3]
-    # Two globs, because a door module is not always `apps/<app>/api.py`: core's
-    # routes live in the `api/` PACKAGE, and a census that only looked one level
-    # down would have reported "no new callers" while four new lists went past
-    # it (found by this test failing when they did, which is the census working).
-    candidates = [
-        path
-        for pattern in ("apps/*/*.py", "apps/*/api/*.py")
-        for path in root.glob(pattern)
-        if path.name in {"api.py", "mcp.py", "routes.py"}
+    calls = ordered_by_call_sites(root)
+
+    assert calls, "no `ordered_by` call site found in the tree at all — the census went blind"
+    by_rest = {call.caller for call in calls if call.caller.endswith("/api.py")}
+    by_machine = {call.caller for call in calls if call.caller.endswith("/mcp.py")}
+    by_package = {call.caller for call in calls if "/api/" in call.caller}
+    assert by_rest, "no REST door calls `ordered_by` — the `apps/*/*.py` glob reached nothing"
+    assert by_machine, "no MCP door calls `ordered_by` — the machine door left the census"
+    assert by_package, (
+        "no `apps/*/api/*.py` caller — the second glob reached nothing, which is the "
+        "exact blindness it was added to close"
+    )
+
+    off_shape = [
+        f"{call.caller}:{call.line} ({call.positional} positional, keywords {call.keywords})"
+        for call in calls
+        if not call.is_a_shape_the_table_drives
     ]
-    callers = {
-        path.relative_to(root).as_posix()
-        for path in candidates
-        if "ordered_by(" in source_text(path)
-    }
-    assert callers == {
-        "apps/accounts/api.py",
-        "apps/comms/api.py",
-        "apps/comms/mcp.py",
-        "apps/connections/api.py",
-        "apps/events/api.py",
-        "apps/events/mcp.py",
-        "apps/core/api/routes.py",
-        "apps/core/mcp.py",
-        "apps/example/api.py",
-        "apps/example/mcp.py",
-        # The run ledger's doors. Its selector promises
-        # `("-started_at",)` and both doors default to `-started_at`, so it is
-        # the first shape in the table above — a single field, and the route's
-        # default is it. Added here rather than by widening the table, because
-        # the shape is one the table already covers.
-        "apps/workflows/api.py",
-        "apps/workflows/mcp.py",
-        # The export doors. `list_exports` promises nothing of its
-        # own — the selector orders by no field, so the queryset arrives
-        # unordered — and both doors default to `-created_at`, which is the
-        # first shape in the table above (a single field, and the route's
-        # default is it). Added here rather than by widening the table, because
-        # the shape is one the table already covers.
-        "apps/exports/api.py",
-        "apps/exports/mcp.py",
-        # The document doors (ADR files-2) — TWO lists in one app, and
-        # both are the first shape in the table above. `list_files` promises
-        # nothing of its own (the selector filters and joins, it does not order)
-        # and both doors default to `-created_at`; `list_versions` likewise, and
-        # both doors default to `-version`. A single field, and the route's default
-        # is it, twice — so this is added here rather than by widening the table.
-        "apps/files/api.py",
-        "apps/files/mcp.py",
-    }, "a new `ordered_by` caller appeared — add its shape to the table above"
+    assert off_shape == [], (
+        "an `ordered_by` call site has a shape the table above has never been run against "
+        f"(expected {CALL_SHAPE}): " + "; ".join(off_shape)
+    )

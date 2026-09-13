@@ -222,6 +222,49 @@ def test_an_inherited_policy_is_reported_as_the_instance_default(
     assert "self-registration" in line
 
 
+def test_a_second_organisation_is_counted_and_named(
+    console: Console, instance: FakeZitadel, capsys: Any
+) -> None:
+    """ "Still invisible: a second organisation" was the paragraph's own words.
+
+    An instance that grew one looked exactly like an instance that had not, so
+    the only way to find out was to open the console — which is the blind spot
+    this whole report is the tripwire for. Counted and named, never inspected:
+    what a second org's policies say is a question for a product that has two.
+    """
+    instance.orgs = [
+        *instance.orgs,
+        {"id": "2", "name": "somebody-elses-org", "state": "ORG_STATE_ACTIVE"},
+    ]
+
+    out = _run(capsys)
+
+    line = next(line for line in _observed_lines(out) if "orgs " in line)
+    assert "2 on this instance" in line
+    assert "the seed owns TestOrg" in line
+    assert "somebody-elses-org" in line
+
+
+def test_the_organisation_count_reaches_no_verdict(
+    console: Console, instance: FakeZitadel, capsys: Any
+) -> None:
+    """A second org is news, not drift. It cannot move the exit status.
+
+    The same property the two surfaces beside it have, asserted separately
+    because a count is the shape most likely to be turned into a threshold by
+    somebody who thinks one is the right number.
+    """
+    instance.orgs = [
+        *instance.orgs,
+        {"id": "2", "name": "somebody-elses-org", "state": "ORG_STATE_ACTIVE"},
+    ]
+
+    out = _run(capsys, expect_exit=0)
+
+    assert "DRIFT" not in "\n".join(_observed_lines(out))
+    assert "Zitadel agrees with every row" in out
+
+
 def test_the_instance_smtp_sender_is_reported(console: Console, capsys: Any) -> None:
     """Who this instance's mail comes from — instance-wide, so possibly not us."""
     out = _run(capsys)
@@ -327,6 +370,11 @@ def test_every_console_call_is_a_get(console: Console, instance: FakeZitadel, ca
     )
     assert ("GET", "/policies/login") in instance.requests
     assert ("GET", "/admin/v1/smtp") in instance.requests
+    # The organisation count is a POST, and it is still a read: `_search` is how
+    # Zitadel spells "list", which is why the assertion above has always been
+    # `GET or _search` rather than `GET`. Named so this cannot pass by the audit
+    # having quietly stopped counting.
+    assert ("POST", "/admin/v1/orgs/_search") in instance.requests
 
 
 # --- the paragraph, beside the verdict ---------------------------------------
@@ -376,5 +424,13 @@ def test_the_paragraph_is_beside_the_verdict_and_not_at_the_top(
 
     assert first_row < paragraph < verdict
     # And nothing but blank lines between the paragraph and the verdict it
-    # qualifies — "beside" is not "somewhere further up".
-    assert all(not line.strip() for line in lines[paragraph + 11 : verdict])
+    # qualifies — "beside" is not "somewhere further up". The paragraph's own
+    # length is DERIVED (its lines are the indented ones that follow the
+    # heading) rather than hard-coded: a count in this assertion is a count that
+    # goes stale the first time somebody adds a sentence to the paragraph, and
+    # then the test fails for a reason that has nothing to do with position.
+    body_end = paragraph
+    while body_end + 1 < verdict and lines[body_end + 1].startswith("  "):
+        body_end += 1
+    assert body_end > paragraph, "the paragraph printed a heading and no body"
+    assert all(not line.strip() for line in lines[body_end + 1 : verdict])

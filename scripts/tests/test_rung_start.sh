@@ -568,6 +568,84 @@ case_resume_does_not_lift_the_reporting_refusals() {
     says "Nothing was reset, installed, created or written."
 }
 
+# --- --expect: the baseline the brief named ----------------------------------
+#
+# THE ONE JUDGMENT STEP 1 CANNOT MAKE FOR ITSELF, now typeable. The reset makes
+# this worktree current with `main`; whether main's tip is the tree the criteria
+# were written against is a fact only the brief carries, and until this flag
+# existed the skill could only ask a builder to check it by eye.
+#
+# BOTH CASES GET PAST STEP 1 AND ONE OF THEM DIES IN STEP 2 (no venv in a
+# scratch repository), so the MATCH case does not assert an exit status —
+# blind spot 1, the same reason the baseline cases above do not. The REFUSAL
+# case does assert one, because its whole claim is that step 2 was never
+# reached.
+
+case_expect_accepts_a_commit_sha_and_says_it_resolved_the_tree() {
+    fresh_repo
+    git -C "$REPO" checkout -q -b work main
+    local commit tree
+    commit="$(head_of)"
+    tree="$(git -C "$REPO" rev-parse "${commit}^{tree}")"
+
+    # A COMMIT, which is what a dispatch brief carries ("A4 is at 1412f86").
+    run_in_repo_with "--expect takes a COMMIT and resolves it to a tree" --expect "$commit"
+    says "handed a COMMIT: ${commit}"
+    says "resolved to tree ${tree}"
+    says "MATCH"
+    # WHICH ONE IT WAS HANDED IS THE POINT: a flag that took both and said
+    # neither would leave a reader unable to tell a resolution that happened
+    # from one that was skipped.
+    says_not "handed a TREE: ${commit}"
+    # It went ON — the check is a precondition, not a mode.
+    says "step 2/${STEP_TOTAL_IN_SCRIPT}"
+
+    # THE SAME TREE, HANDED DIRECTLY. A gate verdict, a banked key and this
+    # script's own output all talk in trees; the flag takes both spellings of
+    # one baseline and reaches the same verdict about it.
+    run_in_repo_with "--expect takes a TREE directly" --expect "$tree"
+    says "handed a TREE: ${tree}"
+    says "MATCH"
+    says_not "resolved to tree"
+}
+
+case_expect_still_refuses_a_tree_that_does_not_match() {
+    fresh_repo
+    git -C "$REPO" checkout -q -b work main
+    local wrong_tree before_head
+    wrong_tree="$(git -C "$REPO" rev-parse 'main~1^{tree}')"
+    before_head="$(head_of)"
+
+    run_in_repo_with "--expect refuses a baseline that is not the one named" --expect "$wrong_tree"
+    exits 2
+    says "THE BASELINE IS NOT THE ONE THE BRIEF NAMED"
+    says "expected tree  ${wrong_tree}"
+    says "Flag it and hold"
+    # THE REFUSAL COMES BEFORE THE RESET AND BEFORE STEP 2, which is what makes
+    # this script's standing promise still true on the way out.
+    says "Nothing was reset, installed, created or written."
+    says_not "step 2/${STEP_TOTAL_IN_SCRIPT}"
+    if [ "$(head_of)" = "$before_head" ]; then
+        ok "HEAD did not move — the refusal fired before the reset"
+    else
+        bad "HEAD moved from ${before_head} to $(head_of): the refusal came after the reset it promises not to have run"
+    fi
+
+    # A SHA THAT IS NEITHER OBJECT IS ALSO A REFUSAL, and it is a different
+    # sentence: a comparison that could not look is not a comparison that
+    # disagreed, and reporting one as the other is how a check goes quiet.
+    run_in_repo_with "--expect refuses a sha this repository cannot resolve" \
+        --expect 0000000000000000000000000000000000000000
+    exits 2
+    says "cannot resolve to a commit or a tree"
+    says_not "THE BASELINE IS NOT THE ONE THE BRIEF NAMED"
+
+    # AND AN EMPTY ARGUMENT IS A USAGE REFUSAL, never a silently skipped check.
+    run_in_repo_with "--expect with nothing after it is refused" --expect
+    exits 2
+    says "--expect takes a sha"
+}
+
 # Runs THIS TREE'S OWN FILE: --help needs no root.
 case_the_help_documents_resume() {
     CURRENT="--help documents --resume"
@@ -707,7 +785,7 @@ case_the_storage_step_is_wired_and_is_not_fatal() {
     # is a guard that teaches people to stop writing comments, and it is a
     # known class (prose spelling a censused marker counts as a registration).
     # What is being detected is a second DERIVATION, and a derivation is code.
-    if sed 's/#.*//' "$REAL" | grep -qE 'shasum|sha256sum|derived_bucket_name'; then
+    if sed 's/#.*//' "$REAL" | grep -E 'shasum|sha256sum|derived_bucket_name' >/dev/null; then
         bad "it has grown its own bucket-name arithmetic — that is the second copy setup.sh:446 exists to avoid"
     else
         ok "it names no bucket itself; ensure_bucket's stdout is the name"
@@ -891,7 +969,7 @@ case_the_identity_carry_is_wired_into_step_three() {
     # is the builder's, and reaching into one to rewrite credential lines on
     # every re-run is a side effect nobody asked for (script header, blind
     # spot 7). `--resume` is therefore never a carry.
-    if [ -n "$db_line" ] && sed -n "${db_line},\$p" "$REAL" | grep -q 'ZITADEL_\* left alone'; then
+    if [ -n "$db_line" ] && sed -n "${db_line},\$p" "$REAL" | grep 'ZITADEL_\* left alone' >/dev/null; then
         ok "an existing .env is left alone, and says so"
     else
         bad "nothing says an existing .env keeps its own ZITADEL_* lines"
@@ -964,6 +1042,9 @@ case_resume_on_a_current_baseline_says_there_was_nothing_to_skip
 case_resume_on_a_dirty_tree_still_refuses
 case_resume_does_not_lift_the_reporting_refusals
 case_the_help_documents_resume
+
+case_expect_accepts_a_commit_sha_and_says_it_resolved_the_tree
+case_expect_still_refuses_a_tree_that_does_not_match
 
 case_the_identity_carry_copies_zitadel_keys_and_prints_no_value
 case_the_identity_carry_population_is_the_zitadel_prefix_only

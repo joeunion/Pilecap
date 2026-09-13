@@ -81,29 +81,64 @@ that the gate is right.
 
 ## The reading order
 
-Read in this order when arriving cold. Each file exists for one reason, given.
+Two lists, and the split is the whole point. **What you READ is what changes
+under you and is small enough to hold; what you KNOW WHERE TO FIND is settled,
+large, or answered by a command.** Reading the settled files front to back
+before you have a question spends most of an arrival's context before it has
+done anything — so this order names four things to read and six to be able to
+reach.
+
+### READ NOW
+
+In this order, before anything else.
 
 1. **`CLAUDE.md`** — the mechanisms and invariants, one page. It does not
    count and does not track; it points at the thing that knows.
 2. **`docs/product/in-flight.md`** — what is live *right now*: the cycle, the
-   stage, the dispatch ledger. The first read on any cold pickup.
-3. **`docs/product/queue.md`** — what is next, in order. Every other file
-   defers to it.
-4. **`docs/product/architecture.md`** — what was decided and why, including
-   what was rejected so nobody rebuilds it. Settled; do not reopen.
-5. **`docs/product/build-contract.md`** — where things live and the interfaces
-   every layer agrees on: the layout, the discovery conventions, the gate legs.
-6. **`docs/product/north-star.md`** — who the product serves and what
-   "shipped" means. In the template it is a skeleton; in a product it is the
-   destination.
-7. **`uv run python manage.py introspect`** — the real models, routes, tools,
+   stage, the dispatch ledger. The `## Live state` block at the top is the
+   live one; everything below it is the superseded stack, kept for the trail.
+   The first read on any cold pickup.
+3. **the head of `docs/product/queue.md`** — the bands and the live rows: what
+   is next, in order. Every other file defers to it. The head, not the file —
+   the tail is the backlog's long trail and each row's detail lives in
+   `docs/product/queue-detail.md`.
+4. **`uv run python manage.py introspect`** — the real models, routes, tools,
    consumers, workflows, events and refusal registry, as JSON from the live
-   registries. The schema is read, never guessed.
-8. **`docs/product/misses.md`** — what we believed that was false. The
-   distilled version is this skill's `references/failure-catalog.md`.
-9. **`apps/example/`** — the worked example: one org-scoped model through
-   every convention and every door. The narrated tour is this skill's
-   `references/walkthrough.md`.
+   registries. A command, not a page: query the part your job needs. The
+   schema is read, never guessed.
+
+**Re-derive the cost rather than believing a number written here** — only the
+first two are read whole, so only they have a size:
+
+```bash
+wc -c CLAUDE.md docs/product/in-flight.md
+wc -c docs/product/{architecture,queue,misses,build-contract,north-star}.md
+```
+
+The second line is the set this order used to open with, front to back. The
+ratio between the two totals is why this section is two lists rather than one,
+and it is a fact about today's tree, not a number this file keeps.
+
+### KNOW WHERE IT IS
+
+Not read on arrival. Each answers one question: open it when you have that
+question, and open the part that answers it.
+
+- **`docs/product/architecture.md`** — *was this already decided, and what was
+  rejected?* Settled; do not reopen. It also numbers the house rules, which
+  `quality/rules.yaml` states and `quality/gate.py` runs.
+- **`docs/product/build-contract.md`** — *where does this file go, and who owns
+  it?* The layout, the discovery conventions, the gate's legs and targets.
+- **`docs/product/north-star.md`** — *who is this for, and what does shipped
+  mean?* A skeleton in the template; the destination in a product.
+- **`docs/product/misses.md`** — *has this failure already happened here?* What
+  we believed that was false. The distilled version is this skill's
+  `references/failure-catalog.md`.
+- **`apps/example/`** — *what does a correct app look like?* One org-scoped
+  model through every convention and every door. The narrated tour is this
+  skill's `references/walkthrough.md`.
+- **`docs/product/queue.md` past its head** — *why is nobody working on this?*
+  The whole backlog; `docs/product/queue-detail.md` holds each row's detail.
 
 ## When to load what
 

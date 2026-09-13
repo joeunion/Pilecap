@@ -108,7 +108,7 @@ outbox. All of them call the same services any screen would call, so the user
 team can drive a capability *before* its screen exists. Validation stops being
 blocked on UI work, and **a disagreement between any two doors is itself a
 finding** (a capability REST serves that MCP cannot; a socket push that names a
-state the API never returns). **The template ships no front end**; for a
+state the API never returns). **The template ships an opinionated default front end (owner-ratified 2026-09-02; architecture.md's Frontend row is the authority)**; for a
 backend-only product the field test drives the three doors, and that is the
 whole field test, not a lesser one.
 
@@ -587,7 +587,7 @@ intent** — lives with the tier mechanics in `references/operations.md`.
 | Call | Runs | Who runs it | Target |
 |---|---|---|---|
 | `--fast` | ruff · mypy · import-linter · house rules · `makemigrations --check` · linear-migrations | **pre-commit** | under a minute |
-| `--loop` | `--fast` + `check --deploy` + ONE pytest pass | **the builder, per rung** | a couple of minutes |
+| `--loop` | `--fast` + `check --deploy` + ONE pytest pass | **the builder, per rung; the verifier, once, as the consult** (a `VERDICT REUSED` banner is the gate; a miss completes and is recorded) | a couple of minutes |
 | *(no arg)* full | `--loop` + second pytest pass + canary self-test (every canary fires, every negative stays silent) + whatever e2e a product adds; **records a verdict in the ledger keyed on `git rev-parse HEAD^{tree}`** | **pre-push**, which consults the ledger first — a measured-green tree passes in seconds | — |
 
 **Exit 0 clean · 1 violations · 2 enforcement broken** (a dead canary, an

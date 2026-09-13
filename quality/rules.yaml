@@ -67,6 +67,107 @@
 # canary comes to prove the fixture rather than the rule.
 selftest_residence_backlog: 18
 
+# THE SCOPE KINDS — which language a rule is written about.
+#
+# Everything above answers *which apps this run holds*. A rule about a language
+# that is not Python needs the sibling fact, and it is three declarations and no
+# more: the ROOTS its rules are about, the SUFFIXES that belong to it, and the
+# COMMENT token a valve is written with. The engine's override walk and its
+# runner invocations both read this, which is what keeps "where this rule
+# scans" and "where this rule's exemptions count" from being two lists that can
+# disagree. `quality/worlds.py` carries the argument; `quality/gate.py` refuses
+# a kind that is missing any of the three.
+#
+# A valve is the SAME mechanism in every kind — the id, the reason, the reason
+# floor, the standing census — spelled in the comment syntax that language
+# has. `// rule-<id>: <reason>` is not a second grammar; it is the one grammar
+# with a different token, which is why the pattern is built from this table
+# rather than written out twice.
+scope_kinds:
+  py:
+    roots: [apps, config]
+    suffixes: [".py"]
+    comment: "#"
+    skip_dirs: [__pycache__]
+  js:
+    # The browser tree. `needs_tree` is declared here rather than on each rule
+    # because every rule of this kind is about the same tree, and a template
+    # that never grew one is the steady state rather than a defect: the live
+    # scan skips and SAYS SO, per rule, and every floor derives to 0.
+    roots: [frontend]
+    needs_tree: frontend
+    suffixes: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+    comment: "//"
+    # THE ONE DECLARATION F1 CLOSED. Before this line the `js_secrets` runner
+    # carried its own SKIP_DIRS literal while the engine's override walk knew
+    # only `__pycache__` — two lists that could disagree, and did: a 12k-file
+    # `node_modules` took `all_overrides()` from 0.1s to 1.55s and let a
+    # vendored valve enter the standing override census. Both halves —
+    # `quality/gate.py`'s walk (`quality.worlds.kind_skip_dirs`) and every
+    # runner under `quality/runners/` (`quality/runners/_kindscope.py`) — read
+    # THIS list and no other.
+    skip_dirs: [node_modules, .next, .turbo, dist, build, coverage, .git]
+
+# THE SEAM'S OWN RECORDED POPULATION.
+#
+# The runner seam is a PROCESS BOUNDARY, and its failure modes are the ones no
+# planted file can produce: a runner that is missing, unrunnable, dead, slow,
+# mute or lying. So its canary forms are rules rather than fixtures, driven
+# through the engine's own pipeline by `quality/gate.py`'s seam leg — and held
+# to exactly the grammar every other plan is held to, because a population
+# counted off the length of a list cannot notice that list shrinking.
+#
+# THE PREFLIGHT RIDES HERE TOO, and it is the same sentence pointed at the
+# tree instead of at the instrument: a self-test killed between plant and
+# restore leaves its fixtures standing, and the next run reads them as the
+# product's own. The dangerous half is the quiet one — a planted NEGATIVE
+# reports nothing, so the run goes GREEN over a tree that is partly fixture.
+# `stale_plants()` refuses that before any leg measures anything, on the
+# narrowest total question there is: a plant target whose bytes ARE the
+# fixture's bytes. It is the PAIR of the older refusal rather than a
+# replacement: one asks whether a plant path is dirty (so a run cannot plant
+# over somebody's uncommitted work), the other asks whether a plant path IS a
+# fixture (so a run cannot measure the residue of the run that died). Both are
+# canaried in both directions.
+seam:
+  # 21/10 -> 22/11 (P16 merge window), and BOTH halves have a reason, which is
+  # why neither branch alone could write this pair. The extra canary is
+  # SEAMFIX's: `seam_sentinel_census` drives the absent-tree sentinel in both
+  # directions, so a future collision with a real tree fails LOUD instead of
+  # turning the seam's own refusal into a pass. The extra negative is R-d's:
+  # the JS kinds gave the seam a runner whose tree is genuinely absent on a
+  # checkout without a frontend, which is the shape the sentinel exists for.
+  # SEAMFIX measured 22/10 on its tree and R-d 21/10 on its own; the union is
+  # 22/11 and the census said so itself rather than being told:
+  #   seam selftest: canaries at 22 against a recorded 21
+  #   seam selftest: negatives at 11 against a recorded 10
+  selftest_floor: { canaries: 22, negatives: 11 }
+  does_not_cover: >
+    THE PROTOCOL, NEVER A RULE'S CORRECTNESS. This population proves that a
+    reply is read, refused or believed for the right reason; whether any
+    particular runner looks at the right thing, or is right about what it saw,
+    is that rule's own canaries' question and is answered nowhere here. THE
+    DIFF LAYER IS UNCOVERED FOR EVERY NON-PYTHON KIND: the change-shaped checks
+    read Python ASTs across a ref, a runner reports about a working tree, and
+    nothing yet bridges the two — so a rule of a non-default kind has a live
+    scan and no diff half, declared here rather than discovered by a reviewer
+    wondering why a renamed file went unnoticed. COST AND DETERMINISM ARE NOT
+    MEASURED: a runner that is correct but slow, or correct but flaky across
+    runs, passes everything here. BATCHING IS NOT ASSERTED — every runner rule
+    invokes its own subprocess, and whether N rules can share one build-and-
+    render pass is a different mechanism with different evidence behind it.
+    THE PREFLIGHT READS BYTES, NEVER HISTORY: a stale plant somebody has since
+    EDITED is no longer identical to its fixture and is invisible to it, and a
+    form whose plant text cannot be resolved against today's migration graph is
+    skipped rather than guessed at. Neither is a silent green — the first is a
+    tree somebody is already working in, and the second is the self-test's own
+    refusal, one leg later. THE TRI-STATE'S FOURTH CELL (tree absent, toolchain installed) is a skip
+    like the third and is asserted only through the third: the tree is what
+    decides whether there is a subject, so a box that happens to hold the
+    interpreter has not acquired one. A RUNNER THAT ANSWERS CORRECTLY ABOUT
+    NOTHING — pointed at a root that exists and is empty — is a legal reply
+    here and is the FLOORS' subject, not the protocol's.
+
 rules:
   - id: "1"
     name: no-auth-user-import
@@ -76,7 +177,10 @@ rules:
       never imported or referenced by label. get_user_model() /
       settings.AUTH_USER_MODEL only.
     check: auth_user_import
-    doc: { file: CLAUDE.md, contains: "`auth.User` never imported" }
+    doc: { file: docs/product/architecture.md, contains: "`auth.User` is never imported" }
+    valve:
+      marker: "<comment> rule-1: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { files_scanned: 90 }
     does_not_cover: >
@@ -104,7 +208,9 @@ rules:
     check: null
     django_check_ids: [djb.E002]
     floor_proxy: count_model_classes
-    doc: { file: CLAUDE.md, contains: "every concrete model inherits" }
+    doc: { file: docs/product/architecture.md, contains: "every concrete model inherits" }
+    valve:
+      none: "this rule reports only through the django system-check leg (manage.py check --tag djb), and those findings never pass through apply_overrides, so no comment anywhere suppresses one. The shape is corrected, or the rule's declared scope moves in a diff a reviewer reads"
     scope: {}
     floors: { model_classes: 12 }
     does_not_cover: >
@@ -138,7 +244,10 @@ rules:
     django_check_ids: [djb.E003, djb.E030, djb.E031]
     floor_proxy: count_routes
     diff: [route_without_test]
-    doc: { file: CLAUDE.md, contains: "never `auth=None` outside the `rules.yaml` allow-list" }
+    doc: { file: docs/product/architecture.md, contains: "never `auth=None` outside the allow-list" }
+    valve:
+      marker: "<comment> rule-3: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. The django system-check half of this rule honours no comment valve: those findings never pass through apply_overrides"
     scope:
       # THE allow-list: the only legitimate auth=None is a
       # signature-verifying inbound webhook receiver — it proves who it is with
@@ -245,6 +354,30 @@ rules:
             path matched nothing. Demanding a credential to be told that would
             answer a typo with a 401 and teach a first-time client the wrong
             thing about the contract.
+      # THE THIRD KEY, and the amendment `does_not_cover` below named in
+      # advance. The clause cannot read authentication off a plain Django view,
+      # so it demands that every first-party one be recorded — and until the
+      # auth-chain rung of 2026-08-31
+      # every one of them was genuinely open, which is why there was one key.
+      # `welcome` is the first that demands a credential. It goes here rather
+      # than above because putting it above would record a false reason, and the
+      # check refuses a name that appears in both keys.
+      authenticated_views:
+        - url_name: "welcome"
+          view: "apps.core.views.welcome"
+          demands: >
+            a session. `@login_required`: an anonymous GET is a 302 to the
+            sign-in page and nothing is rendered. It is the shipped placeholder
+            landing — where `LOGIN_REDIRECT_URL` derives to when a clone has no
+            front end of its own — and everything on it is a fact about the
+            request that reached it: who the session is, which tenant and which
+            acting organization it resolved to, and what role that hat carries.
+            It reads no row it was not already handed except the role lookup,
+            writes nothing, and is SHADOWED by any product route mounted at the
+            same path. It also carries `ensure_csrf_cookie`, which is what
+            retires the reader-less-declaration finding: it is the bootstrap
+            page the CSRF comment in
+            config/settings/base.py used to name in the abstract.
     # Re-pinned at the measurement in the commit that fixed
     # `count_routes`' package blindness — it read 69 where the live registry has
     # 86, because it walked `api.py` by basename and `apps/core/api/routes.py`
@@ -261,11 +394,15 @@ rules:
       cannot tell an AUTHENTICATED plain view from an unauthenticated one.
       There is no `auth=` on a Django view to read and no registry that knows,
       so the clause demands that EVERY first-party plain view be recorded with
-      a reason, and today every one of the six is genuinely open. The first
-      view that checks a credential earns its own key beside this one and the
-      clause gets its one-line amendment then — writing that key now would be a
-      shape with nothing in it, and putting an authenticated view in THIS key
-      would record a false reason. The FIRST-PARTY TEST IS A MODULE PREFIX —
+      a reason — in `allow_unauthenticated_views` if it is open, in
+      `authenticated_views` if it demands a credential, and never in both. THE
+      SECOND KEY ARRIVED WITH THE VIEW THAT TRIGGERED IT (the auth-chain rung
+      of 2026-08-31, `welcome`),
+      exactly as this clause said it would; before that every first-party plain
+      view was genuinely open and one key was enough. What it still cannot do
+      is VERIFY the claim: a view recorded in `authenticated_views` is taken at
+      its word, so a decorator somebody deletes reads as green here and is
+      caught only by that view's own test. The FIRST-PARTY TEST IS A MODULE PREFIX —
       `apps.` or `config.` on the module the callback was defined in — which is
       what keeps ninja's operations, ninja's own document views, admin, allauth
       and every `TemplateView` out of the population without a hand list; it
@@ -340,8 +477,16 @@ rules:
       # plant into `config/urls.py` names no app at all — so without a declared
       # signature this fixture could fire and be recorded as silent. The string
       # is E031's own first branch, which nothing else in the tree emits.
+      #
+      # IT MOVED WITH THE MESSAGE (the auth-chain rung of 2026-08-31). The
+      # branch used to say "is not
+      # recorded in rule 3's `allow_unauthenticated_views`" and now names both
+      # plain-view keys, because there are two. A `contains` left pointing at
+      # the old wording is the worst outcome available here: the negative would
+      # read as silent WHATEVER it did, forever, and nothing would say so.
       - { fixture: recorded_plain_view.py, plant_at: config/urls.py, mode: append,
-          via: django, expect: { id: djb.E031, contains: "is not recorded in rule 3's" } }
+          via: django,
+          expect: { id: djb.E031, contains: "is recorded in neither of rule 3's plain-view keys" } }
 
   - id: "4"
     name: no-signal-logic
@@ -350,7 +495,10 @@ rules:
       No business logic in signals: no @receiver, no signal .connect(), no
       signals.py with function bodies. Services own writes.
     check: signal_logic
-    doc: { file: CLAUDE.md, contains: "no business logic in signals" }
+    doc: { file: docs/product/architecture.md, contains: "no business logic in signals" }
+    valve:
+      marker: "<comment> rule-4: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { files_scanned: 90 }
     does_not_cover: >
@@ -408,7 +556,10 @@ rules:
       set of numbers about nothing.
     check: query_budget_tests
     diff: [list_route_without_budget]
-    doc: { file: CLAUDE.md, contains: "query budgets on list endpoints" }
+    doc: { file: docs/product/architecture.md, contains: "floors on list endpoints at seeded scale" }
+    valve:
+      marker: "<comment> rule-5: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     # `stamp_candidates` is the floor and `stamped_docs` is the verdict: a stale
     # stamp must be a VIOLATION (exit 1) and an empty doc set broken enforcement
@@ -542,7 +693,10 @@ rules:
       merge migration means two agents touched one app, which is a PM ordering
       failure to surface; max_migration.txt agrees with the leaf.
     check: migration_leaves
-    doc: { file: CLAUDE.md, contains: "migration leaf per app" }
+    doc: { file: docs/product/architecture.md, contains: "migration leaf per app" }
+    valve:
+      marker: "<comment> rule-6: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { apps_with_migrations: 5 }
     does_not_cover: >
@@ -590,7 +744,10 @@ rules:
       declares nothing and imports nothing above it. The declaration lives with
       the app; this check diffs it against the app's real import graph.
     check: depends_on_imports
-    doc: { file: CLAUDE.md, contains: "app import contracts hold" }
+    doc: { file: docs/product/architecture.md, contains: "app import contracts hold" }
+    valve:
+      marker: "<comment> rule-7: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { apps_scanned: 5, files_scanned: 80 }
     does_not_cover: >
@@ -626,7 +783,10 @@ rules:
       tools, consumers, admin, receivers or config is a violation unless the
       line carries # rule-8 with a reason.
     check: scoped_reads
-    doc: { file: CLAUDE.md, contains: "read through `for_tenant(...)`" }
+    doc: { file: docs/product/architecture.md, contains: "read through its scoped manager" }
+    valve:
+      marker: "<comment> rule-8: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       exemptions:
         - path: apps/core/services.py
@@ -691,7 +851,10 @@ rules:
       and never calls a clock, randomness, uuid or I/O. Activities do the
       world's work.
     check: workflow_determinism
-    doc: { file: CLAUDE.md, contains: "workflow code is deterministic" }
+    doc: { file: docs/product/architecture.md, contains: "workflow code is deterministic" }
+    valve:
+      marker: "<comment> rule-9: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { workflow_modules: 2 }
     does_not_cover: >
@@ -738,7 +901,10 @@ rules:
       writes go through services.py, which owns the transaction, the authz and
       the audit row.
     check: door_writes
-    doc: { file: CLAUDE.md, contains: "every door calls services" }
+    doc: { file: docs/product/architecture.md, contains: "every door calls services" }
+    valve:
+      marker: "<comment> rule-10: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { door_files: 12 }
     does_not_cover: >
@@ -784,7 +950,9 @@ rules:
     check: null
     django_check_ids: [djb.E011]
     floor_proxy: count_apps
-    doc: { file: CLAUDE.md, contains: "keeps the canonical file shape" }
+    doc: { file: docs/product/architecture.md, contains: "Every app has the canonical shape" }
+    valve:
+      none: "this rule reports only through the django system-check leg (manage.py check --tag djb), and those findings never pass through apply_overrides, so no comment anywhere suppresses one. The shape is corrected, or the rule's declared scope moves in a diff a reviewer reads"
     scope:
       exempt_apps:
         # core is the foundation, not a domain app: it is ALL mechanisms
@@ -927,7 +1095,10 @@ rules:
       display — an object or dataclass out of a service, a queryset out of a
       selector.
     check: selector_service_split
-    doc: { file: CLAUDE.md, contains: "`selectors.py` never writes" }
+    doc: { file: docs/product/architecture.md, contains: "`selectors.py` never writes" }
+    valve:
+      marker: "<comment> rule-12: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { selector_files: 3, service_files: 5 }
     does_not_cover: >
@@ -955,7 +1126,10 @@ rules:
     check: service_shape
     django_check_ids: [djb.E013]
     diff: [service_without_tenant]
-    doc: { file: CLAUDE.md, contains: "a service that resolves an actor authorizes" }
+    doc: { file: docs/product/architecture.md, contains: "Every function in `services.py` is decorated `@service`" }
+    valve:
+      marker: "# authz: <reason>"
+      where: "anywhere inside the flagged function, from its `def` line through its last line (the check reads the whole FunctionDef source segment) — NOT above the decorator and NOT between the decorator and `def`, because neither is in that segment. The generic `# rule-13: <reason>` override also suppresses, on the flagged line or the comment block between the decorator and `def`. The django half honours neither"
     scope:
       exemptions:
         - path: apps/accounts/services.py
@@ -1056,7 +1230,10 @@ rules:
       status codes never appear in services.py, selectors.py, models.py or
       policies.py. The one mapper lives in config/api.py.
     check: http_below_doors
-    doc: { file: CLAUDE.md, contains: "HTTP vocabulary never appears below the doors" }
+    doc: { file: docs/product/architecture.md, contains: "the one mapper lives in `config/api.py`" }
+    valve:
+      marker: "<comment> rule-14: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { files_scanned: 14 }
     does_not_cover: >
@@ -1109,7 +1286,10 @@ rules:
     check: secret_at_rest
     django_check_ids: [djb.E015]
     floor_proxy: count_model_classes
-    doc: { file: CLAUDE.md, contains: "no `FloatField` on money" }
+    doc: { file: docs/product/architecture.md, contains: "no `FloatField` on money" }
+    valve:
+      marker: "<comment> rule-15: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. The django system-check half of this rule honours no comment valve: those findings never pass through apply_overrides"
     scope:
       field_exemptions:
         # Declared on Django's AbstractBaseUser, inherited by the custom User;
@@ -1229,7 +1409,10 @@ rules:
       BooleanField starts is_ or has_.
     check: naming_grammar
     diff: [undeclared_event]
-    doc: { file: CLAUDE.md, contains: "<app>.<noun>.<past-verb>" }
+    doc: { file: docs/product/architecture.md, contains: "<app>.<noun>.<past-verb>" }
+    valve:
+      marker: "<comment> rule-16: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       # Singular app names that are deliberate, each with the reason. An app is
       # normally a collection of things, so `orders`; these three are not.
@@ -1488,7 +1671,10 @@ rules:
     django_check_ids: [djb.E017]
     floor_proxy: count_routes
     diff: [breaking_out_schema]
-    doc: { file: CLAUDE.md, contains: "a capability on REST is on MCP" }
+    doc: { file: docs/product/architecture.md, contains: "a capability on REST is on MCP" }
+    valve:
+      marker: "<comment> rule-17: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. The django system-check half of this rule honours no comment valve: those findings never pass through apply_overrides"
     scope:
       exemptions:
         - app: accounts
@@ -1643,7 +1829,10 @@ rules:
       workflow_id() (directly or through the bridge); start_workflow* never
       receives a random or missing id.
     check: workflow_ids
-    doc: { file: CLAUDE.md, contains: "built by `workflow_id()`, never random" }
+    doc: { file: docs/product/architecture.md, contains: "Workflow ids are deterministic" }
+    valve:
+      marker: "<comment> rule-18: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     # `starter_defs` is the PIN's floor: the two starters in
     # apps/workflows/services.py, the module the live scan excludes because it
@@ -1708,7 +1897,10 @@ rules:
       logging.getLogger, no f-string/% in a log call; only core/observability.py
       configures logging.
     check: structured_logging
-    doc: { file: CLAUDE.md, contains: "no bare `logging.getLogger`" }
+    doc: { file: docs/product/architecture.md, contains: "no bare `logging.getLogger`" }
+    valve:
+      marker: "<comment> rule-19: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       exemptions:
         - path: apps/core/service.py
@@ -1766,6 +1958,9 @@ rules:
       of rule 20; context-binding is the doors' construction.)
     check: append_only_writes
     doc: { file: docs/product/architecture.md, contains: "declared `append_only = True`" }
+    valve:
+      marker: "<comment> rule-20: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     # `bound_names` is LF-Q's addition and it is the tightening's own tripwire:
     # measured 3 on this tree (a queryset in `audit_tail`, a queryset in
@@ -1861,7 +2056,9 @@ rules:
     check: null
     django_check_ids: [djb.E021]
     floor_proxy: count_admin_classes
-    doc: { file: CLAUDE.md, contains: "every admin on a scoped model" }
+    doc: { file: docs/product/architecture.md, contains: "a raw `ModelAdmin` on a scoped model is a violation" }
+    valve:
+      none: "this rule reports only through the django system-check leg (manage.py check --tag djb), and those findings never pass through apply_overrides, so no comment anywhere suppresses one. The shape is corrected, or the rule's declared scope moves in a diff a reviewer reads"
     scope: {}
     floors: { admin_classes: 8 }
     does_not_cover: >
@@ -1890,7 +2087,10 @@ rules:
       its migration in the same change (diff layer).
     check: migration_expand_contract
     diff: [model_without_migration]
-    doc: { file: CLAUDE.md, contains: "no non-nullable `AddField` without a default" }
+    doc: { file: docs/product/architecture.md, contains: "no non-nullable column without a default" }
+    valve:
+      marker: "<comment> rule-22: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { migrations_scanned: 15 }
     does_not_cover: >
@@ -1941,7 +2141,10 @@ rules:
       -gate legs in scripts/check.sh; this check carries the high-signal secret
       patterns itself and verifies the legs exist.
     check: supply_chain
-    doc: { file: CLAUDE.md, contains: "no AGPL/GPL dependency" }
+    doc: { file: docs/product/architecture.md, contains: "no AGPL/GPL dependency" }
+    valve:
+      marker: "<comment> rule-23: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { files_scanned: 150 }
     does_not_cover: >
@@ -1986,6 +2189,9 @@ rules:
       organization services, so no subtree is detached by hand.
     check: org_scoped_reads
     doc: { file: docs/product/architecture.md, contains: "chains `.visible_to(actor)`" }
+    valve:
+      marker: "<comment> rule-24: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       membership_role_writers:
         - path: apps/core/services.py
@@ -2070,6 +2276,9 @@ rules:
       for a mail module or a vendor's SMS SDK reaches around all three.
     check: mail_imports
     doc: { file: docs/product/architecture.md, contains: "the only legal sender" }
+    valve:
+      marker: "<comment> rule-25: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       # THE SENDERS — the population, declared rather than hard-coded (
       # ING-4 T2). The wall was two mail modules while email was the only
@@ -2256,6 +2465,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "A service names nothing the actor could not have reached"
+    valve:
+      marker: "# reach: <reason>"
+      where: "on the parameter's own line (or the contiguous comment block above it) to excuse that one parameter, or on the `def` line or the first decorator line to excuse the whole function"
     scope: {}
     # Findings are classed by APP, so one app's backlog cannot pay for another
     # app's growth, and the per-app numbers in reach-measurement.md and the
@@ -2382,6 +2594,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "the console is a window, not a door"
+    valve:
+      marker: "<comment> rule-27: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       # Who may IMPORT the client. Three places, each with what it is doing
       # there. Everything else starts SyncIdentityConfigWorkflow instead.
@@ -2403,6 +2618,16 @@ rules:
             the read-only drift report. It is the honest half of this ADR: it
             reaches the management API to COMPARE, never to write, and every
             call it makes is a GET or a _search.
+        - path: apps/accounts/management/commands/zitadel_first_admin.py
+          reason: >
+            the shell door, minting the deployment's first identity — once, by
+            an operator, with no tenant yet to authorise it. There is no service
+            to route it through and no workflow to carry it: nothing of ours is
+            written, and the persona a runtime door would authenticate does not
+            exist yet, which is the whole problem it exists to solve (ADR
+            ident-9). It refuses the moment a Tenant row exists, so the
+            product's own invite_member is the only invitation path from the
+            first member on.
       # Who may NAME the credential. Two, and they are the two ends of one
       # variable.
       allow_secret:
@@ -2414,11 +2639,13 @@ rules:
             read it from the environment is not the leak this guards.
     floors:
       # A little under the measured population on the tree built, so
-      # the check is bound without being brittle about one file: files_scanned
-      # ~110, client_module 1, client_importers 3, pat_sites 3.
+      # the check is bound without being brittle about one file. Measured
+      # 2026-09-07 on the tree that added the first-admin door: files_scanned
+      # 252, client_module 1, client_importers 4 (the activity, the seed, the
+      # audit, the first-admin command), pat_sites 4.
       files_scanned: 90
       client_module: 1
-      client_importers: 2
+      client_importers: 3
       pat_sites: 2
     does_not_cover: >
       **Zitadel's own console**, which is the declared blind spot this rule is
@@ -2476,8 +2703,7 @@ rules:
   - id: "28"
     name: workflows-close-their-runs
     enabled: true
-    # ADR workflows-5. MEASURED BEFORE ENFORCED:
-    # quality/run-closing-measurement.md, over tree
+    # ADR workflows-5. MEASURED BEFORE ENFORCED, over tree
     # dfdb0c922be7fbf8ed520a8983f587852e514d78 (main @ b93e318, "Ledger: W1
     # merged") — 9 workflow classes in 5 apps; 7 pass by reaching the seam, 1
     # by declaration, 1 fails.
@@ -2507,6 +2733,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "declares `owns_no_run = True`"
+    valve:
+      marker: "<comment> rule-28: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     # SCOPE, decided rather than inherited: the scan reads exactly
     # `apps/<app>/workflows.py` — the module `config.temporal` discovers — and
     # walks no other file, tests/ included. The reason is the rule's own
@@ -2598,8 +2827,7 @@ rules:
   - id: "29"
     name: bounded-role-assignment
     enabled: true
-    #, the class-closure. MEASURED BEFORE ENFORCED:
-    # quality/b1-enforcement-measurement.md, over tree
+    # The class-closure question. MEASURED BEFORE ENFORCED, over tree
     # f2fe88d87e2624b54bf14460ffccae62caca4710 (main @ ba88e98) — 7 functions
     # carry a role-shaped parameter; 6 are @services and the 7th is
     # `_refuse_escalation`, which IS the wall. Of the six: 5 bound, 1 exempt
@@ -2623,6 +2851,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "nobody grants above themselves"
+    valve:
+      marker: "# role-bound: <reason>"
+      where: "on the `def` line, or on any parameter's line, each with its contiguous comment block above"
     # NO EXEMPTIONS, and that is the second draft rather than the first. The
     # first shipped one for `accounts.services.ensure_membership`, which
     # forwards `role` to `add_membership` and shows no wall of its own — and
@@ -2720,6 +2951,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "a retry clock that nothing reads"
+    valve:
+      marker: "<comment> rule-30: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { retry_clocks: 1, clocks_with_readers: 1 }
     does_not_cover: >
@@ -2862,6 +3096,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "every model declares how its data dies"
+    valve:
+      marker: "<comment> rule-31: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     # FOUR FLOORS, at the measurement (quality/lifecycle-measurement.md), and the
     # judgement applies to every one of them: recorded AT the measurement
@@ -3074,6 +3311,8 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "the first path segment names a resource, never an app"
+    valve:
+      none: "this rule reports only through the django system-check leg (manage.py check --tag djb), and those findings never pass through apply_overrides, so no comment anywhere suppresses one. The shape is corrected, or the rule's declared scope moves in a diff a reviewer reads"
     scope:
       # THE DECLARED COINCIDENCES. One entry per app label that is also the
       # right name for the resource it serves. This is not a list of apps
@@ -3247,6 +3486,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "one door to the search index"
+    valve:
+      marker: "<comment> rule-33: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       # Who may IMPORT the engine. Each entry is a place where reaching the
       # engine is the job, and everything else goes through the chokepoint.
@@ -3460,6 +3702,9 @@ rules:
       whose world cannot falsify it is declared, not quietly green.
     check: hot_path_sargability
     doc: { file: docs/product/architecture.md, contains: "the gate asserts sargability" }
+    valve:
+      marker: "<comment> rule-35: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     registry:
       # `pin: probe` entries are executed by quality/hotpath_probe.py against
@@ -3935,6 +4180,9 @@ rules:
       sockets.
     check: socket_group_discipline
     doc: { file: docs/product/architecture.md, contains: "never pushed to a bare tenant group" }
+    valve:
+      marker: "<comment> rule-36: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { group_send_sites: 2, decision_points: 1 }
     does_not_cover: >
@@ -4015,6 +4263,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "no scoped model orders the whole deployment by time"
+    valve:
+      marker: "<comment> rule-37: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     # DERIVED, never typed — the model walk. The exemptions below are the only
     # hand-written thing here, and each is a judgement with its reason.
     scope:
@@ -4142,6 +4393,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "every Out schema of an OrgScopedModel declares"
+    valve:
+      marker: "<comment> rule-38: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { org_scoped_models: 6, out_schemas_paired: 6 }
     does_not_cover: >
@@ -4247,6 +4501,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "A header is read by its declared name"
+    valve:
+      marker: "<comment> rule-40: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       # THE READ SIDE, and this list is only ever about the read side.
 
@@ -4546,6 +4803,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "the OpenAPI document is the contract, complete"
+    valve:
+      marker: "<comment> rule-41: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. The django system-check half of this rule honours no comment valve: those findings never pass through apply_overrides"
     scope:
       # The hard cap on a title, in characters, stated here as well as in
       # `apps/core/api/docs.py::TITLE_MAX_LENGTH` and ADR api-1 — three places
@@ -5065,6 +5325,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "every service is reachable through a door"
+    valve:
+      marker: "# door: <reason>"
+      where: "on the `def` line or the first decorator line, each with its contiguous comment block above; the reason must say WHICH claim it makes — that no door reaches this service, or that only this tree's own hands do"
     scope: {}
     ratchets:
       # accounts/core/events/workflows re-pinned to 0 at P5 INT (2026-08-23):
@@ -5292,6 +5555,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "one outbound signer, and the scheme census holds"
+    valve:
+      marker: "<comment> rule-43: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       # THE FOUR SITES, each a judgement with the reason it is that site. What
       # is derived is everything else — who else signs, and which schemes each
@@ -5519,6 +5785,9 @@ rules:
       # The measurement doc goes back to being the measurement.
       file: docs/product/architecture.md
       contains: "the library internals we hold are declared, and still exist"
+    valve:
+      marker: "<comment> rule-44: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       # THE CENSUS. One entry per attribute NAME — not per site: the two
       # `_run_checks` assignments are one wrap written twice, because ninja's
@@ -5792,6 +6061,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "every MCP dispatch surface is ceilinged"
+    valve:
+      marker: "<comment> rule-45: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       # ONE ENTRY PER SURFACE. `dispatch` and `manager` are what the rule reads
       # off the installed SDK; `registers` is what it reads off this tree; `guard`
@@ -5957,6 +6229,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "every door pair owes a parity test"
+    valve:
+      marker: "<comment> rule-46: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     # THREE FLOORS, at the measurement (quality/door-parity-measurement.md):
     # `apps_scanned` is the walk itself. Measured 8. An `_app_dirs` that stops
@@ -6148,6 +6423,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "a declared refusal reaches the document"
+    valve:
+      marker: "<comment> rule-47: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     # THREE FLOORS, at the measurement (quality/refusal-document-measurement.md):
     # `operations_checked` is the population, measured 87. It rises with every
@@ -6324,6 +6602,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "one door to the object store"
+    valve:
+      marker: "<comment> rule-48: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       # EVERY ENTRY NAMES A FILE THAT EXISTS (— the gate's own
       # `_scope_paths` consistency assertion, general to every rule). Nothing
@@ -6548,6 +6829,9 @@ rules:
     doc:
       file: docs/product/architecture.md
       contains: "AUDIT-3's rule reads the checked list"
+    valve:
+      marker: "<comment> rule-49: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope:
       # THE ENUMERATED ABSENCES, BY NAME, from ADR core-22. `service:` and not
       # `path:` on purpose: the gate's `_scope_paths` consistency assertion
@@ -6706,3 +6990,494 @@ rules:
       # A @service outside the audited population entirely — the seam's own
       # answer, not this rule's business.
       - { fixture: unaudited_service.py, plant_at: apps/example/services.py, mode: append }
+
+  - id: "50"
+    name: no-credential-written-down-in-the-browser-tree
+    enabled: true
+    # THE SEAM'S READER, AND WHY THE SEAM SHIPS WITH ONE. A mechanism whose
+    # first consumer arrives in a later change is a schema built for a poller
+    # nobody wrote: the keys look consumed because they are declared, and the
+    # day the consumer lands nobody remembers which half was ever exercised.
+    # So the scope-kind seam ships with one enabled, canaried rule that
+    # consumes all three of its keys — `kind`, `needs_tree` and `runner` — on
+    # the day they land. The library of browser rules is a later, larger job;
+    # this is the worked example the house asks every skeleton to carry.
+    #
+    # WHY THIS SUBJECT. It is the supply-chain rule's SECOND POPULATION rather
+    # than a new opinion: the house already refuses a secret in the tree, and
+    # that refusal has never had a subject in a browser tree because there has
+    # never been one. It is also the place the defect is worst — a literal in a
+    # Python module is readable by whoever can read the repository, and a
+    # literal in a browser module is readable by whoever loads the page.
+    #
+    # THE DOC ANCHOR IS THE SUPPLY-CHAIN RULE'S OWN SENTENCE, for the same
+    # reason: this is that statement over a second population, and the human
+    # reading either one should land in the same place. A numbered row of its
+    # own in the architecture record is owed and is outside this change's
+    # territory; it is named here rather than left to be noticed.
+    #
+    # THE FLOOR IS A FACT ABOUT A TREE THIS TEMPLATE DOES NOT HAVE YET, and it
+    # is deliberately the smallest honest one. On a checkout with no browser
+    # tree the rule skips and every floor derives to 0; the number below binds
+    # from the day a tree lands, and the rung that lands it raises it to what
+    # it then measures.
+    kind: js
+    statement: >
+      No module in the browser tree writes a credential down. A binding or an
+      object property whose name is credential-shaped — secret, token,
+      credential, password, an api/private/signing/access key, a client secret;
+      a name ending in `hash` is excluded — never holds a quoted literal. The
+      value arrives from the build environment and the module names it, the way
+      the settings modules already do.
+    runner:
+      argv: ["python3", "quality/runners/js_secrets.py"]
+    doc: { file: docs/product/architecture.md, contains: "no secret in the tree" }
+    valve:
+      marker: "<comment> rule-50: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    floors: { files_scanned: 1 }
+    does_not_cover: >
+      ENTROPY, DELIBERATELY. The instrument reads NAMES, so a credential bound
+      to a name that claims nothing — `const k = "…"` — is invisible to it, and
+      that is the trade a browser tree forces: an entropy scan there fires on
+      hashes, sprites, minified chunks and generated ids, gets valved
+      everywhere, and then means nothing. A NAME IS A CLAIM THE AUTHOR MADE and
+      is a closed question; entropy is a guess about somebody else's data.
+      SHAPES THE TWO PATTERNS DO NOT HOLD: a value assembled by concatenation
+      or a template expression, a literal passed straight as a call argument,
+      one reached through destructuring, and any binding spread across more
+      than one line. STYLESHEETS AND DATA FILES are outside the suffix list, so
+      a credential in a `.css`, a `.json` or an `.env` file that a browser
+      bundler inlines is invisible here — the tree-wide secret scan is that
+      population's instrument, and the two are complements rather than
+      substitutes. VENDORED AND BUILT DIRECTORIES are skipped by name, so a
+      credential committed inside one is unseen and is a supply-chain question
+      rather than this one. WHETHER THE NAMED ENVIRONMENT VARIABLE IS ITSELF
+      SAFE TO EXPOSE — a browser bundler will inline anything with the public
+      prefix — is a different rule about a different declaration, and nothing
+      here reads it. FETCH'S OWN `credentials:` OPTION is closed narrowly by
+      name and by its exact enum (`omit`/`same-origin`/`include`) rather than
+      by loosening NAME or MIN_VALUE — found live at the R-a x SCAFFOLD merge,
+      the exact class every NAME-vocabulary scan risks: a framework's own word
+      landing on a credential-shaped name. A THIRD fetch option arriving with
+      the same shape (a short closed-enum string keyed to a credential-shaped
+      name) is this instrument's next blind spot until it is named here too.
+    # The recorded self-test population (see the header). Rising floor.
+    selftest_floor: { canaries: 3, negatives: 3 }
+    canaries:
+      # (1) THE DEFECT ITSELF.
+      - { fixture: secret_literal.ts, plant_at: frontend/app/config.ts, mode: create,
+          expect: { contains: "ships to a browser" } }
+      # (2) THE SAME DEFECT in the other suffix and one directory down, so the
+      # rule is not one folder's habit and the walk is proved to descend.
+      - { fixture: secret_in_component.tsx, plant_at: frontend/app/panel/Panel.tsx,
+          mode: create, expect: { contains: "ships to a browser" } }
+      # (3) THE VALVE WITH NO REASON, in the second language's own comment
+      # syntax. An exemption nobody has to justify is an off switch, and it is
+      # an off switch in every language — the reason floor is the same number,
+      # read through the same walk, refused with the same sentence.
+      - { fixture: valve_without_reason.ts, plant_at: frontend/app/thin.ts, mode: create,
+          expect: { contains: "with no reason" } }
+    negatives:
+      # THE VALVE THAT IS A DECISION: suppressed here, and counted in the
+      # standing override census — the seam leg asserts both halves over this
+      # same file, because suppression without a census is an off switch with
+      # extra steps.
+      - { fixture: valve_with_reason.ts, plant_at: frontend/app/valved.ts, mode: create }
+      # THE FETCH-VOCABULARY COLLISION (mid-rung finding, P16 R-a x SCAFFOLD
+      # merge): `credentials: "same-origin"` is cookie-inclusion policy, not a
+      # secret, and it must stay silent WITHOUT a valve — the precision fix is
+      # in the runner, not an exemption a reader has to keep renewing.
+      - { fixture: fetch_credentials_mode.ts, plant_at: frontend/app/fetch-options.ts,
+          mode: create }
+      # THE RIGHT FORM beside the exclusion a hash has always carried.
+      - { fixture: env_read_and_hash.ts, plant_at: frontend/app/env.ts, mode: create }
+
+  - id: "51"
+    name: js-ingredient-boundary
+    enabled: true
+    # W2 R-d, through R-a's kind/runner/needs_tree seam. THE CHAIN is the
+    # scaffold's own shipped taxonomy (its report, banked, W2 SCAFFOLD):
+    # frontend/src/{api,tokens,copy,primitives,components,screens,app} +
+    # frontend/journeys, declared in the scaffold's src/primitives/README.md
+    # as `copy <- tokens <- primitives <- components <- screens <-
+    # app(routes)` and `api <- app(routes)`. An import may run DOWNWARD
+    # through that chain only; `api` is a leaf only `app` and `journeys` may
+    # reach directly — every other layer renders a SurfaceState it is handed
+    # (fe-conventions Law 4), it never resolves its own fetch (Law 2).
+    # `journeys` ranks above `app`: it exercises the ASSEMBLED product and is
+    # the one file kind allowed to reach a route the way a person would;
+    # nothing in `src/` may import FROM it, which the downward-only rule
+    # already forbids without a special case.
+    kind: js
+    statement: >
+      A file under frontend/src/<layer> or frontend/journeys imports only from
+      its own layer or a layer strictly below it in the declared chain (copy <-
+      tokens <- primitives <- components <- screens <- app(routes); journeys
+      above app). `api` is off the chain and reachable only from `app` and
+      `journeys` — every other layer renders what it is handed and never
+      resolves its own fetch. ONE CLAUSE ON TOP: a TYPE-ONLY import of the
+      GENERATED CLIENT MODULE's document shapes is legal from any layer, because
+      the edge is erased at compile time AND the shapes are machine-written, so
+      there is no hand logic on the other end to couple to. The REFUSAL/
+      wire-error vocabulary is EXCLUDED from that clause whatever its
+      provenance: it reaches a screen through the surface-state seam, never
+      directly.
+    runner:
+      argv: ["python3", "quality/runners/js_ingredient_boundary.py"]
+    doc:
+      file: .claude/skills/fe-conventions/SKILL.md
+      contains: "Imports flow one way, and it is house rule 7's shape"
+    valve:
+      marker: "<comment> rule-51: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope:
+      # Who may IMPORT the api layer from above it. ONE module, named by path —
+      # the chokepoint shape rules 25/33/48 already use, and the entry the
+      # R-d-3 re-ruling (2026-09-02) granted this rule in place of the blanket
+      # type-only valve it rejected. It could not be written on the rung that
+      # wrote the runner half: the engine refuses an allow-list entry naming a
+      # file absent from the tree ("an allow-list entry is a fact about today,
+      # not a plan"), and the seam module did not exist on that branch. It
+      # exists on this tree, so the entry lands here, with the rung that puts
+      # the two halves in one tree.
+      allow_import:
+        - path: frontend/src/screens/state.ts
+          reason: >
+            the surface-state seam — the one module that maps wire refusals to
+            what a screen renders, and the mirror of `config/api.py` one
+            language over. It names `Refusal` in `SurfaceState`'s own
+            definition, so it must import the api layer; every other screens
+            module takes the vocabulary from here and imports the api layer
+            not at all, which is the rule-14 translation with a door instead
+            of a hole. Refusal/wire-error vocabulary only; a document shape in
+            this re-export surface is drift toward a barrel — the R-d-3
+            ruling's own revisit trigger, and the reason the generated client
+            module's document shapes go to screens DIRECTLY under the
+            statement's type-only clause rather than through here.
+    floors: { files_scanned: 1 }
+    does_not_cover: >
+      RENDERING — whether a screen assembled through a legal import chain
+      actually PRODUCES the right pixels is the W3 census's job, never this
+      static instrument's. AN IMPORT STATEMENT SPLIT ACROSS LINES is invisible
+      to this line-based scan, the same trade `quality/runners/js_secrets.py`
+      already makes. DYNAMIC IMPORTS (`import(...)`) and CommonJS `require()`
+      are not parsed — only the static `import`/`export ... from` grammar.
+      TYPE-ONLY IMPORTS are distinguished from value imports for EXACTLY ONE
+      SOURCE — the generated client module, whose document shapes any layer may
+      import as types (the statement's clause). Everywhere else a `import type`
+      across the boundary is still flagged, which this rule treats as correct
+      (the layering is a MODULE dependency question, not a runtime one) rather
+      than as a gap: the erasure removes the bundle edge, NOT THE KNOWLEDGE
+      EDGE, and a screen typed directly against the api layer's own vocabulary
+      drifts with the wire whether the import survives the bundle or not. The
+      clause is narrow for that reason and not by accident — it holds only
+      where the knowledge on the other end is machine-written. WHAT THE CLAUSE
+      CANNOT SEE: the INLINE type modifier (`import { type X, Y }`) is not read
+      as type-only, so a mixed clause importing a generated shape beside a
+      value is flagged; that is the CLOSED direction (it flags more, never
+      fewer) and the negative below pins the statement form the clause does
+      cover. It also cannot tell a generated module that has stopped being
+      generated — if a hand edit lands in the client module, this rule keeps
+      trusting it, and the fold's own regeneration is what guards that. THE `@/` ALIAS IS ASSUMED to map to
+      `frontend/src/`, the scaffold's own convention; a product that remaps it
+      in `tsconfig.json` silently changes what this rule resolves an import
+      to, undetected. UNLIKE RULE 50, this rule keys on file-PATH position and
+      import-SPECIFIER resolution, never an English word in an identifier — a
+      framework whose own vocabulary contains "token" or "component" cannot
+      collide with a population defined by where a file lives.
+    # THE ORDERING FACT ABOVE IS DISCHARGED, and the note stays as the record
+    # of why the entry arrived a rung late rather than being forgotten. This
+    # rule carried NO `scope.allow_import` entry for as long as the seam module
+    # was absent: the engine's `_scope_paths` invariant refuses an entry naming
+    # a file that is not in the tree ("an allow-list entry is a fact about
+    # today, not a plan; add it in the rung that writes the file"), and the
+    # rung that wrote the runner half forked before the frontend scaffold
+    # merged, so `frontend/` was not on that branch at all. The two halves meet
+    # for the first time in this tree — the runner half honours the entry, the
+    # entry names the module, the module exists — which is why the entry is
+    # written above and not here-abouts as a plan. The canary that proves the
+    # entry's EDGES (3, `welcome-twin.tsx`) was registered before the entry and
+    # stood on its own until now; from here it is the edge-prover, and the
+    # fifth negative below is the other half of that pair.
+    # The recorded self-test population (see the header). Rising floor.
+    # NEGATIVES 4 -> 5 (P16 merge window): the allow-list's own negative, which
+    # could not be registered until the module it plants into existed.
+    selftest_floor: { canaries: 5, negatives: 5 }
+    canaries:
+      # (1) THE UPWARD IMPORT: primitives (rank 2) reaching components (rank 3).
+      - { fixture: upward_primitives_to_components.tsx,
+          plant_at: frontend/src/primitives/button.tsx, mode: create,
+          expect: { contains: "the import contract runs the other way" } }
+      # (2) THE API-REACH VIOLATION: a layer other than app/journeys resolving
+      # its own fetch — fe-conventions Law 2 and Law 4 in one shape.
+      - { fixture: components_reach_api.tsx,
+          plant_at: frontend/src/components/deal-card.tsx, mode: create,
+          expect: { contains: "only `app` (routes) and `journeys` may" } }
+      # (3) A SCREEN REACHING `api` DIRECTLY, PLANTED WHERE SCREENS LIVE —
+      # nested one directory down (`screens/<feature>/`), which is where every
+      # real screen sits; a flat `screens/` plant would prove the rule sees a
+      # folder no product uses. Rule 52's second canary is the precedent: it
+      # exists to prove the walk DESCENDS.
+      #
+      # It carries BOTH edges the surface-state seam carries — the refusal
+      # vocabulary as a TYPE and `unhandledRefusal` as a VALUE — so what is
+      # proved is a runtime crossing and not merely an erasable type edge.
+      # Today it holds `does_not_cover`'s sentence to account ("a `import
+      # type` across the boundary is still flagged"), which is a claim until
+      # something plants it.
+      #
+      # IT BECOMES THE ALLOW-LIST'S EDGE-PROVER the day rule 51's one
+      # `allow_import` entry lands with the rung that writes the seam: same
+      # layer, same specifiers, same two shapes, one path over — and still
+      # firing. That is what makes the ruled entry a chokepoint and not a
+      # syntax valve. Had the exemption been written "type-only imports of the
+      # refusal vocabulary are legal", this plant would go silent and the
+      # fence would have no edges. An allow-list nobody can prove is narrow is
+      # an exemption wearing a chokepoint's clothes.
+      - { fixture: second_screen_reaches_api.tsx,
+          plant_at: frontend/src/screens/welcome/welcome-twin.tsx, mode: create,
+          expect: { contains: "only `app` (routes) and `journeys` may" } }
+      # (4) THE GENERATED-TYPES CLAUSE, ERASURE HALF. A RUNTIME import from the
+      # generated client module, in a screen, still fires. Same module and same
+      # layer as the fourth negative; only the erasure differs — which is what
+      # makes the clause a two-part predicate rather than a source allow-list
+      # wearing a clause's clothes. A value binding survives the bundle, and a
+      # screen holding one has resolved its own fetch (Laws 2 and 4).
+      - { fixture: screen_runtime_reaches_generated_client.tsx,
+          plant_at: frontend/src/screens/welcome/welcome-runtime-reach.tsx, mode: create,
+          expect: { contains: "only `app` (routes) and `journeys` may" } }
+      # (5) THE GENERATED-TYPES CLAUSE, SOURCE HALF — the exclusion, proven. A
+      # type-only import of the REFUSAL vocabulary direct from api still fires:
+      # `api/refusals` is not the generated client module, so the clause never
+      # reaches it whatever the provenance of the name. It is its own plant and
+      # not a second line on (3), because a canary firing on either of two
+      # lines cannot say which edge it caught — if the exclusion broke and only
+      # the runtime line fired, a combined plant would stay green.
+      - { fixture: refusal_type_only_direct_from_api.tsx,
+          plant_at: frontend/src/screens/welcome/welcome-refusal-direct.tsx, mode: create,
+          expect: { contains: "only `app` (routes) and `journeys` may" } }
+    negatives:
+      # A LEGAL DOWNWARD IMPORT, resolved through a RELATIVE specifier (the
+      # canaries above both used the `@/` alias; this proves the other
+      # resolution path is equally silent when the direction is legal).
+      - { fixture: screens_import_components.tsx,
+          plant_at: frontend/src/screens/deal-screen.tsx, mode: create }
+      # `app` REACHING `api` DIRECTLY — the one legal door.
+      - { fixture: app_imports_api.tsx, plant_at: frontend/src/app/page.tsx,
+          mode: create }
+      # `api` REACHING ITS OWN LAYER — a self-import, which this rule's first
+      # clause permits and which the runner flagged anyway until RDF-1 (six
+      # findings against the scaffold's own api layer, Vcd's measurement). The
+      # fixture carries a type-only AND a runtime edge, because the defect
+      # flagged both; being off the ranked chain bounds what reaches IN to
+      # `api`, never the layer's internal cohesion.
+      - { fixture: api_self_import.ts, plant_at: frontend/src/api/twin.ts,
+          mode: create }
+      # THE SHAPE THE GENERATED-TYPES CLAUSE EXISTS FOR — the two live
+      # welcome-screen sites, verbatim in form: document shapes taken from the
+      # generated client module and used as types. Both halves of the predicate
+      # hold, so it is silent. Forcing these through a hand-maintained
+      # re-export was rejected on its own merits: it is a mirror of an open
+      # generated population, one line per screen forever, and a forgotten line
+      # breeds the hand-typed shadow interface rule 16's transfer exists to
+      # prevent.
+      - { fixture: screen_imports_generated_document_types.tsx,
+          plant_at: frontend/src/screens/welcome/welcome-doc-types.tsx, mode: create }
+      # THE ALLOW-LISTED IMPORT's negative — "an allow-list that fires is
+      # decoration" (rules 33 and 48's own words). It plants into the seam
+      # module itself, so it could not be registered until that module was in
+      # the tree; it lands with the `allow_import` entry it proves (see the
+      # scope note above), which is the same commit by construction.
+      #
+      # `mode: append`, not `create`: the seam is a real module with real
+      # content, and a `create` plant would prove the fence around a file the
+      # product does not have. The appended fixture carries the SAME TWO EDGES
+      # canary (3) plants one path over — the refusal vocabulary as a TYPE and
+      # `unhandledRefusal` as a VALUE — so the pair reads: silent on the named
+      # module, firing on its neighbour. That is what makes the entry a
+      # chokepoint rather than a syntax valve.
+      - { fixture: allow_listed_seam_import.ts,
+          plant_at: frontend/src/screens/state.ts, mode: append }
+
+  - id: "52"
+    name: js-no-barrel
+    enabled: true
+    # W2 R-d, through R-a's kind/runner/needs_tree seam. fe-conventions §2:
+    # an `index.ts` that re-exports a directory is the `INSTALLED_APPS` of
+    # JavaScript — one shared file every parallel rung adding a component
+    # must edit, so every parallel rung collides in it. Banning the shape
+    # rather than reviewing for it is what lets frontend rungs fan out at
+    # all.
+    kind: js
+    statement: >
+      No file whose stem is `index` re-exports another module
+      (`export * from '...'` or `export { X } from '...'`). Import from the
+      module that defines the thing.
+    runner:
+      argv: ["python3", "quality/runners/js_no_barrel.py"]
+    doc: { file: .claude/skills/fe-conventions/SKILL.md, contains: "Barrel files are banned." }
+    valve:
+      marker: "<comment> rule-52: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    floors: { files_scanned: 1 }
+    does_not_cover: >
+      RENDERING — whether removing a barrel changes what a screen produces is
+      the W3 census's job, never this static instrument's. A BARREL HIDING
+      UNDER A NON-INDEX FILENAME (`components/all.ts` re-exporting the
+      directory) is outside this population — the collision-file shape this
+      rule targets is the conventional index entry point; the tree's own
+      negative (`reexport_under_other_name.ts`, planted at a non-index name)
+      proves the shape it leaves alone rather than merely asserting it. A
+      DYNAMIC OR BUILD-GENERATED re-export (a codegen step writing an index
+      file) is invisible to a static text scan. A COMMONJS re-export
+      (`module.exports = require('./x')`) uses different grammar and is not
+      matched. UNLIKE RULE 50, this rule keys on a FILENAME plus a fixed
+      re-export SYNTAX marker, never an English word — nothing a library or a
+      framework names collides with it.
+    # The recorded self-test population (see the header). Rising floor.
+    selftest_floor: { canaries: 2, negatives: 2 }
+    canaries:
+      # (1) THE DEFECT ITSELF: a components/ barrel re-exporting two siblings.
+      - { fixture: components_barrel.ts, plant_at: frontend/src/components/index.ts,
+          mode: create, expect: { contains: "one shared file every parallel rung must edit" } }
+      # (2) THE SAME DEFECT one layer down, so the rule is not one folder's
+      # habit and the walk is proved to descend — rule 50's own precedent.
+      - { fixture: primitives_barrel.ts, plant_at: frontend/src/primitives/index.ts,
+          mode: create, expect: { contains: "one shared file every parallel rung must edit" } }
+    negatives:
+      # AN INDEX FILE THAT IS NOT A BARREL — it exports its own local
+      # declarations, never a `from` clause.
+      - { fixture: non_barrel_index.ts, plant_at: frontend/src/tokens/index.ts,
+          mode: create }
+      # THE DECLARED BLIND SPOT, PROVEN RATHER THAN ASSERTED: the identical
+      # re-export shape under a NON-index filename leaves this rule silent.
+      - { fixture: reexport_under_other_name.ts, plant_at: frontend/src/components/all.ts,
+          mode: create }
+
+  - id: "53"
+    name: js-token-has-a-consumer
+    enabled: true
+    # W2 R-d, through R-a's kind/runner/needs_tree seam. fe-conventions §5: "A
+    # token has a consumer" (rule 30's class, declared-unread) — and the
+    # REVERSE, worse because it fails OPEN: a `var(--x)` nobody declared
+    # resolves to nothing at all, the browser-default class, invisible to any
+    # check that only asks "was this named?" The consumer population is the
+    # whole of frontend/src/, not only the tokens layer — a chain that reaches
+    # a component, a screen or an app route counts exactly as one that reaches
+    # tokens/ itself.
+    kind: js
+    statement: >
+      Every custom property declared in frontend/src/tokens/** is read
+      somewhere (var(--name)) in frontend/src/ — a declared-unread token is
+      rule 30's class. Every var(--name) read anywhere in frontend/src/ names
+      a property declared in frontend/src/tokens/**, third-party runtime
+      tokens (Tailwind, Radix, …) excepted — a consumed-undeclared token fails
+      OPEN and is the worse direction.
+    runner:
+      argv: ["python3", "quality/runners/js_token_consumer.py"]
+    doc: { file: .claude/skills/fe-conventions/SKILL.md, contains: "A token has a consumer." }
+    valve:
+      marker: "<comment> rule-53: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    floors: { files_scanned: 1 }
+    does_not_cover: >
+      RENDERING — whether a declared, consumed, syntactically fine token
+      actually resolves to a real value in the cascade is a RENDERED fact
+      (fe-conventions §8's computed-style census), never this static
+      instrument's; a token can pass every check here and still paint nothing
+      if the rule that would apply it never matches. DECLARATION IS SCOPED TO
+      frontend/src/tokens/** — a `--local-var` a component sets on itself
+      dynamically (`style={{ '--progress': pct }}`) is parameterization, not a
+      design-system token, and is outside the declared-unread half even when
+      genuinely unread elsewhere. MULTI-LINE DECLARATIONS OR CONSUMPTION (a
+      value split across lines) are invisible to this line-based scan. A
+      VALVE INSIDE A `.css` FILE is not honoured by the standing override
+      census today — `.css` is outside `kind: js`'s declared suffixes, and
+      CSS's own comment grammar (`/* … */`) is a third syntax this seam does
+      not yet speak; only a `.ts`/`.tsx` finding here can be locally
+      suppressed. THIRD-PARTY VENDOR PREFIXES are named explicitly
+      (VENDOR_PREFIXES in the runner) rather than derived — the fetch-
+      `credentials` lesson applied to this rule's own vocabulary: a fourth
+      library's prefix colliding with a product's own token name is this
+      instrument's next blind spot until it is named there too. COMMENTS ARE
+      STRIPPED before either marker is matched (`/* … */` everywhere, `//` in
+      `.ts`/`.tsx`/`.js` only, never in `.css`), because a stylesheet's own
+      documentation quotes this rule's syntax while explaining it — but STRING
+      LITERALS ARE NOT PARSED, so a `"/*"` inside a JS string opens a comment
+      span the stripper honours. That error drops text from BOTH populations at
+      once, so it can only hide a finding, never invent one.
+    # The recorded self-test population (see the header). Rising floor.
+    selftest_floor: { canaries: 2, negatives: 3 }
+    canaries:
+      # (1) DECLARED-UNREAD — rule 30's class.
+      - { fixture: declared_unread.css, plant_at: frontend/src/tokens/declared-unread.css,
+          mode: create, expect: { contains: "reader-less token" } }
+      # (2) CONSUMED-UNDECLARED, THE WORSE CLASS — its own canary, planted at a
+      # NON-tokens consumer so the chain-reaches-a-non-token-consumer half is
+      # proven and not merely asserted.
+      - { fixture: consumed_undeclared.tsx, plant_at: frontend/src/components/panel.tsx,
+          mode: create, expect: { contains: "fails open" } }
+    negatives:
+      # BOTH DIRECTIONS CLEAN: declared and consumed in the same file.
+      - { fixture: declared_and_consumed.css, plant_at: frontend/src/tokens/theme.css,
+          mode: create }
+      # A THIRD-PARTY TOKEN, consumed and never declared here — legal by its
+      # vendor prefix, not by loosening the syntax this rule watches.
+      - { fixture: vendor_token.tsx, plant_at: frontend/src/components/vendor-panel.tsx,
+          mode: create }
+      # A TOKEN NAMED ONLY IN A COMMENT, in BOTH directions — the shape that
+      # tripped this runner on the scaffold's own documentation until RDF-1
+      # (`tokens.css` teaches this very rule by quoting a `var(--accent-loud)`
+      # nobody declares, and the unstripped scan read the lesson as the
+      # defect). Comments are stripped rather than the markers narrowed: the
+      # marker was right and the POPULATION was wrong, which is rule 50's
+      # lesson pointed at this rule's own vocabulary.
+      - { fixture: documented_tokens.css, plant_at: frontend/src/tokens/doc-example.css,
+          mode: create }
+
+# THE PEER-FORK MIGRATION PATH (rules 51-53, the redemption item for the
+# living-workaround finding of the FEEDBACK-2 survey). That finding recorded
+# the fact this instrument retires: "the engine
+# cannot declare a non-Python rule or external runner; the peer's [the sibling
+# product's]
+# parallel rules.mjs runner is the living workaround" — a whole SECOND
+# enforcement engine, hand-built, because this one could not yet speak a
+# second language. This repo has no read access to that runner's source (it
+# lives in the sibling's own tree), so the mapping below is drawn from what
+# THIS cycle's own evidence base already recorded about its shape — the C1
+# lead consult and the ASK-2 practice row — never from inspecting their code
+# directly; treat rule NAMES as the peer's own if their tree still uses them,
+# and the SHAPE as the thing actually being retired.
+#
+#   rule 51 (js-ingredient-boundary) <- the peer's "screens-import-only-from-
+#     components" — C1's own words for where this lands ("rule 7 -> declared
+#     import contracts -- WHERE THE PEER'S screens-import-only-from-components
+#     LANDS. It is A2/A3/rule 7 in JS, an existing form, no new grammar").
+#   rule 52 (js-no-barrel) <- the peer's own "barrel files BANNED (the
+#     INSTALLED_APPS of JS)" convention, already adopted there by hand (C1);
+#     this instrument is that same law made canaried and first-class rather
+#     than a habit somebody has to remember to review for.
+#   rule 53 (js-token-has-a-consumer) <- the reader-less-declaration class,
+#     of which "tokens are its second population" — whatever hand-compensation
+#     the peer built for the first population (a Python-side sentence; the
+#     retired base.py:1096 ensure_csrf_cookie instance is THIS template's own
+#     first population, not theirs) generalises to the same census here.
+#
+# WHAT THEY DELETE ON A TEMPLATE PULL: their own rules.mjs entries implementing
+# these three shapes, and whatever hand-review step stood in for a fourth
+# (rule 50, the credential scan, if their fork carries one) — replaced by
+# these four rows running through the identical check-v1 protocol their own
+# runner design already proved out (C1: "the design law, learned from the
+# peer's fork: the external runner is a measuring instrument, never a judge" —
+# check-v1 IS that law, generalised). What does NOT retire on pull: the
+# peer's own PRODUCT-SPECIFIC screens and the taste decisions inside them —
+# this instrument enforces the CONTRACT their rules.mjs already enforced, not
+# their design. A rule 51-53 finding on their tree at pull time is a real
+# defect these rules found that theirs did not (or a shape their tree
+# legitimately needs and this seam's does_not_cover has not yet named) —
+# never a reason to keep the second engine running instead of fixing the one
+# finding.

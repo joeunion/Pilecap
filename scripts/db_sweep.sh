@@ -44,8 +44,12 @@ esac
 #
 #   ./scripts/db_sweep.sh --all-checkouts --orphans          census: the reaper
 #   ./scripts/db_sweep.sh --all-checkouts --orphans --roots <dir>   ...+ clones under <dir>
-#   ./scripts/db_sweep.sh --all-checkouts --orphans --sweep --force-foreign
-#                                                            drop what it could not vouch for
+#   ./scripts/db_sweep.sh --all-checkouts --orphans --roots <dir> --sweep --force-foreign
+#                                                            drop what nothing under <dir>
+#                                                            could vouch for. --roots is
+#                                                            REQUIRED beside --force-foreign:
+#                                                            with no root, "could not vouch"
+#                                                            only means nobody was asked.
 #
 # THREE POPULATIONS, AND THEY ARE NOT THE SAME KIND OF THING.
 #
@@ -144,8 +148,10 @@ esac
 #              is connected. It may be a sibling clone's, another machine's, or
 #              a genuinely dead checkout's — AND THIS SCRIPT CANNOT TELL WHICH.
 #              `--sweep` alone will NOT drop it. `--sweep --force-foreign`
-#              will, after printing every name it is about to drop, because an
-#              operator who knows their machine can decide what a hash cannot.
+#              will — and only WITH `--roots <dir>`, after printing every name
+#              it is about to drop — because an operator who has pointed this
+#              run at where the clones live can decide what a hash cannot, and
+#              one who has not has been shown nothing to decide from.
 #     REFUSED  everything else, BY NAME. `djb_main`, `djb_verify`, `postgres`,
 #              `zitadel` and anything a human named have no `_<8 hex>` tail, so
 #              they are not derived names and this mode will not touch them
@@ -176,7 +182,8 @@ esac
 #   scattered anywhere but a `--roots` directory will show a wall of FOREIGN,
 #   and that is the honest reading: the reaper does not know. `--force-foreign`
 #   is the operator's judgement, not the script's, which is why it prints the
-#   list first. (2) A checkout that MOVED on disk derives a new name and its old
+#   list first — and why it is refused without `--roots`, which is the operator
+#   saying what they looked at before judging. (2) A checkout that MOVED on disk derives a new name and its old
 #   database is a true orphan — and reads FOREIGN, indistinguishable from a
 #   sibling clone's. Correct, and now correctly humble. (3) The hashed long form
 #   of the probe cache (`<base[:50]>_<8 hex>_hp`, `quality/hotpaths.py::
@@ -185,7 +192,15 @@ esac
 #   at 51 bytes and the hashing only starts past 60. (4) `--roots` reads the
 #   filesystem at a bounded depth; a checkout nested deeper than that under a
 #   named root is not found, and is FOREIGN rather than missed silently — the
-#   depth is printed with the scope.
+#   depth is printed with the scope. (5) `--roots` IS DELIBERATENESS, NOT PROOF:
+#   the refusal that requires it beside `--force-foreign` tests that a root was
+#   named and is a directory, never that it is the RIGHT directory. An EMPTY one
+#   is legal evidence — "I looked there and found no checkout" is true, and
+#   promotes nothing — and `--roots /` vouches for the whole machine at the
+#   bounded depth and is believed. What it closes is the operator who never
+#   thought about roots; what it cannot close is the one who named the wrong
+#   one. The census the root produced is the actual evidence; the flag only
+#   forces it to exist. (`scripts/sweep.sh` carries the same spot, as 5.)
 #
 # TWO REFUSALS, both load-bearing:
 #
@@ -242,7 +257,7 @@ FORCE_FOREIGN=0
 # — the roots this run was pointed at ARE the evidence its enumerator reasons
 # from, so they are held where the enumerator is.
 ONE_NAME=""
-USAGE="db_sweep.sh takes --sweep, --all, --hot-path, --perf, --name <db>, --all-checkouts --orphans [--roots <dir>] [--force-foreign]"
+USAGE="db_sweep.sh takes --sweep, --all, --hot-path, --perf, --name <db>, --all-checkouts --orphans [--roots <dir>] [--force-foreign (only with --roots <dir>)]"
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --sweep) SWEEP=1 ;;
@@ -309,6 +324,29 @@ if [ "$FORCE_FOREIGN" -eq 1 ] && [ "$SWEEP" -eq 0 ]; then
     echo "!! --force-foreign is a licence to DROP and means nothing without --sweep." >&2
     echo "   Run the census first, read which names come back FOREIGN, and only then" >&2
     echo "   decide. That order is the whole point of the flag." >&2
+    exit 2
+fi
+# --force-foreign NEEDS --roots. `scripts/sweep.sh` holds the identical refusal
+# for the identical reason, and the reasoning is written out there; the short
+# form is that this mode's scope is EVERY checkout's database on the server, and
+# with no root pointed at anything, "FOREIGN" is a statement about what this run
+# was not shown rather than about what is dead. It was a WARNING until it was a
+# loss: one unrooted run reported `1709 found · 1472 destroyed` on a box full of
+# live clones. Before any query, so a refused run has judged nothing.
+if [ "$FORCE_FOREIGN" -eq 1 ] && [ "${#LC_ROOTS[@]}" -eq 0 ]; then
+    echo "!! REFUSED: --force-foreign needs --roots <dir>, and this run was given none." >&2
+    echo "   Nothing was dropped and nothing was looked at." >&2
+    echo "" >&2
+    echo "   FOREIGN is an absence of evidence, never a licence. With no --roots this" >&2
+    echo "   run can see only this repository's own worktrees, so every other checkout" >&2
+    echo "   on this server — a sibling clone, a verifier's tree, another agent's rung" >&2
+    echo "   — reads FOREIGN and would be dropped. One such run took 1,472 databases," >&2
+    echo "   a live builder's among them." >&2
+    echo "" >&2
+    echo "   Point --roots at wherever clones of this repository live (repeatable)," >&2
+    echo "   read the census, and only then authorise:" >&2
+    echo "     ./scripts/db_sweep.sh --all-checkouts --orphans --roots <dir>" >&2
+    echo "     ./scripts/db_sweep.sh --all-checkouts --orphans --roots <dir> --sweep --force-foreign" >&2
     exit 2
 fi
 if [ "$ORPHANS" -eq 1 ] && { [ -n "$ONE_NAME" ] || [ "$SCOPE_ALL" -eq 1 ]; }; then
@@ -469,26 +507,15 @@ if [ "$SWEEP" -eq 1 ]; then
     [ "$PERF" -eq 0 ] &&
         echo "note: seeded perf worlds are shown but NOT swept — add --perf to drop them"
 fi
-if [ "$SWEEP" -eq 1 ] && [ "$ORPHANS" -eq 1 ] && [ "$FORCE_FOREIGN" -eq 1 ] && [ "${#LC_ROOTS[@]}" -eq 0 ]; then
-    # The exact combination that once produced a real finding, now said out loud
-    # instead of discovered afterwards. Not a refusal: an operator who knows
-    # their machine holds no other checkout is entitled to say so, and that
-    # assertion is what --force-foreign IS. But it is an assertion about the
-    # whole machine made from a run that looked at one repository, and the
-    # transcript should carry that sentence next to the drops it authorised.
-    echo "WARNING: --force-foreign with no --roots. This run can see only this"
-    echo "         repository's own worktrees, so every OTHER checkout on this machine —"
-    echo "         a sibling clone, a verifier's tree, a colleague's second checkout —"
-    echo "         is FOREIGN and is about to be dropped. That is the exact mistake"
-    echo "         caught once before (a live clone's database called an orphan)."
-    echo "         If any other checkout of this repository exists on this machine,"
-    echo "         stop and re-run with --roots <the directory holding it>."
-fi
+# The WARNING that stood here is gone: the combination it described is REFUSED at
+# flag parse, above, before the first query. A warning beside the drops it
+# authorised is a sentence read afterwards.
 if [ "$SWEEP" -eq 1 ] && [ "$ORPHANS" -eq 1 ] && [ "$FORCE_FOREIGN" -eq 0 ]; then
     echo "note: FOREIGN names are shown but NOT swept. This mode drops nothing on its own"
     echo "      any more: it once called a live sibling clone's database an orphan"
-    echo "      and offered to drop it. Prove them live with --roots <dir>, or authorise"
-    echo "      the drop with --force-foreign after reading the list."
+    echo "      and offered to drop it. Prove them live with --roots <dir>; the same"
+    echo "      --roots is what --force-foreign needs before it will drop the rest, and"
+    echo "      the list above is what to read before authorising it."
 fi
 
 found=0
@@ -580,7 +607,7 @@ for name in ${names+"${names[@]}"}; do
         echo "                     or a dead checkout's — this script cannot tell which."
         if [ "$SWEEP" -eq 0 ] || [ "$FORCE_FOREIGN" -eq 0 ]; then
             # The correction this class of finding bought: --sweep alone no longer drops this.
-            echo "                     --roots <dir> to prove it live; --sweep --force-foreign to drop"
+            echo "                     --roots <dir> to prove it live; --sweep --force-foreign to drop (also needs --roots)"
             case "$kind" in
             hot-path) echo "                     (and it is a WARM CACHE — --hot-path is needed as well)" ;;
             perf) echo "                     (and it is a WARM CACHE — --perf is needed as well)" ;;
@@ -637,5 +664,6 @@ if [ "$ORPHANS" -eq 1 ] && [ "$foreign" -gt 0 ]; then
     # questions are open rather than burying them in the skipped total.
     echo "        ${foreign} FOREIGN — this run could not say whose they are. That is an"
     echo "        absence of evidence, not a finding: point --roots at wherever clones of"
-    echo "        this repository live, or --sweep --force-foreign to drop them by hand."
+    echo "        this repository live — and only then, having read that census,"
+    echo "        --roots <dir> --sweep --force-foreign to drop what is left by hand."
 fi

@@ -1,0 +1,40 @@
+"""The rows `{{ app_name }}` owns.
+
+There are none yet, and that is deliberate: a generated table is a migration
+somebody has to revert, and `manage.py newapp` emits no migration at all. The
+first model is written here, inside the rung that needs it, and it carries
+three things that are not optional —
+
+    from typing import ClassVar
+
+    from django.db import models
+
+    from apps.core.lifecycle import Lifecycle, LifecycleKind
+    from apps.core.models import TenantScopedModel
+
+
+    class Thing(TenantScopedModel):
+        lifecycle: ClassVar[Lifecycle] = Lifecycle(kind=LifecycleKind.BOUNDED)
+
+        name = models.CharField(max_length=120)
+
+        class Meta:
+            constraints = [
+                models.UniqueConstraint(fields=["tenant", "name"], name="thing_name_per_tenant"),
+            ]
+
+* the base — `TenantScopedModel` when a tenant owns the row, `OrgScopedModel`
+  when one PART of a tenant does, `BaseModel` for the few things no tenant
+  owns. Never a bare `models.Model` (house rule 2);
+* `lifecycle` — how this data dies, declared on the class, PURGED / BOUNDED /
+  UNBOUNDED with a reason (house rule 31). `apps/example/models.py` is the
+  teaching text;
+* invariants as `Meta.constraints`, never as `clean()` — a constraint runs
+  always, a `clean()` runs when something calls it.
+
+Then, in the same rung and never afterwards:
+`uv run python manage.py makemigrations {{ app_name }}` (house rule 6). The
+schema is read with `uv run python manage.py introspect`, never guessed.
+"""
+
+from __future__ import annotations

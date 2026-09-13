@@ -84,7 +84,7 @@ project_working_dir() {
     local found
     found="$(docker ps -a --filter "label=com.docker.compose.project=$1" \
         --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
-        | head -n1)" || true
+        | sed -n '1p')" || true
     printf '%s' "$found"
 }
 
@@ -99,7 +99,11 @@ resolve_project() {
     fi
     if [ -f "$HERE/.env" ]; then
         local from_file
-        from_file="$(sed -n "s/^COMPOSE_PROJECT_NAME='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | head -n1)"
+        # `sed -n '1p'`, never `head -n1`: an early-exit reader closes the pipe
+        # and orphans the producer under this file's `set -o pipefail` once its
+        # output passes the kernel's 64 KiB pipe buffer. An EOF reader closes
+        # nothing, so the producer's own status is what reaches `set -e`.
+        from_file="$(sed -n "s/^COMPOSE_PROJECT_NAME='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | sed -n '1p')"
         if [ -n "$from_file" ]; then
             printf '%s' "$from_file"
             return
@@ -176,7 +180,7 @@ if [ "$ENVIRONMENT" = "--all-mine" ]; then
     # resolving it in the instrument's favour.
     volume_holders() {
         docker ps -a --filter "volume=$1" \
-            --format '{{.Names}} ({{.State}})' 2>/dev/null | head -n 5 || true
+            --format '{{.Names}} ({{.State}})' 2>/dev/null | sed -n '1,5p' || true
     }
 
     # THE ONE DESTRUCTIVE CALL IN THIS BLOCK. Per volume, so a failure names the

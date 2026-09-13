@@ -51,6 +51,7 @@ from apps.accounts.models import (
     CLIENT_SECRET_KEY,
     ISSUER_KEY,
     ApiToken,
+    IdentityBranding,
     SsoConnection,
     SsoDomain,
     SsoIdentity,
@@ -59,6 +60,7 @@ from apps.accounts.models import (
     normalise_domain,
 )
 from apps.accounts.types import (
+    KIND_IDENTITY_BRANDING,
     KIND_IDENTITY_REVOCATION,
     KIND_SSO_CONNECTION,
     KIND_WORKFORCE_PROVIDER,
@@ -1434,6 +1436,182 @@ def sync_workforce_identity_config(*, actor: Actor, tenant: Tenant | None) -> Wo
         run_key=run_key,
     )
     return WorkforceConfigAsked(run=run, key=run_key)
+
+
+# --- The deployment's own look ------------------------------------------------
+
+
+# door: only this tree's own hands reach it — `apply_identity_config`'s
+# activity (recording an outcome) and `manage.py zitadel_brand` (asking for
+# one), the shell door the stage-2 criteria named. A REST/MCP door is the
+# recorded per-tenant-branding trigger (ADR ident-2's amendment), deliberately
+# not built here: one shared LabelPolicy has no tenant to scope a route to.
+@service
+def set_identity_branding(
+    *,
+    actor: Actor,
+    tenant: Tenant | None,
+    branding: IdentityBranding | None = None,
+    product_name: str = "",
+    accent: str = "",
+    background_color: str = "",
+    font_color: str = "",
+    background_color_dark: str = "",
+    font_color_dark: str = "",
+    logo_url: str = "",
+    is_watermark_disabled: bool | None = None,
+    applied: IdentityConfigApplied | None = None,
+) -> IdentityBranding:
+    """Say what the hosted sign-in screen should look like, and go and make it so.
+
+    **The row is the intent; the console is a window, not a door** (house rule
+    27). This is the only way branding reaches Zitadel: the row is written here,
+    inside a transaction, and the management call happens later, in an activity,
+    on a run started **on commit**. That ordering is C2's classic and it is not
+    negotiable here for the same reason it is not negotiable for
+    `sync_identity_config` — a management call inside the transaction means a
+    Zitadel hiccup rolls back a legitimate row, and a rolled-back service leaves
+    no run at all.
+
+    **The defaults are DERIVED from the one declared source.** An unset
+    `product_name` or `accent` falls back to `settings.PRODUCT_NAME` and
+    `settings.BRAND_ACCENT` — the same two values the entrance token block reads
+    (`apps/accounts/templatetags/entrance.py`). Every OTHER unset field keeps
+    what the live row already says, so a caller changing one colour does not
+    silently blank the other five; on the first-ever row there is nothing to
+    keep and the two declared settings are what fill it. That is the
+    one-declared-value law: the page before the hosted step and the page after
+    it match by construction rather than because somebody kept two values in
+    step, which is how the hosted step's own styling regime collapses into the
+    entrance's. A deployment that has never set `BRAND_ACCENT` gets the shipped
+    restrained neutral on both sides, identically. `_branding_field_values` is
+    where this merge happens.
+
+    **Who may ask.** `identity_platform.configure` (`policies.py`) — the same
+    permission the workforce door needs, and for the same reason: this is the
+    deployment's own configuration, and an owner of one customer's workspace has
+    no business changing the screen everybody signs in through.
+
+    **The run is the platform's** (ADR workflows-3): one instance, one login
+    screen, always started with `tenant=None`, under a `platform:` id — the
+    caller's own `tenant` (keyword-only, no default, per ADR core-8: a
+    defaulted `tenant` is a service that looks attributed and silently is not)
+    survives only as the audit anchor, naming the workspace the operator
+    happened to be acting in, exactly as `sync_workforce_identity_config`
+    documents.
+
+    **Supersede, never overwrite.** A second call deactivates the current row
+    BEFORE validating the new one, not after: the partial unique index's own
+    condition (`is_active=True`) is what `IdentityBranding.full_clean()` checks
+    the new row against, and it checks the LIVE database — deactivating first
+    is what keeps that check honest instead of a guaranteed
+    `identitybranding_one_active` violation on every second call. Both writes
+    are still inside this service's one transaction, so a validation refusal
+    rolls the deactivation back along with everything else, and what the screen
+    used to look like stays answerable in the row that lived before it.
+
+    Called with `applied` — by `apply_identity_config`, and by nothing else —
+    this records the *outcome* instead: the state becomes `applied` and no run
+    is started, which is what keeps the activity from re-entering the workflow
+    that is running it. The shape is `sync_identity_config`'s, deliberately.
+    """
+    authz.require(actor, "identity_platform.configure", tenant)
+
+    if applied is not None:
+        row = branding or _active_branding()
+        if row is None:
+            raise NotFound("There is no active identity branding to record against.")
+        row.sync_state = SsoConnection.SyncState.APPLIED
+        row.save(update_fields=["sync_state", "updated_at"])
+        return row
+
+    current = branding or _active_branding()
+    row = IdentityBranding(
+        **_branding_field_values(
+            current,
+            product_name=product_name,
+            accent=accent,
+            background_color=background_color,
+            font_color=font_color,
+            background_color_dark=background_color_dark,
+            font_color_dark=font_color_dark,
+            logo_url=logo_url,
+            is_watermark_disabled=is_watermark_disabled,
+        )
+    )
+    if current is not None:
+        current.is_active = False
+        current.save(update_fields=["is_active", "updated_at"])
+    with as_invalid():
+        row.full_clean()
+    row.save()
+    # **The run is claimed after the row exists and before the transaction
+    # closes**, so its key can name the row. `start_workflow_on_commit`
+    # defers only the Temporal client call; the visibility row is written
+    # here, in this transaction, and a rollback takes both.
+    _start_identity_run(
+        tenant=None,
+        actor=actor,
+        kind=KIND_IDENTITY_BRANDING,
+        key=str(row.pk),
+        noun="identity_config",
+        run_key=f"branding-{row.pk}",
+    )
+    return row
+
+
+def _active_branding() -> IdentityBranding | None:
+    """The live intent row, or `None` when nobody has ever set one.
+
+    Not a selector and deliberately not one: it is private to this module, it is
+    one filter, and every caller of it is inside a service's transaction. The
+    same shape and the same reasoning as `_identity_config_key` above.
+    """
+    return IdentityBranding.objects.filter(is_active=True).first()
+
+
+def _branding_field_values(
+    current: IdentityBranding | None,
+    *,
+    product_name: str,
+    accent: str,
+    background_color: str,
+    font_color: str,
+    background_color_dark: str,
+    font_color_dark: str,
+    logo_url: str,
+    is_watermark_disabled: bool | None,
+) -> dict[str, Any]:
+    """The new row's field values: asked-for, else the live row's, else — name
+    and accent only — the one declared settings source (see
+    `set_identity_branding`'s one-declared-value paragraph).
+
+    Private and pure: `set_identity_branding` is the only caller, inside its own
+    transaction, and this touches no row. Extracted from it so that function's
+    OWN length stays about authorizing, superseding and starting the run — the
+    three things that function is for — rather than about six colour columns'
+    fallback arithmetic.
+    """
+    watermark = (
+        current.is_watermark_disabled
+        if is_watermark_disabled is None and current is not None
+        else bool(is_watermark_disabled)
+    )
+    return {
+        "product_name": (
+            product_name or (current.product_name if current else "") or str(settings.PRODUCT_NAME)
+        ),
+        "accent": accent or (current.accent if current else "") or str(settings.BRAND_ACCENT),
+        "background_color": background_color or (current.background_color if current else ""),
+        "font_color": font_color or (current.font_color if current else ""),
+        "background_color_dark": (
+            background_color_dark or (current.background_color_dark if current else "")
+        ),
+        "font_color_dark": font_color_dark or (current.font_color_dark if current else ""),
+        "logo_url": logo_url or (current.logo_url if current else ""),
+        "is_watermark_disabled": watermark,
+        "sync_state": SsoConnection.SyncState.PENDING,
+    }
 
 
 # --- Just-in-time provisioning -----------------------------------------------

@@ -150,8 +150,10 @@ does.
 **The broom drops nothing it cannot positively prove.** A derivation-shaped
 database with no visible checkout is `FOREIGN`, and `--sweep` alone leaves it;
 reaping means `db_sweep.sh --all-checkouts --orphans --roots <dir-holding-the-clones>`
-(positive proof) or, deliberately, `--force-foreign`. A reap run without
-`--roots` reaps nothing and says so.
+(positive proof) and, deliberately, `--sweep --force-foreign` ON TOP of it —
+`--force-foreign` without `--roots` is REFUSED by `db_sweep.sh`, exit 2: foreign
+is an absence of evidence, never a licence. A reap run without `--roots` reaps
+nothing and says so.
 
 ## Scaling the wave
 
@@ -234,9 +236,11 @@ its census printed before anything is taken:
    worktrees accumulate at a rate of tens of gigabytes per cycle, because no
    single stage feels responsible for them.
 2. **Their orphaned databases.** `./scripts/db_sweep.sh --all-checkouts
-   --orphans --perf --sweep --force-foreign` — the census lists FOREIGN names
-   before dropping; run it only after step 1, so the orphans are genuinely
-   orphaned. Eyes on the list; a name you cannot attribute stops the sweep.
+   --orphans --perf --roots <dir-holding-the-clones> --sweep --force-foreign`
+   (`--roots` is mandatory with `--force-foreign`) — the census lists FOREIGN
+   names before dropping; run it only after step 1, so the orphans are
+   genuinely orphaned. Eyes on the list; a name you cannot attribute stops the
+   sweep.
 3. **The Temporal glance** — count the task queues, record the number, and
    sweep dead-worktree queues only with the same eyes-on listing.
 
@@ -283,13 +287,16 @@ reads as health. The goal-post scan is the named must-check of any instrument
 census, because it is the one instrument enforcing the ship definition's entry
 condition.
 
-**And three CLOSE steps that follow from the same standard:** archive the
+**And four CLOSE steps that follow from the same standard:** archive the
 closed cycle's ledger table to `archive/in-flight-closed.md`, so a verifier
 reading `in-flight.md` cannot mistake a closed cycle's table for the live one
 and cross-explain from it; lead every readouts cell with the value the reader
-scores, not with the narrative; and record sum-of-rung-hours ÷ critical-path
+scores, not with the narrative; record sum-of-rung-hours ÷ critical-path
 hours, which means ledger rows carry HH:MM — a parallelism claim measured on
-real features rather than asserted.
+real features rather than asserted; and carry `loop: <hits>/<verifier rows>`
+in the readouts row's "Overran session?" cell beside GATE TAX, counted off the
+verifier rows' own `loop:` cells — the miss rate is the re-measured minutes,
+and a rate nobody prints is a tax nobody argues about.
 
 **The PM does not edit a checkout while a gate runs in it — docs included.**
 A gate whose tree changes records no verdict, and the loss is silent. Sequence:
@@ -326,6 +333,14 @@ dependencies (the supply-chain leg). Nothing reaches origin un-full-gated
 either way — the pre-push gate is the binding proof, and recording that
 verdict in the ledger is what makes the integration check a fact rather than a
 claim.
+
+**The verifier's single `--loop` is a consult, not a second gate.** A
+verification runs `./scripts/check.sh --loop` once in its own clone — a
+`VERDICT REUSED` banner is the observation and the gate, a miss completes and
+is recorded rather than re-run — and its ledger row carries the typed cell
+`loop: hit|miss(<reason>) <s>`, whose vocabulary `dispatch-briefs.md` § Field
+test owns. That cell is the tax made countable: a field nobody fills is a tax
+nobody can see.
 
 ## The environment
 

@@ -49,8 +49,11 @@ step() { printf '\n== %s\n' "$1"; }
 # OAuth client secrets. Each site used to carry a bare `mktemp` with an `rm` on
 # its happy path only, so under `set -euo pipefail` any failure — or a Ctrl-C —
 # between the two lines walked past the `rm` and left the credential in $TMPDIR
-# for nobody to rotate. Three sites, one bug, so one fix: this helper, and
-# nobody calls `mktemp` directly.
+# for nobody to rotate. Three sites at the time, one bug, so one fix: this
+# helper, and nobody calls `mktemp` directly. THE SITES ARE NOT NUMBERED and
+# nothing here counts them — a count in a comment goes stale without the comment
+# changing, which is the same reason `scripts/check.sh`'s drive registrations
+# carry no ordinal. What binds is the rule: no `mktemp` outside this helper.
 #
 # The registry is a private DIRECTORY rather than a list of paths, which is what
 # lets the whole thing live inside one function: every call appends a file to
@@ -117,7 +120,15 @@ SERVICES=(db redis temporal zitadel mailpit minio meilisearch)
 # Health of one compose service, as compose reports it. Empty when the service
 # is not running at all.
 service_health() {
-    docker compose ps --format '{{.Health}}' "$1" 2>/dev/null | head -1
+    # READ WHOLE, THEN SLICE. `docker compose ps … | head -1` under this file's
+    # `set -o pipefail` orphans compose mid-write once its output passes the
+    # kernel's 64 KiB pipe buffer, and the pipeline's 141 would kill setup at a
+    # line that had already read the health it wanted. `|| true` keeps a compose
+    # that is not running from being fatal, which is what the old `2>/dev/null`
+    # plus an empty answer already meant.
+    local reported
+    reported="$(docker compose ps --format '{{.Health}}' "$1" 2>/dev/null || true)"
+    printf '%s\n' "${reported%%$'\n'*}"
 }
 
 # True when every service is already up and healthy — which is the normal case
@@ -135,7 +146,7 @@ stack_is_healthy() {
 # file, and never touches .env.example.
 env_set() {
     local key="$1" value="$2" tmp
-    # Site 1 of 3. The `rm` below is the happy path; `make_tmp`'s registry is
+    # A `make_tmp` site. The `rm` below is the happy path; `make_tmp`'s registry is
     # what covers the failing one — the redirect into .env going wrong, a
     # Ctrl-C, an `awk` that dies — each of which used to strand a full copy of
     # .env, PAT and all.
@@ -152,6 +163,183 @@ env_set() {
     cat "$tmp" >.env
     rm -f "$tmp"
 }
+
+# >>> env-sync >>>
+# THE ENVIRONMENT FILE IS REGENERATED FROM `.env.example`, NOT LEFT ALONE — and
+# the reason is a measurement rather than tidiness. `loop_env_fingerprint` in
+# `scripts/gate_ledger.sh` hashes EVERY LINE of `.env`, in file order, comments
+# and blank lines included, minus the keys a deriver declares. A verifier's
+# clone builds its own `.env` from `.env.example` and substitutes the derived
+# database name and the identity carry IN PLACE, so a builder's checkout can hit
+# that clone's banked verdict only while its own `.env` is the same skeleton.
+# Leaving an existing file alone made every checkout drift one line further from
+# the example on every merge that touched it. Measured on this box on
+# 2026-09-07: a checkout whose `.env` predated one added block differed from its
+# own clone's by 592 lines and was dozens of keys short, and the consult
+# re-measured the whole suite (162s) instead of reusing a green verdict (1s).
+#
+# ADDING THE MISSING KEYS WOULD NOT HAVE FIXED IT, and that was the first shape
+# proposed. The digest is order- and comment-sensitive, so a file carrying every
+# key in the wrong order with the old prose around it still differs. The only
+# shape that hits is the example's bytes with this checkout's values in the
+# example's positions.
+#
+# WHAT IT PRESERVES, and what it deliberately does not:
+#
+#   * a key in both files whose VALUE differs keeps the file's value, at the
+#     EXAMPLE's position;
+#   * a key the file has and the example does not is kept — appended at the end
+#     under one marker comment, in the order it appeared — never dropped;
+#   * a COMMENT the file carries and the example does not is NOT kept. The
+#     example owns the prose, and that is the whole of why the digest can agree;
+#   * a key the file carries TWICE collapses to its last value, once, at the
+#     example's position — dotenv's own last-wins rule, applied where the file
+#     is rebuilt rather than read.
+#
+# The previous file is copied to `.env.previous` (mode 600; ignored by the
+# `.env.*` line in `.gitignore`) BEFORE anything is written, so one run is
+# reversible by hand. NOTHING HERE PRINTS A VALUE: the block names keys and
+# counts them, because the first credential this file carries is a machine PAT
+# and a setup log is pasted into reports.
+ENV_SYNC_MARKER='# --- kept from a previous .env: not in .env.example ---'
+
+# env_sync_classify <env-file> <example-file> — one `A|P|K <KEY>` line per key
+# that would be added, preserved or kept. NAMES ONLY, never values.
+#
+# `FILENAME == envfile` rather than the usual `FNR == NR`: an EMPTY first file
+# yields no records at all, so `FNR == NR` would then be true for the second
+# file's first line and the example would be read as the environment. That is a
+# real state here — a truncated `.env` — and it would silently classify every
+# key as "kept".
+env_sync_classify() {
+    awk -v envfile="$1" '
+        FILENAME == envfile {
+            if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+                name = $0
+                sub(/=.*$/, "", name)
+                if (!(name in seen)) { seen[name] = 1; order[++n] = name }
+                line[name] = $0
+            }
+            next
+        }
+        {
+            if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+                name = $0
+                sub(/=.*$/, "", name)
+                if (name in fromexample) next
+                fromexample[name] = 1
+                if (!(name in seen)) print "A " name
+                else if (line[name] != $0) print "P " name
+            }
+        }
+        END {
+            for (i = 1; i <= n; i++) if (!(order[i] in fromexample)) print "K " order[i]
+        }
+    ' "$1" "$2"
+}
+
+# env_sync_render <env-file> <example-file> — the file that SHOULD be there, on
+# stdout. The example's bytes, with the environment's value substituted at the
+# example's own position wherever the two disagree, and the keys the example
+# does not have appended under the marker.
+#
+# The whole LINE is carried over, never a re-joined key and value: a value
+# holding an `=` or a `#` is common in a `.env` (a URL, a password, a JSON
+# fragment) and a split-then-join is where that gets quietly rewritten.
+env_sync_render() {
+    awk -v envfile="$1" -v marker="$ENV_SYNC_MARKER" '
+        FILENAME == envfile {
+            if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+                name = $0
+                sub(/=.*$/, "", name)
+                if (!(name in seen)) { seen[name] = 1; order[++n] = name }
+                line[name] = $0
+            }
+            next
+        }
+        {
+            if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+                name = $0
+                sub(/=.*$/, "", name)
+                fromexample[name] = 1
+                if (name in seen) { print line[name]; next }
+            }
+            print
+        }
+        END {
+            any = 0
+            for (i = 1; i <= n; i++) if (!(order[i] in fromexample)) any = 1
+            if (any) {
+                print ""
+                print marker
+                for (i = 1; i <= n; i++) if (!(order[i] in fromexample)) print line[order[i]]
+            }
+        }
+    ' "$1" "$2"
+}
+
+# env_sync_from_example — the environment step's one job. Exit 0 written (or
+# already correct) · 1 there is no `.env.example` and nothing was touched.
+env_sync_from_example() {
+    local example=.env.example target=.env previous=.env.previous
+    local tmp cls count added preserved kept added_names preserved_names kept_names
+
+    if [ ! -f "$example" ]; then
+        echo "env-sync: there is no ${PWD}/${example} — nothing to derive an environment from." >&2
+        echo "env-sync: .env was not written and was not touched." >&2
+        return 1
+    fi
+
+    if [ ! -f "$target" ]; then
+        # A `make_tmp` site, and the same argument as `env_set`'s: what is staged
+        # here is about to become a file full of credentials.
+        make_tmp tmp
+        cat "$example" >"$tmp"
+        cat "$tmp" >"$target"
+        rm -f "$tmp"
+        count=$(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' "$example" || true)
+        echo "env-sync: no .env — copied .env.example to .env, ${count} key(s)"
+        echo "env-sync: 0 value(s) preserved in place"
+        echo "env-sync: 0 key(s) not in .env.example kept at the end"
+        echo "env-sync: no previous .env — .env.previous not written"
+        return 0
+    fi
+
+    make_tmp cls
+    env_sync_classify "$target" "$example" >"$cls"
+    added=$(grep -c '^A ' "$cls" || true)
+    preserved=$(grep -c '^P ' "$cls" || true)
+    kept=$(grep -c '^K ' "$cls" || true)
+    added_names=$(sed -n 's/^A //p' "$cls" | tr '\n' ' ')
+    preserved_names=$(sed -n 's/^P //p' "$cls" | tr '\n' ' ')
+    kept_names=$(sed -n 's/^K //p' "$cls" | tr '\n' ' ')
+
+    make_tmp tmp
+    env_sync_render "$target" "$example" >"$tmp"
+
+    # THE PREVIOUS FILE FIRST, and the mode before the content: a `>` creates
+    # the file with the umask's bits, so filling it and then chmod-ing it leaves
+    # a whole copy of the environment world-readable for the width of one `cat`.
+    : >"$previous"
+    chmod 600 "$previous"
+    cat "$target" >"$previous"
+
+    if cmp -s "$tmp" "$target"; then
+        rm -f "$tmp" "$cls"
+        echo "env-sync: .env already matches .env.example's shape — nothing to do"
+        echo "env-sync: .env.previous written"
+        return 0
+    fi
+
+    cat "$tmp" >"$target"
+    rm -f "$tmp" "$cls"
+
+    echo "env-sync: ${added} key(s) added from .env.example${added_names:+: ${added_names% }}"
+    echo "env-sync: ${preserved} value(s) preserved in place${preserved_names:+: ${preserved_names% }}"
+    echo "env-sync: ${kept} key(s) not in .env.example kept at the end${kept_names:+: ${kept_names% }}"
+    echo "env-sync: .env.previous written"
+}
+# <<< env-sync <<<
 
 # Waits for a compose service to report healthy. Every service in compose.yaml
 # declares a healthcheck, so "up" is never mistaken for "ready".
@@ -171,13 +359,113 @@ wait_healthy() {
     return 1
 }
 
+# >>> services >>>
+# THE STACK IS PULLED BEFORE IT IS STARTED, AND A PULL THAT FAILS IS A REFUSAL
+# — exit 2, naming the image and the registry — rather than the shape this used
+# to have, which was `docker compose up -d` discovering the same thing halfway
+# through a start and saying so in compose's vocabulary, or not saying it at all
+# and leaving `wait_healthy` to count to 180 against a container that was never
+# going to exist.
+#
+# The measurement behind it (2026-09-12): `compose.yaml` pinned
+# `minio/minio:RELEASE.2025-09-07T16-13-09Z`, Docker Hub stopped serving that
+# tag, and the first thing a fresh clone runs stopped working. The pin moved to
+# quay.io; this step is what makes the NEXT registry to drop a tag a refusal
+# that names the image instead of a setup that hangs. A registry is a vendor
+# behind a pin (principle 5) and an external system is untrusted (principle 4):
+# the failure gets a handling path, not a timeout.
+#
+# WHY `compose pull` RATHER THAN `docker manifest inspect`: `pull` is what `up`
+# does anyway, so this adds a name for a failure that was already going to
+# happen rather than a second network act; `manifest inspect` needs experimental
+# mode on some daemons (`deploy/provision.sh` records the same thing about it).
+#
+# The reuse path pulls NOTHING. A second worktree finding the stack already
+# healthy is the normal case, and a pull there would spend a fresh clone's
+# network on every `setup.sh` in the house.
+services_up() {
+    if stack_is_healthy; then
+        # The ports this line names are what it is vouching for; mailpit's 8025
+        # belongs here too, or the message under-reports the stack it just
+        # called healthy. MinIO's 9000 (S3 API) and 9001 (console) and
+        # Meilisearch's 7700 joined under the same rule.
+        echo "reusing running stack (compose project djangobootstrap, ports 5432/6379/7233/8081/8025/9000/9001/7700)"
+        return 0
+    fi
+
+    local pull_log="" rc=0
+    make_tmp pull_log
+    echo "pulling the images before starting anything — a registry that stopped"
+    echo "serving a pinned tag is a refusal here, not a timeout in \`up\`"
+    docker compose pull "${SERVICES[@]}" >"$pull_log" 2>&1 || rc=$?
+    sed 's/^/  | /' "$pull_log"
+
+    if [ "$rc" -ne 0 ]; then
+        echo "!! setup: COULD NOT LOOK — \`docker compose pull\` exited ${rc}, so this" >&2
+        echo "   checkout cannot tell whether its images exist. NOTHING WAS STARTED:" >&2
+        echo "   \`docker compose up\` was not run and no service was waited on." >&2
+        echo "   The image references this checkout asks for, each with the registry" >&2
+        echo "   host it would be fetched from:" >&2
+        services_image_census >&2
+        echo "   Read the pull transcript above for the one that failed. A registry" >&2
+        echo "   that has stopped serving a pinned tag (Docker Hub and" >&2
+        echo "   minio/minio:RELEASE.2025-09-07T16-13-09Z, 2026-09-12) looks exactly" >&2
+        echo "   like this, and the fix is in compose.yaml beside the pin." >&2
+        exit 2
+    fi
+
+    docker compose up -d "${SERVICES[@]}"
+    local service
+    for service in "${SERVICES[@]}"; do
+        # Zitadel's first start on an empty database runs every migration and
+        # then the first-instance bootstrap; it is the slow one here.
+        wait_healthy "$service" 180
+    done
+}
+
+# Every image this checkout's services name, with the registry each would be
+# fetched from — printed by the refusal above so the reader does not have to
+# read compose's transcript to learn which vendor is involved. Derived from the
+# rendered compose file, never a hand list: a hand list is how the census stops
+# naming the service that was added last.
+services_image_census() {
+    local image
+    while IFS= read -r image; do
+        [ -n "$image" ] || continue
+        printf '     %s   (registry %s)\n' "$image" "$(image_registry_host "$image")"
+    done < <(docker compose config --images "${SERVICES[@]}" 2>/dev/null || true)
+}
+
+# Docker's own rule for reading a reference: the first path segment is a
+# registry host only when it carries a dot or a colon, or is exactly
+# `localhost`. That is the whole difference between `minio/minio` (Docker Hub)
+# and `quay.io/minio/minio` (quay.io), and it is the difference the registry
+# move turned on.
+image_registry_host() {
+    local ref="$1" first="${1%%/*}"
+    case "$ref" in
+    */*)
+        case "$first" in
+        *.* | *:* | localhost)
+            printf '%s\n' "$first"
+            return 0
+            ;;
+        esac
+        ;;
+    esac
+    printf 'docker.io\n'
+}
+# <<< services <<<
+
 step "environment file"
-if [ -f .env ]; then
-    echo ".env already present, leaving it alone"
-else
-    cp .env.example .env
-    echo "copied .env.example to .env"
-fi
+# THE STEP REGENERATES rather than leaves alone, because the per-rung ledger's
+# env-file component (`loop_env_fingerprint` in `scripts/gate_ledger.sh`) hashes
+# every line of `.env` in file order, comments included — so a checkout whose
+# file predates a line of `.env.example` cannot reuse a verdict banked by a
+# clone that built its `.env` from the example. Values are carried over in
+# place; keys the example does not have are kept at the end. The argument in
+# full, and what it does not preserve, is above `env_sync_from_example`.
+env_sync_from_example
 # Owner-only, every run and not just the run that created it (SEC-1's INFO,
 # ridden here because this is where the file's owner is). Everything this
 # script goes on to write into .env is a credential — the Zitadel PAT above
@@ -190,28 +478,16 @@ step "python dependencies"
 uv sync
 
 step "services"
-if stack_is_healthy; then
-    # The ports this line names are what it is vouching for; mailpit's 8025
-    # belongs here too, or the message under-reports the stack it just called
-    # healthy. MinIO's 9000 (S3 API) and 9001 (console) and Meilisearch's 7700
-    # joined under the same rule.
-    echo "reusing running stack (compose project djangobootstrap, ports 5432/6379/7233/8081/8025/9000/9001/7700)"
-else
-    docker compose up -d "${SERVICES[@]}"
-    for service in "${SERVICES[@]}"; do
-        # Zitadel's first start on an empty database runs every migration and
-        # then the first-instance bootstrap; it is the slow one here.
-        wait_healthy "$service" 180
-    done
-fi
+services_up
 
 step "zitadel machine credential"
 # Zitadel mints the platform service account's personal access token exactly
 # once, on its first start, into a named docker volume — never into this tree.
 # It belongs in .env, which is gitignored, because that is where settings and
 # the management client read it from.
-# Site 2 of 3: the machine PAT. `make_tmp` arms the one EXIT trap on this first
-# call, so the file is covered before this line has finished returning — and
+# A `make_tmp` site: the machine PAT. On a run that reaches here first, this is
+# what arms the one EXIT trap, so the file is covered before the line has
+# finished returning — and
 # the trap it arms covers `seed_log` further down, and `env_set`'s per-call
 # staging file, without any of them being named here (see `make_tmp`).
 pat_file=""   # the out-parameter make_tmp fills; declared so `set -u` and shellcheck both see it
@@ -303,7 +579,42 @@ else
         echo "sign-in door: could not read ${zitadel_base}/v2/features/instance (HTTP ${features_code:-none});" >&2
         echo "  loginV2 was NOT checked. If browser sign-in 404s at /ui/v2/login/…, repair by hand:" >&2
         echo "  ${login_v2_manual}" >&2
-    elif ! printf '%s' "$features_body" | grep -q '"loginV2"'; then
+    elif ! printf '%s' "$features_body" | grep '"loginV2"' >/dev/null; then
+        # THE READER DOES NOT EXIT EARLY, and the inversion is why it matters
+        # most here. Under this file's `pipefail`, a quiet consumer that stops at
+        # its first match leaves the producer writing into a closed pipe: the
+        # producer takes SIGPIPE, the pipeline reports 141, and 141 is not zero.
+        # A bare probe would then read "absent" for something present — but this
+        # probe is NEGATED, so 141 sends it down THIS branch, and this branch
+        # prints "shape not recognised" and SKIPS THE REAL CHECK below. The race
+        # does not make the step noisy; it makes the step stop looking, while
+        # printing a sentence that sounds like it looked. That is the worse
+        # direction of the two, on the one step that repairs the sign-in door.
+        #
+        # MEASURED ON THIS BOX, not reasoned (BSD grep 2.6.0-FreeBSD, macOS):
+        # it is a STEEP PROBABILITY STEP at the 64 KiB pipe buffer, not a wall.
+        # Re-measured at higher counts than the first reading: a body ABOVE the
+        # buffer took the wrong branch 189 times in 200 runs, and a body BELOW it
+        # 1 time in 500. Neither side is certain — a macOS pipe starts at 16 KiB
+        # and grows, so the boundary itself moves — and the honest statement is
+        # that below the buffer the producer's write usually fits and it rarely
+        # blocks, while above it the producer usually blocks and usually loses.
+        # This body is an external API response and nothing bounds it under
+        # 64 KiB, so the reader reads to EOF and the branch below is reached on
+        # the evidence. The conversion the branch defends is unchanged; only the
+        # certainty the words claimed is.
+        #
+        # AND THE SECOND CONDITION, re-measured when this branch folded main:
+        # the reader is line-oriented and cannot decide a line it does not yet
+        # hold, so a body with NO newline in it is read to EOF whatever its
+        # size — 84,016 bytes on one line took the wrong branch 0/50 runs,
+        # while the same bytes over 2,101 lines took it 50/50. This instance
+        # answers compact JSON today, which is why the line above is BELT and
+        # not repair, and it is labelled that way rather than sold as a fix.
+        # It stops being belt the moment the feature API pretty-prints — a
+        # change nobody would ever make with this branch in mind, which is
+        # exactly the kind this reader should not be one edit away from.
+        #
         # Said out loud rather than read as "already correct": a feature API that
         # stopped naming loginV2 is a shape change, and the one answer this step
         # must never give on a shape it does not recognise is reassurance.
@@ -408,7 +719,7 @@ step "zitadel identity configuration"
 # exit 1 everywhere in this repository. Exit 2 here stays what it is elsewhere
 # (`docs/product/instruments.md`): could not look at all.
 SETUP_INCOMPLETE=""
-# Site 3 of 3. Live credentials again: on a first run the seed prints the OAuth
+# A `make_tmp` site. Live credentials again: on a first run the seed prints the OAuth
 # client secrets it has just minted, and this is the tee of that output. The
 # `rm` after the block is the happy path; every other exit is covered by the
 # single EXIT trap `make_tmp` armed. Do not arm a second trap here — it would

@@ -186,6 +186,16 @@ says() {
     fi
 }
 
+# An exact-value assertion, for the cases that compare a sha or a count rather
+# than look for a sentence.
+is() {
+    if [ "$1" = "$2" ]; then
+        ok "$3 is '$2'"
+    else
+        bad "$3: wanted '$2', got '$1'"
+    fi
+}
+
 says_not() {
     if grep -qF -- "$1" "$OUT"; then
         bad "says \"$1\" and must not"
@@ -403,7 +413,7 @@ case_the_database_name_is_asked_for_and_matches_db_sh() {
 
     # THE SHAPE, per the derivation `scripts/db.sh` documents: djb_<branch>_<8
     # hex of the SHA-256 of the checkout's absolute top level>.
-    if printf '%s' "$printed" | grep -qE '^djb_rung_x_[0-9a-f]{8}$'; then
+    if printf '%s' "$printed" | grep -E '^djb_rung_x_[0-9a-f]{8}$' >/dev/null; then
         ok "the shape is djb_<sanitised-branch>_<8 hex>"
     else
         bad "the shape is not djb_rung_x_<8 hex>: '${printed}'"
@@ -687,6 +697,271 @@ case_it_never_reads_the_environment_file_into_its_own_shell() {
     OUT=""
 }
 
+# --- the local main ref the clone is given ------------------------------------
+#
+# THE PAIRING, and it is owed rather than optional. Every changed-file
+# derivation in this repository forks from the LOCAL `refs/heads/main`, and
+# `git clone --branch <rung>` leaves a clone with exactly one local head — the
+# rung's. `scripts/loop_tier.sh` REFUSES that shape outright rather than
+# grading a rung against a thin basis, so without this line the house's own
+# verification tool would be the first thing to trip the house's own refusal.
+#
+# RED-FIRST IN THE CASE ITSELF: the first half makes the clone `git clone`
+# would have made and shows the ref is absent; the second half runs the real
+# script and shows it there, at the sha the script already verified. A case
+# that only asserted the second half could not tell "the script creates it"
+# from "clone gives it to you anyway".
+case_the_clone_is_given_a_local_main_ref_at_the_verified_sha() {
+    fresh_source
+    CURRENT="the clone is given a local refs/heads/main"
+    N=$((N + 1))
+    OUT="${WORK}/out${N}.log"
+    RC=0
+
+    # (a) the shape `git clone --branch` leaves, made here so the red is this
+    #     case's own and not an assertion about somebody's memory of git.
+    local plain="${WORK}/plainclone${N}"
+    git clone --quiet --branch rung-x "$SRC" "$plain" >"$OUT" 2>&1
+    if git -C "$plain" rev-parse -q --verify refs/heads/main >/dev/null 2>&1; then
+        bad "a plain --branch clone already carries refs/heads/main — the premise is wrong"
+    else
+        ok "RED: a plain --branch clone carries NO refs/heads/main"
+    fi
+
+    # (b) the real script, on the same source.
+    run_it "the clone is given a local refs/heads/main" "rung-x"
+    exits 0
+    says "main ref"
+    local want got
+    want=$(git -C "$SRC" rev-parse refs/heads/main)
+    if got=$(git -C "$DEST" rev-parse -q --verify refs/heads/main 2>/dev/null); then
+        ok "the clone carries refs/heads/main"
+        is "$got" "$want" "the ref's sha (the verified MAIN_SHA)"
+    else
+        bad "the clone still has no refs/heads/main"
+    fi
+}
+
+# --- the loop-verdict seed ----------------------------------------------------
+#
+# The scratch source can carry a `.git/djb-loop-verdicts` with rows of both
+# shapes, which is the whole of what these cases need. THE LIVE HIT IS NOT HERE
+# and cannot be: a hit needs a real key, and the key's environment fingerprint
+# censuses `.venv/**/*.dist-info`, which this scratch repository has none of —
+# blind spot 1 of this drive, unchanged. The hit is the finisher's pasted
+# measurement in a real clone, and after that the next verifier's `loop:` row.
+
+# A well-formed loop row, and a malformed one, written into the source's ledger.
+seed_source_ledger() {
+    local good=${1:-2} bad_rows=${2:-1} i common
+    common=$(git -C "$SRC" rev-parse --git-common-dir)
+    case "$common" in
+    /*) ;;
+    *) common="${SRC}/${common}" ;;
+    esac
+    : >"${common}/djb-loop-verdicts"
+    i=0
+    while [ "$i" -lt "$good" ]; do
+        printf 'loop-v1 loop-v1:%064d loop 2026-09-07T00:00:0%sZ caller=drive scope=mode=fast_own=x_scope=x_always=d passes=1 tree=%064d env=%064d\n' \
+            "$i" "$i" "$i" "$i" >>"${common}/djb-loop-verdicts"
+        i=$((i + 1))
+    done
+    i=0
+    while [ "$i" -lt "$bad_rows" ]; do
+        printf 'not-a-loop-row whatever it says here\n' >>"${common}/djb-loop-verdicts"
+        i=$((i + 1))
+    done
+    printf '%s\n' "${common}/djb-loop-verdicts"
+}
+
+case_the_loop_ledger_is_seeded_and_the_counts_are_exact() {
+    fresh_source
+    local ledger
+    ledger=$(seed_source_ledger 3 2)
+    run_it "the loop ledger is seeded and the counts are exact" "rung-x"
+    exits 0
+    says "ledger seeded: 3 loop rows"
+    says "(2 skipped: not loop-v1)"
+    if [ -f "${DEST}/.git/djb-loop-verdicts" ]; then
+        ok "the clone carries a seeded ledger"
+        is "$(grep -c '^loop-v1 ' "${DEST}/.git/djb-loop-verdicts")" "3" "the rows that landed"
+        if grep -F "not-a-loop-row" "${DEST}/.git/djb-loop-verdicts" >/dev/null; then
+            bad "a malformed line was copied through"
+        else
+            ok "the malformed lines were skipped, not copied"
+        fi
+    else
+        bad "no ledger in the clone at ${DEST}/.git/djb-loop-verdicts"
+    fi
+    # The seed note, which is what lets the gate's banner say how many rows in
+    # its ledger it did not measure itself.
+    if [ -f "${DEST}/.git/djb-loop-verdicts-seed" ]; then
+        ok "the seed note is beside the ledger"
+        # THE SUFFIX, NOT THE ABSOLUTE PATH. On macOS the scratch directory is
+        # reached through /var -> /private/var, and the script resolves its own
+        # root while this drive does not — two spellings of one file, and an
+        # equality assertion on them fails for a reason that has nothing to do
+        # with the seed. What is asserted is that the note names A loop ledger
+        # and that the file it names IS this source's, by content.
+        says "/.git/djb-loop-verdicts"
+        local named
+        named=$(sed -n 's/^.*from=\(.*\)$/\1/p' "${DEST}/.git/djb-loop-verdicts-seed" | tail -1)
+        if [ -f "$named" ] && cmp -s "$named" "$ledger"; then
+            ok "the file the note names is this source's ledger, byte for byte"
+        else
+            bad "the note names '${named}', which is not this source's ledger"
+        fi
+        if grep -F "seeded=3" "${DEST}/.git/djb-loop-verdicts-seed" >/dev/null; then
+            ok "the note records the seeded count"
+        else
+            bad "the note does not record seeded=3"
+        fi
+    else
+        bad "no seed note beside the seeded ledger"
+    fi
+}
+
+case_a_source_with_no_loop_ledger_is_a_named_absence() {
+    fresh_source
+    run_it "a source with no loop ledger is a named absence" "rung-x"
+    exits 0
+    says "ledger not seeded:"
+    says "has no loop ledger"
+    if [ -f "${DEST}/.git/djb-loop-verdicts" ]; then
+        bad "a ledger was created from nothing"
+    else
+        ok "no ledger was invented"
+    fi
+}
+
+case_the_seed_never_writes_to_the_source() {
+    fresh_source
+    local ledger before after
+    ledger=$(seed_source_ledger 2 1)
+    before=$(shasum -a 256 <"$ledger" | awk '{print $1}')
+    run_it "the seed never writes to the source" "rung-x"
+    exits 0
+    after=$(shasum -a 256 <"$ledger" | awk '{print $1}')
+    is "$after" "$before" "the SOURCE ledger's sha across the clone"
+
+    # And the other direction: a row planted in the CLONE stays in the clone.
+    printf 'loop-v1 loop-v1:%064d loop 2026-09-07T00:00:09Z caller=planted scope=x passes=1 tree=x env=x\n' 9 \
+        >>"${DEST}/.git/djb-loop-verdicts"
+    is "$(shasum -a 256 <"$ledger" | awk '{print $1}')" "$before" \
+        "the SOURCE ledger's sha after a row is planted in the clone"
+}
+
+case_step_four_is_still_green_over_the_seeded_file() {
+    fresh_source
+    seed_source_ledger 2 0 >/dev/null
+    run_it "step four is still green over the seeded file" "rung-x"
+    exits 0
+    # The guard ran and found nothing: the seeded file is inside `.git/`, which
+    # `git status` does not report. Asserted, because "it is in .git so it is
+    # fine" is exactly the kind of thing that stops being true quietly.
+    says "clean"
+    says "READY"
+    local strays
+    strays=$(git -C "$DEST" status --porcelain)
+    if [ -z "$strays" ]; then
+        ok "git status in the clone is empty — the seed is invisible to it"
+    else
+        bad "the seed made the clone dirty: ${strays}"
+    fi
+}
+
+# --- docs dirt in the source is announced, not refused ------------------------
+
+case_docs_only_dirt_in_the_source_is_announced_and_the_clone_proceeds() {
+    fresh_source
+    mkdir -p "${SRC}/docs/product"
+    echo "a committed plan" >"${SRC}/docs/product/queue.md"
+    git -C "$SRC" add docs/product/queue.md
+    git -C "$SRC" commit -q -m "the plan"
+    # THE VICTIM IS THIS CASE'S OWN: one modified tracked docs file and one
+    # untracked docs file, both under docs/product/.
+    echo "an uncommitted ledger row" >>"${SRC}/docs/product/queue.md"
+    echo "an unsaved cycle file" >"${SRC}/docs/product/in-flight.md"
+    run_it "docs-only dirt is announced and the clone proceeds" "rung-x"
+    exits 0
+    says "path(s) under docs/product/ are dirty here and are NOT in"
+    says "a criterion read from an uncommitted plan is not in"
+    says "docs/product/queue.md"
+    says "docs/product/in-flight.md"
+    says "READY"
+    # The clone is from HEAD: the uncommitted line is not in it.
+    if grep -F "an uncommitted ledger row" "${DEST}/docs/product/queue.md" >/dev/null 2>&1; then
+        bad "the clone somehow carries the uncommitted line"
+    else
+        ok "the clone is from HEAD — the uncommitted line is not in it"
+    fi
+    if [ -f "${DEST}/docs/product/in-flight.md" ]; then
+        bad "the clone carries the untracked file"
+    else
+        ok "the clone does not carry the untracked docs file"
+    fi
+    # And the source is untouched.
+    if grep -F "an uncommitted ledger row" "${SRC}/docs/product/queue.md" >/dev/null; then
+        ok "the source's uncommitted work is untouched"
+    else
+        bad "the source's uncommitted work did not survive"
+    fi
+}
+
+case_docs_dirt_mixed_with_code_dirt_is_still_refused_naming_both() {
+    fresh_source
+    mkdir -p "${SRC}/docs/product"
+    echo "a committed plan" >"${SRC}/docs/product/queue.md"
+    git -C "$SRC" add docs/product/queue.md
+    git -C "$SRC" commit -q -m "the plan"
+    echo "an uncommitted ledger row" >>"${SRC}/docs/product/queue.md"
+    echo "and a real code change" >>"${SRC}/tracked.txt"
+    run_it "docs dirt mixed with code dirt is still refused" "rung-x"
+    exits 2
+    says "uncommitted work"
+    says "docs/product/queue.md"
+    says "tracked.txt"
+    says "Nothing was cloned, merged or written."
+    if [ -e "$DEST" ]; then
+        bad "the destination was created anyway: $DEST"
+    else
+        ok "nothing was created at the destination"
+    fi
+}
+
+case_the_narrowing_does_not_reach_the_verdict_key_guard() {
+    # THE SCOPE OF THE NARROWING, pinned. `strays_in` is shared with step 4 and with
+    # `--check`, where a stray docs file in a CLONE is a real finding: something
+    # wrote into a tree that had no business being written to. If the narrowing
+    # ever migrates into `strays_in`, this case reds.
+    fresh_source
+    # `docs/product/` has to EXIST in the clone, or git reports the whole
+    # untracked directory as `?? docs/` and the case would assert a path git
+    # never prints — a case failing for its own set-up rather than its subject.
+    mkdir -p "${SRC}/docs/product"
+    echo "a committed plan" >"${SRC}/docs/product/queue.md"
+    git -C "$SRC" add docs/product/queue.md
+    git -C "$SRC" commit -q -m "the plan"
+    run_it "the narrowing does not reach the verdict-key guard" "rung-x"
+    exits 0
+    # THE PLANTED PATH IS ASSEMBLED, NEVER SPELLED. This drive SHIPS (bucket
+    # R3) and `publish.sh`'s `dangling-docs` leg reads every `docs/**.md`
+    # string in the artifact as a POINTER — so a scratch fixture spelled in
+    # full is a pointer at a file the published tree has never had. Same idiom
+    # and same reason as `scripts/archaeology_lib.sh`'s assembled bucket globs:
+    # name it in halves no pattern can join.
+    local planted="product/stray.md"
+    echo "written into the clone by something" >"${DEST}/docs/${planted}"
+    CURRENT="the narrowing does not reach the verdict-key guard"
+    N=$((N + 1))
+    OUT="${WORK}/out${N}.log"
+    RC=0
+    (cd "$SRC" && ./scripts/verify_start.sh --check "$DEST") >"$OUT" 2>&1 || RC=$?
+    exits 2
+    says "STRAY FILES"
+    says "docs/${planted}"
+}
+
 echo "== test_verify_start — driving scripts/verify_start.sh"
 echo "   scratch: ${WORK}"
 
@@ -707,6 +982,14 @@ case_a_repository_that_does_not_ignore_dotenv_is_refused_at_step_4
 case_an_occupied_destination_is_refused
 case_a_conflicting_rung_branch_is_an_exit_1_naming_the_paths
 case_it_never_reads_the_environment_file_into_its_own_shell
+case_the_clone_is_given_a_local_main_ref_at_the_verified_sha
+case_the_loop_ledger_is_seeded_and_the_counts_are_exact
+case_a_source_with_no_loop_ledger_is_a_named_absence
+case_the_seed_never_writes_to_the_source
+case_step_four_is_still_green_over_the_seeded_file
+case_docs_only_dirt_in_the_source_is_announced_and_the_clone_proceeds
+case_docs_dirt_mixed_with_code_dirt_is_still_refused_naming_both
+case_the_narrowing_does_not_reach_the_verdict_key_guard
 
 echo
 echo "== ${PASSED} passed, ${FAILED} failed"

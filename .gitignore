@@ -18,6 +18,28 @@ __pycache__/
 !.env.example
 # Node (frontend, if a product adds one)
 node_modules/
+# Frontend build artefacts. Everything here is the OUTPUT of a command that
+# reads `frontend/` — never source — and every one of them must be ignored for
+# the same reason the run logs below are: an untracked file in the worktree
+# moves the gate's verdict key (`git add -A`), so a green full run over a tree
+# carrying a stale `.next/` banks nothing. They are also, all four, derived from
+# files that ARE committed, so nothing is lost by not keeping them.
+#
+# WHAT IS DELIBERATELY *NOT* HERE, because a reader will look for it:
+#   frontend/pnpm-lock.yaml           committed — the frontend's one serial
+#                                     artefact, the analogue of
+#                                     max_migration.txt (fe-conventions §9)
+#   frontend/openapi.json             committed — the document of record
+#   frontend/src/api/generated/**     committed — the byte-pin's whole subject.
+#                                     `scripts/gen_client.sh` writes a
+#                                     `.gitignore` holding `*` into whatever
+#                                     directory it is pointed at, which is
+#                                     exactly why the pin generates into a
+#                                     scratch directory and copies the bytes in.
+frontend/.next/
+frontend/next-env.d.ts
+frontend/tsconfig.tsbuildinfo
+frontend/.eslintcache
 # Run logs. The gate's verdict key is the working tree measured through
 # `git add -A`, which honours this file — "the content the gate can read", not
 # the content plus every build artefact (scripts/gate_ledger.sh). A gate log

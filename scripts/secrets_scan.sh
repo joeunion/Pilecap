@@ -43,10 +43,40 @@
 # the exact cost this whole change exists to remove.
 # ---------------------------------------------------------------------------
 
+# THE REFUSAL SEAM — scripts/gate_refuse.sh, sourced by this library's own
+# directory and guarded against a second source. The three `!!` headlines below
+# go through `gate_refuse` so the leg banner that follows them can name the cause.
+# shellcheck source=scripts/gate_refuse.sh
+if [ -z "${GATE_REFUSE_SOURCED:-}" ]; then
+    case "${BASH_SOURCE[0]:-}" in
+    */*) . "${BASH_SOURCE[0]%/*}/gate_refuse.sh" ;;
+    *) . scripts/gate_refuse.sh ;;
+    esac
+fi
+
 # Set by secrets_scan_changed_files: one human sentence naming what was
 # compared against what. The leg prints it. If this is empty after a call, the
 # derivation did not get far enough to say — which is a could-not-look.
 SECRETS_SCAN_BASIS=""
+
+#: THE FORK POINT, AND THE ONE THING A CALLER MAY MOVE. Empty means
+#: `refs/heads/main`, which is what every per-rung invocation wants: the
+#: question "what did the active rung change" is answered against the branch
+#: it will merge into. A caller that is asking a DIFFERENT question — "what does this
+#: proposed change contain", against a base commit somebody else named — sets
+#: this to that commit-ish and gets the same derivation, the same edge cases and
+#: the same refusals, against a different fork point.
+#:
+#: WHY IT IS A CALLER-SET VARIABLE AND NOT A SECOND DERIVATION: there is exactly
+#: one answer in this tree to "what did the active rung change", and a second
+#: `git diff` written beside it is the thing that drifts first (the amendment is
+#: spelled out at the head of scripts/loop_tier.sh). Moving the fork point keeps
+#: one derivation and one set of edge cases; forking the function would keep
+#: two.
+#:
+#: It is read, never written, by this file: a caller sets it around its own
+#: call and restores it, so a per-rung scan after one is unaffected.
+SECRETS_SCAN_BASE_REF=${SECRETS_SCAN_BASE_REF:-}
 
 # secrets_scan_changed_files <outfile>
 #
@@ -58,12 +88,12 @@ SECRETS_SCAN_BASIS=""
 # answer, which is could-not-look and outranks a pass everywhere in the gate.
 secrets_scan_changed_files() {
     local out=$1
-    local base head branch raw committed_n
+    local base base_ref base_ref_name head branch raw committed_n
     SECRETS_SCAN_BASIS=""
     : >"$out" || return 2
 
     if ! git rev-parse --git-dir >/dev/null 2>&1; then
-        echo "!! the secret scan could not read a git directory here — the changed-file" >&2
+        gate_refuse "the secret scan could not read a git directory here — the changed-file"
         echo "   set is derived from git and from nothing else." >&2
         return 2
     fi
@@ -92,14 +122,31 @@ secrets_scan_changed_files() {
     # family, which is where every rung actually runs. No network, no
     # `origin/main`: a fetch is not this leg's business and an unfetched remote
     # must never be able to redden a per-rung gate.
+    #
+    # AND IT IS THE DEFAULT, NOT THE ONLY ANSWER: `SECRETS_SCAN_BASE_REF` moves
+    # the fork point for a caller asking about a proposed change rather than
+    # about the rung in progress (see the variable's own block above). One
+    # derivation, one set of edge cases, two questions. A caller-set ref goes
+    # through the identical `rev-parse`/`merge-base` pair, so a ref that does
+    # not resolve is the same thin-basis case as a missing `main` and gets the
+    # same sentence.
+    base_ref=${SECRETS_SCAN_BASE_REF:-refs/heads/main}
+    # The name the SENTENCES use. `main` when nobody moved the fork point, so
+    # the default basis text is byte-identical to what it has always been and
+    # the drives that assert it keep asserting the same thing; the caller-set
+    # ref names itself, because a basis that said `main` while comparing against
+    # a pull request's base commit would be the one sentence a reader trusts and
+    # the one that was wrong.
+    base_ref_name=main
+    [ -z "${SECRETS_SCAN_BASE_REF:-}" ] || base_ref_name=$base_ref
     base=""
-    if git rev-parse -q --verify refs/heads/main >/dev/null 2>&1; then
-        base=$(git merge-base HEAD refs/heads/main 2>/dev/null || true)
+    if git rev-parse -q --verify "$base_ref" >/dev/null 2>&1; then
+        base=$(git merge-base HEAD "$base_ref" 2>/dev/null || true)
     fi
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
 
     if [ -z "$base" ]; then
-        SECRETS_SCAN_BASIS="no local refs/heads/main to fork from — ONLY this checkout's uncommitted changes were scanned, and nothing committed was"
+        SECRETS_SCAN_BASIS="no local ${base_ref} to fork from — ONLY this checkout's uncommitted changes were scanned, and nothing committed was"
     elif [ "$base" = "$head" ]; then
         # Two different situations, one arithmetic: the merge-base with main IS
         # this HEAD. Either we are ON main, or we are on a branch that has not
@@ -108,7 +155,7 @@ secrets_scan_changed_files() {
         if [ "$branch" = "main" ]; then
             SECRETS_SCAN_BASIS="on main itself (the merge-base IS this HEAD) — ONLY this checkout's uncommitted changes were scanned, and no committed history was"
         else
-            SECRETS_SCAN_BASIS="branch '$branch' has committed nothing yet (the merge-base with main IS this HEAD) — ONLY this checkout's uncommitted changes were scanned"
+            SECRETS_SCAN_BASIS="branch '$branch' has committed nothing yet (the merge-base with ${base_ref_name} IS this HEAD) — ONLY this checkout's uncommitted changes were scanned"
         fi
     else
         # `--diff-filter=d` (lower case: EXCLUDE deleted) is how a rung that
@@ -117,11 +164,11 @@ secrets_scan_changed_files() {
         # can be present in one half of the union and gone in the other.
         git diff --name-only -z --diff-filter=d "$base" HEAD >>"$raw" 2>/dev/null || {
             rm -f "$raw"
-            echo "!! the secret scan could not diff HEAD against the merge-base $base." >&2
+            gate_refuse "the secret scan could not diff HEAD against the merge-base $base."
             return 2
         }
         committed_n=$(secrets_scan__count "$raw")
-        SECRETS_SCAN_BASIS="$committed_n file(s) committed on '$branch' since the merge-base with main ($(git rev-parse --short "$base" 2>/dev/null || echo "$base")), plus this checkout's uncommitted changes"
+        SECRETS_SCAN_BASIS="$committed_n file(s) committed on '$branch' since the merge-base with ${base_ref_name} ($(git rev-parse --short "$base" 2>/dev/null || echo "$base")), plus this checkout's uncommitted changes"
     fi
 
     # The uncommitted half, in every case above: HEAD against the index AND the
@@ -129,7 +176,7 @@ secrets_scan_changed_files() {
     # rung's business the moment they exist.
     git diff --name-only -z --diff-filter=d HEAD >>"$raw" 2>/dev/null || {
         rm -f "$raw"
-        echo "!! the secret scan could not diff the working tree against HEAD." >&2
+        gate_refuse "the secret scan could not diff the working tree against HEAD."
         return 2
     }
 

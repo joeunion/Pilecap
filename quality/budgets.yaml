@@ -6,9 +6,10 @@
 # asymmetry is the point: the ceiling only ever moves by a person's hand, in a
 # diff a reviewer sees).
 
-# A NEW subject (a new services.py, a new *Out schema) has no ceiling and FAILS
-# until somebody measures it and records it here — green-because-unrecorded is
-# not a pass.
+# A NEW subject — a services.py that holds a top-level function, a new *Out
+# schema — has no ceiling and FAILS until somebody measures it and records it
+# here; green-because-unrecorded is not a pass. A services.py with no top-level
+# function is not a subject: there is no longest function to have measured.
 
 # Seeded 2026-08-19 from main. The numbers are the measured values, verbatim:
 # a ceiling above reality would be headroom nobody granted.

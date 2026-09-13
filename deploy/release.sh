@@ -328,7 +328,10 @@ project_name() {
 # other. Taking the db service's own pin makes that drift impossible.
 psql_image() {
     local pin
-    pin="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(postgres:[0-9][0-9.]*\).*/\1/p' "$HERE/compose.yaml" | head -n1)"
+    # READ WHOLE, THEN SLICE — no pipe, so `sed`'s own status reaches `set -e`
+    # and nothing can take SIGPIPE on a compose file past the 64 KiB pipe buffer.
+    pin="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(postgres:[0-9][0-9.]*\).*/\1/p' "$HERE/compose.yaml")"
+    pin="${pin%%$'\n'*}"
     [ -n "$pin" ] || die "could not read the postgres image pin out of $HERE/compose.yaml; the psql client version is not this script's to guess"
     printf '%s' "$pin"
 }

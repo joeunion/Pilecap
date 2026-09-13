@@ -151,6 +151,15 @@ MSG_ARG=""
 #: advertised in prose here for a cycle while the code could only ever run one
 #: of the two, which is the class of drift a flag closes.
 GATE_TIER="--fast"
+#: `--no-fold` is legal ONLY alongside `--bank`, which is the identical
+#: semantic `scripts/pm_push.sh` carries at its own parser. The fold is a
+#: BANK-TIME step in both scripts: it commits derived files so that the tree the
+#: verdict keys on is the tree that is committed, and a `--fast` merge banks no
+#: verdict. Folding on every merge would put one fold commit on main per merge
+#: instead of one per push train, for a tree nothing is about to vouch for.
+#: So outside `--bank` there is no fold to skip, and a flag that is accepted and
+#: does nothing is the never-silent class this repository refuses to inherit.
+NO_FOLD=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
     -h | --help)
@@ -168,6 +177,10 @@ while [ "$#" -gt 0 ]; do
         # it, instead of firing from inside a hook, and that the verdict row
         # says `caller=pm-bank` rather than `unstated`.
         GATE_TIER="--bank"
+        shift
+        ;;
+    --no-fold)
+        NO_FOLD=1
         shift
         ;;
     -m)
@@ -190,6 +203,18 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$BRANCH" ] || die "no branch named. Usage: $0 <branch> [-m <msg-file|->]"
 
+# The never-silent half of the flag above, in the same words scripts/pm_push.sh
+# uses at its own parser. One semantic, both scripts.
+if [ "$NO_FOLD" = "1" ] && [ "$GATE_TIER" != "--bank" ]; then
+    die "--no-fold is only meaningful with --bank, and this is not a --bank run.
+   The fold runs at the BANK: it regenerates the derived files and commits them
+   BEFORE the gate measures the tree, so that the verdict vouches for the tree
+   that is committed. A --fast merge banks no verdict, so no fold runs here and
+   there is nothing for --no-fold to skip. Accepting it silently would be a flag
+   that did nothing with no line printed.
+   scripts/pm_push.sh refuses the same combination in the same words."
+fi
+
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git checkout"
 
 # THE CHECKOUT YOU ARE STANDING IN MUST BE THE ONE THIS SCRIPT LIVES IN. The
@@ -211,8 +236,13 @@ if ! TIP="$(git -C "$ROOT" rev-parse --verify --quiet "${BRANCH}^{commit}")"; th
     echo "   merge' on one line, and a filtered merge would have swallowed it." >&2
     # A mistyped branch is often a session-history name close to the real one,
     # so the near misses are worth the two lines they cost.
+    # `sed -n '1,5p'`, never `head -5`: under this file's `set -o pipefail` an
+    # early-exit reader closes the pipe and orphans `for-each-ref` mid-write on
+    # a repository with enough branches to fill a 64 KiB pipe buffer — which is
+    # exactly the repository whose branch names are worth listing. `sed` reads to
+    # EOF and closes nothing. The `|| true` stays for grep's no-match 1.
     NEAR="$(git -C "$ROOT" for-each-ref --format='     %(refname:short)' refs/heads/ |
-        grep -F -- "${BRANCH: -8}" | head -5 || true)"
+        grep -F -- "${BRANCH: -8}" | sed -n '1,5p' || true)"
     if [ -n "$NEAR" ]; then
         echo "   Local branches whose names end similarly:" >&2
         echo "$NEAR" >&2
@@ -351,6 +381,59 @@ if [ -r "$ROOT/scripts/db.sh" ]; then
         . "$ROOT/scripts/db.sh" >/dev/null 2>&1 || exit 0
         db_template_refresh_advisory
     ) || true
+fi
+
+# --- THE FOLD, ON THE MERGED TREE, BEFORE THE GATE MEASURES ANYTHING ---------
+#
+# WHERE IT SITS. After the proof of merge above — folding before the merge would
+# fold a tree nobody keeps, and folding a tree whose merge then failed would
+# leave derived files regenerated against a state that never existed. And before
+# the `exec`'d gate below, for the reason scripts/pm_push.sh gives at its own
+# call site: the gate keys its verdict on the working tree it measures, so a
+# fold that ran after it would change the tree the verdict just vouched for.
+#
+# ONLY AT THE BANK, which is the flag's semantic argued at the parser above:
+# a `--fast` merge banks no verdict, so there is no verdict for a fold to keep
+# honest, and one fold commit per push train beats one per merge.
+#
+# THE MERGE IS ALREADY MADE by the time anything here can fail, and a nonzero
+# fold does not undo it — the same property this script already declares about
+# a red gate, and it is stated rather than left to be inferred.
+if [ "$GATE_TIER" = "--bank" ]; then
+    if [ "$NO_FOLD" = "1" ]; then
+        echo ""
+        echo "pm_merge: ** --no-fold — THE DERIVED FILES WERE NOT REGENERATED. **"
+        echo "  The contract, the secret baseline and the budget floors are whatever this"
+        echo "  merge left them. If the gate below reddens on a stale client or on a budget,"
+        echo "  that is THIS FLAG and not the tree. Nothing else about the run changes."
+    else
+        FOLD="$ROOT/scripts/pm_fold.sh"
+        echo ""
+        echo "pm_merge: folding the merged tree before the gate — ${FOLD}"
+        echo "  It regenerates the derived files and commits AT MOST the paths on its own"
+        echo "  typed list. Pass --no-fold to skip it; anything it modifies outside that"
+        echo "  list is its own exit 2, with nothing committed."
+        if [ ! -x "$FOLD" ]; then
+            echo "!! pm_merge: no executable fold at ${FOLD}." >&2
+            echo "   THE MERGE ABOVE IS ALREADY MADE. The gate did not run and the derived" >&2
+            echo "   files were not regenerated. Pass --no-fold to merge without one." >&2
+            exit 2
+        fi
+        set +e
+        "$FOLD"
+        FOLD_RC=$?
+        set -e
+        if [ "$FOLD_RC" != "0" ]; then
+            echo "" >&2
+            echo "!! pm_merge: THE FOLD EXITED ${FOLD_RC}. The gate did not run." >&2
+            echo "   2 is 'could not fold' — a dirty tree, a generator that failed, or a file" >&2
+            echo "   modified outside the derived list. Read the fold's output above; it names" >&2
+            echo "   which." >&2
+            echo "   THE MERGE ABOVE IS ALREADY MADE and this does not undo it. The next move" >&2
+            echo "   is a fix commit, or 'git -C ${ROOT} reset --hard $(git -C "$ROOT" rev-parse --short "$HEAD_BEFORE")'." >&2
+            exit "$FOLD_RC"
+        fi
+    fi
 fi
 
 # --- THE GATE, AND NOTHING AFTER IT ------------------------------------------

@@ -5,8 +5,8 @@ and the role, and a branch admin passes it everywhere in their tenant. The
 question nobody used to ask is the other one — **could this hat have got hold
 of this row?** — and until rule 26 was adopted the answer in `apps/comms` was "whoever calls
 us presumably checked", which is a property of the caller and not of the
-service. Twelve rows carried that gap (`quality/reach-measurement.md` §1, and
-the baseline section under it); all twelve now call
+service. Twelve rows carried that gap (measured before enforcement, over the
+tree branched from); all twelve now call
 `core.authz.may_be_named` and refuse `NotFound`.
 
 **`NotFound`, never `Forbidden`, and the refusal is composed once.** Not-there

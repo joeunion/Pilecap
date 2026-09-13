@@ -42,6 +42,59 @@ CSRF_TRUSTED_ORIGINS: list[str] = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 # invitation is a bug nobody notices until a customer reports it.
 PUBLIC_BASE_URL: str = env.str("PUBLIC_BASE_URL", default="http://127.0.0.1:8000").rstrip("/")
 
+# Where the PRODUCT lives, as opposed to where this deployment answers. They are
+# the same URL until a product grows a front end of its own, and then they stop
+# being: the API, the machine door and the auth chain stay here, and the thing a
+# person is meant to be looking at is over there.
+#
+# **It defaults to `PUBLIC_BASE_URL` so a front-end-less clone pays nothing.**
+# That is the whole design of the seam: the template ships a placeholder landing
+# page at `/welcome/` (`apps/core/views.py::welcome`), a completed sign-in lands
+# on it, and nobody has to configure anything for the first minute to work. A
+# product that has a front end sets this variable, and the same completed
+# sign-in lands there instead — one line in `.env`, no fork of `config/`.
+#
+# Deliberately NOT the same variable as `PUBLIC_BASE_URL`: an invitation link
+# and a webhook callback have to reach THIS process, and pointing them at a
+# separately-deployed front end would break both the day somebody set it.
+#
+# **`or PUBLIC_BASE_URL` RATHER THAN `default=PUBLIC_BASE_URL`, and this is the
+# whole bug.** A `default=` fires only when the variable is ABSENT, and this one
+# is never absent: `.env.example` ships the line, every entry point copies that
+# file to `.env` (`scripts/setup.sh`, `scripts/rung_start.sh`,
+# `scripts/verify_start.sh`), and an operator who has not set a front-end URL
+# leaves it EMPTY rather than deleting it. So the default never fired on a fresh
+# clone, `PRODUCT_BASE_URL` came out `""`, and `LOGIN_REDIRECT_URL` below
+# derived to `""` — measured: every completed sign-in in a fresh clone
+# redirected to nowhere. PRESENT-BUT-EMPTY DEFEATING A `default=` is a class,
+# not an incident: it has now cost two products, so the treatment is `or`, and
+# `test_a_product_base_url_moves_where_sign_in_lands` carries the empty-line
+# branch beside the absent and set ones.
+PRODUCT_BASE_URL: str = (
+    env.str("PRODUCT_BASE_URL", default="").strip().rstrip("/") or PUBLIC_BASE_URL
+)
+
+# The ONE colour the entrance chain declares, and the value the hosted identity
+# step's branding will be derived from, so the sign-in page and the
+# platform screen after it match BY CONSTRUCTION rather than because somebody
+# kept two values in step. One declared value, two consumers.
+#
+# The default is a restrained near-neutral on the owner's ruling, not a loud
+# placeholder: the entrance chain has to look FINISHED in a clone
+# that has never set it, because a template whose default screams "replace me"
+# teaches every product that the colour is somebody else's problem. Read by
+# `apps/accounts/templatetags/entrance.py`, which validates it as a hex colour
+# before it reaches a `<style>` element and falls back if it is not one.
+#
+# `or` rather than `default=` for the reason spelled out under
+# `PRODUCT_BASE_URL` above. This line ships a REAL value in `.env.example` and
+# so does not have the empty-line shape today — but an operator clearing it is
+# one keystroke, and the failure it would cause is the same one, so the two
+# variables of this seam get the same treatment rather than one of them being
+# left as the next person's surprise.
+DEFAULT_BRAND_ACCENT = "#3f4a5a"
+BRAND_ACCENT: str = env.str("BRAND_ACCENT", default="").strip() or DEFAULT_BRAND_ACCENT
+
 # What this product is CALLED, and the one place the name is written (owner
 # ruling 2026-08-24; ADR platform-1 in docs/product/architecture.md). Every
 # surface that shows a name or
@@ -776,7 +829,31 @@ ACCOUNT_LOGIN_METHODS = {"email"}
 ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*", "password2*"]
 ACCOUNT_UNIQUE_EMAIL = True
 ACCOUNT_USER_MODEL_USERNAME_FIELD = None
-LOGIN_REDIRECT_URL = "/"
+# Where a completed sign-in lands, DERIVED rather than typed.
+#
+# It was `"/"`, which is the door index — a monospace directory listing written
+# for an operator, handed to a person who has just finished authenticating. That
+# was the fourth of the four defects the sign-in survey measured, and the one
+# that made the
+# first minute end on the wrong register no matter how good the pages before it
+# were.
+#
+# The derivation has exactly two outcomes and no third:
+#
+# * `PRODUCT_BASE_URL` unset (so equal to `PUBLIC_BASE_URL`) — the clone has no
+#   front end, and sign-in lands on the shipped placeholder at `/welcome/`,
+#   which extends the same entrance shell the sign-in page does.
+# * `PRODUCT_BASE_URL` set — the product HAS a front end and said where, so
+#   sign-in lands there. Nothing in `apps/` or `templates/` changes; allauth
+#   consumes this setting through its own `get_login_redirect_url`, so the
+#   adapter reads the value and holds none of its own.
+#
+# The path is spelled here rather than `reverse()`d because settings are read
+# before the URL configuration is loaded, and a `reverse_lazy` in a value
+# allauth compares as a string is a trap for the next person. `config/urls.py`
+# mounts `welcome/` and `apps/core/tests/test_welcome.py` pins the two together,
+# so a rename that missed one is a failing test rather than a 404 after login.
+LOGIN_REDIRECT_URL = "/welcome/" if PRODUCT_BASE_URL == PUBLIC_BASE_URL else PRODUCT_BASE_URL
 
 # --- The local password door is retired (ADR ident-4) ------------------------
 # **Zitadel hosts every interactive authentication, including the passwords of
@@ -849,6 +926,51 @@ ZITADEL_DEV_USER_EMAIL: str = env.str(
     "ZITADEL_DEV_USER_EMAIL", default="dev@djangobootstrap.localhost"
 )
 ZITADEL_DEV_USER_PASSWORD: str = env.str("ZITADEL_DEV_USER_PASSWORD", default="Password1!")
+
+# --- This deployment's sign-in POSTURE (ADR ident-8) ------------------------
+# Three values that say who may let themselves in. The intent is the
+# ENVIRONMENT, not a row: a deployment's sign-in posture is set once by an
+# operator editing `.env`, and no runtime persona changes it — so there is no
+# model, no migration and no workflow kind here, only settings that
+# `manage.py zitadel_seed` materialises through `accounts.zitadel.ensure_*` and
+# `manage.py zitadel_audit` compares against. The same three values are spelled
+# as `ZITADEL_DEFAULTINSTANCE_*` keys in `compose.yaml` and
+# `deploy/compose.yaml` with THESE defaults, which is the one-declared-value
+# law; `apps/accounts/tests/test_zitadel_posture.py` reads both files and pins
+# them equal, because a compose default that drifted from this line would give
+# a fresh instance a different posture from a seeded one and nothing would say
+# so.
+#
+# **Both booleans default to closed**, and that is `architecture.md`'s §H
+# ruling rather than a preference: open signup was rejected, invitations are the
+# way in, and until these three settings the hosted login contradicted that on
+# environment. A product that wants open registration flips one of these and
+# owns the consequence.
+ZITADEL_ALLOW_SELF_REGISTRATION: bool = env.bool("ZITADEL_ALLOW_SELF_REGISTRATION", default=False)
+ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION: bool = env.bool(
+    "ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION", default=False
+)
+# How many consecutive wrong passwords lock an account. **Zero means unlimited**
+# and zero is what the image ships (`MaxPasswordAttempts: 0` in
+# ghcr.io/zitadel/zitadel:v4.17.1's own `defaults.yaml`), so a deployment that
+# never set this is one where a password may be guessed forever.
+#
+# THE NUMBER IS NOT INVENTED HERE, and there is exactly one upstream document
+# that states one. **NIST SP 800-63B §5.2.2 "Rate Limiting (Throttling)"**: "the
+# verifier SHALL limit consecutive failed authentication attempts on a single
+# account to no more than 100." 100 is that document's CEILING, and the platform
+# takes the ceiling as its default for the same reason it takes NIST's audit
+# vocabulary in ADR core-22: the platform ships the mechanism at the bound a
+# standard names, and the product decides how much tighter it wants to be. Any
+# smaller number here would be this file having an opinion about a product's
+# users, which is not this layer's to have — and the whole distance that
+# matters is 0 → bounded.
+#
+# OWASP's Authentication Cheat Sheet names the knobs ("lockout threshold",
+# "observation window", "lockout duration") and deliberately states no number;
+# it was read before this default was chosen and is recorded here so nobody
+# re-reads it hoping for one.
+ZITADEL_MAX_PASSWORD_ATTEMPTS: int = env.int("ZITADEL_MAX_PASSWORD_ATTEMPTS", default=100)
 
 # --- Zitadel as the browser relying party (ADR ident-4, P0 W2-R3) ------------
 # The OIDC client `zitadel_seed` made, as an application signs in with it. The
@@ -1093,8 +1215,19 @@ FILES_UPLOAD_URL_TTL: int = env.int("FILES_UPLOAD_URL_TTL", default=900)
 # nothing for another origin to ride on. The human door needs both — a browser
 # sends the session cookie whoever asked it to, which is exactly what CSRF is
 # about, so a session-authenticated write must carry `X-CSRFToken` from the
-# `csrftoken` cookie (`ensure_csrf_cookie` on whatever page the front end
-# bootstraps from, then the header on every unsafe request).
+# `csrftoken` cookie, then the header on every unsafe request.
+#
+# **The reader is `apps.core.views.welcome`**. This sentence used to say
+# "`ensure_csrf_cookie` on whatever page the front end bootstraps from", and no
+# such page existed anywhere in `apps/` or `config/` — the comment was the only
+# occurrence of the name in the tree, shipped to every clone as an instruction
+# addressed to nobody. A named mechanism with no reader is a defect no check can
+# see, which is rule 30's argument in prose form. `/welcome/` is now that page:
+# it is decorated, it is authenticated, and it is the first HTML a signed-in
+# browser is guaranteed to have been handed, because `LOGIN_REDIRECT_URL`
+# derives to it. A product that replaces the landing carries the decorator onto
+# whatever it replaces it with, and `apps/core/tests/test_welcome.py` is what
+# fails if this one loses it.
 #
 # `CORS_ALLOWED_ORIGINS` is an explicit list and there is deliberately no
 # allow-all switch: with credentials, allowing every origin is the same as

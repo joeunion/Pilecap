@@ -186,61 +186,72 @@ drive_require_scratch() {
 DRIVE_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 DRIVE_FINGERPRINT_BEFORE=""
 
-# WHAT IS IN THE FINGERPRINT, and why it is not simply everything. Refs are
-# SHARED across every worktree of one repository, and this repository routinely
-# has eighty-odd agent worktrees on it. If the fingerprint carried every ref's
-# sha, a peer committing on its own branch during the couple of minutes the
-# drives take would redden the push — and a gate that cries wolf is a gate people learn
-# to pass with --no-verify. So it carries the four things the escape moved and a
-# peer's ordinary commit does not:
+# WHAT IS IN THE FINGERPRINT, and why every ref carries its sha:
 #
 #   HEAD, HEAD-ref  this worktree's own checkout. No peer can move it. The
 #                   escape did, twice over: it pointed HEAD at refs/heads/main
 #                   and then committed onto it — so this pair is what actually
-#                   catches the escape, and it is the pair that carries shas.
+#                   catches the escape.
 #   core.bare       `git init` under an inherited GIT_DIR with no GIT_WORK_TREE
 #                   sets it. Nothing legitimate in this repository ever does.
-#   ref names       the NAME list, without shas — `main` included. The escape
-#                   ADDS names (stale, safe, clash); a peer committing MOVES a
-#                   name it already had. So a new branch is seen and a peer's
-#                   ordinary commit is not.
+#   ref <name> <sha>  every local branch, `main` included, WITH its target.
 #
-# WHY `main` NO LONGER CARRIES ITS SHA. It used to, on the sentence "the
-# PM merges into main from the main checkout, never during a push". That
-# sentence was about ONE caller and the fingerprint is read by every drive: the
-# PM merges into LOCAL main continuously, refs are shared across every worktree
-# of this repository, and a builder's drive is not a push. So a merge landing
-# while any drive ran demoted that drive to exit 2 THROUGH NO ACT OF ITS OWN —
-# it cost one rung a full re-run before the mechanism was found, and it is
-# reproducible in a scratch clone in four commands: a drive that touches
-# nothing, and `git branch -f main <sha>` from beside it, prints
+# WHY THE SHA CAME BACK, having once been dropped. It was dropped because refs
+# are SHARED across every worktree of one repository — this one routinely has
+# dozens of agent worktrees — so a peer's ordinary commit moved a ref and
+# reddened whoever's drive happened to be running. Dropping the sha bought quiet
+# at the price of a blind spot in BOTH directions: a `git branch -f main`, a
+# `git update-ref`, a push into a ref, any force-move without a HEAD move,
+# became invisible; and the name-only list STILL reddened on a created ref (a
+# peer's `worktree add`) and on a VANISHED one (the PM reaping a merged branch),
+# which are the two deltas that actually happen here. Both were paid for in
+# whole re-run gates.
 #
-#     !! <drive> MUTATED THE REAL REPOSITORY.
-#          < main      840359601e4e56eca39055aade8a08f679c311d1
-#          > main      adde88b2611df2e0577aea0edf5b9f9d88adbe75
+# So the fingerprint is exact again and the JUDGEMENT moved into the check,
+# where it can name who owns a delta instead of guessing from its shape.
 #
-# This is the SAME TRADE the ref list already makes one line down, and it is
-# made here for the same reason: a gate that cries wolf is a gate people learn
-# to pass with --no-verify. `main` keeps its NAME in the list, so a `main` that
-# is DELETED or created is still seen.
+# THE RULE, and `scripts/tests/test_drive_preamble.sh` drives both directions of
+# every clause of it. A delta is excused when, and only when, somebody other
+# than this checkout can be shown to own it AT CHECK TIME:
 #
-# NOTHING THE ESCAPE DID BECOMES INVISIBLE. The escape pointed this worktree's
-# HEAD at refs/heads/main and committed onto it: both halves move HEAD and
-# HEAD-ref, which are this checkout's own and which no peer can touch. A drive
-# escaping under an inherited GIT_DIR commits through the HEAD it inherits —
-# there is no path by which it moves `main` while leaving HEAD where it was.
+#   created or moved   a worktree OTHER than this one has that ref checked out,
+#                      as `git worktree list --porcelain` reports it. A drive
+#                      cannot plausibly commit onto a peer's checked-out branch
+#                      without that peer's worktree, and if it did, the peer's
+#                      own `git status` is the belt.
+#   vanished           its last known target — the sha this fingerprint recorded
+#                      — is an ancestor of `refs/heads/main`. That is a reap of a
+#                      branch that had already merged, which is the PM's ordinary
+#                      housekeeping and destroys nothing.
 #
-# DECLARED RESIDUAL, which is the price and it is named rather than implied: a
-# drive that force-moved `main` WITHOUT moving HEAD — `git branch -f main`,
-# `git push` into it, a `git update-ref` — is now invisible here, exactly as a
-# peer's commit on any other branch already was. No drive in this tree does any
-# of those, and the day one needs to, this note is where it is argued.
+# STILL RED, AND THIS IS THE HALF THAT MATTERS: a new ref with no worktree, a
+# moved ref with no worktree (the escape class), a vanished ref whose target is
+# NOT on `main` — work destroyed, and the lost sha is printed so it can be
+# recovered — and this checkout's own HEAD, HEAD-ref or `core.bare`, which
+# nobody else can touch and which no excuse reaches.
+#
+# EVERY EXCUSE IS PRINTED WITH ITS REASON, on the green path too. A tripwire that
+# forgives silently is a tripwire nobody can audit, and the first question after
+# a surprising green is which deltas it decided not to mind.
+#
+# DECLARED RESIDUALS, named rather than implied:
+#
+#   * THE EXCUSE IS A WORKTREE, NOT A PERSON. A ref some peer worktree has
+#     checked out is excused however it moved — including by this drive. That is
+#     the price of not reddening on every peer's ordinary commit.
+#   * THE WORKTREE LIST IS ASKED AT CHECK TIME. A peer that adds a worktree and
+#     removes it again inside the window leaves a delta with nothing to explain
+#     it, and reds. Correct for the escape class, a false alarm for that one
+#     sequence, and pinned by a case that says so.
+#   * THE VANISHED EXCUSE TRUSTS `refs/heads/main`. No local `main` excuses no
+#     reap at all; a `main` force-moved backwards could un-excuse a legitimate
+#     one. Both red rather than forgive.
 drive_repo_fingerprint() {
     [ -n "${DRIVE_REPO_ROOT:-}" ] || return 0
     printf 'HEAD      %s\n' "$(git -C "$DRIVE_REPO_ROOT" rev-parse HEAD 2>/dev/null || echo '(none)')"
     printf 'HEAD-ref  %s\n' "$(git -C "$DRIVE_REPO_ROOT" symbolic-ref -q HEAD 2>/dev/null || echo '(detached)')"
     printf 'core.bare %s\n' "$(git -C "$DRIVE_REPO_ROOT" config --get core.bare 2>/dev/null || echo '(unset)')"
-    git -C "$DRIVE_REPO_ROOT" for-each-ref --format='ref       %(refname)' refs/heads 2>/dev/null |
+    git -C "$DRIVE_REPO_ROOT" for-each-ref --format='ref       %(refname) %(objectname)' refs/heads 2>/dev/null |
         LC_ALL=C sort
 }
 
@@ -250,12 +261,93 @@ else
     echo "${DRIVE_NAME}: not inside a git checkout — the real-repository tripwire is not armed." >&2
 fi
 
-# Returns 0 if the real repository is byte-identical to how this drive found it.
+# The physical path, because `git rev-parse --show-toplevel` and
+# `git worktree list` can spell the same directory differently on a machine
+# whose temp directory is a symlink (`/tmp` -> `/private/tmp` on macOS), and the
+# whole excuse below turns on comparing two paths.
+drive__physical_path() {
+    (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
+}
+
+# Every ref that a worktree OTHER than this one has checked out, one per line,
+# asked fresh at the moment of the call.
+drive_peer_checked_out_refs() {
+    local wt="" line
+    git -C "$DRIVE_REPO_ROOT" worktree list --porcelain 2>/dev/null |
+        while IFS= read -r line; do
+            case "$line" in
+            "worktree "*) wt="${line#worktree }" ;;
+            "branch "*)
+                [ "$wt" = "$DRIVE_REPO_ROOT" ] && continue
+                [ "$(drive__physical_path "$wt")" = "$(drive__physical_path "$DRIVE_REPO_ROOT")" ] && continue
+                printf '%s\n' "${line#branch }"
+                ;;
+            esac
+        done
+}
+
+# awk rather than a shell loop: the fingerprint's ref lines are
+# `ref <name> <sha>` under padding, and a field is a field.
+drive__ref_lines() { printf '%s\n' "$1" | awk '$1 == "ref" { print }'; }
+drive__head_lines() { printf '%s\n' "$1" | awk '$1 != "ref" { print }'; }
+drive__ref_names() { printf '%s\n' "$1" | awk '$1 == "ref" { print $2 }'; }
+drive__ref_sha() { printf '%s\n' "$1" | awk -v want="$2" '$1 == "ref" && $2 == want { print $3 }'; }
+
+# Returns 0 if the real repository is as this drive found it, or differs only in
+# ways somebody else demonstrably owns — each of those printed with its reason.
 drive_tripwire_check() {
     [ -n "${DRIVE_REPO_ROOT:-}" ] || return 0
     local after
     after="$(drive_repo_fingerprint)"
     [ "$after" != "$DRIVE_FINGERPRINT_BEFORE" ] || return 0
+
+    local before_refs after_refs peers peers_nl names name before_sha after_sha
+    local excused="" unexcused=0
+    before_refs="$(drive__ref_lines "$DRIVE_FINGERPRINT_BEFORE")"
+    after_refs="$(drive__ref_lines "$after")"
+    peers="$(drive_peer_checked_out_refs)"
+    # Newline-delimited on both ends so membership is one substring test. NOT
+    # `printf … | grep -qx`: a reader that answers on its first match closes the
+    # pipe and orphans its producer under `set -o pipefail`, which is the shape
+    # `test_sweep.sh::case_a_presence_probe_survives_a_long_scan` censuses — and
+    # it found this line.
+    peers_nl=$'\n'"${peers}"$'\n'
+
+    # This checkout's own three lines are nobody else's to move.
+    if [ "$(drive__head_lines "$DRIVE_FINGERPRINT_BEFORE")" != "$(drive__head_lines "$after")" ]; then
+        unexcused=$((unexcused + 1))
+    fi
+
+    names="$(printf '%s\n%s\n' "$(drive__ref_names "$before_refs")" "$(drive__ref_names "$after_refs")" |
+        LC_ALL=C sort -u)"
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        before_sha="$(drive__ref_sha "$before_refs" "$name")"
+        after_sha="$(drive__ref_sha "$after_refs" "$name")"
+        [ "$before_sha" != "$after_sha" ] || continue
+        if [ -z "$after_sha" ]; then
+            if git -C "$DRIVE_REPO_ROOT" merge-base --is-ancestor "$before_sha" refs/heads/main 2>/dev/null; then
+                excused="${excused}  excused: ${name} — merged into main, reaped"$'\n'
+                continue
+            fi
+        elif [ "${peers_nl#*$'\n'"${name}"$'\n'}" != "$peers_nl" ]; then
+            if [ -z "$before_sha" ]; then
+                excused="${excused}  excused: ${name} — created by a peer worktree"$'\n'
+            else
+                excused="${excused}  excused: ${name} — checked out by a peer worktree"$'\n'
+            fi
+            continue
+        fi
+        unexcused=$((unexcused + 1))
+    done <<<"$names"
+
+    if [ "$unexcused" -eq 0 ]; then
+        # PRINTED, never silent: the first question after a surprising green is
+        # which deltas the tripwire decided not to mind.
+        echo "${DRIVE_NAME}: the repository moved while this ran, and every delta belongs to somebody else:" >&2
+        printf '%s' "$excused" >&2
+        return 0
+    fi
 
     echo "!! ${DRIVE_NAME} MUTATED THE REAL REPOSITORY." >&2
     echo "   checkout: ${DRIVE_REPO_ROOT}" >&2
@@ -264,12 +356,16 @@ drive_tripwire_check() {
     echo "   be trusted. The delta, '-' as this drive found it and '+' as it left it:" >&2
     diff <(printf '%s\n' "$DRIVE_FINGERPRINT_BEFORE") <(printf '%s\n' "$after") |
         sed 's/^/     /' >&2 || true
-    echo "   If those are a drive's own scenario names — stale, safe, clash, main," >&2
-    echo "   core.bare, this worktree's HEAD — the escape is back and the preamble's" >&2
-    echo "   header is where the mechanism is written down." >&2
-    echo "   If it is one new branch with a peer's name on it, an agent created a" >&2
-    echo "   worktree while this ran: refs are shared across every worktree of one" >&2
-    echo "   repository. Re-run. Nothing this run asserted is trustworthy either way." >&2
+    if [ -n "$excused" ]; then
+        echo "   Some of it was somebody else's and is not the finding:" >&2
+        printf '%s' "$excused" >&2
+    fi
+    echo "   What is left is NOT: a ref no worktree has checked out moved or appeared," >&2
+    echo "   a branch vanished whose work was never on main — the sha above is the only" >&2
+    echo "   copy of it — or this checkout's own HEAD, HEAD-ref or core.bare moved," >&2
+    echo "   which nobody but this process could have done. That last one is the escape" >&2
+    echo "   this file was written for, and the header is where the mechanism is." >&2
+    echo "   Nothing this run asserted is trustworthy." >&2
     return 1
 }
 

@@ -82,6 +82,15 @@ urlpatterns: list[URLPattern | URLResolver] = [
     # own view exempt and `SessionAuth` does the human door's CSRF check in
     # full — which is why the exemption here loosens nothing for a real route.
     path(f"{API_PREFIX}<path:unmatched>", csrf_exempt(api_not_found), name="api-not-found"),
+    # SHADOWED, NOT CONFIGURED. Where a completed sign-in lands
+    # (`LOGIN_REDIRECT_URL`, derived in `config/settings/base.py` from
+    # `PRODUCT_BASE_URL`). It is mounted here, near the end, for the same reason
+    # the index below it is: a product mounting its own `path("welcome/", ...)`
+    # ahead of this list wins by ordinary URL resolution and deletes nothing —
+    # and a product with a front end never reaches it at all, because
+    # `PRODUCT_BASE_URL` then points sign-in somewhere else entirely. Two ways
+    # out, neither of them a fork of this file.
+    path("welcome/", views.welcome, name="welcome"),
     # LAST, and at the root. The door index (`apps/core/views.py`): what a
     # person, an operator or a third party gets when they open the deployment
     # with no path, instead of Django's bare "Not Found". It is mounted after

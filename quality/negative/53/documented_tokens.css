@@ -1,0 +1,22 @@
+/*
+ * THE NEGATIVE THAT WOULD HAVE CAUGHT RDF-1's DEFECT 2.
+ *
+ * A STYLESHEET'S OWN DOCUMENTATION IS NOT A POPULATION. Both of this rule's
+ * markers are CSS syntax, and CSS syntax is what prose about CSS quotes: the
+ * scaffold's `tokens.css` opens by teaching this very rule — that a
+ * `var(--accent-loud)` nobody declared resolves to nothing at all — and the
+ * unstripped scan read that sentence as a real consumption.
+ *
+ * So this file names a token in BOTH directions inside comments and must stay
+ * silent in both: `--ghost-ink: #ff4400;` declares nothing, and
+ * `var(--ghost-ink)` reads nothing. Only the rule below is real.
+ */
+
+:root {
+    --doc-example-ink: #101014;
+}
+
+.doc-example {
+    /* var(--ghost-ink) again, and still not a consumption. */
+    color: var(--doc-example-ink);
+}

@@ -1,0 +1,79 @@
+/*
+ * L0 — THE TOKENS, AND THE ONE STYLESHEET A ROUTE MAY IMPORT.
+ *
+ * The register these name is not invented here. It is the one two shipped
+ * surfaces of this template already speak — the SSO refusal page and the
+ * invitation email — and the entrance templates speak it too. The litmus, from
+ * the design ruling that settled it: *could two unrelated products keep this
+ * forever without a designer detecting the shared template?*
+ *
+ * THE TEMPLATE STYLES ONLY SURFACES WHOSE WORDS IT ALSO OWNS — the entrance
+ * chain, refusal pages, this placeholder landing. The moment it styles a
+ * surface whose content a product authors, it has shipped taste. A product
+ * screen carries no template look.
+ *
+ * A TOKEN HAS A CONSUMER. A declared token nothing reads is a reader-less
+ * declaration, which this house refuses on the Python side too. The reverse
+ * fails OPEN and is worse: a `var(--accent-loud)` nobody declared resolves to
+ * nothing at all, and an unset `accent-color` renders as the browser's default
+ * blue, which no static check can see. Every name below is read by
+ * `src/screens/welcome/`, and the runtime half of that claim needs a rendered
+ * page.
+ *
+ * `system-ui` is the no-choice choice: nothing is fetched, so nothing can fail
+ * to load, and the font census passes trivially rather than flakily.
+ */
+
+:root {
+    color-scheme: light dark;
+
+    --font-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+    --ink: #1a1a1a;
+    --muted: #55575c;
+    --faint: #d8d8dc;
+
+    --surface: #fbfbfa;
+    --surface-raised: #ffffff;
+
+    /* ONE accent. A restrained neutral, because an accent a product cannot
+       change without a designer noticing is taste this template does not own. */
+    --accent: #33506e;
+
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 1rem;
+    --space-4: 2rem;
+
+    --radius: 6px;
+
+    /* One measure column: the reading width the whole register uses. */
+    --measure: 34rem;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --ink: #ececed;
+        --muted: #a2a4aa;
+        --faint: #3a3b40;
+        --surface: #17181a;
+        --surface-raised: #1f2023;
+        --accent: #9db9d8;
+    }
+}
+
+body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--ink);
+    font-family: var(--font-body);
+    line-height: 1.5;
+    /* Named so no control anywhere wears the user-agent default blue — the
+       exact thing the rendered census asserts and no static check can see. */
+    accent-color: var(--accent);
+}
+
+a {
+    color: var(--accent);
+}

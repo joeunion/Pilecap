@@ -64,7 +64,14 @@ EXEMPT_APPS = {"zzz_canary", "example"}
 #: builds the document the census is about. A canary for a document key planted
 #: anywhere else would be proving the check against a document nothing serves —
 #: the same reasoning that puts rule 3's third clause into `config/urls.py`.
-OUTSIDE_APPS_PLANTS = 13
+#:
+#: 18 -> 38 (P16 R-d): rules 51-53's nineteen plants and rule 50's
+#: fetch-credentials precision-fix negative, all twenty under `frontend/` —
+#: the first population that cannot plant in the scaffold at all (the scaffold
+#: is a Django app; a JS rule reads the frontend tree). The arrival that
+#: forced the ratio test's safe set to say what it always meant — see the
+#: safe-set ruling of 2026-09-02, cycles/2026-09-02-velocity-intake.md.
+OUTSIDE_APPS_PLANTS = 38
 
 #: Measured once, then re-measured every time a rule arrived. Rule 43 added
 #: five product-app plants across three entries. Rule 44 added six — four in the
@@ -171,7 +178,7 @@ OUTSIDE_APPS_PLANTS = 13
 #: top-level-key census, planted into `config/api.py`, which is the module that
 #: OWNS the document and the only place a canary about it would be proving
 #: anything). No product app, no worked example.
-TOTAL_PLANTS = 362
+TOTAL_PLANTS = 387
 SCAFFOLD_PLANTS = 99
 EXAMPLE_PLANTS = 196
 
@@ -441,13 +448,20 @@ def test_the_scaffold_is_where_most_of_the_engine_plants() -> None:
     Every plant that CAN live in the gate's own scaffold should, and today the
     scaffold and the worked example carry more than four fifths of them. This is
     a floor on that ratio: it may rise and a rung that drops it below has moved
-    the engine's instruments into somebody's product code.
+    the engine's instruments into somebody's product code. "Safe" means
+    cannot-live-in-a-product-app (the safe-set ruling of 2026-09-02): the
+    exempt apps plus every site outside apps/ entirely.
     """
     total = len(_plants())
+    # Safe-set ruling, 2026-09-02: safe = cannot-live-in-a-product-app. Outside
+    # `apps/` (config/, quality/, perf/, frontend/) no feature can absorb a
+    # plant; inside `apps/`, only the two exempt apps are safe, and a
+    # directory made by a plant counts UNSAFE — the formula fails closed on
+    # anything it cannot classify.
     safe = sum(
         1
         for _rid, _kind, _index, _fixture, plant_at in _plants()
-        if plant_at.startswith("apps/") and plant_at.split("/")[1] in EXEMPT_APPS
+        if not plant_at.startswith("apps/") or plant_at.split("/")[1] in EXEMPT_APPS
     )
 
     assert safe / total >= 0.80, f"{safe} of {total}"

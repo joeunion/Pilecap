@@ -301,7 +301,11 @@ IMAGE_REGISTRY=""
 require_image_registry() {
     IMAGE_REGISTRY="${DJB_IMAGE_REGISTRY:-}"
     if [ -z "$IMAGE_REGISTRY" ] && [ -f "$HERE/.env" ]; then
-        IMAGE_REGISTRY="$(sed -n "s/^DJB_IMAGE_REGISTRY='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | head -n1)"
+        # `sed -n '1p'`, never `head -n1`: an early-exit reader closes the pipe
+        # and orphans the producer under this file's `set -o pipefail` once the
+        # producer's output passes the kernel's 64 KiB pipe buffer — the value
+        # is right and the status is 141. An EOF reader closes nothing.
+        IMAGE_REGISTRY="$(sed -n "s/^DJB_IMAGE_REGISTRY='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | sed -n '1p')"
     fi
     [ -n "$IMAGE_REGISTRY" ] || die "DJB_IMAGE_REGISTRY is empty.
    It is the repository prefix every image name is composed from — for ECR
@@ -419,7 +423,7 @@ pin_digest() {
 # deploy/compose.yaml runs, and read from that file rather than repeated here —
 # two pins that can disagree is one pin.
 caddy_image() {
-    grep -E '^\s+image: caddy:' "$HERE/compose.yaml" | head -n1 | awk '{print $2}'
+    grep -E '^\s+image: caddy:' "$HERE/compose.yaml" | sed -n '1p' | awk '{print $2}'
 }
 
 # The one slot this deployment ships UNFILLED, and the sentinel that says so.
@@ -429,7 +433,7 @@ caddy_image() {
 # had never heard of would be a refusal on every boot.
 deferred_sentinel() {
     local value
-    value="$(sed -n "s/^DJB_DEFERRED_SENTINEL='\([^']*\)'$/\1/p" "$HERE/entrypoint.sh" | head -n1)"
+    value="$(sed -n "s/^DJB_DEFERRED_SENTINEL='\([^']*\)'$/\1/p" "$HERE/entrypoint.sh" | sed -n '1p')"
     [ -n "$value" ] || die "could not read DJB_DEFERRED_SENTINEL out of deploy/entrypoint.sh. That file declares it and this generator writes it; with the two out of step every container would refuse to start."
     printf '%s' "$value"
 }
@@ -1196,7 +1200,7 @@ PYTHON
 # line the same way.
 project_in_env_file() {
     [ -f "$HERE/.env" ] || return 0
-    sed -n "s/^COMPOSE_PROJECT_NAME='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | head -n1
+    sed -n "s/^COMPOSE_PROJECT_NAME='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | sed -n '1p'
 }
 
 # The image tag the env file pins, read the same way. `deploy/compose.yaml`
@@ -1204,7 +1208,7 @@ project_in_env_file() {
 # the tag you exported to build with — decides which image actually runs.
 image_tag_in_env_file() {
     [ -f "$HERE/.env" ] || return 0
-    sed -n "s/^DJB_IMAGE_TAG='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | head -n1
+    sed -n "s/^DJB_IMAGE_TAG='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$HERE/.env" | sed -n '1p'
 }
 
 # --- THE TAG THE TREE SAYS, AND THE TAG THE FILE PINS -------------------------
@@ -1322,7 +1326,7 @@ cmd_up() {
 
     if [ "$count" -eq 1 ]; then
         local live
-        live="$(printf '%s' "$running" | head -n1)"
+        live="${running%%$'\n'*}"
         if [ -n "$exported" ] && [ "$exported" != "$live" ] && [ "$second" != "--second" ]; then
             echo "!! provision: REFUSED." >&2
             echo "   already running   $live" >&2
@@ -1733,7 +1737,7 @@ cmd_backup_policy() {
     if [ "$mode" = "--check" ]; then
         say "READ-ONLY. bucket $bucket, role $role, inline policy $policy_name, account $account"
         echo "--- versioning ---"
-        aws s3api get-bucket-versioning --bucket "$bucket" --output json 2>&1 | head -5
+        aws s3api get-bucket-versioning --bucket "$bucket" --output json 2>&1 | sed -n '1,5p'
         echo "--- bucket policy statements (Sid / Effect) ---"
         # `|| true` on both: a bucket with NO policy is the answer this check
         # exists to give (it is the very posture named above), not a reason to abort under

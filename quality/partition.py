@@ -877,12 +877,20 @@ def _walking_modules() -> list[str]:
     return found
 
 
-def _platform_test_modules() -> list[Path]:
-    """Every test module inside the partition — the ones a skip stops running."""
-    apps = set(platform_apps())
+def _platform_test_modules(
+    *, root: Path = ROOT, platform: Sequence[str] | None = None
+) -> list[Path]:
+    """Every test module inside the partition — the ones a skip stops running.
+
+    `root` and `platform` are the canaries' seam, not configuration: §8.4 drives
+    this exact function over a scratch tree, because a canary that re-implemented
+    the population walk would be proving a copy of the check rather than the
+    check. Both default to the live tree and the live lockfile.
+    """
+    apps = set(platform_apps() if platform is None else platform)
     found: list[Path] = []
-    for path in sorted((ROOT / "apps").rglob("*.py")):
-        relative = path.relative_to(ROOT)
+    for path in sorted((root / "apps").rglob("*.py")):
+        relative = path.relative_to(root)
         parts = relative.parts
         if len(parts) > 1 and parts[1] not in apps and len(parts) > 2:
             continue  # a product app's tests are outside the partition
@@ -974,6 +982,120 @@ def _is_repository_root(node: ast.AST) -> bool:
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Path":
         return bool(node.args) and _is_repository_root(node.args[0])
     return False
+
+
+def product_app_labels(
+    *, root: Path = ROOT, platform: Sequence[str] | None = None
+) -> frozenset[str]:
+    """Every real app in this tree the lockfile does not claim — DERIVED (§2).
+
+    "Real" is the same test `product_paths` applies when it decides what pytest
+    runs under a skip: a directory under `apps/` carrying an `apps.py`. The two
+    populations are deliberately the same one — what always runs under a skip,
+    and what a platform test may therefore not import — so they cannot drift
+    apart into a window where a thing runs but nothing may name it.
+
+    NEVER A HAND LIST. The lockfile names the PLATFORM half and this subtracts
+    it; an unreadable lockfile is `Broken` out of `platform_apps()`, which is
+    exit 2 and never a judgment about the readable part.
+    """
+    claimed = set(platform_apps() if platform is None else platform)
+    directory = root / "apps"
+    if not directory.is_dir():
+        raise Broken(f"the import census cannot read {directory}: there is no apps/ tree")
+    return frozenset(
+        entry.name
+        for entry in sorted(directory.iterdir())
+        if entry.is_dir() and (entry / "apps.py").exists() and entry.name not in claimed
+    )
+
+
+def _imported_modules(tree: ast.AST) -> set[str]:
+    """Every absolute dotted module name an AST imports. Relative imports skipped.
+
+    A relative import (`from ..services import x`) cannot cross an app boundary
+    upward into a sibling app without going through `apps.`, so the absolute
+    spelling is the whole population — and it is the only spelling this tree
+    permits (`django-conventions` §1: the import path is `apps.<name>`).
+    """
+    named: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            named.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            named.add(node.module)
+            named.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return named
+
+
+def import_census(*, root: Path = ROOT, platform: Sequence[str] | None = None) -> list[str]:
+    """Platform test modules that IMPORT a product app — the other half of §4's
+    sentence, and the half `read_census` cannot see.
+
+    **Why this exists.** The decision table's first row says a product's own
+    `services.py`, selectors, tests and migrations are `skip — the dividend, and
+    it is sound: no platform test reads any of it`
+    (`docs/product/partition-closure.md:218`). `read_census` above checks the
+    FILE-READ half of that sentence and nothing checked the IMPORT half: a
+    platform test that does `from apps.<product>.checks import ...` reads the
+    product app through the import system, where no built path appears and no
+    closure class is consulted. A product-only edit moves neither key part, so a
+    banked skip goes on vouching for a platform test whose answer just changed —
+    the same stale green C8 was added to close, arriving through the other door.
+    The sibling platform's import-census ruling is the source (road (a): the
+    sentence becomes a checked rule over a derived population), measured live on
+    their tree, where `test_slug_clash_sentence.py` imported
+    `apps.playbook.checks`.
+
+    **The population is derived on both sides** — the platform test modules from
+    the lockfile's app list, the product apps as everything under `apps/` the
+    lockfile does not claim — so this is a closed question, never a hand list.
+
+    **THE FAIL-SAFE DIRECTION.** An app the lockfile forgets is a PRODUCT app
+    here, so a forgotten platform app makes this census louder, never quieter:
+    the same direction §2 chose for the boundary itself.
+
+    `does_not_cover`, declared and shared honestly with their blind spot 1: the
+    BEHAVIORAL coupling residue. A platform test that reaches a product app
+    without naming it — through a database row the product's migrations created,
+    a fixture the product registered, a discovered registry entry, or an event
+    payload it consumes — is invisible to any import census, because nothing in
+    the module's text mentions the app. Also invisible: an import assembled at
+    run time (`importlib.import_module(name)` over a computed string).
+    """
+    products = product_app_labels(root=root, platform=platform)
+    if not products:
+        # NOT a pass, and not silence either: on this template's tree every app
+        # is a platform app, so the live population is empty and a green here
+        # asserts over nothing. §8.4's plant is what makes the check falsifiable,
+        # and it runs whether or not this early return is taken.
+        return []
+    findings: list[str] = []
+    for module in _platform_test_modules(root=root, platform=platform):
+        relative = str(module.relative_to(root))
+        try:
+            tree = ast.parse(module.read_text(), filename=str(module))
+        except SyntaxError as error:  # pragma: no cover - a broken file is exit 2
+            raise Broken(f"the import census cannot parse {relative}: {error}") from error
+        reached: dict[str, set[str]] = {}
+        for name in _imported_modules(tree):
+            parts = name.split(".")
+            if len(parts) >= 2 and parts[0] == "apps" and parts[1] in products:
+                reached.setdefault(parts[1], set()).add(name)
+        for app in sorted(reached):
+            # One line per (module, product app), and the DEEPER spellings of one
+            # import collapse into the shallowest — `from apps.x.services import M`
+            # yields both `apps.x.services` and `apps.x.services.M`, and reporting
+            # both would say one violation twice. A census that inflates its own
+            # count is a census whose numbers nobody can use.
+            names = reached[app]
+            minimal = sorted(
+                n for n in names if not any(n != o and n.startswith(f"{o}.") for o in names)
+            )
+            findings.append(
+                f"{relative} imports {', '.join(minimal)} — apps/{app} is a product app"
+            )
+    return findings
 
 
 def seam_census() -> list[str]:
@@ -1157,6 +1279,74 @@ def canary_planted_app(say: Any) -> None:
     say("    the negative stays silent on part 1: product-shaped paths are not members")
 
 
+def canary_import_census(say: Any) -> None:
+    """§8.4 — the import census, born provably non-vacuous.
+
+    **The empty-population problem, stated plainly.** On this template's tree
+    every app is a platform app (`quality/partition.yaml` names all of them), so
+    `import_census`'s derived product set is EMPTY and the census asserts over
+    nothing. A green from an empty quantifier is not evidence, and shipping one
+    is how a check arrives already unable to fail. The plant IS the falsifying
+    world: a scratch tree carrying a real product app (a directory with an
+    `apps.py`, absent from the lockfile) and a platform test that imports it.
+
+    The plant is built in a temporary directory, never in the working tree — a
+    destructive demonstration creates its own victim — and it drives the REAL
+    `import_census` and the REAL `_platform_test_modules`, not a re-implementation.
+
+    A canary that does not fire is exit 2, not a pass (house canary discipline).
+    """
+    label = "partitionimportcanary"
+    host = platform_apps()[0]  # a real platform app, so the plant lands in the real population
+    with tempfile.TemporaryDirectory(prefix="djb-partition-import-") as scratch:
+        root = Path(scratch)
+        tests = root / "apps" / host / "tests"
+        tests.mkdir(parents=True)
+        violator = tests / "test_import_census_canary.py"
+        violator.write_text(f"from apps.{label}.services import MARKER\n")
+        _scratch_plant(root / "apps", label)
+
+        products = product_app_labels(root=root)
+        if label not in products:
+            raise Broken(
+                "THE IMPORT CANARY COULD NOT BE PLANTED: the derived product set "
+                f"{sorted(products)} does not contain the planted app {label!r}, so the "
+                "canary would have proved nothing. The derivation is what is broken here, "
+                "not the plant."
+            )
+        fired = import_census(root=root)
+        if not fired:
+            raise Broken(
+                "THE IMPORT CANARY DID NOT FIRE: a platform test importing a planted "
+                f"product app (apps/{host}/tests/{violator.name} importing apps.{label}) "
+                "left the import census silent. On this tree the live product population "
+                "is empty, so this plant is the ONLY thing that can tell a working census "
+                "from one that cannot fail — a canary that does not fire is exit 2."
+            )
+        say(f"    a platform test importing a planted product app fires: {fired[0]}")
+
+        # THE NEGATIVE — the other direction, which is always legal. A PRODUCT
+        # test importing a platform module is exactly what a product is supposed
+        # to do, and it must stay silent. It does so for a reason worth naming:
+        # a product app's tests are not in `_platform_test_modules` at all, which
+        # is the boundary doing the work rather than a special case in the census.
+        violator.unlink()
+        product_tests = root / "apps" / label / "tests"
+        product_tests.mkdir(parents=True)
+        (product_tests / "test_negative.py").write_text(
+            f"from apps.{host}.services import anything\n"
+        )
+        noise = import_census(root=root)
+        if noise:
+            raise Violation(
+                "THE NEGATIVE FIRED — and a negative that fires is a finding, not a pass. "
+                f"A product test importing a platform module was reported: {noise}. That "
+                "direction is always legal; a census that refuses it would refuse every "
+                "product this template exists to start."
+            )
+        say("    the negative stays silent: a product test importing platform is legal")
+
+
 class _scratch_ledger:
     """Point the ledger at a throwaway file for the length of a canary.
 
@@ -1262,6 +1452,25 @@ def selftest(say: Any) -> tuple[str, str, dict[str, str]]:
             "reason — or say why the test does not really read it, in the same diff."
         )
     say("    every file a platform test builds a path to is in the closure")
+
+    # §8.4 FIRST, then the census it makes falsifiable — the plant proves the
+    # instrument can fire before the instrument's silence is read as evidence.
+    canary_import_census(say)
+    imports = import_census()
+    if imports:
+        raise Violation(
+            "PLATFORM TESTS IMPORT PRODUCT APPS:\n    "
+            + "\n    ".join(imports)
+            + "\n  The decision table's first row (partition-closure.md:218) says a "
+            "product-only edit is a sound skip because no platform test reads any of it. "
+            "Each line above is a platform test that does — through the import system, "
+            "where no closure class is consulted — so a product-only edit moves neither "
+            "key part while changing that test's answer, and the banked skip is a stale "
+            "green. Move the test to the app it is really about, re-derive it as genuinely "
+            "cross-app (read the registry, not a product module), or invert the dependency "
+            "so the shape lives where both sides may legally read it."
+        )
+    say("    no platform test imports a product app")
 
     strays = seam_census()
     if strays:

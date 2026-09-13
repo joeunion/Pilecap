@@ -38,9 +38,16 @@ from typing import Any
 #   unlinked, keyed on our `User` row. It rides this workflow because it is the
 #   same shape: one idempotent write to somebody else's API, retried until it
 #   lands, that must not happen inside the erasing service's transaction.
+# * `IDENTITY_BRANDING` — how the deployment's hosted sign-in screen LOOKS,
+#   keyed on the `IdentityBranding` row. A platform kind like the workforce
+#   door — one instance, one login screen, no customer's — but unlike it this
+#   one HAS a row to be the intent of, which is the whole of the fix for an
+#   unwatched console: the console could repaint the screen and nothing here
+#   would know, so there is now something for `zitadel_audit` to disagree with.
 KIND_SSO_CONNECTION = "sso_connection"
 KIND_WORKFORCE_PROVIDER = "workforce_provider"
 KIND_IDENTITY_REVOCATION = "identity_revocation"
+KIND_IDENTITY_BRANDING = "identity_branding"
 
 
 @dataclass

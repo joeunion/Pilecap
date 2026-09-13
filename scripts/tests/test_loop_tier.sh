@@ -458,10 +458,28 @@ fresh_checkout() {
     git -C "$REPO" symbolic-ref HEAD refs/heads/main
     git -C "$REPO" config user.email drive@example.invalid
     git -C "$REPO" config user.name "loop tier drive"
-    mkdir -p "$REPO/apps/core" "$REPO/apps/exports/tests" "$REPO/scripts/tests" "$REPO/perf"
+    mkdir -p "$REPO/apps/core" "$REPO/apps/exports/tests" "$REPO/apps/comms" \
+        "$REPO/scripts/tests" "$REPO/perf"
     echo "base" >"$REPO/README"
     echo "x = 1" >"$REPO/apps/core/models.py"
     echo "y = 0" >"$REPO/apps/exports/services.py"
+    # EVERY FIXTURE APP DECLARES ITSELF, because the own-app derivation now
+    # ACCOUNTS FOR the labels it derives: a path under `apps/<x>/` whose
+    # `apps.py` declares no `AppConfig` is exit 2 naming that file, not a
+    # silently narrowed rung (`loop_tier.sh:449-453`). Before the closure
+    # landed, a bare directory was enough for these cases; it is not any more,
+    # and the refusal is the correct half of that pair — a label the
+    # declarations cannot account for is a walk that did not answer. No
+    # `depends_on` on any of them: these cases pin the OWN-app mapping, so the
+    # closure is deliberately the identity here and the fan-out is
+    # `test_loop_scope.sh`'s subject. `comms` is created in the base commit for
+    # the untracked-file case to add a file INTO — its own `apps.py` is
+    # committed and unchanged there, so the "derives nothing until it is
+    # staged" half still reads an empty set.
+    for one in core exports comms; do
+        printf 'from django.apps import AppConfig\n\n\nclass %sConfig(AppConfig):\n    name = "apps.%s"\n' \
+            "$one" "$one" >"$REPO/apps/$one/apps.py"
+    done
     # THE SHARED-INFRA FILES EXIST IN THE BASE COMMIT, and that is the point
     # rather than setup noise: on main every one of these is a tracked file, so
     # a rung TOUCHING one is a modification. Creating them fresh inside a case
@@ -680,17 +698,25 @@ case_the_tiers_own_derivation_runs_the_full_suite() {
 
 case_an_apps_own_conftest_is_not_shared() {
     # THE NEGATIVE THAT MATTERS MOST. `apps/exports/tests/conftest.py` is a
-    # conftest, and it belongs to `exports`. It must stay the fast tier plus
-    # that app — a rule that swept every conftest into the full suite would make
-    # the commonest fixture edit in the tree pay for the whole thing.
+    # conftest, and it belongs to `exports`. A rule that swept every conftest
+    # into the full suite would make the commonest fixture edit in the tree pay
+    # for the whole thing, and that is what this case has always refused.
+    #
+    # WHAT THE TESTS-ONLY ROW MOVED, AND WHAT IT DID NOT. The file is inside
+    # `exports`' test tree, so it is now TESTS-ONLY rather than own: exports'
+    # test tree runs at the fast tier, its organ tests wait for the push, and
+    # nothing widens through the declarations. Narrower than before, and in the
+    # same direction. What this case exists to pin is unchanged and is asserted
+    # below: it is not SHARED infrastructure, and it is not the full suite.
     fresh_checkout
     git -C "$REPO" checkout -q -b rung
     echo "# app fixtures, edited" >"$REPO/apps/exports/tests/conftest.py"
     own_apps_in "$REPO" "a change to an app's own tests/conftest.py"
     exits 0
     is "$LOOP_TIER_MODE" "fast" "the tier mode"
-    is "$LOOP_TIER_OWN_APPS" "exports" "the derived own app"
     is "$LOOP_TIER_SHARED_HITS" "" "the shared test-infra hits"
+    is "$LOOP_SCOPE_TESTS_ONLY" "exports" "the tests-only set"
+    is "$LOOP_TIER_OWN_APPS" "" "the derived own app (a test-tree edit is not an own app)"
 }
 
 case_shared_infra_outranks_an_app_change() {

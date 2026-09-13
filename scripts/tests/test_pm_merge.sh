@@ -69,6 +69,15 @@ esac
 #     happened, and that the gate's exit status becomes pm_merge's own. They
 #     prove nothing whatever about `scripts/check.sh` itself, which is the full
 #     gate's business and is measured everywhere else in this repository.
+#   * THE REAL FOLD, for the same reason and with the same shape. `--bank` runs
+#     `scripts/pm_fold.sh` before the gate, and the scratch repositories carry a
+#     STUB one that announces itself and exits 0. So the `--bank` cases prove
+#     the WIRING — that the fold is run, that it is run BEFORE the gate, that a
+#     merge without `--bank` does not run one at all, and that a missing fold is
+#     a refusal rather than a skip. They prove nothing about what the fold
+#     regenerates or commits; that is `scripts/tests/test_pm_fold.sh`'s
+#     business, and it is the drive that copies the REAL fold into its
+#     fixtures.
 #   * A COPY, NOT THE FILE ITSELF, IS WHAT RUNS. `scripts/pm_merge.sh` refuses
 #     to act when the checkout you are standing in is not the one it lives in
 #     (a property worth having on its own), which means the
@@ -194,6 +203,27 @@ says_not() {
     fi
 }
 
+# ORDER, and it is a property rather than a decoration. `pm_merge` prints the
+# fold's output and the gate's into ONE stdout, so the line numbers in
+# `$DRIVE_OUT` are the sequence the operator saw. The sequence is the whole
+# argument of `pm_merge.sh`'s fold block: a fold that ran AFTER the gate would
+# have changed the tree the verdict just vouched for, and the verdict would key
+# on a tree that no longer exists. Two `says` calls cannot see that — both are
+# green whichever way round they happened.
+says_before() {
+    local first="$1" second="$2" fl sl
+    fl="$(grep -nF -- "$first" "$DRIVE_OUT" | head -1 | cut -d: -f1)"
+    sl="$(grep -nF -- "$second" "$DRIVE_OUT" | head -1 | cut -d: -f1)"
+    if [ -n "$fl" ] && [ -n "$sl" ] && [ "$fl" -lt "$sl" ]; then
+        echo "  ok       ${CURRENT} — \"${first}\" (line ${fl}) came before \"${second}\" (line ${sl})"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — \"${first}\" (line ${fl:-absent}) did not come before \"${second}\" (line ${sl:-absent})"
+        sed 's/^/             | /' "$DRIVE_OUT" | tail -20
+        FAILED=$((FAILED + 1))
+    fi
+}
+
 holds() {
     local label="$1" want="$2" got="$3"
     if [ "$want" = "$got" ]; then
@@ -213,15 +243,18 @@ holds() {
 # stale: base                   (already an ancestor of main)
 REPO=""
 GATE_LOG=""
+FOLD_LOG=""
 N=0
 fresh_repo() {
     N=$((N + 1))
     REPO="${WORK}/repo${N}"
     GATE_LOG="${WORK}/gate${N}.log"
+    FOLD_LOG="${WORK}/fold${N}.log"
     # Created empty, so "the gate never ran" is an empty file rather than a
     # missing one — an absent file and a gate that ran zero times read the same
     # to `wc`, and only one of them is the property being asserted.
     : >"$GATE_LOG"
+    : >"$FOLD_LOG"
     # THE BELT, and it comes before the `mkdir` as well as before the
     # first git command. `git -C "" ...` is a no-op chdir, not a refusal: every
     # command after it lands on whatever repository this process is standing in.
@@ -246,6 +279,33 @@ fresh_repo() {
         echo "exit \"\${DJB_DRIVE_GATE_RC:-0}\""
     } >"$REPO/scripts/check.sh"
     chmod +x "$REPO/scripts/check.sh"
+
+    # The stub fold, the stub gate's idiom exactly, and it exists because the
+    # ritual grew a step this fixture did not have. The fold landed in
+    # `pm_merge.sh --bank` on 2026-09-02: `--bank` now runs
+    # `${ROOT}/scripts/pm_fold.sh` BEFORE the gate, and refuses at exit 2 when
+    # there is no executable one. The fixture carried a stub gate and no fold,
+    # so every `--bank` case here was measuring the refusal instead of the tier
+    # — four red assertions at the push bank of 2026-09-07, with the ritual
+    # entirely right and the fixture five days stale.
+    #
+    # THE PATH IS DERIVED, NOT CHOSEN. `pm_merge.sh` resolves the fold as
+    # `$ROOT/scripts/pm_fold.sh` where `ROOT` is `git rev-parse --show-toplevel`
+    # — the scratch repository, because `in_repo` stands in it — so this is that
+    # path and not a guess at it.
+    #
+    # It exits 0 the way the real `pm_fold.sh` does on a tree with nothing to
+    # fold, which is the honest answer here: these repositories have no derived
+    # files to regenerate. That is also the whole of what these cases know about
+    # the fold — see THE REAL FOLD in the blind spots above.
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'echo "STUB FOLD ran"'
+        echo "printf '%s\\n' \"ran\" >>\"$FOLD_LOG\""
+        echo 'echo "pm_fold: NOTHING TO FOLD. No commit was made."'
+        echo 'exit 0'
+    } >"$REPO/scripts/pm_fold.sh"
+    chmod +x "$REPO/scripts/pm_fold.sh"
 
     echo "one" >"$REPO/shared.txt"
     git -C "$REPO" add -A
@@ -452,6 +512,15 @@ run_fake_drive() {
     # this file, on its first run.
     local label="$1"
     local act="$2"
+    # `hold-main` gives the scratch repository a SECOND worktree standing on
+    # `main`, which is this repository's real shape: the primary checkout holds
+    # `main` and every rung is a linked worktree on its own branch. The tripwire
+    # excuses a moved ref only when a worktree other than the drive's has it
+    # checked out, so a fixture that fakes the PM's merge without the PM's
+    # checkout is asking to be convicted — correctly. Only the peer-merge half
+    # wants it: the escape half CHECKS OUT main inside the fake drive, which git
+    # refuses while another worktree holds it.
+    local shape="${3:-}"
     local repo="${WORK}/n454-${label}"
     drive_require_scratch repo "${repo:-}"
     mkdir -p "$repo"
@@ -465,6 +534,9 @@ run_fake_drive() {
     # The rung worktree's own branch is what is checked out, so `main` is not
     # this checkout's HEAD — a builder's worktree, exactly.
     git -C "$repo" checkout -q -b worktree-agent-n454
+    if [ "$shape" = "hold-main" ]; then
+        git -C "$repo" worktree add -q "${WORK}/n454-${label}-primary" main
+    fi
 
     {
         echo '#!/usr/bin/env bash'
@@ -502,11 +574,14 @@ case_a_peers_merge_into_main_does_not_convict_a_drive() {
     # THE PEER'S ACT, NOT THE DRIVE'S. `commit-tree` + `update-ref` moves
     # `main` and nothing else — no HEAD, no index, no working tree — which is
     # what a PM merge looks like from inside a worktree that is not the one
-    # merging. The drive itself touches nothing at all.
+    # merging. The drive itself touches nothing at all. `hold-main` puts the
+    # PM's own checkout into the fixture, because that checkout is what makes
+    # the move somebody else's: a `main` no worktree anywhere holds, moved while
+    # a drive ran, is the escape class and is meant to convict.
     run_fake_drive "peer-merge" '
 NEW=$(git commit-tree "HEAD^{tree}" -p HEAD -m "the PM merge that landed mid-drive")
 git update-ref refs/heads/main "$NEW"
-echo "a peer moved main to $NEW while this drive ran"'
+echo "a peer moved main to $NEW while this drive ran"' hold-main
     n454_exits 0
     says_not "MUTATED THE REAL REPOSITORY"
 }
@@ -609,6 +684,14 @@ case_bank_runs_the_full_gate_instead_of_fast() {
     holds "--bank: the gate ran once, with --bank" "--bank" "$(cat "$GATE_LOG")"
     holds "--bank: the merge still happened and has two parents" "2" \
         "$(git -C "$REPO" log -1 --format=%P | wc -w | tr -d ' ')"
+    # AND THE FOLD, which `--bank` grew on 2026-09-02. Three separate claims:
+    # that it ran at all, that it ran exactly once, and — the one only an
+    # ordering assertion can see — that it ran BEFORE the gate, because a fold
+    # after the gate changes the tree the verdict just vouched for.
+    says "STUB FOLD ran"
+    says_before "STUB FOLD ran" "STUB GATE ran with: --bank"
+    holds "--bank: the fold ran once" "1" \
+        "$(wc -l <"$FOLD_LOG" | tr -d ' ')"
 }
 
 case_the_default_tier_is_still_fast() {
@@ -620,6 +703,54 @@ case_the_default_tier_is_still_fast() {
     says "STUB GATE ran with: --fast"
     says_not "STUB GATE ran with: --bank"
     holds "no flag: the gate ran once, with --fast" "--fast" "$(cat "$GATE_LOG")"
+    # The fold is the bank's, not every merge's — `pm_merge.sh` says so in its
+    # own fold block: one fold commit per push train beats one per merge, and a
+    # `--fast` merge banks no verdict for a fold to keep honest. So the other
+    # direction is asserted here too, where it protects every ordinary merge.
+    says_not "STUB FOLD ran"
+    holds "no flag: the fold did not run" "0" \
+        "$(wc -l <"$FOLD_LOG" | tr -d ' ')"
+}
+
+case_bank_with_no_fold_is_refused() {
+    # BOTH HALVES OF A REFUSAL ARE LOAD-BEARING — this file's own reason for
+    # existing, applied to the ritual's newest step. The case above proves
+    # `--bank` folds; this one proves it REFUSES, loudly and at exit 2, rather
+    # than banking a verdict over derived files nobody regenerated.
+    #
+    # It is also the exact shape the push bank of 2026-09-07 hit, and keeping it
+    # as a case is what stops the fixture's repair from turning the refusal into
+    # something nothing drives: the fixture now installs a fold, so without this
+    # case the "no executable fold" path would be unreachable from here.
+    fresh_repo
+    # COMMITTED, not just deleted. The fold is a tracked file in this fixture
+    # (the `git add -A` at "base" takes it, exactly as it takes the stub gate),
+    # so a bare `rm` leaves an uncommitted deletion and `pm_merge`'s dirty-tree
+    # refusal fires FIRST — a green exit 2 for the wrong reason, which is the
+    # shape this whole rung exists to stop. The gate's twin case
+    # (`case_a_missing_gate_is_refused_before_the_merge`) needs no such commit
+    # because its check runs before the dirty-tree one; the fold's runs after
+    # the merge.
+    git -C "$REPO" rm -q -f scripts/pm_fold.sh
+    git -C "$REPO" commit -q -m "no fold in this checkout"
+    local before
+    before="$(head_of)"
+    drive "merge with --bank and no fold" 2 -- in_repo ./scripts/pm_merge.sh safe --bank
+    says "no executable fold"
+    says "THE MERGE ABOVE IS ALREADY MADE"
+    says_not "STUB GATE ran with: --bank"
+    holds "no fold: the gate never ran" "" "$(cat "$GATE_LOG")"
+    # The merge is not undone by the refusal, and pm_merge says so itself. That
+    # is the property the operator has to act on: HEAD moved, the gate did not.
+    holds "no fold: the merge still happened and has two parents" "2" \
+        "$(git -C "$REPO" log -1 --format=%P | wc -w | tr -d ' ')"
+    if [ "$before" = "$(head_of)" ]; then
+        echo "  FAILED   no fold: HEAD did not move — the merge should still have happened"
+        FAILED=$((FAILED + 1))
+    else
+        echo "  ok       no fold: HEAD moved to $(git -C "$REPO" rev-parse --short HEAD)"
+        PASSED=$((PASSED + 1))
+    fi
 }
 
 case_a_merge_message_file_is_used() {
@@ -691,6 +822,7 @@ case_the_real_script_refuses_a_foreign_checkout
 case_a_conflicting_merge_surfaces_the_conflict
 case_a_clean_merge_prints_the_proof_line
 case_bank_runs_the_full_gate_instead_of_fast
+case_bank_with_no_fold_is_refused
 case_the_default_tier_is_still_fast
 case_a_merge_message_file_is_used
 case_a_merge_message_on_stdin_is_used

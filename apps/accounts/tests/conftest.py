@@ -53,6 +53,63 @@ class _AlreadyInThatState(Exception):
     """
 
 
+class _NotFoundHere(Exception):
+    """Zitadel answering a 404 that CARRIES a reason, as it does for real.
+
+    `handle`'s bare `KeyError` branch answers "NotFound" with nothing else,
+    which is right for a path this fake simply does not route. It is wrong for
+    a path it routes deliberately and refuses — the management login policy on
+    an org that has none — because the whole value of that refusal is its error
+    id, and a client that keys on the id is exactly what a fake answering a
+    blank 404 could not test.
+    """
+
+
+#: The org's login policy when the org HAS one of its own, MEASURED off the
+#: running v4.17.1 stack on 2026-09-07 (`GET /management/v1/policies/login`):
+#: no `isDefault`, `details.resourceOwner` is the org, `allowRegister` ABSENT —
+#: and the five lifetimes and the factor list present, which is the half a
+#: partial PUT would zero.
+ORG_LOGIN_POLICY_OWN: dict[str, Any] = {
+    "details": {"sequence": "73", "resourceOwner": "387613333072707590"},
+    "allowUsernamePassword": True,
+    "allowExternalIdp": True,
+    "passwordlessType": "PASSWORDLESS_TYPE_ALLOWED",
+    "ignoreUnknownUsernames": True,
+    # The lifetime below is a protobuf Duration (10 days), not a credential;
+    # detect-secrets keys on the word in the field name, so it is allowlisted.
+    "passwordCheckLifetime": "864000s",  # pragma: allowlist secret
+    "externalLoginCheckLifetime": "864000s",
+    "mfaInitSkipLifetime": "0s",
+    "secondFactorCheckLifetime": "64800s",
+    "multiFactorCheckLifetime": "43200s",
+    "secondFactors": ["SECOND_FACTOR_TYPE_OTP", "SECOND_FACTOR_TYPE_U2F"],
+    "allowDomainDiscovery": True,
+    "disableLoginWithPhone": True,
+}
+
+#: The same endpoint on an org that has NO policy of its own — the state a
+#: freshly created organisation is in, and the state every org on a fresh
+#: instance is in. Zitadel answers the INSTANCE's policy with `isDefault: true`
+#: and the instance as the `resourceOwner`, which is the only field that tells
+#: the two apart. MEASURED against a throwaway org on the same stack.
+ORG_LOGIN_POLICY_INHERITED: dict[str, Any] = {
+    "details": {"sequence": "116", "resourceOwner": "387613333072642054"},
+    "allowUsernamePassword": True,
+    "allowRegister": True,
+    "allowExternalIdp": True,
+    "passwordlessType": "PASSWORDLESS_TYPE_ALLOWED",
+    "isDefault": True,
+    "passwordCheckLifetime": "864000s",  # pragma: allowlist secret
+    "externalLoginCheckLifetime": "864000s",
+    "mfaInitSkipLifetime": "2592000s",
+    "secondFactorCheckLifetime": "64800s",
+    "multiFactorCheckLifetime": "43200s",
+    "secondFactors": ["SECOND_FACTOR_TYPE_OTP", "SECOND_FACTOR_TYPE_U2F"],
+    "allowDomainDiscovery": True,
+}
+
+
 class FakeZitadel:
     """The smallest thing that behaves like the management API's org surface.
 
@@ -92,6 +149,61 @@ class FakeZitadel:
         # the number MEASURED off the pinned build — the fake serves the
         # real one so the email's stated deadline is tested against it.
         self.invite_code_expiry = "259200s"
+        # --- the deployment's sign-in posture (ADR ident-8) -----------------
+        # Three instance-wide surfaces, in the state a FRESHLY CREATED instance
+        # is in — MEASURED off the running v4.17.1 stack on 2026-09-07, not
+        # invented: `allowRegister: true` with the five lifetimes present,
+        # a lockout policy carrying `isDefault` and **no `maxPasswordAttempts`
+        # key at all**, and `GET /admin/v1/restrictions` answering `{"details":{}}`.
+        #
+        # These live on the shared fake rather than in one module, unlike the
+        # label policy and the two console surfaces, because they are the state
+        # `zitadel_seed` now writes on EVERY run: a seed test, an audit test and
+        # the full-body census all need the same socket, and a stub copied three
+        # times is three stubs that drift.
+        #
+        # **Booleans are absent when false** here as everywhere else on this
+        # API: proto3 omits its zero values, so a reader keying on presence
+        # passes against a fake that sent `false` and fails against Zitadel.
+        self.instance_login_policy: dict[str, Any] = {
+            "details": {"sequence": "19", "resourceOwner": "387613333072642054"},
+            "allowUsernamePassword": True,
+            "allowRegister": True,
+            "allowExternalIdp": True,
+            "passwordlessType": "PASSWORDLESS_TYPE_ALLOWED",
+            "isDefault": True,
+            # The lifetime below is a protobuf Duration (10 days), not a credential;
+            # detect-secrets keys on the word in the field name, so it is allowlisted.
+            "passwordCheckLifetime": "864000s",  # pragma: allowlist secret
+            "externalLoginCheckLifetime": "864000s",
+            "mfaInitSkipLifetime": "2592000s",
+            "secondFactorCheckLifetime": "64800s",
+            "multiFactorCheckLifetime": "43200s",
+            "secondFactors": ["SECOND_FACTOR_TYPE_OTP", "SECOND_FACTOR_TYPE_U2F"],
+            "multiFactors": ["MULTI_FACTOR_TYPE_U2F_WITH_VERIFICATION"],
+            "allowDomainDiscovery": True,
+        }
+        self.lockout_policy: dict[str, Any] = {
+            "details": {"sequence": "22", "resourceOwner": "387613333072642054"},
+            "isDefault": True,
+        }
+        self.restrictions: dict[str, Any] = {"details": {}}
+        # --- the ORG's own login policy, one level down from the three above --
+        # Zitadel serves ONE endpoint for two states and `isDefault` is the
+        # whole discriminator, so the fake holds whichever state a test put it
+        # in. The default is INHERITED because that is what a freshly created
+        # organisation is, and because an inheriting org is the state in which
+        # nothing here writes anything — the seed's org half leaves it alone
+        # and the audit's org line defers to the instance verdict, so every
+        # identity test that is about something else is unaffected by its
+        # arrival. The module whose subject IS this policy puts the fake in the
+        # other state (`test_zitadel_posture.py`).
+        self.org_login_policy: dict[str, Any] = dict(ORG_LOGIN_POLICY_INHERITED)
+        # Every organisation on the instance, which the audit counts and never
+        # inspects. One, because that is what a clone of this template has.
+        self.orgs: list[dict[str, Any]] = [
+            {"id": "1", "name": "TestOrg", "state": "ORG_STATE_ACTIVE"}
+        ]
         self._next = 1000
 
     def id(self) -> str:
@@ -109,6 +221,8 @@ class FakeZitadel:
             return httpx.Response(200, json=self._route(method, path, body))
         except _AlreadyInThatState as already:
             return httpx.Response(400, json={"message": str(already)})
+        except _NotFoundHere as missing:
+            return httpx.Response(404, json={"message": str(missing)})
         except KeyError:
             return httpx.Response(404, json={"message": "NotFound"})
 
@@ -230,6 +344,70 @@ class FakeZitadel:
             code = f"CODE{len(self.invite_codes.get(user_id, [])) + 1:02d}"
             self.invite_codes.setdefault(user_id, []).append(code)
             return {"inviteCode": code}
+        # --- the ORG's own login policy, on the MANAGEMENT prefix -----------
+        # The prefix is already stripped by `handle`, which is why this path is
+        # bare where the instance's is spelled `/admin/v1/...` below: they are
+        # two surfaces of one resource and the paths are how a test tells which
+        # one a call went to.
+        if method == "GET" and path == "/policies/login":
+            return {"policy": self.org_login_policy}
+        if method == "PUT" and path == "/policies/login":
+            if self.org_login_policy.get("isDefault"):
+                # MEASURED on the pinned build: the UPDATE endpoint refuses an
+                # org that has no policy of its own — it does not quietly create
+                # one. Modelled here rather than allowed through, because the
+                # branch that keeps the seed from forking configuration into two
+                # owners is only provable against a fake that refuses the way
+                # the real API refuses.
+                raise _NotFoundHere("Login Policy not found (Org-M0sif)")
+            self.org_login_policy = {
+                **{key: value for key, value in body.items() if value not in (False, "")},
+                "details": self.org_login_policy["details"],
+                "secondFactors": self.org_login_policy.get("secondFactors", []),
+            }
+            return {}
+        # --- the sign-in posture, on the ADMIN prefix -----------------------
+        # The paths are the ones MEASURED off the admin swagger document the
+        # pinned build serves, and the read/write asymmetry on the lockout
+        # policy is Zitadel's own: the GET is `/policies/lockout` and the PUT is
+        # `/policies/password/lockout`. A fake that collapsed the two would let
+        # a writer aimed at the wrong path pass here and 404 on the real thing.
+        if method == "GET" and path == "/admin/v1/policies/login":
+            return {"policy": self.instance_login_policy}
+        if method == "PUT" and path == "/admin/v1/policies/login":
+            self.instance_login_policy = {
+                **{key: value for key, value in body.items() if value not in (False, "")},
+                "details": self.instance_login_policy["details"],
+                "isDefault": True,
+                "secondFactors": self.instance_login_policy.get("secondFactors", []),
+                "multiFactors": self.instance_login_policy.get("multiFactors", []),
+            }
+            return {}
+        if method == "GET" and path == "/admin/v1/policies/lockout":
+            return {"policy": self.lockout_policy}
+        if method == "PUT" and path == "/admin/v1/policies/password/lockout":
+            self.lockout_policy = {
+                **{key: value for key, value in body.items() if value},
+                "details": self.lockout_policy["details"],
+            }
+            return {}
+        if method == "GET" and path == "/admin/v1/restrictions":
+            return {**self.restrictions}
+        if method == "PUT" and path == "/admin/v1/restrictions":
+            self.restrictions = {
+                **{key: value for key, value in body.items() if value not in (False, {"list": []})},
+                "details": self.restrictions.get("details", {}),
+            }
+            return {}
+        if method == "POST" and path == "/admin/v1/orgs/_search":
+            # Zitadel's own envelope: `details.totalResult` beside the rows. The
+            # audit reads the rows; the total is served anyway because a fake
+            # that carried only what the reader wants cannot catch a reader that
+            # started wanting something else.
+            return {
+                "details": {"totalResult": str(len(self.orgs))},
+                "result": list(self.orgs),
+            }
         if method == "POST" and path == "/admin/v1/secretgenerators/_search":
             return {
                 "result": [
@@ -269,10 +447,20 @@ class FakeZitadel:
         }
 
     def _idp(self, idp_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        # `usePkce` is stored because the writer reads it back: it sends
+        # the live value when the caller has no opinion, so a fake that dropped
+        # the field would make "a console-enabled PKCE survives a re-sync"
+        # untestable — and green, which is worse.
         return {
             "id": idp_id,
             "name": body["name"],
-            "config": {"oidc": {"issuer": body["issuer"], "clientId": body["clientId"]}},
+            "config": {
+                "oidc": {
+                    "issuer": body["issuer"],
+                    "clientId": body["clientId"],
+                    "usePkce": bool(body.get("usePkce", False)),
+                }
+            },
         }
 
     @staticmethod
@@ -325,6 +513,21 @@ def instance(
     # fixture is read. The tests whose subject *is* the workforce door set it
     # themselves, after this.
     settings.GOOGLE_WORKSPACE_DOMAINS = []
+    # **And the sign-in posture already agrees with these settings**, for
+    # exactly the reason the workforce line above exists. Since ADR ident-8,
+    # `zitadel_audit` compares three instance surfaces against
+    # `config/settings`, and `FakeZitadel.__init__` holds the measured
+    # FRESH-INSTANCE state — registration on, no lockout, org registration open,
+    # because that is what a new Zitadel actually is. Left that way, every audit
+    # test in every identity module would report three disagreements the fake
+    # was never asked to hold, and each of those tests is about something else.
+    # The module whose subject IS the closing puts the fake back
+    # (`test_zitadel_posture.py`'s `fresh_instance`).
+    fake.instance_login_policy.pop("allowRegister", None)
+    fake.lockout_policy["maxPasswordAttempts"] = settings.ZITADEL_MAX_PASSWORD_ATTEMPTS
+    fake.restrictions[
+        "disallowPublicOrgRegistration"
+    ] = not settings.ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION
 
     @contextmanager
     def stubbed() -> Iterator[httpx.Client]:

@@ -1,0 +1,29 @@
+{% extends "account/base_entrance.html" %}
+{% comment %}
+The two lines that make "one override styles the whole family" TRUE rather than
+nearly true.
+
+allauth 65 does not have one base template. It has five: `allauth/layouts/base`
+(the document), `allauth/layouts/entrance` and `allauth/layouts/manage` (two
+empty re-parents of it), and then `account/base_entrance`,
+`socialaccount/base_entrance` and `mfa/base_entrance` — three separate files,
+each extending `allauth/layouts/entrance` DIRECTLY. Overriding
+`account/base_entrance.html` alone therefore reaches the sign-in page and the
+password flows and misses the two pages a failed federated login actually lands
+on (`socialaccount/authentication_error.html`,
+`socialaccount/login_cancelled.html`), the whole management family including
+sign-out, and every MFA screen. Verified by reading the installed package's
+`{% templatetag openblock %} extends {% templatetag closeblock %}` graph rather
+than by assuming a shape.
+
+`allauth/layouts/base.html` is the ONE file every allauth template ancestor
+chain terminates in, so re-parenting it onto our shell is what makes the census
+total: a page allauth adds in a future version renders in register on the day
+it ships, without anybody noticing it exists.
+
+`{% templatetag openblock %} extends {% templatetag closeblock %}` is above the
+comment because Django requires it to be the first tag in the file, and a
+comment counts. This file deliberately holds nothing else: the shell, the
+tokens and every word are in `templates/account/base_entrance.html`, which is
+where a change belongs.
+{% endcomment %}

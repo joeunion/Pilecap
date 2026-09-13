@@ -1,0 +1,15 @@
+{% load allauth %}
+{% comment %}
+allauth's provider list, with one class on it.
+
+The element templates under `allauth/elements/` are the seam allauth documents
+for restyling without reimplementing, and this is the smallest possible use of
+it: the markup and the slot are allauth's, `class="doors"` is what the entrance
+token block styles the rows through. Reimplementing the snippet above it
+instead would have meant re-deriving its sub-provider and OpenID-brand handling
+here, which is how a restyle quietly becomes a behaviour change.
+{% endcomment %}
+<ul class="doors">
+    {% slot %}
+    {% endslot %}
+</ul>

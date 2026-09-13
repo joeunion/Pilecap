@@ -1,0 +1,23 @@
+"""The names of the things `{{ app_name }}` says happened. Names only.
+
+`<app>.<noun>.<past-tense verb>`, one constant per name, declared here and never
+written as a literal at a call site (house rule 16):
+
+    THING_CREATED = "{{ app_name }}.thing.created"
+
+Three reasons, all of them practical:
+
+* an event name is a PUBLISHED CONTRACT. A webhook subscriber matches on it and
+  a rename breaks every integration silently, so it has one definition;
+* the grammar is much easier to keep in one file per app than spread across
+  call sites;
+* `manage.py introspect` reports this file, so a client can read the list of
+  events it may subscribe to without reading the source.
+
+Past tense, always: an event states that something HAS happened.
+`{{ app_name }}.thing.create` would be an instruction, and an instruction is a
+service call. `services.py` publishes these with `emit()` inside the write's
+own transaction.
+"""
+
+from __future__ import annotations

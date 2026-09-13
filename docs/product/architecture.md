@@ -36,7 +36,7 @@ it is not a port of one.** The product ledgers ship as skeletons.
 | Business logic | **Explicit `services.py` for writes and `selectors.py` for reads, per app. Decided.** Services own writes; routes and schemas are thin; models carry invariants and derived properties, not workflows. **No business logic in signals** — signals are where agents hide logic. House rule. |
 | Tenancy | **Shape: shared schema + tenant FK, read through a scoped manager, enforced by a house rule. ON by default; a product opts out. Decided.** The template ships `core.Tenant`, `core.Membership` (user × tenant), the abstract `TenantScopedModel(BaseModel)` with a `tenant` FK, a `ScopedQuerySet.for_tenant(tenant)` manager, and `TenantMiddleware` that resolves `request.tenant` from the user's membership (default membership; an `X-Tenant: <slug>` header may switch to another tenant the user belongs to; no membership → `request.tenant = None` and every scoped read returns nothing — **fails closed, no superuser exemption**). The example app inherits `TenantScopedModel`; every read in views and services is `Model.objects.for_tenant(request.tenant)`; house rule 8 is **enabled** and refuses a bare `.objects` on a scoped model outside the manager. **Opting out** (a genuinely single-tenant product) is recorded in the product's `architecture.md`: models inherit `BaseModel` instead, the middleware is removed, rule 8 is set `enabled: false` with the reason. Schema-per-tenant (django-tenants) is **not** a template option: a product may adopt it only under heavy consideration and only when it is an actual business requirement (e.g. a compliance demand for database-level isolation), recorded with the requirement named. Rationale: the base, the resolver and the rule are the part that is painful to retrofit; shipping them on means the leak-shaped code is refused from the first model. |
 | Hierarchy | **A template primitive, on from the start ("this framework needs to support hierarchies efficiently and securely from the start").** Per-tenant `Organization` tree (materialized path, fixed-width segments, indexed prefix scans — no recursion, no tree walks on the read path); **every tenant gets a root node automatically**, so a flat product is a depth-one tree and pays nothing. `Membership` = person × tenant × org × role; `OrgScopedModel(TenantScopedModel)` for networked records; reads are `.for_tenant(t).visible_to(actor)` — **visibility flows down only, fails closed, no exemptions** (upward/sideways inheritance only as an explicit policy with a named reason). Roles inherit down (effective role = best role on the record's ancestor chain, computed over the actor's own memberships). Acting hat via `X-Org`, revalidated per request. **No grant above your own effective role or outside your subtree** (the escalation wall). Re-parenting is a service + workflow, audited, ancestor-admin of both ends only. Aggregates go through the same scope. House rule 24 enforces `visible_to` on org-scoped reads by AST, with canaries. Audit and workflow context carry the acting org. |
-| Frontend | **None in the template. Decided: bring your own.** Backend-only with a clean OpenAPI contract and a websocket contract; each product brings its own front end. |
+| Frontend | **Opinionated default — Next.js/React/TypeScript consuming the GENERATED OpenAPI client. Owner-ratified 2026-09-02, superseding "bring your own"** (which had drifted false against the tree: `frontend/` ships Next 16.3.3/React 19.2.8 since the P16 SCAFFOLD merge, `fe-conventions` is written at those pins, rules 51–53 enforce the layer — the register said none while main shipped one; the drift was caught by the owner's own question). The halves meet ONLY at the OpenAPI document (P16 strategy pillar 1): doors serve it, the client is generated never hand-typed, the byte-pin makes drift loud; the backend never imports or assumes the client. **Bring-your-own remains legal as a recorded product divergence** in the product's own architecture.md — at the cost of the scaffold, fe-conventions and rules 51–53's enforcement, which that product replaces or forgoes. Rejected: keeping "bring your own" settled with `frontend/` demoted to a non-normative example (weakens the JS rules' standing on every product that takes the default); reversing the frontend package (the ratified P16 strategy's frontend half, built and verified). |
 | Background work & workflows | **Temporal, from day zero. Decided.** Durable execution for everything that must survive a restart or wait: webhook delivery with backoff, integration syncs, multi-step processes that wait for a human or a signal, schedules. **Activities** call services; **workflow code is deterministic** — no ORM, no I/O, no clock, no randomness inside a workflow function (house rule 9). Local: the Temporal dev server in `compose.yaml`; a `worker` process beside the web process. Production: Temporal Cloud by default, self-hosted as the recorded alternative. **There is no Celery, no beat, no `django.tasks` backend** — Temporal is the one engine for tasks, retries, schedules and workflows. |
 | Server | **ASGI by default** (`uvicorn`), because sockets and async endpoints are day-zero. The CRUD core stays on the sync ORM; async where an endpoint is I/O-bound. |
 | Sockets | **Django Channels** with the Redis channel layer; one authenticated consumer; services emit events that the realtime bridge pushes. **The hierarchy reaches this door (ADR realtime-2):** the socket used to push every fanned event to one group per tenant while REST read the same rows through `visible_to`, so a branch-B seller's socket received branch-A's rows — two doors, one question, two answers. Now `Event` carries the **row's** organization (ADR realtime-2a: it rides the `EventOut` envelope, the one body both the webhook and socket doors are handed, so the fan-out narrows on a field it can see and the spine's bridge signature never changed); an org-bearing event is pushed to `org_group(tenant, org)` and **only** an org-less one to the bare tenant group; and a consumer joins its hat's **subtree** org groups at connect — the socket's half of house rule 24, narrowing *subscriptions* where REST narrows rows, downward-only and failing closed on an unresolved hat. A flat product is a depth-one tree whose root hat joins three constant groups, so the depth-one property is preserved. Every consumer also joins `user_group(user_id)`, and the bridge name **`realtime.kick`** (shape `KicksUser`) closes that group's sockets — connect-time-only auth is right for a channel that stays open for hours and wrong the moment a token is revoked, so revocation and erasure reach the connection instead of the connection eventually noticing. **The channel is declaredly lossy and the seam is poll-on-reconnect** (`apps/realtime/bridge.py`'s docstring says it in full): no replay buffer, no cursor, none planned — a reconnecting client re-reads the REST list it cares about and treats a frame as a hint that something changed, and a hat switched mid-connection applies on reconnect. Rejected: **ancestor-chain publish** (cheaper joins, but the fan-out cost rides every emit including the socketless majority, where subtree-join cost rides only connected sockets) — RECORDED, with M4's measured join count at the 1,200-org hat as the trigger to revisit; a `visible_to` query per push (a DB read per event per connection — the N+1 the harness exists to refuse); connect-time-only auth with shorter tokens (narrows the window, closes nothing). |
@@ -511,6 +511,84 @@ MCP OAuth 2.1 upgrade (the vocabulary survives as OAuth scopes; the
 transport changes); a product wanting per-object grants (that is
 roles/policies territory, never scopes); noun-level socket narrowing when
 one app's families diverge in sensitivity.
+
+**ADR ident-8 · 2026-09-07 · the sign-in posture is deployment
+configuration, materialised through the one identity door.** *Context*: the
+hosted login shipped with self-registration allowed, no lockout and public
+organisation creation open on every environment (measured live before the
+rung: `allowRegister: true`, no `maxPasswordAttempts`, `GET
+/admin/v1/restrictions` = `{}`, `/ui/login/register/org` serving a working
+form), against ADR ident-4's rejection of open signup. *Decision*: three
+settings read from the environment (`ZITADEL_ALLOW_SELF_REGISTRATION`,
+`ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION`, `ZITADEL_MAX_PASSWORD_ATTEMPTS` —
+the NIST SP 800-63B ceiling, a product tightens it), materialised by
+`zitadel_seed` through full-body `ensure_*` writers on the admin API and
+reconciled by `zitadel_audit` (drift is exit 1 naming the remedy); the compose
+`DEFAULTINSTANCE_*` keys carry the same values for a fresh instance and are
+the belt, never the mechanism — they apply at instance creation only, and the
+belt may be tighter than the mechanism but never looser. Every writer declares
+the resource's full field set beside itself, read from the running build's
+API document, and a census test refuses a body that is a strict subset (the
+convention that closed the two partial writers that already existed: the
+label policy, five fields short, and the OIDC provider's `usePkce`).
+*Rejected*: an intent row plus workflow kind (a runtime door for a value no
+runtime persona holds — cost without a reader); compose keys alone (every
+existing instance stays open). *Measured at landing*: the instance-level write
+closes every org without a policy of its own, which is every org a fresh
+clone creates; on the shared laptop instance the org's own login policy had
+already been closed by a sibling product, so the door that visibly moved was
+public org registration, 200 → 404. *The org-level half, settled 2026-09-07*:
+`zitadel_seed` reconciles the credential's own org's login policy **only where
+that org has a policy of its own** (`isDefault` absent on the management `GET`)
+and leaves an inheriting org inheriting, because creating one would fork a
+value into two owners and make every later instance-level change silently not
+apply here (first principles 9); `zitadel_audit` judges that org's
+`allowRegister` where it is the org's own and defers to the instance verdict
+where it is not, so one console edit is one disagreement. Measured on the pinned
+build: `PUT /management/v1/policies/login` on an org with no policy of its own
+answers `404 Org-M0sif`, so the branch is the API's own shape and not a
+preference; and on the shared instance the org's `allowRegister` alone decided
+whether `/ui/login/register` served a working registration form or an error
+page. *Trigger to revisit*: the first product that wants per-tenant
+registration or lockout policy — then the row shape, with the audit comparing
+against the row.
+
+**ADR ident-9 · 2026-09-07 · the first identity has a door of its own, and it
+shuts behind itself.** *Context*: with self-registration closed (ADR ident-8) a
+deployment without a workforce IdP has no way to its first identity but the
+Zitadel console or the `FirstInstance` admin — measured from zero on a sibling
+product at twenty-one minutes, every step of it read off somebody else's admin
+UI; and `bootstrap_tenant` needs a `User` that only a first sign-in can mint.
+*Decision*: `manage.py zitadel_first_admin --email <address>` mints a
+credential-less Zitadel human and an invitation code through the existing
+`accounts/zitadel.py` writers (`ensure_invited_user`, `create_invite_code`,
+`invite_url` — no new writer) and prints the hosted set-password link and the
+two steps after it: sign in at the product so the adapter mints the `User`, then
+`bootstrap_tenant --email`. It writes no row of ours and no audit entry —
+nothing of ours changed, and the birth certificate stays `bootstrap_tenant`'s
+audited write (ADR core-17). **It refuses once any tenant exists**, so
+`core.services.invite_member` through REST and MCP is the only invitation path
+from the first member on; it also refuses an unconfigured platform, a loopback
+`PUBLIC_BASE_URL` outside DEBUG (the printed steps would be a dead end), and a
+`--email` that is not an address. The code is printed once and is in no log line
+and no row (`returnCode`, never `sendCode`: house rule 25 gives the product one
+sender and Zitadel is not it), the precedent being the client secret
+`--rotate-web-secret` prints. A federated deployment needs no command: first
+sign-in through the workforce IdP, then `bootstrap_tenant`. *Rejected*: the
+product's invitation workflow at zero (it needs a tenant, an actor, a running
+worker and a mail path before the first human exists, and lands on the same
+undriven hosted last mile); `bootstrap_tenant` creating the Zitadel human
+(`core` may not import `accounts.zitadel` — house rules 7 and 27); a
+dev-user-shaped account with a password we choose (a credential we transport —
+`ensure_human_user`'s own docstring says why not); documenting the console path
+only (the wall stays); an option on `zitadel_seed` (that runs on every
+`setup.sh`, and a once-on-purpose act with a credential on stdout is its own
+command); a `--force` on the tenant-exists refusal (the product has an
+invitation door; a force flag is a second one). *Trigger to revisit*: the first
+product that federates at birth and never runs this command — then it is
+deleted, not kept; or the hosted invite page becomes driveable headlessly, at
+which point the command's printed steps can be verified by machine instead of
+by a person once.
 
 **ADR accounts-1 · the invitation provisions the person; there is
 no signup door.** *Context*: an early from-zero persona walkthrough had one step with no door at
@@ -1040,7 +1118,7 @@ appears.
 
 | Area | Ruling |
 |---|---|
-| Invitations & tenant lifecycle | `core.services.invite_member(email, tenant, role)` → the invited address's first sign-in at the identity platform joins the membership, through `accounts.adapter` (ADR ident-4); `create_tenant / suspend_tenant / close_tenant` as services. |
+| Invitations & tenant lifecycle | `core.services.invite_member(email, tenant, role)` → the invited address's first sign-in at the identity platform joins the membership, through `accounts.adapter` (ADR ident-4); `create_tenant / suspend_tenant / close_tenant` as services. **First identity** (ADR ident-9) — a federated deployment: first sign-in through the workforce IdP, then `manage.py bootstrap_tenant --email`; a password-only deployment: `manage.py zitadel_first_admin --email`, open the link it prints and set a password, sign in, then `bootstrap_tenant --email`. `zitadel_first_admin` refuses once any tenant exists, so `invite_member` is the only invitation path from the first member on. |
 | Email | Django email backend called **from a workflow activity** (retries); **Mailpit** in compose for dev; a provider via `connections` in production. |
 | Rate limiting | ninja throttling per token and per tenant, defaults in settings; MCP tools share the same limiter. **ADR core-19 · context:** 429 was documented but no response header let a client back off before hitting it, and the throttle knows the numbers · **decision:** the `X-RateLimit-*` triple (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` as delta-seconds, matching `Retry-After`'s unit — no clock-skew ambiguity), stamped by the one middleware from what the throttle recorded on the request; the headers report the **binding** bucket (least remaining/limit ratio of the credential and tenant buckets) without naming it — which bucket binds is capacity information about the tenant's other credentials · **rejected:** the IETF RateLimit draft (`draft-ietf-httpapi-ratelimit-headers` — still a draft whose field names have churned across revisions; pinning it risks going stale as the draft churns, and adopting the RFC names once published is additive: stamp both through a window), per-bucket header pairs (a client can act on one number), headers on the MCP door (tools speak the refusal grammar; no HTTP header surface) · **trigger to revisit:** the draft becomes an RFC. |
 | CORS / CSRF / CSP | `django-cors-headers` with an env allow-list; session auth + CSRF for a same-site front end, token auth for everything else; `django-csp` in production settings. |
@@ -1634,6 +1712,26 @@ and F5's probe; the behavioural storage settings, deliberately outside the
 population; writes, covered only transitively through the two import clauses;
 tests, outside the walk by construction; and a client obtained legally and then
 passed onward, caught at the call and not at the hand-off.
+
+49. **The audit row names who and where, always** (ADR core-22; the row
+was owed here since the rule landed and is written now — the gap itself is
+the evidence for the numbered-list consistency check the queue carries).
+Every `@service` in the audited population — every one whose signature
+declares a keyword-only tenant — declares `actor: Actor` AND `tenant`, both
+required and never defaulted, or its dotted name is on the enumerated-absence
+list in `quality/rules.yaml` with its ADR core-22 absence number and ground.
+A nullable annotation conforms; a default does not. An allow-list entry
+naming no `@service` in the tree is a ghost and fires the list's own
+consistency half.
+
+50. **No credential written down in the browser tree** (rule 23's second
+population, through the scope-kind seam — the first `kind: js` rule). No
+module under `frontend/` binds a credential-shaped name (secret, token,
+credential, password, api/private/signing/access key, client secret; `*hash`
+excluded) to a quoted literal; the value arrives from the build environment
+and the module names it, the way the settings modules already do. Reads
+NAMES, never entropy — the declared trade a browser tree forces. On a tree
+with no `frontend/` the rule skips, printed, and every floor derives to 0.
 
 
 ## App map — data portability

@@ -264,6 +264,31 @@ def organization() -> dict[str, Any]:
     return dict(_call("GET", "/orgs/me").get("org") or {})
 
 
+def organizations() -> list[dict[str, Any]]:
+    """Every organisation on this INSTANCE. Counted by the audit, never written.
+
+    `organization()` above is the one the credential belongs to — the org this
+    deployment's seed owns and the only one anything here writes. This is the
+    whole instance's list, and it exists so that a second organisation is at
+    least VISIBLE: the audit's declared blind spot used to read "still
+    invisible: a second organisation", and a surface nobody can even count is a
+    surface nobody notices being added.
+
+    MEASURED on the pinned build: `POST /admin/v1/orgs/_search` with an empty
+    body answers `200` with `details.totalResult` and a `result` list of orgs
+    carrying `id`, `name`, `state` and `primaryDomain`.
+
+    **Its own page bound is a declared limit, not a hidden one.** `_search`
+    returns the rows Zitadel put on the page it chose, so on an instance with
+    more organisations than that page holds this list is short. That is
+    acceptable for the one thing it is for — *is there more than one?* — and it
+    is why the audit prints the count as an observation and reaches no verdict
+    on it. An instance whose org count is a number anybody depends on wants a
+    paging read, and that is the trigger for writing one.
+    """
+    return _search("/orgs/_search", {}, prefix=ADMIN)
+
+
 def projects() -> list[dict[str, Any]]:
     """Every project in the credential's org."""
     return _search("/projects/_search", {})
@@ -385,6 +410,36 @@ def login_policy() -> dict[str, Any]:
     reads a clean report.
     """
     return dict(_call("GET", "/policies/login").get("policy") or {})
+
+
+def label_policy() -> dict[str, Any]:
+    """The org's label policy, or `{}` — **and whether it is the org's own**.
+
+    MEASURED against the pinned build by a read-only probe, not read off a doc
+    page: `GET /management/v1/policies/label` answers `200` with the policy
+    under a `policy` key, and — exactly like `login_policy` above — the
+    interesting field is one Zitadel only *sometimes* sends. When the org has no
+    policy of its own the body carries a TOP-LEVEL `isDefault: true`; when
+    somebody has set one the key is absent and `details.resourceOwner` is the
+    org. The flag is returned alongside the policy rather than folded into it,
+    because "the org has never been branded" and "the org is branded to look
+    like the default" are different facts and the audit says which.
+
+    The colour keys are Zitadel's own — `primaryColor`, `backgroundColor`,
+    `fontColor`, each with a `*Dark` twin — plus `disableWatermark`,
+    `hideLoginNameSuffix` and `themeMode`. **Booleans are absent when false**
+    (proto3 omits its zero values), which is measured and is why the audit
+    compares with `.get(..., False)` and never on presence.
+
+    `/policies/label/_active` is NOT this endpoint's sibling on this build: it
+    answers 404, measured. The GET above returns the live policy directly.
+    """
+    body = _call("GET", "/policies/label")
+    policy = dict(body.get("policy") or {})
+    if body.get("isDefault") is not None:
+        # Lifted out of the envelope so one return value carries both facts.
+        policy["_isInstanceDefault"] = bool(body.get("isDefault"))
+    return policy
 
 
 def smtp_configuration() -> dict[str, Any]:
@@ -739,6 +794,43 @@ def invite_code_lifetime() -> timedelta | None:
     return None
 
 
+#: **The generic-OIDC provider's FULL field set**, read out of the
+#: API the pinned build serves: `ManagementServiceUpdateGenericOIDCProviderBody`
+#: in `/openapi/v2/swagger/v2/zitadel/zitadel/management.swagger.json` on
+#: ghcr.io/zitadel/zitadel:v4.17.1. `usePkce` is the eighth, and it was the one
+#: this writer omitted — so every sync sent `usePkce=false` by omission and
+#: silently switched off a PKCE somebody had enabled in the console.
+OIDC_IDENTITY_PROVIDER_FIELDS = frozenset(
+    {
+        "name",
+        "issuer",
+        "clientId",
+        "clientSecret",
+        "scopes",
+        "providerOptions",
+        "isIdTokenMapping",
+        "usePkce",
+    }
+)
+
+#: **The Google provider's FULL field set**, from the same document
+#: (`ManagementServiceUpdateGoogleProviderBody`). Five fields, and the writer
+#: below already sent all five — "the Google writer is clean" CONFIRMED
+#: against the API rather than taken on trust. Declared anyway, because the
+#: census in `apps/accounts/tests/test_zitadel_full_body.py` is a closed
+#: question over a declared population: a writer with no declaration is a
+#: writer the census cannot judge.
+GOOGLE_IDENTITY_PROVIDER_FIELDS = frozenset(
+    {
+        "name",
+        "clientId",
+        "clientSecret",
+        "scopes",
+        "providerOptions",
+    }
+)
+
+
 def ensure_oidc_identity_provider(
     *,
     name: str,
@@ -747,6 +839,7 @@ def ensure_oidc_identity_provider(
     client_secret: str,
     scopes: list[str] | None = None,
     existing_id: str = "",
+    use_pkce: bool | None = None,
 ) -> Resource:
     """A customer's IdP, materialised as an org-level generic OIDC provider.
 
@@ -761,7 +854,28 @@ def ensure_oidc_identity_provider(
     a first assertion would be an IdP granting something, and JIT provisioning in
     this product is `provision_sso_identity`'s job, with its three refusals
     (`apps/accounts/services.py`).
+
+    **`use_pkce` is `None` by default, and that is the fix.** This writer
+    used to omit the key entirely, and Zitadel's `PUT` is a REPLACE — so every
+    sync sent `usePkce=false` by omission and silently switched off a PKCE
+    somebody had enabled in the console, on a customer's own IdP, with nothing
+    anywhere saying so. `None` means "we have no opinion": the live provider's
+    own value is read back and sent, so a re-sync preserves the console's
+    setting instead of overwriting it, and a caller with an opinion passes a
+    bool. `False` on the create branch, because a provider that does not exist
+    yet has no setting to preserve and that is what Zitadel's own zero value is.
     """
+    # Our row's id, then the search by name — `_settled_target` holds both nets
+    # so this and the Google template below cannot drift apart. A row naming an
+    # IdP somebody deleted in the console falls through to create, which is the
+    # repair a re-sync is for; `zitadel_audit` is what makes it visible before
+    # then.
+    target = _settled_target(name=name, existing_id=existing_id)
+    settled_pkce = use_pkce
+    if settled_pkce is None:
+        live = get_identity_provider(idp_id=target) if target else None
+        oidc = ((live or {}).get("config") or {}).get("oidc") or {}
+        settled_pkce = bool(oidc.get("usePkce", False)) if isinstance(oidc, Mapping) else False
     payload: dict[str, Any] = {
         "name": name,
         "issuer": issuer,
@@ -769,6 +883,7 @@ def ensure_oidc_identity_provider(
         "clientSecret": client_secret,
         "scopes": scopes or ["openid", "profile", "email"],
         "isIdTokenMapping": False,
+        "usePkce": settled_pkce,
         "providerOptions": {
             "isLinkingAllowed": True,
             "isCreationAllowed": True,
@@ -777,12 +892,6 @@ def ensure_oidc_identity_provider(
             "autoLinking": "AUTO_LINKING_OPTION_UNSPECIFIED",
         },
     }
-    # Our row's id, then the search by name — `_settled_target` holds both nets
-    # so this and the Google template below cannot drift apart. A row naming an
-    # IdP somebody deleted in the console falls through to create, which is the
-    # repair a re-sync is for; `zitadel_audit` is what makes it visible before
-    # then.
-    target = _settled_target(name=name, existing_id=existing_id)
     if target:
         _call("PUT", f"/idps/generic_oidc/{target}", payload)
         log.info("accounts.zitadel.idp_updated", idp_name=name)
@@ -841,6 +950,442 @@ def ensure_google_identity_provider(
     body = _call("POST", "/idps/google", payload)
     log.info("accounts.zitadel.idp_created", idp_name=name, kind="google")
     return Resource(id=str(body.get("id", "")), created=True)
+
+
+#: **The label policy's FULL field set**, read out of the API the
+#: pinned build serves rather than recalled: `v1UpdateCustomLabelPolicyRequest`
+#: in `/openapi/v2/swagger/v2/zitadel/zitadel/management.swagger.json` on
+#: ghcr.io/zitadel/zitadel:v4.17.1, whose `properties` are exactly the eleven
+#: below. This writer used to send the five colours it had a column for plus
+#: `disableWatermark`, and Zitadel's PUT is a REPLACE: the five it omitted were
+#: zeroed on every branding sync, invisibly, because the no-op check and
+#: `zitadel_audit` both read only the keys we sent.
+LABEL_POLICY_FIELDS = frozenset(
+    {
+        "primaryColor",
+        "primaryColorDark",
+        "backgroundColor",
+        "backgroundColorDark",
+        "warnColor",
+        "warnColorDark",
+        "fontColor",
+        "fontColorDark",
+        "hideLoginNameSuffix",
+        "disableWatermark",
+        "themeMode",
+    }
+)
+
+#: What an absent key means on the label policy, so a merge over a live GET can
+#: fill a field the answer omitted. Proto3 omits its zero values, so an absent
+#: boolean is `False`; an absent colour is the empty string, which Zitadel
+#: renders as "no opinion"; `themeMode`'s zero value is its own first enum
+#: member. Same shape as `LOGIN_POLICY_ABSENT` below, and for the same reason:
+#: the field set is derived from this map so the two cannot drift.
+LABEL_POLICY_ABSENT: dict[str, Any] = {
+    "primaryColor": "",
+    "primaryColorDark": "",
+    "backgroundColor": "",
+    "backgroundColorDark": "",
+    "warnColor": "",
+    "warnColorDark": "",
+    "fontColor": "",
+    "fontColorDark": "",
+    "hideLoginNameSuffix": False,
+    "disableWatermark": False,
+    # `v1ThemeMode`'s zero value, read off the same document: the enum is
+    # UNSPECIFIED / AUTO / DARK / LIGHT with `"default": "THEME_MODE_UNSPECIFIED"`.
+    # A live policy on this build answers `THEME_MODE_AUTO`, so this default is
+    # reached only when Zitadel omitted the key entirely.
+    "themeMode": "THEME_MODE_UNSPECIFIED",
+}
+
+
+#: Our column names on the left, Zitadel's on the right. The translation lives
+#: HERE and nowhere else, for the reason every other name Zitadel uses is
+#: translated at this edge: `models.py` stays in our vocabulary, and the day
+#: Zitadel renames a key exactly one file changes.
+LABEL_POLICY_COLORS = {
+    "accent": "primaryColor",
+    "background_color": "backgroundColor",
+    "font_color": "fontColor",
+    "background_color_dark": "backgroundColorDark",
+    "font_color_dark": "fontColorDark",
+}
+
+
+def ensure_label_policy(
+    *,
+    accent: str,
+    background_color: str = "",
+    font_color: str = "",
+    background_color_dark: str = "",
+    font_color_dark: str = "",
+    is_watermark_disabled: bool = False,
+) -> Resource:
+    """The hosted sign-in screen's look, made to agree with our intent row.
+
+    The ninth `ensure_*`, and the same contract as the other eight: **the same
+    input twice leaves one object**, and the second call reports
+    `created=False`. What is different is that a LabelPolicy is a SINGLETON on
+    the org rather than a searchable object, so there is no `find_*` to open
+    with and no id to return — `Resource.id` carries the org that owns the
+    policy, which is the only identifier this surface has.
+
+    THREE MEASURED FACTS, all of them from a read-only probe plus one
+    write-and-restore probe against the pinned build, and each one load-bearing:
+
+    * **`PUT` refuses a no-op.** An unchanged update answers `400 Org-8nfSr`,
+      "Private Label Policy has not been changed". An `ensure_*` that simply
+      PUT every time would therefore *fail on its second call*, which is the
+      exact opposite of what Temporal's at-least-once delivery needs. So this
+      compares first and writes nothing when the live policy already says what
+      we want — the comparison is the idempotence, not a saving.
+    * **`POST` creates and `PUT` updates**, and which one applies is decided by
+      the top-level `isDefault` the GET carries: present means the org has no
+      policy of its own yet.
+    * **The draft has to be activated.** `POST /policies/label/_activate`
+      publishes it; without that call the values are stored and the login screen
+      does not change, which is the failure mode that looks exactly like
+      success. The sequence bumps on activation, measured.
+
+    **And a fourth, learned the expensive way: the `PUT` is a REPLACE.** This
+    writer used to build its body out of the five colours it had a column for
+    plus `disableWatermark` — six of the resource's eleven keys — so
+    `hideLoginNameSuffix`, `themeMode`, `warnColor`, `warnColorDark` and
+    `primaryColorDark` were zeroed on every branding sync, invisibly: the no-op
+    check above and `zitadel_audit` both read only the keys we sent. So the
+    intent is now merged over the live GET and the WHOLE of
+    `LABEL_POLICY_FIELDS` goes in one body. `apps/accounts/tests/
+    test_zitadel_full_body.py` is the census that keeps it that way.
+
+    Colours are passed through as given. Validating a hex string here would be a
+    second opinion about a value `config/settings/base.py` and the entrance
+    templatetag already validate, and two validators disagreeing is worse than
+    one.
+    """
+    ours: dict[str, str] = {
+        "accent": accent,
+        "background_color": background_color,
+        "font_color": font_color,
+        "background_color_dark": background_color_dark,
+        "font_color_dark": font_color_dark,
+    }
+    intent: dict[str, Any] = {
+        LABEL_POLICY_COLORS[column]: value for column, value in ours.items() if value
+    }
+    intent["disableWatermark"] = bool(is_watermark_disabled)
+
+    live = label_policy()
+    is_instance_default = bool(live.pop("_isInstanceDefault", False))
+    # **The full body, merged over the live one.** Booleans are
+    # ABSENT when false on this API (proto3 omits zero values), so every read
+    # goes through `.get` with the declared absent-value and never through key
+    # presence; `LABEL_POLICY_ABSENT` is what an omitted key means, and its own
+    # keys ARE `LABEL_POLICY_FIELDS`, so the two cannot drift.
+    baseline: dict[str, Any] = {
+        key: live.get(key, absent) for key, absent in LABEL_POLICY_ABSENT.items()
+    }
+    desired: dict[str, Any] = {**baseline, **intent}
+    if desired == baseline and not is_instance_default:
+        log.info("accounts.zitadel.label_policy_unchanged")
+        return Resource(id=str((live.get("details") or {}).get("resourceOwner", "")), created=False)
+
+    if is_instance_default:
+        _call("POST", "/policies/label", desired)
+        created = True
+        log.info("accounts.zitadel.label_policy_created")
+    else:
+        _call("PUT", "/policies/label", desired)
+        created = False
+        log.info("accounts.zitadel.label_policy_updated")
+    # Publish. A stored-but-unactivated policy is the failure that looks like
+    # success, so this is not conditional on anything.
+    _call("POST", "/policies/label/_activate", {})
+    settled = label_policy()
+    return Resource(
+        id=str((settled.get("details") or {}).get("resourceOwner", "")),
+        created=created,
+    )
+
+
+# --- the deployment's sign-in posture: instance-wide, and now reconciled -----
+#
+# Three surfaces that used to sit with the login policy and the SMTP sender in
+# `zitadel_audit`'s observed-never-judged section, because nothing wrote them
+# (ADR ident-2). Something writes them now, and the intent is the ENVIRONMENT
+# rather than a row (ADR ident-8): a deployment's sign-in posture is set once
+# per deployment by an operator editing `.env`, and no runtime persona changes
+# it — the same shape `_apply_workforce_provider` already uses, and the reason
+# no model, migration or workflow kind is added here.
+#
+# The compose `ZITADEL_DEFAULTINSTANCE_*` keys carry the same values and are the
+# belt, not the mechanism: `DefaultInstance` applies WHEN THE INSTANCE IS
+# CREATED, so on every instance that already exists — this box's, and every
+# sibling's — the seed below is the only thing that closes the door.
+
+
+#: **The login policy's FULL field set**, read out of the API the pinned build
+#: serves: `v1UpdateLoginPolicyRequest` (admin) and `v1UpdateCustomLoginPolicyRequest`
+#: (management) in the swagger documents at
+#: `/openapi/v2/swagger/v2/zitadel/zitadel/` on ghcr.io/zitadel/zitadel:v4.17.1.
+#: **The two carry the same seventeen properties**, measured by comparing the
+#: two `properties` maps — which is what lets one declaration serve both the
+#: instance's policy and an org's own, and what makes `PUT_FIELD_SETS` key on
+#: the resource path without its version prefix.
+#:
+#: The map is what an ABSENT key means, and the field set is derived from its
+#: keys so the two cannot drift. Proto3 omits its zero values, so an absent
+#: boolean is `False` and an absent Duration is `"0s"` — never `""`, which is
+#: not a Duration and which Zitadel refuses. `PASSWORDLESS_TYPE_NOT_ALLOWED` is
+#: `v1PasswordlessType`'s declared default in the same document.
+#:
+#: **Every one of the five lifetimes is a field we do not manage** — the exact
+#: class this convention is about. They are here so a body that carries our one
+#: also carries them back byte-identical, rather than zeroing a deployment's
+#: `passwordCheckLifetime` as a side effect of turning registration off.
+LOGIN_POLICY_ABSENT: dict[str, Any] = {
+    "allowUsernamePassword": False,
+    "allowRegister": False,
+    "allowExternalIdp": False,
+    "forceMfa": False,
+    "forceMfaLocalOnly": False,
+    "hidePasswordReset": False,
+    "ignoreUnknownUsernames": False,
+    "allowDomainDiscovery": False,
+    "disableLoginWithEmail": False,
+    "disableLoginWithPhone": False,
+    "passwordlessType": "PASSWORDLESS_TYPE_NOT_ALLOWED",
+    "defaultRedirectUri": "",
+    # A protobuf Duration zero value, not a credential; detect-secrets keys on
+    # the word in the field name, so the line below is allowlisted.
+    "passwordCheckLifetime": "0s",  # pragma: allowlist secret
+    "externalLoginCheckLifetime": "0s",
+    "mfaInitSkipLifetime": "0s",
+    "secondFactorCheckLifetime": "0s",
+    "multiFactorCheckLifetime": "0s",
+}
+LOGIN_POLICY_FIELDS = frozenset(LOGIN_POLICY_ABSENT)
+
+
+#: **The lockout policy's FULL field set**, from `v1UpdateLockoutPolicyRequest`
+#: in the admin swagger document on the same build. Two fields, and only one of
+#: them is ours: `maxOtpAttempts` rides along so a deployment that configured it
+#: keeps it (see `ensure_lockout_policy`).
+LOCKOUT_POLICY_ABSENT: dict[str, Any] = {
+    "maxPasswordAttempts": 0,
+    "maxOtpAttempts": 0,
+}
+LOCKOUT_POLICY_FIELDS = frozenset(LOCKOUT_POLICY_ABSENT)
+
+
+#: **The instance restrictions' FULL field set**, from `v1SetRestrictionsRequest`
+#: in the admin swagger document. `allowedLanguages` is the field we do not
+#: manage, and it is the reason this writer merges rather than sets: the API's
+#: own description of this endpoint is "Undefined values don't change the
+#: current restriction. **Zero values remove the current restriction**", so a
+#: body carrying only our one opinion would be safe today and would silently
+#: drop a language restriction the day somebody set one.
+#:
+#: The wrapper shape is Zitadel's own: `v1SelectLanguages` is `{"list": [...]}`
+#: because, in the document's words, "we have to wrap the languages list into a
+#: message so we can serialize empty lists". An empty list means all languages
+#: are allowed, which is the state an instance with no restriction is already in.
+RESTRICTIONS_ABSENT: dict[str, Any] = {
+    "disallowPublicOrgRegistration": False,
+    "allowedLanguages": {"list": []},
+}
+RESTRICTIONS_FIELDS = frozenset(RESTRICTIONS_ABSENT)
+
+
+def instance_login_policy() -> dict[str, Any]:
+    """The **instance's** default login policy, or `{}`.
+
+    `login_policy()` above is the org's (`MANAGEMENT`); this is the instance's
+    (`ADMIN`), and the difference is the whole of what the open door turned out
+    about on this box. An org that has set a policy of its own is governed by
+    it; **every org that has not — which is every org on a fresh instance — is
+    governed by this one**, so this is the read that says whether a newly
+    created organisation can register its own users.
+
+    MEASURED on the pinned build: `GET /admin/v1/policies/login` answers `200`
+    with the policy under a `policy` key, carrying `isDefault: true`, the five
+    lifetimes, and `allowRegister` only when it is true (proto3 omits its zero
+    values, which is why every read here goes through `.get` with a declared
+    default and never through key presence).
+    """
+    return dict(_call("GET", "/policies/login", prefix=ADMIN).get("policy") or {})
+
+
+def lockout_policy() -> dict[str, Any]:
+    """The instance's lockout policy, or `{}`. **An absent key means 0 attempts.**
+
+    MEASURED on the pinned build: `GET /admin/v1/policies/lockout` on a
+    freshly-created instance answers `{"policy": {"details": {...},
+    "isDefault": true}}` — **no `maxPasswordAttempts` key at all**, because
+    proto3 omits its zero values and the image's own `defaults.yaml` ships
+    `MaxPasswordAttempts: 0`. Zero is not "no limit configured yet": it IS the
+    configuration, and it means a password may be guessed forever. That is
+    the defect, and it reads as an empty object rather than as a number, which is
+    exactly why it survived every console glance.
+
+    **The read and the write are not the same path**, also measured: this GET is
+    `/admin/v1/policies/lockout` and the update is
+    `PUT /admin/v1/policies/password/lockout` (`v1UpdateLockoutPolicyRequest`).
+    Both spellings are read out of the admin swagger document the running build
+    serves, not recalled.
+    """
+    return dict(_call("GET", "/policies/lockout", prefix=ADMIN).get("policy") or {})
+
+
+def restrictions() -> dict[str, Any]:
+    """The instance's restrictions, or `{}` — **the public-org-registration door**.
+
+    MEASURED on the pinned build: `GET /admin/v1/restrictions` answers
+    `{"details":{}}` on an instance nobody has restricted — no
+    `disallowPublicOrgRegistration` key, no `allowedLanguages` — which means
+    anybody who can reach the hosted login can create an organisation and its
+    first admin, bypassing invitations entirely. The image's own
+    `defaults.yaml` says what the flag does: "defines if ZITADEL should expose
+    the endpoint /ui/login/register/org. If it is true, the endpoint returns the
+    HTTP status 404 on GET requests, and 409 on POST requests."
+
+    Not nested under a `policy` key like the two above: the answer IS the
+    resource, with a `details` block beside it.
+    """
+    return dict(_call("GET", "/restrictions", prefix=ADMIN))
+
+
+def ensure_login_policy(*, allow_register: bool, prefix: str = ADMIN) -> Resource:
+    """Whether this deployment lets people register themselves. **Full body.**
+
+    `prefix` chooses the surface: `ADMIN` (the default) writes the INSTANCE's
+    policy, which governs every org that has not set one of its own;
+    `MANAGEMENT` writes the credential's own org's, for an org that has. The
+    two take the same seventeen-field body on this build, measured, which is why
+    this is one function with a parameter rather than two that can drift.
+
+    **Idempotent by comparison, not by the API's forgiveness.** Every field is
+    read off the live policy and sent back; only `allowRegister` is ours. When
+    the merged body equals the live one, nothing is written and `created` is
+    `False` — which is what an at-least-once caller needs, and which is also the
+    only way the five lifetimes and `secondFactors` survive a write
+    byte-identical.
+
+    **The `PUT` refuses a no-op, MEASURED** — the same shape the label policy's
+    does, and the same consequence: an unchanged body answers
+    `400 INSTANCE-5M9vdd`, "Default Login Policy has not been changed". So the
+    comparison above is not a saving, it IS the idempotence: a writer that `PUT`
+    unconditionally would succeed on its first call and fail on its second,
+    which is the call `scripts/setup.sh` makes on every run and the call
+    Temporal's at-least-once delivery guarantees will happen.
+    """
+    live = login_policy() if prefix == MANAGEMENT else instance_login_policy()
+    baseline: dict[str, Any] = {
+        key: live.get(key, absent) for key, absent in LOGIN_POLICY_ABSENT.items()
+    }
+    desired: dict[str, Any] = {**baseline, "allowRegister": bool(allow_register)}
+    owner = str((live.get("details") or {}).get("resourceOwner", ""))
+    if desired == baseline:
+        log.info("accounts.zitadel.login_policy_unchanged", allow_register=bool(allow_register))
+        return Resource(id=owner, created=False)
+    _call("PUT", "/policies/login", desired, prefix=prefix)
+    log.info("accounts.zitadel.login_policy_updated", allow_register=bool(allow_register))
+    return Resource(id=owner, created=True)
+
+
+def ensure_lockout_policy(
+    *, max_password_attempts: int, max_otp_attempts: int | None = None
+) -> Resource:
+    """How many wrong passwords a person gets before the account locks. **Full body.**
+
+    The instance's policy, which every org without one of its own inherits. Zero
+    means unlimited, and zero is the image's shipped default — so a deployment
+    that never called this is a deployment where a password may be guessed
+    forever.
+
+    **`max_otp_attempts` defaults to `None`, meaning "keep what is live".** It
+    is the second half of this two-field resource and it is not ours: a
+    deployment that configured an OTP lockout keeps it, because the `PUT` is a
+    REPLACE and a body carrying only our one opinion would zero it. A caller
+    with an opinion passes an int and manages both.
+
+    The read is `GET /admin/v1/policies/lockout`; the write is
+    `PUT /admin/v1/policies/password/lockout`. That asymmetry is Zitadel's, it
+    is measured off the admin swagger document the running build serves, and it
+    is the kind of thing that turns into a 404 nobody expected.
+
+    **This `PUT` refuses a no-op too, MEASURED**: an unchanged body answers
+    `400 INSTANCE-0psjF`, "Errors.Instance.LockoutPolicy.NotChanged". So the
+    comparison above is the idempotence rather than a saving, exactly as it is
+    in `ensure_login_policy`. `ensure_restrictions` is the one of the three that
+    ACCEPTS a no-op (200, sequence unmoved, also measured) — and it compares
+    anyway, so that `created` means the same thing in all three and the seed's
+    printed line can be believed.
+    """
+    live = lockout_policy()
+    baseline: dict[str, Any] = {
+        key: live.get(key, absent) for key, absent in LOCKOUT_POLICY_ABSENT.items()
+    }
+    # Zitadel serialises these as JSON numbers; a deployment that hand-edited
+    # one into a string would otherwise make every comparison disagree forever.
+    baseline = {key: int(value) for key, value in baseline.items()}
+    desired: dict[str, Any] = {**baseline, "maxPasswordAttempts": int(max_password_attempts)}
+    if max_otp_attempts is not None:
+        desired["maxOtpAttempts"] = int(max_otp_attempts)
+    owner = str((live.get("details") or {}).get("resourceOwner", ""))
+    if desired == baseline:
+        log.info(
+            "accounts.zitadel.lockout_policy_unchanged",
+            max_password_attempts=int(max_password_attempts),
+        )
+        return Resource(id=owner, created=False)
+    _call("PUT", "/policies/password/lockout", desired, prefix=ADMIN)
+    log.info(
+        "accounts.zitadel.lockout_policy_updated",
+        max_password_attempts=int(max_password_attempts),
+    )
+    return Resource(id=owner, created=True)
+
+
+def ensure_restrictions(*, is_public_org_registration_disallowed: bool) -> Resource:
+    """Whether a stranger may create an organisation here. **Full body.**
+
+    A different door from `ensure_login_policy`'s: that one
+    governs whether a person may register themselves into an existing
+    organisation, this one governs `/ui/login/register/org`, which creates an
+    ORGANISATION and its first administrator in one form. A product whose
+    invitations are the way in has both doors to close, and the second one is
+    invisible from the first: the org-registration page answers `200` with a
+    working form on an instance whose login policy already refuses
+    self-registration. Measured on this box, which is how it was found.
+
+    `allowedLanguages` is merged from the live answer rather than set, because
+    this endpoint's own description is "Undefined values don't change the
+    current restriction. Zero values remove the current restriction" — so a
+    partial body here is not merely a REPLACE, it is a REMOVE.
+    """
+    live = restrictions()
+    baseline: dict[str, Any] = {
+        key: live.get(key, absent) for key, absent in RESTRICTIONS_ABSENT.items()
+    }
+    desired: dict[str, Any] = {
+        **baseline,
+        "disallowPublicOrgRegistration": bool(is_public_org_registration_disallowed),
+    }
+    owner = str((live.get("details") or {}).get("resourceOwner", ""))
+    if desired == baseline:
+        log.info(
+            "accounts.zitadel.restrictions_unchanged",
+            disallow_public_org_registration=bool(is_public_org_registration_disallowed),
+        )
+        return Resource(id=owner, created=False)
+    _call("PUT", "/restrictions", desired, prefix=ADMIN)
+    log.info(
+        "accounts.zitadel.restrictions_updated",
+        disallow_public_org_registration=bool(is_public_org_registration_disallowed),
+    )
+    return Resource(id=owner, created=True)
 
 
 def _settled_target(*, name: str, existing_id: str) -> str:
@@ -1023,3 +1568,61 @@ def rotate_api_application_secret(*, project_id: str, app_id: str) -> Resource:
         created=True,
         detail={"clientSecret": str(body.get("clientSecret", ""))},
     )
+
+
+#: **The full-body convention's declared population**: every PUT-shaped
+#: writer in this module, by the resource path it PUTs to, with that resource's
+#: FULL field set beside it.
+#:
+#: Zitadel's management and admin PUTs are REPLACES, not merges. A writer whose
+#: body is a strict subset of the resource's field set therefore zeroes every
+#: field it left out — silently, because the writer's own no-op check and
+#: `zitadel_audit` both read only the keys the writer sends. That is one shape
+#: with three sightings (the label colours, the OIDC provider's `usePkce`, and a
+#: sibling platform's login policy), which is why the convention is declared here
+#: rather than remembered:
+#: **every `ensure_*` merges its intent over the live GET and sends the whole
+#: set**, and the census in `apps/accounts/tests/test_zitadel_full_body.py`
+#: reads these declarations and fails by name when a body is short.
+#:
+#: Every set above was read out of the API this deployment actually runs —
+#: `/openapi/v2/swagger/v2/zitadel/zitadel/{admin,management}.swagger.json` on
+#: ghcr.io/zitadel/zitadel:v4.17.1 — never recalled from a doc page. The source
+#: message name is named beside each set.
+#:
+#: The key is the resource path WITHOUT a version prefix, so the login policy's
+#: two surfaces (the instance's on `ADMIN`, an org's on `MANAGEMENT`) share one
+#: declaration — which is a measured fact, not a convenience:
+#: `v1UpdateLoginPolicyRequest` and `v1UpdateCustomLoginPolicyRequest` carry the
+#: same seventeen properties on this build.
+PUT_FIELD_SETS: dict[str, frozenset[str]] = {
+    "/policies/login": LOGIN_POLICY_FIELDS,
+    "/policies/password/lockout": LOCKOUT_POLICY_FIELDS,
+    "/restrictions": RESTRICTIONS_FIELDS,
+    "/policies/label": LABEL_POLICY_FIELDS,
+    "/idps/generic_oidc/{id}": OIDC_IDENTITY_PROVIDER_FIELDS,
+    "/idps/google/{id}": GOOGLE_IDENTITY_PROVIDER_FIELDS,
+}
+
+
+def put_field_set(path: str) -> frozenset[str] | None:
+    """The full field set a `PUT` to `path` owes, or `None` when it owes none.
+
+    Takes the path as the transport sees it — with or without a version prefix,
+    with a real id where a template carries `{id}` — because the census reads
+    recorded requests and the future rule will read call sites, and both should
+    ask this one function rather than each growing its own normalisation.
+
+    `None` rather than an exception for an unknown path: `DELETE`s, `POST`s and
+    the reads all come through the same log, and a resolver that raised on them
+    would make the census assert about the wrong thing.
+    """
+    resource = path
+    for prefix in (MANAGEMENT, ADMIN, USER):
+        if resource.startswith(prefix):
+            resource = resource[len(prefix) :]
+            break
+    if resource in PUT_FIELD_SETS:
+        return PUT_FIELD_SETS[resource]
+    head, _, tail = resource.rpartition("/")
+    return PUT_FIELD_SETS.get(f"{head}/{{id}}") if tail else None

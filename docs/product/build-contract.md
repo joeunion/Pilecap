@@ -28,7 +28,11 @@ Pilecap/
 │   │   │                       #   the one hat resolver all doors call) · service.py (@service) · authz · audit (AuditEntry) ·
 │   │   │                       #   exceptions (+ the refusal registry/composer) · log · observability · lifecycle/schedules registries ·
 │   │   │                       #   api/ (CursorPagination, docs, scopes: FROZEN_FAMILIES) · health (/readyz organs) · admin (ServiceModelAdmin)
-│   │   └── management/commands/introspect.py   # real models, routes, consumers, tools, workflows, settings → JSON
+│   │   ├── management/commands/introspect.py   # real models, routes, consumers, tools, workflows, settings → JSON
+│   │   └── management/commands/newapp.py + management/app_template/   # the app generator: Django's startapp with THIS
+│   │                                           #   house's template — the canonical file set and nothing else, apps.py with
+│   │                                           #   depends_on, a door-parity stub that skips until a door exists. Green under
+│   │                                           #   --fast with nothing but the label filled in; refuses a label that would red
 │   ├── accounts/               # User (custom, email identifier) · ApiToken · auth.py (API_AUTH, ApiTokenAuth) · oauth.py (resource-server
 │   │                           #   validation) · zitadel.py (rule 27's ONE identity-platform door) · lifecycle · services.py · admin ·
 │   │                           #   api.py (`/api/v1/users/` deactivate/erase; `/api/v1/tokens/`; `/api/v1/auth/`) · mcp.py twins
@@ -39,7 +43,7 @@ Pilecap/
 │   ├── connections/            # Connection (per-tenant, encrypted credentials) · client.py (the httpx factory) · providers registry ·
 │   │                           #   OAuth callback pattern · one inbound webhook receiver using events · api.py
 │   ├── example/                # one ORG-scoped model end to end: Widget, services, schemas.py, api.py (PREFIX = "widgets"), admin,
-│   │                           #   mcp.py, workflows.py + activities.py, tests, migrations/, max_migration.txt
+│   │                           #   mcp.py, workflows.py + activities.py, tests, migrations/, max_migration.txt (once the first migration exists — linear-migrations skips a migration-less app, so a freshly generated one has none)
 │   ├── events/                 # Event + Outbox + WebhookEndpoint + Delivery; emit(); dispatch workflow (fan-out: signed
 │   │                           #   deliveries with retries/dead-letter + realtime push); inbound receiver helper ·
 │   │                           #   api.py (endpoints + `/api/v1/event-types/` catalogue) · mcp.py twins
@@ -74,6 +78,14 @@ Pilecap/
 │   ├── gate_ledger.sh          # verdict ledger keyed on tree hash + the caller field (sourced by check.sh);
 │   │                           #   and the partition's verdicts, keyed on <closure hash>:<discovery digest>
 │   ├── gate_lease.sh           # the MACHINE-WIDE full-gate lease: a second full gate WAITS, out loud
+│   ├── gate_refuse.sh          # the refusal seam (sourced by check.sh and by every library a banner stands
+│   │                           #   behind): `gate_refuse` prints a callee's first `!!` line AND records it, so each
+│   │                           #   `— see above.` banner prints `cause:` as its second line. A callee under
+│   │                           #   `$(...)` sets nothing — `gate_capture` is the caller-side form. A banner
+│   │                           #   whose callee recorded nothing SAYS so and is exit 2. Four in-process banners
+│   │                           #   stand behind a callee outside this seam — a separate process
+│   │                           #   (`queue_index.py`, two `sweep.sh --assert-none`) or `db.sh`'s `db_pin_leg` —
+│   │                           #   and print that sentence by design until those callees join it.
 │   ├── rung_start.sh           # one command to a ready worktree: reset, venv, database, introspect dump
 │   ├── test.sh                 # pytest wrapper; owns its exit code; never piped
 │   ├── setup.sh                # fresh clone → running: uv sync, hooks, compose up, DB, migrate
@@ -123,8 +135,11 @@ Pilecap/
 **Gate** — `./scripts/check.sh [--fast|--loop]`
 - `--fast`: ruff (lint+format check) · mypy · import-linter · house rules · `makemigrations --check --dry-run` · linear-migrations check · goalpost census (every executable instrument outside `apps/`/`config/` owes a row in `docs/product/instruments.md`; an uncensused one is exit 2) · db-pin (this checkout's .env DATABASE_NAME pin vs the derivation; a disagreement without a `# pinned` marker is exit 1 naming both names). No services needed beyond what mypy/django needs to import settings. Target < 60 s. **Pre-commit runs this.**
 - `--loop`: `--fast` + `check --deploy` + the changed-files secret scan + ONE pytest pass over the derived test tier (fast tier + the rung's own app in full, the tier choice printed every run; a shared-test-infra change runs the full suite; Postgres + Redis up; Temporal tests use the SDK's time-skipping test environment, not the dev server). **The builder's per-rung gate.**
-- full (no arg): `--loop` + **the platform-partition leg** (self-tests its canaries, computes the two-part skip key — the input closure's hash plus a digest of every discovered population — consults the partition ledger, and SAYS which of the two happened; when a green verdict is banked for the key, both pytest passes run only the product's own tests plus the four always-run frozen nets, and the verdict re-banks only after two green whole-suite passes under an unbent environment. `quality/partition.yaml` is the lockfile, `docs/product/partition-closure.md` is the design and the authority. `--loop` is untouched) + second pytest pass + canary self-test (every canary must fire; every negative must stay silent; the shell-refusal driver `scripts/tests/test_backup_restore.sh` runs in this leg) + anything e2e a product adds. Records a verdict in the ledger keyed on `git rev-parse HEAD^{tree}`. **Pre-push consults the ledger; a measured-green tree passes in ~2 s.**
+- full (no arg): `--loop` + **the platform-partition leg** (self-tests its canaries, computes the two-part skip key — the input closure's hash plus a digest of every discovered population — consults the partition ledger, and SAYS which of the two happened; when a green verdict is banked for the key, both pytest passes run only the product's own tests plus the four always-run frozen nets, and the verdict re-banks only after two green whole-suite passes under an unbent environment. `quality/partition.yaml` is the lockfile, `docs/product/partition-closure.md` is the design and the authority. `--loop` is untouched) + second pytest pass + canary self-test (every canary must fire; every negative must stay silent; **every** shell drive under `scripts/tests/` runs in this leg — `test_backup_restore.sh` was the first, and `test_gate_explain.sh`, `test_drive_preamble.sh` and `test_pipefail_readers.sh` the most recent to join. The list is not written down anywhere, on purpose: each drive is registered at its own `# >>> drive: <name> >>>` sentinel in `scripts/check.sh`, and `scripts/tests/test_drive_preamble.sh::case_every_drive_under_tests_is_invoked_by_the_gate` censuses that set against the directory, so a drive that ships unwired is a red rather than a promise. `deploy/tests/` is the declared gap and the leg prints it) + anything e2e a product adds. Records a verdict in the ledger keyed on `git rev-parse HEAD^{tree}`. **Pre-push consults the ledger; a measured-green tree passes in ~2 s.**
+- `--pr --base <sha>`: the **full gate with its two pytest passes narrowed** to the scope of `<sha>...HEAD` — same exclusive lease, same slot, same legs in the same order, same sanction rules, and the organ tier NOT applied (every test the change can reach runs, organ-reaching or not). It **banks nothing**: no full verdict row and no partition row, because a narrowed run vouches for no tree. Exit 2, never a smaller run: no `--base`, a base git cannot resolve, a base that is not an ancestor of HEAD, a dirty tree, an app label the declarations cannot account for, or an always-on floor unmet — all of them above the lease. **Reader (the trigger line): the consumer's `CI-PR-1` calls `--pr --base` from their own `ci.yml` at the publish carrying the scope files; this repository's own `ci.yml` gains that line in the wave that lands the sharded CI gate, and until then this mode's only caller is a human under a typed sanction.**
 - Exit: **0 clean · 1 violations · 2 enforcement broken** (dead canary, unbound scope/floor, consistency failure, negative-corpus hit, unknown flag). 2 outranks a pass. A mistyped flag is exit 2, never a silent full run.
+
+**What the `--loop` scope costs, declared.** `--loop` runs the fast tier narrowed to the active rung's scope: its touched apps in full, the reverse-transitive `depends_on` closure of those apps at the fast tier, the test trees of any app whose only changed files are under `apps/<x>/tests/` (plus the modules that import those test packages), and the always-on cross-app set. So a red that **only a deselected app's test would show — a coupling that is not an import** (an event name, a registry token, a template path, a settings key, a fixture resolved by name at runtime) lands on main and is caught by the full gate at push, within hours, never on a deploy. The belts: the always-on set runs at every scope including an empty one; a change to shared test infrastructure or to `config/**` runs FULL; the full gate on main runs two whole-suite passes (`pm_push.sh --bank`, and CI on push). `scripts/loop_tier.sh` prints the same sentence as a note on every tests-only run rather than leaving it written down only here.
 
 **Database** — `scripts/db.sh` derives `DATABASE_NAME` as `djb_<branch>_<8-hex path hash>`, so every checkout — clone or worktree, same branch or not — gets its own database on the one compose Postgres; a `DATABASE_NAME` already in the environment wins over the derivation, and `setup.sh` persists the derived name into `.env` so a bare `manage.py` resolves the same database the scripts do — reconciling a stale pin on every run unless a `# pinned` comment line sits directly above the bare `DATABASE_NAME=<name>` line (the deliberate-pin marker — its own line, never inline, because `environ.read_env` and docker `--env-file` read an inline comment INTO the value; `db.sh` refuses the inline form and prints the disagreement either way). Test DB is `test_` + that name (Django default).
 
@@ -137,6 +152,29 @@ Pilecap/
 **Introspection** — `uv run python manage.py introspect` prints JSON: `apps`, `models` (fields, relations, bases), `urls` (name, pattern, the callable), `routes` (pattern, methods, name, `auth`, `paginated` — from the live ninja registry), `tools`, `consumers`, `workflows`, `activities`, and the non-secret `settings`. This is what agents read instead of guessing.
 
 **Skills** — every development brief says: *load `.claude/skills/django-conventions/SKILL.md` before writing code.* The product-manager skill's dispatch-briefs say so too.
+
+## Where a product's edge census lives
+
+A product's edge — the load balancer rules, the reverse proxy's routes, the
+prefixes the front door actually answers on — is configuration nobody's app
+imports, so a tripwire over it has to run at **every** scope or it is not a
+tripwire. **Put it at `apps/test_<edge>.py`: a test module at the `apps/` root,
+belonging to no app.** That placement is always-on *by construction* rather than
+by a marker anyone can forget — an item whose nodeid names no app can never be
+inside any scope, so `--loop`, `--loop --mine` and `--pr` all leave it selected
+(`apps/conftest.py`, `_is_always_on` and the `apps_root_modules` floor beside
+it), and the floor notices if one of those modules is moved aside. `apps/test_*.py`
+is the platform's own mechanism, not a product concept: this repository ships
+three such modules, and a product adds its own beside them without touching
+`config/`, `pyproject.toml` or the scope derivation.
+
+**`deploy/tests/` is the wrong home for one, and silently so.** pytest collects
+only `testpaths = ["apps"]` (`pyproject.toml`), so a Python census under
+`deploy/` is never collected by any pytest leg; and the shell drives that do live
+there are invoked by **no gate moment** — not `--fast`, not `--loop`, not the
+full gate, not CI — which `scripts/check.sh` prints as a declared blind spot at
+the end of its selftest-drive leg. A census placed there is green because nothing
+ever ran it.
 
 ## Conventions every layer assumes
 

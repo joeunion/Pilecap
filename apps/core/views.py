@@ -40,13 +40,26 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from django.conf import settings
+from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
 from django.urls import NoReverseMatch, URLPattern, URLResolver, get_resolver, reverse
+from django.views.decorators.csrf import ensure_csrf_cookie
 
+from apps.core.authz import effective_role
 from apps.core.mcp import MCP_PATH
+from apps.core.middleware import ORG_HEADER, TENANT_HEADER
+from apps.core.requests import TenantRequest
 
-__all__ = ["Door", "Resource", "doors", "index", "rest_resources", "template_version"]
+__all__ = [
+    "Door",
+    "Resource",
+    "doors",
+    "index",
+    "rest_resources",
+    "template_version",
+    "welcome",
+]
 
 #: The namespace `config/urls.py` mounts the ninja API under. Named once, and
 #: read rather than assumed: `_api_mount()` returns None when nothing answers to
@@ -222,5 +235,69 @@ def index(request: HttpRequest) -> HttpResponse:
             "doors": doors(),
             "resources": rest_resources(),
             "version": template_version(),
+        },
+    )
+
+
+@login_required
+@ensure_csrf_cookie
+def welcome(request: TenantRequest) -> HttpResponse:
+    """`GET /welcome/` — where a completed sign-in lands, and what it landed as.
+
+    **Why this exists at all.** `LOGIN_REDIRECT_URL` used to be `"/"`, so the
+    last screen of the sign-in chain was the door index: a monospace directory
+    listing addressed to an operator, reached by a person who had just typed a
+    password. It is the one screen of the first minute that says nothing about
+    the person who just arrived, and it was the fourth of the four defects the
+    entrance survey measured.
+
+    **What it shows, and why those four facts.** Not a greeting: the four
+    things a session actually IS here, which are the four things that go wrong
+    invisibly. *Who* you are, *whose* data you are in (`X-Tenant` resolved
+    against your memberships), *which hat* you are wearing inside that tenant
+    (`X-Org`, resolved by `core.middleware.resolve_org` — the one function all
+    four doors call), and *what that hat can do* (`effective_role`, which
+    inherits downwards). A person who signs in and reads "no organization
+    resolved" has been told, on the first screen, the thing that would
+    otherwise have shown up an hour later as an empty list with no explanation
+    — because every org-scoped read fails closed on an unresolved hat, and
+    fails closed by returning NOTHING rather than by refusing.
+
+    **It is a worked example, not a landing page.** A product mounts its own
+    `path("welcome/", ...)` ahead of this one — or points `PRODUCT_BASE_URL` at
+    its front end, which is what `LOGIN_REDIRECT_URL` derives from — and this
+    disappears without anybody deleting it. It is SHADOWED, not configured.
+
+    **It reads, and only reads.** No service call, no write, no `emit`. The
+    role lookup is one query through `effective_role`; the tenant and the hat
+    were already resolved by `TenantMiddleware` before this function was
+    reached, so the page reports what the request WAS rather than re-deriving
+    it — which is the point of showing it at all.
+
+    **`ensure_csrf_cookie` is deliberate and it is this page's second job.**
+    A front end bootstrapping from a session has to get `csrftoken` from
+    somewhere before it can send `X-CSRFToken` on its first write, and until
+    now the settings comment beside `CSRF_COOKIE_*` named that page in the
+    abstract — "whatever page the front end bootstraps from" — while this tree
+    mounted no such page at all. This is it: the first authenticated HTML a
+    signed-in browser is guaranteed to have been handed.
+    """
+    # `@login_required` has already refused an anonymous request, so this is a
+    # real person — but `HttpRequest.user` is typed as the union and
+    # `AnonymousUser` is not an `AbstractBaseUser`, so the narrowing is written
+    # out rather than asserted away with a cast.
+    user = request.user if request.user.is_authenticated else None
+    org = request.org
+    return render(
+        request,
+        "core/welcome.html",
+        {
+            "actor_email": getattr(user, "email", ""),
+            "tenant": request.tenant,
+            "org": org,
+            "role": effective_role(user, request.tenant, org),
+            "tenant_header": TENANT_HEADER,
+            "org_header": ORG_HEADER,
+            "doors": doors(),
         },
     )

@@ -68,9 +68,13 @@ service contract, the doors' contracts, the app map and ADR formats — where
 ## The gate
 
 The gate is `./scripts/check.sh` — `--fast` (pre-commit runs it) · `--loop` (the
-builder's per-rung gate) · no argument (full; records a verdict in the ledger
+builder's per-rung gate, and the verifier's one consult — a reused verdict is
+the gate) · no argument (full; **refuses outside the push ritual
+unless a typed `DJB_GATE_SANCTION` names who and why** — the sanction prints in
+the header and is recorded beside the verdict; records a verdict in the ledger
 keyed on the tree hash; pre-push consults the ledger and does not re-measure a
-green tree). **Exit 0 clean · 1 violations · 2 enforcement broken.** 2 outranks
+green tree; the wired ritual forms are `pm_merge.sh --bank` and
+`pm_push.sh --bank`). **Exit 0 clean · 1 violations · 2 enforcement broken.** 2 outranks
 a pass: a dead canary, an unbound scope, an unknown flag are all 2 — a mistyped
 flag is never a silent full run. The semantics come from the house-rules engine
 (`python -m quality.gate`) and the gate inherits them. Legs and targets:
@@ -84,71 +88,9 @@ rule plants its canaries through the real scope at self-test time and expects
 them to fire; every negative stays silent; a canary that does not fire is exit
 2, not a pass. `does_not_cover` is the declared blind spot — the surveyor's map.
 
-The starter rules, by id as `architecture.md` numbers them (`rules.yaml` is the
-text): **1** `auth.User` never imported · **2** every concrete model inherits
-`BaseModel` · **3** every route carries an explicit `auth=` — on its router or
-on the route — never `auth=None` outside the `rules.yaml` allow-list; every
-list route is `@paginate`d · **4** no business logic in signals; services own
-writes · **5** query budgets on list endpoints at seeded scale · **6** one
-migration leaf per app · **7** app import contracts hold · **8** scoped models
-are read through `for_tenant(...)` · **9** workflow code is deterministic — no
-ORM, network, clock or randomness in a `workflows.py`; all of it lives in
-activities · **10** every door calls services — tools, consumers, routes,
-activities and receivers never write to a model directly · **11** every app
-keeps the canonical file shape — a `utils`/`helpers`/`logic` file doing a
-canonical job is a violation · **12** reads and writes are separate:
-`selectors.py` never writes; `services.py` never returns a queryset for
-display · **13** every write in `services.py` is `@service` — keyword-only,
-audited — and a service that resolves an actor authorizes
-(`authz.require` or `# authz: <reason>`); a scoped model's writes have a
-`policies.py` entry · **14** HTTP vocabulary never appears below the doors —
-services raise `core.exceptions.*`; the one mapper lives in `config/api.py` ·
-**15** field policies: no `FloatField` on money or quantity, `DateTimeField`s
-end `_at` and `DateField`s `_on`, `on_delete` explicit and never `DO_NOTHING`,
-no `is_deleted` booleans, and a secret-shaped field (`secret`/`token`/`credentials`/`signing_key`, `*_hash` excluded) is a declared encrypted type · **16** the naming grammar holds — apps plural, models
-singular, services verbs from the declared lexicon, selectors `get_`/`list_`,
-schemas suffixed `In/Out/Patch/Filter/Page`, booleans `is_`/`has_`, and events
-`<app>.<noun>.<past-verb>`, declared in the app's `events.py`, never a literal
-at a call site · **17** door parity: a capability on REST is on MCP unless
-exempted in `rules.yaml` with the reason · **18** workflow ids are
-deterministic — built by `workflow_id()`, never random — a house-shaped `platform:` constant also passes, and the starters themselves may not grow an id default · **19** structured
-logging only, through `core.log` — no `print`, no bare `logging.getLogger`, no
-f-string in a log call · **20** append-only is a declared population, not a
-name — a model that declares `append_only = True` may have rows created and
-nothing anywhere updates or deletes one; `AuditEntry` is the first member and
-the gate reads the population off the declarations · **21** every admin on a scoped model
-inherits `core.admin.ServiceModelAdmin` · **22** migrations are
-expand/contract — no non-nullable `AddField` without a default, no
-`RunPython` without a reverse, no drop while the code still references the
-name · **23** supply chain clean — `pip-audit`, no AGPL/GPL dependency, no
-secret in the tree · **24** an org-scoped model is read
-`.for_tenant(t).visible_to(actor_or_org)` — the second half is not optional —
-or `.governing(org)`, which is upward config resolution and never upward
-visibility, and is legal only on a model that declared `InheritedDownward`;
-`Membership.role` is written only by the membership services (the escalation
-wall) and `Organization.path`/`.parent` only by the organization services ·
-**25** `comms.send()` is the only legal sender — no module under `apps/`
-imports a mail module outside the `rules.yaml` allow-list, because consent,
-quiet hours and suppression are enforced inside `send()` · **26** a service
-names nothing the actor could not have reached — a `@service` that writes an
-org-scoped row and takes a parameter annotated with an org-scoped model passes
-it through `core.authz.may_be_named`, or carries `# reach: <reason>` on the
-parameter, counted and printed. · **27** one door to the identity
-platform — identity configuration is written through services onto our rows
-and materialised in Zitadel by one activity (**the row is the intent; the
-console is a window, not a door**): no module outside `apps/accounts/zitadel.py`
-names `ZITADEL_PAT` (`config/settings/` excepted, where the environment is
-read) and only that activity and the `zitadel_*` commands import it, because
-an external call inside a service's transaction is a hiccup that rolls back a
-legitimate row; `manage.py zitadel_audit` is the read-only drift tripwire for
-the console, which no check can see. · **28** every workflow class
-closes its run row through the finish seam or declares `owns_no_run = True` —
-the ledger never lies by omission · **29** a role value that arrives as a
-parameter or configuration is bounded against the granter's own ceiling at the
-model write — nobody grants above themselves through a config field either ·
-**30** a declared retry-clock field (`next_attempt_at` and its shapes) has a
-production reader — a schema built for a poller that was never built is how an
-outbox strands events silently.
+The rule set itself is derived, never listed here: `python -m quality.gate
+--rules` prints every rule that exists today, and `--explain <id>` prints one in
+full. `quality/rules.yaml` is the text; `architecture.md` numbers them.
 
 ## The schema discipline
 
@@ -185,6 +127,109 @@ pays nothing**: a depth-one tree behaves exactly as a flat tenant did.
 `.claude/skills/django-conventions/SKILL.md`. Load it before writing any Python
 in `apps/`, `config/` or tests. They are not summarised here so they cannot
 drift from here.
+
+## Engineering first principles (owner, 2026-09-07 — defaults, not dogma)
+
+Synthesized from the owner's working draft for agent ingestion. They bind every
+design, decomposition and review. `architecture.md` records the settled
+instances for this template; where a principle names a technology this template
+does not ship, `architecture.md` is the authority on what is here and why, and a
+product adopting the named tool records it there. An exception is recorded,
+never implied (principle 20).
+
+1. **Complexity is intentional.** Every piece names the problem it solves, the
+   alternatives rejected and its operational cost; accidental or inconsistent
+   complexity is a defect. Concentrate it where it buys reliability, scale,
+   safety or value.
+2. **Prefer the established technology.** Organization-wide consistency outranks
+   marginal superiority in one service. Preferred: durable workflows → Temporal ·
+   cache and ephemeral state → Redis · messaging/queues → Azure Service Bus ·
+   feature flags → Unleash · tenant configuration → the internal configuration
+   system. A new technology, vendor, framework, store, queue, engine or
+   overlapping tool needs a written proposal and architectural approval stating:
+   why the approved tools are insufficient · the measurable benefit ·
+   operational and organizational cost · failure modes · security · migration
+   and exit · long-term ownership · why one more concept is worth it. "Cleaner",
+   "I prefer it" and "newer" are not reasons.
+3. **Managed first, own later.** Prefer managed services until the workload is
+   understood; self-host only when cost is material, the workload is
+   characterized, operations are quantified and ownership demonstrably pays.
+   Operational burden is part of the cost.
+4. **External systems are untrusted.** Every dependency will fail, slow, lie,
+   change or vanish. An integration ships with timeouts, retries, backoff,
+   circuit breaking, idempotency, rate limits, dead-lettering, invalid-response
+   handling, partial failure, degraded operation, observability, recovery and a
+   vendor-outage stance. Resilience is part of the integration, never added after.
+5. **Every critical dependency has an exit.** Vendors sit behind a boundary we
+   own; SDKs, schemas, DTOs and vendor vocabulary do not spread through business
+   logic. One service boundary above the vendor is usually enough. Local
+   development gets an adapter, stub, emulator or fixture when the integration
+   would otherwise block it.
+6. **Prefer reversible decisions.** Scrutiny scales with the cost of reversal.
+   Persistent data, public APIs, customer contracts, topology, service
+   boundaries, core technology, security architecture and critical integrations
+   get deliberate design; a change revertible tomorrow needs less evidence.
+7. **Protect the critical path.** Distribution serves a purpose. Critical
+   synchronous paths carry no unnecessary dependency or blocking call; queues
+   where async buys scale, durability, isolation, resilience or responsiveness;
+   Temporal wherever a process needs durability, retries, state progression,
+   recovery, orchestration or long running.
+8. **Transactions protect database state only.** Never hold a transaction or
+   lock across an unpredictable network call without an extraordinary written
+   reason; external APIs, queues and workflow engines sit outside the boundary
+   (here: `emit()` inside the transaction, the relay outside it).
+9. **State has one owner.** Duplicated state says which system is authoritative,
+   why the copy exists, how updates propagate, strong or eventual, how staleness
+   is detected, how reconciliation runs and what happens when sync fails.
+   Caches, projections, indexes, mirrors and read models are tools, not truth.
+   Ambiguous ownership is a defect.
+10. **Caching is architecture.** A cache declares its source of truth, key
+    semantics, TTL, invalidation, consistency, failure behavior, stampede
+    protection, observability and resource limits. It never quietly becomes the
+    database.
+11. **Duplicate before abstracting wrongly.** Two similar implementations are not
+    a shared concept. Abstract when the concept is genuinely shared and
+    understood; an interface marks a real boundary, contract or substitution
+    point. Ceremonial indirection is a cost.
+12. **Libraries are dependencies.** Proportional scrutiny: what it provides, why
+    we need it, whether the platform already has it, maintenance health,
+    security, upgrade risk, transitive weight, replacement cost. Convenience
+    does not create permanent dependencies.
+13. **Consistency is a feature.** Prefer the established pattern over a locally
+    better variant; the cost of two ways to do one thing is part of every
+    decision.
+14. **Flags and configuration differ.** Feature flags control release, rollout,
+    experiment and reversibility; tenant or persistent customer configuration
+    lives in configuration management, never as flags that became permanent.
+15. **Test to the confidence required.** The cheapest test that gives the
+    confidence: plentiful unit tests where they pay, integration tests at the
+    boundaries that matter, end-to-end for complete workflows at their higher
+    cost; mocks, fakes and fixtures are legitimate. Clinically critical
+    workflows get correspondingly strong verification.
+16. **Idempotency is first-class.** Assume at-least-once everywhere: commands,
+    consumers, jobs, workflows, integrations. Where it cannot be guaranteed, the
+    architecture accounts for duplicate execution explicitly. "Exactly once" is
+    never assumed.
+17. **Observability is part of the feature.** Structured logs, metrics, tracing
+    where valuable, correlation ids, error context, dashboards or queries,
+    alerting where warranted. Errors feed a process that classifies and resolves
+    recurrence; the recurring-error trend points down, and a repeat is an
+    engineering problem, not an operational event.
+18. **Security and privacy are constraints.** Least privilege, minimum necessary
+    access, strong tenant isolation, auditability, secret management,
+    encryption, PHI/PII only where it must exist, explicit trust boundaries;
+    controls become platform defaults rather than per-engineer memory. HIPAA is
+    the floor, not the definition of good security.
+19. **Reliability is designed.** Machines, networks, deploys and vendors fail;
+    messages duplicate and arrive late; services restart; data goes temporarily
+    inconsistent; humans err. Recovery paths get the same attention as happy
+    paths wherever the workflow is clinically or operationally important.
+20. **Exceptions are deliberate.** Any principle may be broken, with the burden
+    on the exception: which principle, why the default is insufficient,
+    alternatives, risks, mitigations, temporary or permanent, how to reverse.
+    **A human owns and approves every architectural exception. An AI-generated
+    justification is not approval**, and "the AI suggested it" is never a
+    rationale — the engineer defends every decision they submit.
 
 ## Standing rules
 

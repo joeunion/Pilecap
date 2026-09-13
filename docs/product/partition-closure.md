@@ -215,7 +215,7 @@ by stating it.
 
 | the edit | closure hash | digest | consequence |
 |---|---|---|---|
-| product `services.py`, `selectors.py`, its own tests, its migrations¹ | unchanged | unchanged | **skip — the dividend, and it is sound**: no platform test reads any of it |
+| product `services.py`, `selectors.py`, its own tests, its migrations¹ | unchanged | unchanged | **skip — the dividend, and it is sound**: no platform test reads any of it — *checked*, both halves: `partition.py::read_census` (a path a platform test builds) and `partition.py::import_census` (a module a platform test imports)² |
 | product adds an app, a route, a tool, a model, a kind, an event, a lifecycle/integration/schedule entry, a policy action (`policies.py`), a meter (`meters.py`) or a socket route (`consumers.py`) — or edits a door's docstring or schema | unchanged | **moves** | **one honest re-run**, then re-banked under the new digest |
 | any in-closure file | **moves** | — | full partition re-run, re-banked |
 | the environment bends (a read env var set non-default) | — | — | verdict runs but is **not banked**, reason printed |
@@ -223,6 +223,76 @@ by stating it.
 ¹ a migration that changes what the model registry shows changes the digest
 through the models section next time apps load; one that changes schema
 without touching the registry is the declared §3 residual.
+
+² **Row 1's sentence is a CHECKED rule, not a claim this file makes on the
+code's behalf.** It used to be prose, and prose is what a skip is worth when
+nobody is measuring it: a platform test that reaches into a product app makes
+row 1 false for that tree, silently, because a product-only edit moves neither
+key part while changing that test's answer. Two censuses close it, both in
+`quality/partition.py`, both run by `selftest` and therefore on **every path
+that can take the skip** — `decide()` calls `selftest()` before it ever consults
+the ledger, so an instrument gating a skip is never behind the skip:
+
+- **`read_census`** — the file-read half. A path a platform test BUILDS
+  (`BASE_DIR / "x" / "y"`) must be a closure member. It is what found C8 at the
+  freeze, and what found C9 afterwards (`templates/**`, which
+  `apps/accounts/tests/test_entrance_chain.py` walks with `rglob`).
+- **`import_census`** — the import half. No platform test module may import
+  `apps.<product>`, the product set DERIVED as every app directory carrying an
+  `apps.py` that `partition.yaml`'s `platform_apps` does not claim. The source
+  is the sibling platform's own import-census ruling (road (a)), where the
+  class was measured live rather than hypothesised.
+
+**`import_census` is born non-vacuous, and that is load-bearing on this tree.**
+Every app here is a platform app, so the derived product population is EMPTY and
+a green from the live census asserts over nothing. `canary_import_census` (§8.4)
+is what makes it falsifiable: it plants a real product app and a platform test
+importing it into a temporary tree, drives the real census over it, and requires
+the finding — a canary that does not fire is exit 2, not a pass. Its negative is
+the always-legal direction, a product test importing a platform module, and that
+stays silent because a product app's tests are not in the platform test
+population at all.
+
+**The declared residue, shared honestly with the sibling platform's blind spot
+1: BEHAVIORAL coupling.** An import census sees names, so a platform test that
+reaches a product app without naming it is invisible to it — through a database
+row the product's migrations created, a fixture the product registered, a
+registry entry discovered at run time, or an event payload consumed by shape.
+So is an import assembled at run time from a computed string. That residue is
+stated in `quality/partition.yaml`'s `does_not_cover`, which `selftest` prints
+on every run that relies on it.
+
+**Siting a plant, for anyone writing a drive against this table** (doctrine
+line from the planted-miss siting ruling; prose now — PART-1's §8.4 canary is
+where it is already enforced, and it is cited as the worked example below):
+
+> **A platform-app plant is invisible to a skipped partition.** A drive that
+> plants a deliberate miss — a canary, a fixture, a scratch module — and then
+> asks whether the suite notices, must site that plant where the suite it is
+> measuring will actually look. Plant it in a platform app and a SKIPPED
+> partition never runs the test that would have found it, so the drive measures
+> the skip rather than the miss and reports a false green. **A planted-miss
+> drive therefore sites its plant in a product app outside the touched
+> closure** — the population row 1 of this table calls `skip`, which is the same
+> population `partition.py::product_paths` hands pytest under a skip. **And on
+> THIS template's tree, where every app is a platform app, there is no such
+> app to site it in: the drive CREATES a throwaway product app** (a directory
+> with an `apps.py`, absent from `platform_apps`) and sites the plant there.
+> The qualifying condition — which apps are product apps — is **re-derived from
+> `quality/partition.yaml` at drive time**, by
+> `partition.py::product_app_labels`, and is never a hand list: a hand list is a
+> record of what was true when somebody typed it, and the whole hazard here is a
+> drive that is measuring a world that has moved.
+
+*Evidence, first-hand and in this tree:* `canary_import_census` (§8.4) is
+exactly that drive. Its check's live population is empty — `platform_apps`
+names all thirteen app labels — so the canary could not be sited in any existing
+app and had to build a scratch product app in a temporary tree to have anything
+to find. Without it the import census would have shipped green over an empty
+quantifier, which is the failure this line exists to prevent. The sibling
+platform's own import-census ruling reached the same place from the other side:
+it could measure its class live because its tree HAS product apps, and ours
+does not.
 
 *(An earlier draft of row 1 listed `policies.py` as a skip. A doorless plant
 carrying only a `policies.py` entry moved the digest, because the policies

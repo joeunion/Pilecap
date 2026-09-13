@@ -1,0 +1,27 @@
+{% extends "account/base_entrance.html" %}
+{% comment %}
+The page somebody lands on when they pressed cancel — or back — on the identity
+platform's own screen.
+
+Nothing went wrong here, and the page should not read as though something did.
+allauth's own copy calls it a "Login Cancelled" failure and tells the person
+that if this "was a mistake" they may proceed to sign in; this one states the
+fact without the apology, because cancelling is a thing people do on purpose
+and being told off for it is the wrong register.
+
+It is the third of the three returns from the hosted step — succeeded
+(the session), failed (`socialaccount/authentication_error.html`), declined
+(this) — and it is the one that most often gets no override at all, which is
+how a person who simply changed their mind ends up on the only raw
+Times-New-Roman page in an otherwise finished product.
+{% endcomment %}
+{% load i18n allauth %}
+{% block head_title %}Sign-in cancelled{% endblock head_title %}
+{% block content %}
+    <h1>Sign-in cancelled</h1>
+    <p>
+        You stopped before finishing, so you are not signed in and nothing was
+        changed. Nothing here needs fixing.
+    </p>
+    <p><a href="{% url 'account_login' %}">Sign in</a></p>
+{% endblock content %}

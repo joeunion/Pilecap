@@ -1,0 +1,121 @@
+{% load entrance %}
+{% comment %}
+THE ENTRANCE SHELL. Every page allauth serves — the sign-in page, the sign-out
+confirmation, the third-party failure and cancellation pages, the password and
+email flows, and every page a future allauth version adds that nobody here has
+read — renders inside this file.
+
+WHAT WAS WRONG. `templates/account/login.html` was the ONE override in the
+tree, so exactly one screen of the entrance chain was ours and the rest were
+allauth's unstyled defaults: no stylesheet at all, so a browser fell back to
+its own — Times New Roman, a 8px margin, and allauth's `Menu:` navigation list
+above the heading. Measured on the tree this landed against, the sign-out page
+served 1633 bytes whose entire visible text was "Menu: Account Connections Sign
+Out Sign Out Are you sure you want to sign out? Sign Out". A person who had
+just been invited into a product crossed five different visual registers in
+eight screens, and four of them were this absence.
+
+WHY THIS FILE AND NOT A PAGE-BY-PAGE SWEEP. Overriding page by page loses by
+census: allauth 65 ships thirty-odd entrance and management pages and adds more
+every minor version, so a hand list is a list that is already incomplete. The
+base is the seam allauth documents, and it is the only one that makes a page
+NOBODY HERE HAS EVER READ render in register by default.
+
+`templates/allauth/layouts/base.html` beside this file is the two-line
+re-parent that makes "the whole family" true rather than nearly true: allauth
+has THREE `base_entrance.html` files (`account/`, `socialaccount/`, `mfa/`) and
+two `layouts/` files, and only `account/base_entrance.html` — this one — is
+reached by overriding this name. Everything else funnels through
+`allauth/layouts/base.html`, which now extends this file, so one token block
+reaches every page in both families.
+
+WHAT IT IS ALLOWED TO STYLE. Surfaces whose WORDS this template also owns: the
+auth chain, the refusal pages, the invitation mail, the placeholder landing.
+Every product needs those identically and none differentiates on them. The
+moment it styles a surface whose content a product authors, it has shipped
+taste — the design ruling that the neutral bar is a mechanism, not decoration.
+
+NO EXTERNAL FETCH. No stylesheet link, no font file, no script. The font is
+`system-ui` — the no-choice choice — so there is nothing that can fail to load
+and nothing to be slow. The whole design is the token block below.
+
+TOKENS ARE DECLARED ONCE AND CONSUMED HERE. `--accent` is the ONE colour a
+product sets (`BRAND_ACCENT`), and the same declared value is what the hosted
+identity step will read, so the two match by construction rather than by
+somebody remembering. The rest are neutral by the neutral-bar ruling: the
+else-branch voice is FINISHED, not LOUD, and a placeholder accent that shouts
+teaches a clone that the colour is somebody else's problem.
+{% endcomment %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{% block head_title %}{% endblock head_title %}</title>
+<style>
+:root {
+  --entrance-tokens: 1;
+  color-scheme: light dark;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --ink: #17181a;
+  --muted: #575c63;
+  --faint: #878c93;
+  --surface: #fbfbfa;
+  --raised: #ffffff;
+  --line: #e2e3e5;
+  --accent: {% brand_accent %};
+  --on-accent: #ffffff;
+  --s1: .375rem;
+  --s2: .75rem;
+  --s3: 1.25rem;
+  --s4: 2rem;
+  --s5: 3.5rem;
+  --radius: 8px;
+  --measure: 26rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #ecedee; --muted: #a7abb1; --faint: #787d84;
+    --surface: #121316; --raised: #1a1c1f; --line: #292c30;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: var(--s5) var(--s3); background: var(--surface); color: var(--ink);
+       font: 1rem/1.55 var(--font); -webkit-font-smoothing: antialiased; }
+main { max-width: var(--measure); margin: 0 auto; }
+h1 { font-size: 1.3125rem; line-height: 1.25; font-weight: 600; letter-spacing: -.01em;
+     margin: 0 0 var(--s2); }
+h2 { font-size: .8125rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+     color: var(--faint); margin: var(--s4) 0 var(--s2); }
+p { margin: 0 0 var(--s3); color: var(--muted); }
+p.lede { color: var(--ink); }
+small, .note { font-size: .8125rem; color: var(--faint); }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875em;
+       background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 0 .3em; }
+a { color: var(--accent); text-underline-offset: .15em; }
+ul { list-style: none; margin: 0 0 var(--s3); padding: 0; }
+li { margin: 0 0 var(--s1); }
+form { margin: 0 0 var(--s3); }
+button, .button, ul.doors a {
+  display: block; width: 100%; text-align: center; font: inherit; font-weight: 500;
+  padding: var(--s2) var(--s3); border-radius: var(--radius); border: 1px solid var(--accent);
+  background: var(--accent); color: var(--on-accent); text-decoration: none; cursor: pointer; }
+button:hover, .button:hover, ul.doors a:hover { filter: brightness(1.12); }
+ul.doors li + li a { background: var(--raised); color: var(--ink); border-color: var(--line); }
+dl { margin: 0 0 var(--s3); }
+dt { font-size: .8125rem; color: var(--faint); margin: 0 0 .125rem; }
+dd { margin: 0 0 var(--s2); }
+.messages li { color: var(--muted); border-left: 2px solid var(--line); padding-left: var(--s2); }
+</style>
+{% block extra_head %}{% endblock extra_head %}
+</head>
+<body>
+{% block body %}
+<main>
+{% if messages %}<ul class="messages">{% for message in messages %}<li>{{ message }}</li>{% endfor %}</ul>{% endif %}
+{% block content %}{% endblock content %}
+</main>
+{% endblock body %}
+{% block extra_body %}{% endblock extra_body %}
+</body>
+</html>

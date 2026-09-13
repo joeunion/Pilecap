@@ -207,7 +207,12 @@ env_value() {
 # is ADR deploy-1's decision, not a backup script's.
 PG_CLIENT_IMAGE="${DJB_PG_CLIENT_IMAGE:-}"
 if [ -z "$PG_CLIENT_IMAGE" ]; then
-    PG_CLIENT_IMAGE="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(postgres:[^[:space:]]*\).*/\1/p' compose.yaml | head -1)"
+    # READ WHOLE, THEN SLICE — no pipe, so `sed`'s own status is what `set -e`
+    # sees and nothing can take SIGPIPE. A `| head -1` here is green on every
+    # compose file anyone has driven it with and 141 on the first one big enough
+    # to fill a 64 KiB pipe buffer.
+    PG_CLIENT_IMAGE="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(postgres:[^[:space:]]*\).*/\1/p' compose.yaml)"
+    PG_CLIENT_IMAGE="${PG_CLIENT_IMAGE%%$'\n'*}"
 fi
 
 BOX_HOST=""

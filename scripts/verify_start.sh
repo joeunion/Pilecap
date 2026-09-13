@@ -37,7 +37,7 @@ esac
 #   ./scripts/verify_start.sh <rung-branch> [<destination>]
 #   ./scripts/verify_start.sh --check [<checkout>]
 #
-# Four steps, unconditionally and in this order, each printing what it did and
+# Five steps, unconditionally and in this order, each printing what it did and
 # how long it took, with the total at the end:
 #
 #   1. CLONE       this checkout, at the rung branch, into a directory of its
@@ -50,14 +50,22 @@ esac
 #                  `DATABASE_NAME` written into it and the primary's `ZITADEL_*`
 #                  lines carried across BY NAME. Every value it derives is
 #                  PRINTED. Nothing is sourced — see THE .ENV IS PRINTED below.
-#   4. VERDICT KEY `git status --porcelain` in the clone must show nothing but
+#   4. LOOP SEED   the source's banked `--loop` verdict rows, copied into the
+#                  clone's own ledger inside `.git/`, schema-checked line by
+#                  line with the skipped ones COUNTED. A verifier's first
+#                  `--loop` can then reuse a verdict the builder already earned
+#                  on the same bytes, instead of re-measuring it.
+#   5. VERDICT KEY `git status --porcelain` in the clone must show nothing but
 #                  untracked `*.log` files. Anything else is exit 2, naming it.
+#                  It runs AFTER the seed on purpose: the seeded file lives in
+#                  `.git/`, so a seed that ever landed in the working tree would
+#                  be caught here rather than shipped.
 #
 # Exit: 0 the clone is ready · 1 a step ran and FAILED (a merge that conflicts
 # is the whole population today) · 2 refused, or a step could not be verified.
 # 2 outranks a pass, here as everywhere in this repository.
 #
-# `--check` runs STEP 4 ALONE against a checkout that already exists (default:
+# `--check` runs STEP 5 ALONE against a checkout that already exists (default:
 # the one you are standing in). Same code, same exit grammar, no clone. It is
 # the leg a verifier runs by hand before a full gate, because the file that
 # ruins a verdict is usually one the verifier created themselves an hour ago.
@@ -91,8 +99,17 @@ esac
 #   verifier a tree that silently differs from the one the operator is looking
 #   at, and the difference is invisible from inside the clone — which is the
 #   worst shape a verification error can have. The allowance is the same one
-#   step 4 makes and for the same reason: an untracked `*.log` is the output of
+#   step 5 makes and for the same reason: an untracked `*.log` is the output of
 #   a run, never source.
+#
+#   ONE NARROWING, AND IT IS NOT A LOOSENING OF THE ABOVE: when EVERY dirty path
+#   in the SOURCE is under `docs/product/`, the clone proceeds from HEAD and
+#   each ignored path is printed by name. The refusal exists because the
+#   verifier would measure different CODE; a dirty ledger row is not code and
+#   moves no verdict key. What is disclosed instead is the thing that really can
+#   bite — a verifier reads its criteria from the cycle file IN THE CLONE, so an
+#   uncommitted plan is not in the clone either. Scoped to step 1's call site;
+#   `strays_in`, which step 5 and `--check` share, is untouched.
 #
 #   A STRAY UNTRACKED FILE IN THE CLONE (exit 2, naming it). THE TOOTH. The
 #   gate's verdict is keyed on the working tree measured through `git add -A`
@@ -133,10 +150,10 @@ esac
 #   3. A CONFLICTED MERGE'S MEANING. It names the paths and exits 1. Whether
 #      the conflict is the rung's fault, main's, or a PM ordering failure is a
 #      judgement no script makes.
-#   4. A REPOSITORY THAT DOES NOT IGNORE `.env`. Step 3 writes `.env`; step 4
+#   4. A REPOSITORY THAT DOES NOT IGNORE `.env`. Step 3 writes `.env`; step 5
 #      allows only `*.log`. In this template and in every product cloned from
 #      it `.env` is ignored (`.gitignore`, the Env block), so the two never
-#      meet. Somewhere that line was deleted, step 4 refuses and names `.env` —
+#      meet. Somewhere that line was deleted, step 5 refuses and names `.env` —
 #      correctly, because there the file really does shift the verdict key. The
 #      fix is the `.gitignore` line, not an allowance here.
 #   5. THE ZITADEL CARRY IS A COPY, AND IT IS ANNOUNCED RATHER THAN AUDITED.
@@ -144,6 +161,19 @@ esac
 #      NAME in the output and never by value. House rule 27's spirit is that
 #      the copy is RECORDED; it is not a claim that the credential is valid,
 #      current, or yours to use.
+#   6. WHETHER A SEEDED `--loop` ROW WILL ACTUALLY HIT. Step 3b copies the
+#      source's banked `--loop` verdicts into the clone, and the sentence that
+#      used to stand here — that a verify clone begins with an empty ledger — is
+#      false from the commit that added that step. What replaced it is narrower
+#      than "the clone reuses the builder's verdict": a seeded row hits only
+#      when the union IS the branch tip (step 2's *already up to date* case, so
+#      main has not moved since the builder's last fold) AND the environment
+#      fingerprint matches, which is a MEASURED question rather than an
+#      assumption — this clone's `.env` is `.env.example` plus a derived
+#      database name plus the identity carry, and the builder's is whatever its
+#      own `setup.sh` wrote. A moved main is a `miss(tree)` and belongs to the
+#      per-leg-key work that is deferred, not to this step. Every miss says
+#      which of the three key lines moved (`scripts/check.sh`'s miss banner).
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -165,7 +195,7 @@ usage: verify_start.sh <rung-branch> [<destination>]
   <destination>   where the clone goes. Default: $TMPDIR/djb-verify/<branch>.
                   It must not already exist with anything in it.
 
-  --check         run STEP 4 alone — the verdict-key guard — against an
+  --check         run STEP 5 alone — the verdict-key guard — against an
                   existing checkout (default: the one you are standing in).
                   Nothing is cloned, merged or written.
 
@@ -223,7 +253,7 @@ done
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
-STEP_TOTAL=4
+STEP_TOTAL=5
 
 # --- the three ways this can end ---------------------------------------------
 #
@@ -317,7 +347,7 @@ step_end() {
 say() { printf '   %s\n' "$*"; }
 
 # =============================================================================
-# THE VERDICT-KEY GUARD — step 4's body, and `--check`'s whole job.
+# THE VERDICT-KEY GUARD — step 5's body, and `--check`'s whole job.
 # =============================================================================
 #
 # ONE FUNCTION, TWO ENTRY POINTS, because a guard a verifier can only get at by
@@ -457,6 +487,65 @@ step_begin "clone — this checkout, at the rung branch, into its own directory"
 # committed state; uncommitted work here would be invisible from inside the
 # clone, which is the worst shape a verification error can take.
 SOURCE_STRAYS="$(strays_in "$ROOT")"
+
+# DOCS DIRT IN THE SOURCE IS ANNOUNCED, NOT REFUSED, and the scope of
+# that sentence is this call site and nowhere else.
+#
+# THE MEASURED PROBLEM. The PM's own working copy of `docs/product/` is dirty
+# for most of a cycle — a staged in-flight row, an unsaved ledger edit — and
+# every verifier dispatched in that window was refused here and cloned by hand
+# instead. Three of them in one day. The refusal was doing its job on a class it
+# was never aimed at: `git clone` copies committed state, and the reason that
+# matters is that the verifier would measure DIFFERENT CODE. A dirty
+# `docs/product/` file changes no code and moves no verdict key in the clone.
+#
+# WHAT IS DISCLOSED INSTEAD, because the honest risk is not zero: a verifier
+# reads its criteria from the cycle file IN THE CLONE, i.e. from HEAD. If the
+# criteria it is about to work from are uncommitted here, they are not in the
+# clone either — so every ignored path is printed BY NAME.
+#
+# NOT `strays_in`, WHICH IS SHARED. That function is also step 5's verdict-key
+# guard and `--check`'s whole body, where a stray `docs/product/` file in a
+# CLONE is a real finding — something wrote into a tree that had no business
+# being written to. Loosening it there would take the teeth out of the guard
+# this script exists to run. The narrowing lives here, at the one call site
+# whose subject is the SOURCE.
+SOURCE_DIRT_ALL_DOCS=""
+if [ -n "$SOURCE_STRAYS" ]; then
+    SOURCE_DIRT_ALL_DOCS=1
+    while IFS= read -r stray_line; do
+        [ -n "$stray_line" ] || continue
+        # Porcelain is `XY <path>`; a rename is `R  old -> new` and the
+        # destination is what would be in the clone. Both halves are tested, so
+        # a rename that moves a code file OUT of docs/ still refuses.
+        stray_path="${stray_line#???}"
+        case "$stray_path" in
+        *" -> "*) stray_path="${stray_path##* -> }" ;;
+        esac
+        case "$stray_path" in
+        docs/product/*) ;;
+        *)
+            SOURCE_DIRT_ALL_DOCS=""
+            break
+            ;;
+        esac
+    done <<EOF
+$SOURCE_STRAYS
+EOF
+fi
+
+if [ -n "$SOURCE_STRAYS" ] && [ -n "$SOURCE_DIRT_ALL_DOCS" ]; then
+    STRAY_COUNT=$(printf '%s\n' "$SOURCE_STRAYS" | grep -c . || true)
+    say "docs dirt    ${STRAY_COUNT} path(s) under docs/product/ are dirty here and are NOT in"
+    say "             the clone — a criterion read from an uncommitted plan is not in"
+    say "             this clone either. Cloning from HEAD anyway:"
+    printf '%s\n' "$SOURCE_STRAYS" | while IFS= read -r stray_line; do
+        [ -n "$stray_line" ] || continue
+        say "               ${stray_line}"
+    done
+    SOURCE_STRAYS=""
+fi
+
 if [ -n "$SOURCE_STRAYS" ]; then
     printf '\n!! this checkout has uncommitted work — REFUSING to clone it.\n' >&2
     printf '   `git clone` copies COMMITTED state only, so the verifier would\n' >&2
@@ -467,6 +556,27 @@ if [ -n "$SOURCE_STRAYS" ]; then
     printf '\n   Commit them, stash them, or discard them by hand — deliberately.\n' >&2
     printf '   Nothing was cloned, merged or written.\n' >&2
     exit 2
+fi
+
+# A BYTE COPY OF THE SOURCE LEDGER, TAKEN BEFORE ANYTHING IS CREATED. Step 3b
+# copies rows OUT of this file and must never write into it, and `cmp` after the
+# copy is what turns that from a claim into a check.
+#
+# `cmp`, NOT A DIGEST, and that is this file's rule rather than a preference:
+# `verify_start.sh` computes no hashes at all — the path-hash arithmetic belongs
+# to `scripts/db.sh` and a second copy of it here is the thing the seam exists
+# to prevent, which this drive's own case pins by looking for `shasum` in the
+# executable text. A byte comparison is also the stronger assertion.
+SRC_LEDGER_COPY=""
+SRC_COMMON_EARLY=$(git -C "$ROOT" rev-parse --git-common-dir 2>/dev/null || true)
+case "$SRC_COMMON_EARLY" in
+"") ;;
+/*) ;;
+*) SRC_COMMON_EARLY="${ROOT}/${SRC_COMMON_EARLY}" ;;
+esac
+if [ -n "$SRC_COMMON_EARLY" ] && [ -f "${SRC_COMMON_EARLY}/djb-loop-verdicts" ]; then
+    SRC_LEDGER_COPY=$(mktemp "${TMPDIR:-/tmp}/djb-verify-src-ledger.XXXXXX") || SRC_LEDGER_COPY=""
+    [ -n "$SRC_LEDGER_COPY" ] && cp "${SRC_COMMON_EARLY}/djb-loop-verdicts" "$SRC_LEDGER_COPY"
 fi
 
 set +e
@@ -507,6 +617,32 @@ ORIGIN_MAIN="$(git -C "$DEST" rev-parse --verify --quiet refs/remotes/origin/mai
         "The clone did not carry the main this run announced."
 
 say "origin/main  $(git -C "$DEST" log -1 --format='%h  %s' "$ORIGIN_MAIN")"
+
+# THE LOCAL `refs/heads/main`, CREATED HERE, and it is a pairing rather than a
+# convenience. `git clone --branch <rung branch>` leaves the clone with exactly
+# one local head — the rung's — and main only as a REMOTE ref. Every derivation
+# in this repository that asks "what did the active rung change" forks from the
+# LOCAL `refs/heads/main`, spelled in full, for the reasons
+# `scripts/secrets_scan.sh` argues there. In a clone with no such ref those
+# derivations fall back to a thin basis, and `scripts/loop_tier.sh` now REFUSES
+# that basis outright rather than grading a rung against a scope its committed
+# work never reached. Without this line the house's own verification tool would
+# be the first thing to trip its own refusal.
+#
+# SET TO THE IDENTITY THIS SCRIPT ALREADY VERIFIED, three lines up: the clone's
+# origin/main was compared against the source checkout's main and refused if
+# they differed, so `$ORIGIN_MAIN` is `$MAIN_SHA` by the time this runs. Created
+# with `git branch`, which refuses to clobber an existing head — if a future
+# clone ever arrives carrying one, this is loud rather than silently rewriting
+# somebody else's idea of main.
+if git -C "$DEST" rev-parse -q --verify refs/heads/main >/dev/null 2>&1; then
+    say "main ref     the clone already carries refs/heads/main — left alone"
+else
+    git -C "$DEST" branch main "$ORIGIN_MAIN" ||
+        cannot_verify "could not create refs/heads/main in the clone at ${ORIGIN_MAIN}." \
+            "Every changed-file derivation in this tree forks from that ref."
+    say "main ref     refs/heads/main created at $(git -C "$DEST" rev-parse --short "$ORIGIN_MAIN") (the verified MAIN_SHA)"
+fi
 
 if git -C "$DEST" merge-base --is-ancestor "$ORIGIN_MAIN" HEAD; then
     say "already up to date — the rung branch already contains main's tip"
@@ -665,7 +801,96 @@ say "             sibling product, and it was three gate runs."
 step_end
 
 # =============================================================================
-# STEP 4 · VERDICT KEY
+# STEP 4 · THE LOOP-VERDICT SEED
+# =============================================================================
+#
+# WHY A CLONE STARTS BLIND, AND WHY THAT IS WORTH FIXING. `--loop` banks a
+# verdict keyed on tree + environment + scope (`scripts/gate_ledger.sh`, the
+# loop-ledger section). The ledger lives beside the repository, in the common
+# git dir — so `git clone` never brings it, and a verifier's first `--loop` in a
+# fresh clone re-measures a suite the builder measured minutes earlier on the
+# very same bytes. Measured: a fresh clone has no `djb-` file in `.git` at all.
+#
+# WHEN A SEEDED ROW ACTUALLY HITS, stated here so nobody reads more into this
+# than it does: the key's tree and HEAD lines equal the builder's only when the
+# union IS the branch tip — the *already up to date* case in step 2, i.e. main
+# has not moved since the builder's last fold. A moved main is an honest miss
+# and a full re-measure. The `.env` line is the other half and it is NOT equal
+# by construction: this clone's `.env` is `.env.example` plus a derived database
+# name (excluded from the fingerprint) plus the identity carry, while the
+# builder's is whatever its own `setup.sh` wrote. That is a measured question,
+# not an assumption — which is why the miss banner prints the five components.
+#
+# BEFORE STEP 5, DELIBERATELY. The file lands inside `.git/`, which the verdict
+# key guard does not look at, and the assertion below says so rather than
+# trusting it: a seed that made the clone dirty would defeat the guard this
+# script exists to run.
+# >>> seed: the source's banked --loop rows >>>
+step_begin "loop-verdict seed — the source's banked --loop rows, copied into the clone"
+
+SRC_COMMON=$(git -C "$ROOT" rev-parse --git-common-dir 2>/dev/null || true)
+case "$SRC_COMMON" in
+"") SRC_COMMON="" ;;
+/*) ;;
+*) SRC_COMMON="${ROOT}/${SRC_COMMON}" ;;
+esac
+SRC_LEDGER=""
+[ -n "$SRC_COMMON" ] && SRC_LEDGER="${SRC_COMMON}/djb-loop-verdicts"
+DEST_LEDGER="${DEST}/.git/djb-loop-verdicts"
+
+if [ -z "$SRC_LEDGER" ] || [ ! -f "$SRC_LEDGER" ]; then
+    say "ledger not seeded: ${SRC_LEDGER:-<no common git dir>} has no loop ledger"
+    say "             A NAMED ABSENCE, never silence — the clone's first --loop will"
+    say "             re-measure, which is correct and is not an error."
+else
+    SEEDED=0
+    SKIPPED=0
+    : >"$DEST_LEDGER"
+    # SCHEMA-CHECKED LINE BY LINE, and a line that does not match is SKIPPED AND
+    # COUNTED. Copying a malformed line would put a row the lookup can never
+    # match into a file whose whole purpose is to be matched; dropping it in
+    # silence would hide a source ledger that had started to rot.
+    while IFS= read -r ledger_line || [ -n "$ledger_line" ]; do
+        [ -n "$ledger_line" ] || continue
+        if printf '%s' "$ledger_line" |
+            grep -E '^loop-v1 loop-v1:[0-9a-f]{64} loop ' >/dev/null; then
+            printf '%s\n' "$ledger_line" >>"$DEST_LEDGER"
+            SEEDED=$((SEEDED + 1))
+        else
+            SKIPPED=$((SKIPPED + 1))
+        fi
+    done <"$SRC_LEDGER"
+    printf 'seeded=%s from=%s\n' "$SEEDED" "$SRC_LEDGER" >"${DEST_LEDGER}-seed"
+    say "ledger seeded: ${SEEDED} loop rows from ${SRC_LEDGER} (${SKIPPED} skipped: not loop-v1)"
+fi
+
+# READ-ONLY TOWARD THE SOURCE, asserted rather than asserted-in-a-comment. The
+# only writes above are into `$DEST`; this re-reads the source's digest and
+# refuses if it moved, because "I only read it" is exactly the claim every
+# accidental writer has made.
+if [ -n "$SRC_LEDGER" ] && [ -f "$SRC_LEDGER" ] && [ -n "$SRC_LEDGER_COPY" ]; then
+    if cmp -s "$SRC_LEDGER" "$SRC_LEDGER_COPY"; then
+        say "read-only    the source's loop ledger is byte-identical to before the clone"
+    else
+        rm -f "$SRC_LEDGER_COPY"
+        cannot_verify "the SOURCE's loop ledger changed while it was being copied." \
+            "This step reads the source and writes only into the clone."
+    fi
+fi
+rm -f "$SRC_LEDGER_COPY"
+
+# The file must be inside `.git/`, or step 5 is about to refuse a tree this
+# script dirtied itself.
+case "$DEST_LEDGER" in
+"${DEST}/.git/"*) say "inside .git  ${DEST_LEDGER} — invisible to the verdict-key guard below" ;;
+*) cannot_verify "the seeded ledger path ${DEST_LEDGER} is not inside ${DEST}/.git." \
+    "It would be a stray file, and step 5 would refuse the clone this script just made." ;;
+esac
+step_end
+# <<< seed: the source's banked --loop rows <<<
+
+# =============================================================================
+# STEP 5 · VERDICT KEY
 # =============================================================================
 step_begin "verdict key — nothing untracked but *.log, or this clone is not ready"
 verdict_key_guard "$DEST" "the clone"
