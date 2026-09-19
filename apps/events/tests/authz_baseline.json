@@ -1,0 +1,96 @@
+{
+  "_": "DERIVED, never typed. Every cell is `allows(actor, key, obj)` over the events app's declared keys x {owner, admin, member} x two object states. The sweep re-runs the same census on its own tree and asserts equality; a moved answer prints (key, actor, state, before, after).",
+  "_baseline": "2e2b96ad",
+  "_command": "git worktree add <scratch> 2e2b96ad --detach && cp apps/events/tests/authz_matrix.py <scratch>/apps/events/tests/ && cd <scratch> && ./scripts/rung_start.sh && uv run python manage.py shell -c \"from apps.events.tests.authz_matrix import write_baseline as w; w('<repo>/apps/events/tests/authz_baseline.json')\"",
+  "answers": {
+    "delivery.replay": {
+      "admin": {
+        "none": true,
+        "row": true
+      },
+      "member": {
+        "none": false,
+        "row": false
+      },
+      "owner": {
+        "none": true,
+        "row": true
+      }
+    },
+    "endpoint.create": {
+      "admin": {
+        "none": true,
+        "row": true
+      },
+      "member": {
+        "none": false,
+        "row": false
+      },
+      "owner": {
+        "none": true,
+        "row": true
+      }
+    },
+    "endpoint.deactivate": {
+      "admin": {
+        "none": true,
+        "row": true
+      },
+      "member": {
+        "none": false,
+        "row": false
+      },
+      "owner": {
+        "none": true,
+        "row": true
+      }
+    },
+    "endpoint.issue_secret": {
+      "admin": {
+        "none": true,
+        "row": true
+      },
+      "member": {
+        "none": false,
+        "row": false
+      },
+      "owner": {
+        "none": true,
+        "row": true
+      }
+    },
+    "endpoint.resume": {
+      "admin": {
+        "none": true,
+        "row": true
+      },
+      "member": {
+        "none": false,
+        "row": false
+      },
+      "owner": {
+        "none": true,
+        "row": true
+      }
+    },
+    "endpoint.update": {
+      "admin": {
+        "none": true,
+        "row": true
+      },
+      "member": {
+        "none": false,
+        "row": false
+      },
+      "owner": {
+        "none": true,
+        "row": true
+      }
+    }
+  },
+  "roles": [
+    "owner",
+    "admin",
+    "member"
+  ]
+}

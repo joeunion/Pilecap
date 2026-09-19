@@ -54,6 +54,20 @@ pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
 # (`emit` refuses one that is not) and this app may not import that one.
 EVENT_NAME = "example.widget.created"
 
+#: The one name on this tree that is genuinely about nothing a branch owns —
+#: `apps/search/events.py` maps its noun to None and says why. **A widget
+#: cannot stand in for it any more** (R4-F2, house rule 59): a widget is an
+#: `OrgScopedModel`, so a widget event with no `organization_id` was never an
+#: org-less subject — it was a body that had lost its narrowing key, and
+#: `emit` refuses one now rather than broadcasting the row tenant-wide.
+ORG_LESS_EVENT = "search.engine.degraded"
+
+
+def org_less_body() -> dict[str, Any]:
+    """A body for `ORG_LESS_EVENT`: a fact about the deployment, no row behind it."""
+    return {"engine": "meilisearch"}
+
+
 PASSWORD = "not-a-real-password"  # pragma: allowlist secret
 
 
@@ -128,20 +142,27 @@ def network(tenant: Tenant, owner: User) -> Network:
     return _build_network(tenant=tenant, owner=owner)
 
 
-def _emit_and_push(*, tenant: Tenant, actor: Actor, payload: dict[str, Any]) -> Any:
+def _emit_and_push(
+    *, tenant: Tenant, actor: Actor, payload: dict[str, Any], name: str = EVENT_NAME
+) -> Any:
     """Say it happened, then run the dispatch's push hop. Synchronous, like both.
 
     The same helper `test_spine_end_to_end.py` uses, and for the same reason:
     only the Temporal *transport* stands in (the contextvar is set directly
     instead of arriving on a workflow header). Every hop that could drift —
     the bridge lookup, the envelope, the coercion, the group send — is real.
+
+    `name` defaults to this module's own event and is a parameter for
+    `test_read_fanout.py`: the read set is decided from the event's NOUN, so
+    proving it needs two names from two apps reaching one socket, where the
+    hierarchy only ever needed one.
     """
     context = importlib.import_module("apps.workflows.context")
     activities = importlib.import_module("apps.events.activities")
     types = importlib.import_module("apps.events.types")
 
     emit = bridge.get(bridge.EMIT)
-    event = emit(name=EVENT_NAME, tenant=tenant, payload=payload, actor=actor)
+    event = emit(name=name, tenant=tenant, payload=payload, actor=actor)
 
     context.set_principal(tenant_id=str(tenant.pk), user_id=None)
     assert activities.push_realtime(types.PushRealtime(event_id=str(event.pk))) is True
@@ -210,9 +231,10 @@ async def test_a_sibling_branchs_socket_never_sees_this_branchs_row(
             _emit_and_push,
             tenant=network.tenant,
             actor=manager_hat,
-            payload=in_branch(None),
+            name=ORG_LESS_EVENT,
+            payload=org_less_body(),
         )
-        assert (await socket.receive_json())["name"] == EVENT_NAME
+        assert (await socket.receive_json())["name"] == ORG_LESS_EVENT
 
         # Silent: a branch-A row is not theirs, on this door as on every other.
         await run_db(
@@ -274,11 +296,12 @@ async def test_a_branchs_event_reaches_its_ancestors_and_no_one_beside_it(
             _emit_and_push,
             tenant=network.tenant,
             actor=manager_hat,
-            payload=in_branch(None),
+            name=ORG_LESS_EVENT,
+            payload=org_less_body(),
         )
-        assert (await root_socket.receive_json())["name"] == EVENT_NAME
-        assert (await region_socket.receive_json())["name"] == EVENT_NAME
-        assert (await leaf_socket.receive_json())["name"] == EVENT_NAME
+        assert (await root_socket.receive_json())["name"] == ORG_LESS_EVENT
+        assert (await region_socket.receive_json())["name"] == ORG_LESS_EVENT
+        assert (await leaf_socket.receive_json())["name"] == ORG_LESS_EVENT
 
 
 @pytest.mark.usefixtures("recorded_workflow_starts")
@@ -362,9 +385,10 @@ async def test_sending_no_hat_at_all_still_hears_the_default_branch(network: Net
             _emit_and_push,
             tenant=network.tenant,
             actor=manager_hat,
-            payload=in_branch(None),
+            name=ORG_LESS_EVENT,
+            payload=org_less_body(),
         )
-        assert (await socket.receive_json())["name"] == EVENT_NAME
+        assert (await socket.receive_json())["name"] == ORG_LESS_EVENT
 
 
 # --- What a flat product pays --------------------------------------------------------

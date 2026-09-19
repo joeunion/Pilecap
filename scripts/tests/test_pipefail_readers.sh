@@ -13,6 +13,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: deploy/ docs/product/instruments.md scripts/
 # The drive for THE READER THAT LEAVES EARLY — every `producer | head`-shaped
 # pipeline in a script that runs under `set -o pipefail`, and the two forms that
 # survive one.
@@ -56,6 +57,23 @@ esac
 # it never orphans the producer. Replacing an early-exit reader with an EOF one
 # is the fix, not an evasion of the census — the class is the EARLY EXIT.
 #
+# AND A FOURTH SHAPE, WHICH IS NOT THE EARLY EXIT AND IS IN THE CENSUS ANYWAY.
+# `producer | tee file` reads to EOF, so it orphans nothing and the paragraph
+# above forgives it — but it still takes the pipeline's exit status away from
+# the producer, which is the OTHER half of what the class costs. On a line
+# whose status is a verdict, the loss is the same loss:
+#
+#     GATE_SKIP_DJANGO_LEG=1 uv run python -m quality.gate … | tee "$OUT"
+#     GATE_RC=${PIPESTATUS[0]}
+#
+# was a gate leg, and `PIPESTATUS[0]` is a second reading of a status the shell
+# had already made ambiguous rather than a reason the pipe was safe: the leg's
+# `$?` meant `tee`. The fix is the same as everywhere else here — redirect to
+# the file, read `$?`, then `cat` it — and the cost is that the leg stops
+# streaming, which is written down at the site. The census carries `tee` so the
+# next one is a red rather than a reading, and the DISPOSITIONS are unchanged:
+# a comment, the valve with a reason, or a `{ producer || true; }` producer.
+#
 # WHAT IS UNDER DRIVE:
 #   the CLASS    — the old form loses the status under a padded producer, and
 #                  both replacement forms keep the value and the status
@@ -67,11 +85,11 @@ esac
 #
 # WHAT IT DOES NOT COVER, declared rather than discovered:
 #
-#   1. THE CENSUS IS THREE READER SHAPES — `| head`, `| grep -m` and an `awk`
-#      that calls `exit`. `sed -n '1p;q'`, a `read -r` that returns, a
-#      `while … break` and any other early return from a loop reading a pipe
-#      are the same class and are NOT in the grep. The valve comment is where
-#      the next shape gets recorded when somebody finds it.
+#   1. THE CENSUS IS FOUR READER SHAPES — `| head`, `| grep -m`, an `awk`
+#      that calls `exit`, and `| tee`. `sed -n '1p;q'`, a `read -r` that
+#      returns, a `while … break` and any other early return from a loop
+#      reading a pipe are the same class and are NOT in the grep. The valve
+#      comment is where the next shape gets recorded when somebody finds it.
 #   2. THE ASSERTED POPULATION IS THE SCRIPTS, NOT THE DRIVES. `scripts/*.sh`,
 #      `deploy/*.sh` and the hooks are asserted to zero: those are the files
 #      whose exit status becomes a verdict, a merge, a release or a backup, and
@@ -153,8 +171,9 @@ padded_producer() {
     head -c "$pad_bytes" /dev/zero | tr '\0' x
 }
 
-# The census grep, written once and read by two cases. Three reader shapes.
-CENSUS_RE='\| *(head|grep -m|awk[^|]*exit)'
+# The census grep, written once and read by two cases. FOUR reader shapes, and
+# the fourth is a different failure by the same route — see the header.
+CENSUS_RE='\| *(head|grep -m|awk[^|]*exit|tee([[:space:]]|$))'
 
 # The population whose exit status is a verdict, a merge, a release or a backup.
 # Derived from the directories, never typed.
@@ -288,6 +307,70 @@ case_an_eof_reader_keeps_the_producers_own_status() {
         return
     fi
     ok "EOF reader: padded producer is 0, a failing producer is still 3 — the status is not swallowed"
+}
+
+case_a_tee_at_a_pipeline_tail_takes_the_status_over() {
+    CURRENT=case_a_tee_at_a_pipeline_tail_takes_the_status_over
+    # THE FOURTH SHAPE, AND IT IS NOT THE EARLY EXIT. `tee` reads to EOF, so it
+    # orphans nothing and no padding is used here. What it does is stand
+    # BETWEEN a producer and the status its caller acts on, and it costs in two
+    # opposite directions depending on one shell option that the line itself
+    # does not set — which is the whole argument for a rule rather than a
+    # judgment at each site.
+    local sink="${WORK}/tee-sink.log" rc=0 out
+
+    # (1) WITHOUT pipefail: the producer's failure is the reader's success.
+    rc=0
+    out="$(
+        set +e
+        set +o pipefail
+        { printf 'MATCH\n'; exit 3; } | tee "$sink" >/dev/null
+        exit $?
+    )" || rc=$?
+    if [ "$rc" != "0" ]; then
+        bad "without pipefail a tee'd producer exiting 3 should report 0; got ${rc}"
+        return
+    fi
+    ok "without pipefail: a producer exiting 3 reaches its caller as 0 — the status is the reader's"
+
+    # (2) WITH pipefail, the loss runs the other way: the READER's failure is
+    # now the pipeline's, so a green producer is reported as a red and the
+    # caller blames the subject. An unwritable sink is the cheapest way to make
+    # `tee` fail, and it is built here rather than found.
+    local blocked="${WORK}/no-such-dir/sink.log"
+    rc=0
+    out="$(
+        set +e
+        set -o pipefail
+        { printf 'MATCH\n'; exit 0; } | tee "$blocked" >/dev/null 2>&1
+        exit $?
+    )" || rc=$?
+    if [ "$rc" = "0" ]; then
+        bad "under pipefail a tee that cannot write its sink should fail the pipeline; got 0, so this half of the shape is not reproducing on this platform"
+        return
+    fi
+    ok "with pipefail: a producer exiting 0 into a tee that cannot write reports ${rc} — the red names the subject and the fault is the reader's"
+
+    # (3) THE FIX, the one the gate house-rules leg and `setup.sh` now ship:
+    # redirect, read `$?`, then print. Both directions gone, same transcript,
+    # same file. A SUBSHELL and not a brace group for the producer: `exit` in
+    # a brace group is this command substitution own exit, so the `cat` would
+    # never run and the case would read an empty capture — the two pipelines
+    # above get a subshell for free, because each segment of a pipeline is one.
+    rc=0
+    out="$(
+        set +e
+        set -o pipefail
+        ( printf 'MATCH\n'; exit 3 ) >"$sink" 2>&1
+        shipped_rc=$?
+        cat "$sink"
+        exit $shipped_rc
+    )" || rc=$?
+    if [ "$out" != "MATCH" ] || [ "$rc" != "3" ]; then
+        bad "redirect-then-cat: wanted 'MATCH' at status 3, got '${out}' at ${rc}"
+        return
+    fi
+    ok "redirect-then-cat: the same output and the producer's own 3, with no second process in the status"
 }
 
 # --- the census --------------------------------------------------------------
@@ -453,6 +536,7 @@ case_the_old_form_discards_the_match_under_pipefail
 case_the_rewritten_form_keeps_the_match
 case_the_whole_read_then_slice_form_keeps_the_match
 case_an_eof_reader_keeps_the_producers_own_status
+case_a_tee_at_a_pipeline_tail_takes_the_status_over
 case_no_early_exit_reader_follows_a_pipe_under_pipefail
 case_the_undriven_population_is_printed_rather_than_silent
 case_the_pass_two_summary_is_capped_and_complete

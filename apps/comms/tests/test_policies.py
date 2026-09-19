@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -33,12 +34,35 @@ from django.urls import reverse
 
 from apps.accounts.models import User
 from apps.comms import providers
-from apps.comms.models import Category, Channel, DeliveryPolicy, Message, Recipient
+from apps.comms.models import (
+    Category,
+    Channel,
+    DeliveryPolicy,
+    Message,
+    MessageTemplate,
+    Recipient,
+    SuppressionSurge,
+)
+from apps.comms.policies import ACTION_PROSE
+from apps.comms.providers import STATUS_PROVIDER
 from apps.comms.selectors import get_policy, list_policies
-from apps.comms.services import create_policy, retire_policy, revise_policy, send
-from apps.comms.tests.conftest import make_recipient, make_template
-from apps.core.actor import Actor
-from apps.core.exceptions import Conflict, Invalid, NotFound
+from apps.comms.services import (
+    SURGE_THRESHOLD,
+    close_suppression_surge,
+    create_policy,
+    create_template,
+    retire_policy,
+    retire_template,
+    revise_policy,
+    revise_template,
+    send,
+    start_suppression_surge,
+)
+from apps.comms.tests.conftest import Branches, make_recipient, make_template
+from apps.connections.models import Connection
+from apps.connections.services import create_connection
+from apps.core.actor import Actor, actor_for, system_actor
+from apps.core.exceptions import Conflict, Forbidden, Invalid, NotFound
 from apps.core.models import Tenant
 from config.api import as_the_door_renders
 
@@ -46,6 +70,7 @@ pytestmark = pytest.mark.django_db
 
 JSON = "application/json"
 LIST_URL = "/api/v1/delivery-policies/"
+TEMPLATE_LIST_URL = "/api/v1/templates/"
 
 #: Measured at ten policy rows, not guessed: the session row + the user row +
 #: 1 SAVEPOINT (ATOMIC_REQUESTS) + the membership lookup TenantMiddleware makes
@@ -56,7 +81,14 @@ LIST_URL = "/api/v1/delivery-policies/"
 # ADR core-18 took one statement OFF this pin: the default list issues no
 # COUNT any more — `has_more` comes from fetching one row more than asked
 # for. `?include_count=true` puts it back, and costs exactly one more.
-LIST_QUERY_BUDGET = 7
+# PR4.b (ADR core-27) adds exactly THREE: a read is a permission now, so the
+# selector behind this door calls `require(actor, "<kind>.read", ...)` once,
+# and the first `require` of a request reads the actor's three permission
+# tables — the memberships on the chain, their grants, and the delta rows for
+# the role keys those name. Three and not six because PR0's memo rides on the
+# actor: a second `require` in the same request costs nothing, which is what a
+# route that fetches through a `get_` and then calls a service is standing on.
+LIST_QUERY_BUDGET = 10
 
 
 def body(response: Any) -> dict[str, Any]:
@@ -364,8 +396,10 @@ def test_a_name_with_no_active_version_stops_resolving(
     policy = create_policy(tenant=tenant, actor=owner_actor, name="oncall", steps=steps())
     retire_policy(tenant=tenant, actor=owner_actor, policy=policy)
     with pytest.raises(NotFound):
-        get_policy(tenant=tenant, name="oncall")
-    assert list_policies(tenant=tenant).filter(name="oncall").count() == 1, "still readable"
+        get_policy(tenant=tenant, name="oncall", actor=owner_actor)
+    assert list_policies(tenant=tenant, actor=owner_actor).filter(name="oncall").count() == 1, (
+        "still readable"
+    )
 
 
 def test_creating_a_second_policy_under_one_name_is_a_conflict(
@@ -609,3 +643,281 @@ def test_the_fake_refuses_a_recipient_with_no_number(
     with pytest.raises(Invalid) as raised:
         providers.get_channel("sms").send(message=message, subject="", body="Please look.")
     assert "phone" in raised.value.errors
+
+
+# --- W55-comms: a tenant-wide WRITE is asked at the ROOT ---------------------------
+#
+# Rule 55's founding class, in the app it was measured in. A `message_template`, a
+# `delivery_policy` and a `suppression_surge` carry no `organization` column: they
+# are the TENANT's, not a branch's. So a `require` that names no node — or names
+# the row, which carries none — resolves at the ACTING HAT, and an administrator
+# of one branch holds `*` there. That administrator could therefore write the
+# words the whole tenant sends, the escalations it runs and the tripwire's own
+# memory, over the wire, from a leaf they administer.
+#
+# The eight sites now pass `root_organization(tenant=tenant)`, and these two tests
+# are what that sentence means: the same eight acts, by an administrator whose
+# only membership is at `Seller A`, refused with each key's own sentence — and
+# unchanged for everybody who was already right, at the root and below it.
+
+
+#: The two surge verbs, named because they are the pair whose answer does NOT
+#: move: `can_record_surge` refuses every membership (ADR comms-9 — a
+#: surge is observed, never declared), so a branch admin was already refused
+#: there and is refused for a second reason now. They are driven anyway, because
+#: "this key is unreachable to a person" is a property that has to be asserted
+#: rather than assumed, and because the node they ask at is what moved.
+SURGE_KEYS = ("suppression_surge.create",)
+
+
+#: This module's own shared secret for the ESP connection, on a line of its own
+#: so the pragma stays ON it — an inline pragma after a `credentials={...}` dict
+#: is a pragma `ruff format` moves onto the closing brace, where the scanner does
+#: not read it. `test_suppression_wall.py`'s shape, and its reason: the baseline
+#: is a shared file at the root of the tree and this app owns neither it nor the
+#: right to conflict four other lanes on it.
+ESP_SECRET = "w55-comms-signs-with-its-own-string"  # pragma: allowlist secret
+
+
+@pytest.fixture
+def esp(tenant: Tenant, owner_actor: Actor) -> Connection:
+    """The tenant's email provider connection — what a surge names."""
+    return create_connection(
+        tenant=tenant,
+        actor=owner_actor,
+        provider=STATUS_PROVIDER,
+        name="Transactional email",
+        credentials={"webhook_secret": ESP_SECRET},
+    )
+
+
+def branch_admin_of(branches: Branches) -> Actor:
+    """The administrator of `Seller A`, and of nothing above it.
+
+    `conftest.branches` gives this person an `admin` membership at a CHILD of the
+    root. They administer that branch: everything in it, nothing over it.
+    """
+    return actor_for(user=branches.manager, tenant=branches.tenant, org=branches.seller_a)
+
+
+def the_eight_tenant_wide_writes(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    template: MessageTemplate,
+    policy: DeliveryPolicy,
+    connection: Connection,
+    surge: SuppressionSurge,
+    suffix: str,
+) -> tuple[tuple[str, str, Callable[[], Any]], ...]:
+    """The eight sites rule 55 counted, as (service name, key, one call).
+
+    Built as thunks rather than driven inline so the same list is used for the
+    refusals and for the acts that must still land — one list, two directions,
+    and no chance of the positive half drifting to seven.
+    """
+    return (
+        (
+            "create_template",
+            "message_template.create",
+            lambda: create_template(
+                tenant=tenant, actor=actor, name=f"new-{suffix}", body="Hello {{ name }}."
+            ),
+        ),
+        (
+            "revise_template",
+            "message_template.create",
+            lambda: revise_template(
+                tenant=tenant, actor=actor, name=template.name, body="Rewritten by {{ name }}."
+            ),
+        ),
+        (
+            "retire_template",
+            "message_template.retire",
+            lambda: retire_template(tenant=tenant, actor=actor, template=template),
+        ),
+        (
+            "create_policy",
+            "delivery_policy.create",
+            lambda: create_policy(
+                tenant=tenant, actor=actor, name=f"escalation-{suffix}", steps=[steps()[1]]
+            ),
+        ),
+        (
+            "revise_policy",
+            "delivery_policy.create",
+            lambda: revise_policy(tenant=tenant, actor=actor, name=policy.name, steps=[steps()[1]]),
+        ),
+        (
+            "retire_policy",
+            "delivery_policy.retire",
+            lambda: retire_policy(tenant=tenant, actor=actor, policy=policy),
+        ),
+        (
+            "start_suppression_surge",
+            "suppression_surge.create",
+            lambda: start_suppression_surge(
+                tenant=tenant, actor=actor, connection=connection, count=SURGE_THRESHOLD
+            ),
+        ),
+        (
+            "close_suppression_surge",
+            "suppression_surge.create",
+            lambda: close_suppression_surge(tenant=tenant, actor=actor, surge=surge, count=0),
+        ),
+    )
+
+
+def test_a_branch_administrator_may_not_configure_the_tenants_templates_policies_or_surges(
+    tenant: Tenant,
+    branches: Branches,
+    owner_actor: Actor,
+    admin_actor: Actor,
+    member_actor: Actor,
+    esp: Connection,
+    templates: None,
+) -> None:
+    """Eight acts on the tenant's own configuration, by an administrator of one branch.
+
+    Each refusal is asserted against `ACTION_PROSE[key]` rather than a quoted
+    string, so the test says "the key's own sentence" and cannot come to mean
+    "these words" — and a bare `pytest.raises(Forbidden)` would pass on any wall,
+    including a `Conflict` mis-typed as one.
+
+    **Five states, and the two positives are not the same two everywhere.** For
+    the six template and policy acts the row comes back for a ROOT admin and for
+    the owner. For the two surge acts it comes back for **`system` only**:
+    `can_record_surge` refuses every membership, so the answer for the owner and
+    the root admin is `Forbidden` there and always was. That asymmetry is asserted
+    rather than worked around, because a test that let the surge pair quietly fall
+    out of the positive half would stop measuring six of the eight sites the day
+    somebody moved them.
+
+    A plain `member` at the root is refused throughout, unchanged.
+    """
+    branch_admin = branch_admin_of(branches)
+    system = system_actor(tenant=tenant, org=branches.hq)
+
+    template = make_template(actor=owner_actor, name="house-style")
+    policy = create_policy(tenant=tenant, actor=owner_actor, name="oncall", steps=[steps()[1]])
+    surge = start_suppression_surge(
+        tenant=tenant, actor=system, connection=esp, count=SURGE_THRESHOLD
+    )
+
+    def attempts(actor: Actor, suffix: str) -> tuple[tuple[str, str, Callable[[], Any]], ...]:
+        return the_eight_tenant_wide_writes(
+            tenant=tenant,
+            actor=actor,
+            template=template,
+            policy=policy,
+            connection=esp,
+            surge=surge,
+            suffix=suffix,
+        )
+
+    # THE BRANCH ADMINISTRATOR — all eight refused, each with its own sentence.
+    for name, key, attempt in attempts(branch_admin, "branch"):
+        with pytest.raises(Forbidden) as refused:
+            attempt()
+        assert refused.value.detail == ACTION_PROSE[key], name
+
+    # A PLAIN MEMBER at the root — refused throughout, and refused before.
+    for name, key, attempt in attempts(member_actor, "member"):
+        with pytest.raises(Forbidden) as refused_member:
+            attempt()
+        assert refused_member.value.detail == ACTION_PROSE[key], name
+
+    # NOTHING MOVED. A refusal that arrived after the write would leave the
+    # branch admin's rewrite standing and the test green on the sentence alone.
+    template.refresh_from_db()
+    policy.refresh_from_db()
+    surge.refresh_from_db()
+    assert template.is_active is True
+    assert template.body == "Hello {{ name }}, here is your receipt."
+    assert policy.is_active is True
+    assert surge.ended_at is None
+    assert MessageTemplate.objects.for_tenant(tenant).filter(name="new-branch").count() == 0
+    assert DeliveryPolicy.objects.for_tenant(tenant).filter(name="escalation-branch").count() == 0
+
+    # THE ROOT ADMIN and THE OWNER still get the row for the six that are a
+    # person's to do; `system` gets it for the two that are not.
+    for actor, suffix in ((admin_actor, "root-admin"), (owner_actor, "owner")):
+        for name, key, attempt in attempts(actor, suffix):
+            if key in SURGE_KEYS:
+                with pytest.raises(Forbidden) as observed_only:
+                    attempt()
+                assert observed_only.value.detail == ACTION_PROSE[key], name
+                continue
+            assert attempt() is not None, name
+        # Each pass retires the pair, so the next actor gets them back.
+        template = revise_template(
+            tenant=tenant,
+            actor=owner_actor,
+            name="house-style",
+            body="Hello {{ name }}, here is your receipt.",
+        )
+        policy = create_policy(
+            tenant=tenant, actor=owner_actor, name=f"oncall-{suffix}", steps=[steps()[1]]
+        )
+
+    # SYSTEM — the tripwire's own two, which nobody else may reach.
+    closed = close_suppression_surge(tenant=tenant, actor=system, surge=surge, count=0)
+    assert closed.ended_at is not None
+    reopened = start_suppression_surge(
+        tenant=tenant, actor=system, connection=esp, count=SURGE_THRESHOLD
+    )
+    assert reopened.pk != surge.pk
+
+
+def test_a_branch_administrator_is_refused_the_configuration_routes_at_both_doors(
+    api: Client,
+    tenant: Tenant,
+    branches: Branches,
+    owner_actor: Actor,
+    templates: None,
+) -> None:
+    """The same wall through the two doors a caller actually holds.
+
+    REST and MCP, because rule 46's promise is that the two answer identically —
+    and because the review that named this class drove the REST door and got a
+    `201`. The MCP door renders a refusal as one line of text rather than as a
+    JSON body (`core.mcp.tool_call`), so the assertion there is that the key's
+    own sentence is in that line, which is the same claim in the shape that wire
+    carries.
+    """
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from apps.comms.tests.test_mcp import context_for, tool
+
+    branch_admin = branch_admin_of(branches)
+    api.force_login(branches.manager)
+
+    created = api.post(
+        TEMPLATE_LIST_URL,
+        data=json.dumps({"name": "captured", "body": "Hello {{ name }}."}),
+        content_type=JSON,
+    )
+    assert created.status_code == 403, created.content
+    assert body(created)["code"] == "forbidden"
+    assert body(created)["detail"] == ACTION_PROSE["message_template.create"]
+
+    policy_created = api.post(
+        LIST_URL,
+        data=json.dumps({"name": "captured", "steps": [steps()[1]]}),
+        content_type=JSON,
+    )
+    assert policy_created.status_code == 403, policy_created.content
+    assert body(policy_created)["detail"] == ACTION_PROSE["delivery_policy.create"]
+
+    ctx = context_for(branches.manager, tenant, branch_admin.org)
+    with pytest.raises(ToolError) as over_mcp:
+        tool("create_template")(ctx, name="captured", body="Hello {{ name }}.")
+    assert ACTION_PROSE["message_template.create"] in str(over_mcp.value)
+
+    with pytest.raises(ToolError) as policy_over_mcp:
+        tool("create_policy")(ctx, name="captured", steps=[])
+    assert ACTION_PROSE["delivery_policy.create"] in str(policy_over_mcp.value)
+
+    # Nothing was written by either door.
+    assert not MessageTemplate.objects.for_tenant(tenant).filter(name="captured").exists()
+    assert not DeliveryPolicy.objects.for_tenant(tenant).filter(name="captured").exists()

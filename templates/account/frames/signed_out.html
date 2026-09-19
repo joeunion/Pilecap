@@ -1,0 +1,39 @@
+{% comment %}
+FRAME `signed_out` — design J7's last row. The page somebody lands on after
+pressing Sign out.
+
+IT IS A PAGE WITH THE FORM ON IT, NOT A REDIRECT AND NOT A MESSAGE. A sign-out
+that bounces back into a sign-in that starts an authentication flow is the
+logout loop, from which the only escape is clearing cookies — which is why
+`SOCIALACCOUNT_LOGIN_ON_GET` stays `False` and why the way back in is a form a
+person fills, not a hop they are sent on. The fact is stated once, as the
+heading, and then the person's next move is already on the screen.
+
+THE FORM IS DUPLICATED FROM `sign_in`, DELIBERATELY. It is the same six
+elements today and it will not stay that way: the sign-in frame is where the
+ceremony state, the autofocus and the passkey reveal will land, and none
+of them belongs on the screen somebody reaches on their way out. A shared
+partial would also be a seventh file in a vocabulary whose closedness is a
+census over this directory. Two similar implementations are not yet a shared
+concept.
+{% endcomment %}
+<h1>You're signed out.</h1>
+{% if note %}
+    <p class="alert" role="alert">{{ note }}</p>
+{% endif %}
+<form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="password">
+    <label for="id_email">Email</label>
+    <input type="email" name="email" id="id_email" value="{{ email|default:'' }}"
+           autocomplete="username" autocapitalize="none" spellcheck="false" required>
+    <label for="id_password">Password</label>
+    <div class="field">
+        <input type="password" name="password" id="id_password" autocomplete="current-password" required>
+        <button type="button" class="reveal" data-reveal="id_password">Show</button>
+    </div>
+    <button type="submit">Sign in</button>
+</form>
+<p class="quiet">
+    <a href="?forgot=1">Forgot your password?</a>
+</p>

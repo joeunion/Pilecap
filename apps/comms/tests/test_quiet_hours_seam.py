@@ -146,7 +146,11 @@ def test_with_the_seam_unset_a_consented_marketing_send_is_untouched(
     assert (
         quiet_defer_seconds(
             preference=get_preference(
-                tenant=tenant, recipient=recipient, channel=Channel.EMAIL, org=owner_actor.org
+                tenant=tenant,
+                recipient=recipient,
+                channel=Channel.EMAIL,
+                org=owner_actor.org,
+                actor=owner_actor,
             ),
             tenant=tenant,
             at=timezone.now(),
@@ -176,7 +180,11 @@ def test_a_resolver_that_answers_none_is_the_same_as_no_resolver(
     assert (
         quiet_defer_seconds(
             preference=get_preference(
-                tenant=tenant, recipient=recipient, channel=Channel.EMAIL, org=owner_actor.org
+                tenant=tenant,
+                recipient=recipient,
+                channel=Channel.EMAIL,
+                org=owner_actor.org,
+                actor=owner_actor,
             ),
             tenant=tenant,
             at=timezone.now(),
@@ -215,7 +223,11 @@ def test_a_tenant_window_defers_a_marketing_send(
     assert (
         quiet_defer_seconds(
             preference=get_preference(
-                tenant=tenant, recipient=recipient, channel=Channel.EMAIL, org=owner_actor.org
+                tenant=tenant,
+                recipient=recipient,
+                channel=Channel.EMAIL,
+                org=owner_actor.org,
+                actor=owner_actor,
             ),
             tenant=tenant,
             at=timezone.now(),
@@ -252,7 +264,11 @@ def test_a_tenant_window_never_touches_transactional_mail(
     assert (
         quiet_defer_seconds(
             preference=get_preference(
-                tenant=tenant, recipient=recipient, channel=Channel.EMAIL, org=owner_actor.org
+                tenant=tenant,
+                recipient=recipient,
+                channel=Channel.EMAIL,
+                org=owner_actor.org,
+                actor=owner_actor,
             ),
             tenant=tenant,
             at=timezone.now(),
@@ -316,7 +332,11 @@ def test_the_longer_of_the_two_windows_is_what_the_run_waits(
     register_quiet_hours(lambda _tenant: _window_around_now(minutes=90))
 
     preference = get_preference(
-        tenant=tenant, recipient=recipient, channel=Channel.EMAIL, org=owner_actor.org
+        tenant=tenant,
+        recipient=recipient,
+        channel=Channel.EMAIL,
+        org=owner_actor.org,
+        actor=owner_actor,
     )
     assert preference is not None
     person = int(preference.quiet_opens_in(at).total_seconds())

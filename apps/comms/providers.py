@@ -1368,7 +1368,13 @@ class ConnectionChannel:
 
     def send(self, *, message: Message, subject: str, body: str, nonce: str = "") -> Sent:
         connection = (
-            list_connections(tenant=message.tenant)
+            # The system actor: a provider looking up its own credential is the
+            # platform reading for itself, and `list_connections` asks
+            # `connection.read` since Phase R (ADR core-27). There is no person
+            # here — a send runs inside an activity — and `allows` passes a
+            # `system` actor at step 1 while the scoped manager still fences the
+            # read to this tenant.
+            list_connections(tenant=message.tenant, actor=system_actor(message.tenant))
             .filter(provider=self.provider, status=Connection.Status.CONNECTED)
             .first()
         )
@@ -1759,7 +1765,8 @@ class TwilioSmsChannel:
 
     def _connection(self, tenant: Any) -> Connection:
         connection = (
-            list_connections(tenant=tenant)
+            # The system actor, for the reason the send path gives above.
+            list_connections(tenant=tenant, actor=system_actor(tenant))
             .filter(provider=self.provider, status=Connection.Status.CONNECTED)
             .first()
         )
@@ -2461,7 +2468,13 @@ class DevicePushChannel:
 
     def send(self, *, message: Message, subject: str, body: str, nonce: str = "") -> Sent:
         connection = (
-            list_connections(tenant=message.tenant)
+            # The system actor: a provider looking up its own credential is the
+            # platform reading for itself, and `list_connections` asks
+            # `connection.read` since Phase R (ADR core-27). There is no person
+            # here — a send runs inside an activity — and `allows` passes a
+            # `system` actor at step 1 while the scoped manager still fences the
+            # read to this tenant.
+            list_connections(tenant=message.tenant, actor=system_actor(message.tenant))
             .filter(provider=self.provider, status=Connection.Status.CONNECTED)
             .first()
         )

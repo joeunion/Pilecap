@@ -98,3 +98,14 @@ def check_name(name: str) -> str:
     if name not in declared[app_label]:
         raise Invalid({"name": [f"{name!r} is not declared in apps/{app_label}/events.py."]})
     return name
+
+
+#: Which authorization kind the noun above is about, for the socket door's read
+#: check (`apps.realtime.bridge.kind_of_event`, ADR core-27).
+EVENT_KINDS: dict[str, str | None] = {
+    # `endpoint` is the grammar's short word for the `WebhookEndpoint` row the
+    # registration wrote, and `webhook_endpoint` is that model's derived kind.
+    # P7.4 gives the model `authz_kind = "endpoint"`, at which point the noun is
+    # a kind and this line is deleted rather than edited.
+    "endpoint": "webhook_endpoint",
+}

@@ -11,6 +11,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: docs/product/in-flight.md docs/product/queue.md scripts/archaeology_lib.sh scripts/check.sh scripts/secrets_scan.sh
 # The drive for `archaeology_loop` (scripts/archaeology_lib.sh) — the
 # `--loop` per-rung `archaeology` leg body.
 #

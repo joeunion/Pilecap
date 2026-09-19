@@ -255,6 +255,12 @@ def list_endpoints_route(
       this read needs. Reading is not role-gated: any member of the tenant may
       see where its events go. Registering, updating, pausing, resuming and
       re-keying an endpoint are the owner-or-administrator acts.
+    * `403 forbidden` — your role here does not let you read webhook endpoints. A
+      role with no read of this kind reads none of them: ask an administrator
+      for the permission, or act under an organization where you hold it.
+    * `403 forbidden` — your role here does not let you read webhook endpoints. A
+      role with no read of this kind reads none of them: ask an administrator
+      for the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -262,7 +268,10 @@ def list_endpoints_route(
     ones because the delivery fan-out wants exactly those; a door that is
     *about* the endpoints wants all of them.
     """
-    endpoints: QuerySet[WebhookEndpoint] = list_endpoints(tenant=request.tenant, active_only=False)
+    actor, tenant = _acting(request)
+    endpoints: QuerySet[WebhookEndpoint] = list_endpoints(
+        tenant=tenant, active_only=False, actor=actor
+    )
     endpoints = filters.filter(endpoints)
     endpoints = searched(endpoints, q, fields=ENDPOINT_SEARCH_FIELDS)
     return ordered_by(endpoints, ordering, allowed=ENDPOINT_ORDERING, default="-created_at")
@@ -367,7 +376,8 @@ def retrieve_endpoint(request: TenantRequest, endpoint_id: UUID) -> WebhookEndpo
       this read needs. Reading is not role-gated: any member of the tenant may
       see where its events go.
     """
-    return get_endpoint(tenant=request.tenant, endpoint_id=endpoint_id)
+    actor, tenant = _acting(request)
+    return get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=actor)
 
 
 @router.patch(
@@ -404,7 +414,7 @@ def update_endpoint_route(
     that a row changed.
     """
     actor, tenant = _acting(request)
-    endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id)
+    endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=actor)
     return update_endpoint(
         tenant=tenant,
         actor=actor,
@@ -446,7 +456,7 @@ def issue_endpoint_secret_route(
     200 rather than 201: nothing was created — one endpoint has a new key.
     """
     actor, tenant = _acting(request)
-    endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id)
+    endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=actor)
     return with_secret(issue_endpoint_secret(tenant=tenant, actor=actor, endpoint=endpoint))
 
 
@@ -477,7 +487,7 @@ def pause_endpoint_route(request: TenantRequest, endpoint_id: UUID) -> WebhookEn
     * `403 forbidden` — you are not an owner or an administrator of the tenant.
     """
     actor, tenant = _acting(request)
-    endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id)
+    endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=actor)
     return deactivate_endpoint(tenant=tenant, actor=actor, endpoint=endpoint)
 
 
@@ -506,7 +516,7 @@ def resume_endpoint_route(request: TenantRequest, endpoint_id: UUID) -> WebhookE
     deliberate act with a row to point at.
     """
     actor, tenant = _acting(request)
-    endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id)
+    endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=actor)
     return resume_endpoint(tenant=tenant, actor=actor, endpoint=endpoint)
 
 
@@ -597,6 +607,9 @@ def list_deliveries_route(
       do it. It is the acts that *change* a subscription — registering,
       updating, pausing, resuming, re-keying and replaying — that need an owner
       or an administrator.
+    * `403 forbidden` — your role here does not let you read deliveries. A
+      role with no read of this kind reads none of them: ask an administrator
+      for the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -604,7 +617,8 @@ def list_deliveries_route(
     tenant's data — so `selectors.list_deliveries` scopes it by joining to the
     event, and that is the only way any door ever reaches one.
     """
-    deliveries: QuerySet[Delivery] = list_deliveries(tenant=request.tenant)
+    actor, tenant = _acting(request)
+    deliveries: QuerySet[Delivery] = list_deliveries(tenant=tenant, actor=actor)
     deliveries = filters.filter(deliveries)
     return ordered_by(deliveries, ordering, allowed=DELIVERY_ORDERING, default="-created_at")
 
@@ -640,9 +654,13 @@ def list_dead_letters_route(
       do it. Sending a given-up delivery again — `POST
       /dead-letters/{id}/replay/` — is the act that needs an owner or an
       administrator.
+    * `403 forbidden` — your role here does not let you read deliveries. A
+      role with no read of this kind reads none of them: ask an administrator
+      for the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    deliveries: QuerySet[Delivery] = dead_lettered(tenant=request.tenant)
+    actor, tenant = _acting(request)
+    deliveries: QuerySet[Delivery] = dead_lettered(tenant=tenant, actor=actor)
     return ordered_by(deliveries, ordering, allowed=DELIVERY_ORDERING, default="-dead_lettered_at")
 
 
@@ -681,5 +699,5 @@ def replay_dead_letter_route(request: TenantRequest, delivery_id: UUID) -> Deliv
     walks (events-3's machinery), reached from a door instead of from a shell.
     """
     actor, tenant = _acting(request)
-    delivery = get_delivery(tenant=tenant, delivery_id=delivery_id)
+    delivery = get_delivery(tenant=tenant, delivery_id=delivery_id, actor=actor)
     return enqueue_replay(tenant=tenant, actor=actor, delivery=delivery)

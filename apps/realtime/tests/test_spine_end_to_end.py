@@ -47,6 +47,7 @@ from apps.core import bridge
 from apps.core.actor import Actor
 from apps.core.asyncdb import run_db
 from apps.core.models import Tenant
+from apps.core.services import root_organization
 from apps.realtime.schemas import EventMessage
 from apps.realtime.tests.test_consumers import opened, session_headers
 
@@ -67,8 +68,15 @@ def _emit_and_push(*, tenant: Tenant, actor: Actor, payload: dict[str, Any]) -> 
     activities = importlib.import_module("apps.events.activities")
     types = importlib.import_module("apps.events.types")
 
+    # **The branch the row landed in** (house rule 59). `emit` refuses a widget
+    # event that names no `organization_id`: an absent key is stamped NULL and
+    # the fan-out reads NULL as tenant-wide, so the subject's own row would go
+    # to every socket in the tenant. Stamped HERE rather than at the two call
+    # sites because this function runs on the worker thread `run_db` put it on,
+    # which is the only place a synchronous `root_organization` belongs.
+    body = {"organization_id": str(root_organization(tenant=tenant).pk), **payload}
     emit = bridge.get(bridge.EMIT)
-    event = emit(name=EVENT_NAME, tenant=tenant, payload=payload, actor=actor)
+    event = emit(name=EVENT_NAME, tenant=tenant, payload=body, actor=actor)
 
     # What `TenantContextInterceptor` does with the workflow's headers. The
     # activity reads it back through `core.bridge`, which is the hop being

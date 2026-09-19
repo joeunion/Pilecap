@@ -177,6 +177,17 @@ class ThresholdCrossingOut(Schema):
     the causal link between an event and a row, so a subscriber can go and look.
     """
 
+    #: **The branch this crossing is about — the ENTRY's, never the actor's
+    #: hat** (R4 F4; ADR realtime-2a). It duplicates `crossed_by.
+    #: organization_id` on purpose: `events.services._subject_organization`
+    #: reads the payload's TOP level and nothing deeper, and an absent key is
+    #: stamped NULL, which the fan-out reads as 'no branch owns this' — so
+    #: before this field a rival administrator at a sibling branch received a
+    #: ledger row that `GET /usage/` under their own hat never lists. The
+    #: alternative the PM weighed and rejected was mapping the noun to None:
+    #: a crossing IS about a branch's entry, and declaring it org-less would
+    #: have sent it to every socket in the tenant AND skipped the read set.
+    organization_id: UUID
     meter: str
     period: str
     period_starts_on: date

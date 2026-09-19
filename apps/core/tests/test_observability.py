@@ -1,3 +1,4 @@
+# census: cross-app population=apps/**/*.py,config/**/*.py for rule 19's loggers and prints
 """One sink, and the context that makes it queryable.
 
 The load-bearing test is `test_the_middleware_binds_the_four_ids_a_query_needs`:

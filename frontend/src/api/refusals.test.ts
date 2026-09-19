@@ -3,7 +3,14 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { TRANSPORT_CODES, isWireRefusal, registryRefusal, transportFailure } from "@/api/refusals";
+import {
+    FETCH_TRANSPORT_CODES,
+    SOCKET_CLOSE_STATES,
+    TRANSPORT_CODES,
+    isWireRefusal,
+    registryRefusal,
+    transportFailure,
+} from "@/api/refusals";
 import { TRANSPORT_COPY } from "@/copy/refusals";
 
 /** The document of record, read rather than remembered. */
@@ -18,8 +25,28 @@ function registryCodes(): readonly string[] {
 }
 
 describe("the transport vocabulary is closed and is NOT the registry's", () => {
-    it("has exactly two members", () => {
-        expect([...TRANSPORT_CODES]).toEqual(["network_unreachable", "request_timeout"]);
+    it("is exactly its two declared halves, and nothing else", () => {
+        // IT USED TO READ "has exactly two members", and the change is the
+        // point rather than a loosening. P16 ruling 2 closes the STATE list at
+        // four and says in the same breath that the things which can go wrong
+        // are an open population belonging in a vocabulary — so this list may
+        // grow, and the growth must be LOUD. Set-equality against the two
+        // declared halves is that loudness: a member added to neither half, or
+        // a third half, reds here.
+        expect([...TRANSPORT_CODES]).toEqual([...FETCH_TRANSPORT_CODES, ...SOCKET_CLOSE_STATES]);
+        expect([...FETCH_TRANSPORT_CODES]).toEqual(["network_unreachable", "request_timeout"]);
+        expect([...SOCKET_CLOSE_STATES]).toEqual(["socket_handshake_rejected", "socket_credential_withdrawn"]);
+    });
+
+    it("never lets a THROWN FETCH mint a close-frame code", () => {
+        // The two halves answer different events. A fetch that never got a
+        // response is not a socket that ended, and the day this mapper reaches
+        // for a close-frame name it would be telling a person their credential
+        // was withdrawn because a proxy was down.
+        const closeFrameCodes = new Set<string>(SOCKET_CLOSE_STATES);
+        for (const cause of [new DOMException("timed out", "TimeoutError"), new TypeError("Failed to fetch"), null]) {
+            expect(closeFrameCodes.has(transportFailure(cause).code)).toBe(false);
+        }
     });
 
     it("shares no code with the document's refusal registry", () => {

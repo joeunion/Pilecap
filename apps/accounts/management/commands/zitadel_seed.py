@@ -84,6 +84,59 @@ MCP_CALLBACK_URIS = (
     "http://127.0.0.1:8080/callback",
 )
 
+# What Zitadel appends to a declared login-v2 base URI. The declaration names
+# the directory our entrance chain lives under and Zitadel builds the page's
+# URL itself, so a deployment declaring `<base>/accounts` is sending people to
+# `<base>/accounts/login` — which is the URL `reverse("account_login")` already
+# answers on. Measured by the consumer and re-measured here (design I-A fact 2,
+# and `zitadel.LOGIN_V2`'s own measurement note).
+LOGIN_BASE_PATH = "/accounts"
+
+#: The value of `SIGN_IN_DOOR` that means "our page". Named here because this
+#: module is where the declaration is computed, and the door's own module
+#: (`apps/accounts/views.py`) names the same string for the same reason — two
+#: comparisons, one vocabulary, and `config/settings/base.py` refuses anything
+#: outside it at import.
+OURS = "ours"
+
+
+def declared_login_base_uri(base_url: str) -> str | None:
+    """Which login UI this deployment declares its applications use.
+
+    **`None` today, and `None` is a VALUE, not an omission.** A deployment on
+    the hosted sign-in page states that it wants no per-application login
+    version at all, and `zitadel.ensure_application_login_version` writes that
+    statement — clearing a declaration a console edit or a previous
+    configuration left behind. The road back is exactly as important as the
+    road out: the consumer locked an owner out of a deployment for a morning
+    with a v2 declaration and nothing that could withdraw it.
+
+    **One function, three readers.** The seed passes what this returns to the
+    writer, `zitadel_audit` judges the live value against it, and
+    `zitadel_reconcile` closes the gap by running the seed — so the intent has
+    one spelling and the audit cannot come to disagree with the writer about
+    what is declared.
+
+    It takes the base URL rather than reading `PUBLIC_BASE_URL` because the
+    seed's `--base-url` flag exists and a declaration built from a different
+    origin than the redirect URIs beside it would send people to a page on a
+    host that is not the one they came back to.
+
+    **Rung A5 made it return a URI** (design C-13): `SIGN_IN_DOOR ∈ {ours,
+    hosted}` with `hosted` the default, and under `ours` the answer is
+    `f"{base_url}{LOGIN_BASE_PATH}"` — the directory our entrance chain lives
+    under, to which Zitadel appends `/login`, which is the URL
+    `reverse("account_login")` already answers on.
+
+    **Under `hosted` it is still `None`, and still a VALUE.** That is the road
+    back: a deployment that turns the door off and runs the seed again has its
+    declaration WITHDRAWN rather than left standing, which is the half the
+    consumer did not have.
+    """
+    if str(getattr(settings, "SIGN_IN_DOOR", "hosted")) != OURS:
+        return None
+    return f"{base_url.rstrip('/')}{LOGIN_BASE_PATH}"
+
 
 class Command(BaseCommand):
     help = "Create this deployment's Zitadel project, applications and dev user, idempotently."
@@ -163,6 +216,16 @@ class Command(BaseCommand):
             )
             self._say("mcp client", settings.ZITADEL_MCP_CLIENT_NAME, mcp_client)
 
+            self._login_version(
+                project_id=project.id,
+                base_url=base_url,
+                apps={
+                    settings.ZITADEL_BROWSER_APP_NAME: browser.id,
+                    settings.ZITADEL_MCP_CLIENT_NAME: mcp_client.id,
+                },
+            )
+            self._login_client_role()
+
             self._posture(org_name=str(org.get("name", "?")))
 
             if options["rotate_web_secret"]:
@@ -179,17 +242,109 @@ class Command(BaseCommand):
             # what it was trying to do.
             raise CommandError(str(error)) from error
 
-        self.stdout.write("")
-        self.stdout.write(
-            self.style.WARNING(
-                "A client secret is shown once, by Zitadel, at creation. Put the "
-                "browser client's id and secret in .env as ZITADEL_CLIENT_ID and "
-                "ZITADEL_CLIENT_SECRET; a later run cannot print them again. "
-                "Lost it? Re-run with --rotate-web-secret: that mints a new "
-                "secret and prints it, leaving the project and every application "
-                "id untouched."
-            )
+        # Which closing line this run owes the reader, and it is not a style
+        # choice: a run that PRINTED a secret leaves somebody holding one, and a
+        # run that could not leaves somebody who has to get one from elsewhere.
+        # Those are different problems and the old single line only answered the
+        # first, which is why the second checkout on a machine was sent to
+        # --rotate-web-secret — the one road out that breaks the first
+        # checkout's sign-in.
+        secret_printed = bool(browser.detail.get("clientSecret")) or bool(
+            options["rotate_web_secret"]
         )
+
+        self.stdout.write("")
+        if secret_printed:
+            self.stdout.write(
+                self.style.WARNING(
+                    "A client secret is shown once, by Zitadel, at creation. Put the "
+                    "browser client's id and secret in .env as ZITADEL_CLIENT_ID and "
+                    "ZITADEL_CLIENT_SECRET; a later run cannot print them again. "
+                    "Lost it? Re-run with --rotate-web-secret: that mints a new "
+                    "secret and prints it, leaving the project and every application "
+                    "id untouched."
+                )
+            )
+        else:
+            self.stdout.write(
+                self.style.WARNING(
+                    "The browser client already existed, so there was no secret to "
+                    "print: Zitadel shows one once, at creation. Two roads from here, "
+                    "and neither costs anybody else their sign-in. (1) Copy "
+                    "ZITADEL_CLIENT_SECRET out of the checkout that holds it into this "
+                    "checkout's .env, beside the ZITADEL_CLIENT_ID above. (2) Set "
+                    "ZITADEL_PROJECT_NAME in this checkout's .env to a name of your "
+                    "own and re-run: that seeds a second project with a browser client "
+                    "of its own, and a brand-new client does print its secret. There "
+                    "is a third road, --rotate-web-secret, and it is not free — it "
+                    "invalidates the secret every other checkout on this project is "
+                    "signing in with."
+                )
+            )
+
+    def _login_version(self, *, project_id: str, base_url: str, apps: dict[str, str]) -> None:
+        """Which login UI each OIDC client sends people to (design C-9).
+
+        **The seed passes what it is handed, and it is handed `None` today.**
+        `declared_login_base_uri` is the one place the deployment's intent is
+        computed; this loop states it on every application a person can arrive
+        through, which is the browser RP and the pre-registered MCP client.
+        The MCP *resource* is an API application with no OIDC config at all and
+        is deliberately absent: a login version on an object nobody logs in
+        through would be a `PUT` to a config object that does not exist.
+
+        **`None` CLEARS, and a loop over an empty list would not.** That is the
+        distinction this method is shaped around: it always calls the writer,
+        once per application, whatever the declaration says. A seed that
+        skipped the call when there was nothing to declare would leave a
+        console-set v2 exactly where it was and say `exists` over it — the
+        shape that locked the consumer's owner out, arriving here as zero
+        iterations instead of a withdrawal.
+
+        Each writer compares before it writes, so a run that agrees with the
+        live state sends no `PUT` and this prints `exists`.
+        """
+        self.stdout.write("")
+        base_uri = declared_login_base_uri(base_url)
+        stated = base_uri or "none — the identity platform's own page"
+        for name, app_id in apps.items():
+            declared = zitadel.ensure_application_login_version(
+                project_id=project_id, app_id=app_id, base_uri=base_uri
+            )
+            self._say("login version", f"{name}: {stated}", declared)
+
+    def _login_client_role(self) -> None:
+        """The manager role the login-v2 finalize needs, on the machine user.
+
+        **Declared here rather than remembered in a runbook.** Zitadel's
+        `IAM_OWNER` does not carry `IAM_LOGIN_CLIENT`, and without it
+        `POST /v2/oidc/auth_requests/{id}` — the call that hands the relying
+        party its code once a person is signed in — answers `403 AUTH-AWfge`.
+        The consumer's whole rung for the front door was BLOCKED on that
+        (design I-A, fact 2), and a permission an operator has to remember is a
+        deployment that works on the box where somebody remembered.
+
+        **Granted unconditionally, ahead of the door that needs it.** The role
+        costs a deployment on the hosted page nothing — it authorises a call
+        that deployment never makes — and having it already true is what keeps
+        `SIGN_IN_DOOR=ours` a setting flip rather than a setting flip plus a
+        console visit. It is additive: `ensure_instance_member_role` sends the
+        union of what the credential already holds, never a replacement, so
+        `IAM_OWNER` and anything granted by hand survive every run.
+        """
+        user = zitadel.machine_user()
+        user_id = str(user.get("id", ""))
+        login_name = str(user.get("preferredLoginName", "") or user.get("userName", "?"))
+        if not user_id:
+            self.stdout.write(
+                f"unknown  {'login client':<15} Zitadel did not say which user this "
+                "credential belongs to — nothing granted"
+            )
+            return
+        granted = zitadel.ensure_instance_member_role(
+            user_id=user_id, role=zitadel.LOGIN_CLIENT_ROLE
+        )
+        self._say("login client", f"{zitadel.LOGIN_CLIENT_ROLE} on {login_name}", granted)
 
     def _posture(self, *, org_name: str) -> None:
         """The deployment's sign-in posture, applied to the live instance.
@@ -415,8 +570,22 @@ class Command(BaseCommand):
         `created` versus `exists` is the whole readable half of idempotence — a
         second run that printed `created` again would be telling you it had made
         a second object.
+
+        **`updated` is the third verb, and it is the one that carries news.**
+        An `ensure_*` that reconciles what it finds has three honest answers —
+        I made it, I found it and it agreed, I found it and made it agree — and
+        the third one is the line an operator most needs to see: something
+        outside this codebase had changed the object, and this run changed it
+        back. Reporting that as `exists` was how a hijacked redirect URI
+        survived a seed run without a word.
+
+        `scripts/setup.sh` reads the PROJECT line's verb out of this output and
+        matches `created|exists`. Only the applications reconcile, so no project
+        line can wear the third verb and that reader needs no change —
+        `test_seed.py::test_the_seeds_project_line_is_still_readable_by_setup`
+        is the census that holds both halves of that sentence together.
         """
-        verb = "created" if resource.created else "exists "
+        verb = "updated" if resource.updated else "created" if resource.created else "exists "
         self.stdout.write(f"{verb} {kind:<15} {name}  ({resource.id})")
         for key in ("clientId", "clientSecret"):
             value = str(resource.detail.get(key, ""))

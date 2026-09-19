@@ -55,14 +55,26 @@ JSON = "application/json"
 #: `select_related("organization", "uploaded_by")` is what keeps the two relations
 #: `StoredFileOut` walks off the per-row path. Removing either would move this
 #: number, which is the point.
-LIST_QUERY_BUDGET = 7
+#:
+#: **7 → 10 in Phase R, and the three are named.** `file.read` is asked at the
+#: hat inside `selectors.list_files`, and resolving what one person holds at one
+#: node reads exactly three tables — their memberships in the tenant, the grants
+#: on those memberships, the role-delta rows for the role keys — once per actor.
+#: Once, not once per key: the actor carries the memo (PR0).
+LIST_QUERY_BUDGET = 10
 
 #: The same for one document's version history. One statement more than the
 #: document list, and the extra one is the document itself: the route resolves the
 #: parent through the scoped selector before it lists anything, because a version
 #: list for a document this hat cannot see has to answer `not_found` rather than
 #: an empty page.
-VERSION_LIST_QUERY_BUDGET = 8
+#:
+#: **8 → 11 in Phase R, and it is the SAME three, once.** The route asks
+#: `file.read` twice — once resolving the document, once listing its versions,
+#: because a version is authorized as its document — and pays for one: the memo
+#: is the actor's, so the second `require` reads no table. A door that had lost
+#: the memo would be at 14 here and this number is what would say so.
+VERSION_LIST_QUERY_BUDGET = 11
 
 DIGEST = "beadbead" * 8
 

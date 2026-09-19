@@ -56,7 +56,7 @@ connect, from the hat the middleware resolved then; a client that switches
 `X-Org` mid connection keeps the groups it joined until it reconnects.
 Reconnecting is what applies the new hat, and it is cheap.
 
-**Three things do NOT wait for a reconnect, and one thing deliberately does.**
+**Four things do NOT wait for a reconnect, and one thing deliberately does.**
 The old wording here said "revocation" and left a reader to decide what that
 covered; a field test found that a reader takes it to include the withdrawal
 of a *hat*, which it did not. Said precisely, the socket is closed immediately
@@ -71,20 +71,31 @@ of a *hat*, which it did not. Said precisely, the socket is closed immediately
 * a **subtree is re-parented** out from under a hat
   (`core.services.apply_organization_move`), because a move withdraws
   visibility without touching a single membership row, and only the people
-  whose view actually shrank are closed.
+  whose view actually shrank are closed;
+* a **read set is narrowed** — a demotion, a `withhold`, a role's collection
+  edited (`core.services.kick_if_reads_narrowed` and its two siblings), because
+  since ADR core-27 a read IS a permission and a connection that resolved one at
+  the handshake goes on delivering what its hat may no longer read. **This is
+  the New Enemy Problem** — SpiceDB's name for the window between a permission
+  shrinking and a cached decision noticing, which a ZedToken closes there and a
+  kick closes here (BVB-3). A **widening** kicks nobody: nothing a socket is
+  delivering has been taken away, and hanging up to give somebody more would be
+  a reconnect storm with no security content.
 
-**A role change does not close the socket, and that is correct rather than an
-omission.** Role gates *verbs*, never row visibility, at all four seams that
-decide what a connection receives: the consumer's group set is
+**A role change closed no socket until Phase R, and the argument for that is
+struck rather than deleted — it is why trigger 1 below reads FIRED.** Role gates
+*verbs*, went the reasoning, never row visibility, at all four seams that decide
+what a connection receives: the consumer's group set is
 `tenant_group + org_group per subtree id + user_group` (`consumers.py`),
 the subtree comes from `list_subtree_org_ids`, which is a pure path prefix scan
 (`selectors.py`), the hat comes from `resolve_org`, which reads
 `Membership.organization` and never `Membership.role` (`core.middleware`), and
-`visible_to` is path-based (`core.models`). So a person demoted `owner` ->
-`member` still reads exactly the same rows over REST, and a socket that kept
-delivering them AGREES with the REST door — which is the invariant, not a
-breach of it. Kicking on a role change would drop a live connection to enforce
-a narrowing that does not exist.
+`visible_to` is path-based (`core.models`). Every one of those sentences is
+still true, and the conclusion no longer follows: a fifth seam now decides what
+a connection receives — `consumers.may_hear`, against the read set — and role is
+what fills it. A person demoted to a role holding no reads is refused
+`list_widgets` over REST, so a socket that kept delivering widgets to them would
+be the disagreement, not the invariant.
 
 One attack worth recording, because it is the one that looks like it should
 work: a demotion cannot shrink the set of hats a person may *wear* either.
@@ -95,13 +106,18 @@ acts that shrink the hat set are membership **removal** and a membership
 **move**, which is exactly the leak above.
 
 **The six triggers, so this is a decision that repairs itself rather than an
-assumption that rots.** Any one of these expires the reasoning and makes the
-demotion kick correct:
+assumption that rots.** They keep their numbers; the first one FIRED and the
+other five stand as written. Any one of them expires the reasoning above and
+makes the demotion kick correct:
 
-1. a product adds a `POLICIES` entry keyed on a **read** verb
-   (`*.view` / `*.read` / `*.list` / `*.get`) — today every action in every
-   `policies.py` is a write verb, and `core.authz.allows` additionally grants
-   the read verbs to any membership regardless of role;
+1. **FIRED (P20, ADR core-27).** A product adds a `POLICIES` entry keyed on a
+   **read** verb (`*.view` / `*.read` / `*.list` / `*.get`) — which is now every
+   kind in the deployment: `core.authz.allows` no longer grants read verbs to
+   any membership regardless of role, `read_kinds` is what a connection resolves
+   at the handshake, and the kick is **three call sites in `core.services`,
+   guarded on the read set** (`set_role` through `_write_role_and_kick`,
+   `_kick_the_holders_of`, `_kick_if_a_read_was_taken`) rather than the one
+   guarded line this paragraph used to promise;
 2. a selector or a route branches on `effective_role` / `membership_for` /
    `is_privileged`, or a schema resolver picks an `Out` variant by role
    (field-level redaction — the socket ships the full body regardless);
@@ -114,9 +130,12 @@ demotion kick correct:
 6. a `Role.VIEWER`-style addition tempts somebody to make `is_read`
    role-ranked in `allows()`.
 
-The seam is already here, so acting on a trigger is one guarded line: a
-`close_sockets_on_commit(user_id=..., reason=...)` in `core.services.set_role`,
-guarded on `rank(new) < rank(old)`.
+Acting on a trigger used to be one guarded line. Trigger 1 fired and it is
+**three call sites in `core.services`, guarded on the read set** — each one
+computing `read_kinds_by_node` before and after its write and handing the pair
+to `kick_if_reads_narrowed`, which is where the rule "a proper subset at any
+node, never a widening" is written down. A trigger that fires next inherits that
+seam rather than a rank comparison.
 """
 
 from __future__ import annotations
@@ -127,7 +146,19 @@ from uuid import UUID
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.core.exceptions import ImproperlyConfigured
 
+# **Re-exported, not re-implemented** (R4-F2). `kind_of_event` and
+# `event_kinds_of` moved to `apps.core.authz` because `emit()` has to ask the
+# same question — an org-scoped event that carries no branch is broadcast
+# tenant-wide by `group_for` below — and `apps/events` may not import this app:
+# `import-linter` holds the platform apps independent of each other. The answer
+# is a registry read plus a per-app declaration and needs nothing either app
+# owns, so it belongs below both. The `as` spelling is the explicit re-export
+# form, so every reader that already says `from apps.realtime.bridge import
+# kind_of_event` is unchanged and there is still exactly one implementation.
+from apps.core.authz import event_kinds_of as event_kinds_of
+from apps.core.authz import kind_of_event as kind_of_event
 from apps.core.log import get_logger
 from apps.realtime.schemas import EventMessage
 
@@ -215,6 +246,21 @@ def group_for(*, tenant_id: UUID | str, event: EventMessage) -> str:
     return tenant_group(tenant_id)
 
 
+def _names_no_row(name: str) -> bool:
+    """Whether this event is about nothing a membership could hold a read on.
+
+    A noun nobody decided about answers False rather than True, and that is the
+    fail-open direction ON PURPOSE for this one question: an undecided noun is
+    already handled one hop later by `consumers._may_read`, which drops the
+    frame and says `realtime.frame.kind_undecided`. Dropping it HERE as well
+    would put one configuration mistake behind two different log lines.
+    """
+    try:
+        return kind_of_event(name) is None
+    except ImproperlyConfigured:
+        return False
+
+
 async def push_event(*, tenant_id: UUID | str, event: EventMessage) -> None:
     """Push one event to the group it belongs to, and to nothing else.
 
@@ -228,6 +274,25 @@ async def push_event(*, tenant_id: UUID | str, event: EventMessage) -> None:
     existed, and that is the point of carrying the organization on the envelope:
     the spine hands over one body and this side decides where it goes.
     """
+    # **An org-less kind may not name a branch** (R4 F5, house rule 59). The
+    # consumer's `_may_read` answers True for a None kind whatever branch the
+    # frame carries — the org-less contract, and the right answer for
+    # `search.engine.degraded` — so a frame combining the two would reach every
+    # connection in the tenant AND skip the read set, which is the widest
+    # delivery this product has. `emit()` refuses the combination at the write;
+    # this is the belt for a body composed before that refusal existed or by a
+    # producer that is not `emit`. DROPPED, never raised: a raise inside a
+    # channel-layer handler takes the connection down, so one bad frame would
+    # become a reconnect storm — the same argument `consumers._may_read` makes
+    # about an undecided noun.
+    if event.organization_id is not None and _names_no_row(event.name):
+        log.error(
+            "realtime.frame.org_on_orgless_kind",
+            event_name=event.name,
+            tenant_id=str(tenant_id),
+            organization_id=str(event.organization_id),
+        )
+        return
     group = group_for(tenant_id=tenant_id, event=event)
     await _layer().group_send(
         group,
@@ -261,6 +326,52 @@ async def kick_user(*, user_id: UUID | str, reason: str | None = None) -> None:
         {"type": KICK_TYPE, "reason": reason},
     )
     log.info("realtime.user.kicked", user_id=str(user_id), reason=reason)
+
+
+async def kick_tenant(*, tenant_id: UUID | str, reason: str | None = None) -> None:
+    """Close every socket open on this tenant. **The second kick primitive.**
+
+    `kick_user` answers "this credential is gone"; this answers "this
+    workspace is". A tenant suspended or closed is not a fact about one
+    person, and there was no way to say it: R4 found that `suspend_tenant`
+    wrote a status and registered nothing, so a NEW handshake was refused
+    while every connection already open went on hearing for the life of the
+    connection — hours, by this module's own docstring — and the REST door
+    answered 403 to the same credential the whole time. Two doors, one
+    question, two answers, which `architecture.md` calls a finding.
+
+    **A `KICK_TYPE` frame on the bare tenant group, and that is the one
+    message that legitimately goes there.** Rule 36 refuses an org-bearing
+    PAYLOAD on `tenant_group` because a payload is about a row one branch
+    owns; an instruction to hang up is about the tenant, so it reaches every
+    socket in it by construction — which is exactly what a suspension means.
+    The rule's statement says so since R4-F3 and a negative pins it.
+
+    Fire-and-forget and idempotent, like every other kick: a tenant with
+    nothing open is not an error, a `group_send` to an empty group is a
+    no-op, and kicking twice closes nothing the second time.
+
+    The client is told `CLOSE_KICKED`, the same code a revoked credential
+    gets, because that is all a disconnected client can act on; which way
+    the tenant went dark is the operator's business and rides the log line.
+    """
+    await _layer().group_send(
+        tenant_group(tenant_id),
+        {"type": KICK_TYPE, "reason": reason},
+    )
+    log.info("realtime.tenant.kicked", tenant_id=str(tenant_id), reason=reason)
+
+
+def kick_tenant_from_spine(*, tenant_id: Any, reason: str | None = None) -> None:
+    """The callable `core.bridge` holds under `realtime.kick_tenant`.
+
+    Synchronous for `kick_from_spine`'s reason, unchanged one level up: the
+    caller is `core.services.close_tenant_sockets`, reached from an
+    `on_commit` hook on whatever thread committed the write, and a coroutine
+    handed to a sync caller is a coroutine nobody awaits — a suspension that
+    reports success and closes nothing.
+    """
+    async_to_sync(kick_tenant)(tenant_id=tenant_id, reason=reason)
 
 
 def kick_from_spine(*, user_id: Any, reason: str | None = None) -> None:

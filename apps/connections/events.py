@@ -23,3 +23,13 @@ CONNECTION_REVOKED = "connections.connection.revoked"
 # fans out to every subscribed endpoint, and the body is the one part of an
 # inbound webhook that might carry somebody else's customer data.
 WEBHOOK_RECEIVED = "connections.webhook.received"
+
+
+#: Which authorization kind each noun above is about, for the socket door's read
+#: check (`apps.realtime.bridge.kind_of_event`, ADR core-27). `connection` is a
+#: kind and answers for itself.
+EVENT_KINDS: dict[str, str | None] = {
+    # The receipt this announces IS an `InboundWebhook` row; the noun is the
+    # short word the event grammar uses for it.
+    "webhook": "inbound_webhook",
+}

@@ -31,6 +31,8 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .gitignore apps/ config/ deploy/tests docs/product/instruments.md pyproject.toml quality/ scripts/archaeology_lib.sh scripts/check.sh scripts/db.sh scripts/gate_lease.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/queue_cited.sh scripts/secrets_scan.sh scripts/sweep.sh scripts/test.sh scripts/tests/test_gate_lease.sh scripts/tests/test_loop_ledger.sh scripts/tests/test_pipefail_readers.sh scripts/tests/test_sweep.sh
+# cites: scripts/test_impact.py scripts/test_impact.json .env.example
 
 # The drive for the `--loop` SCOPE — `scripts/loop_tier.sh`'s fan-out decision
 # table, its reverse-transitive `depends_on` closure, its refusals, and the
@@ -89,10 +91,22 @@ esac
 #     pin the rest by the text of the file: no leg added, one variable reaching
 #     both passes, neither ledger writer reachable. The one end-to-end run is
 #     the verifier's, under a typed sanction.
-#   * The real `-n` invocation is exercised once (case_the_always_on_set_survives
-#     _the_real_parallel_invocation) and not per case: measuring the leg you ship
-#     costs a real xdist run, and one is enough to prove the banner's counts
-#     reconcile across workers rather than summing.
+#   * The real `-n` invocation is exercised where the property IS the parallel
+#     run and nowhere else: the always-on set's survival across workers, the
+#     worker count with the documented knob set, and the three cases that drive
+#     the full gate's own pytest leg body. Everywhere else the counts are read
+#     from state a case built once, because measuring the leg you ship costs a
+#     real xdist run and a drive that paid for one per case would be a drive
+#     nobody runs.
+#   * A COLLECTOR THAT DIES AFTER WRITING ITS COUNTS FILE AND BEFORE RUNNING ITS
+#     TESTS. The reconciliation counts files, so that collector is present and
+#     the population is whole; pytest's own exit status and the `no tests ran`
+#     mapping are the only tell, and neither is driven here. Declared rather
+#     than discovered.
+#   * HOW `--pr` DERIVES its narrowing, in the `--pr` half of the leg-body cases:
+#     those drive the COMPOSITION (the preflight's counts directory reaching both
+#     passes and the refusal binding above the narrowed-run note) over a fixed
+#     scope. The derivation is case_pr_narrows_pytest_and_nothing_else's.
 
 set -euo pipefail
 
@@ -126,7 +140,10 @@ cannot_look() {
 case "${1:-}" in
 "") ;;
 --list)
-    grep -n '^case_' "$0" | sed 's/() {.*//; s/^/  /'
+    # THE DEFINITION, NOT THE CALL. `^case_` matched the definition line AND
+    # the column-zero invocation at the foot of this file, so every case was
+    # named twice; `test_list_legs.sh:149` is the form that was already right.
+    grep -n '^case_[A-Za-z0-9_]*() {' "$0" | sed 's/() {.*//; s/^/  /'
     exit 0
     ;;
 *)
@@ -162,6 +179,8 @@ command -v loop_scope__pytest_args >/dev/null 2>&1 ||
     cannot_look "scripts/loop_tier.sh defines no loop_scope__pytest_args — the flags the two passes are pointed at are gone"
 command -v loop_scope__prerun_absence >/dev/null 2>&1 ||
     cannot_look "scripts/loop_tier.sh defines no loop_scope__prerun_absence — an absent pre-run banner would be silent again"
+command -v loop_scope__impact >/dev/null 2>&1 ||
+    cannot_look "scripts/loop_tier.sh defines no loop_scope__impact — the test-impact map would be consulted by nobody, and every loop would be the closure scope with no line saying so"
 # The worker-ceiling cases ask this box the same question the gate asks it: one
 # derivation, in the file that owns it, rather than a number typed into a drive.
 [ -f scripts/gate_lease.sh ] || cannot_look "scripts/gate_lease.sh is not in this tree — the slot share has no derivation"
@@ -171,6 +190,8 @@ command -v gate_slot_workers >/dev/null 2>&1 ||
     cannot_look "scripts/gate_lease.sh defines no gate_slot_workers — the share the clamp and the refusal both name is gone"
 command -v gate_slots_total >/dev/null 2>&1 ||
     cannot_look "scripts/gate_lease.sh defines no gate_slots_total — the slot count the share divides by is gone"
+command -v gate_slot_worker_count >/dev/null 2>&1 ||
+    cannot_look "scripts/gate_lease.sh defines no gate_slot_worker_count — the ONE derivation of the gate's -n is gone, and a typed DJB_GATE_SLOT_WORKERS would be honoured by pytest and not by the gate again"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/djb-loop-scope-drive.XXXXXX")" ||
     cannot_look "could not make a scratch directory"
@@ -201,7 +222,18 @@ is() {
         bad "${what}: wanted '${want}', got '${got}'"
     fi
 }
+# THE FLOOR UNDER EVERY `$OUT` READER. `says` over an empty capture is a red
+# that blames the subject for a run that never happened, and the `grep -q`
+# NEGATIVES scattered through this file are `ok` over one. The shared shape is
+# `drive_capture_refusal` (drive_preamble.sh section 7); this is the voice.
+capture_floor() {
+    local why
+    why="$(drive_capture_refusal "${CURRENT:-a case}" "${OUT:-}" "${RC:-<none>}")" &&
+        cannot_look "$why"
+    return 0
+}
 says() {
+    capture_floor
     if grep -qF -- "$1" "$OUT"; then
         ok "says \"$1\""
     else
@@ -360,6 +392,81 @@ touch_and_scope() {
     scope_in "$dir" "$name"
 }
 
+# --- the scope a collapsed checkout cannot derive for itself -----------------
+#
+# A VERIFIER BOX HOLDS A DEPTH-1 MIRROR: the wrapper pushes `HEAD:refs/heads/main`
+# into a shallow checkout, so over there HEAD, `refs/heads/main` and the
+# merge-base of the two are ONE commit. `secrets_scan_changed_files` reads that
+# exactly as it reads `main` itself — uncommitted changes only, and there are
+# none — and this mapping over it therefore derives an EMPTY scope for a rung
+# that touched an app. Measured on the first off-box gate run: `the merge-base
+# IS this HEAD … the scope is EMPTY`. The verdict banked over there is honest
+# (its key carries its own scope) and "the box ran the same --loop" is not true.
+#
+# THE FIX IS ONE FORK POINT, CARRIED. The wrapper sends the rung's merge-base as
+# `refs/djb/base` in the same pack and names it in `DJB_LOOP_SCOPE_BASE`; the ONE
+# derivation honours it when its own history reaches nothing. What this case
+# adds over `test_secrets_scan.sh`'s is the half this file owns: that the SCOPE
+# — the app labels, the closure, the canonical string the ledger keys on — comes
+# out the same as it does on the machine that has the history.
+collapsed_clone() {
+    local src="$1" dst="$2"
+    git clone -q --depth 1 --branch rung "file://${src}" "$dst" 2>/dev/null || return 1
+    git -C "$dst" branch -q -f main HEAD
+    git -C "$dst" checkout -q main
+    return 0
+}
+
+case_a_collapsed_checkout_derives_the_same_scope_when_the_base_is_carried() {
+    fresh_checkout
+    local src="$REPO" base box
+    # A RUNG THAT TOUCHED AN APP, COMMITTED — which is what a box receives and
+    # what every case above arranges as an uncommitted edit instead.
+    git -C "$src" checkout -q -b rung
+    echo "the rung's own work" >>"$src/apps/mid/services.py"
+    git -C "$src" add -A
+    git -C "$src" commit -q -m "rung work in mid"
+    base="$(git -C "$src" merge-base rung main)"
+
+    # WHAT THE MACHINE WITH THE HISTORY SAYS, first, so the box has something to
+    # be compared against rather than a number typed here.
+    scope_in "$src" "the rung's own checkout, which has the history"
+    local want_apps="$LOOP_SCOPE_APPS" want_touched="$LOOP_SCOPE_TOUCHED" want_canonical="$LOOP_SCOPE_CANONICAL"
+    is "$RC" "0" "the exit status on the checkout that has the history"
+    is "$want_touched" "mid" "the touched set here"
+
+    box="${WORK}/box${N}"
+    collapsed_clone "$src" "$box" ||
+        cannot_look "could not build a depth-1 clone — the box's shape cannot be driven here"
+
+    # THE RED, KEPT AS A CASE: with no base handed over, the box's scope is
+    # empty for a rung that changed an app's services.
+    scope_in "$box" "a depth-1 box checkout with no base handed to it"
+    is "$RC" "0" "the exit status on the collapsed checkout"
+    is "$LOOP_SCOPE_TOUCHED" "" "the touched set with nothing carried"
+    is "$LOOP_SCOPE_APPS" "" "the scope with nothing carried"
+
+    # THE REF THE WRAPPER SENDS, planted the way the wrapper sends it: the base
+    # COMMIT has to be on the box, because a sha it does not have is a sha it
+    # cannot diff against.
+    git -C "$src" update-ref refs/djb/base "$base"
+    git -C "$box" fetch -q --depth 1 "file://${src}" "+refs/djb/base:refs/djb/base" 2>/dev/null ||
+        cannot_look "could not plant refs/djb/base in the box clone"
+
+    DJB_LOOP_SCOPE_BASE=refs/djb/base scope_in "$box" "a depth-1 box checkout with the fork point carried"
+    is "$RC" "0" "the exit status with the base carried"
+    is "$LOOP_SCOPE_TOUCHED" "$want_touched" "the touched set — the same as the machine that has the history"
+    is "$LOOP_SCOPE_APPS" "$want_apps" "the derived scope — the same"
+    # THE CANONICAL STRING IS WHAT THE LOOP LEDGER KEYS ON. Two runs that
+    # measured the same thing must key the same, or a verdict banked on one is
+    # not readable by the other.
+    is "$LOOP_SCOPE_CANONICAL" "$want_canonical" "the canonical scope string the ledger keys on"
+    case "$LOOP_TIER_BASIS" in
+    *"CARRIED fork point"*) ok "and the banner says the basis was handed to it rather than derived" ;;
+    *) bad "the basis does not say it was carried — it says '${LOOP_TIER_BASIS}'" ;;
+    esac
+}
+
 # --- the fan-out decision table, one case per row ----------------------------
 
 case_a_core_touch_reaches_every_app_through_the_closure_alone() {
@@ -383,9 +490,26 @@ case_a_core_touch_reaches_every_app_through_the_closure_alone() {
     # the core case at length, and a grep that could not tell the explanation
     # from the act would make the explanation unwritable. Measured: this
     # assertion went red on its own subject's prose.
+    #
+    # THE READER IS ONE `awk` OVER THE FILE, AND IT USED TO BE A PIPELINE ENDING
+    # IN `grep -q` — which is this repository's own documented trap
+    # (`scripts/tests/test_pipefail_readers.sh`, `test_gate_lease.sh`'s
+    # no-pipeline note) and which made THIS case report a green over a real hit.
+    # `grep -q` exits at the first match and kills `sed` with SIGPIPE; under
+    # `set -o pipefail` the pipeline's status is then 141, the `if` takes the
+    # ELSE branch, and the case prints `ok` about a file that names an app. It
+    # only bites once the producer's output passes the 64 KiB pipe buffer, so it
+    # arrived silently the day `loop_tier.sh` grew past it: measured on this
+    # tree at 58 KB of source, the shipped reader answered `ok` while
+    # `grep -c` over the same bytes answered 2. A verifier reading the same case
+    # in its own clone saw the red. An `awk` reading the file DIRECTLY has no
+    # producer to kill and runs to EOF, so its answer does not depend on how big
+    # the subject has grown.
     CURRENT="the table names no app"
-    if sed 's/#.*$//' "$ROOT/scripts/loop_tier.sh" | grep -q 'apps/core'; then
-        bad "loop_tier.sh names apps/core in CODE — the core case must fall out of the closure, not a special case"
+    if awk '{ sub(/#.*$/, ""); if (index($0, "apps/core")) { print NR ": " $0; hit = 1 } }
+        END { exit hit ? 0 : 1 }' "$ROOT/scripts/loop_tier.sh" >"${WORK}/names-an-app.txt"; then
+        bad "loop_tier.sh names apps/core in CODE — the core case must fall out of the closure, not a special case:
+$(sed 's/^/      /' "${WORK}/names-an-app.txt")"
     else
         ok "no executable line names an app: the core case falls out of the declarations"
     fi
@@ -773,10 +897,24 @@ collected_count() {
 # would prove nothing about it. The clone is what lets a case CHANGE a real file
 # without touching the tree the drive is running in.
 REAL_CLONE=""
+# The clone's interpreter, RE-LINKED ON EVERY REUSE and not only at creation.
+# A clone carries tracked files and `.venv` is ignored, so it starts with none —
+# and the gate bodies driven inside it run python files this repository ships,
+# which must not fall back to whatever `python3` is first on PATH (on a verifier
+# box that is a 3.9 these files are not written for). The re-link is the
+# load-bearing half: `.gitignore` says `.venv/`, which matches a DIRECTORY, and
+# what this plants is a SYMLINK — so `git clean -fd` on the reuse path sweeps it
+# away as untracked and the next case measures a could-not-look instead of a
+# census. Measured here, on exactly that path.
+real_clone_python() {
+    [ -e "${REAL_CLONE}/.venv" ] || ln -s "${ROOT}/.venv" "${REAL_CLONE}/.venv" 2>/dev/null || true
+}
+
 real_clone() {
     if [ -n "$REAL_CLONE" ]; then
         git -C "$REAL_CLONE" checkout -q -- . 2>/dev/null || true
         git -C "$REAL_CLONE" clean -qfd 2>/dev/null || true
+        real_clone_python
         return 0
     fi
     REAL_CLONE="${WORK}/real-clone"
@@ -786,6 +924,7 @@ real_clone() {
     git -C "$REAL_CLONE" checkout -q -B main
     git -C "$REAL_CLONE" config user.email drive@example.invalid
     git -C "$REAL_CLONE" config user.name "loop scope drive"
+    real_clone_python
 }
 
 collect_scope() {
@@ -799,6 +938,41 @@ collect_scope() {
     OUT="${WORK}/collect${N}.log"
     RC=0
     (cd "$ROOT" && "$PY" -m pytest --collect-only -q -p no:randomly "$@") >"$OUT" 2>&1 || RC=$?
+    capture_floor
+}
+
+# collect_scope_memo <slot> <name> <args…> — ONE collection per (slot), shared
+# by every case that asks the same question of the same tree.
+#
+# WHY A SLOT AND NOT THE ARGV. Memoising on the argument list alone would be
+# wrong here and silently so: several cases run byte-identical flags on
+# DIFFERENT trees — the apps-root census case collects four scopes with its
+# plant standing and the same four with it removed, and the whole claim is
+# that every count drops by exactly one. A key made of the flags would hand
+# the second set the first set's answer and the case would pass about nothing.
+# So the sharing is NAMED at each site, by a slot a reader can grep, and the
+# plant-side runs take no slot at all.
+#
+# WHAT IT SAVES, measured by the lead before the rung: this drive spent most of
+# its 292 s on ~39 whole-suite collections at 6-10 s each, and five groups of
+# them were asking one question several times over one unchanged tree.
+#
+# THE MEMO IS THE FILE, NOT THE TEXT: `$OUT` and `$RC` are restored exactly as
+# `collect_scope` left them, so a caller reads the same log by the same names.
+# The idiom is `bank_leg_run`'s and `manifest_all`'s, one layer up.
+collect_scope_memo() {
+    local slot="$1" name="$2" held
+    shift 2
+    eval "held=\${SCOPE_MEMO_OUT_${slot}:-}"
+    if [ -n "$held" ]; then
+        OUT="$held"
+        eval "RC=\$SCOPE_MEMO_RC_${slot}"
+        CURRENT="$name (the ${slot} collection, already taken)"
+        return 0
+    fi
+    collect_scope "$name" "$@"
+    eval "SCOPE_MEMO_OUT_${slot}=\$OUT"
+    eval "SCOPE_MEMO_RC_${slot}=\$RC"
 }
 
 case_the_floors_refuse_when_the_cross_app_derivation_returns_nothing() {
@@ -920,7 +1094,7 @@ case_the_always_on_set_survives_the_real_parallel_invocation() {
 }
 
 case_a_narrower_scope_selects_strictly_less_than_a_wider_one() {
-    collect_scope "an empty scope selects less than a scope with an app in it" \
+    collect_scope_memo empty "an empty scope selects less than a scope with an app in it" \
         --djb-tier=fast --djb-scope-narrow
     is "$RC" "0" "the exit status"
     local empty scoped
@@ -957,6 +1131,35 @@ case_a_narrower_scope_selects_strictly_less_than_a_wider_one() {
 # script. Written blind while `--mine` did not exist; live and checked now that
 # it does.
 MINE_ARM_FLAGS=(--djb-tier=fast --djb-scope-narrow --djb-own-app=core --djb-scope=core)
+
+# ONE `--mine` COLLECTION, AND IT CARRIES THE COUNTS WRITER. Two cases asked
+# the same question of the same tree — one wanted the collected count, the
+# other the always-on figure the counts files carry — so the run is taken once
+# with `--djb-scope-counts` on. The flag writes a file per collector and
+# changes nothing about what is SELECTED, which is what lets the count case
+# read this capture instead of paying for a second collection.
+MINE_COUNTS=""
+MINE_COLLECTION_READY=""
+MINE_COLLECTION_OUT=""
+MINE_COLLECTION_RC=0
+mine_collection_once() {
+    local name="$1"
+    if [ -n "$MINE_COLLECTION_READY" ]; then
+        OUT="$MINE_COLLECTION_OUT"
+        RC="$MINE_COLLECTION_RC"
+        CURRENT="${name} (the --mine collection, already taken)"
+        capture_floor
+        return 0
+    fi
+    MINE_COUNTS="${WORK}/mine-counts"
+    drive_require_scratch MINE_COUNTS "${MINE_COUNTS:-}"
+    rm -rf "$MINE_COUNTS"
+    mkdir -p "$MINE_COUNTS"
+    collect_scope "$name" "${MINE_ARM_FLAGS[@]}" "--djb-scope-counts=$MINE_COUNTS"
+    MINE_COLLECTION_OUT="$OUT"
+    MINE_COLLECTION_RC="$RC"
+    MINE_COLLECTION_READY=1
+}
 
 selects_the_plant() {
     # One assertion, asked of each scope shape in turn: the planted apps-root
@@ -1058,20 +1261,20 @@ PY
     # difference of exactly one is what makes the nodeid assertions above mean
     # the plant was ADDED to each selection.
     rm -f "$plant"
-    collect_scope "the empty scope with the plant removed" \
+    collect_scope_memo empty "the empty scope with the plant removed" \
         --djb-tier=fast --djb-scope-narrow
     is "$RC" "0" "the exit status"
     empty_without=$(collected_count "$OUT")
-    collect_scope "the leaf-app scope with the plant removed" \
+    collect_scope_memo leaf "the leaf-app scope with the plant removed" \
         --djb-tier=fast --djb-scope-narrow --djb-own-app=files \
         --djb-scope=files --djb-scope=exports
     is "$RC" "0" "the exit status"
     leaf_without=$(collected_count "$OUT")
-    collect_scope "the --pr shape with the plant removed" \
+    collect_scope_memo pr "the --pr shape with the plant removed" \
         --djb-scope-narrow --djb-scope=files --djb-scope=exports
     is "$RC" "0" "the exit status"
     pr_without=$(collected_count "$OUT")
-    collect_scope "the --mine shape with the plant removed" "${MINE_ARM_FLAGS[@]}"
+    mine_collection_once "the --mine shape with the plant removed"
     is "$RC" "0" "the exit status"
     mine_without=$(collected_count "$OUT")
 
@@ -1142,7 +1345,17 @@ case_the_mine_arm_in_the_placement_case_matches_the_flags_check_sh_passes() {
     for label in $LOOP_TIER_OWN_APPS; do expected+=("--djb-own-app=$label"); done
     for label in $LOOP_SCOPE_TESTS_ONLY; do expected+=("--djb-tests-only=$label"); done
     for path in $LOOP_SCOPE_CHANGED_TESTS; do expected+=("--djb-changed-test=$path"); done
-    if [ -n "$LOOP_SCOPE_NARROW" ]; then
+    # THE MAP'S TWO FLAGS, ASSEMBLED UNDER THE LEG'S OWN GUARD, which is what
+    # makes this arm a statement about `--mine` rather than about the map:
+    # `--mine` does not consult the map, so `LOOP_IMPACT` is empty here and
+    # neither flag is emitted — and if that ever stops being true, this
+    # reconstruction says so instead of quietly agreeing.
+    if [ -n "${LOOP_IMPACT:-}" ]; then
+        for path in $LOOP_SCOPE_CHANGED_FILES; do expected+=("--djb-changed=$path"); done
+    fi
+    if [ -n "$LOOP_SCOPE_IMPACT_SELECT" ]; then
+        expected+=("--djb-impact-select=$LOOP_SCOPE_IMPACT_SELECT")
+    elif [ -n "$LOOP_SCOPE_NARROW" ]; then
         for label in $LOOP_SCOPE_APPS; do expected+=("--djb-scope=$label"); done
         expected+=(--djb-scope-narrow)
     fi
@@ -1154,7 +1367,7 @@ case_the_mine_arm_in_the_placement_case_matches_the_flags_check_sh_passes() {
     #     smaller with it. A flag added to the leg and not to this list is the
     #     drift this half exists to catch; without it the comparison in (b)
     #     stays true and stops meaning anything.
-    local covered="--djb-tier --djb-own-app --djb-tests-only --djb-changed-test --djb-scope --djb-scope-narrow"
+    local covered="--djb-tier --djb-own-app --djb-tests-only --djb-changed-test --djb-scope --djb-scope-narrow --djb-changed --djb-impact-select"
     local script_names case_names counts_hits
     script_names=$(mine_flag_names_in_check_sh) ||
         cannot_look "could not read check.sh's TIER_ARGS block — the flags the leg passes cannot be read, so nothing here can be compared to them"
@@ -1253,14 +1466,10 @@ case_mine_runs_own_apps_only_and_never_banks() {
     # counts writer rather than inferred from a total, at the narrowest scope
     # there is, which is exactly where a set that narrows with the scope would
     # disappear.
-    local counts always
-    counts="${WORK}/mine-counts"
-    drive_require_scratch counts "${counts:-}"
-    mkdir -p "$counts"
-    collect_scope "the --mine selection, with the counts writer on" \
-        "${MINE_ARM_FLAGS[@]}" "--djb-scope-counts=$counts"
+    local always
+    mine_collection_once "the --mine selection, with the counts writer on"
     is "$RC" "0" "the exit status"
-    always=$(awk -F= '/^always_on=/ {print $2}' "$(find "$counts" -type f | sort | head -1)" 2>/dev/null || true)
+    always=$(awk -F= '/^always_on=/ {print $2}' "$(find "$MINE_COUNTS" -type f | sort | head -1)" 2>/dev/null || true)
     CURRENT="the always-on set runs under --mine"
     if [ -n "$always" ] && [ "$always" -gt 0 ]; then
         ok "always_on=${always} under --mine — the cross-app tripwires are outside the narrowing"
@@ -1375,7 +1584,7 @@ case_a_tests_only_comms_touch_is_not_own_and_widens_to_its_importers() {
     is "$LOOP_SCOPE_CHANGED_TESTS" "apps/comms/tests/test_mcp.py" "the edited test module"
 
     manifest_all
-    collect_scope "the whole collection, for the importer census"
+    collect_scope_memo whole "the whole collection, for the importer census"
     is "$RC" "0" "the whole collection's exit status"
     local full_log="$OUT" full_n
     full_n=$(collected_count "$full_log")
@@ -1474,7 +1683,7 @@ case_a_files_touch_selects_the_exports_tests_through_the_closure() {
     # CANARY A.4-1, a KEEP: the closure still widens by the declarations
     # (`apps/exports/apps.py` declares `files`), and the tests-only row has not
     # taken that back.
-    collect_scope "a files touch selects exports' tests through the closure" \
+    collect_scope_memo leaf "a files touch selects exports' tests through the closure" \
         --djb-tier=fast --djb-scope-narrow --djb-own-app=files \
         --djb-scope=files --djb-scope=exports
     is "$RC" "0" "the exit status"
@@ -1484,6 +1693,46 @@ case_a_files_touch_selects_the_exports_tests_through_the_closure() {
     else
         bad "no apps/exports/tests/ nodeid in the selection — the closure stopped widening"
     fi
+}
+
+# ONE REAL `-n 2` RUN, TWO CASES, AND `-v` SERVES BOTH. The two cases asked
+# byte-identical questions of the shipped leg — the banner's position relative
+# to the first test result, and the banner's numbers against the counts files
+# the same run wrote — and paid for two parallel pytest runs to do it. The
+# difference was `-v` against `-q`, and `-v` prints everything `-q` does plus
+# the per-test result lines the ordering case needs, so one run answers both.
+# The memo is `bank_leg_run`'s, one section down: a drive that started this
+# box's workers twice to assert two things about one run is paying the
+# measurement twice.
+PRERUN_COUNTS=""
+PRERUN_READY=""
+PRERUN_OUT=""
+PRERUN_RC=0
+prerun_xdist_once() {
+    local name="$1"
+    if [ -n "$PRERUN_READY" ]; then
+        OUT="$PRERUN_OUT"
+        RC="$PRERUN_RC"
+        CURRENT="${name} (the -n 2 run, already taken)"
+        capture_floor
+        return 0
+    fi
+    CURRENT="$name"
+    PRERUN_COUNTS="${WORK}/prerun-counts"
+    drive_require_scratch PRERUN_COUNTS "${PRERUN_COUNTS:-}"
+    rm -rf "$PRERUN_COUNTS"
+    mkdir -p "$PRERUN_COUNTS"
+    N=$((N + 1))
+    OUT="${WORK}/prerun${N}.log"
+    RC=0
+    (cd "$ROOT" && "$PY" -m pytest -v -p no:randomly -n 2 \
+        --djb-tier=fast --djb-scope-narrow "--djb-scope-counts=$PRERUN_COUNTS" \
+        --djb-tests-only=comms --djb-changed-test=apps/comms/tests/test_mcp.py \
+        -k test_the_namer_unwraps_and_never_reaches_for_repr) >"$OUT" 2>&1 || RC=$?
+    capture_floor
+    PRERUN_OUT="$OUT"
+    PRERUN_RC="$RC"
+    PRERUN_READY=1
 }
 
 case_the_banner_prints_every_decision_before_the_first_test() {
@@ -1499,18 +1748,7 @@ case_the_banner_prints_every_decision_before_the_first_test() {
     # MEASURED IN THE SHAPE THE GATE SHIPS: a real `-n 2`, not a serial
     # approximation. `-k` rather than a path, so every worker still performs the
     # FULL collection this case exists to read.
-    local counts="${WORK}/prerun-counts"
-    drive_require_scratch counts "${counts:-}"
-    rm -rf "$counts"
-    mkdir -p "$counts"
-    CURRENT="the pre-run banner lands before the first test"
-    N=$((N + 1))
-    OUT="${WORK}/prerun${N}.log"
-    RC=0
-    (cd "$ROOT" && "$PY" -m pytest -v -p no:randomly -n 2 \
-        --djb-tier=fast --djb-scope-narrow "--djb-scope-counts=$counts" \
-        --djb-tests-only=comms --djb-changed-test=apps/comms/tests/test_mcp.py \
-        -k test_the_namer_unwraps_and_never_reaches_for_repr) >"$OUT" 2>&1 || RC=$?
+    prerun_xdist_once "the pre-run banner lands before the first test"
     is "$RC" "0" "the exit status"
     local banner_at first_test_at
     banner_at=$(grep -n 'scope   selected ' "$OUT" | head -1 | cut -d: -f1)
@@ -1548,21 +1786,10 @@ case_the_pre_run_counts_agree_with_the_reconciliation() {
     # before they are printed — so they must equal what the counts files say,
     # which is what scripts/check.sh reconciles again after the run. A banner
     # that printed one number and banked another would be worse than no banner.
-    local counts="${WORK}/agree-counts"
-    drive_require_scratch counts "${counts:-}"
-    rm -rf "$counts"
-    mkdir -p "$counts"
-    CURRENT="the pre-run counts agree with the counts files"
-    N=$((N + 1))
-    OUT="${WORK}/agree${N}.log"
-    RC=0
-    (cd "$ROOT" && "$PY" -m pytest -q -p no:randomly -n 2 \
-        --djb-tier=fast --djb-scope-narrow "--djb-scope-counts=$counts" \
-        --djb-tests-only=comms --djb-changed-test=apps/comms/tests/test_mcp.py \
-        -k test_the_namer_unwraps_and_never_reaches_for_repr) >"$OUT" 2>&1 || RC=$?
+    prerun_xdist_once "the pre-run counts agree with the counts files"
     is "$RC" "0" "the exit status"
     local files first n banner_selected banner_deselected file_selected file_deselected
-    files=$(find "$counts" -type f | sort)
+    files=$(find "$PRERUN_COUNTS" -type f | sort)
     n=$(printf '%s\n' "$files" | grep -c . || true)
     CURRENT="every worker wrote its own counts file"
     if [ "$n" -lt 2 ]; then
@@ -1601,7 +1828,7 @@ case_a_tests_only_core_touch_widens_to_every_cross_app_importer() {
     # answering, and a case that greened on one would be the vacuity this case
     # was written to replace.
     manifest_all
-    collect_scope "the whole collection, for the core importer census"
+    collect_scope_memo whole "the whole collection, for the core importer census"
     is "$RC" "0" "the whole collection's exit status"
     local full_log="$OUT"
 
@@ -1817,6 +2044,755 @@ PLANT
     else
         bad "the refusal at line '${refuse_line:-<none>}' does not precede the bank at '${bank_line:-<none>}' — a short collection could still bank"
     fi
+
+    # AND IT CARRIES ITS CAUSE THROUGH THE ONE SEAM. The refusal used to print
+    # its `!!` line with a bare `echo`, so the banner three lines down read the
+    # callee-set-none sentence: a reader with no scrollback was told that the
+    # scope could not be reconciled and NOT what the collectors did. The text is
+    # byte-identical (asserted above); what is asserted here is that it was also
+    # REMEMBERED (scripts/gate_refuse.sh, the B4 family).
+    CURRENT="the shortfall refusal RECORDS its first line"
+    gate_refuse_reset
+    N=$((N + 1))
+    OUT="${WORK}/counts-cause${N}.log"
+    RC=0
+    loop_counts_refuse_if_short 1 2 >"$OUT" 2>&1 || RC=$?
+    is "$RC" "2" "the refusal's exit status"
+    cause_recorded "1 of 2 collectors reported"
+    CURRENT="and the --loop reconciliation prints a cause line for it"
+    if grep -qF 'cause: ${GATE_LAST_REFUSAL}' "${ROOT}/scripts/check.sh" &&
+        grep -qF 'the --loop scope could not be RECONCILED — see above.' "${ROOT}/scripts/check.sh"; then
+        ok "scripts/check.sh banners the reconciliation's refusal with its cause"
+    else
+        bad "the --loop reconciliation exits 2 with no cause banner — the shortfall's sentence never reaches a reader without the scrollback"
+    fi
+}
+
+# --- the worker count: ONE derivation, and the documented knob honoured by it --
+#
+# THE FALSE RED THIS PAIR CLOSES, and it was found on a CONTROL run rather than
+# a plant: with `DJB_GATE_SLOT_WORKERS` set — a knob `scripts/test.sh` reads and
+# `apps/conftest.py`'s ceiling reads FIRST — every `--loop` exited 2 on a clean
+# suite. The gate started `-n <derived share>`, pytest clamped ITSELF down to the
+# typed value, and the shortfall refusal above compared the survivors against the
+# PRE-CLAMP number: `2 of 5 collectors reported — a collector died`, on a tree
+# where nothing had died at all. Two answers to "how many collectors" is how a
+# floor stops binding, and this is what it looks like when it stops binding in
+# the loud direction.
+
+case_a_typed_slot_share_is_the_workers_number_and_no_clamp_fires() {
+    local total share counts="${WORK}/typed-counts" n
+    total=$(gate_slots_total)
+    share=$(gate_slot_workers "$total")
+
+    # A PROBE WORLD TOO SMALL TO FALSIFY, SAID OUT LOUD. The claim is that a
+    # typed value STRICTLY BELOW the share is honoured; on a box whose share is
+    # already 2 or less there is no such value to type, and a case that "passed"
+    # there would be a case that could not fail.
+    CURRENT="this box can falsify the claim"
+    if [ "$share" -le 2 ]; then
+        ok "SKIPPED — this box's slot share is ${share}, so no typed value is strictly below it; nothing was asserted and this line is the disclosure"
+        return
+    fi
+    ok "the share is ${share}, so a typed 2 is strictly below it"
+
+    CURRENT="a typed share at or below this slot's IS the workers number"
+    GATE_SLOT_WORKERS=""
+    GATE_SLOT_WORKERS_PROV=""
+    gate_refuse_reset
+    N=$((N + 1))
+    OUT="${WORK}/typed-derive${N}.log"
+    RC=0
+    DJB_GATE_SLOT_WORKERS=2 gate_slot_worker_count "$total" >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the derivation's exit status"
+    is "${GATE_SLOT_WORKERS}" "2" "GATE_SLOT_WORKERS"
+    CURRENT="and it prints where the number came from"
+    says "workers:    -n 2 (typed: DJB_GATE_SLOT_WORKERS, at or below this slot's share of ${share})"
+
+    # MEASURE THE LEG YOU SHIP: a REAL `-n` at the number the derivation just
+    # produced, with the counts directory the leg passes, and no plant anywhere.
+    drive_require_scratch counts "${counts:-}"
+    rm -rf "$counts"
+    mkdir -p "$counts"
+    CURRENT="the leg's own -n starts exactly that many collectors"
+    N=$((N + 1))
+    OUT="${WORK}/typed-run${N}.log"
+    RC=0
+    (cd "$ROOT" && DJB_GATE_SLOT_WORKERS=2 "$PY" -m pytest -q -p no:randomly -n "$GATE_SLOT_WORKERS" \
+        --djb-tier=fast --djb-scope-narrow "--djb-scope-counts=$counts" \
+        -k test_the_namer_unwraps_and_never_reaches_for_repr) >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the exit status of the clean run"
+    CURRENT="and the python ceiling has nothing left to lower"
+    if grep -qF 'clamped -n' "$OUT"; then
+        bad "the clamp fired inside the gate's own -n — the shell and pytest are answering with two different numbers again"
+    else
+        ok "no 'clamped' line: -n and the ceiling are one number"
+    fi
+    n=$(find "$counts" -type f | wc -l | tr -d ' ')
+    CURRENT="the expected population is the population that collected"
+    is "$n" "$GATE_SLOT_WORKERS" "the counts files found"
+    CURRENT="so the shortfall refusal is silent on a clean suite with the knob set"
+    N=$((N + 1))
+    OUT="${WORK}/typed-refuse${N}.log"
+    RC=0
+    loop_counts_refuse_if_short "$n" "$GATE_SLOT_WORKERS" >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the refusal's exit status"
+    if grep -qF 'collectors reported' "$OUT"; then
+        bad "the shortfall refusal fired on a clean suite: the false red is back"
+    else
+        ok "silent — ${n} of ${GATE_SLOT_WORKERS}, not ${n} of ${share}"
+    fi
+
+    # AND THE GATE ASKS THIS FUNCTION, not `gate_slot_workers` directly. A
+    # derivation nothing calls is the same two numbers with more code in it.
+    CURRENT="gate_slot_acquire takes its number from this derivation"
+    if grep -qF 'gate_slot_worker_count "$total"' "${ROOT}/scripts/gate_lease.sh"; then
+        ok "gate_slot_acquire calls gate_slot_worker_count"
+    else
+        bad "gate_slot_acquire does not call gate_slot_worker_count — the knob is unhonoured at the source again"
+    fi
+    GATE_SLOT_WORKERS=""
+    GATE_SLOT_WORKERS_PROV=""
+    # AND THE HAND-DOWN GOES BACK. The derivation EXPORTS the number it resolved
+    # (scripts/gate_lease.sh: the gate hands its share down to `scripts/test.sh`
+    # and to the python ceiling), and an export outlives the command prefix that
+    # set the knob — so a case below that measures the DERIVED ceiling would be
+    # measuring this case's typed 2. `gate_slot_release` is where the gate itself
+    # gives it back; this drive is not the gate, so it gives it back here.
+    unset DJB_GATE_SLOT_WORKERS
+}
+
+case_a_typed_share_above_the_slot_is_refused_naming_both() {
+    local total share over
+    total=$(gate_slots_total)
+    share=$(gate_slot_workers "$total")
+    over=$((share + 1))
+
+    # REFUSED, NOT CLAMPED, and the direction is the whole argument: a knob that
+    # NARROWS a slot costs its own run and nobody else's, while a knob that
+    # WIDENS one spends the share of every gate that is still believing in its
+    # own — which is the oversubscription the semaphore exists to stop. A silent
+    # lowering would also teach the knob's reader that what they typed is what
+    # ran.
+    CURRENT="one above the share is refused, naming both numbers"
+    gate_refuse_reset
+    N=$((N + 1))
+    OUT="${WORK}/typed-over${N}.log"
+    RC=0
+    DJB_GATE_SLOT_WORKERS="$over" gate_slot_worker_count "$total" >"$OUT" 2>&1 || RC=$?
+    is "$RC" "2" "the exit status"
+    says "DJB_GATE_SLOT_WORKERS=${over} is ABOVE this slot's share of ${share}."
+    says "Nothing was judged: no slot was taken and no suite started."
+    cause_recorded "is ABOVE this slot's share"
+
+    # The plan's own number, where this box is small enough for it to be above
+    # the share. Skipped out loud rather than silently on a box that is not.
+    CURRENT="the documented example value is refused too"
+    if [ "$share" -lt 99 ]; then
+        gate_refuse_reset
+        N=$((N + 1))
+        OUT="${WORK}/typed-99-${N}.log"
+        RC=0
+        DJB_GATE_SLOT_WORKERS=99 gate_slot_worker_count "$total" >"$OUT" 2>&1 || RC=$?
+        is "$RC" "2" "the exit status for 99"
+        says "DJB_GATE_SLOT_WORKERS=99 is ABOVE this slot's share of ${share}."
+    else
+        ok "SKIPPED — this box's share is ${share}, so 99 is not above it; the boundary case above is the assertion"
+    fi
+
+    CURRENT="an unreadable value is exit 2, as DJB_GATE_SLOTS already is"
+    gate_refuse_reset
+    N=$((N + 1))
+    OUT="${WORK}/typed-junk${N}.log"
+    RC=0
+    DJB_GATE_SLOT_WORKERS="two" gate_slot_worker_count "$total" >"$OUT" 2>&1 || RC=$?
+    is "$RC" "2" "the exit status"
+    says "is not a positive whole number."
+    cause_recorded "is not a positive whole number"
+
+    CURRENT="and zero is refused rather than read as 'no ceiling'"
+    gate_refuse_reset
+    N=$((N + 1))
+    OUT="${WORK}/typed-zero${N}.log"
+    RC=0
+    DJB_GATE_SLOT_WORKERS=0 gate_slot_worker_count "$total" >"$OUT" 2>&1 || RC=$?
+    is "$RC" "2" "the exit status"
+
+    CURRENT="the share itself is honoured, so the refusal is a ceiling and not a ban"
+    gate_refuse_reset
+    GATE_SLOT_WORKERS=""
+    N=$((N + 1))
+    OUT="${WORK}/typed-at${N}.log"
+    RC=0
+    DJB_GATE_SLOT_WORKERS="$share" gate_slot_worker_count "$total" >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the exit status at the share"
+    is "$GATE_SLOT_WORKERS" "$share" "GATE_SLOT_WORKERS at the share"
+    GATE_SLOT_WORKERS=""
+    GATE_SLOT_WORKERS_PROV=""
+    # AND THE HAND-DOWN GOES BACK, because this case is not the gate. The
+    # derivation now EXPORTS the number it resolved (scripts/gate_lease.sh — the
+    # gate hands its share down to `scripts/test.sh` and the python ceiling), and
+    # an export outlives the command prefix that set the knob: a case below that
+    # measures the DERIVED ceiling would be measuring this case's typed value.
+    unset DJB_GATE_SLOT_WORKERS
+
+    # AND IT IS REFUSED ABOVE THE SLOT. A run that was never going to be legal
+    # must not queue for the box first — the `--pr` refusals' own property, one
+    # guard over.
+    CURRENT="the derivation sits above the slot attempt"
+    local derive_line try_line
+    derive_line=$(first_call_line 'gate_slot_worker_count "$total"' "${ROOT}/scripts/gate_lease.sh")
+    try_line=$(first_call_line 'gate_slot_try "$mode"' "${ROOT}/scripts/gate_lease.sh")
+    if [ -n "$derive_line" ] && [ -n "$try_line" ] && [ "$derive_line" -lt "$try_line" ]; then
+        ok "the derivation (line ${derive_line}) is above the first slot attempt (line ${try_line})"
+    else
+        bad "the derivation at '${derive_line:-<none>}' does not precede the slot attempt at '${try_line:-<none>}' — an unhonourable number would wait for the box before being refused"
+    fi
+}
+
+# --- THE BANK'S SHARE: one number, three readers -------------------------------
+#
+# THE MISS, AND IT COST THE FIRST LIVE MERGE-TRAIN BANK (bank-2349.log,
+# 2026-09-16). `--bank` holds EVERY pytest slot, so its share is the whole box's
+# cores; the leg started `-n 10` and said so. `apps/conftest.py`'s worker ceiling
+# found nothing handed down, DERIVED one slot's share of its own (5), clamped the
+# leg to it, and pytest created five workers and passed 3653 tests — over which
+# the collector census, still expecting one collector per worker ASKED for,
+# printed `5 of 10 collectors reported — a collector died`, exit 2, nothing
+# banked, nothing pushed. Two mechanisms held different numbers for one run and
+# every one of them was behaving exactly as written.
+#
+# THE TWO HALVES, AND EACH HAS ITS OWN CASE BELOW. (1) The derivation EXPORTS the
+# share it resolved, under the one name the ceiling and `scripts/test.sh` already
+# read, so there is nothing left for the ceiling to derive. (2) The census's
+# expected population is what pytest CREATED — every collector writes
+# `workers=<workercount>` into its own counts file — so the census can no longer
+# be told a number the run disagrees with, whatever else changes.
+#
+# NO SLOT IS TAKEN, AND THAT IS DELIBERATE. `gate_slot_worker_count` is the call
+# `gate_slot_acquire bank` makes for the number, and its own header says it
+# "never takes a slot and starts nothing, which is what lets a drive ask it the
+# question the gate asks". A drive that acquired a REAL bank would stop every
+# builder on this machine in order to prove an integer.
+
+BANK_READY=""
+BANK_COUNTS="${WORK}/bank-counts"
+BANK_OUT=""
+BANK_RC=0
+BANK_WORKERS=""
+BANK_SLOT_SHARE=""
+BANK_BOX=""
+BANK_HANDED=""
+BANK_TOTAL=2
+
+bank_leg_run() {
+    # ONE REAL RUN AT THE BANK'S `-n`, shared by both cases and memoised, because
+    # the number under test is this box's whole core count and starting that many
+    # workers twice to assert two different things about one run would be paying
+    # the measurement twice. Either case alone calls this and gets it.
+    [ -z "$BANK_READY" ] || return 0
+    check_sh_function loop_counts_refuse_if_short
+    drive_require_scratch BANK_COUNTS "${BANK_COUNTS:-}"
+    rm -rf "$BANK_COUNTS"
+    mkdir -p "$BANK_COUNTS"
+
+    # THE SHIMMED BOX: two slots, whatever this machine's cores are. The slot
+    # share is one slot's (`gate_slot_workers`); the bank's is the box's
+    # (`gate_slot_cores`) — the exact second argument `gate_slot_acquire bank`
+    # passes, and the whole reason the two numbers can differ at all.
+    BANK_SLOT_SHARE=$(gate_slot_workers "$BANK_TOTAL")
+    BANK_BOX=$(gate_slot_cores)
+
+    unset DJB_GATE_SLOT_WORKERS
+    GATE_SLOT_WORKERS=""
+    GATE_SLOT_WORKERS_PROV=""
+    gate_refuse_reset
+    RC=0
+    gate_slot_worker_count "$BANK_TOTAL" "$BANK_BOX" >"${WORK}/bank-derive.log" 2>&1 || RC=$?
+    [ "$RC" = "0" ] ||
+        cannot_look "the bank's own derivation refused on this box — gate_slot_worker_count ${BANK_TOTAL} ${BANK_BOX} exited ${RC}, so nothing below could be measured"
+    BANK_WORKERS="$GATE_SLOT_WORKERS"
+    # What the leg's own environment carries into the suite, captured BEFORE the
+    # run so a later `unset` cannot make this look true.
+    BANK_HANDED="${DJB_GATE_SLOT_WORKERS:-<unset>}"
+
+    # THE LEG IN THE SHAPE THE GATE RUNS IT: the bank's `-n`, the counts
+    # directory both pytest legs pass, and NO `-q` — xdist prints
+    # `created: N/N workers` in the report header, which is the run's own answer
+    # to the question the census asks, and `-q` is what hides it.
+    BANK_OUT="${WORK}/bank-run.log"
+    BANK_RC=0
+    (cd "$ROOT" && "$PY" -m pytest -p no:randomly -n "$BANK_WORKERS" \
+        --djb-tier=fast --djb-scope-narrow "--djb-scope-counts=$BANK_COUNTS" \
+        -k test_the_namer_unwraps_and_never_reaches_for_repr) >"$BANK_OUT" 2>&1 || BANK_RC=$?
+    # GIVEN BACK HERE, exactly as `gate_slot_release` gives it back in the gate:
+    # every case after these two measures the DERIVED ceiling, and a whole-box
+    # share left in this drive's environment would silently become theirs.
+    unset DJB_GATE_SLOT_WORKERS
+    GATE_SLOT_WORKERS=""
+    GATE_SLOT_WORKERS_PROV=""
+    BANK_READY=1
+}
+
+case_a_bank_runs_every_slots_share_and_the_census_agrees() {
+    local n first recorded
+    bank_leg_run
+
+    CURRENT="a bank's share is every slot's share, not one slot's"
+    is "$BANK_WORKERS" "$BANK_BOX" "the -n the bank leg starts"
+    if [ "$((BANK_SLOT_SHARE * BANK_TOTAL))" = "$BANK_BOX" ]; then
+        ok "and ${BANK_TOTAL} x ${BANK_SLOT_SHARE} = ${BANK_BOX}: the bank runs every slot's share"
+    else
+        ok "SKIPPED — this box's ${BANK_BOX} cores do not divide into ${BANK_TOTAL} slots of ${BANK_SLOT_SHARE} exactly; the assertion above is the claim and this line is the disclosure"
+    fi
+
+    CURRENT="the derivation hands the share down to the suite"
+    is "$BANK_HANDED" "$BANK_WORKERS" "DJB_GATE_SLOT_WORKERS in the leg's environment"
+
+    OUT="$BANK_OUT"
+    CURRENT="so the python ceiling has nothing left to lower"
+    if grep -qF 'clamped -n' "$OUT"; then
+        bad "the clamp fired inside the bank's own -n — the shell and pytest are answering with two different numbers again, which is the ${BANK_SLOT_SHARE} of ${BANK_BOX} that banked nothing"
+    else
+        ok "no 'clamped' line: the bank's -n and the ceiling are one number"
+    fi
+    CURRENT="and pytest created the workers the leg asked for"
+    says "created: ${BANK_WORKERS}/${BANK_WORKERS} workers"
+    is "$BANK_RC" "0" "the leg's exit status"
+
+    CURRENT="every collector reported, and each one recorded the population it belongs to"
+    n=$(find "$BANK_COUNTS" -type f | wc -l | tr -d ' ')
+    is "$n" "$BANK_WORKERS" "the counts files found"
+    first=$(find "$BANK_COUNTS" -type f | sort | head -1)
+    recorded=$(awk -F= '$1 == "workers" { print $2; exit }' "$first")
+    is "$recorded" "$BANK_WORKERS" "the workers= the collectors recorded"
+
+    CURRENT="so the census is silent, and the verdict banks"
+    gate_refuse_reset
+    N=$((N + 1))
+    OUT="${WORK}/bank-census${N}.log"
+    RC=0
+    loop_counts_refuse_if_short "$n" "$BANK_WORKERS" "$first" >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the census's exit status"
+    if grep -qF 'collectors reported' "$OUT"; then
+        bad "the shortfall refusal fired on a complete bank: the false red is back"
+    else
+        ok "silent — ${n} of ${BANK_WORKERS}"
+    fi
+
+    # THE LOAD-BEARING HALF OF HB.2. Hand the census the number that was ASKED
+    # FOR BEFORE A CLAMP — twice the population that ran — and it still reads the
+    # run's own answer out of the collectors' files. That is what makes "the
+    # census counts what ran" a mechanism rather than a coincidence of the export
+    # above: the two halves fail independently, and this case can tell them apart.
+    CURRENT="and it counts what RAN even when handed the pre-clamp number"
+    gate_refuse_reset
+    N=$((N + 1))
+    OUT="${WORK}/bank-preclamp${N}.log"
+    RC=0
+    loop_counts_refuse_if_short "$n" "$((BANK_WORKERS * 2))" "$first" >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the census's exit status with $((BANK_WORKERS * 2)) asked for and ${n} created"
+    if grep -qF 'collectors reported' "$OUT"; then
+        bad "the census believed the pre-clamp number over the collectors' own — this is tonight's ${BANK_SLOT_SHARE} of ${BANK_BOX}, one layer down"
+    else
+        ok "silent: the collectors' workers=${recorded} outranks the ${BANK_WORKERS} x 2 it was told"
+    fi
+
+    # AND THE SHARE BELONGS TO THE SLOT. A whole-box share left exported after the
+    # box has been given back is a ceiling that is true of nothing, and every leg
+    # the full gate runs after the suite would inherit it — the self-test leg's
+    # drives included, which measure the DERIVED ceiling.
+    CURRENT="the release gives the share back"
+    gate_slot_release >/dev/null 2>&1
+    is "${DJB_GATE_SLOT_WORKERS:-<unset>}" "<unset>" "DJB_GATE_SLOT_WORKERS after gate_slot_release"
+    local release_line
+    release_line=$(first_call_line 'unset DJB_GATE_SLOT_WORKERS' "${ROOT}/scripts/gate_lease.sh")
+    if [ -n "$release_line" ]; then
+        ok "scripts/gate_lease.sh unsets it (line ${release_line})"
+    else
+        bad "scripts/gate_lease.sh never unsets DJB_GATE_SLOT_WORKERS — the released bank's share outlives the box"
+    fi
+}
+
+case_a_dead_collector_under_a_bank_still_refuses() {
+    # THE OTHER DIRECTION, AND THE ONE THAT MATTERS MOST: the census was widened
+    # to read the run's own population, so the thing to prove is that it did not
+    # become unable to fail. One collector's file removed from a complete bank is
+    # exactly the state the refusal exists for — a worker that died during
+    # collection, which pytest can still exit 0 from.
+    local scratch="${WORK}/bank-dead" n first
+    bank_leg_run
+    drive_require_scratch scratch "${scratch:-}"
+    rm -rf "$scratch"
+    mkdir -p "$scratch"
+    cp "$BANK_COUNTS"/* "$scratch"/
+    rm -f "$(find "$scratch" -type f | sort | tail -1)"
+    n=$(find "$scratch" -type f | wc -l | tr -d ' ')
+    first=$(find "$scratch" -type f | sort | head -1)
+
+    CURRENT="one collector short of a full bank is still a refusal"
+    gate_refuse_reset
+    N=$((N + 1))
+    OUT="${WORK}/bank-dead${N}.log"
+    RC=0
+    loop_counts_refuse_if_short "$n" "$BANK_WORKERS" "$first" >"$OUT" 2>&1 || RC=$?
+    is "$RC" "2" "the census's exit status"
+    says "${n} of ${BANK_WORKERS} collectors reported — a collector died"
+    says "No verdict is banked."
+    cause_recorded "collectors reported"
+
+    # AND THE SENTENCE IS UNCHANGED, which is not decoration: the drives above,
+    # `scripts/check.sh`'s own banner and every transcript a reader has ever
+    # grepped all name this text. Widening where the number comes from must not
+    # move the words it is printed in.
+    CURRENT="and the survivors' own file cannot talk it out of refusing"
+    if grep -qF "${n} of ${BANK_WORKERS}" "$OUT"; then
+        ok "the surviving collectors still say workers=${BANK_WORKERS}, so ${n} of them is short"
+    else
+        bad "the refusal did not name ${n} of ${BANK_WORKERS} — the population the survivors recorded was lost"
+    fi
+}
+
+# --- the collector population under the gate that BANKS ------------------------
+#
+# THE DEFECT, AND IT IS THE DANGEROUS DIRECTION. The shortfall refusal above
+# bound under `--loop` alone: `--djb-scope-counts` was assigned at one site
+# inside the `--loop` block, so the FULL gate's two passes carried no counts
+# directory, there were no files to reconcile, and the refusal was never
+# reached. Measured on this tree — a worker that exits during collection with
+# xdist's restart budget exhausted leaves pytest able to exit **0** printing
+# `no tests ran`, and 0 is the one status the full gate reads as "this tree is
+# clean". A full gate that lost a collector banked a green verdict for a suite
+# that had not run, and the only tell was a line in the middle of a passing
+# transcript.
+#
+# THE LEG BODY, NEVER A NESTED GATE. A drive may not run `./scripts/check.sh`
+# inside one — the per-checkout lock refuses it — so these cases source the leg's
+# own functions out of the file that ships them and drive those over real state.
+
+X2_READY=""
+x2_leg_body() {
+    [ -z "$X2_READY" ] || return 0
+    # The four the leg is made of: the two passes and the reconciliation between
+    # them, the reconciliation's reader, the pass-2 explainer it calls on a red,
+    # and the shortfall refusal underneath both.
+    check_sh_function loop_counts_refuse_if_short
+    check_sh_function pytest_x2_counts_refuse
+    check_sh_function pytest_x2_verdict
+    check_sh_function pytest_x2_passes
+    # THE TICKER IS NOT THIS DRIVE'S BUSINESS, stubbed for the reason the
+    # EXIT-trap case stubs its neighbours: a drive that had to start a heartbeat
+    # in order to measure a reconciliation would be measuring the heartbeat.
+    heartbeat_label() { :; }
+    heartbeat_stop() { :; }
+    X2_READY=1
+}
+
+X2_PLANT="${ROOT}/apps/test_zzz_g1_full_collector.py"
+X2_PLANTED=""
+x2_plant() {
+    # A DESTRUCTIVE DEMONSTRATION BUILDS ITS OWN VICTIM. The module below is
+    # created by this drive at a name no product can own, and removed by the case
+    # and by the exit trap both — so a killed run cannot leave a module in the
+    # real tree that exits a worker whenever an environment variable is set.
+    CURRENT="the plant's own path is free"
+    if [ -e "$X2_PLANT" ] && [ -z "$X2_PLANTED" ]; then
+        cannot_look "apps/test_zzz_g1_full_collector.py already exists in this tree — this case will not overwrite a file it did not create"
+    fi
+    if [ -z "$X2_PLANTED" ]; then
+        ok "apps/test_zzz_g1_full_collector.py is this drive's to create"
+        drive_at_exit "rm -f \"$X2_PLANT\""
+        X2_PLANTED=1
+    else
+        ok "the plant is this drive's, from an earlier case"
+    fi
+    cat >"$X2_PLANT" <<'PLANT'
+"""A collector that dies on purpose, so a drive can prove the FULL gate refuses.
+
+Inert unless a drive names a worker in DJB_DRIVE_KILL_COLLECTOR. When it is
+named, it waits for the OTHER worker's counts file to appear before it goes:
+the state this exists to build is "one collector reported, the other never
+did", which is the state a full gate used to bank a green verdict over.
+"""
+
+import os
+import pathlib
+import time
+
+_victims = [v for v in os.environ.get("DJB_DRIVE_KILL_COLLECTOR", "").split(",") if v]
+if os.environ.get("PYTEST_XDIST_WORKER", "") in _victims:
+    _witness = pathlib.Path(os.environ.get("DJB_DRIVE_KILL_AFTER", "/nonexistent"))
+    _deadline = time.time() + 60
+    while not _witness.exists() and time.time() < _deadline:
+        time.sleep(0.05)
+    os._exit(1)
+
+
+def test_zzz_g1_full_collector_is_inert_by_default() -> None:
+    assert True
+PLANT
+}
+
+# The two tests this drive's `-k` selects: one real test of this tree's, and the
+# plant's own inert one. Named once so the three cases below cannot drift apart.
+X2_K="test_the_namer_unwraps_and_never_reaches_for_repr or test_zzz_g1_full_collector_is_inert_by_default"
+
+# A SCRATCH LEDGER, AND IT IS THE MEASUREMENT RATHER THAN A CONVENIENCE. The
+# claim is that the LEG BODY writes no verdict row, and the before/after count
+# used to be taken over the real `djb-gate-verdicts` — one file SHARED by every
+# worktree of this repository through `--git-common-dir`. A peer's bank
+# appending a row between the two counts reds this case for somebody else's
+# work (measured: 274 before, 275 after, while BANK-12 ran on the primary), and
+# the same peer writing nothing would have hidden a row this run really wrote.
+# Pointed at a file of this drive's own, the count answers about this run and
+# only this run.
+X2_LEDGER=""
+x2_ledger_rows() {
+    [ -n "$X2_LEDGER" ] || return 1
+    if [ -f "$X2_LEDGER" ]; then
+        wc -l <"$X2_LEDGER" | tr -d ' '
+    else
+        echo 0
+    fi
+}
+
+case_a_dying_collector_under_the_full_gate_leg_body_is_exit_2_and_banks_nothing() {
+    local counts="${WORK}/full-counts" rows_before rows_after
+    x2_leg_body
+    x2_plant
+    drive_require_scratch counts "${counts:-}"
+    rm -rf "$counts"
+    mkdir -p "$counts"
+    X2_LEDGER="${WORK}/x2-verdicts"
+    drive_require_scratch X2_LEDGER "${X2_LEDGER:-}"
+    : >"$X2_LEDGER"
+    rows_before=$(x2_ledger_rows)
+
+    # `--max-worker-restart=0` IS PART OF THE MEASUREMENT AND IS DECLARED, for
+    # the reason the `--loop` case beside it states: without it xdist REPLACES a
+    # collector that dies and the state this case exists to build never forms.
+    GATE_SLOT_WORKERS=2
+    PYTEST_SEED=1
+    GATE_X2_COUNTS_DIR="$counts"
+    CURRENT="a dying collector under the FULL gate's leg body"
+    N=$((N + 1))
+    OUT="${WORK}/x2full${N}.log"
+    RC=0
+    (cd "$ROOT" && DJB_GATE_LEDGER="$X2_LEDGER" \
+        DJB_DRIVE_KILL_COLLECTOR=gw1 DJB_DRIVE_KILL_AFTER="${counts}/gw0" \
+        pytest_x2_passes --max-worker-restart=0 "--djb-scope-counts=$counts" \
+        -k "$X2_K") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "2" "the leg body's exit status"
+    says "1 of 2 collectors reported"
+    says "the two pytest passes could not be RECONCILED — see above."
+    says "cause: 1 of 2 collectors reported"
+    CURRENT="and it is could-not-look, never pytest's own status"
+    if grep -qE 'no tests ran|node down' "$OUT"; then
+        ok "pytest itself printed the state it exits 0 from — which is why the shell refuses instead of reading it"
+    else
+        bad "this case did not build the state it exists to read: no dead node in the transcript"
+    fi
+
+    # BANKED NOTHING, MEASURED RATHER THAN ARGUED. The leg body itself writes no
+    # verdict — the bank is the caller's — so what is falsifiable here is that
+    # this run added no row to the ledger the caller would have written into,
+    # and that the caller's refusal sits above every writer.
+    CURRENT="the verdict ledger gained no row"
+    rows_after=$(x2_ledger_rows)
+    is "$rows_after" "$rows_before" "the verdict ledger's row count"
+    CURRENT="and the refusal is above everything that banks"
+    local x2_line partition_line verdict_line
+    x2_line=$(first_call_line 'pytest_x2_passes $X2_PASS_ARGS' "${ROOT}/scripts/check.sh")
+    partition_line=$(first_call_line 'quality.partition bank' "${ROOT}/scripts/check.sh")
+    verdict_line=$(first_call_line 'gate_ledger_record ' "${ROOT}/scripts/check.sh")
+    if [ -n "$x2_line" ] && [ -n "$partition_line" ] && [ "$x2_line" -lt "$partition_line" ]; then
+        ok "the passes (line ${x2_line}) are above the partition bank (line ${partition_line})"
+    else
+        bad "the passes at '${x2_line:-<none>}' do not precede the partition bank at '${partition_line:-<none>}'"
+    fi
+    if [ -n "$x2_line" ] && [ -n "$verdict_line" ] && [ "$x2_line" -lt "$verdict_line" ]; then
+        ok "and above the verdict row (line ${verdict_line})"
+    else
+        bad "the passes at '${x2_line:-<none>}' do not precede the verdict row at '${verdict_line:-<none>}'"
+    fi
+    CURRENT="and the caller maps a 2 to a 2"
+    if grep -qE '^2\) exit 2 ;;' "${ROOT}/scripts/check.sh"; then
+        ok "the leg maps the reconciliation's 2 to the gate's 2, never to a 1"
+    else
+        bad "the leg does not map the passes' exit 2 to 2 — broken enforcement would read as a finding"
+    fi
+    rm -f "$X2_PLANT"
+    GATE_X2_COUNTS_DIR=""
+}
+
+case_a_dying_collector_under_pr_is_exit_2_and_writes_no_narrowed_run_note() {
+    # THE SAME PLANT THROUGH THE `--pr` SHAPE. `--pr` mints its counts directory
+    # in the preflight and appends `--djb-scope-counts=<it>` to the flags both
+    # passes carry, so the leg reuses that one rather than passing the option
+    # twice — and the refusal has to bind there too, above the narrowed-run note
+    # the verdict section would otherwise print for a run that never got there.
+    #
+    # WHAT THIS CASE DOES NOT DRIVE, declared: how `--pr` DERIVES its narrowing.
+    # That is `case_pr_narrows_pytest_and_nothing_else`'s subject. The flags
+    # below are the preflight's SHAPE with a fixed scope, so this case measures
+    # the composition and not the derivation.
+    local counts="${WORK}/pr-x2-counts" pr_args
+    x2_leg_body
+    x2_plant
+    drive_require_scratch counts "${counts:-}"
+    rm -rf "$counts"
+    mkdir -p "$counts"
+    pr_args="--djb-scope-narrow --djb-scope=example --djb-own-app=example --djb-scope-counts=${counts}"
+
+    GATE_SLOT_WORKERS=2
+    PYTEST_SEED=1
+    GATE_X2_COUNTS_DIR="$counts"
+    CURRENT="a dying collector under the --pr pass shape"
+    N=$((N + 1))
+    OUT="${WORK}/x2pr${N}.log"
+    RC=0
+    # shellcheck disable=SC2086
+    (cd "$ROOT" && DJB_DRIVE_KILL_COLLECTOR=gw1 DJB_DRIVE_KILL_AFTER="${counts}/gw0" \
+        pytest_x2_passes --max-worker-restart=0 $pr_args -k "$X2_K") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "2" "the leg body's exit status"
+    says "1 of 2 collectors reported"
+    CURRENT="and no narrowed-run note is printed by a run that never reached one"
+    if grep -qF 'no verdict recorded — narrowed run' "$OUT"; then
+        bad "the narrowed-run note printed from a refused run — a sentence about a verdict nobody was going to write"
+    else
+        ok "no 'no verdict recorded — narrowed run' line"
+    fi
+    CURRENT="and that note lives BELOW the passes in the file"
+    local x2_line note_line
+    x2_line=$(first_call_line 'pytest_x2_passes $X2_PASS_ARGS' "${ROOT}/scripts/check.sh")
+    note_line=$(first_call_line 'no verdict recorded — narrowed run' "${ROOT}/scripts/check.sh")
+    if [ -n "$x2_line" ] && [ -n "$note_line" ] && [ "$x2_line" -lt "$note_line" ]; then
+        ok "the passes (line ${x2_line}) are above the narrowed-run note (line ${note_line})"
+    else
+        bad "the passes at '${x2_line:-<none>}' do not precede the narrowed-run note at '${note_line:-<none>}'"
+    fi
+    CURRENT="and the leg passes no second counts flag when --pr already carried one"
+    if grep -qF 'if [ -n "$GATE_PR_COUNTS_DIR" ]; then' "${ROOT}/scripts/check.sh"; then
+        ok "the leg reuses the --pr directory instead of minting a second one"
+    else
+        bad "the leg does not reuse GATE_PR_COUNTS_DIR — two --djb-scope-counts flags, and the last one wins silently"
+    fi
+    rm -f "$X2_PLANT"
+    GATE_X2_COUNTS_DIR=""
+}
+
+case_the_full_gate_passes_write_counts_and_the_whole_suite_reconciles() {
+    # THE OTHER DIRECTION, AND IT IS THE ONE A FALSE RED WOULD LIVE IN. A
+    # reconciliation that refused a healthy full gate would stop every push, so
+    # the clean case is driven with no plant at all: two real passes at a real
+    # `-n 2`, both writing counts, both reconciling, exit 0.
+    local counts="${WORK}/full-clean-counts" n files first selected collected
+    x2_leg_body
+    drive_require_scratch counts "${counts:-}"
+    rm -rf "$counts"
+    mkdir -p "$counts"
+
+    GATE_SLOT_WORKERS=2
+    PYTEST_SEED=1
+    GATE_X2_COUNTS_DIR="$counts"
+    CURRENT="two clean passes under the full gate's leg body"
+    N=$((N + 1))
+    OUT="${WORK}/x2clean${N}.log"
+    RC=0
+    (cd "$ROOT" && pytest_x2_passes "--djb-scope-counts=$counts" \
+        -k test_the_namer_unwraps_and_never_reaches_for_repr) >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the leg body's exit status"
+    says "pytest pass 1: green"
+    says "pytest pass 2: green"
+    CURRENT="every collector wrote its counts file"
+    files=$(find "$counts" -type f | sort)
+    n=$(printf '%s\n' "$files" | grep -c . || true)
+    is "$n" "2" "the counts files pass 2 left"
+    CURRENT="and the collectors agree"
+    first=$(printf '%s\n' "$files" | head -1)
+    local file
+    for file in $files; do
+        if ! cmp -s "$first" "$file"; then
+            bad "two collectors wrote different counts under the whole suite: $(basename "$first") vs $(basename "$file")"
+            return
+        fi
+    done
+    ok "all ${n} counts files identical"
+    CURRENT="the whole-suite file is a POPULATION, not a scope"
+    selected=$(awk -F= '/^selected=/ {print $2}' "$first")
+    is "$(awk -F= '/^deselected=/ {print $2}' "$first")" "0" "deselected under the whole suite"
+    CURRENT="and selected is this tree's collected count"
+    collect_scope_memo whole "the whole tree's collected count"
+    collected=$(collected_count "$OUT")
+    is "${selected:-unset}" "${collected:-unset}" "the counts file's selected"
+    CURRENT="and the pre-run banner says the population and nothing about a scope"
+    N=$((N + 1))
+    OUT="${WORK}/x2clean-banner${N}.log"
+    RC=0
+    (cd "$ROOT" && "$PY" -m pytest -q -p no:randomly -n 2 "--djb-scope-counts=$counts" \
+        -k test_the_namer_unwraps_and_never_reaches_for_repr) >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the exit status"
+    says "collectors: 2 of 2 reported (the whole suite)"
+    if grep -qF 'scope   selected' "$OUT"; then
+        bad "the narrowed banner printed under the whole suite — there is no scope to describe there"
+    else
+        ok "no scope lines under a run that narrowed nothing"
+    fi
+    GATE_X2_COUNTS_DIR=""
+}
+
+case_the_full_counts_dir_is_removed_on_an_early_red() {
+    # A2F.2'S SHAPE, ONE DIRECTORY OVER. The `--pr` counts directory rides the
+    # EXIT trap because a red leg, a refused lease and a SIGTERM all leave by a
+    # path no tidy-up line sits on; the full gate's own directory is minted
+    # inside the `pytest-x2` leg, which is above a dozen more of those paths.
+    # THE REAL TRAP STRING IS WHAT RUNS, not a paraphrase of it.
+    local trap_line stub="${WORK}/full-trap-harness.sh" victim="${WORK}/full-counts-victim"
+    trap_line=$( { grep -n "trap 'RC=\$?" "${ROOT}/scripts/check.sh" || true; } | head -1 | cut -d: -f1)
+    CURRENT="the full-mode EXIT trap exists"
+    if [ -z "$trap_line" ]; then
+        bad "no 'trap ... EXIT' in scripts/check.sh's full-mode branch — nothing owns the cleanup"
+        return
+    fi
+    ok "found at line ${trap_line}"
+    CURRENT="the trap drops the FULL counts directory"
+    if sed -n "${trap_line}p" "${ROOT}/scripts/check.sh" | grep -F 'GATE_FULL_COUNTS_DIR' >/dev/null; then
+        ok "the EXIT trap names GATE_FULL_COUNTS_DIR"
+    else
+        bad "the EXIT trap does not drop the full gate's counts directory: every red leg below the pytest leg leaks one"
+        return
+    fi
+    rm -rf "$victim"
+    mkdir -p "$victim"
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -uo pipefail'
+        echo 'gate_lock_release() { :; }'
+        echo 'gate_slot_release() { :; }'
+        echo 'gate_lease_release() { :; }'
+        echo 'gate_run_finish() { :; }'
+        echo 'GATE_PR_COUNTS_DIR=""'
+        echo "GATE_FULL_COUNTS_DIR=\"${victim}\""
+        sed -n "${trap_line}p" "${ROOT}/scripts/check.sh"
+        echo 'exit 1'
+    } >"$stub"
+    N=$((N + 1))
+    OUT="${WORK}/fulltraprun${N}.log"
+    RC=0
+    bash "$stub" >"$OUT" 2>&1 || RC=$?
+    is "$RC" "1" "the harness's exit status (the early-red path)"
+    CURRENT="the counts directory is gone after a NON-ZERO exit"
+    if [ -d "$victim" ]; then
+        bad "the directory survived a red exit — every full gate that reds below the pytest leg leaves one behind"
+    else
+        ok "removed by the shipped trap line on a red exit"
+    fi
+    CURRENT="and the leg leaves the removal to the trap"
+    if grep -qE '^ *rm -rf "\$GATE_FULL_COUNTS_DIR"' "${ROOT}/scripts/check.sh"; then
+        bad "a second remover stands beside the trap — two owners of one directory"
+    else
+        ok "the EXIT trap is the only remover"
+    fi
 }
 
 # --- the inner loop: the cache, the first screen, and the worker ceiling ------
@@ -2024,6 +3000,83 @@ case_test_sh_refuses_n_auto_and_names_the_share() {
     fi
 }
 
+# ONE UNCAPPED COLLECTION, TWO CASES. Two cases ran a byte-identical
+# `DJB_PYTEST_UNCAPPED=1 pytest -n <2x the share> --collect-only apps/example`
+# — one to show the clamp does not fire, one to read the disclosure line it
+# prints instead — and both are readings of one run. The `-n` and the share
+# are passed in and CHECKED against the first call rather than assumed: the
+# two cases derive them independently, and a memo that quietly served a
+# different pair would be a capture about another question.
+UNCAPPED_READY=""
+UNCAPPED_OUT=""
+UNCAPPED_RC=0
+UNCAPPED_ARGS=""
+uncapped_collect_once() {
+    local name="$1" over="$2" share="$3" want="-n ${over} (share ${share})"
+    if [ -n "$UNCAPPED_READY" ]; then
+        if [ "$UNCAPPED_ARGS" != "$want" ]; then
+            cannot_look "the uncapped collection was taken at '${UNCAPPED_ARGS}' and is now wanted at '${want}' — two cases derived different numbers, so one capture cannot answer both"
+        fi
+        OUT="$UNCAPPED_OUT"
+        RC="$UNCAPPED_RC"
+        CURRENT="${name} (the uncapped collection, already taken)"
+        capture_floor
+        return 0
+    fi
+    CURRENT="$name"
+    N=$((N + 1))
+    OUT="${WORK}/uncapped${N}.log"
+    RC=0
+    (cd "$ROOT" && DJB_PYTEST_UNCAPPED=1 "$PY" -m pytest -n "$over" --collect-only -q -p no:randomly apps/example) >"$OUT" 2>&1 || RC=$?
+    capture_floor
+    UNCAPPED_OUT="$OUT"
+    UNCAPPED_RC="$RC"
+    UNCAPPED_ARGS="$want"
+    UNCAPPED_READY=1
+}
+
+case_an_empty_capture_is_could_not_look() {
+    # THE FLOOR UNDER EVERY `$OUT` READER, SHOWN FIRING. `says` over a capture
+    # that was never taken is a red blaming the subject, and the `grep -q`
+    # negatives through this file are `ok` over one. The plant is the way a
+    # refactor makes one — the variable emptied — driven in a SUBSHELL, which
+    # does not run this shell EXIT trap, so it costs two processes and leaves
+    # nothing behind.
+    local out="${WORK}/empty-capture.log" rc=0
+    CURRENT="an emptied capture is could-not-look"
+    rc=0
+    (
+        CURRENT="a planted case"
+        OUT=""
+        RC=0
+        says "NOTHING THIS RUN COULD EVER HAVE PRINTED"
+    ) >"$out" 2>&1 || rc=$?
+    if [ "$rc" != "2" ]; then
+        bad "an emptied capture exited ${rc}, not 2 — a reader that answers a question it could not look at is what this floor exists to stop"
+        return
+    fi
+    if ! grep -qF 'capture with no path at all' "$out"; then
+        bad "exit 2, but the refusal never says the capture is what could not be read: $(sed -n 1p "$out")"
+        return
+    fi
+    ok "exit 2, naming the capture and the exit code of the run that did not fill it"
+
+    CURRENT="a capture with bytes in it is judged, not refused"
+    printf 'the collection said something\n' >"${WORK}/non-empty-capture.log"
+    rc=0
+    (
+        CURRENT="a planted case"
+        OUT="${WORK}/non-empty-capture.log"
+        RC=0
+        says "NOTHING THIS RUN COULD EVER HAVE PRINTED"
+    ) >"$out" 2>&1 || rc=$?
+    if [ "$rc" = "0" ] && grep -qF 'does not say' "$out"; then
+        ok "the floor is a floor, not an off switch — a readable capture is judged"
+    else
+        bad "a readable capture exited ${rc}: $(sed -n 1p "$out")"
+    fi
+}
+
 case_a_typed_n_above_the_share_is_clamped_and_printed() {
     # THE BELT FOR EVERY OTHER DOOR. `scripts/test.sh` is not the only way a
     # number gets typed — a bare `uv run pytest -n 10` is the shape the queue row
@@ -2054,11 +3107,7 @@ case_a_typed_n_above_the_share_is_clamped_and_printed() {
         ok "no clamp line at -n ${share}"
     fi
 
-    CURRENT="the typed escape turns it off"
-    N=$((N + 1))
-    OUT="${WORK}/clamp-uncapped${N}.log"
-    RC=0
-    (cd "$ROOT" && DJB_PYTEST_UNCAPPED=1 "$PY" -m pytest -n "$over" --collect-only -q -p no:randomly apps/example) >"$OUT" 2>&1 || RC=$?
+    uncapped_collect_once "the typed escape turns it off" "$over" "$share"
     is "$RC" "0" "the exit status"
     if grep -qF "clamped -n" "$OUT"; then
         bad "DJB_PYTEST_UNCAPPED=1 did not lift the clamp"
@@ -2242,11 +3291,7 @@ case_the_typed_escape_prints_and_lifts_the_clamp() {
     # and the worker count this path produces is read off the code (the escape
     # returns before `numprocesses` and `tx` are touched — `apps/conftest.py`,
     # `pytest_configure`), never off a run.
-    CURRENT="the typed escape PRINTS the number it is running past"
-    N=$((N + 1))
-    OUT="${WORK}/uncapped${N}.log"
-    RC=0
-    (cd "$ROOT" && DJB_PYTEST_UNCAPPED=1 "$PY" -m pytest -n "$over" --collect-only -q -p no:randomly apps/example) >"$OUT" 2>&1 || RC=$?
+    uncapped_collect_once "the typed escape PRINTS the number it is running past" "$over" "$share"
     is "$RC" "0" "the exit status"
     says "uncapped: -n ${over} (DJB_PYTEST_UNCAPPED=1 — the slot share on this box is ${share})"
 
@@ -2322,11 +3367,31 @@ print(c._djb_slot_share())"
     is "$handed" "3" "the share when the caller hands one down"
 }
 
-case_a_miss_prints_two_lines_by_default_and_the_detail_on_request() {
+case_a_tree_miss_prints_three_lines_every_other_miss_two_and_the_detail_on_request() {
     # THE FIRST SCREEN IS THE RUNG'S. A measuring `--loop` used to open with
     # twelve lines about why a CACHE lookup missed, above the finding the gate
     # was run for. The facts did not stop being worth printing; they stopped
     # being worth printing first. Driven over `scripts/check.sh`'s own printer.
+    #
+    # WIDENED BY THE DOCS-ONLY PYTEST REUSE (2026-09-15), AND THE NAME NOW SAYS
+    # SO. A `miss(tree)` prints THREE lines by default — the token, the key, and
+    # the `since banked head …; docs-only: yes|no` line — because that third
+    # line is what the docs-only pytest reuse is decided on, and a run whose
+    # cheapest available answer is hidden behind a flag is a 2302-second
+    # re-measure bought by two docs files. Every OTHER token still prints two,
+    # which is what the short-banner property was ever about and is asserted
+    # below. The name was one line behind the property for a day and was
+    # corrected (2026-09-15) together with the citation that named it — a name
+    # that lies is worse than a stale citation, but only when both move.
+    #
+    # THE TWO-LINE CLAIM RESTS ON ONE GUARD, AND THE CASE SAYS WHICH. The three
+    # lines are printed by the single `= "tree"` test in `loop_miss_narrative`
+    # (`scripts/check.sh`): every token that is not the literal `tree` takes the
+    # two-line path. So the `env:env-file` assertion below is a true negative
+    # for exactly that guard and for nothing else — a SECOND condition added
+    # beside it (a token that also earned a third line, a mode that suppressed
+    # it) would make both halves of this case green while the banner had grown a
+    # branch nothing here looks at. That is this case's declared blind spot.
     check_sh_function loop_miss_narrative
     LOOP_LEDGER_KEY="loop-v1:planted0000000000000000000000000000000000000000000000000000"
     LOOP_LEDGER_TREE="planted-tree-0000000000000000000000000000"
@@ -2336,15 +3401,26 @@ case_a_miss_prints_two_lines_by_default_and_the_detail_on_request() {
     local why
     why=$(printf '%s\n%s\n%s\n' "tree" "banked row: a planted row" "since banked head: 3 path(s) changed")
 
-    CURRENT="the default miss banner is two lines"
+    CURRENT="the default miss banner is short: the token, the key, and what moved"
     N=$((N + 1))
-    OUT="${WORK}/miss-default${N}.log"
+    local tree_out env_out
+    tree_out="${WORK}/miss-default${N}.log"
+    env_out="${WORK}/miss-default-env${N}.log"
+    OUT="$tree_out"
     RC=0
     (unset DJB_LOOP_VERBOSE; loop_miss_narrative "$why") >"$OUT" 2>&1 || RC=$?
     is "$RC" "0" "the printer's exit status"
-    is "$(wc -l <"$OUT" | tr -d ' ')" "2" "the number of lines a miss prints by default"
+    is "$(wc -l <"$OUT" | tr -d ' ')" "3" "the number of lines a miss(tree) prints by default"
     says "MISSED: miss(tree)"
     says "DJB_LOOP_VERBOSE=1"
+    says "since banked head: 3 path(s) changed"
+    CURRENT="and every other token still prints the two P19 A4.2 asked for"
+    OUT="$env_out"
+    RC=0
+    (unset DJB_LOOP_VERBOSE
+        loop_miss_narrative "$(printf '%s\n%s\n' "env:env-file" "banked row: a planted row")") >"$OUT" 2>&1 || RC=$?
+    is "$(wc -l <"$OUT" | tr -d ' ')" "2" "the number of lines an env: miss prints by default"
+    OUT="$tree_out"
     CURRENT="and the detail is not in it"
     if grep -qF "fingerprint components" "$OUT"; then
         bad "the default banner still prints the fingerprint components"
@@ -2895,7 +3971,7 @@ case_an_organ_test_in_a_closure_added_app_runs_under_pr_and_not_under_loop() {
     [ -n "$victim" ] ||
         cannot_look "no organ-reaching test under apps/exports/tests/ — the subject this case needs is gone"
 
-    collect_scope "an organ test in a closure-added app, under --pr" \
+    collect_scope_memo pr "an organ test in a closure-added app, under --pr" \
         --djb-scope-narrow --djb-scope=files --djb-scope=exports
     is "$RC" "0" "the exit status"
     CURRENT="under --pr it is SELECTED"
@@ -2905,7 +3981,7 @@ case_an_organ_test_in_a_closure_added_app_runs_under_pr_and_not_under_loop() {
         bad "${victim} was deselected under --pr: the organ tier is being applied where it must not be"
     fi
 
-    collect_scope "the same module under --loop's fast tier" \
+    collect_scope_memo leaf "the same module under --loop's fast tier" \
         --djb-tier=fast --djb-scope-narrow --djb-own-app=files \
         --djb-scope=files --djb-scope=exports
     is "$RC" "0" "the exit status"
@@ -3193,8 +4269,663 @@ PY
     fi
 }
 
+# --- the census seeds (the gate lane's census-seed rider, criteria R.1-R.4) -----------------------------------------------
+#
+# THE HOLE. The closure this scope walks is the REVERSE `depends_on` one, and
+# `core` is everyone's dependency and nobody's dependant — so `core`'s tests are
+# never pulled in by another app's change. That is right for nearly all of them
+# and wrong for the handful that quantify over EVERY app's declarations: a rung
+# that adds a permission key to its own `policies.py` moves a census that lives
+# in `core`, and no `--loop` anywhere ran it. Found at a bank, by a hotfix.
+#
+# `seeded_args` — the `--djb-changed-test` flags `loop_scope__pytest_args`
+# emits, space-joined, so a case can assert on what the leg would actually be
+# handed rather than on a variable it could read a different way.
+seeded_args() {
+    loop_scope__pytest_args | grep -- '--djb-changed-test=' | tr '\n' ' ' | sed 's/ $//'
+}
+
+# scratch_census <checkout> [declaration…] — plant a census module in the
+# scratch world that DECLARES what it quantifies over.
+#
+# THE CASES BELOW PROVE A DERIVATION, so they must not lean on the real tree's
+# census module: the scratch world grows its own, at a path no product owns, and
+# the assertions name THAT path. If the derivation were still a typed literal,
+# every one of them would go red — which is the whole point of planting it here
+# rather than asserting on `apps/core/tests/test_vocabulary.py`.
+scratch_census() {
+    local dir=$1 name decls=""
+    shift
+    for name in "$@"; do decls="${decls}${decls:+, }\"${name}\""; done
+    mkdir -p "$dir/apps/core/tests"
+    {
+        echo '"""A scratch census over other apps declarations."""'
+        echo ""
+        echo "CENSUS_SEEDED_BY = (${decls},)"
+    } >"$dir/apps/core/tests/test_scratch_census.py"
+    printf '%s' "apps/core/tests/test_scratch_census.py"
+}
+
+case_a_policies_touch_census_seeds_the_vocabulary_module() {
+    # R.1 and R.2. The seed is ONE MODULE, the app is not widened, the
+    # footer says so, and the banked key carries it.
+    local census
+    fresh_checkout
+    census=$(scratch_census "$REPO" policies roles)
+    printf 'POLICIES = {}\n' >"$REPO/apps/mid/policies.py"
+    git -C "$REPO" add apps/mid/policies.py
+    scope_in "$REPO" "apps/mid/policies.py -> the declared census is seeded"
+    is "$RC" "0" "the exit status"
+    is "$LOOP_SCOPE_SEEDED_TESTS" "$census" "the seeded census module(s)"
+    is "$LOOP_SCOPE_SEEDED_BY" "apps/mid/policies.py" "the file(s) that seeded it"
+    is "$LOOP_SCOPE_TOUCHED" "mid" "the touched set"
+
+    CURRENT="and the scope did NOT gain core"
+    case " $LOOP_SCOPE_APPS " in
+    *" core "*) bad "the seed widened the scope to the whole core app: ${LOOP_SCOPE_APPS}" ;;
+    *) ok "scope=${LOOP_SCOPE_APPS} — the module is added, the app is not" ;;
+    esac
+
+    CURRENT="the leg is handed the module as a changed-test flag"
+    is "$(seeded_args)" "--djb-changed-test=${census}" "the --djb-changed-test flags"
+
+    notes_say "census-seeded by apps/mid/policies.py: ${census}"
+
+    CURRENT="and the banked key carries the seed"
+    case "$LOOP_SCOPE_CANONICAL" in
+    *"seeded=${census}"*)
+        ok "$LOOP_SCOPE_CANONICAL"
+        ;;
+    *) bad "the canonical scope does not carry the seed: ${LOOP_SCOPE_CANONICAL}" ;;
+    esac
+}
+
+case_roles_seed_the_same_census_and_ordinary_files_seed_nothing() {
+    # R.1's population, both members and the negatives. `policies.py` and
+    # `roles.py` are ONE discovery walk in `apps.core.authz._declarations`, so
+    # a seed on one and not the other would be half a rule.
+    local census
+    fresh_checkout
+    census=$(scratch_census "$REPO" policies roles)
+    printf 'ROLES = {}\n' >"$REPO/apps/leaf/roles.py"
+    git -C "$REPO" add apps/leaf/roles.py
+    scope_in "$REPO" "apps/leaf/roles.py -> the same census is seeded"
+    is "$LOOP_SCOPE_SEEDED_TESTS" "$census" "the seeded census module(s)"
+
+    fresh_checkout
+    scratch_census "$REPO" policies roles >/dev/null
+    touch_and_scope "$REPO" "an ordinary app file seeds nothing" apps/leaf/services.py
+    is "$LOOP_SCOPE_SEEDED_TESTS" "" "the seeded set for a plain code touch"
+    CURRENT="and the canonical says so rather than omitting the field"
+    case "$LOOP_SCOPE_CANONICAL" in
+    *"seeded=-"*) ok "$LOOP_SCOPE_CANONICAL" ;;
+    *) bad "the canonical has no seeded= field: ${LOOP_SCOPE_CANONICAL}" ;;
+    esac
+
+    # CORE'S OWN DECLARATIONS ARE EXCLUDED, and not for tidiness: a change there
+    # makes `core` a touched app, so the module is already in the selection and
+    # a note about it would be a line nobody can act on.
+    fresh_checkout
+    scratch_census "$REPO" policies roles >/dev/null
+    printf 'POLICIES = {}\n' >"$REPO/apps/core/policies.py"
+    git -C "$REPO" add apps/core/policies.py
+    scope_in "$REPO" "a declaration in the census's OWN app seeds nothing — it is already touched"
+    is "$LOOP_SCOPE_SEEDED_TESTS" "" "the seeded set"
+    is "$LOOP_SCOPE_TOUCHED" "core" "the touched set — core runs in full anyway"
+}
+
+case_the_seeded_census_goes_red_on_a_planted_nineteenth_key() {
+    # R.3, AND IT IS THE PROPERTY THE OTHER TWO CASES ONLY SET UP: a
+    # declaration this tree could really grow makes the core census RED, and
+    # without the seed that census is not merely green — it is DESELECTED, which
+    # is what "no --loop anywhere ran it" looks like from the inside.
+    #
+    # THE PYTEST INVOCATION THE LOOP MAKES, NOT A NESTED GATE. A drive may not
+    # run `./scripts/check.sh` inside one (the per-checkout lock refuses it) and
+    # a scratch clone has no database for the module to run against, so what is
+    # driven here is the command the `--loop` leg builds — the flags this file's
+    # own derivation emits — against this checkout's real suite. Declared rather
+    # than implied: the gate wrapper around those flags is not covered here; the
+    # two cases above cover the derivation that produces them.
+    #
+    # IT BUILDS ITS OWN VICTIM AND RESTORES IT BYTE-IDENTICAL. The plant is one
+    # line in a tracked file, removed by the case and by the exit trap both, and
+    # the case refuses to run at all if the tree is already dirty there.
+    local plant="${ROOT}/apps/example/policies.py" backup="${WORK}/policies.orig"
+    local out rc=0 seeded="--djb-changed-test=apps/core/tests/test_vocabulary.py"
+    local narrow="--djb-tier=fast --djb-own-app=example --djb-scope-narrow --djb-scope=example"
+
+    CURRENT="the plant's own file is clean before this case touches it"
+    if [ -n "$(git -C "$ROOT" status --porcelain -- apps/example/policies.py)" ]; then
+        cannot_look "apps/example/policies.py is already modified — this case will not plant into a file somebody else is editing"
+    fi
+    ok "apps/example/policies.py is committed and unmodified"
+    cp "$plant" "$backup"
+    drive_at_exit "cp \"$backup\" \"$plant\" 2>/dev/null || true"
+
+    CURRENT="WITHOUT the seed, the core census is not even selected"
+    out="${WORK}/seed-collect-without.txt"
+    # shellcheck disable=SC2086  # the flag list word-splits into arguments
+    (cd "$ROOT" && uv run pytest --collect-only -q -p no:randomly $narrow) >"$out" 2>&1 || true
+    if [ "$(grep -c 'test_vocabulary' "$out")" = "0" ]; then
+        ok "0 items of apps/core/tests/test_vocabulary.py in the selection — the census the declaration moved never runs"
+    else
+        bad "$(grep -c 'test_vocabulary' "$out") item(s) selected without the seed — this case has no subject"
+    fi
+
+    CURRENT="WITH the seed, the module is selected"
+    out="${WORK}/seed-collect-with.txt"
+    # shellcheck disable=SC2086
+    (cd "$ROOT" && uv run pytest --collect-only -q -p no:randomly $narrow "$seeded") >"$out" 2>&1 || true
+    if [ "$(grep -c 'test_vocabulary' "$out")" -ge 1 ]; then
+        ok "$(grep -c 'test_vocabulary' "$out") item(s) selected — the module is in, and nothing else of core is"
+    else
+        bad "the seed did not put the module in the selection"
+    fi
+
+    CURRENT="and with a declaration planted, the census is RED by name"
+    python3 - "$plant" <<'PY_PLANT'
+import sys
+
+path = sys.argv[1]
+src = open(path).read()
+anchor = "ACTION_PROSE: dict[str, str] = {"
+if anchor not in src:
+    raise SystemExit("apps/example/policies.py has no ACTION_PROSE to plant into")
+# BOTH HALVES AT ONCE, and neither is `gadget.view`: no kind `gizmo`, and `view`
+# is an alias for the one read verb, so the classification cannot pass it by
+# luck — and it is a DIFFERENT key from the one the census's own test plants, so
+# the count the pin asserts moves.
+open(path, "w").write(
+    src.replace(anchor, anchor + '\n    "gizmo.view": "You may not view gizmos.",', 1)
+)
+PY_PLANT
+    out="${WORK}/seed-red.txt"
+    rc=0
+    (cd "$ROOT" && uv run pytest apps/core/tests/test_vocabulary.py \
+        -k the_census_refuses_a_nineteenth -p no:randomly -q) >"$out" 2>&1 || rc=$?
+    cp "$backup" "$plant"
+    if [ "$rc" = "1" ] && grep -q 'FAILED apps/core/tests/test_vocabulary.py::test_the_census_refuses_a_nineteenth' "$out"; then
+        ok "$(grep -m1 '^FAILED' "$out")"
+    else
+        bad "the planted declaration left the census green (exit ${rc}): $(tail -2 "$out" | head -1)"
+    fi
+
+    CURRENT="and the plant is restored byte-identical"
+    if [ -z "$(git -C "$ROOT" status --porcelain -- apps/example/policies.py)" ]; then
+        ok "apps/example/policies.py is back to the committed bytes"
+    else
+        bad "the plant was not restored — the tree is dirty where this case worked"
+    fi
+}
+
+# --- the always-on digest on a machine that spells SHA-256 differently -------
+#
+# `loop_scope__always_digest` is one of the two sites the first off-box gate run
+# died at: `scripts/loop_tier.sh: line 721: shasum: command not found` on Amazon
+# Linux 2023, where the digest is spelled `sha256sum`. An UNDERIVED digest here
+# is not a refusal — the function answers `UNDECLARED` for an unreadable
+# declaration — so what the box actually got was an EMPTY digest inside the
+# ledger key: a key nothing could ever hit, silently.
+#
+# THE SIBLING CASE IS `test_loop_ledger.sh`'s
+# `case_the_ledgers_digest_is_the_same_where_only_sha256sum_exists`, which
+# drives the helper's own two branches and its neither-tool refusal. This one
+# asks only the question this file owns: does the scope's digest still answer,
+# and answer THE SAME, with the Mac's spelling gone.
+case_the_always_on_digest_survives_a_machine_with_no_shasum() {
+    CURRENT="the always-on digest with shasum shadowed off PATH"
+    local shim="${WORK}/digest-shim" name found d normal shadowed
+    mkdir -p "$shim"
+    # FIXED DIRECTORIES, not `command -v`: this drive is bash and the shell a
+    # human debugs it from may be zsh, where `command -v find` can answer with
+    # the bare word and link a shim to itself.
+    for name in awk sed sort find tr cat cut head git grep env printf sha256sum; do
+        found=""
+        for d in /usr/bin /bin /usr/sbin /sbin /opt/homebrew/bin /usr/local/bin; do
+            if [ -x "$d/$name" ]; then
+                found="$d/$name"
+                break
+            fi
+        done
+        [ -n "$found" ] && ln -sf "$found" "$shim/$name"
+    done
+    if [ ! -x "$shim/sha256sum" ]; then
+        # COULD NOT LOOK, AND IT SAYS SO RATHER THAN PASSING. This drive has no
+        # skip idiom, and a case that quietly returned 0 on a machine with only
+        # one digest tool would report a proven property it never drove.
+        cannot_look "this machine has no 'sha256sum' anywhere on the standard paths, so the
+   branch a Linux box takes cannot be driven here at all"
+    fi
+    for name in awk sed find; do
+        [ -x "$shim/$name" ] || {
+            bad "the shim could not link '$name' — the case would fail for that and read as the digest's failure"
+            return 0
+        }
+    done
+
+    normal="$(loop_scope__always_digest "$ROOT/apps/conftest.py")"
+    shadowed="$(PATH="$shim" loop_scope__always_digest "$ROOT/apps/conftest.py")"
+    case "$normal" in
+    [0-9a-f]*) ok "the digest derives on this machine (${normal:0:12}…)" ;;
+    *) bad "the digest did not derive with the ordinary PATH: '${normal}'" ;;
+    esac
+    is "$shadowed" "$normal" "the digest with only sha256sum on PATH"
+}
+
+# --- THE TEST-IMPACT MAP, CONSULTED ------------------------------------------
+#
+# A FIXTURE MAP OVER THE FIXTURE WORLD, for the reason the fixture world exists
+# at all: the selection rule is about what a map SAYS, and a case standing on
+# this tree's real map would go red the day an acceptance box re-measures it.
+# The real map's own numbers are a MEASUREMENT and belong in the rung's report,
+# not in an assertion (`scripts/test_impact.py` writes it; the count moves with
+# the suite).
+#
+# THE POPULATION IS DECLARED, NOT COUNTED BY A READER. `MAP_LEAF_TESTS` tests
+# reach `apps/leaf/services.py`; every test in the map reaches
+# `apps/core/services.py`, which is the DAG root and the class the map cannot
+# help with (architect A2). So a leaf change must select exactly the first
+# number and a root change exactly the whole population — the two ends of the
+# only claim a selection makes.
+MAP_LEAF_TESTS=4
+MAP_TESTS=300
+
+# map_entry <nodeid> <file>… — one map line, JSON, no trailing comma logic in
+# the caller: the writer below joins them.
+map_entry() {
+    local nodeid=$1 first=1 file
+    shift
+    printf '    "%s": [' "$nodeid"
+    for file in "$@"; do
+        [ "$first" = "1" ] || printf ', '
+        printf '"%s"' "$file"
+        first=0
+    done
+    printf ']'
+}
+
+# plant_map <repo> [whole|no-leaf|dropped-test]
+#
+# Writes the fixture map and COMMITS it, a commit after the base. The commit
+# matters twice: `generated.tree` names the base's tree — the map's
+# PREDECESSOR, exactly as the real writer does, because committing a map moves
+# the tree it was measured on — and a tracked map is one the age walk can find
+# a commit for.
+#
+# THE TREE SHA IS LABELLED `tree:` IN THE FIXTURE, and that is not decoration:
+# a bare forty-hex string in a JSON file is what `detect-secrets`' high-entropy
+# plugin reads as a credential, and JSON has no comment to hang a pragma on.
+# The label is the real writer's own (scripts/test_impact.py) and the reader
+# strips it.
+plant_map() {
+    local dir=$1 shape=${2:-whole} tree i first=1
+    tree=$(git -C "$dir" rev-parse 'HEAD^{tree}') || return 2
+    {
+        printf '{\n'
+        printf '  "generated": {"at": "2026-09-18T00:00:00+00:00", "pytest": %s, "tree": "tree:%s"},\n' \
+            "$MAP_TESTS" "$tree"
+        printf '  "tests": {\n'
+        i=1
+        while [ "$i" -le "$MAP_LEAF_TESTS" ]; do
+            if [ "$shape" = "dropped-test" ] && [ "$i" = "1" ]; then
+                # THE DANGEROUS HALF. The FILE stays in the map, so nothing
+                # falls back — and this one test is simply not there to be
+                # selected. Declared, bounded by the wave's bank, and asserted
+                # below rather than hoped about.
+                i=$((i + 1))
+                continue
+            fi
+            [ "$first" = "1" ] || printf ',\n'
+            if [ "$shape" = "no-leaf" ]; then
+                map_entry "apps/leaf/tests/test_leaf.py::test_leaf_${i}" \
+                    "apps/core/services.py" "apps/conftest.py"
+            else
+                map_entry "apps/leaf/tests/test_leaf.py::test_leaf_${i}" \
+                    "apps/leaf/services.py" "apps/core/services.py" "apps/conftest.py"
+            fi
+            first=0
+            i=$((i + 1))
+        done
+        i=$((MAP_LEAF_TESTS + 1))
+        while [ "$i" -le "$MAP_TESTS" ]; do
+            [ "$first" = "1" ] || printf ',\n'
+            map_entry "apps/mid/tests/test_mid.py::test_mid_${i}" \
+                "apps/mid/services.py" "apps/core/services.py" "apps/conftest.py"
+            first=0
+            i=$((i + 1))
+        done
+        printf '\n  },\n'
+        printf '  "unmapped": {}\n'
+        printf '}\n'
+    } >"$dir/scripts/test_impact.json"
+    git -C "$dir" add scripts/test_impact.json
+    git -C "$dir" commit -q -m "the fixture map"
+}
+
+# selection_holds <nodeid> — the written selection file names it.
+selection_holds() {
+    if [ -z "$LOOP_SCOPE_IMPACT_SELECT" ] || [ ! -f "$LOOP_SCOPE_IMPACT_SELECT" ]; then
+        bad "there is no selection file to look in"
+        return 0
+    fi
+    if grep -Fxq -- "$1" "$LOOP_SCOPE_IMPACT_SELECT"; then
+        ok "the selection names ${1}"
+    else
+        bad "the selection does not name ${1}"
+    fi
+}
+
+fallback_says() {
+    case "$LOOP_SCOPE_IMPACT_FALLBACK" in
+    *"$1"*) ok "the fallback sentence says \"$1\"" ;;
+    *) bad "the fallback sentence does not say \"$1\" — it says '${LOOP_SCOPE_IMPACT_FALLBACK}'" ;;
+    esac
+}
+
+# args_for — the pytest flags this derivation would hand the leg, one per line.
+args_for() {
+    LOOP_IMPACT=1
+    loop_scope__pytest_args
+    LOOP_IMPACT=""
+}
+
+args_carry() {
+    local want=$1 args
+    args=$(args_for)
+    case "
+$args" in
+    *"
+$want"*) ok "the pytest args carry ${want}" ;;
+    *) bad "the pytest args do not carry ${want} — they are [$(printf '%s ' $args)]" ;;
+    esac
+}
+
+args_do_not_carry() {
+    local want=$1 args
+    args=$(args_for)
+    case "
+$args" in
+    *"
+$want"*) bad "the pytest args still carry ${want} — [$(printf '%s ' $args)]" ;;
+    *) ok "the pytest args do NOT carry ${want}" ;;
+    esac
+}
+
+case_a_seen_leaf_file_selects_only_its_tests() {
+    fresh_checkout
+    plant_map "$REPO" whole
+    echo "changed" >>"$REPO/apps/leaf/services.py"
+    LOOP_IMPACT=1
+    scope_in "$REPO" "a leaf file the map has seen"
+    LOOP_IMPACT=""
+    is "$RC" "0" "the exit status"
+    is "$LOOP_SCOPE_IMPACT_SEEN" "1" "the number of changed files the map has seen"
+    is "$LOOP_SCOPE_IMPACT_TESTS" "$MAP_LEAF_TESTS" "the number of tests selected"
+    is "$LOOP_SCOPE_IMPACT_FALLBACK" "" "the fallback sentence (empty: the map answered)"
+    selection_holds "apps/leaf/tests/test_leaf.py::test_leaf_1"
+    CURRENT="a leaf file the map has seen: the selection excludes the rest"
+    if [ -n "$LOOP_SCOPE_IMPACT_SELECT" ] &&
+        grep -Fq 'test_mid_' "$LOOP_SCOPE_IMPACT_SELECT"; then
+        bad "a mid test the change cannot reach is in the selection"
+    else
+        ok "no test outside the ${MAP_LEAF_TESTS} the map attributes to the file is selected"
+    fi
+    # THE CLOSURE IS STILL DERIVED AND IS NOT WHAT RUNS. `leaf` declares `mid`,
+    # which declares `core`, so today's scope for this touch is `leaf` alone —
+    # and the point of the selection is that even THAT is not passed.
+    is "$LOOP_SCOPE_APPS" "leaf" "the closure scope the map replaced"
+    args_carry "--djb-impact-select=${LOOP_SCOPE_IMPACT_SELECT}"
+    args_carry "--djb-changed=apps/leaf/services.py"
+    args_do_not_carry "--djb-scope=leaf"
+    args_do_not_carry "--djb-scope-narrow"
+    CURRENT="a leaf file the map has seen: the key carries the map"
+    case "$LOOP_SCOPE_CANONICAL" in
+    *" map="?*) ok "$LOOP_SCOPE_CANONICAL" ;;
+    *) bad "the canonical scope carries no map= field: ${LOOP_SCOPE_CANONICAL}" ;;
+    esac
+}
+
+case_a_never_seen_file_falls_back_and_says_so() {
+    # FIVE PLANTS, ONE EACH, AND EACH ONE A CLASS THE MAP CANNOT SEE BY
+    # CONSTRUCTION: coverage records executed Python lines, so a template, an
+    # environment file, a fixture, a rules file and a migration are all
+    # invisible to it. The fifth — the migration — is the one that looks like
+    # an app file and is not.
+    #
+    # `.env` ITSELF IS NOT ONE OF THE FIVE and the substitution is declared:
+    # this tree's fan-out table has no row for a bare `.env` (it is ignored and
+    # cannot reach a changed-file set), so a tracked one is EXIT 2 at the
+    # table — a stronger answer than a fallback, and the table was left as it
+    # stands. `.env.example`, which is tracked and classified, stands in its
+    # place.
+    local plant
+    for plant in templates/x.html .env.example apps/leaf/fixtures/a.json \
+        quality/rules.yaml apps/leaf/migrations/0002_x.py; do
+        fresh_checkout
+        mkdir -p "$REPO/$(dirname "$plant")"
+        echo "base" >"$REPO/$plant"
+        git -C "$REPO" add "$plant"
+        # `|| true`: two of the five plants are already in the base commit
+        # (the fixture world creates them), and a commit with nothing staged
+        # is a non-zero exit about a no-op.
+        git -C "$REPO" commit -q -m "the plant, in the base" || true
+        plant_map "$REPO" whole
+        echo "changed" >>"$REPO/$plant"
+        LOOP_IMPACT=1
+        scope_in "$REPO" "a never-seen file: ${plant}"
+        LOOP_IMPACT=""
+        is "$RC" "0" "the exit status"
+        is "$LOOP_SCOPE_IMPACT_SELECT" "" "the selection (empty: the map has never seen it)"
+        fallback_says "$plant"
+        fallback_says "never recorded by the map"
+        CURRENT="a never-seen file: ${plant} — the key still names the map"
+        case "$LOOP_SCOPE_CANONICAL" in
+        *" map="?*) ok "$LOOP_SCOPE_CANONICAL" ;;
+        *) bad "no map= field: ${LOOP_SCOPE_CANONICAL}" ;;
+        esac
+        CURRENT="a never-seen file: ${plant} — today's scope is what runs"
+        if [ "$LOOP_TIER_MODE" = "full" ]; then
+            # `templates/**` is a FULL-suite row in the fan-out table, and the
+            # table outranks the map: there is no scope to pass because there
+            # is no scope, and the fallback sentence says both halves.
+            ok "mode=full — the table outranks the map, and no scope flag is emitted"
+            args_do_not_carry "--djb-scope-narrow"
+        else
+            args_carry "--djb-scope-narrow"
+            args_do_not_carry "--djb-impact-select"
+        fi
+    done
+}
+
+case_a_root_file_selects_everything_it_touches() {
+    # THE CLASS THE MAP CANNOT HELP WITH, MEASURED RATHER THAN ASSUMED
+    # (architect A2: `core` is the DAG root). Every test in the fixture map
+    # executes `apps/core/services.py`, so the honest selection is the whole
+    # population — and the loop says the number instead of implying a
+    # narrowing it did not make.
+    fresh_checkout
+    plant_map "$REPO" whole
+    echo "changed" >>"$REPO/apps/core/services.py"
+    LOOP_IMPACT=1
+    scope_in "$REPO" "a root file every test executes"
+    LOOP_IMPACT=""
+    is "$RC" "0" "the exit status"
+    is "$LOOP_SCOPE_IMPACT_TESTS" "$MAP_TESTS" "the number of tests selected"
+    is "$LOOP_SCOPE_IMPACT_FALLBACK" "" "the fallback sentence (empty: the map answered)"
+    CURRENT="a root file: the selection is honest about being the whole population"
+    if [ "$LOOP_SCOPE_IMPACT_TESTS" = "$MAP_TESTS" ]; then
+        ok "the root file selects all ${MAP_TESTS} — a narrowing of nothing, printed as such"
+    else
+        bad "the root file selected ${LOOP_SCOPE_IMPACT_TESTS} of ${MAP_TESTS}"
+    fi
+}
+
+case_a_removed_entry_falls_back_and_a_dropped_test_is_the_declared_hole() {
+    # (a) THE CANARY. The map loses the FILE entirely — which is what a map
+    #     written before the file existed looks like — and the whole run falls
+    #     back to today's closure scope, so every test that would have been
+    #     selected runs anyway.
+    fresh_checkout
+    plant_map "$REPO" no-leaf
+    echo "changed" >>"$REPO/apps/leaf/services.py"
+    LOOP_IMPACT=1
+    scope_in "$REPO" "the map lost the file: the closure still runs it"
+    LOOP_IMPACT=""
+    is "$RC" "0" "the exit status"
+    is "$LOOP_SCOPE_IMPACT_SELECT" "" "the selection (empty: fallback)"
+    fallback_says "apps/leaf/services.py"
+    args_carry "--djb-scope=leaf"
+    args_do_not_carry "--djb-impact-select"
+
+    # (b) THE DANGEROUS HALF, ASSERTED RATHER THAN HOPED ABOUT. The file stays
+    #     in the map and ONE test that touches it is dropped: nothing falls
+    #     back, the run is green, and that test does not run. This is the
+    #     declared hole — bounded by the map's age (printed on every run) and
+    #     by the bank, which runs everything, once per wave.
+    fresh_checkout
+    plant_map "$REPO" dropped-test
+    echo "changed" >>"$REPO/apps/leaf/services.py"
+    LOOP_IMPACT=1
+    scope_in "$REPO" "a dropped map entry is a test nobody runs"
+    LOOP_IMPACT=""
+    is "$RC" "0" "the exit status"
+    is "$LOOP_SCOPE_IMPACT_TESTS" "$((MAP_LEAF_TESTS - 1))" "the number of tests selected"
+    CURRENT="a dropped map entry: the hole is real and this case names it"
+    if [ -n "$LOOP_SCOPE_IMPACT_SELECT" ] &&
+        grep -Fxq -- 'apps/leaf/tests/test_leaf.py::test_leaf_1' "$LOOP_SCOPE_IMPACT_SELECT"; then
+        bad "the dropped test is in the selection — this case is not testing what it claims"
+    else
+        ok "the dropped test is NOT selected: a map that forgets a test silently narrows, which is why the map's age is printed on every run and the bank runs the whole suite once per wave"
+    fi
+}
+
+case_an_absent_map_is_the_closure_scope() {
+    fresh_checkout
+    echo "changed" >>"$REPO/apps/leaf/services.py"
+    LOOP_IMPACT=1
+    scope_in "$REPO" "no map at all"
+    LOOP_IMPACT=""
+    is "$RC" "0" "the exit status — an absent map is never a refusal"
+    is "$LOOP_SCOPE_IMPACT_SELECT" "" "the selection (empty: there is no map)"
+    is "$LOOP_SCOPE_MAP_SHA" "-" "the map sha in the key"
+    fallback_says "absent or unreadable"
+    args_carry "--djb-scope=leaf"
+    CURRENT="no map at all: the key says so rather than omitting the field"
+    case "$LOOP_SCOPE_CANONICAL" in
+    *" map=-") ok "$LOOP_SCOPE_CANONICAL" ;;
+    *) bad "the canonical scope does not end in map=-: ${LOOP_SCOPE_CANONICAL}" ;;
+    esac
+}
+
+case_an_unreadable_map_is_the_closure_scope_and_not_exit_2() {
+    fresh_checkout
+    plant_map "$REPO" whole
+    printf 'this is not JSON\n' >"$REPO/scripts/test_impact.json"
+    echo "changed" >>"$REPO/apps/leaf/services.py"
+    LOOP_IMPACT=1
+    scope_in "$REPO" "a map that is not a map"
+    LOOP_IMPACT=""
+    is "$RC" "0" "the exit status — could-not-read is a BIGGER run, never a refusal"
+    is "$LOOP_SCOPE_IMPACT_SELECT" "" "the selection (empty: the map could not be read)"
+    fallback_says "could not be read as a map"
+    args_carry "--djb-scope=leaf"
+}
+
+case_the_map_sha_is_in_the_loop_key() {
+    # TWO MAPS OVER ONE TREE ARE TWO KEYS. The loop ledger keys a verdict on
+    # the tree AND the canonical scope, so a selection made under one map must
+    # never be vouched for by a verdict banked under another — and the only
+    # thing in the key that can say which map is this field.
+    fresh_checkout
+    plant_map "$REPO" whole
+    echo "changed" >>"$REPO/apps/leaf/services.py"
+    LOOP_IMPACT=1
+    scope_in "$REPO" "the first map"
+    LOOP_IMPACT=""
+    local first="$LOOP_SCOPE_CANONICAL" first_sha="$LOOP_SCOPE_MAP_SHA"
+    # A SECOND MAP OVER THE SAME TREE: one more test against the same file.
+    MAP_TESTS=$((MAP_TESTS + 1))
+    git -C "$REPO" checkout -q -- apps/leaf/services.py
+    plant_map "$REPO" whole
+    MAP_TESTS=$((MAP_TESTS - 1))
+    echo "changed" >>"$REPO/apps/leaf/services.py"
+    LOOP_IMPACT=1
+    scope_in "$REPO" "the second map, same tree"
+    LOOP_IMPACT=""
+    CURRENT="two maps over one tree are two keys"
+    if [ "$first_sha" = "$LOOP_SCOPE_MAP_SHA" ]; then
+        bad "both maps digested to ${first_sha} — the fixture did not change the map"
+    elif [ "$first" = "$LOOP_SCOPE_CANONICAL" ]; then
+        bad "two maps, one canonical scope: ${first}"
+    else
+        ok "map=${first_sha} -> map=${LOOP_SCOPE_MAP_SHA}, and the canonical scope moved with it"
+    fi
+    CURRENT="the map field is LAST, the append precedent every field since tests= took"
+    case "$LOOP_SCOPE_CANONICAL" in
+    *"alwayson="*" map="*) ok "$LOOP_SCOPE_CANONICAL" ;;
+    *) bad "map= is not appended after alwayson=: ${LOOP_SCOPE_CANONICAL}" ;;
+    esac
+}
+
+case_the_valve_widens_and_keys_itself() {
+    # THE VALVE IS THE MEASUREMENT'S OTHER HALF — the same change run with the
+    # map and without it — and it can only WIDEN. It keys itself, because a
+    # person who typed it asked for the bigger run and must not be handed a
+    # verdict banked by the smaller one.
+    fresh_checkout
+    plant_map "$REPO" whole
+    echo "changed" >>"$REPO/apps/leaf/services.py"
+    DJB_LOOP_NO_IMPACT=1
+    LOOP_IMPACT=1
+    scope_in "$REPO" "the valve: today's closure scope"
+    LOOP_IMPACT=""
+    DJB_LOOP_NO_IMPACT=""
+    is "$RC" "0" "the exit status"
+    is "$LOOP_SCOPE_IMPACT_SELECT" "" "the selection (empty: the valve was typed)"
+    is "$LOOP_SCOPE_MAP_SHA" "bypassed" "the map field in the key"
+    fallback_says "DJB_LOOP_NO_IMPACT"
+    args_carry "--djb-scope=leaf"
+}
+
+case_mine_and_pr_do_not_consult_the_map_and_still_carry_it() {
+    # `--mine` IS A CLAIM ABOUT AN APP. A selection reaching into a DEPENDANT
+    # of that app to run one test would be a third thing wearing the flag's
+    # name, so the map is not consulted — and the key still says which map the
+    # tree carried, so a row can always be read against it.
+    fresh_checkout
+    plant_map "$REPO" whole
+    echo "changed" >>"$REPO/apps/leaf/services.py"
+    LOOP_MINE=1
+    scope_in "$REPO" "--mine does not consult the map"
+    LOOP_MINE=""
+    is "$RC" "0" "the exit status"
+    is "$LOOP_SCOPE_IMPACT_SELECT" "" "the selection (empty: --mine did not ask)"
+    fallback_says "the caller did not ask for the map"
+    CURRENT="--mine carries the map sha in its key"
+    case "$LOOP_SCOPE_CANONICAL" in
+    "mode=mine"*" map="?*) ok "$LOOP_SCOPE_CANONICAL" ;;
+    *) bad "a --mine key with no map= field: ${LOOP_SCOPE_CANONICAL}" ;;
+    esac
+    CURRENT="and the flags are the ones --mine passed before the map existed"
+    local args
+    args=$(loop_scope__pytest_args)
+    case "
+$args" in
+    *"
+--djb-changed="*) bad "--mine now passes --djb-changed: [$(printf '%s ' $args)]" ;;
+    *) ok "no --djb-changed under --mine: [$(printf '%s ' $args)]" ;;
+    esac
+}
+
 # --- the cases, in the order they should run ---------------------------------
 
+case_an_empty_capture_is_could_not_look
+case_the_always_on_digest_survives_a_machine_with_no_shasum
+case_a_collapsed_checkout_derives_the_same_scope_when_the_base_is_carried
+case_a_policies_touch_census_seeds_the_vocabulary_module
+case_roles_seed_the_same_census_and_ordinary_files_seed_nothing
+case_the_seeded_census_goes_red_on_a_planted_nineteenth_key
 case_a_core_touch_reaches_every_app_through_the_closure_alone
 case_the_transitive_step_is_walked_not_one_hop
 case_forward_edges_are_not_widened
@@ -3240,7 +4971,7 @@ case_a_typed_n_above_the_share_is_clamped_and_printed
 case_census_runs_the_instrument_census_alone_without_a_slot
 case_the_typed_escape_prints_and_lifts_the_clamp
 case_the_python_clamp_and_the_shell_share_are_the_same_number
-case_a_miss_prints_two_lines_by_default_and_the_detail_on_request
+case_a_tree_miss_prints_three_lines_every_other_miss_two_and_the_detail_on_request
 case_pr_refuses_an_uncomputable_impact_map_before_taking_the_lease
 case_pr_refuses_an_unaccountable_label_above_the_lease
 case_pr_removes_its_counts_directory_on_every_path
@@ -3254,6 +4985,24 @@ case_pr_writes_no_verdict_row_and_no_partition_row
 case_the_planted_miss_triple
 case_a_substitution_callees_refusal_surfaces_as_cause
 case_a_banner_with_no_recorded_cause_is_exit_2
+case_a_typed_slot_share_is_the_workers_number_and_no_clamp_fires
+case_a_typed_share_above_the_slot_is_refused_naming_both
+case_a_bank_runs_every_slots_share_and_the_census_agrees
+case_a_dead_collector_under_a_bank_still_refuses
+case_the_full_gate_passes_write_counts_and_the_whole_suite_reconciles
+case_a_dying_collector_under_the_full_gate_leg_body_is_exit_2_and_banks_nothing
+case_a_dying_collector_under_pr_is_exit_2_and_writes_no_narrowed_run_note
+case_the_full_counts_dir_is_removed_on_an_early_red
+
+case_a_seen_leaf_file_selects_only_its_tests
+case_a_never_seen_file_falls_back_and_says_so
+case_a_root_file_selects_everything_it_touches
+case_a_removed_entry_falls_back_and_a_dropped_test_is_the_declared_hole
+case_an_absent_map_is_the_closure_scope
+case_an_unreadable_map_is_the_closure_scope_and_not_exit_2
+case_the_map_sha_is_in_the_loop_key
+case_the_valve_widens_and_keys_itself
+case_mine_and_pr_do_not_consult_the_map_and_still_carry_it
 
 echo "test_loop_scope: ${PASSED} passed · ${FAILED} failed"
 # Every case ran. Anything below here is a verdict on them, not another case —

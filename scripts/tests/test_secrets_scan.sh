@@ -31,6 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .secrets.baseline docs/product/queue.md scripts/check.sh scripts/db.sh scripts/kill_mine.sh scripts/queue_cited.sh scripts/secrets_scan.sh scripts/serve.sh scripts/sweep.sh scripts/tests/test_pm_merge.sh scripts/tests/test_verify_start.sh
 # The drive for `scripts/secrets_scan.sh` — the `--loop` secret scan's
 # changed-file derivation, its edge cases and the sentence it prints.
 #
@@ -490,6 +491,102 @@ case_a_linked_worktree_derives_against_the_shared_main() {
     not_listed "shared.txt"
 }
 
+# --- the fork point a machine could not derive, handed to it ------------------
+#
+# WHAT A VERIFIER BOX ACTUALLY HOLDS. The wrapper pushes `HEAD:refs/heads/main`
+# into a shallow checkout, so over there HEAD, `refs/heads/main` and the
+# merge-base of the two are ONE commit: every branch in this function reads it
+# as "on main itself", the uncommitted half is empty because nobody edited
+# anything, and the answer is an empty change set for a rung that touched six
+# files on the laptop. Five readers inherit that one answer — the `--loop`
+# scope, this scan, the three changed-file censuses and the fe leg — so all five
+# ask about nothing while printing a sentence that sounds like a measurement.
+#
+# `collapsed_box_checkout` is that machine, built rather than described: a clone
+# whose `main` is the rung's tip and whose history is one commit deep.
+collapsed_box_checkout() {
+    local src="$1" dst="$2"
+    git clone -q --depth 1 --branch rung "file://${src}" "$dst" 2>/dev/null || return 1
+    git -C "$dst" branch -q -f main HEAD
+    git -C "$dst" checkout -q main
+    return 0
+}
+
+case_a_collapsed_checkout_derives_nothing_without_a_carried_base() {
+    # THE RED THIS EXISTS FOR, kept as a case rather than as a memory: without
+    # the carried base the box's answer is EMPTY and says "on main itself".
+    fresh_repo
+    on_a_rung
+    echo "the rung's own work" >"$REPO/rung.txt"
+    commit_in "rung work"
+    local box="${WORK}/box${R}"
+    collapsed_box_checkout "$REPO" "$box" ||
+        cannot_look "could not build a depth-1 clone — the box's shape cannot be driven"
+    derive_in "$box" "a depth-1 box checkout with no base handed to it"
+    exits 0
+    set_is_empty
+    basis_says "on main itself"
+}
+
+case_a_carried_base_gives_the_collapsed_checkout_the_rungs_own_files() {
+    fresh_repo
+    on_a_rung
+    echo "the rung's own work" >"$REPO/rung.txt"
+    commit_in "rung work"
+    local box="${WORK}/box${R}" base
+    base="$(git -C "$REPO" merge-base rung main)"
+    collapsed_box_checkout "$REPO" "$box" ||
+        cannot_look "could not build a depth-1 clone — the box's shape cannot be driven"
+    # THE REF THE WRAPPER SENDS, planted the way the wrapper sends it: the base
+    # COMMIT has to be ON the box, because a sha it does not have is a name it
+    # cannot diff against. Advertised as a ref on the source and fetched at
+    # depth 1 — the same one-commit-deep shape the wrapper's mirror pushes.
+    git -C "$REPO" update-ref refs/djb/base "$base"
+    git -C "$box" fetch -q --depth 1 "file://${REPO}" "+refs/djb/base:refs/djb/base" 2>/dev/null ||
+        cannot_look "could not plant refs/djb/base in the box clone"
+    DJB_LOOP_SCOPE_BASE=refs/djb/base derive_in "$box" "a depth-1 box checkout with the fork point carried"
+    exits 0
+    listed "rung.txt"
+    not_listed "shared.txt"
+    basis_says "CARRIED fork point"
+    basis_says "DJB_LOOP_SCOPE_BASE"
+}
+
+case_a_carried_base_never_overrides_a_real_fork_point() {
+    # IT CAN ONLY WIDEN A THIN BASIS. On a laptop the derivation answers for
+    # itself, and a knob left in the environment — exported once, forgotten,
+    # inherited by every later run — must not be able to move the question.
+    fresh_repo
+    on_a_rung
+    echo "the rung's own work" >"$REPO/rung.txt"
+    commit_in "rung work"
+    local first
+    first="$(git -C "$REPO" rev-list --max-parents=0 HEAD)"
+    git -C "$REPO" update-ref refs/djb/base "$first"
+    DJB_LOOP_SCOPE_BASE=refs/djb/base derive_in "$REPO" "a real fork point with a knob set beside it"
+    exits 0
+    listed "rung.txt"
+    not_listed "untouched.txt"
+    basis_says "since the merge-base with main"
+}
+
+case_a_carried_base_that_resolves_to_nothing_is_ignored() {
+    # A NAME THAT IS NOT THERE IS NOT A BASIS. An old image, a push that
+    # declined to carry the ref, a typo: the run behaves exactly as it did
+    # before the knob existed rather than refusing or inventing a scope.
+    fresh_repo
+    on_a_rung
+    echo "the rung's own work" >"$REPO/rung.txt"
+    commit_in "rung work"
+    local box="${WORK}/box${R}"
+    collapsed_box_checkout "$REPO" "$box" ||
+        cannot_look "could not build a depth-1 clone — the box's shape cannot be driven"
+    DJB_LOOP_SCOPE_BASE=refs/djb/base derive_in "$box" "a carried base that is not in this repository"
+    exits 0
+    set_is_empty
+    basis_says "on main itself"
+}
+
 case_an_empty_change_set_says_nothing_was_scanned() {
     # The honesty case. A leg that looked at nothing and a leg that looked at
     # everything and found nothing print the same word — "ok" — unless one of
@@ -627,6 +724,10 @@ case_a_rename_names_the_destination_that_exists
 case_no_local_main_falls_back_and_says_so
 case_a_linked_worktree_derives_against_the_shared_main
 case_an_empty_change_set_says_nothing_was_scanned
+case_a_collapsed_checkout_derives_nothing_without_a_carried_base
+case_a_carried_base_gives_the_collapsed_checkout_the_rungs_own_files
+case_a_carried_base_never_overrides_a_real_fork_point
+case_a_carried_base_that_resolves_to_nothing_is_ignored
 case_a_directory_that_is_no_repository_cannot_look
 case_a_planted_secret_in_a_changed_file_fails_the_leg
 case_the_zitadel_passwordless_enum_is_not_a_secret

@@ -31,6 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: deploy/tests scripts/check.sh scripts/db.sh scripts/gate_lease.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks/pre-push scripts/kill_mine.sh scripts/pm_push.sh scripts/queue_cited.sh scripts/sweep.sh scripts/tests
 # The drive for the MACHINE-WIDE GATE GUARDS (`scripts/gate_lease.sh`), for the
 # caller and sanction fields the ledger records beside them
 # (`scripts/gate_ledger.sh`), and for the sanction valve on the full gate itself
@@ -1192,6 +1193,273 @@ case_exactly_N_of_many_racing_slot_acquires_win() {
     rm -rf "$SLOTS_DIR"
 }
 
+# --- the bank: one caller that takes the whole box ----------------------
+#
+# A `--bank` run is the PM's push, and it is the one run on this box whose wall
+# clock everybody is waiting on. It used to queue for ONE slot beside two
+# `--loop` runs and then run its two whole-suite passes on a third of the
+# machine (`waited=12 took=613`, a real verdict row). The bank mode is the
+# answer: it takes EVERY slot, so the box it measures is the box it has.
+#
+# THE ACQUIRER RUNS IN ITS OWN PROCESS, and that is a scar rather than a
+# preference. The holder record is keyed on `$$`, which a SUBSHELL inherits from
+# this drive — so a bank started as `( gate_slot_acquire bank ) &` would write
+# THIS drive's pid into every slot it took, the reclaim case would SIGTERM a
+# subshell whose recorded pid is still very much alive, and the sweep would
+# correctly refuse to reclaim anything. The case would then prove the opposite
+# of its name and go green doing it.
+
+#: Set by `start_bank`: the pid of the bank process, the log it writes, and the
+#: flag file whose removal tells it to let go.
+BANK_PID=""
+BANK_OUT=""
+BANK_FLAG=""
+
+start_bank() {
+    # start_bank <mode> [VAR=value ...] — a `gate_slot_acquire <mode>` in its own
+    # process, holding whatever it took until `stop_bank`.
+    local mode=$1
+    shift
+    N=$((N + 1))
+    BANK_OUT="${WORK}/bank${N}.log"
+    BANK_FLAG="${WORK}/bank${N}.hold"
+    : >"$BANK_OUT"
+    : >"$BANK_FLAG"
+    # The three lines it prints are the three things a caller of this function
+    # asks about: what `-n` it resolved, what it ended up holding, and whether it
+    # RETURNED at all — the last one is the discriminator, because a bank that
+    # returns while another slot is still held has taken one slot and called it a
+    # box.
+    env DJB_GATE_LEASE_DIR="$LEASE_DIR" "$@" bash -c '
+        cd "$1" || exit 2
+        . scripts/gate_lease.sh
+        rc=0
+        gate_slot_acquire "$2" || rc=$?
+        echo "BANK_WORKERS=${GATE_SLOT_WORKERS:-}"
+        echo "BANK_PHRASE=${GATE_SLOT_WORKERS_PHRASE:-}"
+        echo "BANK_RC=${rc}"
+        [ "$rc" = 0 ] || exit "$rc"
+        while [ -f "$3" ]; do sleep 1; done
+        gate_slot_release
+    ' _ "$ROOT" "$mode" "$BANK_FLAG" >"$BANK_OUT" 2>&1 &
+    BANK_PID=$!
+    SLEEPERS="${SLEEPERS} ${BANK_PID}"
+    disown "$BANK_PID" 2>/dev/null || true
+}
+
+stop_bank() {
+    # `|| true` on both, and not for tidiness: under `set -e` a `kill` of a bank
+    # this case already reaped is a FAILING last command of an && list, which
+    # ends the whole drive at the line after its last assertion — measured on
+    # this drive's own first run, where the four cases below it never ran and the
+    # summary never printed.
+    [ -n "$BANK_FLAG" ] && rm -f "$BANK_FLAG" || true
+    [ -n "$BANK_PID" ] && kill "$BANK_PID" 2>/dev/null || true
+    BANK_PID=""
+    return 0
+}
+
+# wait_for <seconds> <command...> — a BOUNDED poll. Every wait in this drive has
+# a ceiling for the reason the semaphore's own wait has one: a drive that hangs
+# is a leg that hangs, and a leg that hangs is killed by a harness that has
+# judged nothing.
+wait_for() {
+    local secs=$1 i=0
+    shift
+    while [ "$i" -lt $((secs * 5)) ]; do
+        if "$@" >/dev/null 2>&1; then return 0; fi
+        sleep 0.2
+        i=$((i + 1))
+    done
+    return 1
+}
+
+slot_pid() {
+    awk 'NR==1{print $1}' "${SLOTS_DIR}/slot-$1/holder" 2>/dev/null || true
+}
+slot_held_by() {
+    [ "$(slot_pid "$1")" = "$2" ]
+}
+
+case_a_bank_takes_every_free_slot_and_waits_for_the_held_one() {
+    # THE CENTRAL BANK CASE. Two slots, one of them held by a `loop` decoy: the
+    # bank takes the free one AT ONCE and then waits for the other, taking it as
+    # it frees, and returns 0 only holding both.
+    CURRENT="a bank takes every free slot and waits for the held one"
+    fresh_slot_dir
+    local decoy cores
+    cores=$(gate_slot_cores)
+    live_pid
+    decoy=$LIVE_PID
+    mkdir -p "$SLOTS_DIR"
+    plant_slot 1 "$decoy" "$(hostname -s 2>/dev/null || echo host)" loop
+
+    start_bank bank DJB_GATE_SLOTS=2 DJB_GATE_LEASE_POLL=1 \
+        DJB_GATE_LEASE_ANNOUNCE=1 DJB_GATE_SLOT_MAX_WAIT=90
+    OUT="$BANK_OUT"
+
+    if wait_for 20 slot_held_by 2 "$BANK_PID"; then
+        ok "the bank took the free slot-2 at once (pid ${BANK_PID})"
+    else
+        bad "the bank never took the free slot-2 (slot-2 holder: $(slot_pid 2))"
+    fi
+    # THE HEADLINE IS WAITED FOR, NOT SAMPLED. The slot directory appears a
+    # moment BEFORE the bank has printed anything about waiting — it takes
+    # slot-2, tries again, fails, and only then announces — so a bare `says` here
+    # races the bank's own stdout and reds a working bank about one line
+    # (measured on this drive: green, then red, on identical bytes).
+    if wait_for 20 grep -q 'WAITING for the REST of the box' "$BANK_OUT"; then
+        ok "the bank announced the wait it is in"
+    else
+        bad "the bank never said it was waiting for the rest of the box"
+    fi
+    # THE DISCRIMINATOR: it has NOT returned, because slot-1 is still held.
+    if grep -q 'BANK_RC=' "$BANK_OUT"; then
+        bad "the bank RETURNED while the decoy still held slot-1 — it took one slot and called it a box"
+    else
+        ok "the bank has not returned: it is still waiting for slot-1"
+    fi
+    if slot_held_by 1 "$decoy"; then
+        ok "the decoy's slot-1 is untouched — a bank waits for a held slot, it does not steal one"
+    else
+        bad "slot-1 is held by $(slot_pid 1), not the decoy ${decoy}"
+    fi
+
+    # The decoy lets go. A bank takes a slot as it frees.
+    rm -rf "${SLOTS_DIR}/slot-1"
+    if wait_for 60 grep -q 'BANK_RC=0' "$BANK_OUT"; then
+        ok "the bank returned 0 once the held slot freed"
+    else
+        bad "the bank never returned 0 after slot-1 freed"
+    fi
+    if slot_held_by 1 "$BANK_PID" && slot_held_by 2 "$BANK_PID"; then
+        ok "the bank holds BOTH slots (pid ${BANK_PID})"
+    else
+        bad "the bank holds slot-1=$(slot_pid 1) slot-2=$(slot_pid 2), wanted ${BANK_PID} on both"
+    fi
+    says "BANK COMPLETE after"
+    says "holds ALL 2 of 2"
+    # EVERY SLOT MEANS EVERY SHARE: the whole box's cores, not one slot's third.
+    says "BANK_WORKERS=${cores}"
+    says "BANK_PHRASE=bank: every slot — 2/2; loops wait"
+    stop_bank
+    kill "$decoy" 2>/dev/null || true
+}
+
+case_a_bank_that_shares_slots_takes_one_and_says_so() {
+    # PRINCIPLE 20's escape, typed and PRINTED. A bank that takes the box is the
+    # right default and the wrong answer for somebody who needs to keep building
+    # while it runs; the knob exists, and a run that took it says so in its own
+    # transcript rather than looking like an ordinary full gate.
+    CURRENT="a bank that shares the box"
+    fresh_slot_dir
+    mkdir -p "$SLOTS_DIR"
+    out_file
+    RC=0
+    DJB_GATE_SLOTS=2 DJB_BANK_SHARES_SLOTS=1 \
+        gate_slot_acquire bank >"$OUT" 2>&1 || RC=$?
+    exits 0
+    says "bank shares the box: DJB_BANK_SHARES_SLOTS=1"
+    says "pytest slot held: slot-1 of 2"
+    says_not "holds ALL"
+    if [ -d "${SLOTS_DIR}/slot-2" ]; then
+        bad "a sharing bank took slot-2 as well — the knob bought nothing"
+    else
+        ok "slot-2 is left for the loops beside it"
+    fi
+    gate_slot_release
+}
+
+case_a_loop_arriving_during_a_bank_waits_naming_the_bank() {
+    # A WAIT NAMES ITS HOLDER (P19 B2.1), and "the box is full" is the wrong
+    # answer when the box is full of ONE run: a builder reading a generic holder
+    # table sees two anonymous rows and no reason; reading `bank holds 2/2 slots`
+    # they know it is the push, roughly how long, and that the escape is theirs
+    # (`--loop --mine`, targeted pytest) rather than a kill.
+    CURRENT="a loop arriving during a bank"
+    fresh_slot_dir
+    local banker host
+    live_pid
+    banker=$LIVE_PID
+    host="$(hostname -s 2>/dev/null || echo host)"
+    mkdir -p "$SLOTS_DIR"
+    plant_slot 1 "$banker" "$host" bank
+    plant_slot 2 "$banker" "$host" bank
+    out_file
+    RC=0
+    DJB_GATE_SLOTS=2 DJB_GATE_SLOT_MAX_WAIT=3 DJB_GATE_LEASE_POLL=1 DJB_GATE_LEASE_ANNOUNCE=1 \
+        gate_slot_acquire loop >"$OUT" 2>&1 || RC=$?
+    exits 2
+    says "holder: bank holds 2/2 slots — loops wait (pid ${banker}, started 2026-08-30T00:00:00Z)"
+    # AND THE TWO ROWS ARE GONE: a collapsed line that printed the raw records
+    # beside it would be the generic table with a sentence on top.
+    says_not "holder: slot-1 ${banker} bank"
+    kill "$banker" 2>/dev/null || true
+}
+
+case_a_released_bank_frees_every_slot() {
+    # RELEASE COVERS WHAT ACQUIRE TOOK. A release that let go of one slot would
+    # leave the box permanently smaller after every push, and the only tell would
+    # be builders waiting longer and longer for a slot nobody holds.
+    CURRENT="a released bank frees every slot"
+    fresh_slot_dir
+    mkdir -p "$SLOTS_DIR"
+    out_file
+    RC=0
+    DJB_GATE_SLOTS=2 gate_slot_acquire bank >"$OUT" 2>&1 || RC=$?
+    exits 0
+    says "holds ALL 2 of 2"
+    if [ -d "${SLOTS_DIR}/slot-1" ] && [ -d "${SLOTS_DIR}/slot-2" ]; then
+        ok "an uncontended bank holds both slots at once, with no waiting"
+    else
+        bad "the bank holds slot-1=$([ -d "${SLOTS_DIR}/slot-1" ] && echo yes || echo no) slot-2=$([ -d "${SLOTS_DIR}/slot-2" ] && echo yes || echo no)"
+    fi
+    gate_slot_release
+    if [ ! -d "${SLOTS_DIR}/slot-1" ] && [ ! -d "${SLOTS_DIR}/slot-2" ]; then
+        ok "the release gave back every slot it held"
+    else
+        bad "a released bank left slot-1=$([ -d "${SLOTS_DIR}/slot-1" ] && echo held || echo free) slot-2=$([ -d "${SLOTS_DIR}/slot-2" ] && echo held || echo free)"
+    fi
+}
+
+case_a_killed_bank_is_reclaimed_whole() {
+    # The killed-holder case, at the bank's width. Gates are killed at the
+    # harness ceiling routinely, and a killed bank that kept EVERY slot would
+    # block every pytest leg on the machine until somebody deleted a directory
+    # they had to be told about.
+    CURRENT="a killed bank"
+    fresh_slot_dir
+    mkdir -p "$SLOTS_DIR"
+    start_bank bank DJB_GATE_SLOTS=2 DJB_GATE_LEASE_POLL=1
+    if wait_for 20 grep -q 'BANK_RC=0' "$BANK_OUT"; then
+        ok "the bank holds the box (pid ${BANK_PID})"
+    else
+        bad "the bank never took the box; its log says: $(tail -3 "$BANK_OUT" 2>/dev/null)"
+    fi
+    kill -TERM "$BANK_PID" 2>/dev/null || true
+    if wait_for 20 sh -c "! kill -0 ${BANK_PID} 2>/dev/null"; then
+        ok "the bank is gone, its slots behind it"
+    else
+        bad "the bank survived a SIGTERM — the case cannot be driven"
+    fi
+    out_file
+    RC=0
+    DJB_GATE_SLOTS=2 gate_slot_holders >"$OUT" 2>&1 || RC=$?
+    local cleared
+    cleared="$(grep -c 'cleared a STALE gate slot' "$OUT" || true)"
+    if [ "$cleared" = "2" ]; then
+        ok "both of the dead bank's slots were reclaimed by the sweep"
+    else
+        bad "the sweep cleared ${cleared} of the dead bank's 2 slots"
+    fi
+    if [ ! -d "${SLOTS_DIR}/slot-1" ] && [ ! -d "${SLOTS_DIR}/slot-2" ]; then
+        ok "the box is whole again"
+    else
+        bad "slot-1=$([ -d "${SLOTS_DIR}/slot-1" ] && echo held || echo free) slot-2=$([ -d "${SLOTS_DIR}/slot-2" ] && echo held || echo free) after the bank died"
+    fi
+    stop_bank
+}
+
 case_the_lock_order_is_REFUSED_not_merely_documented() {
     # THE DEADLOCK THE TWO GUARDS COULD FORM, closed mechanically. A full run
     # holding a slot while waiting for the lease, and a lease holder waiting for
@@ -1724,14 +1992,15 @@ case_the_slot_wiring_in_check_sh() {
     out_file
     local gate="${ROOT}/scripts/check.sh"
     local loop_slot full_slot acquire_line order_line release_hits auto_hits
+    local bank_slot bank_guard
 
     # CALL SITES, not mentions: the count is anchored to the start of a line so
     # the file may go on EXPLAINING the order in prose without the explanation
     # reading as a third acquire.
-    if [ "$(grep -cE '^[[:space:]]*gate_slot_acquire ' "$gate")" = "2" ]; then
-        ok "exactly two slot acquire call sites — the --loop pytest leg and pytest-x2"
+    if [ "$(grep -cE '^[[:space:]]*gate_slot_acquire ' "$gate")" = "3" ]; then
+        ok "exactly three slot acquire call sites — the --loop pytest leg, and pytest-x2's bank and full arms"
     else
-        bad "check.sh has $(grep -cE '^[[:space:]]*gate_slot_acquire ' "$gate") gate_slot_acquire call sites, wanted 2"
+        bad "check.sh has $(grep -cE '^[[:space:]]*gate_slot_acquire ' "$gate") gate_slot_acquire call sites, wanted 3"
     fi
     loop_slot="$(grep -n 'gate_slot_acquire loop' "$gate" | head -1 | cut -d: -f1 || true)"
     full_slot="$(grep -n 'gate_slot_acquire full' "$gate" | head -1 | cut -d: -f1 || true)"
@@ -1740,6 +2009,32 @@ case_the_slot_wiring_in_check_sh() {
     else
         bad "one of the two pytest legs takes no slot — that leg would run unbounded"
         return 0
+    fi
+
+    # THE BANK ARM, read as text: `bank` IFF `GATE_BANK` is set. Three call
+    # WORDS, one function — `loop` from the loop, `bank` from `--bank`, `full`
+    # from a typed-sanction full gate and from push-wall, which still take ONE
+    # slot and must keep taking one.
+    bank_slot="$(grep -n '^ *gate_slot_acquire bank$' "$gate" | head -1 | cut -d: -f1 || true)"
+    if [ -n "$bank_slot" ] && [ "$bank_slot" -gt "$loop_slot" ]; then
+        ok "the pytest-x2 leg has a bank arm (line ${bank_slot}), below the --loop leg's own acquire"
+    else
+        bad 'no "gate_slot_acquire bank" call site in the pytest-x2 leg — --bank would take one slot like any other full gate'
+        return 0
+    fi
+    bank_guard="$(sed -n "$((bank_slot - 1))p" "$gate")"
+    case "$bank_guard" in
+    *'if [ -n "$GATE_BANK" ]; then'*)
+        ok "the bank arm is guarded by GATE_BANK, on the line above it — bank iff --bank"
+        ;;
+    *)
+        bad "the line above the bank acquire is not the GATE_BANK guard: ${bank_guard}"
+        ;;
+    esac
+    if [ "$full_slot" -gt "$bank_slot" ] && [ "$((full_slot - bank_slot))" -le 3 ]; then
+        ok "the full arm (line ${full_slot}) is the other half of that one branch — everything else still takes one slot"
+    else
+        bad "the full acquire (line ${full_slot}) is not the else arm of the bank branch (line ${bank_slot})"
     fi
 
     # THE LOCK ORDER, read where it is declared. The full gate's slot must sit
@@ -1798,6 +2093,115 @@ case_the_slot_wiring_in_check_sh() {
     fi
 }
 
+case_the_workers_sentence_is_true_in_both_cases() {
+    # THE RIDER (PM, 2026-09-14, from G1's return). `gate_slot_worker_count`
+    # prints the typed-knob provenance AT THE SOURCE, and the pytest-x2 leg then
+    # printed its own parenthetical — "this box's cores split 2 ways" — which is
+    # FALSE when the knob is set and false again when a bank holds every slot.
+    # Two sentences about one number, one of them wrong, on the line a reader
+    # uses to check the number. So the leg prints ONE sentence and the phrase
+    # comes from where the number does.
+    CURRENT="the pytest-x2 workers sentence"
+    out_file
+    local gate="${ROOT}/scripts/check.sh"
+    local leg_line workers_line workers_text
+    leg_line="$(grep -n '^leg pytest-x2 ' "$gate" | head -1 | cut -d: -f1 || true)"
+    if [ -z "$leg_line" ]; then
+        bad "no pytest-x2 leg in check.sh — the line cannot be read"
+        return 0
+    fi
+    workers_line="$(awk -v start="$leg_line" 'NR>start && /^echo "  workers:/{print NR; exit}' "$gate")"
+    if [ -z "$workers_line" ]; then
+        bad "the pytest-x2 leg prints no workers: line — the number would be invisible"
+        return 0
+    fi
+    workers_text="$(sed -n "${workers_line}p" "$gate")"
+    printf '%s\n' "$workers_text" >"$OUT"
+    says 'GATE_SLOT_WORKERS_PHRASE'
+    says_not "cores split"
+
+    # AND THE --LOOP LEG'S LINE IS THE SAME LINE. Two pytest legs print this
+    # sentence, and a knob that is honoured at the source is mis-described by
+    # EITHER of them that carries its own parenthetical — the builder watching
+    # a `--loop` is the reader most likely to have typed the knob in the first
+    # place, so the loop's copy is the one that was wrong most often.
+    CURRENT="the --loop leg's workers sentence"
+    out_file
+    local loop_workers_line loop_workers_text
+    loop_workers_line="$(grep -n '^ *echo "  workers:' "$gate" | head -1 | cut -d: -f1 || true)"
+    if [ -z "$loop_workers_line" ] || [ "$loop_workers_line" -ge "$leg_line" ]; then
+        bad "the --loop pytest leg prints no workers: line above the pytest-x2 leg"
+        return 0
+    fi
+    loop_workers_text="$(sed -n "${loop_workers_line}p" "$gate")"
+    printf '%s\n' "$loop_workers_text" >"$OUT"
+    says 'GATE_SLOT_WORKERS_PHRASE'
+    says_not "cores split"
+
+    # AND THE PHRASE IS SET IN ALL THREE CASES, which is what makes the one
+    # sentence true in all of them. Derived, typed, bank.
+    # THE PHRASE ALONE IS WHAT IS ASSERTED, never the function's stdout beside
+    # it: `gate_slot_worker_count` PRINTS the typed sentence at the source, so a
+    # case that grepped both would pass on the printed line while the variable
+    # the leg interpolates stayed empty — green, with the leg's own sentence
+    # saying nothing at all.
+    local said="${WORK}/worker-count-said.log"
+
+    CURRENT="the phrase, derived"
+    fresh_slot_dir
+    GATE_SLOT_WORKERS_PHRASE=""
+    RC=0
+    gate_slot_worker_count 2 >"$said" 2>&1 || RC=$?
+    exits 0
+    out_file
+    printf '%s\n' "$GATE_SLOT_WORKERS_PHRASE" >"$OUT"
+    says "one share per pytest slot"
+
+    CURRENT="the phrase, typed"
+    GATE_SLOT_WORKERS_PHRASE=""
+    RC=0
+    DJB_GATE_SLOT_WORKERS=1 gate_slot_worker_count 2 >"$said" 2>&1 || RC=$?
+    exits 0
+    out_file
+    printf '%s\n' "$GATE_SLOT_WORKERS_PHRASE" >"$OUT"
+    says "typed: DJB_GATE_SLOT_WORKERS"
+    says_not "cores split"
+
+    CURRENT="the phrase, bank"
+    fresh_slot_dir
+    mkdir -p "$SLOTS_DIR"
+    GATE_SLOT_WORKERS_PHRASE=""
+    RC=0
+    DJB_GATE_SLOTS=2 gate_slot_acquire bank >"$said" 2>&1 || RC=$?
+    exits 0
+    out_file
+    printf '%s\n' "$GATE_SLOT_WORKERS_PHRASE" >"$OUT"
+    says "bank: every slot — 2/2; loops wait"
+    gate_slot_release
+}
+
+case_the_bank_announcement_names_every_slot() {
+    # WHAT THE OPERATOR IS TOLD, at the one moment they can still decide not to.
+    # `pm_push.sh --bank` prints what the run is about to cost before it starts
+    # it, and that sentence said "one pytest slot" — true of every full gate
+    # except the one it describes. An operator reading it would have no reason to
+    # expect every builder on the box to stop, which is exactly the cost a bank
+    # now pays deliberately. A stale cost sentence is worse than none: it is
+    # believed.
+    CURRENT="the bank announcement in pm_push.sh"
+    out_file
+    local push="${ROOT}/scripts/pm_push.sh"
+    [ -f "$push" ] || {
+        bad "scripts/pm_push.sh is not in this tree — the announcement cannot be read"
+        return 0
+    }
+    sed -n '/banking a verdict for/,/A red one stops here/p' "$push" >"$OUT"
+    says "EVERY pytest slot"
+    says "--loop"
+    says "DJB_BANK_SHARES_SLOTS=1"
+    says_not "one pytest slot"
+}
+
 case_the_sanction_valve_wiring_in_check_sh() {
     # The refusals are DRIVEN above; this is the half a refusal cannot show —
     # where the valve sits, and that the accepting paths exist at all.
@@ -1806,7 +2210,16 @@ case_the_sanction_valve_wiring_in_check_sh() {
     local gate="${ROOT}/scripts/check.sh"
     local valve_line acquire_line pipe_line mode_guard
 
-    valve_line="$(grep -n 'THE FULL GATE IS SANCTIONED' "$gate" | tail -1 | cut -d: -f1 || true)"
+    # THE SECTION MARKER, NOT ANY MENTION OF IT. This used to be
+    # `grep 'THE FULL GATE IS SANCTIONED' | tail -1`, and that anchor moved the
+    # day a LATER section of `check.sh` cross-referenced this one by name (the
+    # `--loop`-runs-on-a-box valve, which says "with the same shape the full
+    # gate's sanction already uses (THE FULL GATE IS SANCTIONED, above)"). The
+    # window then read the WRONG valve's prose and two of its three needles went
+    # missing, while nothing about the sanction valve had changed. A banner in
+    # this file is a column-zero `# --- <NAME> ---` line and a cross-reference
+    # never is, so the anchor is the banner's own form.
+    valve_line="$(grep -n '^# --- THE FULL GATE IS SANCTIONED' "$gate" | head -1 | cut -d: -f1 || true)"
     acquire_line="$(grep -n '^    gate_lease_acquire$' "$gate" | head -1 | cut -d: -f1 || true)"
     if [ -z "$valve_line" ] || [ -z "$acquire_line" ]; then
         bad "the valve or the lease acquire could not be found — the order cannot be judged"
@@ -2384,6 +2797,11 @@ case_a_foreign_hosts_slot_is_waited_on_then_refused
 case_an_orphaned_mkdir_window_is_reclaimed_eventually
 case_a_slot_is_released_only_by_the_process_that_holds_it
 case_exactly_N_of_many_racing_slot_acquires_win
+case_a_bank_takes_every_free_slot_and_waits_for_the_held_one
+case_a_bank_that_shares_slots_takes_one_and_says_so
+case_a_loop_arriving_during_a_bank_waits_naming_the_bank
+case_a_released_bank_frees_every_slot
+case_a_killed_bank_is_reclaimed_whole
 case_the_lock_order_is_REFUSED_not_merely_documented
 case_an_unsanctioned_full_gate_is_REFUSED
 case_a_shapeless_sanction_is_REFUSED
@@ -2397,6 +2815,8 @@ case_the_ledger_and_run_log_carry_the_caller
 case_a_pre_N353_line_still_parses
 case_the_wiring_in_check_sh
 case_the_slot_wiring_in_check_sh
+case_the_workers_sentence_is_true_in_both_cases
+case_the_bank_announcement_names_every_slot
 case_the_sanction_valve_wiring_in_check_sh
 case_the_declared_limit_is_written_down
 case_gate_lease_sh_is_a_library_not_an_instrument

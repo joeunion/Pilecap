@@ -51,6 +51,7 @@ def test_it_emits_valid_json_with_a_section_per_door(payload: dict[str, Any]) ->
         "activities",
         "bridge",
         "policies",
+        "roles",
         "events",
         "refusals",
         "settings",
@@ -210,55 +211,175 @@ def test_redaction_survives_nesting() -> None:
     assert redacted["nested"][1]["PASSWORD"] == "[redacted]"
 
 
-def test_the_policies_section_reports_the_discovered_registry(
-    payload: dict[str, Any],
-) -> None:
+def test_a_predicate_row_names_its_callable_and_its_kind(payload: dict[str, Any]) -> None:
     """What an agent reads instead of guessing at a role name.
 
-    An opaque predicate is reported as one: the callable is named, `roles` is
-    `null`, and `decided_by` says which of the two shapes this row is so that
-    the `null` is never read as "unknown".
+    The predicate is named, and so is the KIND it decides about — which is what
+    lets an agent ask "what may I do to a widget" and get an answer without
+    reading our source.
     """
     actions = {row["action"]: row for row in payload["policies"]}
+
     assert "widget.update" in actions
-    assert actions["widget.update"]["policy"].startswith("apps.example.policies.")
-    assert actions["widget.update"]["decided_by"] == "predicate"
-    assert actions["widget.update"]["roles"] is None
+    assert actions["widget.update"]["predicate"].startswith("apps.example.policies.")
+    assert actions["widget.update"]["kind"] == "widget"
+    assert actions["widget.update"]["verb"] == "update"
+    assert actions["widget.update"]["app"] == "example"
 
 
-def test_no_row_carries_a_role_default_that_never_applies(payload: dict[str, Any]) -> None:
-    """The column that was wrong on every row, not just the loud one.
+def test_every_row_carries_the_new_vocabulary_keys(payload: dict[str, Any]) -> None:
+    """Set equality on the columns, so a half-derived row cannot ship.
 
-    `core.authz.allows` consults the policy and returns; the `is_read` role
-    default is reached only when NO policy names the action. Every row in this
-    section is an action a policy names, so a `member_default` here described
-    the rows that are not in the table. It is gone, and this is what keeps it
-    from coming back by somebody restoring a "helpful" column.
+    `member_default` used to live here and **every value it ever printed was a
+    value that never applied**: it described the rows that were not in the
+    table. `default_roles` replaces it and is derived from the declarations
+    rather than from the verb, which is the thing the old column could never be.
     """
     assert payload["policies"], "the section is empty; this test would pass vacuously"
     for row in payload["policies"]:
-        assert set(row) == {"action", "policy", "decided_by", "roles"}, row
-        assert row["decided_by"] in {"declaration", "predicate"}
+        assert set(row) == {
+            "action",
+            "kind",
+            "verb",
+            "app",
+            "decided_by",
+            "conforms",
+            "non_conformance",
+            "sentence",
+            "is_read",
+            "default_roles",
+            "predicate",
+            "renamed_from",
+        }, row
+        assert row["decided_by"] in {"derived", "declared", "reserved"}
+        assert isinstance(row["conforms"], bool)
+        assert row["sentence"]
+        assert "owner" in row["default_roles"]
+        assert (row["non_conformance"] is None) is row["conforms"]
 
 
-def test_a_declared_permissions_roles_reach_the_instrument(payload: dict[str, Any]) -> None:
+def test_the_section_is_the_vocabulary_and_not_the_policy_registry(
+    payload: dict[str, Any],
+) -> None:
+    """The four derived verbs of a kind nobody wrote a predicate for are HERE.
+
+    Before this the section printed the policy registry, so a key with no
+    predicate had no row and an agent could learn a permission existed only by
+    being refused by it.
+    """
+    from apps.core.authz import policies, vocabulary
+
+    actions = {row["action"] for row in payload["policies"]}
+
+    assert actions == set(vocabulary())
+    assert len(actions) > len(policies())
+    assert {"message.create", "message.read", "message.update", "message.delete"} <= actions
+
+
+def test_a_declared_permissions_default_roles_reach_the_instrument(
+    payload: dict[str, Any],
+) -> None:
     """The narrowing seam, made visible where agents look.
 
-    `apps/usage/policies.py` declares who may read a tenant's bill as DATA —
-    all roles by default — and the predicate consults the declaration. Before
-    this, `introspect` printed the bound method's name and nothing else, so a
-    product that narrowed the declaration to owners changed what the API does
-    and changed nothing an instrument could see.
+    `apps/usage` publishes who may read a tenant's bill as DATA — all three
+    template roles, derived from their own declarations. Before this,
+    `introspect` printed a bound method's name and nothing else, so a
+    deployment that narrowed the bill changed what the API does and changed
+    nothing an instrument could see.
 
-    Asserted against `ROLE_RANK` rather than a typed list of three strings: the
-    declaration itself is derived from the role vocabulary, and a hand-written
-    expectation here would be the second spelling of it.
+    **Re-keyed by P7.7** and the row is the proof the sweep moved nothing: the
+    key is now `usage_entry.read` — the DERIVED read of the row the report
+    totals — `conforms` is True, the old word answers as an alias under
+    `renamed_from`, and `default_roles` is the same three names it printed
+    when the app carried its own declaration class. `decided_by` stays
+    `derived` because an `ACTION_PROSE` entry for a key the registry already
+    produced is a sentence override, never a second declaration.
     """
-    from apps.core.authz import ROLE_RANK
+    row = next(r for r in payload["policies"] if r["action"] == "usage_entry.read")
 
-    row = next(r for r in payload["policies"] if r["action"] == "usage.read_report")
-    assert row["decided_by"] == "declaration"
-    assert row["roles"] == sorted(ROLE_RANK)
+    assert row["decided_by"] == "derived"
+    assert row["default_roles"] == ["admin", "member", "owner"]
+    assert row["conforms"] is True
+    assert row["renamed_from"] == ["usage.read_report"]
+    assert "usage" in row["sentence"].lower()
+    assert not any(r["action"] == "usage.read_report" for r in payload["policies"])
+
+
+def test_a_renamed_key_is_printed_under_its_successor(payload: dict[str, Any]) -> None:
+    """One row, not two: the old name is an alias and says so on the new row."""
+    actions = {row["action"]: row for row in payload["policies"]}
+
+    assert "organization.rename" not in actions
+    assert actions["organization.update"]["renamed_from"] == ["organization.rename"]
+    assert actions["organization.update"]["sentence"] == "You may not rename that organization."
+
+
+def test_the_reserved_key_is_printed_as_reserved(payload: dict[str, Any]) -> None:
+    row = next(r for r in payload["policies"] if r["action"] == "tenant.own")
+
+    assert row["decided_by"] == "reserved"
+    assert row["default_roles"] == ["owner"]
+
+
+def test_the_roles_registry_lists_admin_and_member(payload: dict[str, Any]) -> None:
+    """The roles section: the code layer, with the collection each one resolves to.
+
+    `owner` leads it and is not a declaration — its collection IS the
+    vocabulary — so an agent reading this never has to infer that the platform
+    role was left out rather than forgotten.
+
+    **`admin` is the vocabulary minus TWO populations**, and the arithmetic is
+    derived rather than typed so that a second key in either one needs no edit
+    here. The reserved keys (`tenant.own`) are withheld because ownership may
+    not be handed out sideways; the VIRTUAL kinds are withheld because a kind
+    with no table names no row anybody can be given authority over. Both come
+    out of `authz.grantable_permissions()`, and `admin`'s `("*",)` reaches
+    everything else. `owner` stays the whole vocabulary: this row answers what
+    the owner role IS, and what an owner may be HANDED is `collection()`.
+    """
+    from apps.core.authz import RESERVED_PERMISSIONS, VIRTUAL_KINDS, vocabulary
+
+    roles = {row["key"]: row for row in payload["roles"]}
+    words = vocabulary()
+    virtual = {action for action, word in words.items() if word.kind in VIRTUAL_KINDS}
+    assert virtual, "no key on a virtual kind — this arithmetic has stopped measuring"
+
+    assert set(roles) == {"owner", "admin", "member"}
+    assert roles["owner"]["collection_size"] == len(words)
+    assert roles["owner"]["declared_in"] is None
+
+    assert roles["admin"]["permissions"] == ["*"]
+    assert roles["admin"]["declared_in"] == "apps/core/roles.py"
+    assert roles["admin"]["collection_size"] == len(words) - len(RESERVED_PERMISSIONS) - len(
+        virtual
+    )
+
+    assert roles["member"]["permissions"] == ["*.read"]
+    assert roles["member"]["is_default_for_new_members"] is True
+    assert not roles["admin"]["is_default_for_new_members"]
+
+
+def test_a_model_row_carries_its_authz_kind_or_the_reason_it_has_none(
+    payload: dict[str, Any],
+) -> None:
+    """Where an agent looks up "what is the kind of this table".
+
+    A `null` always comes with the reason, because the two ways to have no kind
+    — a third-party table, a model that opted out — are different facts and an
+    unexplained `null` reads as neither.
+    """
+    models = {f"{row['app']}.{row['name']}": row for row in payload["models"]}
+
+    assert models["example.Widget"]["authz_kind"] == "widget"
+    assert models["example.Widget"]["authz_kind_reason"] is None
+    assert models["workflows.WorkflowRun"]["authz_kind"] == "workflow_run"
+
+    for row in payload["models"]:
+        if row["authz_kind"] is None:
+            assert row["authz_kind_reason"], row
+
+    third_party = [row for row in payload["models"] if row["authz_kind"] is None]
+    assert third_party, "no third-party table at all; this test would pass vacuously"
 
 
 def test_the_events_section_exists_and_is_names_only(payload: dict[str, Any]) -> None:

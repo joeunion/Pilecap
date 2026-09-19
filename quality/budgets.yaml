@@ -48,17 +48,17 @@ service_function_length:
   # set, and an unfalsifiable population is the one thing an instrument here may
   # not carry. So a service that buys length with a valve still pays for it, and
   # that is the visible diff the ceiling is for.
-  apps/accounts/services.py: 63 # provision_sso_identity — the longest CODE in
+  apps/accounts/services.py: 65 # provision_sso_identity — the longest CODE in
   # this module, and it took the ceiling from `revoke_token` the moment the docstring stopped
   # counting: `revoke_token` was the module's most-argued function, not its longest one. 63 is
   # the identity round-trip a reader would expect to be the biggest thing here.
-  apps/comms/services.py: 130 # send — was 152 under the old span; it keeps the
+  apps/comms/services.py: 129 # send — was 152 under the old span; it keeps the
   # ceiling under the new one, which is the module's own claim confirmed rather than a reprieve.
   # `send_step` and `record_delivery_status` sit behind it as before.
   apps/connections/services.py: 46 # record_inbound_webhook — was 83, and the
   # 37-line gap IS the paragraph about why the identity is the provider's delivery id and never a
   # hash of the body. The argument is still in the source; it no longer buys ceiling.
-  apps/core/services.py: 70 # invite_member — was 95. Still the module's longest
+  apps/core/services.py: 69 # invite_member — was 95. Still the module's longest
   # code, and still two questions in one function (may you invite at all, may you grant this role).
   apps/events/services.py: 35 # record_event — took the ceiling from
   # `enqueue_dispatch`, whose 54 was largely the ADR events-3 resume argument. 35 lines of code
@@ -89,7 +89,14 @@ out_schema_fields:
   # Declared fields per published *Out schema. An Out crossing its ceiling is a
   # contract quietly becoming a dump of the row.
   apps/accounts/schemas.py::RealmOut: 3 # A9
-  apps/accounts/schemas.py::SsoConnectionOut: 13 # A9
+  apps/accounts/schemas.py::SsoConnectionOut: 14 # A9, +1 for `verified_domains`
+  # — which of the claimed domains an operator has confirmed, and therefore
+  # which of them route a sign-in at all. It is a second list beside
+  # `email_domains` rather than a flag on the first because the two are
+  # different questions a client has to be able to ask apart — "what did I
+  # claim" and "what answers today" — and the whole point of the rung is that
+  # they are not the same set. Not the row becoming a dump: it is derived from
+  # the same prefetched `domains` rows the sibling list is.
   apps/accounts/schemas.py::TokenOut: 7 # (ADR ident-7): + scopes, the ceiling the token
   # carries. A read-shape field and not a dump of the row: it is the one thing about a token
   # somebody needs to know afterwards that they cannot recover from the secret.
@@ -177,6 +184,31 @@ out_schema_fields:
   apps/core/schemas.py::FlagsOut: 1 # one map, deliberately. A flag read is a resolved
   # name->bool and nothing else; a second field here would be somebody starting to explain
   # WHY a flag resolved the way it did, which is a different endpoint.
+  apps/core/schemas.py::RoleOut: 12 # P5 (ADR core-25) — a role is THREE layers in one row
+  # and the count is that: who it is (key/name/description/kind), what it holds here
+  # (permissions), what the product declared it holds (default_permissions) and the two
+  # halves of the difference (added/removed), the new-member flag, and the two instants a
+  # custom role has. Not a dump of the row: `Role` has four columns, and the other eight
+  # are computed from the code layer so that a client does not have to merge three
+  # fetches to answer "what does this role actually do in this tenant".
+  apps/core/schemas.py::GrantOut: 7 # P5 — one exception: which row (id), on whom
+  # (membership_id), WHERE (organization_id — rule 38, a grant in one branch says nothing
+  # about the next), what (permission + its sentence, because the key is a word for this
+  # codebase and the sentence is the one a person reads), which way it points (effect),
+  # and when.
+  apps/core/schemas.py::PermissionOut: 11 # P5 — one key of the vocabulary, and every
+  # field is something a role editor chooses BY: the key and its three parts
+  # (kind/verb/sentence), which app owns it, who decided it exists, whether it is a read,
+  # which roles get it out of the box, whether a predicate also asks about the row, and
+  # what it used to be called. A derived vocabulary's whole value is that these are
+  # answerable without reading our source.
+  apps/core/schemas.py::HeldPermissionOut: 4 # P5 — one key somebody holds and WHERE it
+  # came from: the key, its sentence, `via` (role/grant/inherited) and the membership that
+  # carries it. "Why can this person do that" is the question the screen opens with.
+  apps/core/schemas.py::MembershipPermissionsOut: 4 # P5 — the membership, its node, what
+  # it holds and what was taken away. `withheld` is a field rather than a subtraction
+  # because a withhold is a decision somebody made, and hiding it is how "why has this
+  # stopped working" becomes unanswerable.
   apps/events/schemas.py::EventOut: 8 # + organization_id (P3 RT1, ADR realtime-2a) — which
   # part of the tenant the row belongs to. It is the field the realtime fan-out narrows on, and
   # it is on the ENVELOPE rather than on a second socket-only body because the two doors read
@@ -278,7 +310,13 @@ out_schema_fields:
   # What is deliberately NOT here is a PRICE: ADR usage-1 rules that this app meters and never
   # rates, and a money column on this shape would be a second truth able to disagree with the
   # rate card. Adding one should be a diff a reviewer reads, which is what this number is for.
-  apps/usage/schemas.py::ThresholdCrossingOut: 7 # (U1) — a NEW subject. What the one event
+  # 7 -> 8 (P20 R4-F2): `organization_id` at the TOP level. Not an eighth FACT — the
+  # branch was already on the shape, one level down on `crossed_by` — but a security
+  # field rather than a data one: `events.services._subject_organization` reads the
+  # payload's top level and nothing deeper, an absent key is stamped NULL, and the
+  # fan-out reads NULL as tenant-wide. Before it, a rival administrator at a sibling
+  # branch received a ledger row `GET /usage/` under their own hat never lists (R4 F4).
+  apps/usage/schemas.py::ThresholdCrossingOut: 8 # (U1) — a NEW subject. What the one event
   # this app publishes says: which line (meter, threshold), over which window (period,
   # period_starts_on, period_ends_on), what the total now is (total, a MeasuredOut with its
   # day-by-day basis rather than a naked number — ADR core-7), and which entry moved it across

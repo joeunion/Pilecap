@@ -50,7 +50,7 @@ It puts up four walls, in this order, and each refuses something different:
    does not own is `NotFound` — the same answer as one that never existed,
    because a refusal that distinguished them would say that somebody else's run
    exists.
-3. **The membership.** `require(actor, "workflow.signal", run)`. What that can
+3. **The membership.** `require(actor, "workflow_run.signal", run)`. What that can
    and cannot decide is `policies.py`'s subject; the short version is that
    object-level authorization belongs to the domain service in front of this
    one, because `WorkflowRun` does not know what the run is about.
@@ -95,7 +95,7 @@ It puts up walls in this order, and the order is the refusal grammar:
 
 1. **The tenant.** The row is read through `for_tenant`; another tenant's run
    is `NotFound`.
-2. **The membership.** `require(actor, "workflowrun.replay", run)`.
+2. **The membership.** `require(actor, "workflow_run.replay", run)`.
 3. **Whose run it is.** A run this actor did not start is `NotFound` — the
    *same* answer as one that does not exist, on purpose: a `Forbidden`
    here would confirm that somebody else in the tenant has a run under that id.
@@ -160,7 +160,7 @@ from apps.core.authz import require
 from apps.core.exceptions import Conflict, NotFound, as_invalid
 from apps.core.log import get_logger
 from apps.core.models import Organization, Tenant
-from apps.core.service import service
+from apps.core.service import redact, service, write_audit
 from apps.workflows.context import reset_principal, set_principal
 from apps.workflows.models import WorkflowRun
 
@@ -178,25 +178,80 @@ PLATFORM_SEGMENT = "platform"
 # workflow id, type and signal name are structural, not personal — and they are
 # the things you search on when a run has gone missing. The `arg` a signal
 # carries is not on the list: it is the caller's payload and could be anything.
-LOG_KEYS: frozenset[str] = frozenset({"workflow_id", "workflow_type", "status", "error", "signal"})
+# `closed_as` and `previous_error` are the re-ask receipt's two facts: the
+# status the row held before it was re-opened, and the error text that was
+# cleared off it. Both are this app's own words about its own row —
+# the same class as `status` and `error` beside them — and both are useless
+# `[redacted]`, which is what a receipt that named nothing would be.
+LOG_KEYS: frozenset[str] = frozenset(
+    {
+        "workflow_id",
+        "workflow_type",
+        "status",
+        "error",
+        "signal",
+        "closed_as",
+        "previous_error",
+        # What the caller ASKED FOR, on the one path where nothing else records
+        # it. `@service` files the refused call's audit row from the arguments
+        # alone — there is no return value on that path — so a redacted flag
+        # made the wall's `outcome=error` row unable to tell a caller who set
+        # it deliberately and hit the `completed` wall from one who never asked
+        # at all. Those are the same refusal with different intent behind them,
+        # and only one of them is a bug in the caller. A boolean the caller
+        # typed is not a fact about a person; the allow-list protects values,
+        # and this one has nothing in it to protect.
+        "reask_after_failure",
+    }
+)
+
+# The statuses that mean a run **finished without delivering** — the population
+# `record_run`'s fifth answer re-opens when a start site asks for it.
+#
+# Derived from the model's own enum rather than listed, and the derivation is
+# the subtraction rather than the addition: everything that is not RUNNING (not
+# finished at all) and not COMPLETED (finished, and delivered). A terminal
+# status added to `WorkflowRun.Status` tomorrow therefore joins this population
+# by default, which is the safe direction — the alternative is a new way for a
+# run to end that silently keeps the lockout the fifth answer exists to end.
+REASKABLE_STATUSES: tuple[str, ...] = tuple(
+    status
+    for status in WorkflowRun.Status.values
+    if status not in (WorkflowRun.Status.RUNNING, WorkflowRun.Status.COMPLETED)
+)
+
+# What the re-ask receipt is filed under. Not `workflows.record_run`: that
+# action is the row being written, and this is the separate fact that a
+# previous attempt's closure was discarded to write it.
+REASK_AUDIT_ACTION = "workflows.reask_run"
+
+# The four keys this app's doors authorize, and all four name the kind
+# `WorkflowRun` derives — `workflow_run`. They were `workflow.signal` and
+# `workflowrun.{read,replay,cancel}` until P7.8; the old words still answer
+# through `policies.py`'s `RENAMED_PERMISSIONS`, and that file says what naming
+# a kind the registry does not have was costing.
+#
+# Module-level string CONSTANTS rather than literals at the call sites, which is
+# a shape rule 13 reads by resolving the name to its constant: one spelling, and
+# a rename that cannot half-land across four call sites.
 
 # The action `signal_workflow` authorizes. `policies.py` answers it; see the
 # note there about which half of the question this layer can actually answer.
-SIGNAL_ACTION = "workflow.signal"
+SIGNAL_ACTION = "workflow_run.signal"
 
 # The two actions the run ledger's own doors authorize (ADR workflows-6). Read
 # is tenant-wide and replay is not — the narrowing that makes replay the
 # actor's own is `started_by`, checked in the service and not in the policy,
 # because a policy that reached for the acting user would be answering a
 # question about the ROW rather than about the person's standing.
-READ_ACTION = "workflowrun.read"
-REPLAY_ACTION = "workflowrun.replay"
+READ_ACTION = "workflow_run.read"
+REPLAY_ACTION = "workflow_run.replay"
 
 # And the third (ADR workflows-7). Narrowed to the actor's own by `started_by`
 # in `cancel_run`, for exactly the reason replay is: the policy is handed the
 # row and could compare it, but `require` raises `Forbidden` and a `Forbidden`
 # on somebody else's run confirms the run exists.
-CANCEL_ACTION = "workflowrun.cancel"
+CANCEL_ACTION = "workflow_run.cancel"
 
 # How far back a run can still be replayed. **Temporal's default namespace
 # retention**, and a reset needs history to reset to: past this, the events the
@@ -322,12 +377,74 @@ def check_org_agreement(*, tenant: Tenant | None, org: Organization | None) -> N
         )
 
 
+def _reask_receipt(
+    run: WorkflowRun,
+    *,
+    tenant: Tenant | None,
+    closed_as: str,
+    previous_error: str,
+    user: AbstractBaseUser | None,
+) -> None:
+    """What the re-opened row can no longer say, written where it cannot be lost.
+
+    **The problem this closes is that `_reopen` is a rewrite.** `status`,
+    `error`, `finished_at` and `run_id` are cleared in place, so a second later
+    nothing in the ledger says the previous attempt ever failed, or why. For
+    the *supersede* quadrant that is honest — the work changed, and the old
+    answer was about different work — but for a re-ask it is the opposite: the
+    whole reason the caller is here is that the last attempt broke, and losing
+    that is losing the only record of a run that did not deliver.
+
+    So the fact goes to `AuditEntry`, which declares `append_only = True`
+    (house rule 20): once written, nothing in the tree may update or delete it.
+    The visibility row stays visibility; the ledger keeps the history. Both
+    land in `record_run`'s transaction — this is called from inside it — so a
+    caller that rolls back leaves neither the re-open nor its receipt.
+
+    **Not a `@service`, and `write_audit` directly, for two reasons.** It is a
+    private branch of one decision rather than a capability anybody may ask
+    for — the same argument `_reopen` makes about itself one function down —
+    and the two facts it records are *derived from the row*, not arguments
+    anybody passed, so there is no signature the `@service` seam could redact
+    them out of. `core.services.bootstrap_tenant` is the standing precedent for
+    a caller that assembles its own row rather than a second copy of this
+    function's body.
+
+    The payload still goes through `redact` against this app's `LOG_KEYS`,
+    which is what makes the allow-list load-bearing here rather than decorative:
+    a key this app has not declared comes out `[redacted]` in a receipt exactly
+    as it would in a service's own row.
+    """
+    write_audit(
+        action=REASK_AUDIT_ACTION,
+        tenant=tenant,
+        # `record_run` takes no actor — it is the write seam beneath the
+        # starters and rule 49 records the absence — so the person is named the
+        # way the row itself names them: by the id the starter threaded here.
+        actor=None,
+        payload=redact(
+            {
+                "workflow_id": run.workflow_id,
+                "workflow_type": run.type,
+                "closed_as": closed_as,
+                "previous_error": previous_error,
+                "user_id": str(user.pk) if user is not None else "",
+            },
+            LOG_KEYS,
+        ),
+        outcome="ok",
+        result=run,
+    )
+
+
 def _reopen(
     run: WorkflowRun,
     *,
     workflow_type: str,
     input_digest: str,
     user: AbstractBaseUser | None,
+    tenant: Tenant | None = None,
+    reasked: bool = False,
 ) -> WorkflowRun:
     """The fourth quadrant: a finished row asked for again, with different work.
 
@@ -351,7 +468,18 @@ def _reopen(
 
     Not a `@service` of its own: it is one branch of `record_run`, and a second
     audit row for one decision would say a thing that did not happen.
+
+    **`reasked` is the fifth answer coming through the same door.**
+    The mutation below is identical either way — a re-opened row is a re-opened
+    row — and what differs is what was thrown away to get it: the supersede
+    discards an answer about *different* work, which the new digest already
+    records, while a re-ask discards the record of a run that BROKE, which
+    nothing else in the tree would then hold. So that branch, and only that
+    branch, files `_reask_receipt` above before it returns. The facts are read
+    off the row **before** the mutation, because after it they are gone.
     """
+    closed_as = run.status
+    previous_error = run.error
     run.type = workflow_type
     run.status = WorkflowRun.Status.RUNNING
     run.input_digest = input_digest
@@ -373,7 +501,65 @@ def _reopen(
             "updated_at",
         ]
     )
+    if reasked:
+        _reask_receipt(
+            run,
+            tenant=tenant,
+            closed_as=closed_as,
+            previous_error=previous_error,
+            user=user,
+        )
     return run
+
+
+def _answer_for_the_row_already_there(
+    existing: WorkflowRun,
+    *,
+    tenant: Tenant | None,
+    workflow_type: str,
+    input_digest: str,
+    user: AbstractBaseUser | None,
+    reask_after_failure: bool,
+) -> WorkflowRun:
+    """The five answers, as code. `record_run`'s docstring is the contract.
+
+    A private branch rather than a second seam: it is reachable only from
+    `record_run`, whose transaction, audit row and published prose cover every
+    answer it can give. It lives one `def` out because the function-length
+    budget is the house's way of saying a service has grown a second job, and
+    "write the row" and "decide what the row that is already there means" are
+    honestly two — which is why the split falls here and not somewhere that
+    would leave half a decision on each side.
+    """
+    # Unknown on either side is not a mismatch: see `record_run`'s docstring.
+    same_work = (
+        not input_digest or not existing.input_digest or existing.input_digest == input_digest
+    )
+    if existing.status == WorkflowRun.Status.RUNNING:
+        if existing.type != workflow_type:
+            raise Conflict(f"That id is already running {existing.type}, not {workflow_type}.")
+        if not same_work:
+            raise Conflict(
+                f"A {existing.type} job with that id is already running and was given "
+                "different input. That is a second job: give it its own id."
+            )
+        return existing
+    # The fifth answer and the supersede re-open the same way; what differs is
+    # what was discarded, which is why only the re-ask files a receipt.
+    reasked = same_work and reask_after_failure and existing.status in REASKABLE_STATUSES
+    if same_work and not reasked:
+        raise Conflict(
+            f"A {existing.type} job with that id has already {existing.status}. "
+            "Running the same work again is a new job, not a repeat of that one."
+        )
+    return _reopen(
+        existing,
+        workflow_type=workflow_type,
+        input_digest=input_digest,
+        user=user,
+        tenant=tenant,
+        reasked=reasked,
+    )
 
 
 # door: the ledger's own write seam, and giving it a door would be the bug. A
@@ -390,6 +576,7 @@ def record_run(
     workflow_type: str,
     input_digest: str = "",
     user: AbstractBaseUser | None = None,
+    reask_after_failure: bool = False,
 ) -> WorkflowRun:
     """Write the visibility row for a run that is about to be started.
 
@@ -403,8 +590,8 @@ def record_run(
     dropped their intent in silence.
 
     So the row this population already holds under that id decides, over two
-    questions — is it live, and is it the same work — and there are exactly
-    four answers (ADR workflows-4):
+    questions — is it live, and is it the same work — and there are four
+    answers (ADR workflows-4), plus a fifth the START SITE has to ask for:
 
     * **running, and the same type and digest** — that row is returned,
       unchanged, and the caller goes on to start the run it describes. The
@@ -422,6 +609,25 @@ def record_run(
     * **already finished, and a different digest** — **supersede**: `_reopen`,
       below, which carries that quadrant's reasoning.
 
+    **The fifth answer: `reask_after_failure=True` and the row finished without
+    delivering** — the row re-opens, exactly as the supersede does,
+    and the ledger keeps a receipt of what that threw away (`_reask_receipt`).
+
+    It exists because the third answer above is right about `completed` and
+    wrong about `failed`. A reconciler whose run broke re-derives the *same*
+    intent — that is what makes it a reconciler — under a key derived from the
+    row it is reconciling, so it has no second id to offer and the honest retry
+    was answered "that is a new job". A morning of it is the lockout the
+    consumer measured. The population that re-opens is `REASKABLE_STATUSES`,
+    derived from the model's own enum; `completed` is deliberately not in it,
+    so the flag can never turn delivered work into a silent second run.
+
+    **And it is off unless asked for**, which is what keeps every other start
+    site in the tree byte-identical: the default is `False`, the answer at that
+    default is the `Conflict` it always was, and the decision to re-ask belongs
+    to the service that knows whether its work is safe to repeat (principle 16)
+    rather than to this layer, which cannot know.
+
     **An empty digest is unknown, never a mismatch.** Rows written before the
     column existed hold `""` and pass every comparison, because a backfill
     nobody can compute would be a guess wearing the authority of a fact. New
@@ -436,25 +642,14 @@ def record_run(
     """
     existing = _run_under(tenant=tenant, workflow_id=workflow_id)
     if existing is not None:
-        # Unknown on either side is not a mismatch: see the docstring.
-        same_work = (
-            not input_digest or not existing.input_digest or existing.input_digest == input_digest
+        return _answer_for_the_row_already_there(
+            existing,
+            tenant=tenant,
+            workflow_type=workflow_type,
+            input_digest=input_digest,
+            user=user,
+            reask_after_failure=reask_after_failure,
         )
-        if existing.status == WorkflowRun.Status.RUNNING:
-            if existing.type != workflow_type:
-                raise Conflict(f"That id is already running {existing.type}, not {workflow_type}.")
-            if not same_work:
-                raise Conflict(
-                    f"A {existing.type} job with that id is already running and was given "
-                    "different input. That is a second job: give it its own id."
-                )
-            return existing
-        if same_work:
-            raise Conflict(
-                f"A {existing.type} job with that id has already {existing.status}. "
-                "Running the same work again is a new job, not a repeat of that one."
-            )
-        return _reopen(existing, workflow_type=workflow_type, input_digest=input_digest, user=user)
     run = WorkflowRun(
         tenant=tenant,
         workflow_id=workflow_id,
@@ -549,6 +744,13 @@ def signal_workflow(
     run = WorkflowRun.objects.for_tenant(tenant).filter(workflow_id=workflow_id).first()
     if run is None:
         raise NotFound()
+    # hat-scoped: a `WorkflowRun` has no organization column, so `run` is passed
+    # for the POLICY (`belongs_to_the_tenant`) to read and not as a node — the
+    # question this layer can answer is "are you somebody in this tenant", and
+    # the acting hat is where that is asked. Reach is answered ABOVE this line by
+    # the tenant-scoped fetch raising `NotFound` — reachability before capability,
+    # house rule 26's order. Object-level authorization belongs to the domain
+    # caller, and `policies.py` says why this layer cannot do it.
     require(actor, SIGNAL_ACTION, run)
     if run.status != WorkflowRun.Status.RUNNING:
         raise Conflict(f"That run is {run.status} and can no longer be signalled.")
@@ -684,7 +886,7 @@ def start_replay(*, tenant: Tenant, actor: Actor, run_id: UUID) -> WorkflowRun:
     run = WorkflowRun.objects.for_tenant(tenant).select_for_update().filter(pk=run_id).first()
     if run is None:
         raise NotFound()
-    require(actor, REPLAY_ACTION, run)
+    require(actor, REPLAY_ACTION, run)  # hat-scoped: no organization on this row; see policies.py
     if run.started_by_id is None or run.started_by_id != actor.user_id:
         raise NotFound()
     _refuse_unless_replayable(run)
@@ -776,6 +978,13 @@ def cancel_run(*, tenant: Tenant, actor: Actor, run_id: UUID) -> WorkflowRun:
     run = WorkflowRun.objects.for_tenant(tenant).filter(pk=run_id).first()
     if run is None:
         raise NotFound()
+    # hat-scoped: `may_cancel_their_own`'s question, not a node's — a
+    # `WorkflowRun` carries no organization, so `run` is the policy's argument
+    # and the acting hat is the node a tenant-wide ledger asks at. Reach is
+    # answered ABOVE this line by the tenant-scoped fetch raising `NotFound` —
+    # reachability before capability, house rule 26's order. The ownership half is
+    # the `started_by_id` wall below, a `NotFound` for the reason `start_replay`
+    # gives verbatim.
     require(actor, CANCEL_ACTION, run)
     if run.started_by_id is None or run.started_by_id != actor.user_id:
         raise NotFound()
@@ -928,6 +1137,7 @@ def start_workflow_on_commit(
     org: Organization | None = None,
     id: str,
     task_queue: str | None = None,
+    reask_after_failure: bool = False,
 ) -> WorkflowRun:
     """Start a workflow when the caller's transaction commits. **The service door.**
 
@@ -946,6 +1156,14 @@ def start_workflow_on_commit(
     2x2, and the digest that drives it is computed here rather than by any
     caller.
 
+    `reask_after_failure` is the **caller's** answer to "is this work safe to
+    run again after it broke?", and it is a parameter rather than a policy
+    because this layer cannot answer it: a reconciler re-deriving the same
+    intent wants `True`, and work whose side effects must happen once wants the
+    refusal. It defaults to `False`, so a start site that says nothing behaves
+    exactly as it did before the answer existed. `record_run`'s docstring holds
+    what it does and which statuses it reaches.
+
     `org` is the **acting hat** the run is started under. It rides on the
     workflow's headers to every activity, so an activity acting for a branch
     reads and writes as that branch rather than as the whole tenant. A start
@@ -961,6 +1179,7 @@ def start_workflow_on_commit(
         workflow_type=_workflow_type(workflow),
         input_digest=hash_run_input(arg),
         user=user,
+        reask_after_failure=reask_after_failure,
     )
 
     def _dispatch() -> None:

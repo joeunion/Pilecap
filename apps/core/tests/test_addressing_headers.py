@@ -1,3 +1,4 @@
+# census: cross-app population=apps/**/*.py,config/**/*.py for calls to the header resolvers
 """The addressing-header law, as a decision table, driven at every door.
 
 The law (ADR core-21): **an addressing header (`X-Tenant`,
@@ -584,3 +585,158 @@ def test_the_header_census_tolerates_a_file_that_vanishes_at_open() -> None:
         for path in _modules():
             _resolves_an_addressing_header(path)
         assert not planted.exists(), "the census never opened the plant — this drove nothing"
+
+
+# --- R1-F3 · a tenant that is not ACTIVE resolves nowhere ----------------------
+
+#: The non-ACTIVE population, DERIVED from the enum rather than typed. A fourth
+#: status declared tomorrow joins this test the day it is declared.
+DARK_STATUSES = tuple(s for s in Tenant.Status if s != Tenant.Status.ACTIVE)
+
+
+def _a_dark_tenant(status: Any) -> tuple[Tenant, User, str]:
+    """A tenant, its only member (whose DEFAULT membership it is), and the plaintext.
+
+    **The victim is the test's own** — never the `tenant` fixture, because a
+    suspended primary fixture would red every sibling test in the module.
+    """
+    import uuid
+
+    from apps.accounts.services import create_user
+    from apps.core.actor import system_actor
+    from apps.core.services import add_membership, create_tenant, root_organization
+
+    suffix = uuid.uuid4().hex[:8]
+    victim = create_tenant(name=f"Dark {suffix}", slug=f"dark-{suffix}", actor=system_actor())
+    person = create_user(email=f"dark-{suffix}@example.com", password="dark-pass-12345")
+    add_membership(
+        user=person,
+        tenant=victim,
+        organization=root_organization(tenant=victim),
+        is_default=True,
+        role="owner",
+        actor=system_actor(tenant=victim),
+    )
+    plaintext = issue_token(
+        user=person, tenant=None, name="unpinned", actor=actor_for(user=person, tenant=None)
+    )[1]
+    victim.status = status
+    victim.save(update_fields=["status"])
+    return victim, person, str(plaintext)
+
+
+def _organizations(*, kind: str, user: User, plaintext: str, slug: str | None) -> Any:
+    """`GET /api/v1/organizations/` — a core route, so `_acting` speaks for it."""
+    client = Client()
+    headers: dict[str, str] = {}
+    if kind == SESSION:
+        client.force_login(user)
+    else:
+        headers["authorization"] = f"Bearer {plaintext}"
+    if slug is not None:
+        headers["x-tenant"] = slug
+    return client.get("/api/v1/organizations/", headers=headers)
+
+
+@pytest.mark.parametrize("status", DARK_STATUSES)
+def test_a_suspended_tenant_resolves_nowhere_at_every_door(status: Any) -> None:
+    """**A tenant that is not ACTIVE is a place nobody may act** (R1-F3, ADR core-21).
+
+    `Tenant.status` had one owner and no reader: `suspend_tenant` wrote it,
+    `close_tenant` wrote it, and every door went on serving the tenant as if
+    nothing had happened. One predicate — `Tenant.is_active`, already on the
+    model — read in `resolve_tenant`, and the existing law does the rest: a SENT
+    header that cannot be honoured refuses with `addressing_header_not_honoured`
+    and byte-identically to a foreign one; an OMITTED header falls through to
+    the door's own no-tenant answer. No new refusal code.
+
+    Both branches, both header states, session and unpinned token — and the
+    reversal, so the operator's recovery path is driven rather than assumed.
+    """
+    from apps.core.actor import system_actor
+    from apps.core.middleware import resolve_tenant
+    from apps.core.services import resume_tenant
+
+    victim, person, plaintext = _a_dark_tenant(status)
+
+    # (a) the function, both branches
+    assert resolve_tenant(user=person, requested_slug=victim.slug) is None
+    assert resolve_tenant(user=person, requested_slug=None) is None
+
+    # (b) the REST door — session and unpinned token, sent and omitted.
+    #
+    # `/api/v1/organizations/` rather than the module's `LIST_URL`: the two
+    # refusals are different laws and only this one shows both. A SENT header
+    # that cannot be honoured is `addressing_header_not_honoured` wherever it
+    # lands, and `/widgets/` says that too — but an OMITTED header leaves the
+    # request with no tenant, and a scoped list with no tenant is legitimately
+    # `200 []` (the whole point of failing closed). `_acting` is what turns "no
+    # tenant" into the door's own answer, and core's routes are the ones that
+    # call it.
+    for kind in (SESSION, UNPINNED):
+        sent = _organizations(kind=kind, user=person, plaintext=plaintext, slug=victim.slug)
+        assert sent.status_code == REFUSED_STATUS, (status, kind, sent.content)
+        assert sent.json()["code"] == CODE, sent.json()
+
+        omitted = _organizations(kind=kind, user=person, plaintext=plaintext, slug=None)
+        assert omitted.status_code == REFUSED_STATUS, (status, kind, omitted.content)
+        assert "No tenant for this request." in omitted.content.decode()
+
+    # …and the write the review drove.
+    client = Client()
+    client.force_login(person)
+    assert (
+        client.put(
+            "/api/v1/settings/",
+            data=json.dumps({"timezone": "UTC", "locale": "en"}),
+            content_type="application/json",
+            headers={"x-tenant": victim.slug},
+        ).status_code
+        == REFUSED_STATUS
+    )
+
+    # (c) the reversal: the operator's own path never resolved a slug, so it
+    # still works while the tenant is dark, and every door comes back.
+    #
+    # SUSPENDED only. `resume_tenant` refuses a CLOSED tenant by its own rule —
+    # "a closed tenant is not resumed; that is a new decision and a new service"
+    # — so the reversal is driven where the product HAS one, and the closed
+    # tenant's own irreversibility is `test_platform.py`'s.
+    if status != Tenant.Status.SUSPENDED:
+        return
+    resume_tenant(tenant=victim, actor=system_actor(tenant=victim))
+    assert resolve_tenant(user=person, requested_slug=victim.slug) == victim
+    assert resolve_tenant(user=person, requested_slug=None) == victim
+    back = _organizations(kind=SESSION, user=person, plaintext=plaintext, slug=victim.slug)
+    assert back.status_code == 200, back.content
+    assert (
+        _organizations(kind=SESSION, user=person, plaintext=plaintext, slug=None).status_code == 200
+    )
+
+
+@pytest.mark.parametrize("status", DARK_STATUSES)
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_a_dark_tenant_resolves_nowhere_at_the_machine_door(status: Any) -> None:
+    """The same claim at MCP: a sent slug refuses, an omitted one has no tenant."""
+    from apps.core.asyncdb import run_db
+    from config.asgi import build_application
+
+    victim, _person, plaintext = await run_db(_a_dark_tenant, status)
+
+    application = build_application()
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            sent = await client.post(
+                MCP_URL,
+                headers={
+                    **MCP_HEADERS,
+                    "authorization": f"Bearer {plaintext}",
+                    "x-tenant": victim.slug,
+                },
+                json=_mcp_body(),
+            )
+
+    assert sent.status_code == REFUSED_STATUS, sent.text
+    assert sent.json()["code"] == CODE, sent.json()

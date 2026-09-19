@@ -113,7 +113,7 @@ def register(server: MCPServer[Any]) -> None:
             # `api.py`: filtering returns the plain one, and narrowing a queryset
             # cannot widen its tenant.
             widgets: QuerySet[Widget] = WidgetFilter(name=name).filter(
-                list_widgets(tenant=acting.tenant, org=acting.org)
+                list_widgets(tenant=acting.tenant, org=acting.org, actor=acting.actor())
             )
             widgets = searched(widgets, q, fields=SEARCH_FIELDS)
             widgets = ordered_by(widgets, ordering, allowed=ORDERING, default="-created_at")
@@ -141,7 +141,12 @@ def register(server: MCPServer[Any]) -> None:
             # HTTP: a refusal that distinguished the two would tell the caller
             # the row exists, which is the fact the tenancy was hiding.
             return WidgetOut.from_orm(
-                get_widget(tenant=acting.tenant, widget_id=widget_id, org=acting.org)
+                get_widget(
+                    tenant=acting.tenant,
+                    widget_id=widget_id,
+                    org=acting.org,
+                    actor=acting.actor(),
+                )
             )
 
     @server.tool(
@@ -183,7 +188,7 @@ def register(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
             actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org)
+            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
             policy = resolve_named_policy(tenant=tenant, actor=actor, policy_id=policy_id)
             if policy is not None and not may_be_named(actor, policy):
                 raise NotFound()
@@ -205,7 +210,9 @@ def register(server: MCPServer[Any]) -> None:
     def approve_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org)
+            widget = get_widget(
+                tenant=tenant, widget_id=widget_id, org=acting.org, actor=acting.actor()
+            )
             # House rule 26: approval writes a ledger line now, so its
             # foreign-key target is checked here, as it is on the HTTP door.
             if not may_be_named(acting.actor(), widget):
@@ -224,7 +231,9 @@ def register(server: MCPServer[Any]) -> None:
     def delete_widget_tool(ctx: Context[Any], widget_id: UUID) -> WidgetOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org)
+            widget = get_widget(
+                tenant=tenant, widget_id=widget_id, org=acting.org, actor=acting.actor()
+            )
             if not may_be_named(acting.actor(), widget):
                 raise NotFound()
             # The deleted row comes back rather than a bare acknowledgement: an
@@ -244,7 +253,7 @@ def register(server: MCPServer[Any]) -> None:
             # The HTTP route's own function, imported rather than reimplemented:
             # a measured number computed twice is two numbers waiting to differ,
             # which is the whole reason `MeasuredOut` exists.
-            return widget_stats(tenant=acting.tenant, org=acting.org)
+            return widget_stats(tenant=acting.tenant, org=acting.org, actor=acting.actor())
 
     @server.tool(
         name="list_widget_policies",
@@ -258,7 +267,7 @@ def register(server: MCPServer[Any]) -> None:
     ) -> WidgetPolicyPage:
         with tool_call(ctx) as acting:
             policies: QuerySet[WidgetPolicy] = list_widget_policies(
-                tenant=acting.tenant, org=acting.org
+                tenant=acting.tenant, org=acting.org, actor=acting.actor()
             )
             page = cursor_page(
                 policies,
@@ -281,7 +290,9 @@ def register(server: MCPServer[Any]) -> None:
     def get_governing_widget_policy_tool(ctx: Context[Any]) -> WidgetPolicyOut:
         with tool_call(ctx) as acting:
             return WidgetPolicyOut.from_orm(
-                get_governing_widget_policy(tenant=acting.tenant, org=acting.org)
+                get_governing_widget_policy(
+                    tenant=acting.tenant, org=acting.org, actor=acting.actor()
+                )
             )
 
     @server.tool(
@@ -312,7 +323,7 @@ def register(server: MCPServer[Any]) -> None:
     ) -> WidgetEntryPage:
         with tool_call(ctx) as acting:
             entries: QuerySet[WidgetEntry] = list_widget_entries(
-                tenant=acting.tenant, org=acting.org, widget_id=widget_id
+                tenant=acting.tenant, org=acting.org, widget_id=widget_id, actor=acting.actor()
             )
             page = cursor_page(
                 entries,
@@ -342,7 +353,7 @@ def register(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
             actor = acting.actor()
-            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org)
+            widget = get_widget(tenant=tenant, widget_id=widget_id, org=acting.org, actor=actor)
             # House rule 26, at the site that hands the foreign-key target over.
             if not may_be_named(actor, widget):
                 raise NotFound()

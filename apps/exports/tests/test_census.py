@@ -99,9 +99,31 @@ EXPECTED: frozenset[str] = frozenset(
         "connections.Connection",
         "connections.InboundWebhook",
         "core.AuditEntry",
+        # Three lines — `core.Grant` here, `core.Role` and `core.RolePermission`
+        # below — and they are the diff the pin exists to make somebody read. The
+        # census is DERIVED, so all three joined the archive the moment the models
+        # existed. They BELONG in a tenant's archive: a tenant's own roles, its
+        # deltas on the collections of the declared ones, and the per-person
+        # allows and withholds are that customer's own configuration — who they
+        # decided may do what, in their own words. An archive that carried the
+        # people and not the authority they held would describe a permission
+        # system the customer could not reconstruct anywhere else.
+        #
+        # NONE OF THE THREE CARRIES AN `organization`, so a subtree export SKIPS
+        # them rather than narrowing them, and that is right rather than a gap. A
+        # role and its collection belong to the whole customer; a grant's place in
+        # the tree is its membership's and not a column of its own. There is no
+        # honest way to cut any of them to one branch, and the skip says so in the
+        # plan, which is what keeps it distinguishable from a tenant that never
+        # had the table.
+        "core.Grant",
         "core.Invitation",
         "core.Membership",
         "core.Organization",
+        # The other two of the three above: the roles one tenant made for itself,
+        # and its include/exclude deltas on what a role holds.
+        "core.Role",
+        "core.RolePermission",
         "events.WebhookEndpoint",
         "example.Widget",
         "example.WidgetEntry",
@@ -449,12 +471,18 @@ def test_the_counts_this_report_states(capsys: Any) -> None:
     # `tenant`, so it never joins `scoped_models()` and the other two counts
     # below are untouched — the deployment's own login-screen intent has no
     # tenant to be a customer's.
-    assert concrete == 45, (
+    # 45 -> 48: `core.Role`, `core.RolePermission` and `core.Grant`, the three
+    # tables behind a tenant's own roles, its deltas on the declared ones and one
+    # person's exceptions. ALL THREE numbers move together, which is the shape to
+    # expect: each carries a `tenant`, so each joins `scoped_models()`, and none
+    # is excluded, so each is dispositioned into the archive. A diff that moved
+    # only one of the three would be the thing to look at.
+    assert concrete == 48, (
         "the review's 38, plus exports.Export, usage.UsageEntry, "
         "comms.MessageEngagement, the two files models, "
-        "comms.Device and accounts.IdentityBranding"
+        "comms.Device, accounts.IdentityBranding and the three permission tables"
     )
-    assert len(not_a_product_model(scoped_models())) == 29
-    assert len(platform_only(dispositions())) == 26
+    assert len(not_a_product_model(scoped_models())) == 32
+    assert len(platform_only(dispositions())) == 29
     assert len(platform_only(exclusions())) == 3
     assert issubclass(dispositions()["core.AuditEntry"].model, BaseModel)

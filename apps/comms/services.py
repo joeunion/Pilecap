@@ -99,6 +99,7 @@ from apps.core.exceptions import Conflict, Invalid, NotFound, as_invalid
 from apps.core.log import get_logger
 from apps.core.models import Organization, Tenant
 from apps.core.service import service
+from apps.core.services import root_organization
 from apps.events.services import emit
 from apps.workflows.services import signal_workflow, start_workflow_on_commit, workflow_id
 
@@ -574,7 +575,7 @@ class _Plan:
     policy_version: int | None = None
 
 
-def _policy_steps(*, tenant: Tenant, steps: list[dict[str, Any]]) -> list[PolicyStep]:
+def _policy_steps(*, tenant: Tenant, steps: list[dict[str, Any]], actor: Actor) -> list[PolicyStep]:
     """Every rung of a policy, checked against the closed sets. **The one gate.**
 
     Both writes (`create_policy`, `revise_policy`) and every read that is about
@@ -623,7 +624,7 @@ def _policy_steps(*, tenant: Tenant, steps: list[dict[str, Any]]) -> list[Policy
             errors.setdefault(f"{where}.wait_seconds", []).append("A wait cannot be negative.")
         if f"{where}.channel" not in errors:
             try:
-                template_row = get_template(tenant=tenant, name=wanted)
+                template_row = get_template(tenant=tenant, name=wanted, actor=actor)
             except NotFound:
                 errors.setdefault(f"{where}.template", []).append(
                     f"No active template named {wanted!r}."
@@ -662,7 +663,7 @@ def _channel(slug: str, *, given: str) -> str:
     return slug
 
 
-def _plan(*, tenant: Tenant, template: str, channel: str, policy: str) -> _Plan:
+def _plan(*, tenant: Tenant, template: str, channel: str, policy: str, actor: Actor) -> _Plan:
     """Decide what this send is, and refuse it, before anything is written.
 
     Everything between "a caller asked for something" and "there is a row to
@@ -699,12 +700,12 @@ def _plan(*, tenant: Tenant, template: str, channel: str, policy: str) -> _Plan:
                     for field in passed
                 }
             )
-        row = get_policy(tenant=tenant, name=named)
-        steps = _policy_steps(tenant=tenant, steps=list(row.steps or []))
+        row = get_policy(tenant=tenant, name=named, actor=actor)
+        steps = _policy_steps(tenant=tenant, steps=list(row.steps or []), actor=actor)
         slug = _channel(steps[0].channel, given=steps[0].channel)
         return _Plan(
             channel=slug,
-            template=get_template(tenant=tenant, name=steps[0].template),
+            template=get_template(tenant=tenant, name=steps[0].template, actor=actor),
             steps=steps,
             policy_name=row.name,
             policy_version=int(row.version),
@@ -716,7 +717,7 @@ def _plan(*, tenant: Tenant, template: str, channel: str, policy: str) -> _Plan:
             {"template": ["Name a template to send, or a policy whose first step names one."]}
         )
     slug = _channel(str(channel or "").strip().lower() or Channel.EMAIL.value, given=channel)
-    chosen = get_template(tenant=tenant, name=wanted)
+    chosen = get_template(tenant=tenant, name=wanted, actor=actor)
     if chosen.channel != slug:
         raise Invalid(
             {
@@ -763,26 +764,28 @@ def send(
     scheduling is not a way to bank permission.
     """
     at = timezone.now()
-    require(actor, "message.send", recipient)
     # House rule 26, and this is the row it matters most for: `recipient` comes
-    # straight off the wire. See the management surface's section note below for
-    # the argument; the short form is that `require` answered a question about
-    # the verb and this one is about the reference.
+    # straight off the wire. REACHABILITY FIRST — `require` is asked at the node
+    # the ROW names, so asking it first said `forbidden` for a branch this hat
+    # holds nothing over, which tells the caller the row exists.
     if not may_be_named(actor, recipient):
         raise NotFound()
+    require(actor, "message.send", recipient)
     if actor.org is None:
         # Fails closed like every other unresolved scope here: a message row
         # written with no organization would be invisible to every read in the
         # product, including the root's.
         raise Invalid({"organization": ["This request resolved no acting organization."]})
 
-    plan = _plan(tenant=tenant, template=template, channel=channel, policy=policy)
+    plan = _plan(tenant=tenant, template=template, channel=channel, policy=policy, actor=actor)
     slug, row = plan.channel, plan.template
     errors = _context_errors(schema=row.context_schema or {}, context=context)
     if errors:
         raise Invalid(errors)
 
-    preference = get_preference(tenant=tenant, recipient=recipient, channel=slug, org=actor.org)
+    preference = get_preference(
+        tenant=tenant, recipient=recipient, channel=slug, org=actor.org, actor=actor
+    )
     reason = _refusal(preference=preference, category=row.category, at=at, tenant=tenant)
     delay, reason = _wait_for(
         reason=reason, preference=preference, tenant=tenant, at=at, send_at=send_at
@@ -836,10 +839,7 @@ def send(
     # message and which delivery lineage of it — and `NONCE_SEPARATOR` is a full
     # stop because the id's own four-segment grammar refuses a colon in a key.
     run_id = workflow_id(
-        tenant=tenant,
-        app="comms",
-        noun="message",
-        key=f"{message.pk}{NONCE_SEPARATOR}{nonce}",
+        tenant=tenant, app="comms", noun="message", key=f"{message.pk}{NONCE_SEPARATOR}{nonce}"
     )
     needs_run = not reason or len(plan.steps) > 1
     if needs_run:
@@ -1013,7 +1013,6 @@ def send_step(
     nothing could stop, and "delivered, so do not send the rest" would have no
     single place to be true. The interpreter is the only orchestrator.
     """
-    require(actor, "message.send", message.recipient)
     # House rule 26, judged. The anchor arrives from the `send_step`
     # activity, which resolved it through `get_message(... org=)` — a
     # `.visible_to(org)` read, so the row is already in this hat's subtree and
@@ -1024,13 +1023,18 @@ def send_step(
     # `message.organization`, so the reference being reachable is precisely the
     # question, and the run acting for the product is not an answer to it —
     # `may_be_named` has no system exemption on purpose.
+    # REACHABILITY FIRST, then the capability — `require` is asked at the
+    # node the ROW names since resolution landed, so asking it first turned
+    # an anchor outside this hat's subtree into `forbidden`. Not-there
+    # before not-yours, as `core.revoke_membership` orders it.
     if not may_be_named(actor, message):
         raise NotFound()
+    require(actor, "message.send", message.recipient)
     slug = str(channel or "").strip().lower()
     if slug not in registered_channels():
         raise Invalid({"channel": [f"No transport is registered for the {slug!r} channel."]})
 
-    row = get_template(tenant=tenant, name=template)
+    row = get_template(tenant=tenant, name=template, actor=actor)
     at = timezone.now()
     reason = _refusal(
         preference=get_preference(
@@ -1038,6 +1042,7 @@ def send_step(
             recipient=message.recipient,
             channel=slug,
             org=message.organization,
+            actor=actor,
         ),
         category=row.category,
         at=at,
@@ -1069,6 +1074,7 @@ def send_step(
                 recipient=message.recipient,
                 channel=slug,
                 org=message.organization,
+                actor=actor,
             ),
             tenant=tenant,
             at=at,
@@ -1142,11 +1148,15 @@ def cancel_message(*, tenant: Tenant, actor: Actor, message: Message) -> Message
     that decides. That belt is why this is safe to do in this order, and it is
     driven rather than assumed (`tests/test_cancel.py`).
     """
-    require(actor, "message.cancel", message.recipient)
     # House rule 26: `message` came off the wire as an id. `require` answered a
     # question about the verb; this one is about the reference.
+    # REACHABILITY FIRST, then the capability — `require` is asked at the
+    # node the ROW names since resolution landed, so asking it first turned
+    # an anchor outside this hat's subtree into `forbidden`. Not-there
+    # before not-yours, as `core.revoke_membership` orders it.
     if not may_be_named(actor, message):
         raise NotFound()
+    require(actor, "message.cancel", message.recipient)
     if message.status not in CANCELLABLE:
         raise Conflict(
             f"That message is {message.status} and can no longer be cancelled. "
@@ -1242,7 +1252,6 @@ def mark_message_sending(*, tenant: Tenant, actor: Actor, message: Message) -> M
     The status this returns is what the caller must branch on: the activity
     hands nothing to a transport unless it reads back as sendable.
     """
-    require(actor, "message.send", message.recipient)
     # House rule 26, judged. Same argument as `send_step` above: the
     # `deliver_message` activity read this row through `get_message(... org=)`,
     # so the check is free today and is the whole fence tomorrow. The delivery
@@ -1250,8 +1259,13 @@ def mark_message_sending(*, tenant: Tenant, actor: Actor, message: Message) -> M
     # starts one — so the platform-acting-for-itself case this rule's `# reach:`
     # valve exists for does not arise in this app, and taking the valve would be
     # choosing the weaker of two available answers.
+    # REACHABILITY FIRST, then the capability — `require` is asked at the
+    # node the ROW names since resolution landed, so asking it first turned
+    # an anchor outside this hat's subtree into `forbidden`. Not-there
+    # before not-yours, as `core.revoke_membership` orders it.
     if not may_be_named(actor, message):
         raise NotFound()
+    require(actor, "message.send", message.recipient)
     if message.status not in SENDABLE:
         return message
 
@@ -1262,6 +1276,7 @@ def mark_message_sending(*, tenant: Tenant, actor: Actor, message: Message) -> M
             recipient=message.recipient,
             channel=message.channel,
             org=message.organization,
+            actor=actor,
         ),
         # The row's own category, not the template's: it was denormalised at
         # send time for exactly this kind of later read, and the template may
@@ -1328,12 +1343,16 @@ def record_message_sent(
     status webhook is later news from the same transport, and an activity replay
     landing after it must not turn "it arrived" back into "we handed it over".
     """
-    require(actor, "message.send", message.recipient)
     # House rule 26, judged. `finish_message` resolved this row through
     # `get_message(... org=)` before calling; the check restates that guarantee
     # where a second caller would have to satisfy it too.
+    # REACHABILITY FIRST, then the capability — `require` is asked at the
+    # node the ROW names since resolution landed, so asking it first turned
+    # an anchor outside this hat's subtree into `forbidden`. Not-there
+    # before not-yours, as `core.revoke_membership` orders it.
     if not may_be_named(actor, message):
         raise NotFound()
+    require(actor, "message.send", message.recipient)
     if message.status in REPORTED:
         return message
     message.status = Message.Status.SENT
@@ -1363,11 +1382,15 @@ def record_message_failed(*, tenant: Tenant, actor: Actor, message: Message, err
     alone: a late failure arriving after a success is a replay, and downgrading
     a delivered message would make the log say something that did not happen.
     """
-    require(actor, "message.send", message.recipient)
     # House rule 26, judged. The `record_message_sent` argument, on the
     # other branch of the same activity.
+    # REACHABILITY FIRST, then the capability — `require` is asked at the
+    # node the ROW names since resolution landed, so asking it first turned
+    # an anchor outside this hat's subtree into `forbidden`. Not-there
+    # before not-yours, as `core.revoke_membership` orders it.
     if not may_be_named(actor, message):
         raise NotFound()
+    require(actor, "message.send", message.recipient)
     if message.status in REPORTED:
         return message
     message.status = Message.Status.FAILED
@@ -1725,7 +1748,7 @@ def record_engagement(
     is legal: the class docstring on `MessageEngagement` carries the residue
     that creates and the trigger that closes it.
     """
-    require(actor, "message_engagement.record")
+    require(actor, "message_engagement.create")
     slug = str(kind or "").strip().lower()
     if slug not in ENGAGEMENT_KINDS:
         raise Invalid({"kind": [f"{kind!r} is not an engagement this product records."]})
@@ -1826,12 +1849,17 @@ def register_device(
     else — the acting hat decides *whether* this caller may register, never
     *where* the row goes.
     """
-    require(actor, "device.register", recipient)
     # House rule 26. `recipient` came off the wire as an id, and `require`
-    # answered a question about the verb; this one is about the reference. A
+    # answers a question about the verb; this one is about the reference. A
     # contact in a branch this hat holds no membership over is `not_found`.
+    # REACHABILITY FIRST, then the capability. `require` is asked AT THE
+    # NODE THE ROW NAMES since resolution landed, so asking it first turned a
+    # row in a branch this hat holds no membership over into `forbidden` —
+    # which tells the caller the row exists. Not-there before not-yours, the
+    # order `core.revoke_membership` has always used.
     if not may_be_named(actor, recipient):
         raise NotFound()
+    require(actor, "device.create", recipient)
     slug = str(platform or "").strip().lower()
     if slug not in {choice.value for choice in Device.Platform}:
         raise Invalid({"platform": [f"{platform!r} is not a platform this product pushes to."]})
@@ -1894,9 +1922,14 @@ def retire_device(*, tenant: Tenant, actor: Actor, device: Device) -> Device:
     the earlier one — and it emits nothing the second time, so a client
     retrying does not announce a state change that did not happen.
     """
-    require(actor, "device.retire", device)
+    # REACHABILITY FIRST, then the capability. `require` is asked AT THE
+    # NODE THE ROW NAMES since resolution landed, so asking it first turned a
+    # row in a branch this hat holds no membership over into `forbidden` —
+    # which tells the caller the row exists. Not-there before not-yours, the
+    # order `core.revoke_membership` has always used.
     if not may_be_named(actor, device):
         raise NotFound()
+    require(actor, "device.retire", device)
     if device.retired_at is not None:
         return device
     device.retired_at = timezone.now()
@@ -2049,8 +2082,15 @@ def start_suppression_surge(
     `require` against a policy that refuses every membership: a surge is
     observed, never declared, exactly as a delivery status is. Only the system
     actor a verified webhook acts as reaches it.
+
+    **And the node it asks at is the ROOT**, although the predicate already
+    refuses every person: the tripwire's memory is the tenant's, the node is
+    what a reader of this line has to be able to see, and a question asked at
+    the hat is one predicate edit away from being a branch administrator's. A
+    `system` actor is answered before any node is read, so this costs the
+    webhook path one query at a crossing and nothing per message.
     """
-    require(actor, "suppression_surge.record")
+    require(actor, "suppression_surge.create", root_organization(tenant=tenant))
     # Built and validated rather than `.objects.create(...)` — the house shape
     # every other write in this module uses, and the one that keeps a scoped
     # model's bare manager out of a service (house rule 8).
@@ -2091,7 +2131,9 @@ def close_suppression_surge(
     recovery announcement matters, and is a poller nobody has to build (rule 30's
     class, avoided rather than paid for).
     """
-    require(actor, "suppression_surge.record")
+    # At the root, for `start_suppression_surge`'s reason — the same key, the
+    # same tenant-wide row, the same height.
+    require(actor, "suppression_surge.create", root_organization(tenant=tenant))
     surge.ended_at = timezone.now()
     surge.suppression_count = max(surge.suppression_count, count)
     surge.save(update_fields=["ended_at", "suppression_count", "updated_at"])
@@ -2154,9 +2196,14 @@ def create_template(
     gets to pick a name that is free). Guessing between those two is how a
     product ends up with two templates called `receipt`.
     """
-    require(actor, "message_template.create")
+    # **AT THE ROOT, not at the acting hat.** A `MessageTemplate` carries no
+    # `organization` column: it is the TENANT's words, resolved by NAME at every
+    # door and at every node. Asked at the hat, an administrator of one branch
+    # held it — and wrote what the whole tenant says. The shape is
+    # `update_tenant_settings`' (`core/services.py`), for the same reason.
+    require(actor, "message_template.create", root_organization(tenant=tenant))
     slug = str(name).strip()
-    if list_templates(tenant=tenant).filter(name=slug).exists():
+    if list_templates(tenant=tenant, actor=actor).filter(name=slug).exists():
         raise Conflict(
             f"This tenant already has a template named {slug!r}. "
             "A change to it is a new version, not a second template."
@@ -2207,9 +2254,12 @@ def revise_template(
     would silently re-target every `send()` that names it. Sending on a new
     channel is a new template with a new name.
     """
-    require(actor, "message_template.create")
+    # At the root: a revision is the same act as `create` one version on (see it).
+    require(actor, "message_template.create", root_organization(tenant=tenant))
     slug = str(name).strip()
-    latest = list_templates(tenant=tenant).filter(name=slug).order_by("-version").first()
+    latest = (
+        list_templates(tenant=tenant, actor=actor).filter(name=slug).order_by("-version").first()
+    )
     if latest is None:
         raise NotFound(f"No template named {slug!r} to revise.")
     revision = MessageTemplate(
@@ -2250,7 +2300,10 @@ def retire_template(*, tenant: Tenant, actor: Actor, template: MessageTemplate) 
     a client that retried a request it never saw the answer to is not told it
     collided with itself.
     """
-    require(actor, "message_template.retire", template)
+    # At the root, and the row is no longer the question: a template names no
+    # branch, so passing it asked at the acting hat exactly as passing nothing
+    # did — the most careful-looking line on the page, and the same hole.
+    require(actor, "message_template.retire", root_organization(tenant=tenant))
     if not template.is_active:
         return template
     template.is_active = False
@@ -2278,14 +2331,17 @@ def create_policy(
     escalations called `oncall`, one of which nobody is using and nobody can
     tell.
     """
-    require(actor, "delivery_policy.create")
+    # At the root: a `DeliveryPolicy` carries no `organization` column either,
+    # and it decides how hard the whole tenant chases people. See
+    # `create_template` for the argument in full.
+    require(actor, "delivery_policy.create", root_organization(tenant=tenant))
     slug = str(name).strip()
-    if list_policies(tenant=tenant).filter(name=slug).exists():
+    if list_policies(tenant=tenant, actor=actor).filter(name=slug).exists():
         raise Conflict(
             f"This tenant already has a policy named {slug!r}. "
             "A change to it is a new version, not a second policy."
         )
-    checked = _policy_steps(tenant=tenant, steps=steps)
+    checked = _policy_steps(tenant=tenant, steps=steps, actor=actor)
     policy = DeliveryPolicy(
         tenant=tenant,
         name=slug,
@@ -2321,12 +2377,15 @@ def revise_policy(
     inside `@service`'s transaction, which is what stops two concurrent
     revisions both claiming v3 (the unique constraint is the second wall).
     """
-    require(actor, "delivery_policy.create")
+    # At the root: a revision is the same act as `create` one version on.
+    require(actor, "delivery_policy.create", root_organization(tenant=tenant))
     slug = str(name).strip()
-    latest = list_policies(tenant=tenant).filter(name=slug).order_by("-version").first()
+    latest = (
+        list_policies(tenant=tenant, actor=actor).filter(name=slug).order_by("-version").first()
+    )
     if latest is None:
         raise NotFound(f"No policy named {slug!r} to revise.")
-    checked = _policy_steps(tenant=tenant, steps=steps)
+    checked = _policy_steps(tenant=tenant, steps=steps, actor=actor)
     revision = DeliveryPolicy(
         tenant=tenant,
         name=slug,
@@ -2355,7 +2414,9 @@ def retire_policy(*, tenant: Tenant, actor: Actor, policy: DeliveryPolicy) -> De
     a client that retried a request it never saw the answer to is not told it
     collided with itself.
     """
-    require(actor, "delivery_policy.retire", policy)
+    # At the root, and the row is no longer the question — `retire_template`'s
+    # sentence, one table over.
+    require(actor, "delivery_policy.retire", root_organization(tenant=tenant))
     if not policy.is_active:
         return policy
     policy.is_active = False
@@ -2420,9 +2481,14 @@ def update_recipient(
     person's `ChannelPreference` rows, which is the consent surface and is only
     ever reached through the five verbs below.
     """
-    require(actor, "recipient.update", recipient)
+    # REACHABILITY FIRST, then the capability. `require` is asked AT THE
+    # NODE THE ROW NAMES since resolution landed, so asking it first turned a
+    # row in a branch this hat holds no membership over into `forbidden` —
+    # which tells the caller the row exists. Not-there before not-yours, the
+    # order `core.revoke_membership` has always used.
     if not may_be_named(actor, recipient):
         raise NotFound()
+    require(actor, "recipient.update", recipient)
     updated: list[str] = []
     if email is not None:
         recipient.email = str(email).strip().lower()
@@ -2462,9 +2528,14 @@ def archive_recipient(*, tenant: Tenant, actor: Actor, recipient: Recipient) -> 
     Idempotent: archiving an archived contact keeps the first timestamp, because
     the honest answer to "when did we close this contact" is the earlier one.
     """
-    require(actor, "recipient.archive", recipient)
+    # REACHABILITY FIRST, then the capability. `require` is asked AT THE
+    # NODE THE ROW NAMES since resolution landed, so asking it first turned a
+    # row in a branch this hat holds no membership over into `forbidden` —
+    # which tells the caller the row exists. Not-there before not-yours, the
+    # order `core.revoke_membership` has always used.
     if not may_be_named(actor, recipient):
         raise NotFound()
+    require(actor, "recipient.archive", recipient)
     if recipient.archived_at is not None:
         return recipient
     recipient.archived_at = timezone.now()
@@ -2492,7 +2563,9 @@ def _preference_row(
         raise Invalid({"channel": [f"{channel!r} is not a channel this product knows."]})
     if actor.org is None:
         raise Invalid({"organization": ["This request resolved no acting organization."]})
-    existing = get_preference(tenant=tenant, recipient=recipient, channel=slug, org=actor.org)
+    existing = get_preference(
+        tenant=tenant, recipient=recipient, channel=slug, org=actor.org, actor=actor
+    )
     if existing is not None:
         return existing
     # The row lands in the recipient's own branch rather than the actor's: a
@@ -2519,9 +2592,14 @@ def grant_consent(
     `has_marketing_consent` compares — the later of the two wins, so somebody
     who opts back in is opted back in without any row being erased.
     """
-    require(actor, "channel_preference.update", recipient)
+    # REACHABILITY FIRST, then the capability. `require` is asked AT THE
+    # NODE THE ROW NAMES since resolution landed, so asking it first turned a
+    # row in a branch this hat holds no membership over into `forbidden` —
+    # which tells the caller the row exists. Not-there before not-yours, the
+    # order `core.revoke_membership` has always used.
     if not may_be_named(actor, recipient):
         raise NotFound()
+    require(actor, "channel_preference.update", recipient)
     preference = _preference_row(tenant=tenant, actor=actor, recipient=recipient, channel=channel)
     preference.marketing_consented_at = timezone.now()
     with as_invalid():
@@ -2546,9 +2624,14 @@ def revoke_consent(
     `send()` an explicit record rather than the default that applies to
     everybody nobody has asked.
     """
-    require(actor, "channel_preference.update", recipient)
+    # REACHABILITY FIRST, then the capability. `require` is asked AT THE
+    # NODE THE ROW NAMES since resolution landed, so asking it first turned a
+    # row in a branch this hat holds no membership over into `forbidden` —
+    # which tells the caller the row exists. Not-there before not-yours, the
+    # order `core.revoke_membership` has always used.
     if not may_be_named(actor, recipient):
         raise NotFound()
+    require(actor, "channel_preference.update", recipient)
     preference = _preference_row(tenant=tenant, actor=actor, recipient=recipient, channel=channel)
     preference.marketing_revoked_at = timezone.now()
     with as_invalid():
@@ -2581,9 +2664,14 @@ def set_quiet_hours(
     the table; it is not a way to
     write more of them.
     """
-    require(actor, "channel_preference.update", recipient)
+    # REACHABILITY FIRST, then the capability. `require` is asked AT THE
+    # NODE THE ROW NAMES since resolution landed, so asking it first turned a
+    # row in a branch this hat holds no membership over into `forbidden` —
+    # which tells the caller the row exists. Not-there before not-yours, the
+    # order `core.revoke_membership` has always used.
     if not may_be_named(actor, recipient):
         raise NotFound()
+    require(actor, "channel_preference.update", recipient)
     if (start is None) != (end is None):
         raise Invalid(
             {"quiet_hours": ["Quiet hours are a window: give both a start and an end, or neither."]}
@@ -2625,9 +2713,14 @@ def suppress_recipient(
     Idempotent: suppressing an already-suppressed channel keeps the first
     timestamp. "When did we stop writing to this address" has one honest answer.
     """
-    require(actor, "channel_preference.update", recipient)
+    # REACHABILITY FIRST, then the capability. `require` is asked AT THE
+    # NODE THE ROW NAMES since resolution landed, so asking it first turned a
+    # row in a branch this hat holds no membership over into `forbidden` —
+    # which tells the caller the row exists. Not-there before not-yours, the
+    # order `core.revoke_membership` has always used.
     if not may_be_named(actor, recipient):
         raise NotFound()
+    require(actor, "channel_preference.update", recipient)
     preference = _preference_row(tenant=tenant, actor=actor, recipient=recipient, channel=channel)
     if preference.suppressed_at is None:
         preference.suppressed_at = timezone.now()
@@ -2649,9 +2742,14 @@ def unsuppress_recipient(
     A lift that also re-granted consent would be a product opting somebody in on
     their behalf, from a support tool, with a timestamp that says they agreed.
     """
-    require(actor, "channel_preference.update", recipient)
+    # REACHABILITY FIRST, then the capability. `require` is asked AT THE
+    # NODE THE ROW NAMES since resolution landed, so asking it first turned a
+    # row in a branch this hat holds no membership over into `forbidden` —
+    # which tells the caller the row exists. Not-there before not-yours, the
+    # order `core.revoke_membership` has always used.
     if not may_be_named(actor, recipient):
         raise NotFound()
+    require(actor, "channel_preference.update", recipient)
     preference = _preference_row(tenant=tenant, actor=actor, recipient=recipient, channel=channel)
     preference.suppressed_at = None
     with as_invalid():

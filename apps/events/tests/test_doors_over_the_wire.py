@@ -258,3 +258,117 @@ async def test_neither_door_ever_answers_the_signing_secret(
     # also writes a text rendering of the result, and a key that leaked into one
     # and not the other is still a key that left the building.
     assert SECRET not in called.text
+
+
+# --- the read refusal, on both doors, in the same words -----------------------
+
+
+@pytest.fixture
+def member_bearer(tenant: Tenant, member: User) -> str:
+    """A real token for the plain member — the credential both doors accept."""
+    _, plaintext = issue_token(
+        user=member,
+        tenant=tenant,
+        name="events-read-parity",
+        actor=actor_for(user=member, tenant=tenant),
+    )
+    return plaintext
+
+
+@pytest.fixture
+def withheld_endpoint_read(tenant: Tenant, member: User) -> str:
+    """A committed `withhold` of `endpoint.read` on the member, and its sentence.
+
+    A fixture rather than three lines in the test body, because the body is
+    `async def`: Django refuses a synchronous query from an async context, and
+    the row has to be COMMITTED before the transport's worker thread looks for
+    it anyway. Raw `Grant`, as everywhere in this lane until the hand-out
+    services land.
+    """
+    from apps.core.authz import refusal_sentence
+    from apps.core.models import Grant, Membership
+
+    membership = Membership.objects.get(user=member, tenant=tenant)
+    Grant.objects.create(
+        tenant=tenant,
+        membership=membership,
+        permission="endpoint.read",
+        effect=Grant.Effect.WITHHOLD,
+    )
+    return refusal_sentence("endpoint.read")
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
+    member_bearer: str, withheld_endpoint_read: str, endpoint: WebhookEndpoint
+) -> None:
+    """House rule 46, applied to the read gate Phase R added.
+
+    The parity case above proves the two doors agree when they ANSWER. This
+    proves they agree when they REFUSE, which is the half a parity test over
+    happy paths cannot see — and refusals are where the doors have the most room
+    to drift, because each has its own error envelope and neither shares the
+    other's.
+
+    The withheld key is `endpoint.read`, and the sentence both doors must speak
+    is `refusal_sentence("endpoint.read")` — derived from the key rather than
+    typed here, so a product that gives the key its own prose moves both doors at
+    once or fails here. The key is spelled `endpoint.*` and not
+    `webhook_endpoint.*` because `WebhookEndpoint` declares its kind
+    (`models.py`), which is the sweep this case arrived with.
+    """
+    import json as _json
+
+    from config.asgi import build_application
+
+    sentence = withheld_endpoint_read
+    application = build_application()
+    bearer_header = {"authorization": f"Bearer {member_bearer}"}
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.get(
+                DETAIL_URL.format(endpoint.pk), headers={**bearer_header, "accept": JSON}
+            )
+
+            headers = {**MCP_HEADERS, **bearer_header}
+            initialize = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "initialize",
+                    {
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {"name": "read-parity", "version": "1"},
+                    },
+                    1,
+                ),
+            )
+            assert initialize.status_code == 200, initialize.text
+
+            called = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call",
+                    {"name": "get_endpoint", "arguments": {"endpoint_id": str(endpoint.pk)}},
+                    2,
+                ),
+            )
+
+    # The human door: a row INSIDE the tenant, refused by capability and not
+    # hidden — 404 there would say "no such endpoint", which is false and is the
+    # answer the scoping gives for a row in a tenant you cannot reach.
+    assert over_http.status_code == 403, over_http.text
+    body = over_http.json()
+    assert body["code"] == "forbidden"
+    assert body["detail"] == sentence
+
+    # The machine door: the same code and the same sentence, through
+    # `wire_refusal`. Compared as text because a tool error is text on the wire.
+    rendered = _json.dumps(called.json())
+    assert "forbidden" in rendered, rendered
+    assert sentence in rendered, rendered

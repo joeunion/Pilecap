@@ -390,6 +390,14 @@ DOCKER
 # name from the env file to reach the derivation, and a value inherited from the
 # operator's own shell would silently answer for it.
 #
+# `-u DJB_IMAGE_TAG` for the same reason and it is not hypothetical: runbook
+# steps 30, 33 and 2360 all say `export DJB_IMAGE_TAG="$(./deploy/provision.sh
+# image-tag)"`, so an operator who ran the runbook in this shell has a REAL
+# box's tag in the environment — and `release.sh` compares the interpolated
+# value, so it would answer for an env file that names none. The cases that
+# want a pin write one into the scratch `.env`, which is where compose reads
+# it from.
+#
 # The readyz bound is two attempts, zero seconds apart: the length of the wait is
 # the deployment's property and is argued in release.sh's header (recorded,
 # never gated), while paying two real minutes per failing case would make this
@@ -405,7 +413,7 @@ release() {
         *) break ;;
         esac
     done
-    env -u COMPOSE_PROJECT_NAME \
+    env -u COMPOSE_PROJECT_NAME -u DJB_IMAGE_TAG \
         PATH="${CASE_DIR}/bin:$PATH" \
         DJB_DRIVE_DOCKER_LOG="$DOCKER_LOG" \
         DJB_DRIVE_ALERTS_LOG="$ALERTS_LOG" \
@@ -1273,6 +1281,88 @@ case_a_checkout_with_no_tree_marker_pins_nothing_and_says_so() {
     holds "no TREE marker: nothing was pinned" "0" "$(wc -l <"$PIN_LOG" | tr -d ' ')"
 }
 
+# --- THE ENV FILE'S PIN, AGAINST THE TREE ------------------------------------
+#
+# The registry guards above ask whether the image this TREE names exists and is
+# the one this box last released. Neither of them asks the other half: whether
+# the image compose will actually START is that image at all. It is
+# `${DJB_IMAGE_REGISTRY}/djb-<service>:${DJB_IMAGE_TAG}` interpolated out of
+# `deploy/.env` — for `web`, for `worker`, and for the `oneoff` service every
+# act of this release runs inside — and `deploy/.env` is restored from the
+# vault at runbook step 31 carrying the tag stored at the LAST deploy.
+#
+# That disagreement has happened on this deployment's staging box: new images
+# built, old ones started, nothing failed, `docker inspect` the only witness.
+# `provision.sh up` reconciles it; `release.sh` is a separate command that can
+# be run without `up` and, before the guard these two cases drive, would have
+# migrated this tree's schema through the previous tree's code.
+
+case_a_stale_env_image_tag_is_refused_before_act_one() {
+    fresh_deploy
+    # The stale pin, in the one place compose reads it from. The generated
+    # `.env` above names no tag at all, so appending one is exactly what a
+    # vault restore does to a box.
+    printf "DJB_IMAGE_TAG='tree-thelastdeploy'\n" >>"$DEPLOY/.env"
+    drive "stale env tag" 2 -- release "$DEPLOY/release.sh"
+    says "REFUSED — the env file pins a different tree than this box holds"
+    # BOTH TAGS, because a refusal that names only one of two disagreeing
+    # values leaves the operator to guess which end is wrong.
+    says "this tree is    tree-stub00000000"
+    says "the env file    tree-thelastdeploy"
+    # AND THE REMEDY, as a command rather than as advice.
+    says "./deploy/provision.sh up"
+    says "Nothing was released; no act ran."
+    holds "stale env tag: docker was never invoked" "0" "$(docker_calls)"
+    holds "stale env tag: nothing was pinned" "0" "$(wc -l <"$PIN_LOG" | tr -d ' ')"
+
+    # THE CANARY, and it is the only thing that proves the assertions above are
+    # about a guard rather than about a coincidence — the registry guards'
+    # canary case, applied to this one and folded in here so the rung stays at
+    # the two cases its criteria name. Sever the comparison in a COPY of
+    # release.sh (beside the real one, so `HERE` still resolves to this
+    # deployment), drive the same case, and assert the release sails past;
+    # then re-assert the refusal on the unsevered file in the tree.
+    local severed="${DEPLOY}/severed.sh"
+    sed 's/^if \[ -n "\${DJB_IMAGE_TAG:-}" \] \&\& \[ "\$DJB_IMAGE_TAG" != "\$IMAGE_TAG" \]; then/if false; then/' \
+        "$SOURCE" >"$severed"
+    chmod +x "$severed"
+    if cmp -s "$SOURCE" "$severed"; then
+        echo "  FAILED   the stale-tag canary planted NOTHING — the sever pattern no longer matches release.sh"
+        FAILED=$((FAILED + 1))
+    else
+        drive "severed: stale env tag" 0 -- release "$severed"
+        says_not "REFUSED — the env file pins a different tree than this box holds"
+    fi
+
+    fresh_deploy
+    printf "DJB_IMAGE_TAG='tree-thelastdeploy'\n" >>"$DEPLOY/.env"
+    drive "restored: stale env tag" 2 -- release "$DEPLOY/release.sh"
+    says "REFUSED — the env file pins a different tree than this box holds"
+}
+
+case_an_env_tag_that_agrees_and_a_checkout_that_pins_none_both_release() {
+    # AGREEMENT IS THE ORDINARY CASE, and a guard that fired here would refuse
+    # every release a box has ever performed correctly. `up` has just run and
+    # written this tree's tag into the file: the two agree, and nothing is said
+    # about it at all.
+    fresh_deploy
+    printf "DJB_IMAGE_TAG='%s'\n" "$DRIVE_TAG" >>"$DEPLOY/.env"
+    drive "env tag agrees" 0 -- release "$DEPLOY/release.sh"
+    says "RELEASED. 7/7 acts complete."
+    says_not "the env file pins a different tree"
+
+    # AND ABSENCE IS NOT DISAGREEMENT. A checkout with no `TREE` marker and an
+    # env file naming no tag is `deploy/compose.yaml`'s `:?` to refuse, naming
+    # the slot itself; a second sentence about it here would be this script
+    # answering a question it was not asked. The generated `.env` carries no
+    # `DJB_IMAGE_TAG`, so this arm is that state exactly.
+    fresh_deploy
+    rm -f "${CASE_DIR}/TREE"
+    drive "checkout pins no tag" 0 -- release "$DEPLOY/release.sh"
+    says "RELEASED. 7/7 acts complete."
+    says_not "the env file pins a different tree"
+}
+
 case_the_dry_run_names_the_image_and_the_digest_it_would_release() {
     fresh_deploy
     drive "--dry-run names the image" 0 -- release "$DEPLOY/release.sh" --dry-run
@@ -1439,6 +1529,8 @@ case_a_pin_that_agrees_with_the_registry_is_not_a_mismatch
 case_an_unpinned_box_is_not_a_mismatch
 case_the_release_pins_the_registrys_digest_after_the_recreate
 case_a_checkout_with_no_tree_marker_pins_nothing_and_says_so
+case_a_stale_env_image_tag_is_refused_before_act_one
+case_an_env_tag_that_agrees_and_a_checkout_that_pins_none_both_release
 case_the_dry_run_names_the_image_and_the_digest_it_would_release
 case_the_registry_guards_can_actually_fire
 case_promotion_is_a_re_pin_of_the_same_digest_and_never_a_build

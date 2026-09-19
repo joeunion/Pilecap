@@ -233,6 +233,28 @@ test can find one.
 
 ## 3 · The gate
 
+- **Your one `--loop` runs ON A VERIFIER BOX, not on this machine** (owner,
+  2026-09-18: the laptop carries editing; every measurement leaves it). The
+  recipe, from your worktree, with `AWS_PROFILE`, `DJB_DEPLOY_NAMESPACE` and
+  `DJB_VERIFIER_REGION` exported, each command's output to its own file under
+  your mktemp dir (the wrapper refuses pipes):
+
+  ```bash
+  git commit …                                   # the push sends HEAD
+  ./scripts/verifier_box.sh up --for <rung>       # the id is on the `instance ` line — never a grep for i-…
+  ./scripts/verifier_box.sh loop <id> --log loop-<rung>
+  ./scripts/verifier_box.sh wait <id> loop-<rung>  # blocks; run it in the background
+  ./scripts/verifier_box.sh down <id>             # ALWAYS, before you report; then `census` shows none of yours
+  ```
+
+  The wait prints the verdict and the `banked:` lines; the `tree=` there
+  must equal your `git rev-parse HEAD^{tree}` — paste both. A `--loop` on
+  this machine refuses and prints that recipe unless `DJB_LOOP_HERE=<who and
+  why>` is typed; the reason lands beside the verdict. A drive your rung
+  rewrites may also run on the box: `./scripts/verifier_box.sh run <id> --
+  "cd /home/verifier/src && bash scripts/tests/test_x.sh"` — ONE quoted
+  string; the wrapper joins its arguments with spaces and the box's shell
+  re-parses them, so no `$VAR`, no `\n`, no unquoted pipes.
 - **`./scripts/check.sh --loop` is your per-rung gate.** The full gate runs
   once at the PM's push; do not run it by hand — with two exceptions where it
   uniquely binds: rungs touching `quality/**` (the canary self-test is their
@@ -328,6 +350,17 @@ test can find one.
   by construction or it is nobody's.
 - **Exit 2 means the enforcement is broken, not your code.** Stop and report
   it; do not work around it.
+- **When a refusal prints `offer:`, run the offer — do not do it by hand.**
+  Three of this gate's refusals end in a piece of bookkeeping the refusal
+  itself describes, and each now names the one command that applies it:
+  `./scripts/rung_tidy.sh --budgets` (a red house-rules leg carrying a
+  `budget:` line), `--client` (the fe leg's `CLIENT SUSPECT` state),
+  `--secrets` (a bank whose fold printed `BASELINE SHIFTED`, read at the start
+  of the next rung). The tidy applies each subject THROUGH the instrument that
+  already owns it, writes into the working tree, and stages and commits
+  nothing — so the change lands in your own diff, which is where a budget raise
+  belongs. It never runs the gate, and its `--secrets` subject goes through the
+  fold, which folds a COMMITTED tree: run that one at a boundary.
 - **Secrets are met immediately.** The `--loop` secrets leg scans your
   changed files; a false positive gets `# pragma: allowlist secret` with the
   reason, now, while the string is still in your head — never deferred to
@@ -380,7 +413,11 @@ test can find one.
   paste the `banked:` key it printed (`LOOP_VERDICT_KEY`) into your report so
   the verifier can compare keys when it misses. A commit made *after* that run
   moves the tree and the consult reads `miss(tree)` — the correct outcome, and
-  an avoidable one.
+  an avoidable one. **Folding main is `git merge main` in your worktree** —
+  never `scripts/pm_fold.sh`, which is the PM's post-merge fold of derived
+  files and has nothing to do with this. §6 fixes the two lines your report
+  owes about it, and `verify_start.sh` prints the fold point it will be
+  compared against.
 - **Rung duration discipline.** Run
   **targeted tests between boundaries** — `uv run pytest
   apps/<x>/tests/test_<y>.py`, the file you are changing, not the suite. **And
@@ -394,6 +431,12 @@ test can find one.
   your next boundary, and you do not stop mid-leg for one. The worked example
   is the c1 rider of 2026-09-07 — the finisher holding it took it at its own
   report boundary rather than mid-leg, and nothing waited on the difference.
+  **And `pm_push.sh --bank` takes EVERY pytest slot for its run**: a `--loop`
+  that arrives waits, naming the bank, for roughly the bank's pytest wall, and
+  `DJB_GATE_SLOT_MAX_WAIT` refuses (exit 2, could-not-look — a re-run, never a
+  red tree) a loop that queued past the ceiling. `--loop --mine` and targeted
+  `pytest` between boundaries are how a builder keeps moving while a bank holds
+  the box.
 - `./scripts/test.sh` exits with pytest's own status and is never piped
   either. A red order replays with `--randomly-seed=<the printed seed>`.
 
@@ -549,6 +592,24 @@ First line: **still working** · **done, stopping** · **stuck on X**. Then:
    commit sha, plus the baseline sha from step zero (and the reset, if any),
    and the `banked:` key your last `--loop` printed (`LOOP_VERDICT_KEY`) — the
    verifier's consult compares keys when it misses, and cannot without yours.
+   **Two of those are lines with a fixed spelling, and a report without them is
+   one the verifier sends back**:
+
+   ```
+   fold: main@<sha> merged at <commit>
+   banked: tree <sha> key <loop key>
+   ```
+
+   The first names the main you folded and the commit that folded it; the
+   second is the last `--loop`'s own banner, verbatim. They are spelled rather
+   than described because they are **read by arithmetic**: `verify_start.sh`
+   prints the clone's `fold point   <sha>`, and a fold sha that does not equal
+   it is a finding — a rung that folded, edited and never re-folded, or never
+   folded at all — caught before a minute of verification is spent on it. And
+   **no commit after the fold except ones that last `--loop` measured**: the
+   measured tree reads through `git add -A` (`scripts/gate_ledger.sh`), so
+   committing bytes the loop already saw keeps the key, while writing new ones
+   moves it and costs the verifier the whole suite.
 2. **Red-first evidence, pasted** — the red and the green, per §2.
 3. **Per-criterion status** — each criterion from the brief, met/not-met, with
    the artifact that proves it (a test, a wire response, a file:line). A

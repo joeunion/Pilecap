@@ -96,6 +96,13 @@ most expensive shape there is — doors broken in production form underneath a
 fully green suite, because the harness substituted friendlier parts exactly
 where the breakage lived.
 
+**The batch, when the brief carries more than one rung to verify** (the standing
+rule in `SKILL.md` § The loop, owner 2026-09-15): the rungs listed in order,
+each with its own criteria pointer and its own baseline for the red; ONE clone,
+ONE `--loop` consult; a verdict PER RUNG (a NOT MET blocks that rung alone);
+the cleanup census once. A security fix or a wire-driven door rung is never
+batched.
+
 **PROVE brief must include:** the acceptance criteria **verbatim from stage 4**,
 and *"verify against these criteria, not against what was built; if a criterion
 was wrong, that is a finding against the criteria."* Through REST always,
@@ -106,6 +113,31 @@ plus one adjacent persona to catch what the primary path hides. And the
 mirror lens, for every criterion over a stateful flow: *which state or
 population member did this criterion NOT drive?* — an undriven live path is a
 finding against the criteria.
+
+**A destructive plant builds its own victim on a COMMITTED tree** (builder and verifier alike): a plant that commits, resets or checks out — `git reset --hard`, `checkout --`, a scratch branch — runs only after the rung's own work is committed, and never against the tree the rung is being built in; a verifier-box rider (2026-09-16) lost every uncommitted edit to a `reset --hard HEAD~1` inside its own F.2 plant and rebuilt them from scratch.
+
+**A brief names the mechanism, never a finding id, for anything the builder will write into a shipped file.** The archaeology census refuses finding ids in comments and drives; a rider brief that cites one invites the builder to write exactly that, and the hook reds the commit. Ids belong in the commit message and the ledger (paid 2026-09-16).
+
+**A subagent never waits silently for more than five minutes.** The harness kills an agent whose stream shows no progress for 600 s ("Agent stalled: no progress for 600s"), and a Monitor or a `run_in_background` task produces none while it runs — three agents died twice in one evening this way (2026-09-16, STALL-1/2), one of them mid-self-test with its plants left in the tree. A long run (a self-test, a `--loop`, a drive set) is launched in the background and then WAITED FOR in foreground Bash polls of at most five minutes each (`for i in $(seq 1 18); do kill -0 <pid> 2>/dev/null || break; sleep 15; done; tail -3 <log>`), each poll returning output; a 35-minute self-test is seven polls. This supersedes "never end a turn with a run in flight" only in the mechanism — the agent still never ends its turn while a run of its own is alive.
+
+**Against a real external system, explore first, then codify.** When a rung's proof is a real box, a real account or a real vendor, the loop's one-defect-per-iteration shape is the wrong shape: each field test costs a verify, a merge, a bank and a launch to find the NEXT line that fails. The first run is a HAND WALK on a kept box (`bake --keep`, `up`, or the vendor's console) with every fix and every command recorded as it happens; one codifying rung then lands the whole list with its drive cases, and the field test after it is the proof. The verifier-box lane paid six serial field tests (Tuesday to Wednesday night) for a recipe that ran 14/14 in two minutes once walked by hand (2026-09-17; the owner: "get it running by hand once, find all the errors in one drive").
+
+**The clone's own dev database is dropped by its exact derived name, as the LAST step** — `db_sweep.sh --sweep --hot-path --perf` from inside the clone drops the test, hot-path and perf worlds and DELIBERATELY keeps the checkout's live database; the verifier then drops that one by the name the sweep's scope line printed (`db_drop <name>` or the compose `psql` drop), and never reaches for `--all` (machine-wide — every checkout's databases; a verifier killed it at the confirmation on 2026-09-16, nothing lost).
+
+**Every log the verifier writes is named after its rung** (`loop-v-<rung>.log`, `verify_start-<rung>.log`, never `verify_start.log`): several verifiers share one session scratchpad, and V-G9b (2026-09-15) read back V-PR1's `verify_start.log` as its own — an unqualified name in a shared directory is a transcript that silently belongs to someone else.
+
+**When the clone lives on a verifier box** (boxes are per PM choice, the brief
+says which): the brief names the instance id, and `scripts/verifier_box.sh
+run|loop|wait|fetch <id>` is the ONLY way to touch the tree — the agent stays on
+this machine. `verify_start.sh` runs on the box from `~/pilecap`; the ONE
+`--loop` is `loop <id> --log <name>` + `wait <id> <name>`, its log fetched into
+the scratchpad and cited by local path; the ledger cell is read off that log
+(a box's first `--loop` is always a measure — the loop ledger lives in `.git/`
+and no push carries it — so the cell reads `miss(no-ledger)`, never a reuse).
+*If `run` prints `box reclaimed`, stop and report `stuck on: box reclaimed` —
+the verdict is lost, never red; the PM re-ups and re-dispatches.* The cleanup
+census names the box: `down <id>` unless the brief says the reaper takes it,
+and `census` afterwards showing nothing of yours.
 
 **And three demands the PROVE brief makes of the verifier's own hands**, because
 evidence lifted from a builder's report is a claim to re-derive, never an
@@ -136,12 +168,21 @@ paraphrase of it:**
 > failure and not something to force or dodge: let the run **complete** —
 > never killed, never a byte added to change the key — and record the reason,
 > because the completed run is the union's verdict, which the grep never was.
+> **Step zero of the consult reads `verify_start.sh`'s own `consult:` line
+> and its `fold point <sha>`:** compare that sha with the builder's report's
+> `fold: main@<sha>` line — equal means the union is the builder's banked
+> tree and an `EXPECTED HIT` is the verdict; different means main moved after
+> the fold (or the builder never folded), the clone's own run is the consult,
+> and the report says so with the count the line prints.
 > Then drive the criteria through the doors and the UI. A second `--loop`,
 > `test.sh`, any other suite, and the full gate are all out of scope and a
 > criteria-writing error — if a criterion asks you to, say so and stop.*
 >
 > *Your ledger row carries the result as one typed cell,
-> `loop: hit|miss(<reason>) <s>`: `hit` when the `VERDICT REUSED` banner
+> `loop: hit|miss(<reason>) <s>` — or, since P20 G8, `loop: docs-only reuse of
+> <banked tree>` when the gate printed `pytest: REUSED from the banked verdict`
+> (a docs-only delta from a banked green; the row carries `reuse=<tree>`; copy
+> the gate's own line): `hit` when the `VERDICT REUSED` banner
 > printed, `<s>` being the `--loop`'s own wall clock; otherwise
 > `miss(<reason>)` with `<reason>` one of `tree` (the measured bytes moved),
 > `env:<component>[,<component>]` (an identical tree, one or more of the
@@ -208,6 +249,19 @@ the constraints that are not negotiable (`architecture.md`) · known traps ·
 the enforcement conventions (canaries, floors, where a house rule is defined —
 `quality/rules.yaml`) · **the app map**, which the lead owns, and the
 introspection output for the apps in scope.
+
+- **Every criterion names its sites (S5, owner 2026-09-18).** A criterion
+  that says "the sixteen `require` literals in `apps/accounts/services.py`"
+  makes the builder find them; the I8 build spent 44 of its 104 shell calls
+  and half its 33 minutes finding what the lead already knew. A criterion
+  names each site as `file:line` on the baseline sha (a range where the
+  sites are contiguous), the expected count, and the anchor text the
+  builder can assert on before editing; the plan's rung section is the
+  criteria pointer and the brief cites its line range, never the whole
+  file. A builder that greps to find a site the criteria did not name
+  reports it as a finding against the criteria in its report's friction
+  section. Measured: turns and tool calls per build, against I8's 201 and
+  125 (the plan's SPEED PROGRAM, S5).
 
 **The one demand that has failed most often.** For **every** criterion, require:
 *what observable thing differs if this is false?* Criteria that assert a
@@ -320,6 +374,13 @@ repeats them. What a brief still MUST carry, because no skill can know it:
   this work does that the last ten rungs did not;
 - **the seam block**, whenever the brief names a callable the rung will call
   and did not write — see immediately below.
+- **the batch, when the brief carries more than one rung** (the standing rule
+  in `SKILL.md` § The loop): the rungs listed in order with each one's own
+  territory, criteria pointer and baseline; the instruction that each rung is
+  its own commit with its own red-first evidence and its own report section;
+  the cap (four rungs or one session, one app, one territory, no frozen app);
+  and the stop rule — a rung that cannot land is reported by name with the
+  others marked untouched, never worked around.
 
 The clauses below remain as the record of what was paid for and for the
 occasional brief that must override one — an override is stated explicitly,

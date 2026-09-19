@@ -46,6 +46,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.accounts.services import create_user, issue_token
 from apps.core.actor import system_actor
+from apps.core.authz import OWNER_ROLE, default_role_key
 from apps.core.management import BaseCommand
 from apps.core.models import Membership, Tenant
 from apps.core.services import add_membership, create_tenant
@@ -91,8 +92,14 @@ class Command(BaseCommand):
         else:
             self.stdout.write(f"tenant exists   {tenant.slug}")
 
-        owner = self._person(email=SEED_OWNER_EMAIL, tenant=tenant, role=Membership.Role.OWNER)
-        self._person(email=SEED_MEMBER_EMAIL, tenant=tenant, role=Membership.Role.MEMBER)
+        # The two roles by KEY, not by enum member: `owner` is the reserved
+        # platform role (`core.authz.OWNER_ROLE`) and the second person gets
+        # whatever this deployment declares a new member to be — which is
+        # `member` on the template and whatever `roles.py` says in a product
+        # that renamed it. A seed that spelled the enum would seed a role a
+        # product may not declare.
+        owner = self._person(email=SEED_OWNER_EMAIL, tenant=tenant, role=OWNER_ROLE)
+        self._person(email=SEED_MEMBER_EMAIL, tenant=tenant, role=default_role_key())
 
         # A token's name is unique per user, so the name carries the run: a
         # second `seed` mints a second token rather than colliding with the

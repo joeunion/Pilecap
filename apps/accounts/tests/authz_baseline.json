@@ -1,0 +1,402 @@
+{
+  "_": "DERIVED, never typed. Every cell is `allows(actor, key, row)` over the `accounts` keys as the baseline tree spelled them, the three roles of `permissions_world.build_world`, and the row classes `authz_matrix.accounts_rows` names. The sweep re-runs the same function on its own tree and asserts equality; a moved cell prints (key, row class, actor, before, after).",
+  "_baseline": "9ba0c429",
+  "_command": "git worktree add <scratch> 9ba0c429 --detach && cp apps/accounts/tests/authz_matrix.py <scratch>/apps/accounts/tests/ && cd <scratch> && ./scripts/rung_start.sh && uv run python manage.py shell -c \"from apps.accounts.tests.authz_matrix import write_baseline as w; w('<repo>/apps/accounts/tests/authz_baseline.json')\"   # before the sweep",
+  "accepted_deltas": {},
+  "actors": [
+    "admin_at_a",
+    "member",
+    "owner"
+  ],
+  "answers": {
+    "accounts.user.deactivate": {
+      "admin_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "connection": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "other_user": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "own_user": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "root_org": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "tenant": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      }
+    },
+    "accounts.user.erase": {
+      "admin_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "connection": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "other_user": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "own_user": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "root_org": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "tenant": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      }
+    },
+    "identity_platform.configure": {
+      "admin_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": false
+      },
+      "connection": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": false
+      },
+      "no_row": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": false
+      },
+      "other_user": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": false
+      },
+      "own_user": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": false
+      },
+      "root_org": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": false
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": false
+      },
+      "tenant": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": false
+      }
+    },
+    "sso_connection.create": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "connection": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "other_user": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "own_user": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "root_org": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "tenant": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      }
+    },
+    "sso_connection.disable": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "connection": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "other_user": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "own_user": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "root_org": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "tenant": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      }
+    },
+    "sso_connection.update": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "connection": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "other_user": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "own_user": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "root_org": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "tenant": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      }
+    },
+    "sso_domain.verify": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "connection": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "other_user": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "own_user": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "root_org": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "tenant": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      }
+    },
+    "sso_identity.provision": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "connection": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "other_user": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "own_user": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "root_org": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "tenant": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      }
+    },
+    "user.unlink": {
+      "admin_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "connection": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "other_user": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "own_user": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "root_org": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "tenant": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      }
+    }
+  },
+  "keys": [
+    "accounts.user.deactivate",
+    "accounts.user.erase",
+    "identity_platform.configure",
+    "sso_connection.create",
+    "sso_connection.disable",
+    "sso_connection.update",
+    "sso_domain.verify",
+    "sso_identity.provision",
+    "user.unlink"
+  ]
+}

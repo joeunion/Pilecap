@@ -52,7 +52,8 @@ from apps.accounts.services import issue_token
 from apps.comms.models import Message, MessageTemplate, Recipient
 from apps.comms.services import send
 from apps.core.actor import Actor, actor_for
-from apps.core.models import Tenant
+from apps.core.exceptions import refusal_message
+from apps.core.models import Grant, Membership, Organization, Tenant
 
 # The transport harness, from the module that owns it. Copying it here would be
 # a second thing to keep in step with the MCP protocol version.
@@ -569,3 +570,101 @@ async def test_the_two_device_doors_answer_the_same_row_and_neither_carries_the_
         assert token not in rendered
         for forbidden in NOTHING_ABOUT_THE_TOKEN:
             assert forbidden not in rendered
+
+
+# --- rule 46's named case for PR4.b: one withheld read, two doors, one sentence ---
+
+
+@pytest.fixture
+def withheld_bearer(tenant: Tenant, member: User, root_org: Organization) -> str:
+    """A real token for somebody whose `message.read` has been taken away.
+
+    A `member` and not an owner, because the whole point of the case is a person
+    the product still lets in: the credential authenticates, the tenancy
+    resolves, the row exists and is inside the hat's subtree — and the ONLY
+    thing missing is the one key ADR core-27 made a key. An owner could not be
+    withheld (`owner` is the vocabulary) and a stranger would be refused three
+    steps earlier, so neither would be driving this property.
+    """
+    Grant.objects.create(
+        tenant=tenant,
+        membership=Membership.objects.get(user=member, tenant=tenant),
+        permission="message.read",
+        effect=Grant.Effect.WITHHOLD,
+    )
+    _, plaintext = issue_token(
+        user=member,
+        tenant=tenant,
+        name="comms-withheld-read",
+        actor=actor_for(user=member, tenant=tenant, org=root_org),
+    )
+    return plaintext
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
+    withheld_bearer: str, message: Message
+) -> None:
+    """House rule 46's case for PR4.b, driven over the real transport.
+
+    Rule 17 proves a capability exists on both doors; only this sees them
+    **refusing differently**. A read is a permission since ADR core-27, so there
+    is a new refusal on every read door in this app — and a new refusal is
+    exactly where two doors drift, because the REST half goes through
+    `config/api.py`'s exception seam and the MCP half through `tool_call`'s
+    `wire_refusal`. Two seams, one grammar, or the assistant offers a way out
+    the screen does not.
+
+    What is asserted is the whole envelope a client branches on: the code, and
+    the sentence. **The sentence and never the key** — `message.read` is an
+    internal word and publishing it on the wire tells a caller to go and read
+    our source (the owner's plain-language ruling of 2026-08-23).
+    """
+    from config.asgi import build_application
+
+    application = build_application()
+    bearer_header = {"authorization": f"Bearer {withheld_bearer}"}
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.get(
+                DETAIL_URL.format(message.pk), headers={**bearer_header, "accept": JSON}
+            )
+            assert over_http.status_code == 403, over_http.text
+
+            headers = {**MCP_HEADERS, **bearer_header}
+            await _initialize(client, headers, "comms-withheld-read")
+            called = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call",
+                    {"name": "get_message", "arguments": {"message_id": str(message.pk)}},
+                    2,
+                ),
+            )
+            assert called.status_code == 200, called.text
+
+    rest_body = over_http.json()
+    answered = called.json()
+    # **The MCP door renders the refusal as TEXT, not as a JSON body**, and this
+    # test compares what each wire really carries rather than what it would be
+    # convenient to compare. `refusal_message` builds that line from
+    # `wire_refusal`'s output — the same mapping the REST door serialises — so
+    # the parity claim is that the rendered line is exactly what the REST body
+    # says, rebuilt here from the REST body and asserted string for string.
+    over_mcp = answered["result"]["content"][0]["text"]
+
+    assert rest_body["code"] == "forbidden", rest_body
+    assert rest_body["detail"] == "You may not read this message.", rest_body
+    assert f"{rest_body['code']}: {rest_body['detail']}" in over_mcp, (over_mcp, rest_body)
+    assert refusal_message(rest_body) in over_mcp, (over_mcp, rest_body)
+    # And the remedies travel with it: an assistant offers the way out the
+    # screen offers, which is the half ADR core-5 exists for.
+    for remedy in rest_body["remedies"]:
+        assert remedy["label"] in over_mcp, (remedy, over_mcp)
+    # The internal key reaches neither wire.
+    assert "message.read" not in json.dumps(rest_body), rest_body
+    assert "message.read" not in over_mcp, over_mcp

@@ -11,7 +11,10 @@ Allow-lists and exemptions are DATA, in `quality/rules.yaml`, each with a
 reason — a judgement somebody wrote down, in the one file the gate
 consistency-checks, never an edit to the check.
 
-No check here touches the database; `--tag djb` runs without one.
+No check in the `djb` tag touches the database; `--tag djb` runs without one.
+The one exception is registered under `deploy` instead and therefore is NOT in
+that tag: `djb.W054` reads a deployment's own rows, says so when it cannot, and
+runs only under `manage.py check --deploy`.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from __future__ import annotations
 import functools
 import inspect
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -27,7 +30,7 @@ from typing import Any
 import yaml
 from django.apps import AppConfig, apps
 from django.conf import settings
-from django.core.checks import CheckMessage, Error, register
+from django.core.checks import CheckMessage, Error, Info, Warning, register
 from django.db import models
 
 DJB = "djb"
@@ -75,6 +78,16 @@ CANONICAL_MODULES = {
     # (`apps/core/integrations.py`); this entry is for the apps that will
     # declare through it.
     "integrations",
+    # The same promotion again, and the same argument. `apps/<x>/roles.py`
+    # exposing `ROLES` is the filename `core.authz.role_declarations()`
+    # requires of EVERY app that declares a role, exactly as `policies.py`
+    # above is required of every app that declares a permission — and the roles
+    # are the half a PRODUCT is most likely to write first. `core` is exempt
+    # from this check's novel-name half, so `apps/core/roles.py` would have
+    # been legal either way; what this entry buys is that a product's own
+    # `apps/<x>/roles.py` is not `djb.E011` on sight, with the adoption path
+    # documented and boot-refused until somebody edits `quality/`.
+    "roles",
 }
 BANNED_MODULES = {"utils", "helpers", "logic", "misc", "common", "lib", "managers"}
 
@@ -760,12 +773,63 @@ def check_canonical_shape(app_configs: Any = None, **kwargs: Any) -> list[CheckM
 
 @register(DJB)
 def check_scoped_write_policies(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
-    from apps.core.authz import policies
-    from apps.core.models import TenantScopedModel
+    """Every scoped model has a write action somebody can be given. **Three ways now.**
+
+    THE PREMISE MOVED UNDER THIS CHECK (ADR core-25), and the sentence it used
+    to print became false: *"no `role.*` action in any policies.py, so
+    authz.require can only refuse"*. Since the vocabulary is derived, every
+    first-party model IS a kind and carries `<kind>.create/read/update/delete`
+    with no `policies.py` entry anywhere — measured on this tree:
+    `role.create` is `decided_by=derived`, has no predicate, and
+    `defaults_for("admin")` and `defaults_for("owner")` both contain it, so
+    `require` allows rather than only refusing. Left as it was, this check
+    reported a cause it could not prove against **every model added to any app
+    after the vocabulary landed**, which is a tripwire on arrival rather than on
+    a defect.
+
+    So the question is asked three ways, in the order they cost:
+
+    1. **The kind's derived verbs.** `kind_of(model)` yields a kind whose
+       `create` is in the vocabulary — the model has write actions, by
+       derivation, and nobody had to type anything.
+    2. **A declared opt-out.** `authz_kind = None` means "this is not a kind",
+       and `core.authz._own_kind` already refuses that declaration without an
+       `authz_kind_reason` beside it, so the sentence is guaranteed present and
+       lives in the model's own file. That is the same judgement a `rules.yaml`
+       exemption records, sourced from the member's own declaration.
+    3. **A policy noun, or a recorded exemption** — the original question,
+       unchanged, for anything the first two do not answer.
+
+    DOES NOT COVER — declared: whether the service that writes the model
+    requires the right kind. That is rule 13's kind-mismatch clause and it is
+    read by AST, not here.
+    """
+    from apps.core.authz import kind_of, policies, vocabulary
+    from apps.core.models import AUTHZ_KIND_DERIVED, TenantScopedModel
 
     found: list[CheckMessage] = []
     exempt = {str(x.get("model")) for x in _scope("13").get("policy_exemptions") or []}
-    nouns = {action.split(".", 1)[0] for action in policies()}
+    # GUARDED like the vocabulary below it, and for the same reason: discovering
+    # the policy registry walks every app's `policies.py`, so a product with one
+    # malformed declaration used to take the whole check pass down from this
+    # line — a traceback where `djb.E025` should have been. `policies` is a
+    # forced derivation in `check_vocabulary_is_derivable` so the finding keeps
+    # an owner (that function says why the pair is one change).
+    declared = _derived_or_none(policies)
+    if declared is None:
+        return []
+    nouns = {action.split(".", 1)[0] for action in declared}
+    # GUARDED, and `_derived_or_none` argues why the guard rather than a
+    # registration order. While the vocabulary will not derive, the first of
+    # this check's three questions has no answer and the other two would be
+    # judging models against half a premise, so it stops: `djb.E025` owns that
+    # finding and runs beside this one under every tag that selects either.
+    words = _derived_or_none(vocabulary)
+    if words is None:
+        return []
+    # `kind_of` cannot raise once `vocabulary()` has returned: deriving it walks
+    # `kind_registry_of(first_party_models())`, which calls `kind_of` on every
+    # first-party model first. The guard above is the whole of it.
     for model in _local_models():
         if model._meta.proxy or not issubclass(model, TenantScopedModel):
             continue
@@ -773,6 +837,11 @@ def check_scoped_write_policies(app_configs: Any = None, **kwargs: Any) -> list[
             continue
         label = model._meta.label
         if label in exempt:
+            continue
+        kind = kind_of(model)
+        if kind is not None and f"{kind}.create" in words:
+            continue
+        if getattr(model, "authz_kind", AUTHZ_KIND_DERIVED) is None:
             continue
         name = model.__name__.lower()
         # A policy noun may write the model's name with underscores
@@ -1201,3 +1270,368 @@ def check_rules_file_present(app_configs: Any = None, **kwargs: Any) -> list[Che
             id="djb.E000",
         )
     ]
+
+
+# --- rule 54: the vocabulary is one shape (ADR core-25) -------------------------
+#
+# TWO CHECKS AND THEY ARE DIFFERENT TIERS, because they answer different
+# questions about different things.
+#
+# `check_vocabulary_is_derivable` is an ERROR over CODE, and it runs on every
+# `manage.py` call. The things it forces are the ones that make the vocabulary
+# underivable rather than wrong: two models claiming one kind, an
+# `authz_kind_of` naming a foreign key that is not `CASCADE`, a malformed
+# `policies.py`, two apps declaring one role key, a rename pointing at a key
+# nothing declares, two roles marked as the default. None of those is a
+# judgement — each one means a permission key would mean a different thing
+# depending on import order, and no answer is better than an arbitrary one.
+#
+# `check_roles_are_keys` (`djb.W054`) is a WARNING over DATA, and it runs only
+# under `--deploy`. It reads rows, so it needs a database and the rest of this
+# module does not; and what it finds is a deployment's own history rather than a
+# defect in the tree — a membership left on a role somebody deleted is a real
+# problem for one tenant and no reason for anybody's `manage.py` to stop.
+
+
+def _derived_or_none[T](derive: Callable[[], T]) -> T | None:
+    """A forced derivation's answer, or `None` when this deployment cannot derive it.
+
+    **THE ORDERING DJANGO DOES NOT OFFER.** Every check in this module that
+    reads the permission vocabulary asks through here, because the obvious
+    alternative — "register `djb.E025` ahead of the checks that read it" — is
+    not something the framework can promise. `django.core.checks.registry`
+    holds `self.registered_checks = set()` and `run_checks` iterates what
+    `get_checks()` builds out of that set, so the run order is a hash order:
+    it would appear to work on one machine, under one interpreter, and
+    reorder silently on the next. The guard does not depend on an ordering
+    nobody is offering.
+
+    **What it buys, measured.** Before this, a kind collision planted on
+    `core.AuditEntry` made `manage.py check`, `check --tag djb` and
+    `check --deploy` all die with an unhandled `ImproperlyConfigured` out of
+    `check_scoped_write_policies` — a traceback, no `(djb.E025)` line, and
+    every forced derivation after the first reporting nothing at all, because
+    the check that owns the finding never got to run. The safety was real and
+    the grammar was not.
+
+    **One finding, one owner.** A blinded check returns nothing rather than a
+    second copy of E025's sentence under its own id: the same fact reported by
+    two checks is noise, and `check_vocabulary_is_derivable` is guaranteed to
+    run beside every caller here — it carries the same `djb` tag, so no tag
+    selection can pick a reader without picking the owner, and a bare
+    `manage.py check` runs both. E025's own message says that the readers went
+    quiet, so the silence is declared rather than discovered (§I).
+
+    DOES NOT COVER — declared: an `ImproperlyConfigured` raised for a reason
+    that has nothing to do with the vocabulary would also be swallowed here and
+    reported by E025's forcing loop instead, which is the right answer for
+    every case this module can produce and a wrong one for a case it cannot.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+
+    try:
+        return derive()
+    except ImproperlyConfigured:
+        return None
+
+
+@register(DJB)
+def check_vocabulary_is_derivable(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
+    """Force the vocabulary and the role declarations at BOOT, not at the first `require`.
+
+    Everything `core.authz` refuses at discovery — a kind two models both claim,
+    an `authz_kind_of` whose foreign key is not `CASCADE`, one role key declared
+    by two apps, a rename onto a key nobody declares, two roles both marked as
+    the default — used to be refused lazily, at the first call to `require()`.
+    That is a 500 on somebody's request, in production, for a mistake that was
+    in the tree before it was deployed, and the traceback names one model while
+    the reader needs both.
+
+    Forcing them here is the cheapest place the mistake can be found after the
+    file is saved: every `manage.py` command runs the check framework, so does
+    the gate (`manage.py check --tag djb`), and `check --deploy` runs everything
+    a plain `check` does plus the deployment set.
+
+    **Why a check and not `CoreConfig.ready()`**, which would be stronger: a
+    failure in `ready()` is an `ImproperlyConfigured` traceback out of
+    `django.setup()`, which takes `manage.py` down with it — including the
+    commands somebody would use to FIX the collision — and it names one model in
+    a stack trace rather than two findings a reviewer can read side by side.
+    This check reports in the house grammar, with an id a product can grep,
+    beside every other finding from the same run, and still exits non-zero.
+    DOES NOT COVER — declared: the ASGI and Temporal worker boots do not run the
+    check framework, so a deployment that never runs `manage.py check` can serve
+    with an underivable vocabulary and meet it at the first `require()` after
+    all. The gate leg and `check --deploy` are the two places it is caught
+    before that, and both are in the road to production.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+
+    from apps.core import authz
+
+    found: list[CheckMessage] = []
+    forced: tuple[tuple[str, Any], ...] = (
+        ("the authorization kinds", authz.kind_registry),
+        # THE POLICY REGISTRY IS FORCED HERE TOO, and that is the half that
+        # makes guarding its reader safe. `check_scoped_write_policies` asks
+        # `policies()` through `_derived_or_none` like its siblings, so a broken
+        # `policies.py` no longer tracebacks out of the check pass — but a guard
+        # with no owner would turn the traceback into SILENCE, which is worse:
+        # none of the other four derivations has to fail for `policies()` to,
+        # and the check that went quiet would be the only thing that noticed.
+        # Guarding the reader and forcing the derivation are one change.
+        ("the policy registry", authz.policies),
+        ("the permission vocabulary", authz.vocabulary),
+        ("the role declarations", authz.role_declarations),
+        ("the default role for new members", authz.default_role_key),
+    )
+    for what, derive in forced:
+        try:
+            derive()
+        except ImproperlyConfigured as exc:
+            # THE SILENCE SENTENCE IS MEASURED, NOT ASSUMED. Not every
+            # underivable thing here silences the guarded readers: two roles
+            # marked as the default breaks `default_role_key()` while
+            # `vocabulary()` and `role_declarations()` both answer, so rule 13's
+            # model half and the role census are working normally and telling
+            # the reader otherwise would send them hunting for a second defect.
+            # So the sentence is appended only when the readers really are
+            # silent, and it is the readers themselves that are asked.
+            silenced = (
+                _derived_or_none(authz.vocabulary) is None
+                or _derived_or_none(authz.role_declarations) is None
+            )
+            text = (
+                f"{what} cannot be derived, so every permission key in this deployment "
+                f"is ambiguous: {exc}"
+            )
+            if silenced:
+                text += (
+                    " While this stands, every other check that reads the vocabulary reports "
+                    "NOTHING rather than reporting clean — rule 13's model half and the "
+                    "`--deploy` role census included (`_derived_or_none` in this module says "
+                    "why). Fix this finding and run `check` again."
+                )
+            found.append(Error(text, obj="apps/core/authz.py", id="djb.E025"))
+            # The five are ordered so that the first failure is the nearest
+            # cause: the kinds and the policies feed the vocabulary, which feeds
+            # the renames. A second message about a derivation that could never
+            # have run on top of a broken first one would be noise wearing a
+            # finding's clothes.
+            break
+    return found
+
+
+def _role_census_rows() -> tuple[list[CheckMessage], bool]:
+    """The `djb.W054` findings over this deployment's rows, and whether it could look.
+
+    Split out of the check so a test can call it without `call_command`, and so
+    the could-not-look half has one place to be true. The boolean is `False`
+    when the tables are not there — an unmigrated database is not a deployment
+    with clean data, and the check says which it met.
+    """
+    from django.db import DatabaseError
+
+    from apps.core.authz import (
+        OWNER_ROLE,
+        RESERVED_PERMISSIONS,
+        role_declarations,
+        vocabulary,
+    )
+    from apps.core.models import Grant, Invitation, Membership, Role, RolePermission, Tenant
+
+    # GUARDED, like every other reader in this module (`_derived_or_none`). A
+    # census that cannot say what a legal role or a legal permission IS cannot
+    # judge a row against either, and `--deploy` runs the plain checks too, so
+    # `djb.E025` is already in the same output saying why. Reported as a
+    # could-not-look rather than as clean, which is what the boolean is for.
+    declarations = _derived_or_none(role_declarations)
+    words = _derived_or_none(vocabulary)
+    if declarations is None or words is None:
+        return ([], False)
+    declared = set(declarations)
+    grantable = set(words) - set(RESERVED_PERMISSIONS)
+    found: list[CheckMessage] = []
+
+    def warn(text: str, obj: str) -> None:
+        found.append(Warning(f"{text} (house rule 54 (b), ADR core-25).", obj=obj, id="djb.W054"))
+
+    try:
+        slugs = dict(Tenant.objects.values_list("id", "slug"))
+        custom: dict[Any, set[str]] = {}
+        for tenant_id, key in Role.objects.values_list("tenant_id", "key"):
+            custom.setdefault(tenant_id, set()).add(str(key))
+
+        # (1) Memberships and pending invitations name a role this tenant has.
+        # One warning per (tenant, value), with the count: a tenant with forty
+        # memberships on a deleted role has one problem, not forty.
+        counts: dict[tuple[Any, str, str], int] = {}
+        pairs = [
+            ("membership", Membership.objects.values_list("tenant_id", "role")),
+            (
+                "pending invitation",
+                Invitation.objects.filter(status=Invitation.Status.PENDING).values_list(
+                    "tenant_id", "role"
+                ),
+            ),
+        ]
+        for noun, rows in pairs:
+            for tenant_id, value in rows.iterator(chunk_size=2000):
+                role = str(value or "")
+                if role in ({OWNER_ROLE, ""} | declared | custom.get(tenant_id, set())):
+                    continue
+                counts[(tenant_id, role, noun)] = counts.get((tenant_id, role, noun), 0) + 1
+        for (tenant_id, role, noun), count in sorted(
+            counts.items(),
+            key=lambda item: (str(slugs.get(item[0][0], "")), item[0][1], item[0][2]),
+        ):
+            slug = slugs.get(tenant_id, tenant_id)
+            warn(
+                f"tenant {slug!s} has {count} {noun}(s) on the role {role!r}, which is not "
+                "`owner`, not a key any app declares in a `roles.py`, and not a `core.Role` "
+                "row this tenant owns — it resolves to no permissions at all",
+                f"core.Tenant:{slug}",
+            )
+
+        # (2) A stored permission that is not in the vocabulary, or is reserved.
+        # Both are rows that can never fire: the first names nothing, and the
+        # second names the one key no grant and no role may carry.
+        stored = [
+            ("core.Grant", Grant.objects.values_list("tenant_id", "permission")),
+            ("core.RolePermission", RolePermission.objects.values_list("tenant_id", "permission")),
+        ]
+        for label, rows in stored:
+            seen: dict[tuple[Any, str], int] = {}
+            for tenant_id, permission in rows.iterator(chunk_size=2000):
+                if str(permission) in grantable:
+                    continue
+                seen[(tenant_id, str(permission))] = seen.get((tenant_id, str(permission)), 0) + 1
+            for (tenant_id, permission, *_), count in sorted(
+                seen.items(), key=lambda item: (str(slugs.get(item[0][0], "")), item[0][1])
+            ):
+                slug = slugs.get(tenant_id, tenant_id)
+                why = (
+                    "is reserved — `owner` is its only holder and no row may name it"
+                    if permission in RESERVED_PERMISSIONS
+                    else "is in no app's vocabulary, so it can never be matched"
+                )
+                warn(
+                    f"tenant {slug!s} holds {count} {label} row(s) naming {permission!r}, which "
+                    f"{why}",
+                    f"{label}:{slug}",
+                )
+
+        # (3) `exclude` subtracts from a DECLARED collection, and a custom role
+        # has none to subtract from — the row would be storing a difference from
+        # the empty set.
+        excludes: dict[tuple[Any, str], int] = {}
+        for tenant_id, role_key in RolePermission.objects.filter(
+            effect=RolePermission.Effect.EXCLUDE
+        ).values_list("tenant_id", "role_key"):
+            if str(role_key) in declared:
+                continue
+            excludes[(tenant_id, str(role_key))] = excludes.get((tenant_id, str(role_key)), 0) + 1
+        for (tenant_id, role_key), count in sorted(
+            excludes.items(), key=lambda item: (str(slugs.get(item[0][0], "")), item[0][1])
+        ):
+            slug = slugs.get(tenant_id, tenant_id)
+            warn(
+                f"tenant {slug!s} holds {count} `exclude` row(s) on the role {role_key!r}, which "
+                "no app declares — an exclusion only means something against a declared "
+                "collection, and a custom role's collection is the rows themselves",
+                f"core.RolePermission:{slug}",
+            )
+    except DatabaseError as exc:
+        # COULD NOT LOOK, said out loud — and at `Info`, which is the whole
+        # judgement in this branch. The gate's own `check --deploy` leg runs
+        # production settings against a throwaway environment with no database
+        # by design ("the point is the SETTINGS, not the secrets" —
+        # `scripts/check.sh`), so an unreachable database there is the leg
+        # working, not a deployment with bad rows. A `Warning` would redden it
+        # under `--fail-level WARNING` and turn a settings probe into a database
+        # probe; returning `[]` would let this census report clean while reading
+        # nothing, which is the failure mode §I exists to forbid. `Info` prints
+        # the sentence and fails nothing, and the sentence says what was not
+        # read.
+        return (
+            [
+                Info(
+                    "the role census read no rows — this deployment's database was not "
+                    f"reachable, so it is reporting NOTHING rather than reporting clean: {exc}",
+                    obj="apps/core/checks.py",
+                    id="djb.W054",
+                )
+            ],
+            False,
+        )
+    return found, True
+
+
+@register(DJB, deploy=True)
+def check_roles_are_keys(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
+    """`djb.W054` — every stored role and permission names something this deployment has.
+
+    The belt behind the service refusals (rule 54 (b)). `add_membership`,
+    `set_role` and `invite_member` refuse a role key the tenant cannot name, and
+    the six permission services refuse a permission outside the vocabulary — but
+    a deployment accumulates rows over time and the CODE moves underneath them:
+    a product removes `admin` from its `roles.py`, a tenant deletes a custom
+    role, an app is uninstalled and takes its keys with it. Every one of those
+    leaves rows that are still perfectly valid strings and resolve to nothing.
+
+    **A warning and `--deploy`-only, deliberately.** What it finds is one
+    deployment's data, not a defect in the tree: it must not stop a developer's
+    `manage.py`, and it is not something the gate can measure, because the gate
+    has no product's rows. DOES NOT COVER — declared: nothing stops a deploy on
+    a warning. It is printed where somebody is looking at a deployment, and the
+    `0018` census is the hard refusal for the one case that cannot be allowed to
+    pass silently — a value that was legal under `choices` and is a key now.
+
+    The fourth clause reads CODE rather than rows and is here anyway, because a
+    `DEFAULT_ROLES` entry naming an undeclared role is the same defect one layer
+    up: an app offering a capability to a role nobody declares offers it to
+    nobody. It is import-tolerant by construction — a platform app must still
+    import in a product that deleted `member`, so this is a census and never a
+    refusal at discovery.
+    """
+    from apps.core.authz import _discover_default_roles, role_declarations
+
+    # DJANGO'S OWN IDIOM FOR "WAS I OFFERED A DATABASE". `manage.py check`
+    # passes the `--database` aliases through as `databases`, and every
+    # database-reading check in Django skips when the set is empty. The gate's
+    # `check --deploy` leg offers none on purpose — it is a settings probe — so
+    # without this the census spends ten seconds failing to connect on every
+    # builder's `--loop` before printing that it saw nothing. An operator who
+    # wants the rows asks for them: `manage.py check --deploy --database default`.
+    found: list[CheckMessage] = []
+    if kwargs.get("databases"):
+        found, _looked = _role_census_rows()
+    else:
+        found = [
+            Info(
+                "the role census read no rows — this run offered it no database. Ask for "
+                "them with `--database default`; without that this check reports only the "
+                "code half below (house rule 54 (b), ADR core-25).",
+                obj="apps/core/checks.py",
+                id="djb.W054",
+            )
+        ]
+    # The code half, guarded for the same reason as the row half above: a
+    # `DEFAULT_ROLES` entry can only be judged against the declarations, and
+    # the declarations are one of the things `djb.E025` forces.
+    declarations = _derived_or_none(role_declarations)
+    if declarations is None:
+        return found
+    declared = set(declarations)
+    for action, roles in sorted(_discover_default_roles().items()):
+        for role_key in sorted(set(roles) - declared):
+            found.append(
+                Warning(
+                    f"a DEFAULT_ROLES entry offers {action!r} to the role {role_key!r}, which no "
+                    "app declares in a `roles.py` — the capability is offered to nobody "
+                    "(house rule 54 (b), ADR core-25).",
+                    obj=action,
+                    id="djb.W054",
+                )
+            )
+    return found

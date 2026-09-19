@@ -13,6 +13,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .github/workflows/ci.yml scripts/check.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/
 # The drive for THE REAL-REPOSITORY TRIPWIRE — `drive_repo_fingerprint` and
 # `drive_tripwire_check` in `scripts/tests/drive_preamble.sh` §3.
 #
@@ -517,6 +518,162 @@ case_a_registered_drive_that_cannot_look_is_exit_2_not_a_pass() {
     ok "three registrations × three statuses: 2 is COULD NOT LOOK and exit 2, 1 is the drive's red, 0 carries on"
 }
 
+# Every name `.github/workflows/ci.yml` puts into the environment of the step
+# that runs a unit, DERIVED FROM THE WORKFLOW rather than typed here. Three
+# mechanisms, because the file uses three:
+#
+#   * the workflow-level `env:` block, which GitHub exports into every step;
+#   * the gate step's own `env:` block, inside the `legs` job;
+#   * a `NAME=` written to `$GITHUB_ENV` by an earlier step of the same job,
+#     which is how the derived database name reaches the gate.
+#
+# The `images` and `verdict` jobs are deliberately OUT of scope: neither runs a
+# drive, so a `TAG` or a `GH_TOKEN` there reaches nothing this file protects.
+# An uppercase YAML key is the needle for the first two, because that is the
+# convention the file keeps and the alternative — tracking `env:` block indent
+# through a `run: |` literal — is a YAML parser written in awk.
+workflow_sets() {
+    awk '
+        /^env:$/ { inenv = 1; next }
+        inenv && /^[a-z]/ { inenv = 0 }
+        /^  legs:$/ { inlegs = 1; next }
+        inlegs && /^  [a-z]/ { inlegs = 0 }
+        (inenv || inlegs) && match($0, /^[[:space:]]+[A-Z][A-Z0-9_]*:/) {
+            k = substr($0, RSTART, RLENGTH); gsub(/[[:space:]:]/, "", k); print k; next
+        }
+        inlegs && /GITHUB_ENV/ && match($0, /"[A-Z][A-Z0-9_]*=/) {
+            print substr($0, RSTART + 1, RLENGTH - 2)
+        }
+    ' "$1" | LC_ALL=C sort -u
+}
+
+case_every_variable_the_workflow_sets_is_accounted_for() {
+    # THE TOOTH ON BOTH LISTS, and it is about the CLASS rather than one knob.
+    # The workflow runs the selftest leg in the SAME step it runs every other
+    # unit in, so every name that step carries is in every drive's environment —
+    # and a case that asks for the DEFAULT branch of one then measures the
+    # branch the runner typed. Measured on run 35241431444: three shards red,
+    # five drives, and two of them were this exactly — `DJB_GATE_PYTEST_SEED`
+    # made `test_list_legs`'s untyped-seed case see a typed one, and
+    # `DATABASE_NAME` made `test_db_pin`'s present-database case read a
+    # provenance label that belonged to the launcher.
+    #
+    # ACCOUNTED FOR, NOT STRIPPED, because most of this population is the
+    # world's coordinates and a drive that unset them could not dial the stack
+    # it measures. Every name is in `DRIVE_GATE_VARS` (unset for every drive) or
+    # `DRIVE_INHERITED_VARS` (declared: somebody looked, and a case that turns on
+    # it pins it at its own call site). What this case refuses is a name in
+    # NEITHER — the knob nobody has thought about yet.
+    #
+    # Containment, not equality: `DRIVE_GATE_VARS` also names knobs an operator
+    # types by hand and CI never sets, which is what the two sanction variables
+    # are.
+    CURRENT=case_every_variable_the_workflow_sets_is_accounted_for
+    local workflow names name unlisted="" stripped="" inherited=""
+    OUT=""
+    workflow="${ROOT}/.github/workflows/ci.yml"
+    if [ ! -r "$workflow" ]; then
+        bad "no readable ${workflow} — this case cannot look, and a silent pass would vouch for a list nothing compares"
+        return
+    fi
+    names="$(workflow_sets "$workflow")"
+    # THE CANARY. If the extraction ever comes back empty the case must not
+    # report clean: an assertion over an empty population is could-not-look
+    # wearing a pass, which is the shape this whole rung was sent to end.
+    case " $(printf '%s' "$names" | tr '\n' ' ') " in
+    *" DJB_GATE_PYTEST_SEED "*) ;;
+    *)
+        bad "the extraction found no DJB_GATE_PYTEST_SEED in ${workflow} — the reader is broken or the workflow moved, and either way this case is asserting over the wrong population"
+        return
+        ;;
+    esac
+    for name in $names; do
+        case " ${DRIVE_GATE_VARS} " in
+        *" ${name} "*)
+            stripped="${stripped}${stripped:+ }${name}"
+            continue
+            ;;
+        esac
+        case " ${DRIVE_INHERITED_VARS} " in
+        *" ${name} "*)
+            inherited="${inherited}${inherited:+ }${name}"
+            continue
+            ;;
+        esac
+        unlisted="${unlisted}${unlisted:+ }${name}"
+    done
+    if [ -n "$unlisted" ]; then
+        bad "ci.yml puts ${unlisted} into the step that runs the gate, and drive_preamble.sh neither strips it (DRIVE_GATE_VARS) nor declares it inherited (DRIVE_INHERITED_VARS) — every drive gets it, and a case that wants its default measures the runner's value instead"
+        return
+    fi
+    ok "$(printf '%s\n' "$names" | grep -c .) name(s) the workflow sets, all accounted for — stripped: ${stripped:-none} · declared inherited: ${inherited:-none}"
+}
+
+case_every_registered_drive_declares_what_it_drives() {
+    CURRENT=case_every_registered_drive_declares_what_it_drives
+    # THE NEGATIVE OF THE LEG'S OWN REFUSALS, and the fourth thing this census
+    # out of a registration. `test_selftest_leg.sh` plants the three ways a key
+    # cannot be decided and requires exit 2 for each; this case requires that no
+    # drive this repository SHIPS is in any of those states — a marker in its
+    # first forty lines, every declared path expanding to something in the
+    # measured tree, and every checkout path its body spells covered by one of
+    # them.
+    #
+    # THE POPULATION IS `selftest_registered_drives`, read out of
+    # `scripts/check.sh` (:901-910) and never typed here: a list in this file
+    # would be right on the day it was written and silent ever after.
+    local names name file keyout tree listing bad_ones=""
+    OUT=""
+    # shellcheck source=scripts/gate_refuse.sh
+    . "${ROOT}/scripts/gate_refuse.sh"
+    # shellcheck source=scripts/gate_ledger.sh
+    . "${ROOT}/scripts/gate_ledger.sh"
+    if ! command -v drive_key >/dev/null 2>&1; then
+        bad "scripts/gate_ledger.sh defines no drive_key — the declaration nothing derives is FULL_LEGS before R3-F3x"
+        return
+    fi
+    names="$(cd "$ROOT" && awk '
+        /^\.\/scripts\/tests\/test_[a-z_]+\.sh$/ {
+            name = $0
+            sub(/^\.\/scripts\/tests\/test_/, "", name)
+            sub(/\.sh$/, "", name)
+            print name
+        }
+    ' scripts/check.sh)"
+    if [ -z "$names" ]; then
+        bad "no registered drives read out of scripts/check.sh — this census has lost its subject"
+        return
+    fi
+    tree="$(cd "$ROOT" && gate_measured_tree)" || tree=""
+    if [ -z "$tree" ]; then
+        cannot_look "the measured tree could not be read — every key below would be undecidable for the wrong reason"
+    fi
+    listing="${WORK}/tree-listing.txt"
+    (cd "$ROOT" && git ls-tree -r "$tree") >"$listing" 2>/dev/null || true
+    if [ ! -s "$listing" ]; then
+        cannot_look "git ls-tree -r ${tree} produced nothing"
+    fi
+    for name in $names; do
+        file="${ROOT}/scripts/tests/test_${name}.sh"
+        if [ ! -f "$file" ]; then
+            bad_ones="${bad_ones}
+  ${name}: registered and not in scripts/tests/"
+            continue
+        fi
+        keyout="$(cd "$ROOT" && drive_key "scripts/tests/test_${name}.sh" "$tree" "$listing")" || true
+        case "$keyout" in
+        ok\ drive-v1:*) ;;
+        *) bad_ones="${bad_ones}
+  ${name}: ${keyout#err }" ;;
+        esac
+    done
+    if [ -n "$bad_ones" ]; then
+        bad "drive(s) whose key the leg could not decide — each is exit 2 on every full gate:${bad_ones}"
+        return
+    fi
+    ok "$(printf '%s\n' "$names" | grep -c .) registered drive(s), each with a \`# drives:\` line that keys cleanly against tree ${tree:0:12}…"
+}
+
 # --- run ----------------------------------------------------------------------
 
 case_the_fingerprint_records_a_sha_for_every_ref
@@ -532,6 +689,8 @@ case_this_checkouts_head_moving_still_reds
 case_every_drive_under_tests_is_invoked_by_the_gate
 case_the_drive_is_registered_in_the_gate
 case_a_registered_drive_that_cannot_look_is_exit_2_not_a_pass
+case_every_variable_the_workflow_sets_is_accounted_for
+case_every_registered_drive_declares_what_it_drives
 
 echo "test_drive_preamble: ${PASSED} passed · ${FAILED} failed"
 drive_finished

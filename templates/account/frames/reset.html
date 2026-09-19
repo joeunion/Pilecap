@@ -1,0 +1,48 @@
+{% comment %}
+FRAME `reset` — design J5's forgotten-password road, as M6 settled it.
+
+THE DESIGN DREW A PAGE WHERE THE PERSON PICKS A NEW PASSWORD. They cannot,
+and the measurement is why: the identity platform's reset mail carries a link
+to the PLATFORM's own page (`/ui/login/password/init`), with an empty
+`authRequestID` — a mail has no application context, so the per-application
+login-v2 declaration that moves the sign-in screen cannot move this one
+(`zitadel_measure`'s M6, against v4.17.1, read out of a real inbox). A frame
+of ours with a New-password field on it would have been a screen nobody can
+reach, which is exactly what it was between A4 and A11b: shipped, titled,
+censused and rendered by nothing.
+
+SO THIS FRAME HAS TWO STATES AND NEITHER OF THEM TAKES A PASSWORD. Before:
+the address, and one action. After: no form at all, and a sentence that says
+where the mail goes, because the one thing somebody who just pressed the
+button needs is to know which window to look in next.
+
+THE AFTER-STATE SAYS "IF". Not politeness — the whole road is built so that
+an address with an account and an address without one get the same page and
+the same timing (`signin.request_reset`'s floor), and a sentence that said
+"we've sent you a link" would give away in words what the rest of it spends
+a measured 250 ms not giving away.
+
+THE BACK LINK CARRIES `next`. Somebody who arrived at the sign-in page on a
+deep link and detoured through here is still going where they were going.
+{% endcomment %}
+<h1>Reset your password</h1>
+{% if note %}
+    <p class="alert" role="alert">{{ note }}<span class="remedy">If this keeps happening, ask whoever runs your organization to reset your sign-in.</span></p>
+{% endif %}
+{% if asked %}
+    <p class="lede">If that address has an account, a link is on its way to it.</p>
+    <p class="note">The link opens the sign-in service's own page, where you pick the new password. Come back here afterwards to sign in.</p>
+{% else %}
+    <p class="lede">Type your address and we'll ask the sign-in service to email you a link.</p>
+    <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="reset">
+        <label for="id_email">Email</label>
+        <input type="email" name="email" id="id_email" value="{{ email|default:'' }}"
+               autocomplete="username" autocapitalize="none" spellcheck="false" required>
+        <button type="submit">Email me a link</button>
+    </form>
+{% endif %}
+<p class="quiet">
+    <a href="{{ back|default:'' }}">Back to sign in</a>
+</p>

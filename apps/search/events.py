@@ -68,3 +68,16 @@ SEARCH_ENGINE_DEGRADED = "search.engine.degraded"
 #: `restored` or `closed` would declare a degradation the alert surface cannot
 #: see — an alarm that can be raised and never lowered.
 SEARCH_ENGINE_RECOVERED = "search.engine.recovered"
+
+
+#: Which authorization kind the noun above is about, for the socket door's read
+#: check (`apps.realtime.bridge.kind_of_event`, ADR core-27).
+EVENT_KINDS: dict[str, str | None] = {
+    # None, and it is the declared answer rather than an omission: the engine is
+    # the DEPLOYMENT's, not a row of anybody's tenant, so there is nothing a
+    # membership could hold a read on. Both announcements are therefore heard by
+    # every connection in the tenant that observed the transition — which is the
+    # audience this pair exists for (the operator, through the sink) and the same
+    # audience the file's own blind-spot paragraph already declares.
+    "engine": None,
+}

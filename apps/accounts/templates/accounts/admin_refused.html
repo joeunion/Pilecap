@@ -1,0 +1,41 @@
+{% extends "account/base_entrance.html" %}
+{% comment %}
+The page a signed-in person who is not staff reads at `/admin/login/`, instead
+of the password form that used to be there (ADR ident-4).
+
+WHAT IT REPLACES. Django's admin answers an authenticated non-staff request by
+re-rendering its own login form, so an owner who followed `/admin/` landed on a
+prompt for a credential this deployment does not keep, with nothing on the page
+saying so. The only two readings available were "my password is wrong" and
+"this product is broken", and both are false — which is why the page says the
+true third thing, and says what would have to change for it to be otherwise.
+
+IT EXTENDS THE ENTRANCE SHELL, and that is the whole of its design: the same
+token block every other page of the entrance chain renders through, so a person
+who has just crossed the sign-in pages does not cross a visual register to read
+a refusal. It renders at 403 and carries no form, no field and no retry — the
+enforcement grammar's shape for a wall somebody can do nothing about from the
+browser they are holding.
+
+The sentence is `apps.accounts.admin.ADMIN_REFUSED_SENTENCE`, passed in rather
+than typed here, so the assertion in `test_password_door_retired.py` and the
+words on the screen cannot come apart.
+{% endcomment %}
+{% block head_title %}Admin{% endblock head_title %}
+{% block content %}
+    <h1>{{ sentence }}</h1>
+    <p class="lede">
+      You are signed in as <code>{{ email }}</code>. The admin is for people this
+      deployment has marked as staff, and this account is not one of them.
+    </p>
+    <p>
+      Nothing is wrong with your sign-in, and there is no other password to try —
+      this deployment keeps one credential store and it is the identity platform.
+      <a href="{{ landing }}">Go back to the product</a>.
+    </p>
+    <p class="note">
+      If you should have admin access, whoever runs this deployment grants it
+      with one audited command on the box:
+      <code>manage.py grant_staff --email {{ email }}</code>.
+    </p>
+{% endblock content %}

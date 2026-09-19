@@ -32,7 +32,9 @@ V1). Two things keep that shut, and both are needed:
    cookie authenticator;
 2. `SessionCookieAuth` **declines** a request that carries an `Authorization`
    header instead of CSRF-checking it, so a bad or expired token gets the 401 it
-   deserves rather than a 403 about a cookie it never sent;
+   deserves rather than a 403 about a cookie it never sent — and that 401 now
+   says *which* 401 it is (`BEARER_NOT_VALID`), because a caller holding a
+   withdrawn token was being told nobody could be identified;
 3. `SessionCookieAuth` **declines a request with no session cookie at all**, for
    the same reason said about a different caller: an anonymous `POST` carrying
    no credential of any kind was answered "CSRF check Failed" (403), which
@@ -82,6 +84,7 @@ from apps.core.requests import TenantRequest
 __all__ = [
     "API_AUTH",
     "AUTHORIZATION_HEADER",
+    "BEARER_NOT_VALID",
     "CSRF_TOKEN_HEADER",
     "MINT_AUTH",
     "TOKEN_ATTR",
@@ -167,6 +170,12 @@ class Unauthenticated(DomainError):
     nothing" from "your token was withdrawn" would tell an unauthenticated
     caller which strings are real tokens, which is the fact the hashing exists
     to hide.
+
+    **One code, two sentences, and the `detail` is the half that varies.** The
+    `default_detail` below is the answer to a caller who identified themselves
+    with *nothing*; `BEARER_NOT_VALID` is the answer to a caller who presented a
+    bearer token that resolved to nobody. Both are this code and this fact —
+    see `BEARER_NOT_VALID` for why saying which one happened leaks nothing.
     """
 
     code = "unauthenticated"
@@ -174,6 +183,31 @@ class Unauthenticated(DomainError):
         "We could not tell who is making this request. Sign in, or send a token you "
         "hold as `Authorization: Bearer <token>`."
     )
+
+
+#: What a caller who PRESENTED a bearer that resolved to nobody is told —
+#: declared once and said by **both** doors that read the header: this module
+#: for REST, `config/mcp.py` for `/mcp`, which imports it rather than spelling
+#: it a second time.
+#:
+#: The two doors used to disagree, and REST was the one that was wrong: it
+#: answered the registry's general sentence — "we could not tell who is making
+#: this request" — over a credential whose owner the door had just looked up and
+#: refused. That fact is true of a request that sent nothing and false of a
+#: withdrawn token, and a refusal whose fact is false is what the grammar
+#: exists against.
+#:
+#: **It tells the holder nothing they do not already have.** They sent the
+#: string, so they have it; and revoked, expired, never-issued and
+#: belonging-to-a-deactivated-person are all still answered identically —
+#: `authenticate_token` returns `None` for every one of them — which is the fact
+#: the hashing protects. What changes is only whether the door admits that
+#: something was presented at all.
+#:
+#: A second refusal CODE was deliberately not minted for it: `unauthenticated`
+#: is what this is, one code carries one fact, and the `detail` is the half a
+#: raise site is allowed to make specific.
+BEARER_NOT_VALID = "That bearer token is not valid."
 
 
 register_refusal(
@@ -357,6 +391,10 @@ class ApiTokenAuth(HttpBearer):
     every route reads them. The hat goes through `core.middleware.resolve_org`,
     the one function both HTTP doors and the MCP mount call, so a token gets
     exactly the rows a session for the same person and the same header would.
+
+    **A presented bearer that resolves to nobody is REFUSED here, not
+    declined**, and the difference is the sentence the caller reads — see the
+    raise below.
     """
 
     openapi_name = "ApiToken"
@@ -367,7 +405,28 @@ class ApiTokenAuth(HttpBearer):
             requested_slug=request.headers.get(TENANT_HEADER),
         )
         if resolved is None:
-            return None
+            # RAISED RATHER THAN DECLINED, and nothing about the status changes:
+            # this was a 401 before and is a 401 now. What changes is the
+            # `detail`. Declining left ninja to reach the end of `API_AUTH` and
+            # raise its own `AuthenticationError`, which `config/api.py`
+            # translates with the registry's `default_detail` — the sentence for
+            # a caller who sent NOTHING — over a credential this door had just
+            # looked up and refused. The machine door has always said the true
+            # one, and `/mcp` and this door are two doors onto one refusal.
+            #
+            # Nothing behind this authenticator can answer for this caller
+            # anyway: `SessionCookieAuth` declines every request carrying
+            # `Authorization` (above), so a decline here only ever reached the
+            # end of the list. And `HttpBearer.__call__` has already established
+            # that a bearer was presented — a missing header, or a scheme that
+            # is not Bearer, never reaches this method at all, which is what
+            # keeps the sentence honest about what happened.
+            #
+            # It travels the path `PageTokenMissing` already travels:
+            # `Operation._run_authentication` hands an authenticator's exception
+            # to `api.on_exception`, so the refusal arrives in the product's one
+            # envelope with its code and its remedies (`config/api.py`).
+            raise Unauthenticated(BEARER_NOT_VALID)
         user, tenant, token_row = resolved
         request.user = user
         cast(TenantRequest, request).tenant = tenant

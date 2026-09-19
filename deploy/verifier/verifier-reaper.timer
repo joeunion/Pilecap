@@ -1,0 +1,21 @@
+[Unit]
+Description=Fire the verifier box reaper every minute
+# The timer is what makes the teardown need no session. It is installed by the
+# bake recipe and ENABLED by the launch user-data, so an image can be inspected
+# — or a bake box can be logged into — without a reaper running underneath.
+
+[Timer]
+# One minute after boot, then every minute. The idle threshold is minutes and
+# the lifetime is hours, so a minute of granularity costs at most a minute of
+# billing on either decision.
+OnBootSec=60s
+OnUnitActiveSec=60s
+# Persistent=false deliberately: there is no missed run to catch up on. A box
+# that was off was not billing, and a burst of catch-up ticks at boot is exactly
+# the shape that would reap a machine somebody just started.
+Persistent=false
+AccuracySec=1s
+Unit=verifier-reaper.service
+
+[Install]
+WantedBy=timers.target

@@ -19,16 +19,40 @@ auto-redirecting sign-in page turns this button into a loop).
 The form, the method and the hidden redirect field are allauth's, unchanged:
 sign-out is a POST because it is a state change, and a GET that ends a session
 is something any other site can point an image tag at.
+
+THE SENTENCE IS A FACT ABOUT THE DOOR, SO IT BRANCHES ON THE DOOR (design J5,
+A5.5). Under `hosted` the person's password is typed on the identity
+platform's own screens and that platform keeps a browser session of its own,
+which is why signing out here may not ask for a password again — the sentence
+this file has always carried. Under `ours` there is no such session to leave
+behind: our page opens a Session API session for the ceremony and CLOSES it at
+every exit, including every refusal and every *Never mind* (ADR ident-10), and
+there is no `{% templatetag openblock %} baseUri {% templatetag closeblock %}
+/logout` leg to render (ident-9, amendment 3).
+
+**What is still UNMEASURED is whether the OIDC round trip under login v2
+leaves any cookie of the platform's in the browser** — measurement-kit item
+M7. Until it is measured the `ours` sentence is the design's intent and is
+written to claim only what this deployment controls: it says what happens to
+the session, and promises nothing about anybody else's.
 {% endcomment %}
-{% load i18n allauth %}
+{% load i18n allauth entrance %}
 {% block head_title %}Sign out{% endblock head_title %}
 {% block content %}
+    {% sign_in_door as door %}
     <h1>Sign out</h1>
-    <p>
-        This ends your session here. You will stay signed in to the identity
-        platform itself, so signing back in may not ask for your password
-        again.
-    </p>
+    {% if door == "ours" %}
+        <p>
+            This ends your session. Signing back in asks for your password
+            again.
+        </p>
+    {% else %}
+        <p>
+            This ends your session here. You will stay signed in to the identity
+            platform itself, so signing back in may not ask for your password
+            again.
+        </p>
+    {% endif %}
     {% url 'account_logout' as action_url %}
     <form method="post" action="{{ action_url }}">
         {% csrf_token %}

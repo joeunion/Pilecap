@@ -178,14 +178,21 @@ def test_the_refusal_still_has_its_structured_log_line() -> None:
     """House rule 19's half of the same ruling: silent in the ledger, not silent.
 
     Read off the source rather than captured at runtime, because the property is
-    that the line EXISTS at both refusal branches — a log assertion at one of
-    them proves nothing about the other.
+    that the line EXISTS at EVERY refusal branch — a log assertion at one of
+    them proves nothing about the others.
+
+    **Three, since the deactivation fix.** The door refused two things when this
+    was written; it now also refuses a person who has been switched off, before
+    it links them to anything. The number is hand-written and so is the list of
+    reasons below it, which is the point: a branch that learns to refuse without
+    learning to say so reds this test by arithmetic.
     """
     source = inspect.getsource(SocialAccountAdapter._workforce_login)
 
-    assert source.count('"accounts.workforce.refused"') == 2
+    assert source.count('"accounts.workforce.refused"') == 3
     assert 'reason="domain_not_allowed"' in source
     assert 'reason="email_not_verified"' in source
+    assert 'reason="inactive"' in source
     assert "log.warning" in source
     # And through `core.log`, never a bare `logging.getLogger` (rule 19).
     assert "from apps.core.log import" in inspect.getsource(adapter_module)

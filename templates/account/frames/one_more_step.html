@@ -1,0 +1,69 @@
+{% load static %}
+{% comment %}
+FRAME `one_more_step` — design J2-b. A second factor is enrolled, and this is
+the second screen of the same sign-in rather than somebody else's page.
+
+THE CHIPS ARE A POPULATION, NOT A LIST. They are the kinds the identity
+platform says are ENROLLED and this deployment can DELIVER — an emailed code
+only where the instance has SMTP configured — so the frame draws what it is
+handed and draws nothing where it is handed nothing. The same word is used for
+a kind here and in the unanswerable-kind sentence in the alert slot, so the
+page never calls one thing two names. Never "MFA", "2FA", "U2F" or "WebAuthn"
+on any face.
+
+`Never mind` ends the ceremony: the server-side state is dropped and the
+identity platform's session is closed (every session that module opens, it
+closes). It returns to `sign_in` with the sentence the cancellation page
+already uses, word for word. It is a BUTTON in its own form, not a link:
+ending a ceremony is a state change, and a link is something a prefetcher
+follows on the person's behalf while they are still reading the screen.
+
+EVERY CONTROL HERE IS `action=<name>`, and the door's switch is the closed
+set of those names. A chip carries `formnovalidate` because the code field
+above it is `required` and a person pressing "email me one instead" has not
+typed a code and must not be told to.
+
+The code field is the six-digit primitive: `inputmode="numeric"` and
+`autocomplete="one-time-code"` are what make a phone offer the code it just
+received, and `maxlength` is the only length written anywhere near this page.
+{% endcomment %}
+<h1>One more step</h1>
+{% if note %}
+    <p class="alert" role="alert">{{ note }}<span class="remedy">If this keeps happening, ask whoever runs your organization to reset your sign-in.</span></p>
+{% endif %}
+<p class="lede">{% if lede %}{{ lede }}{% else %}Enter the code from your authenticator app.{% endif %}</p>
+{% if sender %}
+    <p class="note">The code is sent from {{ sender }}.</p>
+{% endif %}
+<form method="post">
+    {% csrf_token %}
+    <label for="id_code">Code</label>
+    <input type="text" class="code" name="code" id="id_code" inputmode="numeric"
+           autocomplete="one-time-code" pattern="{{ code_pattern|default:'[0-9]{6}' }}"
+           maxlength="{{ code_length|default:6 }}" required>
+    <button type="submit" name="action" value="code">Continue</button>
+    {% if chips %}
+        <div class="chips">
+            {% for chip in chips %}
+                <button type="submit" name="action" value="{{ chip.action }}"
+                        formnovalidate>{{ chip.label }}</button>
+            {% endfor %}
+        </div>
+    {% endif %}
+</form>
+<form method="post">
+    {% csrf_token %}
+    <div class="chips">
+        <button type="submit" name="action" value="cancel">Never mind</button>
+    </div>
+</form>
+{% if passkey_options %}
+    <form method="post" data-passkey-ceremony>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="passkey">
+        <input type="hidden" name="options" value="{{ passkey_options }}">
+        <input type="hidden" name="assertion" value="">
+    </form>
+    <p class="note" data-passkey-cancelled hidden>Your device didn&#x27;t finish. Try again, or use another way in.</p>
+    <script src="{% static 'accounts/signin.js' %}" defer></script>
+{% endif %}

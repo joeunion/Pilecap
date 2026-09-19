@@ -16,6 +16,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: docs/product/queue-detail.md docs/product/queue.md scripts/check.sh scripts/queue_cited.sh scripts/queue_index.py
 # The drive for `scripts/queue_index.py` — the queue's index/detail split, the
 # consistency check that keeps the two halves honest, and both ratchets.
 #
@@ -99,6 +100,17 @@ case "${1:-}" in
 esac
 
 command -v python3 >/dev/null 2>&1 || cannot_look "no python3 on PATH"
+# THE CHECKOUT'S OWN INTERPRETER, for every PYTHON FILE THIS REPOSITORY SHIPS
+# that this drive runs. `python3` off PATH is some other environment's: on a
+# verifier box it is the system 3.9, where `zip(…, strict=True)` — which these
+# files use — is `TypeError: zip() takes no keyword arguments`, and the drive
+# would report that as a finding about the file it was driving. Inline
+# `python3 -c` and heredoc programs below stay as they are: they are stdlib on
+# any Python 3, and their own `command -v python3` guard covers their absence.
+DRIVE_PY="$PWD/.venv/bin/python"
+[ -x "$DRIVE_PY" ] ||
+    cannot_look "this checkout has no .venv/bin/python, and the python files this drive
+   runs are written at the version that venv holds. Run ./scripts/setup.sh first"
 GEN="$PWD/scripts/queue_index.py"
 [ -x "$GEN" ] || cannot_look "scripts/queue_index.py is not an executable file in this tree — there is nothing to drive"
 REAL_QUEUE="$PWD/docs/product/queue.md"
@@ -196,7 +208,7 @@ run() {
     N=$((N + 1))
     OUT="${WORK}/out${N}.log"
     RC=0
-    (cd "$DIR" && python3 "$GEN" "$@") >"$OUT" 2>&1 || RC=$?
+    (cd "$DIR" && "$DRIVE_PY" "$GEN" "$@") >"$OUT" 2>&1 || RC=$?
 }
 
 split_fixture() {
@@ -364,7 +376,7 @@ case_a_record_beside_an_ungenerated_index_is_exit_2() {
     fresh "a record beside an ungenerated index is exit 2"
     split_fixture
     # Half-migrated: the record stands, somebody put the old index back.
-    python3 "$GEN" --unsplit "$DIR/queue-detail.md" "$DIR/queue.md" >/dev/null
+    "$DRIVE_PY" "$GEN" --unsplit "$DIR/queue-detail.md" "$DIR/queue.md" >/dev/null
     run --check queue.md queue-detail.md
     exits 2
     says "half-migrated"
@@ -580,7 +592,7 @@ case_the_check_is_under_a_second_at_real_scale() {
         # back byte for byte.
         run --unsplit docs/product/queue-detail.md pre.md
         exits 0
-        (cd "$DIR" && python3 "$GEN" --split pre.md rebuilt-detail.md) >"${WORK}/resplit.log" 2>&1
+        (cd "$DIR" && "$DRIVE_PY" "$GEN" --split pre.md rebuilt-detail.md) >"${WORK}/resplit.log" 2>&1
         if cmp -s "$DIR/docs/product/queue-detail.md" "$DIR/rebuilt-detail.md"; then
             ok "this checkout's real record survives unsplit-and-re-split byte for byte"
         else

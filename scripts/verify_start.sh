@@ -37,7 +37,7 @@ esac
 #   ./scripts/verify_start.sh <rung-branch> [<destination>]
 #   ./scripts/verify_start.sh --check [<checkout>]
 #
-# Five steps, unconditionally and in this order, each printing what it did and
+# Six steps, unconditionally and in this order, each printing what it did and
 # how long it took, with the total at the end:
 #
 #   1. CLONE       this checkout, at the rung branch, into a directory of its
@@ -50,12 +50,21 @@ esac
 #                  `DATABASE_NAME` written into it and the primary's `ZITADEL_*`
 #                  lines carried across BY NAME. Every value it derives is
 #                  PRINTED. Nothing is sourced — see THE .ENV IS PRINTED below.
-#   4. LOOP SEED   the source's banked `--loop` verdict rows, copied into the
+#   4. PYTHON DEPS `uv sync --frozen`, run INSIDE the clone, so the environment
+#                  the `--loop` ledger fingerprints EXISTS before the seed below
+#                  is written. Without it the seed can never hit: the ledger's
+#                  environment fingerprint censuses the installed distributions
+#                  under `.venv`, and zero distributions is a read that did not
+#                  answer — the key is never derived and every seeded row is
+#                  dead on arrival (`scripts/gate_ledger.sh`,
+#                  `loop_env_fingerprint`). Skipped by `--no-sync`, which says
+#                  so and says what the skip costs.
+#   5. LOOP SEED   the source's banked `--loop` verdict rows, copied into the
 #                  clone's own ledger inside `.git/`, schema-checked line by
 #                  line with the skipped ones COUNTED. A verifier's first
 #                  `--loop` can then reuse a verdict the builder already earned
 #                  on the same bytes, instead of re-measuring it.
-#   5. VERDICT KEY `git status --porcelain` in the clone must show nothing but
+#   6. VERDICT KEY `git status --porcelain` in the clone must show nothing but
 #                  untracked `*.log` files. Anything else is exit 2, naming it.
 #                  It runs AFTER the seed on purpose: the seeded file lives in
 #                  `.git/`, so a seed that ever landed in the working tree would
@@ -65,7 +74,7 @@ esac
 # is the whole population today) · 2 refused, or a step could not be verified.
 # 2 outranks a pass, here as everywhere in this repository.
 #
-# `--check` runs STEP 5 ALONE against a checkout that already exists (default:
+# `--check` runs THE LAST STEP ALONE against a checkout that already exists (default:
 # the one you are standing in). Same code, same exit grammar, no clone. It is
 # the leg a verifier runs by hand before a full gate, because the file that
 # ruins a verdict is usually one the verifier created themselves an hour ago.
@@ -99,8 +108,8 @@ esac
 #   verifier a tree that silently differs from the one the operator is looking
 #   at, and the difference is invisible from inside the clone — which is the
 #   worst shape a verification error can have. The allowance is the same one
-#   step 5 makes and for the same reason: an untracked `*.log` is the output of
-#   a run, never source.
+#   the LAST step makes and for the same reason: an untracked `*.log` is the
+#   output of a run, never source.
 #
 #   ONE NARROWING, AND IT IS NOT A LOOSENING OF THE ABOVE: when EVERY dirty path
 #   in the SOURCE is under `docs/product/`, the clone proceeds from HEAD and
@@ -109,7 +118,7 @@ esac
 #   moves no verdict key. What is disclosed instead is the thing that really can
 #   bite — a verifier reads its criteria from the cycle file IN THE CLONE, so an
 #   uncommitted plan is not in the clone either. Scoped to step 1's call site;
-#   `strays_in`, which step 5 and `--check` share, is untouched.
+#   `strays_in`, which the verdict-key step and `--check` share, is untouched.
 #
 #   A STRAY UNTRACKED FILE IN THE CLONE (exit 2, naming it). THE TOOTH. The
 #   gate's verdict is keyed on the working tree measured through `git add -A`
@@ -140,20 +149,32 @@ esac
 #      has it AT CLONE TIME. If the PM merges another rung a minute later, this
 #      clone is measuring a union that has already moved. The clone prints both
 #      shas so the report can name them; nothing here watches for drift.
-#   2. THE VENV, THE DATABASE AND THE SCHEMA. It DERIVES the database name and
-#      writes it down; it does not run `uv sync`, create the database or
-#      migrate. That is deliberate and it is the line between this script and
-#      `scripts/setup.sh`: those steps need a compose stack this script must not
-#      start on other agents' behalf (`rung_start.sh`'s argument, unchanged),
-#      and a step that cannot be driven end to end in a scratch repository is a
-#      step nothing proves. The footer prints the exact commands.
+#   2. THE DATABASE AND THE SCHEMA — NOT THE VENV, WHICH IS NOW PROVISIONED.
+#      Step 4 installs this clone's Python dependencies; it DERIVES the database
+#      name and writes it down, and it does not create that database or migrate
+#      it. The line moved on purpose and the reason it moved is the reason the
+#      rest of it did not: the venv is a directory this script can make on its
+#      own, in the clone, with no shared machinery — and the seed one step later
+#      is worthless without it, because the loop ledger's environment
+#      fingerprint is a census of what is installed under `.venv`. The database
+#      and the migrations need a compose stack this script must not start on
+#      other agents' behalf (`rung_start.sh`'s argument, unchanged), and a step
+#      that cannot be driven end to end in a scratch repository is a step
+#      nothing proves — which is why the venv step IS driven (a `uv` shim on
+#      PATH in `scripts/tests/test_verify_start.sh`) and the database step is
+#      still not here. The footer prints the exact remaining commands. One
+#      corollary, small and sharp: `.venv` must be IGNORED in the repository
+#      being verified, exactly as `.env` must be (blind spot 4) — where it is
+#      not, the last step refuses and names it, correctly, because there it
+#      really does shift the verdict key.
 #   3. A CONFLICTED MERGE'S MEANING. It names the paths and exits 1. Whether
 #      the conflict is the rung's fault, main's, or a PM ordering failure is a
 #      judgement no script makes.
-#   4. A REPOSITORY THAT DOES NOT IGNORE `.env`. Step 3 writes `.env`; step 5
-#      allows only `*.log`. In this template and in every product cloned from
-#      it `.env` is ignored (`.gitignore`, the Env block), so the two never
-#      meet. Somewhere that line was deleted, step 5 refuses and names `.env` —
+#   4. A REPOSITORY THAT DOES NOT IGNORE `.env`. The environment step writes
+#      `.env`; the verdict-key step allows only `*.log`. In this template and in
+#      every product cloned from it `.env` is ignored (`.gitignore`, the Env
+#      block), so the two never meet. Somewhere that line was deleted, the
+#      verdict-key step refuses and names `.env` —
 #      correctly, because there the file really does shift the verdict key. The
 #      fix is the `.gitignore` line, not an allowance here.
 #   5. THE ZITADEL CARRY IS A COPY, AND IT IS ANNOUNCED RATHER THAN AUDITED.
@@ -161,7 +182,7 @@ esac
 #      NAME in the output and never by value. House rule 27's spirit is that
 #      the copy is RECORDED; it is not a claim that the credential is valid,
 #      current, or yours to use.
-#   6. WHETHER A SEEDED `--loop` ROW WILL ACTUALLY HIT. Step 3b copies the
+#   6. WHETHER A SEEDED `--loop` ROW WILL ACTUALLY HIT. The seed step copies the
 #      source's banked `--loop` verdicts into the clone, and the sentence that
 #      used to stand here — that a verify clone begins with an empty ledger — is
 #      false from the commit that added that step. What replaced it is narrower
@@ -187,7 +208,7 @@ fi
 
 usage() {
     cat <<'USAGE'
-usage: verify_start.sh <rung-branch> [<destination>]
+usage: verify_start.sh <rung-branch> [--no-sync] [<destination>]
        verify_start.sh --check [<checkout>]
        verify_start.sh -h
 
@@ -195,7 +216,12 @@ usage: verify_start.sh <rung-branch> [<destination>]
   <destination>   where the clone goes. Default: $TMPDIR/djb-verify/<branch>.
                   It must not already exist with anything in it.
 
-  --check         run STEP 5 alone — the verdict-key guard — against an
+  --no-sync       skip the python-dependencies step. The clone then has no
+                  venv, and the seeded --loop rows CANNOT HIT — the ledger's
+                  environment fingerprint censuses .venv and refuses an empty
+                  one, so the first --loop re-measures in full.
+
+  --check         run THE LAST STEP alone — the verdict-key guard — against an
                   existing checkout (default: the one you are standing in).
                   Nothing is cloned, merged or written.
 
@@ -208,12 +234,17 @@ MODE="clone"
 BRANCH=""
 DEST=""
 CHECK_DIR=""
+NO_SYNC=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
     -h | --help)
         usage
         exit 0
+        ;;
+    --no-sync)
+        NO_SYNC=1
+        shift
         ;;
     --check)
         MODE="check"
@@ -253,7 +284,7 @@ done
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
-STEP_TOTAL=5
+STEP_TOTAL=6
 
 # --- the three ways this can end ---------------------------------------------
 #
@@ -347,7 +378,7 @@ step_end() {
 say() { printf '   %s\n' "$*"; }
 
 # =============================================================================
-# THE VERDICT-KEY GUARD — step 5's body, and `--check`'s whole job.
+# THE VERDICT-KEY GUARD — the last step's body, and `--check`'s whole job.
 # =============================================================================
 #
 # ONE FUNCTION, TWO ENTRY POINTS, because a guard a verifier can only get at by
@@ -504,7 +535,7 @@ SOURCE_STRAYS="$(strays_in "$ROOT")"
 # criteria it is about to work from are uncommitted here, they are not in the
 # clone either — so every ignored path is printed BY NAME.
 #
-# NOT `strays_in`, WHICH IS SHARED. That function is also step 5's verdict-key
+# NOT `strays_in`, WHICH IS SHARED. That function is also the last step's verdict-key
 # guard and `--check`'s whole body, where a stray `docs/product/` file in a
 # CLONE is a real finding — something wrote into a tree that had no business
 # being written to. Loosening it there would take the teeth out of the guard
@@ -558,8 +589,8 @@ if [ -n "$SOURCE_STRAYS" ]; then
     exit 2
 fi
 
-# A BYTE COPY OF THE SOURCE LEDGER, TAKEN BEFORE ANYTHING IS CREATED. Step 3b
-# copies rows OUT of this file and must never write into it, and `cmp` after the
+# A BYTE COPY OF THE SOURCE LEDGER, TAKEN BEFORE ANYTHING IS CREATED. The seed
+# step copies rows OUT of this file and must never write into it, and `cmp` after the
 # copy is what turns that from a claim into a check.
 #
 # `cmp`, NOT A DIGEST, and that is this file's rule rather than a preference:
@@ -596,6 +627,23 @@ CLONE_HEAD="$(git -C "$DEST" rev-parse HEAD)"
 
 say "cloned       $DEST"
 say "HEAD         $(git -C "$DEST" log -1 --format='%h  %s' HEAD)"
+
+# THE HOOKS THE CLONE DOES NOT INHERIT. `git clone` copies committed state and
+# NOTHING ELSE: not `core.hooksPath` (config is per-repository and is not
+# cloned), not a hook file (`.git/hooks` is populated from the templates, so a
+# fresh clone holds `*.sample` and no more). A clone is therefore HOOKLESS, and
+# hooklessness is silent in the direction that costs — `git push --dry-run` from
+# it exits 0 having consulted nothing, which is indistinguishable from a wall
+# that let the tree through. Measured by a verifier on 2026-09-18: the box
+# wrapper's vouch fired the pre-push hook from the primary and demanded a full
+# gate, and from a clone of the same tree fired no hook at all, so the box
+# carried a tree no wall had ever seen. `scripts/verifier_box.sh` now refuses
+# that silence by reading the hook's sentinel; this line is the other half —
+# a clone that can be pushed from is a clone whose hooks run.
+git -C "$DEST" config core.hooksPath scripts/githooks ||
+    cannot_verify "could not set core.hooksPath in ${DEST}." \
+        "A clone with no hooks vouches for nothing it pushes."
+say "hooks        core.hooksPath=scripts/githooks (a clone inherits neither the config nor the hook)"
 step_end
 
 # =============================================================================
@@ -644,7 +692,19 @@ else
     say "main ref     refs/heads/main created at $(git -C "$DEST" rev-parse --short "$ORIGIN_MAIN") (the verified MAIN_SHA)"
 fi
 
+# THE FOLD POINT, TAKEN BEFORE THE MERGE AND FOR THAT REASON. After the merge
+# below, main IS an ancestor of HEAD, so `merge-base main HEAD` answers main's
+# tip and the count of "commits on main since the fold" would be zero in every
+# world — a number that is always right and never means anything. Taken here,
+# between two refs that do not move (`$ORIGIN_MAIN` and the branch tip this run
+# cloned), it is the commit the builder's last `git merge main` landed on, or
+# the branch point when there never was one. The consult prediction below is its
+# only reader; nothing acts on it.
+FOLD_POINT=$(git -C "$DEST" merge-base "$ORIGIN_MAIN" "$CLONE_HEAD" 2>/dev/null) || FOLD_POINT=""
+UNION_IS_BRANCH_TIP=0
+
 if git -C "$DEST" merge-base --is-ancestor "$ORIGIN_MAIN" HEAD; then
+    UNION_IS_BRANCH_TIP=1
     say "already up to date — the rung branch already contains main's tip"
     say "union        $(git -C "$DEST" rev-parse HEAD)  (= the branch tip; no merge commit)"
 else
@@ -801,7 +861,116 @@ say "             sibling product, and it was three gate runs."
 step_end
 
 # =============================================================================
-# STEP 4 · THE LOOP-VERDICT SEED
+# STEP 4 · PYTHON DEPENDENCIES
+# =============================================================================
+#
+# THE STEP THE SEED BELOW IS WORTHLESS WITHOUT, and it was measured rather than
+# reasoned: a field test's consult, on a clone of a branch whose rows this script had
+# just seeded, printed
+#
+#   the --loop ledger could not census the installed distributions under .venv
+#   … no key is derived and nothing is reused
+#
+# and then measured the whole suite in full (201 s). Fifty-one seeded rows, none
+# of which could ever be looked up, because the ledger's environment fingerprint
+# is a census of `.venv` and this script had deliberately left the clone without
+# one. A seed and a consult that do not see ONE environment are two
+# environments (engineering principle 13); this step is how they become one.
+#
+# THE RECIPE IS `rung_start.sh`'s, COPIED WITH ITS OWNER NAMED, never re-derived
+# — `scripts/rung_start.sh`, STEP 2 · VENV, which is the file that owns "how a
+# checkout in this repository gets its Python". A third recipe is the drift
+# class this repository refuses everywhere else.
+#
+# ONE DELIBERATE DIFFERENCE FROM THAT OWNER, AND IT IS FORCED: `--frozen`.
+# `rung_start.sh` runs a bare `uv sync`, which may RE-LOCK and rewrite
+# `uv.lock` — a TRACKED file. In a worktree that is a change a builder commits;
+# here it would dirty the clone, and the verdict-key step two steps down would
+# refuse the very tree this script just made. `--frozen` installs the lockfile
+# as it stands and touches nothing tracked. The environment it produces is the
+# same environment, which is the property principle 13 is actually about.
+#
+# AND THE FAILURE IS COULD-NOT-LOOK, NOT A FAILED ACT. `rung_start.sh` calls a
+# non-zero `uv sync` an act that ran and failed (exit 1) because there the venv
+# IS the deliverable. Here it is an input to two later steps: a clone with no
+# interpreter is a clone this script cannot say is ready, so it is exit 2 naming
+# `uv`, and the seed below never runs over a missing venv (§I, "an instrument
+# fails loud when it cannot look").
+step_begin "python dependencies — uv sync --frozen in the clone"
+
+if [ -n "$NO_SYNC" ]; then
+    say "SKIPPED      --no-sync was given: this clone gets no venv."
+    say "             THE SEED BELOW CANNOT HIT. The --loop ledger's environment"
+    say "             fingerprint censuses the installed distributions under"
+    say "             .venv and refuses an empty census, so no key is derived and"
+    say "             every seeded row is dead on arrival — the first --loop in"
+    say "             this clone will re-measure the suite in full."
+    say "             Run \`uv sync --frozen\` in the clone to undo the skip."
+    step_end
+else
+    command -v uv >/dev/null 2>&1 ||
+        cannot_verify "no \`uv\` on PATH." \
+            "This repository's interpreter and dependencies are uv's (CLAUDE.md, the" \
+            "stack), and without them the clone has no environment for the seed" \
+            "below to be about."
+
+    set +e
+    (cd "$DEST" && uv sync --frozen)
+    rc=$?
+    set -e
+    [ $rc -eq 0 ] ||
+        cannot_verify "\`uv sync --frozen\` in the clone exited ${rc}." \
+            "Its output is above, unfiltered. The clone has no environment the" \
+            "loop ledger can fingerprint, so the seed below would write rows" \
+            "nothing could ever match. Nothing was seeded."
+
+    # WHAT IS ASSERTED IS WHAT THE CONSUMER READS, ASKED OF THE CONSUMER. The
+    # thing that has to be true is not "a directory called .venv exists" — it is
+    # "`loop_env_fingerprint` can derive a key in this clone", and that function
+    # lives in `scripts/gate_ledger.sh` and is the only authority on what it
+    # needs. So this asks it, in the clone, in a subshell. A copy of its census
+    # here would be a second derivation of one fact, which is the same drift the
+    # database name is asked for rather than re-implemented one step up.
+    [ -r "${DEST}/scripts/gate_ledger.sh" ] ||
+        cannot_verify "the clone has no readable scripts/gate_ledger.sh." \
+            "It owns the --loop ledger's environment fingerprint, and it is the" \
+            "one seam this step proves the venv through."
+
+    FP_ERR=$(mktemp "${TMPDIR:-/tmp}/djb-verify-fingerprint.XXXXXX")
+    set +e
+    FINGERPRINT=$(cd "$DEST" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 &&
+        loop_env_fingerprint 2>"$FP_ERR")
+    rc=$?
+    set -e
+    if [ $rc -ne 0 ] || [ -z "$FINGERPRINT" ]; then
+        printf '\n!! step %d could not be VERIFIED: the clone'\''s own gate_ledger.sh still cannot\n' "$STEP_N" >&2
+        printf '   fingerprint this environment after uv sync exited 0.\n' >&2
+        # `if`, NOT `[ … ] && …`: under `set -e` a false test as a bare
+        # statement kills the shell, and dying with 1 in the middle of printing
+        # a could-not-look would turn an exit 2 into an exit 1 — the one
+        # inversion this file's exit grammar must never make.
+        if [ -s "$FP_ERR" ]; then
+            sed 's/^/   /' "$FP_ERR" >&2
+        fi
+        rm -f "$FP_ERR"
+        printf '   A seed written over an environment the ledger cannot read is a set\n' >&2
+        printf '   of rows nothing will ever match. Nothing was seeded.\n' >&2
+        exit 2
+    fi
+    rm -f "$FP_ERR"
+
+    say "installed    uv sync --frozen (the recipe is rung_start.sh's STEP 2 · VENV;"
+    say "             --frozen because uv.lock is tracked and the verdict-key step"
+    say "             below refuses a clone this script dirtied)"
+    say "fingerprint  ${FINGERPRINT}"
+    say "             derived by the clone's own scripts/gate_ledger.sh — the same"
+    say "             function the first --loop will call. The seed below is about"
+    say "             THIS environment, and that is the whole point of the step."
+    step_end
+fi
+
+# =============================================================================
+# STEP 5 · THE LOOP-VERDICT SEED
 # =============================================================================
 #
 # WHY A CLONE STARTS BLIND, AND WHY THAT IS WORTH FIXING. `--loop` banks a
@@ -821,7 +990,7 @@ step_end
 # builder's is whatever its own `setup.sh` wrote. That is a measured question,
 # not an assumption — which is why the miss banner prints the five components.
 #
-# BEFORE STEP 5, DELIBERATELY. The file lands inside `.git/`, which the verdict
+# BEFORE THE VERDICT-KEY STEP, DELIBERATELY. The file lands inside `.git/`, which the verdict
 # key guard does not look at, and the assertion below says so rather than
 # trusting it: a seed that made the clone dirty would defeat the guard this
 # script exists to run.
@@ -879,18 +1048,120 @@ if [ -n "$SRC_LEDGER" ] && [ -f "$SRC_LEDGER" ] && [ -n "$SRC_LEDGER_COPY" ]; th
 fi
 rm -f "$SRC_LEDGER_COPY"
 
-# The file must be inside `.git/`, or step 5 is about to refuse a tree this
+# The file must be inside `.git/`, or the verdict-key step is about to refuse a tree this
 # script dirtied itself.
 case "$DEST_LEDGER" in
 "${DEST}/.git/"*) say "inside .git  ${DEST_LEDGER} — invisible to the verdict-key guard below" ;;
 *) cannot_verify "the seeded ledger path ${DEST_LEDGER} is not inside ${DEST}/.git." \
-    "It would be a stray file, and step 5 would refuse the clone this script just made." ;;
+    "It would be a stray file, and the verdict-key step would refuse the clone this script just made." ;;
 esac
 step_end
 # <<< seed: the source's banked --loop rows <<<
 
 # =============================================================================
-# STEP 5 · VERDICT KEY
+# THE CONSULT PREDICTION — what the verifier's first `--loop` is about to do
+# =============================================================================
+#
+# NOT A STEP, AND THE SECTION IS SHAPED SO NOBODY CAN READ IT AS ONE. Every step
+# above ACTS — it clones, merges, writes an `.env`, installs, seeds, or refuses.
+# This block acts on nothing: it reads what the five steps already produced and
+# says, in one line, which of two worlds this clone is in. A prediction numbered
+# among the steps would be a step whose failure mode is "it was wrong", and this
+# file's exit grammar has no room for that.
+#
+# WHY IT IS HERE AT ALL. The mechanism it describes already existed and was
+# invisible: step 2 builds the union, step 5 seeds the builder's banked rows,
+# and whether those two facts add up to a one-second consult or a full
+# re-measure was a thing a verifier found out several minutes later, by running
+# the loop. The seed step's header states the rule (`WHEN A SEEDED ROW ACTUALLY
+# HITS`); this says which side of it THIS clone landed on, at the moment the
+# information is free.
+#
+# IT PREDICTS THE TREE HALF, AND IT SAYS SO IN ITS OWN OUTPUT. The loop's key is
+# tree + environment + scope (`scripts/gate_ledger.sh`, `loop_ledger_key`). Only
+# the tree half is knowable here: the environment fingerprint is measured when
+# the loop runs — it censuses this clone's `.venv` and digests this clone's
+# `.env`, which is `.env.example` plus a derived database name plus the identity
+# carry and is NOT the builder's file — and the scope is derived from the
+# changed-file set at that moment. So a hit is EXPECTED, never promised, and
+# R3-F2x's rule is untouched: an environment that differs is a miss whatever
+# this line said.
+#
+# A NAMED ABSENCE, NEVER A REFUSAL. Where the prediction cannot be made — the
+# clone's own `gate_ledger.sh` could not measure a tree — this says so and the
+# run's verdict does not move. That is step 5's own precedent for the same
+# class: "A NAMED ABSENCE, never silence — the clone's first --loop will
+# re-measure, which is correct and is not an error." The instrument's job is the
+# clone; this paragraph is a courtesy the clone does not depend on.
+# >>> consult: the prediction >>>
+printf '\n== consult · what the verifier'"'"'s first `--loop` will do\n'
+
+CONSULT_TREE=$(cd "$DEST" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 &&
+    gate_measured_tree 2>/dev/null) || CONSULT_TREE=""
+
+# The banked row for THIS tree, if the seed brought one. Rows are padded with a
+# trailing space before the match for the reason `loop_ledger_attribute` pads
+# its own: ` tree=` is a field name only when a space precedes it, and `tree=`
+# is a suffix of nothing else on the line only when one follows it.
+CONSULT_ROW=""
+CONSULT_KEY=""
+if [ -n "$CONSULT_TREE" ] && [ -f "$DEST_LEDGER" ]; then
+    # `grep` answers 1 when nothing matches, which is the ordinary case and is
+    # not a failure; `${var%%<newline>*}` takes the first line without a
+    # `| head -1`, which would close the pipe under its producer.
+    CONSULT_MATCHED=$(sed 's/$/ /' "$DEST_LEDGER" | grep -F " tree=${CONSULT_TREE} ") ||
+        CONSULT_MATCHED=""
+    CONSULT_ROW="${CONSULT_MATCHED%%$'\n'*}"
+    [ -z "$CONSULT_ROW" ] || CONSULT_KEY=$(printf '%s\n' "$CONSULT_ROW" | awk '{print $2}')
+fi
+
+CONSULT_AHEAD=""
+if [ -n "$FOLD_POINT" ]; then
+    CONSULT_AHEAD=$(git -C "$DEST" rev-list --count "${FOLD_POINT}..${ORIGIN_MAIN}" 2>/dev/null) ||
+        CONSULT_AHEAD=""
+fi
+
+if [ -n "$NO_SYNC" ]; then
+    # STATED FIRST, BECAUSE IT OUTRANKS THE TREE. With no venv the ledger's
+    # environment fingerprint refuses outright, no key is derived at all, and no
+    # tree comparison could make this clone a hit. Step 4 already said so; this
+    # says it in the grammar the reader is now reading.
+    say "consult: WILL RUN (--no-sync: this clone has no venv, so the ledger derives no key)"
+elif [ -z "$CONSULT_TREE" ]; then
+    say "consult: NOT PREDICTED (this clone's own scripts/gate_ledger.sh could not"
+    say "         measure its tree). A named absence: the loop will say, and the"
+    say "         clone is no less ready for it."
+elif [ "$UNION_IS_BRANCH_TIP" = 1 ] && [ -n "$CONSULT_KEY" ]; then
+    say "consult: EXPECTED HIT ${CONSULT_KEY} (union = branch tip; seeded row tree=${CONSULT_TREE})"
+elif [ "$UNION_IS_BRANCH_TIP" = 1 ]; then
+    say "consult: WILL RUN (no seeded row for tree ${CONSULT_TREE})"
+elif [ -n "$CONSULT_AHEAD" ]; then
+    say "consult: WILL RUN (union differs: ${CONSULT_AHEAD} commit(s) on main since the fold ${FOLD_POINT})"
+else
+    say "consult: WILL RUN (union differs; the commits since the fold could not be counted)"
+fi
+
+# THE TWO LINES EVERY ARM PRINTS, and neither is decoration.
+#
+# The disclosure is what keeps the sentence above honest: it is a prediction
+# about ONE of three key components, and a reader who took it for a promise
+# would read a `miss` as a broken instrument rather than as the ledger doing
+# exactly its job (R3-F2x).
+#
+# The fold point is the verifier's step zero: the builder's report carries
+# `fold: main@<sha> merged at <commit>`, and comparing that sha against this one
+# is how a report that folded, edited and re-folded — or never folded at all —
+# is caught by arithmetic rather than by trust.
+say "         a PREDICTION about the TREE half of the key, and only that half:"
+say "         the environment and the scope halves are measured when the loop runs,"
+say "         so a clone whose .env or whose changed-file set differs misses"
+say "         whatever the line above says."
+say "fold point   ${FOLD_POINT:-unknown} — compare it against the builder's report's"
+say "             \`fold: main@<sha>\` line; unequal is a finding, not a re-measure."
+# <<< consult: the prediction <<<
+
+# =============================================================================
+# STEP 6 · VERDICT KEY
 # =============================================================================
 step_begin "verdict key — nothing untracked but *.log, or this clone is not ready"
 verdict_key_guard "$DEST" "the clone"
@@ -900,11 +1171,17 @@ step_end
 TOTAL=$(($(now_ms) - RUN_START))
 printf '\n== READY · total %s · %s\n' "$(fmt_ms $TOTAL)" "$(git -C "$DEST" log -1 --format='%h  %s' HEAD)"
 printf '   The clone is the union of %s and main, and nothing in it shifts a\n' "$BRANCH"
-printf '   verdict key. It has no venv and no database yet — deliberately (header,\n'
-printf '   WHAT IT CANNOT SEE 2). From here:\n'
+if [ -n "$NO_SYNC" ]; then
+    printf '   verdict key. It has NO VENV (--no-sync) and no database yet, and with no\n'
+    printf '   venv the seeded --loop rows cannot hit — the first --loop re-measures.\n'
+else
+    printf '   verdict key. Its python dependencies are installed; it has no database\n'
+    printf '   yet — deliberately (header, WHAT IT CANNOT SEE 2).\n'
+fi
+printf '   From here:\n'
 printf '\n'
 printf '     cd %s\n' "$DEST"
-printf '     ./scripts/setup.sh                       # venv, database, migrate\n'
+printf '     ./scripts/setup.sh                       # the database and the migrations\n'
 printf '     ./scripts/check.sh --loop > "$PWD/gate-<your-verification>.log" 2>&1\n'
 printf '\n'
 printf '   Re-run the guard alone whenever you have written into the tree:\n'

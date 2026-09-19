@@ -85,13 +85,18 @@ Two lists, and the split is the whole point. **What you READ is what changes
 under you and is small enough to hold; what you KNOW WHERE TO FIND is settled,
 large, or answered by a command.** Reading the settled files front to back
 before you have a question spends most of an arrival's context before it has
-done anything — so this order names four things to read and six to be able to
-reach.
+done anything — so this order names five things — one to run, then four to
+read — and six to be able to reach.
 
 ### READ NOW
 
 In this order, before anything else.
 
+0. **Get it running: `README.md` § "Quickstart, from a fresh clone"** —
+   `./scripts/setup.sh` (it creates `main` on a tag clone and prints its
+   total), then `./scripts/check.sh --fast`; nothing below runs until this
+   has. README owns the commands and their order, and says what each one
+   prints; this list does not repeat them.
 1. **`CLAUDE.md`** — the mechanisms and invariants, one page. It does not
    count and does not track; it points at the thing that knows.
 2. **`docs/product/in-flight.md`** — what is live *right now*: the cycle, the
@@ -105,19 +110,30 @@ In this order, before anything else.
 4. **`uv run python manage.py introspect`** — the real models, routes, tools,
    consumers, workflows, events and refusal registry, as JSON from the live
    registries. A command, not a page: query the part your job needs. The
-   schema is read, never guessed.
+   schema is read, never guessed. It needs the venv, `.env` and a migrated
+   database — all three are what step 0 provides, and none of them exists in
+   a clone that has not run it.
 
-**Re-derive the cost rather than believing a number written here** — only the
-first two are read whole, so only they have a size:
+**In a fresh clone of the template, items 2 and 3 are skeletons** — an empty
+live state and a one-row worked example, which is the shape `CLAUDE.md`
+§ "What this is" says the ledgers ship in — so "nothing actionable" is the
+correct day-one reading, not a broken ledger; a product fills them from its
+first cycle, and the product-manager skill is how.
+
+**Re-derive the cost rather than believing a number written here** — the
+quickstart section and the first two files are read whole, so only they have a
+size:
 
 ```bash
+awk '/^## Quickstart, from a fresh clone/{p=1;next} p&&/^## /{exit} p' README.md | wc -c
 wc -c CLAUDE.md docs/product/in-flight.md
 wc -c docs/product/{architecture,queue,misses,build-contract,north-star}.md
 ```
 
-The second line is the set this order used to open with, front to back. The
-ratio between the two totals is why this section is two lists rather than one,
-and it is a fact about today's tree, not a number this file keeps.
+The third line is the set this order used to open with, front to back. The
+ratio between that total and the other two is why this section is two lists
+rather than one, and it is a fact about today's tree, not a number this file
+keeps.
 
 ### KNOW WHERE IT IS
 
@@ -217,13 +233,23 @@ refusal messages are written to teach; your job is the response discipline.
 The full list is `CLAUDE.md` § "Standing rules"; these are the ones that bite
 in the first hour:
 
-- **Never pipe the gate — and now it refuses to be.** Run `./scripts/check.sh`
-  bare, wait, read its exit status; if you must capture output, redirect to a
-  file. The gate detects a piped stdout and exits 2 outright
-  (`scripts/check.sh`). Piping through `tail` replaced the exit code once
-  already, and the scar is a recurring row in `docs/product/misses.md`. The
-  same discipline goes for `./scripts/test.sh` and anything whose exit status
-  you intend to trust.
+- **Run the form of the gate that is yours, and run it unpiped.** An arrival
+  needs three forms of `./scripts/check.sh`, and the usage header at the top
+  of `scripts/check.sh` is the authority on every other flag — this is not a
+  second list: `--fast` (the static legs, what pre-commit runs; seconds, no
+  stack), `--loop` (the per-rung gate — one test pass over the apps you
+  touched; what a builder runs at every boundary and what a verifier
+  consults), and the bare form with no argument, which is the FULL gate and is
+  SANCTIONED: legal from the push wall, from `--bank` in the ritual checkout,
+  or under a typed `DJB_GATE_SANCTION="<rung-id>: <reason>"` — the one-line
+  form is quoted in `rung-execution` § 3 and the why is
+  `scripts/check.sh` § "THE FULL GATE IS SANCTIONED" — and typed unsanctioned
+  it exits 2 before taking a lease. Whichever form: run it unpiped, wait, read
+  its exit status; if you must capture output, redirect to a `*.log` file. The
+  gate detects a piped stdout and exits 2 outright (`scripts/check.sh`).
+  Piping through `tail` replaced the exit code once already, and the scar is
+  a recurring row in `docs/product/misses.md`. The same discipline goes for
+  `./scripts/test.sh` and anything whose exit status you intend to trust.
 - **Whoever builds does not decide done.** One other agent verifies, always,
   even for one line, against criteria written before the code existed.
 - **The pre-fix demonstration comes after the fix is committed** — the A11
@@ -298,7 +324,12 @@ what a product grows. If you have arrived in a **product clone**: everything
 above still holds, `docs/product/north-star.md` is filled in, `apps/example`
 may already be deleted in favor of real apps, and any divergence from the
 template's defaults is recorded in the product's own `architecture.md` with
-its reason — read that file's divergence notes before assuming a default.
+its reason — read that file's divergence notes before assuming a default. A
+clone of a **published tag** (`git clone --branch <tag> …`) arrives on a
+detached HEAD with no local `main`; `./scripts/setup.sh`'s first step creates
+one at the tag and says so on the line it prints, because the `--loop` scope
+and this checkout's database name both derive from that ref — `README.md`
+§ "Quickstart, from a fresh clone" holds the sentence and names the step.
 
 ## Identity and sign-in
 

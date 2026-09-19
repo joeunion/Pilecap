@@ -50,3 +50,14 @@ FILE_STORED = "files.file.stored"
 #: inside `archive_file`'s transaction, so an archive that rolled back said
 #: nothing.
 FILE_ARCHIVED = "files.file.archived"
+
+
+#: Which authorization kind each noun above is about, for the socket door's read
+#: check (`apps.realtime.bridge.kind_of_event`, ADR core-27).
+EVENT_KINDS: dict[str, str | None] = {
+    # `file` is the grammar's short word for the `StoredFile` row both events are
+    # about, and `stored_file` is that model's derived kind. P7.6 gives the model
+    # `authz_kind = "file"`, at which point the noun is a kind and this line is
+    # deleted rather than edited.
+    "file": "stored_file",
+}

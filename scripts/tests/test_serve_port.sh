@@ -31,6 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: compose.yaml scripts/db.sh scripts/kill_mine.sh scripts/queue_cited.sh scripts/serve.sh scripts/sweep.sh
 # The drive for `scripts/serve.sh`'s port — the derivation that gives every
 # checkout its own, and the belt that refuses one somebody else is holding.
 #
@@ -527,7 +528,10 @@ case_the_port_derivation_rides_db_sh_rather_than_copying_it() {
     else
         bad "serve.sh no longer reads the root and the hash out of db.sh"
     fi
-    if grep -qE 'shasum|sha256sum|openssl dgst|cksum' scripts/serve.sh; then
+    # `sha256_of` joins the pattern for the reason test_verify_start.sh gives
+    # at the same guard: one helper now spells SHA-256 for the gate family, and
+    # a second copy written through it would be invisible to the old pattern.
+    if grep -qE 'shasum|sha256sum|sha256_of|openssl dgst|cksum' scripts/serve.sh; then
         bad "serve.sh has grown its own digest ladder — that is the second copy"
     else
         ok "serve.sh carries no digest arithmetic of its own"

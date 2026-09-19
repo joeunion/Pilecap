@@ -864,7 +864,14 @@ ENGAGEMENT_URL = "/api/v1/messages/{}/engagement/"
 # The message read is the one this route has that the message list does not, and
 # it is deliberate: it is what makes a message this hat cannot see a `not_found`
 # before any engagement is touched.
-ENGAGEMENT_LIST_QUERY_BUDGET = 8
+# PR4.b (ADR core-27) adds exactly THREE: a read is a permission now, so the
+# selector behind this door calls `require(actor, "<kind>.read", ...)` once,
+# and the first `require` of a request reads the actor's three permission
+# tables — the memberships on the chain, their grants, and the delta rows for
+# the role keys those name. Three and not six because PR0's memo rides on the
+# actor: a second `require` in the same request costs nothing, which is what a
+# route that fetches through a `get_` and then calls a service is standing on.
+ENGAGEMENT_LIST_QUERY_BUDGET = 11
 
 
 def _engagement_body(response: Any) -> dict[str, Any]:
@@ -1034,16 +1041,32 @@ def test_a_sibling_branch_cannot_read_the_engagements(
     )
 
     assert (
-        list_engagements(tenant=branches.tenant, message=message, org=branches.seller_b).count()
+        list_engagements(
+            tenant=branches.tenant,
+            message=message,
+            org=branches.seller_b,
+            actor=actor_for(user=branches.owner, tenant=branches.tenant, org=branches.seller_b),
+        ).count()
         == 0
     )
     # And the branch itself, and its parent, do see it — otherwise the line
     # above passes on a read that returns nothing to anybody.
     assert (
-        list_engagements(tenant=branches.tenant, message=message, org=branches.sub_a1).count() == 1
+        list_engagements(
+            tenant=branches.tenant,
+            message=message,
+            org=branches.sub_a1,
+            actor=in_branch,
+        ).count()
+        == 1
     )
     assert (
-        list_engagements(tenant=branches.tenant, message=message, org=branches.seller_a).count()
+        list_engagements(
+            tenant=branches.tenant,
+            message=message,
+            org=branches.seller_a,
+            actor=actor_for(user=branches.owner, tenant=branches.tenant, org=branches.seller_a),
+        ).count()
         == 1
     )
 

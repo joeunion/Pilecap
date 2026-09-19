@@ -37,11 +37,26 @@ NOON = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
 
 MONTH = Period.containing(NOON, PeriodKind.MONTH)
 
-#: What one period read costs, measured on this tree: the
-#: membership read `require` performs, and the one grouped aggregate. It does not
-#: grow with the number of days or meters — that is the property the pin exists
-#: to hold — so it may fall and never rise without a diff a reviewer reads.
-READ_QUERY_BUDGET = 2
+#: What one period read costs on a FRESH actor, measured on this tree: the three
+#: statements `require` resolves `usage_entry.read` from — memberships, grants,
+#: role deltas — and the one grouped aggregate. It does not grow with the number
+#: of days or meters — that is the property the pin exists to hold — so it may
+#: fall and never rise without a diff a reviewer reads.
+#:
+#: **2 -> 4, and the arithmetic is +3 and -1** (PR4.h.3). The +3 is the read key
+#: asked at the hat, which is what ADR core-27 costs every read door once per
+#: actor; the -1 is the membership read the retired `usage.read_report`
+#: predicate used to perform on EVERY call, which the memo now subsumes. A door
+#: builds one actor per request (`actor_from_request`), so 4 is what a request
+#: pays and the line below is what a second question in the same request pays.
+READ_QUERY_BUDGET = 4
+
+#: The same read a second time on the same actor: the memo answers the key and
+#: only the aggregate reaches the database (PR0). Pinned beside the cold number
+#: rather than instead of it, because a pin taken on a warm actor alone would
+#: measure a request nobody makes and would go green if the key stopped being
+#: asked at all.
+MEMOED_READ_QUERY_BUDGET = 1
 
 
 def _record(world: World, **overrides: Any) -> Any:
@@ -204,9 +219,14 @@ def test_a_period_read_costs_one_query(
 ) -> None:
     """The day bucketing is a GROUP BY, not a walk: one statement at any number of days.
 
-    Two queries and not one: the policy read (`require` resolves the actor's
-    membership) and then the aggregate. The number that matters is that the
-    second one does not grow with the days — ten days, one statement.
+    Four queries on a fresh actor and one on a warm one: three of them resolve
+    `usage_entry.read` at the acting hat and the fourth is the aggregate. The
+    number that matters is that the aggregate does not grow with the days — ten
+    days, one statement — which is what the second measurement isolates.
+
+    **A FRESH actor**, deliberately: `world.root_actor` has already authorized a
+    widget creation by the time this runs, so its memo is warm and a pin taken
+    on it would read `1` and stay green with the read key never asked at all.
     """
     for day in range(10):
         _record(
@@ -215,11 +235,14 @@ def test_a_period_read_costs_one_query(
             occurred_at=NOON + timedelta(days=day),
             idempotency_key=f"day-{day}",
         )
+    reader = actor_for(user=world.owner, tenant=world.tenant, org=world.root)
     with django_assert_num_queries(READ_QUERY_BUDGET):
-        measured = get_usage(
-            tenant=world.tenant, actor=world.root_actor, period=MONTH, meters=[METER]
-        )[METER]
+        measured = get_usage(tenant=world.tenant, actor=reader, period=MONTH, meters=[METER])[METER]
     assert measured.value == Decimal("10")
+
+    with django_assert_num_queries(MEMOED_READ_QUERY_BUDGET):
+        again = get_usage(tenant=world.tenant, actor=reader, period=MONTH, meters=[METER])[METER]
+    assert again.value == Decimal("10")
 
 
 # --- the configured lines ----------------------------------------------------

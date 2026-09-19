@@ -1,3 +1,4 @@
+# census: cross-app population=apps/*/services.py,apps/*/selectors.py for the door's vocabulary
 """The domain vocabulary, and the rule that makes it worth having.
 
 House rule 14 is a *shape* rule, not a taste one: a `services.py` that imported

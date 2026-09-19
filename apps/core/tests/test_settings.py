@@ -1,3 +1,4 @@
+# census: cross-app population=config/settings/*.py,.env.example parses base.py for env reads
 """What the settings layer promises: discovery, and what production refuses.
 
 Two things are proved here that cannot be seen from a diff:
@@ -11,6 +12,7 @@ Two things are proved here that cannot be seen from a diff:
 
 from __future__ import annotations
 
+import ast
 import importlib
 import json
 import os
@@ -22,6 +24,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from urllib.parse import urlsplit
 
 import environ
 import pytest
@@ -32,9 +35,15 @@ from django.core.management import call_command
 from django.http import HttpResponse
 from django.test import RequestFactory, override_settings
 
+from apps.accounts.management.commands import zitadel_seed
 from apps.core.models import Tenant
-from apps.core.tests.tree_census import TRANSIENT_APP_MODULES, without_transient_apps
+from apps.core.tests.tree_census import (
+    TRANSIENT_APP_MODULES,
+    source_tree,
+    without_transient_apps,
+)
 from config.settings.base import DEFAULT_BRAND_ACCENT
+from config.settings.base import _env_file as SETTINGS_ENV_FILE
 from config.settings.discovery import DEFAULT_ORDER, discover_apps, discover_local_apps
 from config.settings.guards import (
     DEV_CONNECTIONS_ENCRYPTION_KEY,
@@ -328,9 +337,44 @@ def test_a_url_configured_deployment_is_outside_the_password_check() -> None:
 
 
 def test_the_proxy_header_is_off_unless_the_deployment_says_it_is_behind_one() -> None:
-    """Trusting `X-Forwarded-Proto` from anyone makes every HTTPS check a lie."""
-    assert settings.BEHIND_PROXY is False
-    assert getattr(settings, "SECURE_PROXY_SSL_HEADER", None) is None
+    """Trusting `X-Forwarded-Proto` from anyone makes every HTTPS check a lie.
+
+    **Both branches, imported under a cleared and a set environment**, rather
+    than one assertion off live settings. `BEHIND_PROXY` is an `env.bool` read,
+    so `assert settings.BEHIND_PROXY is False` reported the machine the suite ran
+    on: green on a laptop that never set the variable, red on the first checkout
+    that did — and, worse, silently vacuous about the half that matters, because
+    a deployment that DOES set it never reached this test at all. The same class
+    as the landing seam below, and the same fix.
+    """
+    # `SECURE_PROXY_SSL_HEADER` is bound only INSIDE `if BEHIND_PROXY:`, and
+    # `importlib.reload` re-executes a module WITHOUT clearing its namespace —
+    # so a name an earlier import bound survives a reload that does not rebind
+    # it. Measured, not assumed: with `BEHIND_PROXY=1` ambient, the cleared
+    # branch below read the header off the import Django did at start-up and
+    # the negative was unfalsifiable. Dropping the stale binding first is what
+    # makes the branch ask what THIS import did. Any future setting bound under
+    # an `if` in `base.py` owes the same line to be testable this way.
+    stale = importlib.import_module("config.settings.base")
+    had_header = hasattr(stale, "SECURE_PROXY_SSL_HEADER")
+    if had_header:
+        del stale.SECURE_PROXY_SSL_HEADER
+
+    with _settings_module("config.settings.base", BEHIND_PROXY=None) as base:
+        assert base.BEHIND_PROXY is False
+        assert getattr(base, "SECURE_PROXY_SSL_HEADER", None) is None
+
+    with _settings_module("config.settings.base", BEHIND_PROXY="1") as base:
+        assert base.BEHIND_PROXY is True
+        assert base.SECURE_PROXY_SSL_HEADER == ("HTTP_X_FORWARDED_PROTO", "https")
+
+    # And left as it was found, for the same reload reason in the other
+    # direction: the branch above BOUND the header, and the reload back to the
+    # original environment will not unbind it.
+    restored = importlib.import_module("config.settings.base")
+    if not had_header and hasattr(restored, "SECURE_PROXY_SSL_HEADER"):
+        del restored.SECURE_PROXY_SSL_HEADER
+
     assert "BEHIND_PROXY" in _env_example()
 
 
@@ -338,7 +382,7 @@ def test_the_proxy_header_is_off_unless_the_deployment_says_it_is_behind_one() -
 
 
 @contextmanager
-def _settings_module(name: str, **environment: str) -> Iterator[Any]:
+def _settings_module(name: str, **environment: str | None) -> Iterator[Any]:
     """Import a settings module under a given environment, then put it back.
 
     Settings are read at import time — the honest thing for settings to do, and
@@ -346,30 +390,116 @@ def _settings_module(name: str, **environment: str) -> Iterator[Any]:
     gets is to import the module with the bucket set. So the module is reloaded,
     asserted on, and reloaded again with the original environment.
     `django.conf.settings` is a separate object and is untouched throughout.
+
+    **A value of `None` CLEARS the key instead of setting it**, and that is the
+    half a pinned environment cannot do without. A dict that only ever adds
+    variables pins nothing about the ones it is silent on: the checkout's own
+    `.env` supplies those, so the same assertion is green on a laptop with no
+    sign-in door and red on one that has configured a client id — a test whose
+    verdict is the machine it ran on. Clearing takes
+    BOTH sources, because there are two: the process environment, and the `.env`
+    file `config.settings.base` reads at import — `environ.Env.read_env`
+    SETDEFAULTS, so a key popped here would be handed straight back by the
+    reload. So `read_env` is wrapped for the length of the block and the cleared
+    keys are popped again after it runs.
     """
     base = importlib.import_module("config.settings.base")
     is_base = name == base.__name__
+    applied = {key: value for key, value in environment.items() if value is not None}
+    cleared = tuple(key for key, value in environment.items() if value is None)
+    read_env = environ.Env.read_env
+
+    def _read_env_minus_the_cleared(_self: Any, *args: Any, **kwargs: Any) -> None:
+        read_env(*args, **kwargs)
+        for key in cleared:
+            os.environ.pop(key, None)
+
     try:
-        with mock.patch.dict(os.environ, environment):
-            importlib.reload(base)
-            if is_base:
-                yield base
-            else:
-                # Dropped rather than reloaded, both here and on the way out:
-                # `config.settings.production` raises unless the environment it
-                # demands is present, so it must be *executed* under the patch
-                # and simply not left behind afterwards.
-                sys.modules.pop(name, None)
-                yield importlib.import_module(name)
+        with mock.patch.dict(os.environ, applied):
+            for key in cleared:
+                os.environ.pop(key, None)
+            with mock.patch.object(environ.Env, "read_env", _read_env_minus_the_cleared):
+                importlib.reload(base)
+                if is_base:
+                    yield base
+                else:
+                    # Dropped rather than reloaded, both here and on the way
+                    # out: `config.settings.production` raises unless the
+                    # environment it demands is present, so it must be
+                    # *executed* under the patch and simply not left behind
+                    # afterwards.
+                    sys.modules.pop(name, None)
+                    yield importlib.import_module(name)
     finally:
         if not is_base:
             sys.modules.pop(name, None)
         importlib.reload(base)
 
 
-# What `config.settings.production` refuses to start without. A throwaway pair
-# of real-shaped keys, so the guards pass and the module can be read.
-PRODUCTION_ENVIRONMENT = {
+# Every environment key `config/settings/base.py` reads under the identity, the
+# front-end and the brand names — the population `PRODUCTION_ENVIRONMENT` has to
+# be complete over, DERIVED from `base.py` below rather than typed here, because
+# a hand list goes stale the day somebody adds the next key and nothing says so.
+IDENTITY_KEY_PREFIXES = (
+    "ZITADEL_",
+    "GOOGLE_",
+    "PRODUCT_BASE_URL",
+    "PUBLIC_BASE_URL",
+    "BRAND_ACCENT",
+    # Both spellings, and the second one is the setting. I0 wrote `SIGN_IN_DOOR`
+    # here one rung before the door existed; A5 reads the environment under the
+    # product's own `DJB_` prefix (`DJB_SIGN_IN_DOOR`), which starts with none of
+    # the names above — so the census could not see the key the rider was about
+    # and the pin below would have been silent on exactly the setting that
+    # decides where every person in the deployment types their password. The
+    # bare name stays: a product that reads `SIGN_IN_DOOR` unprefixed is still
+    # in the population this census is over.
+    "SIGN_IN_DOOR",
+    "DJB_SIGN_IN_DOOR",
+    "DJB_IDENTITY_SHAPE",
+)
+
+
+def identity_keys_base_reads() -> frozenset[str]:
+    """Every `env.<kind>("<KEY>", …)` in `base.py` whose key is an identity one.
+
+    Parsed rather than grepped: an `env.str(` split over two lines is invisible
+    to a line-oriented census, and that is exactly the key the next F14 will be
+    about.
+    """
+    found: set[str] = set()
+    for node in ast.walk(source_tree(BASE_DIR / "config" / "settings" / "base.py")):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = node.func
+        if not isinstance(callee, ast.Attribute):
+            continue
+        receiver = callee.value
+        if not isinstance(receiver, ast.Name) or receiver.id != "env":
+            continue
+        if not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            if first.value.startswith(IDENTITY_KEY_PREFIXES):
+                found.add(first.value)
+    return frozenset(found)
+
+
+# What `config.settings.production` refuses to start without, and what it
+# refuses to read from the machine underneath it. A throwaway pair of
+# real-shaped keys, so the guards pass and the module can be read.
+#
+# **`None` means CLEARED, and the identity population is cleared in full.** A
+# test that imports production under this dict is asking what a deployment with
+# no sign-in door configured gets. The dict used to be SILENT about the identity
+# keys, so `.env` answered instead, and `test_an_unconfigured_provider_gets_no_
+# origin` below went red on the first checkout that configured a client id — a
+# platform test that fails because sign-in works. Silence is not a pin, and the
+# census above is what keeps it from going quiet again. An arm is an explicit
+# override —
+# `IDENTITY_ENVIRONMENT` below is the worked one.
+PRODUCTION_ENVIRONMENT: dict[str, str | None] = {
     "DEBUG": "0",
     "ALLOWED_HOSTS": "example.test",
     "SECRET_KEY": "b3a1" * 16,  # pragma: allowlist secret
@@ -380,7 +510,168 @@ PRODUCTION_ENVIRONMENT = {
     # settings needs a complete production environment, which is what this
     # dict is for.
     "DATABASE_PASSWORD": "throwaway-production-database-password",  # pragma: allowlist secret
+    # The identity population, cleared. Kept in one block and in the order the
+    # census prints, so adding the key the census names is a one-line edit.
+    "BRAND_ACCENT": None,
+    # The shape declaration. Cleared like the rest: a production import
+    # under this dict is asking what a deployment that declared nothing gets,
+    # and an ambient declaration in the checkout's own `.env` would otherwise
+    # answer for it — the same silence the block above was written to end.
+    "DJB_IDENTITY_SHAPE": None,
+    # The sign-in door (rung A5, design C-13). Cleared, so a production import
+    # under this dict is asking what a deployment that declared nothing gets —
+    # and what it gets is `hosted`, the default, which is the answer every
+    # criterion in lane A is proven against. A checkout that had turned its own
+    # door to `ours` in `.env` would otherwise answer for the test, and the CSP
+    # census below would then be measuring that checkout rather than the
+    # derivation.
+    "DJB_SIGN_IN_DOOR": None,
+    "GOOGLE_OAUTH_CLIENT_ID": None,
+    "GOOGLE_OAUTH_CLIENT_SECRET": None,
+    "GOOGLE_WORKSPACE_DOMAINS": None,
+    "PRODUCT_BASE_URL": None,
+    "PUBLIC_BASE_URL": None,
+    "ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION": None,
+    "ZITADEL_ALLOW_SELF_REGISTRATION": None,
+    "ZITADEL_BROWSER_APP_NAME": None,
+    "ZITADEL_CLIENT_ID": None,
+    "ZITADEL_CLIENT_SECRET": None,
+    "ZITADEL_DEV_USER_EMAIL": None,
+    "ZITADEL_DEV_USER_PASSWORD": None,
+    "ZITADEL_ISSUER": None,
+    "ZITADEL_JWKS_CACHE_SECONDS": None,
+    "ZITADEL_MANAGEMENT_TIMEOUT": None,
+    "ZITADEL_MAX_PASSWORD_ATTEMPTS": None,
+    "ZITADEL_MCP_AUDIENCE": None,
+    "ZITADEL_MCP_CLIENT_NAME": None,
+    "ZITADEL_MCP_RESOURCE_NAME": None,
+    "ZITADEL_PAT": None,
+    "ZITADEL_PROJECT_NAME": None,
+    # The sign-in seam's two clocks (rung A3, design I-A §3.2). They are here
+    # because the census above is DERIVED from `base.py`'s own `env.<kind>`
+    # reads and these two match `IDENTITY_KEY_PREFIXES` — the same one-line
+    # consequence A5's rider names for `SIGN_IN_DOOR`, arriving two rungs
+    # early because the clocks land with the seam rather than with the door.
+    "ZITADEL_SIGNIN_DEADLINE": None,
+    "ZITADEL_SIGNIN_TIMEOUT": None,
 }
+
+
+def test_the_production_environment_pins_every_identity_key_base_reads() -> None:
+    """Completeness as a census, not as a list somebody remembered to extend.
+
+    The population comes out of `base.py` itself; a key this dict is silent on
+    is a key the machine underneath the test answers for. Both halves are worth
+    failing on: a key `base` reads and the dict does not name (the next leak),
+    and a key the dict names that `base` no longer reads (a pin outliving its
+    setting, which reads as coverage and is not).
+    """
+    read_by_base = identity_keys_base_reads()
+    pinned = {key for key in PRODUCTION_ENVIRONMENT if key.startswith(IDENTITY_KEY_PREFIXES)}
+
+    assert read_by_base, "the census found no identity keys at all — it stopped looking"
+    assert read_by_base - pinned == set(), "identity keys base reads that the dict does not pin"
+    assert pinned - read_by_base == set(), "keys pinned here that base no longer reads"
+
+
+PLANTED_CLIENT_ID = "planted-by-the-test"
+
+
+def test_a_cleared_key_is_gone_from_the_process_environment() -> None:
+    """Half one of the mechanism the completeness rests on, driven both ways."""
+    with mock.patch.dict(os.environ, {"ZITADEL_CLIENT_ID": PLANTED_CLIENT_ID}):
+        with _settings_module("config.settings.base") as base:
+            assert base.ZITADEL_CLIENT_ID == PLANTED_CLIENT_ID
+
+        with _settings_module("config.settings.base", ZITADEL_CLIENT_ID=None) as base:
+            assert base.ZITADEL_CLIENT_ID == ""
+
+
+def test_a_cleared_key_is_gone_from_the_env_file_too() -> None:
+    """Half two, and the half nobody would think to write.
+
+    `.env` is a SECOND source, and `environ.Env.read_env` SETDEFAULTS: a key
+    popped from the process environment is handed straight back by the reload,
+    so clearing that only pops would be clearing that does nothing on exactly
+    the checkout it exists for — one whose `.env` names a client id. This tree's
+    own `.env` ships that line EMPTY, so the difference is invisible here and
+    would first be seen by a product that had configured sign-in, which is the
+    audience the pin is for.
+
+    So the test builds its own victim rather than editing anything: a stand-in
+    for `read_env` that supplies a configured value the way a configured `.env`
+    would, and the assertion is that the import still could not see it.
+
+    **The stand-in stands in for the whole SOURCE, file included, and that is
+    what makes the test say the same thing on a runner as on a laptop.**
+    `base.py` reads the file conditionally — `if _env_file.is_file():
+    env.read_env(...)` — so a stand-in for the CALL alone is inert on any
+    checkout that has no `.env`: the call never happens, the plant never lands,
+    and the control assertion below reads the `env.str` default instead. That is
+    not hypothetical. GitHub's `gate` job on 76fb372e (run 35051950098) failed
+    here and nowhere else — `assert '' == 'planted-by-the-test'`, 3,812 passed —
+    because CI sets the environment from `.env.example`'s values and writes no
+    `.env` at all, while every local bank was green on a checkout that has one.
+    A test whose verdict is whether the machine it ran on happens to have a file
+    is the same defect `_settings_module`'s clearing was written to end, one
+    level out. So the pair below stands in for both halves — the file IS there
+    (`_the_env_file_is_there`) and it says this (`_configured_env_file`) — and
+    the presence half answers for `.env` and for nothing else, delegating every
+    other path to the real `is_file` so no other file consulted during the
+    reload is answered for by this test.
+    """
+
+    def _configured_env_file(_self: Any, *args: Any, **kwargs: Any) -> None:
+        """What `read_env` does on a checkout whose `.env` names a client id.
+
+        Assigned rather than `setdefault`ed, and that is not a shortcut: this
+        tree's `.env` ships the line EMPTY, so the session's very first import
+        has already put `""` in `os.environ` and a stand-in that setdefaulted
+        would quietly do nothing at all — a plant that cannot fail standing in
+        for a source that can.
+        """
+        os.environ["ZITADEL_CLIENT_ID"] = PLANTED_CLIENT_ID
+
+    # THE PATH IS ASKED OF THE MODULE THAT READS IT, never rebuilt here.
+    # `base.py` owns the name — `_env_file = BASE_DIR / ".env"` is the very
+    # path whose `is_file()` the stand-in below answers for — so a hand-built
+    # `BASE_DIR / ".env"` here is a second opinion about it: green on the day it
+    # is written, and silently answering for nothing the day `base.py` moves or
+    # renames the file it reads.
+    #
+    # It is also the only form the platform partition can place, and that is
+    # what made this a hotfix rather than a tidy-up. `.env` is ignored and
+    # per-checkout, so `quality/partition.py::tree_paths()` — tracked files plus
+    # untracked-NON-IGNORED ones — never sees it: a closure class naming `.env`
+    # alone is exit 2 for matching nothing in the tree, and `.env` appended to
+    # an existing class is dropped in silence while the read census (§3) goes on
+    # reporting the same stray. There was no closure class this read could have
+    # joined. Asking the settings module instead puts the read inside `config/**`,
+    # which class C3 already covers, and the test says exactly what it meant.
+    env_file = SETTINGS_ENV_FILE
+    real_is_file = Path.is_file
+
+    def _the_env_file_is_there(self: Path, *args: Any, **kwargs: Any) -> bool:
+        """`.env` exists — for `.env` only, and for nothing else on disk."""
+        if self == env_file:
+            return True
+        return real_is_file(self, *args, **kwargs)
+
+    # `mock.patch.dict` with nothing to add is doing the whole of its other job:
+    # it snapshots `os.environ` and puts it back. `_settings_module` reloads
+    # `base` one last time on the way out, after its own snapshot has been
+    # restored, and that reload runs the stand-in above — so without this the
+    # plant would outlive the test and every later case in the session would
+    # read a configured client id.
+    with mock.patch.dict(os.environ, {}):
+        with mock.patch.object(Path, "is_file", _the_env_file_is_there):
+            with mock.patch.object(environ.Env, "read_env", _configured_env_file):
+                # The control: nothing cleared, and the planted file reaches settings.
+                with _settings_module("config.settings.base") as base:
+                    assert base.ZITADEL_CLIENT_ID == PLANTED_CLIENT_ID
+
+                with _settings_module("config.settings.base", ZITADEL_CLIENT_ID=None) as base:
+                    assert base.ZITADEL_CLIENT_ID == ""
 
 
 def test_whitenoise_sits_immediately_after_the_security_middleware() -> None:
@@ -414,7 +705,13 @@ def test_a_product_base_url_moves_where_sign_in_lands() -> None:
     cross-product class; the branch below is what makes this seam's version of
     it fail loudly instead of shipping again.
     """
-    with _settings_module("config.settings.base") as base:
+    # CLEARED, not merely unmentioned. An environment this branch is silent
+    # about is one the checkout's own `.env` answers for, and a checkout that
+    # declares a front end turned "unset derives to the placeholder" into
+    # "today's environment is today's environment" — green or red according to
+    # the machine. `None` is `_settings_module`'s clear, and it is what makes
+    # the answer the derivation's.
+    with _settings_module("config.settings.base", PRODUCT_BASE_URL=None) as base:
         assert base.PRODUCT_BASE_URL == base.PUBLIC_BASE_URL
         assert base.LOGIN_REDIRECT_URL == "/welcome/"
 
@@ -1132,7 +1429,7 @@ IDENTITY_ENVIRONMENT = {
 }
 
 
-def _rendered_csp(**environment: str) -> str:
+def _rendered_csp(**environment: str | None) -> str:
     """The header a browser would actually receive, through django-csp itself.
 
     Not the settings dict: the defect was in what the browser enforces, so the
@@ -1154,7 +1451,7 @@ def _rendered_csp(**environment: str) -> str:
     return str(rendered.headers["Content-Security-Policy"])
 
 
-def _form_action(**environment: str) -> list[str]:
+def _form_action(**environment: str | None) -> list[str]:
     header = _rendered_csp(**environment)
     for directive in header.split(";"):
         parts = directive.split()
@@ -1205,3 +1502,75 @@ def test_an_unconfigured_provider_gets_no_origin() -> None:
     sources = _form_action(**PRODUCTION_ENVIRONMENT)
 
     assert sources == ["'self'"]
+
+
+# --- The CSP the door on OUR host has to survive (A5.6) -----------------------
+# The other half of the same defect, and the half that has no symptom on this
+# side of the wire. With `SIGN_IN_DOOR=ours` the password is typed on OUR page,
+# our server finalizes the OIDC auth request, and the answer is a 302 towards
+# the OIDC client's registered redirect URI — a hop in the same submission's
+# chain, so `form-action` decides whether the browser follows it. It does not
+# tell us when it declines: the server log shows the 302 leaving, and every
+# headless drive in this suite follows it happily, because a test client has no
+# CSP. So the assertion is on the rendered header against the URIs the SEED
+# registers, which is the only place those URIs exist.
+
+#: The production environment with both providers armed AND our own door open.
+#: `PUBLIC_BASE_URL` is what the seed builds the browser client's redirect URI
+#: from, so it is the one value this case needs beyond `IDENTITY_ENVIRONMENT`.
+OUR_DOOR_ENVIRONMENT = {
+    **IDENTITY_ENVIRONMENT,
+    "DJB_SIGN_IN_DOOR": "ours",
+    "PUBLIC_BASE_URL": "https://app.example.test",
+}
+
+
+def _declared_redirect_uris(base_url: str) -> list[str]:
+    """Every redirect URI `zitadel_seed` registers, read off the seed itself.
+
+    Not a list typed here. The point of the criterion is that the policy and
+    the registration cannot disagree, and two hand lists agree only until one
+    of them moves — so the test reads the same constants the command does, and
+    a seed that registers a new client fails this the day it lands rather than
+    the day a browser refuses a redirect nobody can see refused.
+    """
+    return [
+        f"{base_url}{zitadel_seed.BROWSER_CALLBACK_PATH}",
+        f"{base_url}{zitadel_seed.BROWSER_LOGOUT_PATH}",
+        *zitadel_seed.MCP_CALLBACK_URIS,
+    ]
+
+
+def test_the_csp_form_action_admits_every_declared_redirect_origin() -> None:
+    """Under `ours`, every declared client's redirect origin is in the directive.
+
+    A population, not an example: the set of origins the seed registers, each
+    of them asserted present. A derivation that admitted the browser client and
+    forgot the pre-registered MCP native client would pass a test that named
+    one URI, and the person it failed for would be somebody completing a
+    sign-in for an assistant with no way to see why.
+    """
+    sources = _form_action(**OUR_DOOR_ENVIRONMENT)
+    base = str(OUR_DOOR_ENVIRONMENT["PUBLIC_BASE_URL"])
+
+    wanted = {urlsplit(uri) for uri in _declared_redirect_uris(base)}
+    for parts in wanted:
+        origin = f"{parts.scheme}://{parts.netloc}"
+        assert origin in sources, f"{origin} is registered with Zitadel and not in {sources}"
+
+
+def test_the_redirect_origins_are_not_admitted_under_the_hosted_door() -> None:
+    """The control, and it is the derivation rather than a second list.
+
+    Under `hosted` no form of ours is ever submitted into that chain — the
+    password is typed on the identity platform's own screens — so admitting
+    the loopback origins of a native client would be a policy wider than the
+    doors this deployment opened, which is the rule the authorize origins
+    beside them are derived by. `IDENTITY_ENVIRONMENT` clears
+    `DJB_SIGN_IN_DOOR`, so this is the default deployment.
+    """
+    sources = _form_action(**IDENTITY_ENVIRONMENT)
+
+    for uri in _declared_redirect_uris("https://app.example.test"):
+        parts = urlsplit(uri)
+        assert f"{parts.scheme}://{parts.netloc}" not in sources, uri

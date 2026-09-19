@@ -52,9 +52,14 @@ from django.conf import settings
 from django.contrib.auth import BACKEND_SESSION_KEY, HASH_SESSION_KEY, SESSION_KEY
 
 from apps.accounts.models import User
-from apps.accounts.services import issue_token
+from apps.accounts.services import issue_token, revoke_token
 from apps.core.actor import actor_for
 from apps.core.models import Tenant
+
+# The transport harness for the machine door, from the module that owns it —
+# `apps/core/tests/test_mcp.py`. Copying it here would be a second thing to keep
+# in step with the MCP protocol version, and `core` sits below `accounts`.
+from apps.core.tests.test_mcp import MCP_HEADERS, running
 
 # `transaction=True` because the request commits: the widget route's service
 # registers work on `transaction.on_commit`, and a test that never commits would
@@ -63,7 +68,19 @@ from apps.core.models import Tenant
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
 
 WIDGETS_URL = "/api/v1/widgets/"
+MCP_URL = "/mcp"
 BASE_URL = "http://testserver"
+
+# The two sentences this door says no with, written out rather than imported
+# from the module they pin: a pin derived from the thing it pins cannot fail,
+# and both of these are wire contract — the first is what a caller HOLDING a
+# credential reads, the second what a caller who sent nothing reads.
+BEARER_NOT_VALID = "That bearer token is not valid."
+NOTHING_IDENTIFIED_YOU = (
+    "We could not tell who is making this request. Sign in, or send a token you "
+    "hold as `Authorization: Bearer <token>`."
+)
+SESSION_DESTINATION = "self:session"
 
 # Any GET through `CsrfViewMiddleware` leaves the cookie behind; the admin login
 # page is the one page always mounted in this tree. Nothing about the admin is
@@ -83,6 +100,34 @@ async def wire() -> AsyncIterator[httpx.AsyncClient]:
         yield client
 
 
+@asynccontextmanager
+async def both_doors() -> AsyncIterator[httpx.AsyncClient]:
+    """`wire()`, with the machine door's session manager running as well.
+
+    One application and one client, so a probe of `/api/v1/…` and a probe of
+    `/mcp` in the same test are two doors onto the same process rather than two
+    processes that happen to agree. `running(...)` is what `/mcp` needs: the
+    Streamable HTTP transport keeps a session manager, and a POST to it without
+    one is a transport error rather than the refusal under test.
+    """
+    from config.asgi import build_application
+
+    application = build_application()
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
+            yield client
+
+
+def tools_list() -> dict[str, Any]:
+    """The cheapest thing a real MCP client asks for, as JSON-RPC.
+
+    The credential is refused at the mount, before any tool is reached, so the
+    method here only has to be one a client really sends.
+    """
+    return {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+
+
 @pytest.fixture
 def bearer(tenant: Tenant, owner: User) -> str:
     """A real `ApiToken` for a real user with a real membership.
@@ -95,6 +140,26 @@ def bearer(tenant: Tenant, owner: User) -> str:
     _, plaintext = issue_token(
         user=owner, tenant=tenant, name="over-the-wire", actor=actor_for(user=owner, tenant=tenant)
     )
+    return plaintext
+
+
+@pytest.fixture
+def revoked_bearer(tenant: Tenant, owner: User) -> str:
+    """A real token for a real person, then withdrawn — the credential in question.
+
+    Minted and revoked through the services rather than by writing
+    `revoked_at`, so what the doors meet is the state a revocation really
+    leaves. The plaintext is what the caller still holds: revoking a token
+    takes nothing off the caller's shelf, which is the whole reason "we could
+    not tell who is making this request" was the wrong sentence for it.
+
+    A fixture for the reason `bearer` is one — the tests are `async def` and the
+    ORM refuses a synchronous query inside a running event loop — and the
+    revocation has to be COMMITTED before the request under test looks for it.
+    """
+    actor = actor_for(user=owner, tenant=tenant)
+    token, plaintext = issue_token(user=owner, tenant=tenant, name="withdrawn", actor=actor)
+    revoke_token(token=token, tenant=tenant, actor=actor)
     return plaintext
 
 
@@ -227,6 +292,67 @@ async def test_a_session_write_with_a_csrf_token_writes(
 
 
 # --- The decline is about the cookie, not about the method --------------------
+
+
+# --- The credential the caller HOLDS, said the same way at both doors --------
+
+
+async def test_a_revoked_bearer_reads_the_same_sentence_on_both_doors(
+    revoked_bearer: str, recorded_workflow_starts: None
+) -> None:
+    """One refusal, two doors, one sentence.
+
+    A revoked token is a credential the caller **holds**, presented at the door,
+    and the door knew exactly who it belonged to before it refused. REST
+    answered "We could not tell who is making this request." — which is the
+    fact for a request that sent *nothing*, and false here — while `/mcp`
+    answered "That bearer token is not valid." The same caller, the same
+    credential, two different accounts of what happened.
+
+    The MCP sentence is the one that survives, on both doors, because it is the
+    true one: A9's posture is that a bearer's holder may be told their token is
+    not valid. Nothing is leaked by it — the token was presented, so its bearer
+    already knows the string, and revoked, expired and never-existed are still
+    answered identically, which is the fact the hashing protects.
+
+    **One code, not two** (E9): `unauthenticated` is still what this is, and the
+    `detail` is the half that varies with what happened. The third probe is the
+    control — the caller who sent nothing keeps the sentence and the remedies
+    they always had, including the session remedy REST can honour.
+    """
+    async with both_doors() as client:
+        bearer = {"authorization": f"Bearer {revoked_bearer}"}
+        over_rest = await client.get(WIDGETS_URL, headers=bearer)
+        over_mcp = await client.post(
+            MCP_URL,
+            headers={**MCP_HEADERS, **bearer},
+            json=tools_list(),
+        )
+        sent_nothing = await client.get(WIDGETS_URL)
+
+    assert over_rest.status_code == 401, over_rest.text
+    assert over_mcp.status_code == 401, over_mcp.text
+    rest_body = over_rest.json()
+    mcp_body = over_mcp.json()
+
+    # The two doors, on the two fields a client actually consumes.
+    assert rest_body["code"] == mcp_body["code"] == "unauthenticated", (rest_body, mcp_body)
+    assert rest_body["detail"] == mcp_body["detail"] == BEARER_NOT_VALID, (rest_body, mcp_body)
+
+    # The control: nothing sent, and nothing about that answer moved.
+    assert sent_nothing.status_code == 401, sent_nothing.text
+    nothing_body = sent_nothing.json()
+    assert nothing_body["code"] == "unauthenticated", nothing_body
+    assert nothing_body["detail"] == NOTHING_IDENTIFIED_YOU, nothing_body
+    destinations = [remedy["destination"] for remedy in nothing_body["remedies"]]
+    assert SESSION_DESTINATION in destinations, nothing_body
+    # And the remedy is still true on THIS door: REST honours a session, so the
+    # remedy that sends a caller to sign in is the one the human door keeps. It
+    # is dropped only where it cannot be honoured (`/mcp`), which is
+    # `test_mcp_oauth.py`'s half of this.
+    assert SESSION_DESTINATION in [
+        remedy["destination"] for remedy in rest_body.get("remedies", [])
+    ], rest_body
 
 
 async def test_a_cookie_that_is_not_a_session_is_still_nothing(

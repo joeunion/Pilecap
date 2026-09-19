@@ -28,6 +28,8 @@ from django.urls import URLPattern, URLResolver, include, path
 from django.views.decorators.csrf import csrf_exempt
 
 from apps.accounts import oauth
+from apps.accounts import views as accounts_views
+from apps.accounts.admin import admin_login, admin_password_change
 from apps.core import health, views
 from apps.core.api import docs
 from config.api import api, api_not_found, api_server_error
@@ -61,7 +63,44 @@ urlpatterns: list[URLPattern | URLResolver] = [
     # imports that module, so `partial` is what keeps the arrow pointing one
     # way. Ninja mounts its own document view exactly like this.
     path("llms.txt", partial(docs.llms_txt, api=api), name="llms-txt"),
+    # ONE line ahead of the admin, and it shadows ONE of its URLs (ADR
+    # ident-4). Django's `/admin/login/` is a password form POSTing against
+    # `User.password` — the second credential store the ADR closed — so it is
+    # taken over here rather than left mounted and hoped about. `admin.site.urls`
+    # below still contributes every `admin:` name including `admin:login`, which
+    # still reverses to this path; what changed is which callable answers it.
+    # A shadow rather than a custom `AdminSite`: a second admin object is one
+    # every `ServiceModelAdmin` in the tree would have to be re-registered on.
+    path("admin/login/", admin_login, name="admin-login"),
+    # The same shadow, one rung later, for the two URLs BEHIND that door that
+    # still wrote `User.password`: `AdminSite.password_change` answered
+    # 200 with three password fields and a POST changed the hash on the row,
+    # and `password_change_done` answered "Password change successful" about a
+    # store this deployment does not keep. Both names still reverse — the
+    # admin below contributes `admin:password_change` and
+    # `admin:password_change_done` exactly as before — and what changed is
+    # again only which callable answers. The third password surface,
+    # `/admin/accounts/user/<id>/password/`, is `UserAdmin`'s own method and is
+    # refused in `apps/accounts/admin.py` where it is defined; it is not
+    # mountable here and does not want to be.
+    path("admin/password_change/", admin_password_change, name="admin-password-change"),
+    path(
+        "admin/password_change/done/",
+        admin_password_change,
+        name="admin-password-change-done",
+    ),
     path("admin/", admin.site.urls),
+    # ONE line ahead of allauth, and it shadows ONE of its URLs — the same
+    # pattern, and the same reasoning, as `/admin/login/` above (design C-13,
+    # the lead's decision 16). `SIGN_IN_DOOR` decides which door answers:
+    # under `hosted`, the default, this view calls allauth's own `LoginView`
+    # and the page is byte-identical to the one this deployment already
+    # serves; under `ours` it draws design P-10's frames over the sign-in seam.
+    # allauth below still contributes the `account_login` NAME, which still
+    # reverses to this path; what changed is which callable answers it. A
+    # `LoginView` subclass was rejected for the reason `apps/accounts/views.py`
+    # records: a multi-step ceremony is not a form.
+    path("accounts/login/", accounts_views.sign_in, name="sign-in"),
     path("accounts/", include("allauth.urls")),
     path(API_PREFIX, api.urls),
     # Reached only when the resolver has already failed INSIDE the API

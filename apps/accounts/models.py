@@ -27,9 +27,10 @@ from django.contrib.auth.models import PermissionsMixin
 from django.db import models
 from django.utils import timezone
 
+from apps.core.authz import default_role_key
 from apps.core.fields import EncryptedJSONField
 from apps.core.lifecycle import Lifecycle, LifecycleKind
-from apps.core.models import BaseModel, Membership, ScopedManager, Tenant, TenantScopedModel
+from apps.core.models import BaseModel, ScopedManager, Tenant, TenantScopedModel
 
 
 class UserManager(BaseUserManager["User"]):
@@ -354,11 +355,24 @@ class SsoConnection(TenantScopedModel):
     metadata = EncryptedJSONField(default=dict, blank=True)
 
     enforced = models.BooleanField(default=False)
-    default_role = models.CharField(
-        max_length=16,
-        choices=Membership.Role.choices,
-        default=Membership.Role.MEMBER,
-    )
+    # **No `choices`, and the default is the deployment's own answer.** A role
+    # is a row a tenant owns (`core.Role`) or a declaration an app makes
+    # (`apps/*/roles.py`), so a three-value enum on this column was a per-process
+    # list refusing keys the tenant itself had made — and `member` as the literal
+    # default was this app deciding what a new person is for a product whose
+    # `roles.py` may not declare that word at all. The width is the key width
+    # `core.Role.key` carries; the guard that used to be `choices` is
+    # `services._refuse_role_above_the_configurer`, which validates the key
+    # against `{owner} + declared + this tenant's rows` where a human is typing
+    # it and says `invalid` in a sentence rather than at a database constraint.
+    #
+    # RECORDED, not fixed: `schemas.py`'s `default_role` is still
+    # `Literal["owner", "admin", "member"]`, so a custom role key this column
+    # now accepts cannot arrive through the REST or MCP door. The column and
+    # the service are right; the WIRE is the half still carrying the old enum,
+    # and widening it is a contract change with its own criteria rather than a
+    # line this sweep takes on the way past.
+    default_role = models.CharField(max_length=64, default=default_role_key)
     disabled_at = models.DateTimeField(null=True, blank=True)
 
     # --- the materialisation, written back by `apply_identity_config` --------
@@ -435,6 +449,23 @@ class SsoConnection(TenantScopedModel):
         """
         return sorted(domain.domain for domain in self.domains.all())
 
+    @property
+    def verified_domains(self) -> list[str]:
+        """The claims that actually route — a subset of `email_domains`.
+
+        Derived from the same prefetched rows as its sibling above, for the same
+        reason and at the same cost, so a caller that already prefetched
+        `domains` pays nothing more for it.
+
+        **The two lists are different questions** and a client needs both: one
+        says what this connection has asked for, the other what an operator has
+        confirmed (a domain claim routes nothing until it is verified). A fresh connection answers
+        `[]` here and says
+        so in the `201`, which is the only place a tenant's administrator finds
+        out that claiming is not the same as routing.
+        """
+        return sorted(row.domain for row in self.domains.all() if row.verified_at is not None)
+
 
 class SsoDomainManager(ScopedManager["SsoDomain"]):
     """`for_tenant`, plus home-realm discovery itself."""
@@ -458,7 +489,7 @@ class SsoDomainManager(ScopedManager["SsoDomain"]):
         return self.get_queryset().select_related("connection").filter(domain=cleaned).first()
 
     def for_domain(self, domain: str) -> SsoDomain | None:
-        """The claim on an email domain, whoever holds it.
+        """The **verified** claim on an email domain, whoever holds it.
 
         This is home-realm discovery: a person types an address, and the whole
         question is *which tenant's IdP owns that domain* — so a tenant-scoped
@@ -466,6 +497,24 @@ class SsoDomainManager(ScopedManager["SsoDomain"]):
         makes it safe is that the caller (`selectors.realm_for_email`) returns
         only the method and the connection's own id: never a tenant name, never
         a slug, never a count.
+
+        **`verified_at__isnull=False`, and it is the whole of the verified-claims routing law.**
+        Until it was there, any tenant's administrator could POST a domain they
+        did not own and capture the platform sign-in for everybody at it: a
+        person with a membership elsewhere was refused outright
+        (`provision_sso_identity`'s third refusal, over the wire: 403), and a
+        person with none was absorbed into the claimant with an `SsoIdentity`
+        and their standing invitation elsewhere quietly dropped (302). Neither
+        needed a bug anywhere else — routing on a self-asserted claim IS the
+        hole, and this filter is the fix.
+
+        **Unverified reads exactly like unclaimed**, byte for byte, at every
+        caller: `realm_for_email` answers the same `Realm`, `sso_enforced_for`
+        answers `None` even when the connection says `enforced`, and
+        `get_connection_for_email` sends the assertion down the platform branch
+        where it would have gone with no claim at all. A claim still RESERVES
+        the name — `claim()` above is deliberately not filtered — so nobody can
+        take a domain from under a tenant that is waiting for an operator.
         """
         cleaned = normalise_domain(domain)
         if not cleaned:
@@ -473,7 +522,11 @@ class SsoDomainManager(ScopedManager["SsoDomain"]):
         return (
             self.get_queryset()
             .select_related("connection", "connection__tenant")
-            .filter(domain=cleaned, connection__status=SsoConnection.Status.ACTIVE)
+            .filter(
+                domain=cleaned,
+                verified_at__isnull=False,
+                connection__status=SsoConnection.Status.ACTIVE,
+            )
             .first()
         )
 
@@ -502,6 +555,23 @@ class SsoDomain(TenantScopedModel):
         related_name="domains",
     )
     domain = models.CharField(max_length=253, unique=True)
+    #: **When an operator confirmed this tenant really owns this domain.** NULL
+    #: is the whole of "unverified", and it is the state every claim starts in:
+    #: there is no flag beside it and no `clean()` law about it, because a null
+    #: column is a state a migration can add and take away, while a routing law
+    #: expressed in two fields is one nobody can read (the routing law, D3/D6).
+    #:
+    #: Written by `services.verify_sso_domain` and by nothing else — an
+    #: operator's audited act through `manage.py verify_sso_domain`. Read by
+    #: exactly three production sites: `SsoDomainManager.for_domain` (which
+    #: routes on verified rows only), `services.provision_sso_identity` (which
+    #: trusts no caller about it) and `schemas.SsoConnectionOut.verified_domains`
+    #: (so a client can see which of its claims route).
+    #:
+    #: A claim still RESERVES the name unverified — `claim()` below does not
+    #: filter on this — because the alternative is that an unverified claim can
+    #: be taken from under a tenant that is waiting for an operator.
+    verified_at = models.DateTimeField(null=True, blank=True)
 
     objects: ClassVar[SsoDomainManager] = SsoDomainManager()
 

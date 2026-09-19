@@ -398,6 +398,60 @@ untracked | "")
     ;;
 esac
 
+# --- THE TAG THE ENV FILE PINS, AGAINST THE TAG THIS TREE IS ------------------
+# EVERY ACT BELOW RUNS THE IMAGE `deploy/.env` NAMES, AND NOTHING ABOVE
+# COMPARED IT TO THE TREE. `IMAGE_TAG` is derived from the tree that is on this
+# box — git where git exists, the archive's `TREE` marker where it does not.
+# The image compose actually starts is a different value read from a different
+# place: `${DJB_IMAGE_REGISTRY}/djb-<service>:${DJB_IMAGE_TAG}`, interpolated
+# out of `deploy/.env` for `web`, for `worker`, and for the `oneoff` service
+# that every one-off act in this script runs inside (deploy/compose.yaml). Two
+# names for "the image this release is releasing", never compared.
+#
+# IT HAS ALREADY COST THIS DEPLOYMENT ONE RELEASE. On staging the tree was
+# re-shipped, the images were built for the new tag, and runbook step 31's
+# `secrets-fetch` restored `deploy/.env` from the vault still pinning the tag
+# stored at the LAST deploy. Nothing failed, `/` served the old code, and
+# `docker inspect` was the only witness. Unreconciled HERE it is worse than it
+# was there: act 2 would migrate THIS tree's schema through the OTHER tree's
+# code, and act 6 would then recreate the pair onto the old tag — the exact
+# new-code-on-an-old-schema window this script's ordering exists to close,
+# inverted, and with a clean 7/7 transcript over the top of it.
+#
+# `provision.sh up` is the one thing that reconciles the file to the tree
+# (`reconcile_image_tag`), and runbook step 34 runs it — but this is a separate
+# command, and a box has been released without it. So the question is asked
+# HERE, before act 1, where the honest answer is still "no act ran".
+#
+# WHAT IS COMPARED IS THE ENVIRONMENT, NOT THE FILE'S TEXT. `.env` was sourced
+# above, so `$DJB_IMAGE_TAG` is the value compose will interpolate — including
+# the case where the file names none and the operator exported one, which is
+# the runbook's own idiom and would be invisible to a reader of the file.
+#
+# AN ABSENT PIN IS NOT A DISAGREEMENT, and the shape is `tree-digest`'s above:
+# absence compares nothing. `deploy/compose.yaml` declares the slot required
+# and undefaulted (`:?`), so a missing one is refused at the first act by the
+# file that owns it, naming the slot; a second sentence about it here would be
+# this script answering a question it was not asked.
+if [ -n "${DJB_IMAGE_TAG:-}" ] && [ "$DJB_IMAGE_TAG" != "$IMAGE_TAG" ]; then
+    echo "!! release: REFUSED — the env file pins a different tree than this box holds" >&2
+    echo "   this tree is    $IMAGE_TAG" >&2
+    echo "   the env file    $DJB_IMAGE_TAG    ($HERE/.env)" >&2
+    echo "" >&2
+    echo "   Every act below runs in a container on the image that env file names," >&2
+    echo "   and act 6 recreates web and worker onto it. This release would migrate" >&2
+    echo "   THIS tree's schema through THAT tree's code and print 7/7 having done" >&2
+    echo "   it; nothing afterwards would say so." >&2
+    echo "" >&2
+    echo "   Reconcile the file to the tree first. That is what 'provision.sh up'" >&2
+    echo "   does, and it announces the tag it adopted:" >&2
+    echo "" >&2
+    echo "     ./deploy/provision.sh up" >&2
+    echo "" >&2
+    echo "   Nothing was released; no act ran." >&2
+    exit 2
+fi
+
 RELEASE_SERVICES=(web worker)
 RELEASE_REFS=()
 RELEASE_DIGESTS=()

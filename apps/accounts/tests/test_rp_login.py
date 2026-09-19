@@ -22,22 +22,46 @@ can forge our own state.
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from allauth.socialaccount.models import SocialAccount
 from django.test import Client
 from django.urls import reverse
 
 from apps.accounts.models import User
 from apps.accounts.tests.stub_issuer import StubIssuer
-from apps.core.actor import system_actor
-from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import invite_member
+from apps.core.actor import actor_for, system_actor
+from apps.core.models import Invitation, Membership, Organization, Tenant
+from apps.core.services import add_membership, create_organization, invite_member
 
 pytestmark = pytest.mark.django_db
 
 CALLBACK_PATH = "/accounts/oidc/zitadel/login/callback/"
+
+# The event the adapter's guard writes when an offer no longer applies. Named
+# once, here, because two tests and the adapter have to agree on the string and
+# a dashboard groups by it (`core.log`: the first argument is a NAME).
+NOT_APPLIED_EVENT = "accounts.invitation.not_applied"
+
+
+def structured(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    """Every structured line captured so far, parsed back from what left the process.
+
+    Deliberately not `structlog.testing.capture_logs`, which swaps the whole
+    processor chain out; this reads what stdlib logging received, which is the
+    rendering a person actually queries. The `{` test is what keeps a stray
+    plain-text line from a library out of the list — the idiom
+    `core/tests/test_vocabulary.py` uses, for the same reason.
+    """
+    return [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith("{")
+    ]
 
 
 def start_login(api: Client) -> dict[str, list[str]]:
@@ -271,6 +295,302 @@ def test_an_expired_invitation_still_lets_the_person_in(
     assert not Membership.objects.filter(user_id=person.pk).exists()
 
 
+# --- an EXISTING person's pending invitations, honoured at sign-in -----------
+#
+# Everything above this line is about somebody arriving for the FIRST time, and
+# that is the only case the invitation join ever covered: it ran from
+# `AccountAdapter.save_user`, which fires when allauth writes a `User` row. A
+# person who already has an account and is invited into a second tenant never
+# reaches it — and the invitation mail says "sign in and you will land in …",
+# which is the promise these cases hold the tree to.
+
+
+def invited_into_a_second_tenant(
+    *,
+    email: str,
+    inviter: User,
+    other_tenant: Tenant,
+    other_root_org: Organization,
+) -> tuple[Invitation, Organization]:
+    """An offer of a place in a BRANCH of the second tenant, never its root.
+
+    The branch is the point. A membership that landed at the root would satisfy
+    "they are in that tenant now" while silently losing the placement the offer
+    named, which is the thing ADR core-20 made the invitation carry.
+    """
+    hat = actor_for(user=inviter, tenant=other_tenant, org=other_root_org)
+    branch = create_organization(
+        tenant=other_tenant,
+        parent=other_root_org,
+        name="Field office",
+        slug="field-office",
+        actor=hat,
+    )
+    invitation, _token = invite_member(
+        tenant=other_tenant,
+        email=email,
+        role=Membership.Role.ADMIN,
+        organization=branch,
+        invited_by=inviter,
+        actor=hat,
+    )
+    return invitation, branch
+
+
+def test_an_existing_person_who_signs_in_joins_the_tenant_they_were_invited_into(
+    api: Client,
+    stub_issuer: StubIssuer,
+    tenant: Tenant,
+    member: User,
+    stranger: User,
+    other_tenant: Tenant,
+    other_root_org: Organization,
+) -> None:
+    """The mail's sentence, made true for somebody who already has an account.
+
+    `member` belongs to the first tenant already, so allauth's signup step never
+    runs for them — which is exactly why the offer standing in the second tenant
+    used to expire unnoticed while they signed in and out every day.
+    """
+    stub_issuer.email = member.email
+    invitation, branch = invited_into_a_second_tenant(
+        email=member.email,
+        inviter=stranger,
+        other_tenant=other_tenant,
+        other_root_org=other_root_org,
+    )
+
+    response = sign_in(api)
+
+    assert response.status_code == 302
+    assert Membership.objects.filter(user_id=member.pk, tenant=other_tenant).count() == 1
+    joined = Membership.objects.get(user_id=member.pk, tenant=other_tenant)
+    # The organization and the role are the OFFER's, not a default this file chose.
+    assert joined.organization_id == branch.pk
+    assert joined.role == invitation.role == Membership.Role.ADMIN
+    invitation.refresh_from_db()
+    assert invitation.status == Invitation.Status.ACCEPTED
+    assert invitation.accepted_at is not None
+    # And the place they already held is untouched.
+    assert Membership.objects.filter(user_id=member.pk, tenant=tenant).count() == 1
+    assert api.session.get("_auth_user_id") == str(member.pk)
+
+
+def test_a_second_sign_in_does_not_double_join(
+    api: Client,
+    stub_issuer: StubIssuer,
+    member: User,
+    stranger: User,
+    other_tenant: Tenant,
+    other_root_org: Organization,
+) -> None:
+    """The `accepted` state, driven: signing in twice joins once.
+
+    This is what makes the hook safe to run on EVERY sign-in rather than on the
+    one that happens to be the first: accepting moves the row out of `pending`,
+    and the second pass finds nothing to do.
+    """
+    stub_issuer.email = member.email
+    invitation, branch = invited_into_a_second_tenant(
+        email=member.email,
+        inviter=stranger,
+        other_tenant=other_tenant,
+        other_root_org=other_root_org,
+    )
+
+    sign_in(api)
+    api.logout()
+    second = sign_in(api)
+
+    assert second.status_code == 302
+    assert Membership.objects.filter(user_id=member.pk, tenant=other_tenant).count() == 1
+    invitation.refresh_from_db()
+    assert invitation.status == Invitation.Status.ACCEPTED
+    assert api.session.get("_auth_user_id") == str(member.pk)
+
+
+def test_a_voided_invitation_is_left_alone_and_sign_in_still_lands(
+    api: Client,
+    stub_issuer: StubIssuer,
+    member: User,
+    stranger: User,
+    other_tenant: Tenant,
+    other_root_org: Organization,
+) -> None:
+    """The `revoked` state, driven: withdrawn is withdrawn, and signing in works.
+
+    Two halves, and the second is the one worth saying out loud: an offer that
+    was taken back must not become a membership, and must not cost the person
+    their sign-in either.
+    """
+    stub_issuer.email = member.email
+    invitation, _branch = invited_into_a_second_tenant(
+        email=member.email,
+        inviter=stranger,
+        other_tenant=other_tenant,
+        other_root_org=other_root_org,
+    )
+    Invitation.objects.filter(pk=invitation.pk).update(status=Invitation.Status.REVOKED)
+
+    response = sign_in(api)
+
+    assert response.status_code == 302
+    assert not Membership.objects.filter(user_id=member.pk, tenant=other_tenant).exists()
+    invitation.refresh_from_db()
+    assert invitation.status == Invitation.Status.REVOKED
+    assert invitation.accepted_at is None
+    assert api.session.get("_auth_user_id") == str(member.pk)
+
+
+def test_an_expired_invitation_into_a_second_tenant_is_left_alone_and_sign_in_still_lands(
+    api: Client,
+    stub_issuer: StubIssuer,
+    member: User,
+    stranger: User,
+    other_tenant: Tenant,
+    other_root_org: Organization,
+) -> None:
+    """The `expired` state, driven on the EXISTING-person road.
+
+    The sibling above (`test_an_expired_invitation_still_lets_the_person_in`)
+    drives it for somebody arriving for the first time; expiry is a state, not a
+    deleted row, so the road that reads it has to be the same on both.
+    """
+    from datetime import timedelta
+
+    from apps.core.time import now
+
+    stub_issuer.email = member.email
+    invitation, _branch = invited_into_a_second_tenant(
+        email=member.email,
+        inviter=stranger,
+        other_tenant=other_tenant,
+        other_root_org=other_root_org,
+    )
+    Invitation.objects.filter(pk=invitation.pk).update(expires_at=now() - timedelta(days=1))
+
+    response = sign_in(api)
+
+    assert response.status_code == 302
+    assert not Membership.objects.filter(user_id=member.pk, tenant=other_tenant).exists()
+    invitation.refresh_from_db()
+    assert invitation.status == Invitation.Status.PENDING
+    assert api.session.get("_auth_user_id") == str(member.pk)
+
+
+def test_an_invitation_to_a_place_they_already_hold_does_not_cost_them_the_sign_in(
+    api: Client,
+    stub_issuer: StubIssuer,
+    member: User,
+    stranger: User,
+    other_tenant: Tenant,
+    other_root_org: Organization,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The state the four above do not name, and the one the hook above CREATED.
+
+    `invite_member` does not refuse an address that is already a member — two
+    branches may each have an offer out to one person — so "invited here, then
+    added here by hand, then signs in" leaves a pending offer whose acceptance
+    the service correctly refuses (`Conflict`, "You are already a member of…").
+    Until the join moved onto the sign-in road that refusal was unreachable
+    from one, because the
+    join only ever ran for an account that did not exist yet and therefore held
+    nothing. Running it on every sign-in makes it reachable, and an unhandled
+    refusal there is a 500 on the front door: the invitation that no longer
+    applies simply does not apply, exactly as an expired one does not.
+
+    **And the stepping over is asserted by its LOG, not only by its silence.**
+    Every assertion above this line is about something that did NOT happen, and
+    a bare `except: pass` in the guard satisfies all of them — the one thing
+    that tells "handled, and here is which refusal" from "swallowed" is the
+    line the guard writes. So the event is named, and so are the three fields a
+    person reading it at three in the morning needs: which refusal, which offer,
+    which tenant.
+    """
+    stub_issuer.email = member.email
+    invitation, branch = invited_into_a_second_tenant(
+        email=member.email,
+        inviter=stranger,
+        other_tenant=other_tenant,
+        other_root_org=other_root_org,
+    )
+    add_membership(
+        user=member,
+        tenant=other_tenant,
+        organization=branch,
+        role=Membership.Role.MEMBER,
+        actor=system_actor(tenant=other_tenant),
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        response = sign_in(api)
+
+    assert response.status_code == 302
+    assert Membership.objects.filter(user_id=member.pk, tenant=other_tenant).count() == 1
+    # The place they hold is the one they already held — the offer changed nothing.
+    assert (
+        Membership.objects.get(user_id=member.pk, tenant=other_tenant).role
+        == Membership.Role.MEMBER
+    )
+    invitation.refresh_from_db()
+    assert invitation.status == Invitation.Status.PENDING
+    assert api.session.get("_auth_user_id") == str(member.pk)
+
+    stepped_over = [line for line in structured(caplog) if line.get("event") == NOT_APPLIED_EVENT]
+    assert len(stepped_over) == 1, structured(caplog)
+    # The refusal's own code, not a message somebody will reword.
+    assert stepped_over[0]["code"] == "conflict"
+    assert stepped_over[0]["invitation_id"] == str(invitation.pk)
+    assert stepped_over[0]["tenant_id"] == str(other_tenant.pk)
+
+
+def test_an_unexpected_failure_inside_the_join_is_not_swallowed(
+    api: Client,
+    stub_issuer: StubIssuer,
+    member: User,
+    stranger: User,
+    other_tenant: Tenant,
+    other_root_org: Organization,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard's POPULATION, said out loud: refusals, and nothing else.
+
+    A `try/except` is a claim about which failures are expected, and the claim
+    is only as narrow as the class it names. `DomainError` is the refusal
+    family — an offer that no longer applies — and stepping over one is the
+    honest answer. Everything else is a bug, and a front door that swallows
+    bugs is a front door that signs people in past a broken join and reports
+    a clean 302.
+
+    The sibling above proves the narrow half fires. This proves the wide half
+    does NOT: widen the guard to `Exception` and this case is the one that
+    reds, which is exactly what makes it worth its second.
+    """
+    stub_issuer.email = member.email
+    invited_into_a_second_tenant(
+        email=member.email,
+        inviter=stranger,
+        other_tenant=other_tenant,
+        other_root_org=other_root_org,
+    )
+
+    def the_join_breaks(**_kwargs: Any) -> None:
+        raise RuntimeError("the join broke in a way nobody predicted")
+
+    # Patched on the ADAPTER's name, which is where the call is made from: a
+    # guard that has widened would catch this exactly where it catches a
+    # refusal, and patching the service's own module would leave the same hole.
+    monkeypatch.setattr("apps.accounts.adapter.accept_invitation", the_join_breaks)
+
+    with pytest.raises(RuntimeError, match="nobody predicted"):
+        sign_in(api)
+
+    # And nothing was invented on the way out: no membership, no session.
+    assert not Membership.objects.filter(user_id=member.pk, tenant=other_tenant).exists()
+
+
 def test_the_seed_the_settings_and_the_url_agree_on_the_provider_id() -> None:
     """Three things name this string, and a disagreement is undebuggable.
 
@@ -337,3 +657,228 @@ def test_the_login_page_says_what_is_missing_when_nothing_is_configured(
     # no signup door, and the old page implied both.
     assert "<form" not in page
     assert "sign up" not in page.lower()
+
+
+# --- the join is the SUBJECT's, not the address's -----------------------------
+#
+# Everything above resolves a returning person by the address the issuer
+# asserted. An address is a label an employer can reassign, and the subject is
+# the account — so an assertion carrying a fresh subject and a verified address
+# that already belongs to somebody is a claim on that account, not an update to
+# it. The three cases below are the three shapes that claim arrives in.
+
+
+def test_a_second_subject_for_a_person_who_already_holds_one_is_refused(
+    api: Client, stub_issuer: StubIssuer, owner: User
+) -> None:
+    """The takeover, over the wire: a new subject, somebody else's verified address.
+
+    The owner has signed in before, so their account carries the subject the
+    platform gave them. The issuer then asserts their address under a DIFFERENT
+    subject — which is exactly what a party who can make the trusted issuer say
+    a chosen address is verified would send. Resolving by address hands them the
+    session; resolving by subject refuses, because the subject is the account.
+    """
+    stub_issuer.email = owner.email
+    stub_issuer.subject = "sub-original"
+    sign_in(api)
+    api.logout()
+
+    stub_issuer.subject = "sub-impostor"
+    response = sign_in(api)
+
+    assert response.status_code == 403
+    assert "_auth_user_id" not in api.session
+    owner.refresh_from_db()
+    assert owner.zitadel_sub == "sub-original"
+    assert SocialAccount.objects.filter(uid="sub-impostor").count() == 0
+
+
+def test_a_known_subject_signs_in_even_when_its_address_moved(
+    api: Client, stub_issuer: StubIssuer, owner: User
+) -> None:
+    """The other half of "the subject is the account", and the reason it is safe.
+
+    Somebody's address changes at the identity platform. The subject does not,
+    so they are still the same person here and they still get in. This rung does
+    NOT copy the new address onto our row — the address is a product's own field
+    with its own door, and a sign-in that silently rewrote it would be a second
+    writer of a fact `update_user` owns. The trigger for changing that is a
+    product that wants the platform to be authoritative for addresses.
+    """
+    stub_issuer.email = owner.email
+    stub_issuer.subject = "sub-original"
+    sign_in(api)
+    api.logout()
+
+    stub_issuer.email = "renamed@example.com"
+    response = sign_in(api)
+
+    assert response.status_code == 302
+    assert api.session.get("_auth_user_id") == str(owner.pk)
+    owner.refresh_from_db()
+    assert owner.email == "owner@example.com"
+    assert User.objects.filter(email="renamed@example.com").count() == 0
+
+
+def test_a_social_account_held_by_one_person_is_never_rehomed(
+    api: Client, stub_issuer: StubIssuer, owner: User, member: User
+) -> None:
+    """The variant our own column cannot see, and the row that votes instead.
+
+    Three tables can name a subject — `User.zitadel_sub`, `SocialAccount.uid`
+    and `SsoIdentity.subject` — and the first two must agree. A row predating
+    the column has a `SocialAccount` and no `zitadel_sub`, so a subject-first
+    lookup finds nobody and the address road would happily link the subject to
+    whoever holds the asserted address. allauth already knows whose that subject
+    is; it gets a vote.
+    """
+    SocialAccount.objects.create(user=owner, provider="zitadel", uid="sub-x")
+    assert owner.zitadel_sub is None
+    stub_issuer.subject = "sub-x"
+    stub_issuer.email = member.email
+
+    response = sign_in(api)
+
+    assert response.status_code == 403
+    assert "_auth_user_id" not in api.session
+    assert SocialAccount.objects.get(uid="sub-x").user_id == owner.pk
+    member.refresh_from_db()
+    assert member.zitadel_sub is None
+
+
+@pytest.mark.parametrize("asserted", ["an address nobody holds", "another account's address"])
+def test_an_allauth_row_without_our_column_never_signs_anyone_in(
+    api: Client, stub_issuer: StubIssuer, owner: User, member: User, asserted: str
+) -> None:
+    """allauth's row is a handle on an account, and this door decides who uses it.
+
+    A `SocialAccount` holding the asserted subject while `User.zitadel_sub`
+    holds it for nobody is refused **whatever address the assertion carried**.
+    The address is what separates the two cases and it must not separate the
+    answers: allauth's own `(provider, uid)` lookup runs after this adapter and
+    consults none of its rules, so a subject it holds and we do not is a
+    sign-in this door has to decide or lose.
+
+    * **an address nobody holds** — the fatal one, and the reason this test
+      exists. The old door found nobody by subject, found nobody by address,
+      took the new-person branch and wrote nothing — and allauth then resolved
+      the row and signed the bearer in AS ITS OWNER (V-R2F: 302, a session as
+      `member`). Two roads produce that row: one from before the column existed,
+      and one an `unlink_identity` left behind.
+    * **another account's address** — the variant that was already refused, kept
+      here as the sibling that makes the rule readable as one rule rather than
+      two coincidences. Its own case (`…_never_rehomed`, above) asserts the row
+      is not rehomed; this one asserts the answer does not depend on the
+      address.
+    """
+    SocialAccount.objects.create(user=member, provider="zitadel", uid="sub-y")
+    assert member.zitadel_sub is None
+    stub_issuer.subject = "sub-y"
+    stub_issuer.email = (
+        "nobody-here@example.com" if asserted == "an address nobody holds" else owner.email
+    )
+    people_before = User.objects.count()
+
+    response = sign_in(api)
+
+    assert response.status_code == 403
+    assert "_auth_user_id" not in api.session
+    assert User.objects.count() == people_before, "a refused sign-in creates nobody"
+    assert SocialAccount.objects.get(uid="sub-y").user_id == member.pk
+    member.refresh_from_db()
+    owner.refresh_from_db()
+    assert member.zitadel_sub is None
+    assert owner.zitadel_sub is None
+
+
+# --- a refused sign-in writes nothing ----------------------------------------
+
+
+def test_a_deactivated_person_signing_in_writes_nothing(
+    api: Client,
+    stub_issuer: StubIssuer,
+    member: User,
+    stranger: User,
+    other_tenant: Tenant,
+    other_root_org: Organization,
+) -> None:
+    """Switched off is switched off, and the wall has to hold at the FRONT door.
+
+    allauth refuses an inactive account of its own accord — but it does it at
+    the END, after the adapter has recorded the subject, connected a
+    `SocialAccount` and honoured every standing invitation. The person never
+    gets a session, so the refusal looks like it worked; what actually happened
+    is that a deactivated account grew a membership, an identity join and an
+    accepted invitation on the strength of a login that was refused.
+
+    The invitation is the part that makes it more than untidiness: deactivating
+    somebody is how an administrator ends their access, and an invitation
+    accepted afterwards is access granted after the ending.
+    """
+    invitation, branch = invited_into_a_second_tenant(
+        email=member.email,
+        inviter=stranger,
+        other_tenant=other_tenant,
+        other_root_org=other_root_org,
+    )
+    member.is_active = False
+    member.save(update_fields=["is_active"])
+    stub_issuer.email = member.email
+    memberships_before = Membership.objects.filter(user_id=member.pk).count()
+
+    response = sign_in(api)
+
+    assert response.status_code == 403
+    assert "_auth_user_id" not in api.session
+    member.refresh_from_db()
+    assert member.zitadel_sub is None
+    assert SocialAccount.objects.filter(user_id=member.pk).count() == 0
+    assert Membership.objects.filter(user_id=member.pk).count() == memberships_before
+    assert not Membership.objects.filter(user_id=member.pk, tenant=other_tenant).exists()
+    invitation.refresh_from_db()
+    assert invitation.status == Invitation.Status.PENDING
+
+
+# --- A8 · Mode A does not move the RP road it rides on ------------------------
+
+
+def test_the_rp_road_is_unchanged_under_ours(
+    api: Client, stub_issuer: StubIssuer, settings: Any
+) -> None:
+    """A8.5 · turning the front door to `ours` changes NOTHING on this road.
+
+    Mode A is a detour in the MIDDLE of this journey, not a replacement for
+    it: allauth still starts the authorize, the platform still 302s a browser
+    somewhere, the code still comes back to allauth's own callback, and
+    `_platform_login` still makes all three of its decisions. What changes is
+    only where the browser spends the middle of the trip — a page of ours
+    instead of the platform's — and this stub issuer cannot model that hop,
+    which is why the live walk is pasted in the rung's report and this case
+    asserts the thing a test CAN: that the two ends are byte-for-byte the
+    ends they were.
+
+    Driven under both door values in one function rather than parametrised,
+    so the comparison is an assertion rather than two green lines somebody
+    has to notice agree.
+    """
+    settings.SIGN_IN_DOOR = "hosted"
+    hosted = start_login(api)
+
+    api.logout()
+    settings.SIGN_IN_DOOR = "ours"
+    ours = start_login(api)
+
+    moved = {
+        name: (hosted.get(name), ours.get(name))
+        for name in set(hosted) | set(ours)
+        # `state` and `code_challenge` are per-attempt by construction.
+        if name not in ("state", "code_challenge") and hosted.get(name) != ours.get(name)
+    }
+    assert moved == {}, moved
+
+    landed = sign_in(api)
+    assert landed.status_code == 302
+    person = User.objects.get(email=stub_issuer.email)
+    assert api.session.get("_auth_user_id") == str(person.pk)
+    assert person.zitadel_sub == stub_issuer.subject

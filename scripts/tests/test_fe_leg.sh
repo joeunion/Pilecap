@@ -11,6 +11,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: apps/example/models.py docs/product/queue.md quality/worlds.py scripts/fe_gate.sh scripts/goalpost_scan.py scripts/secrets_scan.sh
 # The 9-case leg-machinery harness for scripts/fe_gate.sh — the --loop `fe`
 # leg's tri-state (absent/untouched/full).
 #

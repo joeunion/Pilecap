@@ -67,8 +67,15 @@ RECIPIENTS_URL = "/api/v1/recipients/"
 # ADR core-18 took one statement OFF this pin: the default list issues no
 # COUNT any more — `has_more` comes from fetching one row more than asked
 # for. `?include_count=true` puts it back, and costs exactly one more.
-TEMPLATE_LIST_BUDGET = 7
-RECIPIENT_LIST_BUDGET = 7
+# PR4.b (ADR core-27) adds exactly THREE: a read is a permission now, so the
+# selector behind this door calls `require(actor, "<kind>.read", ...)` once,
+# and the first `require` of a request reads the actor's three permission
+# tables — the memberships on the chain, their grants, and the delta rows for
+# the role keys those name. Three and not six because PR0's memo rides on the
+# actor: a second `require` in the same request costs nothing, which is what a
+# route that fetches through a `get_` and then calls a service is standing on.
+TEMPLATE_LIST_BUDGET = 10
+RECIPIENT_LIST_BUDGET = 10
 
 
 def _body(response: Any) -> dict[str, Any]:
@@ -162,7 +169,7 @@ def test_a_retired_version_puts_the_previous_one_back_in_service(
     tenant: Tenant, owner_actor: Actor, receipt: MessageTemplate
 ) -> None:
     make_next_version(actor=owner_actor, retired=True)
-    assert get_template(tenant=tenant, name="receipt").version == 1
+    assert get_template(tenant=tenant, name="receipt", actor=owner_actor).version == 1
 
 
 def test_a_name_is_claimed_once(
@@ -271,7 +278,7 @@ def test_retiring_by_name_takes_the_live_version_out_and_the_name_falls_back(
     assert body["id"] == str(second.pk)
     assert body["is_active"] is False
 
-    assert get_template(tenant=receipt.tenant, name="receipt").version == 1
+    assert get_template(tenant=receipt.tenant, name="receipt", actor=owner_actor).version == 1
     assert _body(api.get(f"{TEMPLATES_URL}receipt/"))["version"] == 1
     assert len(_body(api.get(f"{TEMPLATES_URL}?name=receipt"))["items"]) == 2
 

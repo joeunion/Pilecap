@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from django.test import Client
 from django.utils import timezone
 
 from apps.accounts.models import ApiToken, User
@@ -18,7 +19,7 @@ from apps.accounts.services import (
 )
 from apps.core.actor import actor_for, system_actor
 from apps.core.models import Tenant
-from apps.core.services import add_membership
+from apps.core.services import add_membership, suspend_tenant
 
 pytestmark = pytest.mark.django_db
 
@@ -201,3 +202,42 @@ def test_a_deactivated_users_token_stops_working(tenant: Tenant, owner: User) ->
 def test_nonsense_is_not_a_token() -> None:
     assert authenticate_token(plaintext="nonsense") is None
     assert authenticate_token(plaintext="") is None
+
+
+def test_a_pinned_token_to_a_suspended_tenant_authenticates_and_resolves_nowhere(
+    api: Client, tenant: Tenant, owner: User
+) -> None:
+    """A dark tenant is nowhere, and a credential that points there points nowhere.
+
+    **Authenticated, not rejected** (ADR core-21). The token is real, unrevoked
+    and belongs to a live person, so answering `None` would put a false fact on
+    the wire — "we could not tell who is making this request" — which is the
+    exact shape the pinned branch was written to stop telling. What is untrue
+    after a suspension is the ADDRESS, so the tenant resolves to nothing and
+    each door says its own no.
+
+    The touch is asserted for the same reason it is asserted for a mismatched
+    header: a credential that authenticated was used, and an operator hunting a
+    live token wants to see it.
+    """
+    token, plaintext = issue_token(
+        user=owner, tenant=tenant, name="pinned", actor=actor_for(user=owner, tenant=tenant)
+    )
+    suspend_tenant(tenant=tenant, reason="unpaid", actor=system_actor(tenant=tenant))
+
+    resolved = authenticate_token(plaintext=plaintext)
+
+    assert resolved is not None, "a real credential still authenticates"
+    assert resolved.user == owner
+    assert resolved.tenant is None, "a suspended tenant resolves nowhere"
+    token.refresh_from_db()
+    assert token.last_used_at is not None
+
+    # And the door says so, in both header cells: omitted, and naming the pin.
+    bearer = f"Bearer {plaintext}"
+    omitted = api.get("/api/v1/organizations/", HTTP_AUTHORIZATION=bearer)
+    naming_the_pin = api.get(
+        "/api/v1/organizations/", HTTP_AUTHORIZATION=bearer, HTTP_X_TENANT=tenant.slug
+    )
+    assert omitted.status_code == 403
+    assert naming_the_pin.status_code == 403

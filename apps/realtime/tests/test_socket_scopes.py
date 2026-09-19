@@ -373,3 +373,52 @@ async def test_a_hatted_bearer_socket_is_still_kicked(network: Network) -> None:
 
     assert closed["type"] == "websocket.close", closed
     assert closed["code"] == CLOSE_KICKED, closed
+
+
+# --- R1-F3 · a tenant that is not ACTIVE resolves nowhere, here too ------------
+
+
+async def test_a_socket_for_a_dark_tenant_is_closed_no_tenant(tenant: Tenant, owner: User) -> None:
+    """The third door's cell of R1-F3, over the real handshake.
+
+    `resolve_tenant` is the one function every door asks after resolving
+    (ADR core-21), and the socket's answer for "this handshake resolved no
+    tenant" already exists: `CLOSE_NO_TENANT`, 4403. Suspending the tenant
+    therefore needs no close code of its own — which is the point of putting the
+    predicate in the shared function rather than in three doors.
+
+    The victim is this test's own row: the fixture tenant is suspended and then
+    resumed inside one test, and the accepted handshake at the end is what says
+    the reversal works rather than that the close came from somewhere else.
+
+    **An UNPINNED token, deliberately.** That is the credential kind whose
+    tenant comes from `resolve_tenant`, which is this rider's line. A PINNED
+    token's tenant comes off the token row in
+    `accounts.services.authenticate_token`, and reading `is_active` THERE is
+    R1-F3.4 — the accounts line, which rides R1-F1 and belongs to the accounts
+    lane. So
+    the cell driven here is the one this change owns, and the pinned cell is
+    named rather than silently assumed.
+    """
+    from apps.core.actor import system_actor
+    from apps.core.services import resume_tenant, suspend_tenant
+    from apps.realtime.schemas import CLOSE_NO_TENANT
+
+    _, plaintext = await run_db(
+        issue_token,
+        user=owner,
+        tenant=None,
+        name="socket-unpinned",
+        actor=actor_for(user=owner, tenant=None),
+    )
+
+    await run_db(suspend_tenant, tenant=tenant, reason="R1-F3", actor=system_actor(tenant=tenant))
+    async with opened(PATH, bearer_headers(plaintext)) as (_socket, handshake):
+        assert handshake.accepted is False
+        assert handshake.code == CLOSE_NO_TENANT, handshake.code
+
+    await run_db(resume_tenant, tenant=tenant, actor=system_actor(tenant=tenant))
+    async with opened(PATH, bearer_headers(plaintext)) as (socket, handshake):
+        assert handshake.accepted is True
+        await push_event(tenant_id=tenant.pk, event=an_event())
+        assert (await socket.receive_json())["name"] == WIDGET_EVENT

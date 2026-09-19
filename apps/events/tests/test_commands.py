@@ -17,6 +17,7 @@ from apps.core.actor import system_actor
 from apps.core.models import Tenant
 from apps.events import services
 from apps.events.models import Outbox
+from apps.events.tests.bodies import in_the_root
 from apps.example.events import WIDGET_CREATED
 from apps.workflows.models import WorkflowRun
 
@@ -25,7 +26,10 @@ pytestmark = pytest.mark.django_db
 
 def test_replaying_one_event_re_enqueues_it(tenant: Tenant) -> None:
     event = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant),
+        actor=system_actor(tenant=tenant),
     )
     services.close_outbox(
         tenant=tenant, event_id=event.pk, status=Outbox.Status.FAILED, error="subscriber down"
@@ -52,7 +56,10 @@ def test_replaying_one_event_re_enqueues_it(tenant: Tenant) -> None:
 
 def test_a_dry_run_changes_nothing(tenant: Tenant) -> None:
     event = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant),
+        actor=system_actor(tenant=tenant),
     )
 
     out = StringIO()
@@ -64,11 +71,16 @@ def test_a_dry_run_changes_nothing(tenant: Tenant) -> None:
 
 def test_replaying_since_a_date_covers_every_tenant(tenant: Tenant, other_tenant: Tenant) -> None:
     """An outage is a deployment-level event, not one customer's."""
-    services.emit(name=WIDGET_CREATED, tenant=tenant, payload={}, actor=system_actor(tenant=tenant))
+    services.emit(
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant),
+        actor=system_actor(tenant=tenant),
+    )
     services.emit(
         name=WIDGET_CREATED,
         tenant=other_tenant,
-        payload={},
+        payload=in_the_root(other_tenant),
         actor=system_actor(tenant=other_tenant),
     )
 
@@ -81,10 +93,16 @@ def test_replaying_since_a_date_covers_every_tenant(tenant: Tenant, other_tenant
 
 def test_failed_only_leaves_the_delivered_ones_alone(tenant: Tenant) -> None:
     done = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={"n": 1}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant, {"n": 1}),
+        actor=system_actor(tenant=tenant),
     )
     stuck = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={"n": 2}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant, {"n": 2}),
+        actor=system_actor(tenant=tenant),
     )
     services.close_outbox(tenant=tenant, event_id=done.pk, status=Outbox.Status.DISPATCHED)
 

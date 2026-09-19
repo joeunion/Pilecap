@@ -1,0 +1,51 @@
+{% comment %}
+FRAME `set_up_two_factor` — design J2-c. The organization asks for a second
+step and this person has none enrolled, so enrolment happens HERE rather than
+on a page in a different visual register.
+
+THE QR IS DRAWN BY US, FROM THE URI THE IDENTITY PLATFORM RETURNS — `apps/
+accounts/qr.py`, an in-tree encoder, so there is no library and no image
+to fetch. This frame is its slot; with nothing handed in it draws no figure,
+which is why the secret is offered as text in its own right and not only as a
+fallback: a person on a laptop with no camera types it.
+
+`Not now` appears only where the platform's login settings say a skip is
+allowed and for how long — the number is read at render, never typed here. No
+skip configured, no control: a door that looks available and refuses is worse
+than no door. It is a BUTTON in its own form for the same reason `Never mind`
+is one on the previous frame: skipping is a state change, and a link is
+something a prefetcher follows while the person is still reading.
+
+THE LEDE IS OVERRIDABLE AND DEFAULTS TO THE DESIGN'S WORDS. A re-render after
+a refused code carries no symbol — the platform begins ONE enrolment and the
+person's app already holds it, so asking for a second secret would replace
+the one they just scanned — and "scan this" is the wrong instruction on a
+screen with nothing to scan.
+{% endcomment %}
+<h1>Set up two-factor</h1>
+{% if note %}
+    <p class="alert" role="alert">{{ note }}<span class="remedy">If this keeps happening, ask whoever runs your organization to reset your sign-in.</span></p>
+{% endif %}
+<p class="lede">{% if lede %}{{ lede }}{% else %}Your organization asks for a second step when you sign in. Scan this with an authenticator app, then type the code it shows.{% endif %}</p>
+{% if qr %}
+    <p class="qr">{{ qr }}</p>
+{% endif %}
+{% if secret %}
+    <p class="note">No camera? Type this into the app instead: <code>{{ secret }}</code></p>
+{% endif %}
+<form method="post">
+    {% csrf_token %}
+    <label for="id_code">Code</label>
+    <input type="text" class="code" name="code" id="id_code" inputmode="numeric"
+           autocomplete="one-time-code" pattern="{{ code_pattern|default:'[0-9]{6}' }}"
+           maxlength="{{ code_length|default:6 }}" required>
+    <button type="submit" name="action" value="enrol">Continue</button>
+</form>
+{% if skip_days %}
+    <form method="post">
+        {% csrf_token %}
+        <div class="chips">
+            <button type="submit" name="action" value="skip">Not now ({{ skip_days }} days)</button>
+        </div>
+    </form>
+{% endif %}

@@ -1,3 +1,4 @@
+# census: cross-app A7's link builders — one `invite_url`, one invite-path literal
 """The invitation makes a person, and the email can be acted on.
 
 **Nothing here dials Zitadel** (ADR ident-5): the `instance` fixture replaces the
@@ -25,6 +26,7 @@ from typing import Any
 import pytest
 from django.core import mail as django_mail
 from django.db import transaction
+from django.urls import reverse
 
 from apps.accounts import zitadel
 from apps.accounts.activities import _invited_person_names, provision_invited_identity
@@ -434,3 +436,97 @@ def test_no_template_markup_survives_either_branch() -> None:
         for rendered in _rendered(context):
             for marker in ("{#", "#}", "{%", "%}", "{{", "}}"):
                 assert marker not in rendered
+
+
+# --- A7.3 · both links follow `invite_url`, and there is no second builder ----
+
+
+def test_ours_the_activitys_link_is_our_page(instance: FakeZitadel, settings: Any) -> None:
+    """The invitation email's link follows the door, exactly as day zero's does.
+
+    Two producers of a credential-setting link exist in this tree — this
+    activity and `zitadel_first_admin` — and under `ours` a deployment where
+    one of them still pointed at the identity platform would be a product
+    whose first human lands on our page and whose second lands on somebody
+    else's, with one of the two screens never having been designed for them.
+    """
+    settings.SIGN_IN_DOOR = "ours"
+
+    identity = provision_invited_identity(_payload())
+
+    code = instance.invite_codes[identity.zitadel_user_id][-1]
+    assert identity.set_credentials_url == zitadel.invite_url(
+        user_id=identity.zitadel_user_id, code=code
+    )
+    assert identity.set_credentials_url.startswith(
+        f"{settings.PUBLIC_BASE_URL}{reverse('account_login')}?"
+    )
+    assert zitadel.INVITE_PATH not in identity.set_credentials_url
+    assert f"userID={identity.zitadel_user_id}" in identity.set_credentials_url
+    assert f"code={code}" in identity.set_credentials_url
+
+
+def test_every_credential_setting_link_in_the_tree_comes_from_invite_url() -> None:
+    """The census behind the two cases above: one builder, and it branches.
+
+    A second place that spelled the hosted path would keep passing every test
+    about the door it was written for. Two halves:
+
+    (1) The path is a STRING LITERAL in exactly one module. Read by AST and
+        compared for equality rather than grepped, so that prose which quotes
+        the path — `zitadel_measure`'s own description of what C7 measures —
+        is not counted as a second spelling of it. A comment cannot build a
+        URL; a constant can.
+    (2) Both producers of a credential-setting link call `invite_url`. The
+        population is named here because it is small and because naming it is
+        what makes a THIRD producer a failure rather than an omission.
+    """
+    import ast
+    from pathlib import Path
+
+    from django.conf import settings as django_settings
+
+    from apps.core.tests.tree_census import source_text, source_tree
+
+    root = Path(django_settings.BASE_DIR) / "apps"
+    walked = [path for path in sorted(root.rglob("*.py")) if "tests" not in path.parts]
+    spellers = sorted(
+        str(path.relative_to(django_settings.BASE_DIR))
+        for path in walked
+        if any(
+            isinstance(node, ast.Constant) and node.value == zitadel.INVITE_PATH
+            for node in ast.walk(source_tree(path))
+        )
+    )
+    assert spellers == ["apps/accounts/zitadel.py"], spellers
+
+    producers = (
+        "apps/accounts/activities.py",
+        "apps/accounts/management/commands/zitadel_first_admin.py",
+    )
+    for name in producers:
+        assert "zitadel.invite_url(" in source_text(Path(django_settings.BASE_DIR) / name), name
+    callers = sorted(
+        str(path.relative_to(django_settings.BASE_DIR))
+        for path in walked
+        if "invite_url(" in source_text(path)
+    )
+    assert callers == sorted([*producers, "apps/accounts/zitadel.py"]), callers
+
+
+def test_the_email_leads_with_the_credential_setting_link_under_either_door() -> None:
+    """A7.3 · the template is door-agnostic, and that is a property, not luck.
+
+    The mail renders whatever link the activity hands it, so the door lives
+    one layer up — which is why the case above asserts on the ACTIVITY and
+    this one asserts the template survives our own URL shape. Our page's link
+    carries the same `?userID=…&code=…` tail (A5.5 kept Zitadel's spelling),
+    so the ampersand trap the original case was written for is live on both
+    doors and is re-driven here against ours.
+    """
+    link = "https://app.yourcompany.test/accounts/login/?userID=1&code=ABC123"
+    text, html = _rendered({"set_credentials_url": link, "link_expires_on": "2026-08-26"})
+
+    assert link in text
+    assert "&amp;" not in text
+    assert f'href="{link.replace("&", "&amp;")}"' in html

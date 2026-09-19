@@ -139,7 +139,67 @@
 # wants a green run; a "just this once" flag is that argument with a keyboard.
 # The ONE legal override is `DJB_LOOP_SCOPE_ALSO`, and it can only WIDEN: every
 # label it names is added and none is removed, so the worst it can do is run
-# more. It is printed in the banner whenever it is set.
+# more. It is printed in the banner whenever it is set. It is unchanged by the
+# census seeds below: those are DERIVED from the changed paths, and an override
+# is something a person types.
+#
+# ---------------------------------------------------------------------------
+# CENSUS-SEEDED FILES: THE CORE CENSUSES THAT READ OTHER APPS' DECLARATIONS
+#
+# THE HOLE THIS CLOSES, and it was paid for. The closure this file walks is the
+# REVERSE `depends_on` one: for a change in `apps/<x>`, the apps that depend on
+# `<x>`. `core` is a DEPENDENCY of every app and a dependant of none, so
+# `core`'s tests are never pulled in by another app's change — which is right
+# for nearly all of them, and wrong for the handful that quantify over EVERY
+# app's declarations. A rung that adds a permission key to its own
+# `policies.py` moves a census that lives in `core`, and no `--loop` anywhere
+# ran it. It was found at a bank, by a hotfix.
+#
+# SO THE RULE IS: a changed file that DECLARES something a core census reads
+# seeds that census's test MODULE into the selection — and nothing else. Not
+# the `core` app, not `core`'s organ tests, not a closure: one module, through
+# the same `--djb-changed-test` seam an edited test module already uses, so the
+# footer's `selected=` count for a declarations-only change grows by that
+# module's tests and by nothing at all besides. The cost of an unrelated rung
+# must not move, and this is what keeps that true.
+#
+# THE POPULATION IS DERIVED AND THIS FILE NAMES NO APP AND NO MODULE. A census
+# that wants to be run says so IN ITS OWN SOURCE — `CENSUS_SEEDED_BY = (...)` at
+# column zero in a test module, naming the declaration modules it quantifies
+# over — and `loop_scope__census_modules` walks `apps/*/tests/test_*.py` for
+# that marker. So the map from a changed declaration to the census that reads it
+# is read off the tree, the way `selftest_registered_drives` reads the drive
+# order off `check.sh`, and a product's own census joins the day it writes the
+# line.
+#
+# IT USED TO BE A PATTERN WITH `apps/core` TYPED INTO IT, and that was a defect
+# the standing case `the table names no app` exists to refuse: `core` reaches
+# everything because everything DECLARES it, and the same must be true of the
+# censuses `core` holds. Nothing in this file may name an app.
+#
+# THE ONE MEMBER ON THIS TREE, derived rather than listed here — run
+# `loop_scope__census_modules` to see today's — is the permission vocabulary's,
+# over `policies` and `roles`: the two modules
+# `apps.core.authz._declarations` walks, in ONE discovery walk.
+#
+# does_not_cover — checked, and deliberately NOT seeded, each with its reason:
+#
+#   * THE KINDS HALF of the same census (`apps/*/models.py` -> a kind per
+#     first-party model). Not seeded: `models.py` is touched by a large share of
+#     all rungs, and a seed there would move the cost of nearly every loop —
+#     which is the one thing the rule above exists not to do. The trigger to buy
+#     it anyway: a models-only rung that reddens the kinds census at a bank.
+#     Until then the full gate at push is the belt, as it is for every other
+#     coupling that is not an import.
+#   * THE DOORS (house rules 17 and 46 — a capability on both doors, and the
+#     door-pair parity test). Nothing to seed: these are GATE LEGS, and a gate
+#     leg runs at every scope including an empty one. A census that is always-on
+#     never needed the scope to carry it.
+#   * ADR CITATIONS. Same answer: `adr-census` is a `--fast` leg, so it runs on
+#     every `--loop` and every `--fast` whatever the scope derived.
+#   * THE APPS-ROOT MODULES (`apps/test_*.py`). Already always-on BY
+#     CONSTRUCTION — an item whose nodeid names no app can never be inside any
+#     scope (`apps/conftest.py`, `_is_always_on`).
 #
 # ---------------------------------------------------------------------------
 # THE FAN-OUT DECISION TABLE. Every changed path is classified into exactly one
@@ -283,11 +343,147 @@ LOOP_SCOPE_TESTS_ONLY=""
 #: They run whatever tier they are in — an organ-reaching module the rung EDITED
 #: is the one organ test a per-rung gate has a reason to run.
 LOOP_SCOPE_CHANGED_TESTS=""
+#: The core census MODULES the active rung's changed declarations seeded, and the
+#: files that seeded them. Two sets rather than one because the note names both
+#: halves: a reader of `census-seeded by X: Y` can check X against their own
+#: diff, and a seed with no seeder beside it is a line nobody can falsify.
+LOOP_SCOPE_SEEDED_TESTS=""
+LOOP_SCOPE_SEEDED_BY=""
 
 #: The digest of the always-on derivation's DECLARATION — the sentinel-delimited
 #: block in `apps/conftest.py`. Part of the canonical scope, because changing
 #: which tests are unconditional changes what a green loop meant.
 LOOP_SCOPE_ALWAYS_DIGEST=""
+
+#: The digest of the `--loop` ALWAYS-ON LEG'S INPUTS — the committed member
+#: durations and the set of drives declaring themselves cross-app. Part of the
+#: canonical scope for the same reason the line above is: changing which
+#: full-only members the loop runs changes what a green loop meant, and neither
+#: input is visible anywhere else in the key.
+LOOP_SCOPE_ALWAYS_ON_DIGEST=""
+
+# --- THE TEST-IMPACT MAP, CONSULTED ------------------------------------------
+#
+# The scope above answers "which apps can this change reach", from the app
+# declarations. The map answers the question underneath it — WHICH TESTS
+# EXECUTED THIS FILE — from one acceptance run's per-test coverage contexts
+# (`scripts/test_impact.py` writes it; its header is the authority on what it
+# is and what it cannot see). A changed file the map has SEEN therefore selects
+# the tests that reach it and nothing else, and the closure becomes the
+# FALLBACK rather than the rule.
+#
+# IT IS A PROJECTION AND NEVER TRUTH (principle 9), so every reader owes a
+# fallback and this one owes four:
+#
+#   1. A CHANGED FILE THE MAP HAS NEVER RECORDED — a template, a fixture, a
+#      migration, `quality/rules.yaml`, a brand-new module — falls the WHOLE
+#      run back to today's closure scope, printed with the path and its class.
+#      Coverage sees executed Python lines and nothing else, so everything a
+#      test reads by path is invisible here BY CONSTRUCTION.
+#   2. AN ABSENT OR UNREADABLE MAP is the closure scope, printed, and never
+#      exit 2: a product that has not run an acceptance box yet has no map, and
+#      a loop that refused would be a loop nobody could run.
+#   3. A STALE MAP is the closure scope, printed. Stale is measured, not
+#      assumed: the map names the tree it was MEASURED on (its predecessor —
+#      committing the map moves the tree), and when this checkout's history can
+#      account for that tree the map is fresh, and when it can account for the
+#      history and NOT the tree the map belongs to a tree this base never had.
+#   4. A SEEDED CENSUS MODULE THE MAP HOLDS NO TEST FROM is the closure scope:
+#      a selection that silently dropped a census the scope seeded would be a
+#      narrowing nobody asked for.
+#
+# AND THE ONE CASE THAT IS NOT A FALLBACK, because it cannot be answered: a
+# SHALLOW checkout (the verifier box's depth-1 mirror, `verifier_box.sh push`)
+# holds the rung's own commits and the carried fork point and no history behind
+# them, so the map's measured tree is not there to find and its ABSENCE means
+# nothing. That is printed as `age=unverifiable (shallow history)` and the
+# selection proceeds — because reading an undecidable question as "stale" would
+# un-narrow every run on the one machine this loop is measured on, and because
+# nothing that makes a selection SAFE depends on the age: the never-seen rule
+# above covers a file the map has not got, `apps/conftest.py`'s orphan refusal
+# covers a nodeid the collection has not got, the map's sha is in the loop key
+# so a verdict never crosses two maps, and the wave's bank runs everything.
+# THE AGE IS A PRINTED NUMBER FOR A PERSON, NEVER A REFUSAL.
+#
+# WHAT THE SELECTION IS, exactly: the union over every SEEN changed file of the
+# tests the map records against it, plus every test the map holds from a module
+# the scope SEEDED (an edited test module is already a changed file, and a test
+# module is one of its own tests' source files, so it needs no second rule).
+# It is handed to pytest as `--djb-impact-select=<file>` — one nodeid per line,
+# `apps/conftest.py`'s seam, which adds the always-on set and refuses an orphan
+# — and the scope flags are DROPPED: a selection is the whole question, and a
+# `--djb-scope=` beside it would only widen back what the map was asked to
+# narrow.
+#
+# `--djb-changed=<path>` RIDES ON BOTH PATHS, selection and fallback alike. It
+# narrows nothing by itself: it is what lets a DECLARED cross-app census with a
+# `population=` clause sit out a run whose changed files are all outside it
+# (`apps/conftest.py`'s population clause). The fallback run gets it for the same
+# reason the selecting one does — the census population is not a projection and
+# owes no staleness argument.
+#
+# THE VALVE IS `DJB_LOOP_NO_IMPACT`, AND IT ONLY WIDENS. Typed, it skips the
+# consultation and runs today's closure scope, prints that it did, and keys the
+# run `map=bypassed` — its own value, so a wide run can never be handed a
+# verdict banked by a narrow one. It is the measurement's other half (a rung
+# reports the same change with and without it), not a way to argue with a red.
+
+#: The map this library consults. A positional default rather than an env var:
+#: `loop_scope__always_on_digest` sets the precedent one section up, and a knob
+#: that could NAME a different map is a knob that could narrow a run with one
+#: nobody can see.
+LOOP_SCOPE_MAP_PATH="scripts/test_impact.json"
+
+#: The first 12 hex of the SHA-256 of the map file — `-` when there is none,
+#: `bypassed` under the valve. LAST in the canonical scope, so the loop key
+#: moves with the map and a verdict measured under one selection can never be
+#: reused under another.
+LOOP_SCOPE_MAP_SHA=""
+
+#: The first 8 hex of the tree the map was MEASURED on (`generated.tree`), and
+#: `-` when the map could not be read. The full sha beside it is what the
+#: freshness walk compares; only the short form is ever printed.
+LOOP_SCOPE_MAP_TREE=""
+LOOP_SCOPE_MAP_TREE_FULL=""
+
+#: `select` or `fallback`, as the map reader itself reported it. Absent is a
+#: fallback: see loop_scope__impact.
+LOOP_SCOPE_IMPACT_STATUS=""
+
+#: How far the base has moved since the map's own commit, in commits, for a
+#: person: a number, `unverifiable` in a shallow checkout, `-` when there is no
+#: map. Printed, never enforced.
+LOOP_SCOPE_MAP_AGE=""
+
+#: The file holding the selected nodeids, one per line. EMPTY is the fallback:
+#: every reader of this variable treats "no selection" and "today's closure" as
+#: the same thing, so a derivation that could not answer cannot become a narrow
+#: run by omission.
+LOOP_SCOPE_IMPACT_SELECT=""
+
+#: How many tests the selection holds, and how many changed files it came from.
+LOOP_SCOPE_IMPACT_TESTS=""
+LOOP_SCOPE_IMPACT_SEEN=""
+
+#: Why there is no selection, in one sentence naming the file and its class.
+#: Empty exactly when a selection was made.
+LOOP_SCOPE_IMPACT_FALLBACK=""
+
+#: Every changed path, in the classification order, for `--djb-changed`. The
+#: TSV beside it is the same set with each path's SHAPE in front of it, one
+#: `<shape><TAB><path>` line each, so the map reader can name a never-seen
+#: file's class without classifying anything a second time.
+LOOP_SCOPE_CHANGED_FILES=""
+LOOP_SCOPE_CHANGED_TSV=""
+
+#: The CALLER'S request for the map, read here and set nowhere in this file —
+#: the same division `LOOP_MINE` is under: `check.sh` owns the flag, this
+#: library owns what it means. Only the ordinary `--loop` sets it. `--pr`
+#: grades a whole proposed change and must not be narrowed by one run's
+#: measurement of a different tree; `--mine` is a claim about an app, and a
+#: selection that reached into a DEPENDANT of that app to run one test would be
+#: a third thing wearing the flag's name.
+LOOP_IMPACT="${LOOP_IMPACT:-}"
 
 #: The repository this library lives in, so the closure can be read with this
 #: checkout's own interpreter even when the tree under test is somewhere else.
@@ -436,6 +632,77 @@ loop_scope__add() {
     eval "$var=\"\${$var}\${$var:+ }\$label\""
 }
 
+# loop_scope__census_modules
+#
+# EVERY TEST MODULE THAT DECLARES ITSELF A CENSUS over other apps' declarations,
+# one `<declaration module>\t<path>` line per name it declares. Derived, the way
+# `selftest_registered_drives` is derived: nothing here knows a module path or an
+# app, and a product's own census joins the day it writes the marker.
+#
+# THE MARKER IS THE CENSUS'S OWN. A module says `CENSUS_SEEDED_BY = ("policies",
+# "roles")` at column zero, meaning: those are the declaration modules I
+# quantify over, so a rung that changes one of them in ANY app has moved what I
+# assert about. `apps/core/tests/test_vocabulary.py` is the first; the walk is
+# over `apps/*/tests/test_*.py` and names none of them.
+#
+# ONE `grep -l` AND THEN A READ PER HIT, because the alternative is a `sed` per
+# test module on every single `--loop`. The `|| true` is the no-hit case: an
+# empty population is legal here (a product with no such census) and is NOT the
+# could-not-look the closure walk has — nothing is being narrowed on the
+# strength of it.
+loop_scope__census_modules() {
+    local path decls decl
+    for path in $(grep -l '^CENSUS_SEEDED_BY' apps/*/tests/test_*.py 2>/dev/null || true); do
+        decls=$(sed -n 's/^CENSUS_SEEDED_BY[^=]*=[[:space:]]*(\(.*\))[[:space:]]*$/\1/p' "$path" | sed -n 1p)
+        [ -n "$decls" ] || continue
+        for decl in $(printf '%s' "$decls" | tr ',' ' ' | tr -d "\"'"); do
+            [ -n "$decl" ] || continue
+            printf '%s\t%s\n' "$decl" "$path"
+        done
+    done
+}
+
+# loop_scope__census_seed <changed path>
+#
+# THE CENSUS-SEEDED FILES, DERIVED. See the CENSUS-SEEDED FILES section of this
+# file's header for the class, what is seeded and what is deliberately not.
+# NOTHING HERE NAMES AN APP OR A MODULE: the changed path's own basename is
+# matched against the declaration names the censuses above publish, and the
+# module that gets seeded is the one that published the name.
+#
+# THE DECLARING APP'S OWN CENSUS IS NOT SEEDED, and that is the derived form of
+# a rule that used to be spelled `apps/core/*`: when the changed file and the
+# census module are in the SAME app, that app is already a touched app and its
+# whole test tree — the census included — is already in the selection. Seeding
+# it again would put a note in front of a reader about a module that was never
+# at risk. Read off the two paths, so it holds for whichever app a product puts
+# its own census in.
+#
+# Returns 0 always. A path that seeds nothing is the overwhelming majority.
+loop_scope__census_seed() {
+    local path=$1 base decl module changed_app census_app
+    case "$path" in
+    apps/*/*.py) ;;
+    *) return 0 ;;
+    esac
+    base=${path##*/}
+    base=${base%.py}
+    changed_app=${path#apps/}
+    changed_app=${changed_app%%/*}
+    while IFS=$(printf '\t') read -r decl module; do
+        [ -n "$module" ] || continue
+        [ "$decl" = "$base" ] || continue
+        census_app=${module#apps/}
+        census_app=${census_app%%/*}
+        [ "$census_app" != "$changed_app" ] || continue
+        loop_scope__add LOOP_SCOPE_SEEDED_TESTS "$module"
+        loop_scope__add LOOP_SCOPE_SEEDED_BY "$path"
+    done <<EOF
+$(loop_scope__census_modules)
+EOF
+    return 0
+}
+
 # loop_scope__sorted <space-separated set> — the same set, sorted, on stdout.
 loop_scope__sorted() {
     local one out=""
@@ -581,7 +848,419 @@ loop_scope__always_digest() {
         printf 'UNDECLARED\n'
         return 0
     fi
-    printf '%s' "$block" | shasum -a 256 | awk '{print $1}'
+    printf '%s' "$block" | sha256_of
+}
+
+# --- the DECLARED cross-app censuses, for the banner -------------------------
+#
+# WHY THE SHELL READS A MARKER THE PYTHON SIDE ALREADY READS. It reads it for a
+# different reader. `apps/conftest.py` reads the marker to DECIDE — a marked
+# module survives every scope. This reads it to SAY SO: a builder watching a
+# `--loop` narrow a 4000-test suite to two apps has no way to tell which
+# unconditional tests came with it, and an always-on set nobody can enumerate is
+# an always-on set nobody audits. The decision stays in one place; only the
+# sentence is here.
+#
+# THE MARKER IS ONE GRAMMAR, SPELLED TWICE AND DRIVEN ONCE. The string below and
+# `DJB_CENSUS_MARKER` in the sentinel block are the same three words in two
+# languages, which is a copy — so `scripts/tests/test_loop_tier.sh`'s
+# `case_the_loop_banner_names_each_declared_census` asserts the two agree, and a
+# rung that rewords one and not the other reds there rather than in a banner
+# that quietly lists nothing.
+LOOP_SCOPE_CENSUS_MARKER='# census: cross-app'
+
+#: How far into a module the marker is looked for — `DJB_CENSUS_MARKER_LINES`'s
+#: twin, and asserted against it by the same case.
+LOOP_SCOPE_CENSUS_LINES=40
+
+#: The optional clause inside the line: `<marker> population=<glob>[,<glob>]
+#: <reason>`. `DJB_CENSUS_POPULATION`'s twin, asserted against it by the same
+#: case, and here for the same one reason the marker is — the BANNER. The
+#: population is the half a `--loop` acts on, so a reader who can see which
+#: censuses came with the scope and not which files each one is about can audit
+#: the set's membership and not its price. The DECISION stays in
+#: `apps/conftest.py`; what is here is the sentence, and the refusal below that
+#: keeps a half-written clause from reading as an absent one.
+LOOP_SCOPE_CENSUS_POPULATION='population='
+
+# loop_scope__declared_censuses [<dir>] [<filename pattern>]
+#
+# One `<module><TAB><reason>` line per DECLARED cross-app census, sorted, on
+# stdout. An EMPTY SET IS A LEGITIMATE ANSWER and prints nothing at exit 0: a
+# tree with no census to declare is a tree, not a broken read.
+#
+# TWO POPULATIONS, ONE READER, AND THAT IS THE WHOLE OF THE SECOND ARGUMENT.
+# A cross-app census exists in two languages here — a pytest module under
+# `apps/` read by `apps/conftest.py`'s always-on derivation, and a shell drive
+# under `scripts/tests/` read by the `--loop` always-on leg. The MARKER GRAMMAR
+# is one grammar (the marker at column zero in the first
+# `LOOP_SCOPE_CENSUS_LINES` lines, followed by a reason), so it gets one reader:
+# a second function would be a second place for the refusal below to be
+# forgotten. The caller says which files to walk; nothing else differs.
+#
+# Exit: 0 the set was derived · 2 the directory is not there, or a module
+# carries the marker with NO REASON after it, or with a `population=` and NO
+# GLOBS after that — the same two refusals
+# `apps/conftest.py::_module_census_declaration` makes, and for the same reason:
+# read as an absent marker or an absent population, a half-written declaration
+# changes what the always-on set holds and says nothing.
+loop_scope__declared_censuses() {
+    local dir=${1:-apps} pattern=${2:-'test_*.py'} path rest spec globs reason
+    [ -d "$dir" ] || {
+        printf '!! loop_scope__declared_censuses: %s is not a directory. The declared\n' "$dir" >&2
+        printf '   cross-app censuses could not be read; nothing was listed.\n' >&2
+        return 2
+    }
+    while IFS= read -r path; do
+        # THE `FOUND:` PREFIX IS LOAD-BEARING. Without it a marker followed by
+        # NOTHING and a module with no marker at all reach this loop as the same
+        # empty string, and the refusal below would never fire — which is the
+        # exact failure the refusal exists to prevent.
+        rest=$(awk -v m="$LOOP_SCOPE_CENSUS_MARKER" -v n="$LOOP_SCOPE_CENSUS_LINES" '
+            NR > n { exit }
+            index($0, m) != 1 { next }
+            {
+                rest = substr($0, length(m) + 1)
+                # `<marker>lication` is a different word, not this marker.
+                if (rest != "" && rest !~ /^[ \t]/) next
+                print "FOUND:" rest
+                exit
+            }
+        ' "$path") || return 2
+        case "$rest" in
+        FOUND:*) rest=${rest#FOUND:} ;;
+        *) continue ;;
+        esac
+        # Leading whitespace off, the sentence kept whole.
+        rest=${rest#"${rest%%[![:space:]]*}"}
+        # THE POPULATION COMES FIRST AND IT IS ONE WORD — `partition(" ")` in
+        # the Python twin, `%% ` here. Split off so the REASON can be judged on
+        # its own: a line that declared a population and then said nothing would
+        # otherwise pass this reader and fail the door's.
+        reason=$rest
+        case "$rest" in
+        "$LOOP_SCOPE_CENSUS_POPULATION"*)
+            spec=${rest#"$LOOP_SCOPE_CENSUS_POPULATION"}
+            globs=${spec%% *}
+            [ -n "$globs" ] || {
+                printf '!! %s declares an EMPTY POPULATION.\n' "$path" >&2
+                printf '   The grammar is `%s %s<glob>[,<glob>] <reason>` (apps/conftest.py,\n' \
+                    "$LOOP_SCOPE_CENSUS_MARKER" "$LOOP_SCOPE_CENSUS_POPULATION" >&2
+                printf '   the sentinel block). A population nobody can match against is not a\n' >&2
+                printf '   narrowing — it is a census every scope would deselect.\n' >&2
+                return 2
+            }
+            reason=${spec#"$globs"}
+            reason=${reason#"${reason%%[![:space:]]*}"}
+            ;;
+        esac
+        [ -n "$reason" ] || {
+            printf '!! %s carries the census marker and gives NO REASON.\n' "$path" >&2
+            printf '   The grammar is the marker at column zero followed by one line saying\n' >&2
+            printf '   what population the module walks (apps/conftest.py, the sentinel\n' >&2
+            printf '   block). A declaration nobody can disagree with is not a declaration.\n' >&2
+            return 2
+        }
+        printf '%s\t%s\n' "$path" "$rest"
+    done < <(find "$dir" -type f -name "$pattern" | sort)
+}
+
+# --- the ALWAYS-ON set's own digest, for the banked loop key ------------------
+#
+# WHY A BANKED `--loop` VERDICT HAS TO CARRY THIS. The always-on leg runs a set
+# that is DERIVED from two files that are not the tree the verdict is keyed on
+# in any way a reader can see: the committed member-durations measurement, and
+# the set of drives that declare themselves cross-app. Re-measure the durations
+# and a member leaves the set; add a marker and one joins. Both move what the
+# loop RAN without moving anything the key already carried, so a row banked
+# before the move would be reused by a run that would have measured more — the
+# one failure mode a verdict cache must not have.
+#
+# IT IS THE FILE'S BYTES AND THE MARKED SET'S TEXT, not the derived membership.
+# Deriving the membership here would be a second implementation of the leg's own
+# selection (the leg's is the one that runs), and the two would fall out of step
+# in exactly the direction that makes a stale row reusable. Bytes are cheaper
+# and strictly more conservative: a comment edit in the durations file re-keys a
+# run that would have selected identically, which costs one loop and vouches for
+# nothing it should not.
+#
+# AN ABSENT DURATIONS FILE IS A VALUE, NOT A REFUSAL. `no-durations` is what a
+# tree before the first `--store-durations` looks like, and the leg says so on
+# every run; keying it as its own value is what makes the first measurement
+# re-key every banked row exactly once.
+#
+# Exit: 0 with the digest on stdout · 1 the marked set could not be read, which
+# the caller turns into `UNDECLARED` exactly as `loop_scope__always_digest`'s
+# broken read is — never a digest over a set nobody could enumerate.
+#
+# THE PARTS ARE ASSEMBLED INTO A VARIABLE AND THEN HASHED, never piped from a
+# brace group: a `return` inside `{ ... } | sha256_of` returns from the
+# pipeline's subshell and the function goes on to exit 0 with a digest over a
+# half-read set. That is this file's own `loop_scope__closure` lesson (the one
+# subshell callee, and the comment beside it) in miniature.
+loop_scope__always_on_digest() {
+    local durations=${1:-scripts/gate_member_durations.json}
+    local drives=${2:-scripts/tests}
+    local body marked
+    if [ -r "$durations" ]; then
+        body=$(cat "$durations") || return 1
+    else
+        body="no-durations"
+    fi
+    # THE MARKED SET, READ THROUGH THE ONE READER. A grep here would be a
+    # second grammar for the marker; `loop_scope__declared_censuses` is the
+    # reader the leg itself uses, and its refusal (a marker with no reason)
+    # reaches this digest as a non-zero exit rather than as a silently
+    # shorter list.
+    if [ -d "$drives" ]; then
+        marked=$(loop_scope__declared_censuses "$drives" 'test_*.sh') || return 1
+    else
+        marked="no-drives-dir"
+    fi
+    printf '%s\n%s\n' "$body" "$marked" | sha256_of
+}
+
+# loop_scope__map_fresh <tree sha>
+#
+# Exit: 0 this checkout's history accounts for the tree the map was measured on
+# · 1 it accounts for the history and NOT for that tree (STALE) · 2 it cannot
+# answer (a shallow mirror, no fork point, a scan that hit its ceiling).
+#
+# THE THREE ANSWERS ARE THREE, and collapsing the third into either of the
+# others is the whole reason this is a function. Read as fresh, an undecidable
+# answer would narrow a run on a map from another tree; read as stale, it would
+# un-narrow every run on the verifier box, whose mirror is depth-1 BY DESIGN
+# (scripts/verifier_box.sh) and therefore holds no tree older than the carried
+# fork point. The caller prints which of the three it got.
+loop_scope__map_fresh() {
+    local tree=$1 base scan limit found=1
+    [ -n "$tree" ] && [ "$tree" != "-" ] || return 2
+    [ "$(git rev-parse --is-shallow-repository 2>/dev/null || printf 'true')" = "false" ] || return 2
+    base=$(git merge-base HEAD "${SECRETS_SCAN_BASE_REF:-refs/heads/main}" 2>/dev/null) || base=""
+    [ -n "$base" ] || return 2
+    limit=${DJB_LOOP_MAP_SCAN:-800}
+    scan=$(mktemp "${TMPDIR:-/tmp}/djb-loop-mapscan.XXXXXX") || return 2
+    # WRITTEN WHOLE, THEN READ — never `git rev-list … | grep -q`, which closes
+    # the pipe on the first hit and hands a producer with thousands of lines
+    # left a SIGPIPE that `set -o pipefail` reports as a failure. The same
+    # class every reader in scripts/check.sh is written for.
+    if ! git rev-list --max-count="$limit" --format=%T "$base" >"$scan" 2>/dev/null; then
+        rm -f "$scan"
+        return 2
+    fi
+    grep -Fx -- "$tree" "$scan" >/dev/null && found=0
+    rm -f "$scan"
+    return "$found"
+}
+
+# loop_scope__map_age <map path>
+#
+# How many commits the base has taken since the one that last wrote the map, on
+# stdout: a number, or `unverifiable` where the history cannot answer. It is a
+# NUMBER FOR A PERSON — the PM deciding whether a wave owes a re-measurement —
+# and nothing in this file branches on it.
+loop_scope__map_age() {
+    local path=$1 base commit age
+    base=$(git merge-base HEAD "${SECRETS_SCAN_BASE_REF:-refs/heads/main}" 2>/dev/null) || base=""
+    if [ -z "$base" ] ||
+        [ "$(git rev-parse --is-shallow-repository 2>/dev/null || printf 'true')" != "false" ]; then
+        printf 'unverifiable\n'
+        return 0
+    fi
+    commit=$(git log -1 --format=%H "$base" -- "$path" 2>/dev/null) || commit=""
+    if [ -z "$commit" ]; then
+        printf 'unverifiable\n'
+        return 0
+    fi
+    age=$(git rev-list --count "${commit}..${base}" 2>/dev/null) || age=""
+    printf '%s\n' "${age:-unverifiable}"
+}
+
+# loop_scope__impact [<map path>]
+#
+# THE CONSULTATION. Sets LOOP_SCOPE_MAP_SHA / _TREE / _AGE and either
+# LOOP_SCOPE_IMPACT_SELECT (a selection) or LOOP_SCOPE_IMPACT_FALLBACK (one
+# sentence saying why there is none). This file's TEST-IMPACT MAP section is
+# the rule and its four fallbacks; this is the arithmetic.
+#
+# RETURNS 0 ALWAYS, and that is the declaration: it decides how much to RUN,
+# never whether the tree is good. Every way it can fail to answer is a BIGGER
+# run with a printed reason — there is no input that makes the loop narrower
+# than today's closure by accident, which is why it has no refusal.
+loop_scope__impact() {
+    local map=${1:-$LOOP_SCOPE_MAP_PATH} py out changed modules line key value fresh
+    LOOP_SCOPE_MAP_SHA="-"
+    LOOP_SCOPE_MAP_TREE="-"
+    LOOP_SCOPE_MAP_TREE_FULL=""
+    LOOP_SCOPE_MAP_AGE="-"
+    LOOP_SCOPE_IMPACT_SELECT=""
+    LOOP_SCOPE_IMPACT_TESTS=""
+    LOOP_SCOPE_IMPACT_SEEN=""
+    LOOP_SCOPE_IMPACT_FALLBACK=""
+    LOOP_SCOPE_IMPACT_STATUS=""
+
+    if [ -n "${DJB_LOOP_NO_IMPACT:-}" ]; then
+        LOOP_SCOPE_MAP_SHA="bypassed"
+        LOOP_SCOPE_IMPACT_FALLBACK="DJB_LOOP_NO_IMPACT is set — the map was NOT consulted and this run is today's closure scope. The valve only widens, and it keys itself map=bypassed so no verdict crosses between the two."
+        return 0
+    fi
+    if [ ! -r "$map" ]; then
+        LOOP_SCOPE_IMPACT_FALLBACK="${map} is absent or unreadable — closure scope. A tree whose acceptance box has never written a map is a tree, not a broken read."
+        return 0
+    fi
+    LOOP_SCOPE_MAP_SHA=$(sha256_of "$map" 2>/dev/null | cut -c1-12) || LOOP_SCOPE_MAP_SHA=""
+    if [ -z "$LOOP_SCOPE_MAP_SHA" ]; then
+        LOOP_SCOPE_MAP_SHA="-"
+        LOOP_SCOPE_IMPACT_FALLBACK="${map} could not be digested — closure scope. A map nobody can key a verdict on must not narrow one."
+        return 0
+    fi
+    if [ -z "${LOOP_IMPACT:-}" ]; then
+        # THE CALLER DID NOT ASK. `--pr` and `--mine` reach here; the sha is
+        # already in hand and goes into the key — a `--mine` row says which map
+        # the tree carried — and nothing else happens.
+        LOOP_SCOPE_IMPACT_FALLBACK="the caller did not ask for the map (only the ordinary --loop consults it) — today's closure scope, unchanged."
+        return 0
+    fi
+    if [ -z "$LOOP_SCOPE_CHANGED_FILES" ]; then
+        LOOP_SCOPE_IMPACT_FALLBACK="the active rung changed no file this derivation can see, so there is nothing to select for — the scope is what it was and the always-on set runs alone."
+        return 0
+    fi
+
+    py=$(loop_scope__python) || {
+        LOOP_SCOPE_IMPACT_FALLBACK="this checkout has no interpreter to read the map with (${LOOP_TIER_ROOT}/.venv/bin/python is not executable) — closure scope."
+        return 0
+    }
+    out=$(mktemp "${TMPDIR:-/tmp}/djb-loop-impact.XXXXXX") || {
+        LOOP_SCOPE_IMPACT_FALLBACK="the selection file could not be created under ${TMPDIR:-/tmp} — closure scope."
+        return 0
+    }
+    # THE INPUTS GO THROUGH THE ENVIRONMENT, ONE PER LINE, rather than argv: a
+    # changed-file set is unbounded, and a rung that touched three hundred
+    # files would meet the argument-list ceiling inside a derivation — the
+    # worst place in the gate to meet it.
+    changed="$LOOP_SCOPE_CHANGED_TSV"
+    modules=""
+    for line in $LOOP_SCOPE_SEEDED_TESTS; do
+        modules="${modules}${line}
+"
+    done
+    DJB_IMPACT_MAP="$map" DJB_IMPACT_OUT="$out" \
+        DJB_IMPACT_CHANGED="$changed" DJB_IMPACT_MODULES="$modules" \
+        "$py" - >"${out}.report" 2>&1 <<'PY'
+import json
+import os
+import pathlib
+
+
+def emit(key: str, value: object) -> None:
+    print(f"{key}\t{value}")
+
+
+map_path = os.environ["DJB_IMPACT_MAP"]
+out_path = os.environ["DJB_IMPACT_OUT"]
+changed = [
+    line.split("\t", 1)
+    for line in os.environ.get("DJB_IMPACT_CHANGED", "").splitlines()
+    if "\t" in line
+]
+modules = [line for line in os.environ.get("DJB_IMPACT_MODULES", "").splitlines() if line.strip()]
+
+try:
+    doc = json.loads(pathlib.Path(map_path).read_text(encoding="utf-8"))
+    tests = doc["tests"]
+    if not isinstance(tests, dict) or not tests:
+        raise ValueError("the map records no test")
+    generated = doc.get("generated") or {}
+except Exception as exc:  # an unreadable map is a bigger run, never a refusal
+    emit("tree", "-")
+    emit("status", "fallback")
+    emit("reason", f"{map_path} could not be read as a map ({exc}) — closure scope")
+    raise SystemExit(0)
+
+# `tree:<sha>` is the writer's own label (scripts/test_impact.py) and the half
+# after the colon is the sha; a value with no label is taken as the sha itself.
+emit("tree", str(generated.get("tree", "-")).rsplit(":", 1)[-1] or "-")
+emit("pytest", len(tests))
+
+known: set[str] = set()
+for files in tests.values():
+    known.update(files)
+
+unseen = [(shape, path) for shape, path in changed if path not in known]
+if unseen:
+    shape, path = unseen[0]
+    more = f", and {len(unseen) - 1} more it has not" if len(unseen) > 1 else ""
+    emit("status", "fallback")
+    emit("reason", f"{path} ({shape}) never recorded by the map{more} — closure scope")
+    raise SystemExit(0)
+
+seen = {path for _shape, path in changed}
+selected = {nodeid for nodeid, files in tests.items() if not seen.isdisjoint(files)}
+for module in modules:
+    held = {nodeid for nodeid in tests if nodeid.split("::", 1)[0] == module}
+    if not held:
+        emit("status", "fallback")
+        emit(
+            "reason",
+            f"{module} is seeded into the selection and the map holds no test from "
+            "it — closure scope",
+        )
+        raise SystemExit(0)
+    selected |= held
+
+pathlib.Path(out_path).write_text("".join(f"{one}\n" for one in sorted(selected)), encoding="utf-8")
+emit("status", "select")
+emit("selected", len(selected))
+emit("seen", len(seen))
+PY
+    # THE REPORT IS READ AS KEY/VALUE AND NEVER EVALUATED, and a report with no
+    # `status` line — an interpreter that died mid-write, a traceback where the
+    # answer should be — falls back by DEFAULT rather than by a branch somebody
+    # remembered to write.
+    while IFS=$(printf '\t') read -r key value; do
+        case "$key" in
+        tree)
+            LOOP_SCOPE_MAP_TREE_FULL="$value"
+            LOOP_SCOPE_MAP_TREE=$(printf '%s' "$value" | cut -c1-8)
+            ;;
+        status) LOOP_SCOPE_IMPACT_STATUS="$value" ;;
+        reason) LOOP_SCOPE_IMPACT_FALLBACK="$value" ;;
+        selected) LOOP_SCOPE_IMPACT_TESTS="$value" ;;
+        seen) LOOP_SCOPE_IMPACT_SEEN="$value" ;;
+        esac
+    done <"${out}.report"
+    LOOP_SCOPE_MAP_AGE=$(loop_scope__map_age "$map")
+
+    if [ "$LOOP_SCOPE_IMPACT_STATUS" != "select" ]; then
+        [ -n "$LOOP_SCOPE_IMPACT_FALLBACK" ] ||
+            LOOP_SCOPE_IMPACT_FALLBACK="the map reader did not answer ($(sed -n 1p "${out}.report" 2>/dev/null)) — closure scope"
+        rm -f "$out" "${out}.report"
+        return 0
+    fi
+
+    fresh=0
+    loop_scope__map_fresh "$LOOP_SCOPE_MAP_TREE_FULL" || fresh=$?
+    case "$fresh" in
+    1)
+        LOOP_SCOPE_IMPACT_FALLBACK="the map was measured on tree:${LOOP_SCOPE_MAP_TREE} and this checkout's history does not hold that tree — a map from a tree this base never had is STALE, and a stale map is a slower run, never a wrong one."
+        rm -f "$out" "${out}.report"
+        return 0
+        ;;
+    2) LOOP_SCOPE_MAP_AGE="unverifiable" ;;
+    esac
+
+    if [ "$LOOP_TIER_MODE" = "full" ]; then
+        # THE TABLE OUTRANKS THE MAP, and it is said here rather than by not
+        # asking: the sentence above this one may already name a plant the map
+        # has never seen, and a reader of a full run is owed BOTH halves.
+        LOOP_SCOPE_IMPACT_FALLBACK="mode=full — the active rung changed a file every test in the tree stands on, and the FULL suite outranks any selection a map could make."
+        rm -f "$out" "${out}.report"
+        return 0
+    fi
+
+    rm -f "${out}.report"
+    LOOP_SCOPE_IMPACT_SELECT="$out"
+    return 0
 }
 
 # loop_tier_own_apps
@@ -607,7 +1286,17 @@ loop_tier_own_apps() {
     LOOP_SCOPE_CANONICAL=""
     LOOP_SCOPE_TESTS_ONLY=""
     LOOP_SCOPE_CHANGED_TESTS=""
+    LOOP_SCOPE_SEEDED_TESTS=""
+    LOOP_SCOPE_SEEDED_BY=""
     LOOP_SCOPE_ALWAYS_DIGEST=""
+    LOOP_SCOPE_ALWAYS_ON_DIGEST=""
+    LOOP_SCOPE_CHANGED_FILES=""
+    LOOP_SCOPE_CHANGED_TSV=""
+    LOOP_SCOPE_MAP_SHA=""
+    LOOP_SCOPE_MAP_TREE=""
+    LOOP_SCOPE_MAP_AGE=""
+    LOOP_SCOPE_IMPACT_SELECT=""
+    LOOP_SCOPE_IMPACT_FALLBACK=""
 
     # THE BASIS MUST BE A BASIS. `secrets_scan_changed_files` has a legal case
     # for a checkout with no local `refs/heads/main`: it derives the uncommitted
@@ -679,6 +1368,20 @@ loop_tier_own_apps() {
             return 2
         }
         loop_scope__add shapes "$shape"
+        # THE PATH AND ITS SHAPE, KEPT. Both readers downstream are about the
+        # FILE rather than about its app: `--djb-changed` hands every changed
+        # path to the declared censuses' population test, and the map reader
+        # names a never-seen file with the shape this line already derived.
+        # Accumulated here so neither derives a second answer to a question
+        # this loop has just asked (the amendment at the top of this file).
+        LOOP_SCOPE_CHANGED_FILES="${LOOP_SCOPE_CHANGED_FILES}${LOOP_SCOPE_CHANGED_FILES:+ }$path"
+        LOOP_SCOPE_CHANGED_TSV="${LOOP_SCOPE_CHANGED_TSV}${shape}	${path}
+"
+        # BEFORE THE SHAPE SWITCH, AND PATH-DRIVEN. The `app` arm below skips a
+        # label it has already seen, so a second declaring file in one app would
+        # never reach a seed placed inside it — and the question here is about
+        # the PATH, not about the app.
+        loop_scope__census_seed "$path"
         case "$shape" in
         shared-test-infra)
             case " $LOOP_TIER_SHARED_HITS " in
@@ -757,11 +1460,21 @@ loop_tier_own_apps() {
         LOOP_SCOPE_NARROW=""
         LOOP_TIER_REASON="the active rung changed shared test infrastructure or a file no app owns that every test stands on — so --loop runs the FULL suite, not a scope"
         LOOP_SCOPE_ALWAYS_DIGEST=$(loop_scope__always_digest "apps/conftest.py")
+        LOOP_SCOPE_ALWAYS_ON_DIGEST=$(loop_scope__always_on_digest) ||
+            LOOP_SCOPE_ALWAYS_ON_DIGEST=UNDECLARED
+        # THE MAP IS CONSULTED HERE TOO, AND IT SELECTS NOTHING. The full
+        # suite outranks any selection (the fan-out table), so this call can
+        # only ever come back a fallback — and it is made anyway, for two
+        # reasons a reader of a full run is owed: the sentence names the plant
+        # the map has never seen when there is one, and `map=` carries the
+        # same value it would on a fast run, so one field shape is parsed
+        # rather than two.
+        loop_scope__impact
         # THE SAME FIELD SHAPE AS THE FAST BRANCH, so the two are read the same
         # way and neither can be mistaken for the other: `mode=full` already
         # makes this key distinct from every scoped one, and keeping the field
         # list identical means a reader parses one format rather than two.
-        LOOP_SCOPE_CANONICAL="mode=full own=- scope=- always=${LOOP_SCOPE_ALWAYS_DIGEST} tests=-"
+        LOOP_SCOPE_CANONICAL="mode=full own=- scope=- always=${LOOP_SCOPE_ALWAYS_DIGEST} tests=- seeded=- alwayson=${LOOP_SCOPE_ALWAYS_ON_DIGEST} map=${LOOP_SCOPE_MAP_SHA:--}"
         return 0
     fi
 
@@ -824,6 +1537,16 @@ loop_tier_own_apps() {
         LOOP_SCOPE_CHANGED_TESTS=""
     fi
 
+    # THE CENSUS SEEDS, ANNOUNCED. Outside the tests-only branch above, and
+    # deliberately: a seed has nothing to do with whether an app changed only
+    # its tests — it is about a DECLARATION the active rung moved that a core census
+    # reads. It survives every branch of the block above for the same reason.
+    if [ -n "$LOOP_SCOPE_SEEDED_TESTS" ]; then
+        LOOP_SCOPE_SEEDED_TESTS=$(loop_scope__sorted "$LOOP_SCOPE_SEEDED_TESTS")
+        LOOP_SCOPE_SEEDED_BY=$(loop_scope__sorted "$LOOP_SCOPE_SEEDED_BY")
+        loop_scope__note "census-seeded by ${LOOP_SCOPE_SEEDED_BY}: ${LOOP_SCOPE_SEEDED_TESTS} — a core census that reads OTHER apps' declarations, which the reverse depends_on closure can never reach (core is everyone's dependency and nobody's dependant). The module is added, never the core app or its organ tests."
+    fi
+
     if [ -n "$LOOP_SCOPE_TOUCHED" ]; then
         # THE ONE SUBSHELL CALLEE IN THIS FILE, AND REVIEW F7'S WHOLE CLASS.
         # `$(...)` is a subshell: `loop_scope__closure` can print, but every
@@ -883,6 +1606,14 @@ loop_tier_own_apps() {
     LOOP_TIER_OWN_APPS="$LOOP_SCOPE_TOUCHED"
     LOOP_SCOPE_NARROW=1
     LOOP_SCOPE_ALWAYS_DIGEST=$(loop_scope__always_digest "apps/conftest.py")
+    # THE SECOND ALWAYS-ON SET, AND IT IS A SECOND FIELD RATHER THAN A WIDER
+    # FIRST ONE. `always=` is the digest of the pytest door's derivation RULE;
+    # `alwayson=` is the digest of the `--loop` always-on leg's INPUTS. Folding
+    # them into one value would make `UNDECLARED` — the broken read the ledger
+    # refuses to bank — unreachable, because a readable durations file would
+    # hash it away.
+    LOOP_SCOPE_ALWAYS_ON_DIGEST=$(loop_scope__always_on_digest) ||
+        LOOP_SCOPE_ALWAYS_ON_DIGEST=UNDECLARED
     # BOTH LISTS ARE IN THE KEY, because both decide what ran: `own` decides
     # which apps run their organ tests and `scope` decides which apps run at
     # all. A verdict keyed on only one of them would be reused by a run that
@@ -901,7 +1632,37 @@ loop_tier_own_apps() {
     # field makes that impossible by construction rather than by memory.
     local key_mode=fast
     [ -z "${LOOP_MINE:-}" ] || key_mode=mine
-    LOOP_SCOPE_CANONICAL="mode=${key_mode} own=${LOOP_SCOPE_TOUCHED:--} scope=${LOOP_SCOPE_APPS:--} always=${LOOP_SCOPE_ALWAYS_DIGEST} tests=${LOOP_SCOPE_TESTS_ONLY:--}"
+    # THE SEED IS IN THE KEY, AND THAT IS NOT DECORATION. The banked verdict is
+    # keyed on what the run SELECTED; a tree whose seeds differ selected a
+    # different set, so it must not hit a row banked without them — and a
+    # verifier's plain `--loop` on the same tree derives the same seeds and
+    # therefore the same key, which is the property that makes a hit meaningful.
+    # `seeded=` is appended AFTER `tests=`, the append precedent this file
+    # already set one field earlier, so an older row simply misses rather than
+    # being misread.
+    #
+    # `alwayson=` IS APPENDED LAST, the same append precedent `tests=` and
+    # `seeded=` set before it: an older row simply misses rather than being
+    # misread, and every row written from here on names the always-on inputs it
+    # was measured with.
+    # THE MAP, CONSULTED LAST, because it reads what everything above derived:
+    # the changed paths with their shapes, and the census modules the seeds
+    # added. It sets no scope and removes no app — it either produces a
+    # SELECTION that replaces the narrowing at the pytest door, or a printed
+    # sentence saying why this run is the closure scope it was before.
+    loop_scope__impact
+    if [ -n "$LOOP_SCOPE_IMPACT_SELECT" ]; then
+        loop_scope__note "the TEST-IMPACT MAP answered: ${LOOP_SCOPE_IMPACT_TESTS} test(s) selected for ${LOOP_SCOPE_IMPACT_SEEN} changed file(s) it has seen, so the closure above is NOT what runs — the scope flags are dropped and the selection is handed to pytest whole. A test the map attributes elsewhere is the declared hole, bounded by the wave's bank."
+    else
+        loop_scope__note "the TEST-IMPACT MAP did NOT narrow this run: ${LOOP_SCOPE_IMPACT_FALLBACK}"
+    fi
+    # `map=` IS APPENDED LAST, the same append precedent every field since
+    # `tests=` has taken: an older row simply misses rather than being
+    # misread, and the loop key now MOVES WITH THE MAP — a tree measured
+    # against one selection can never be vouched for by a verdict banked
+    # against another. `bypassed` is its own value for the same reason
+    # `mode=mine` is: the valve's wide run must not be handed a narrow row.
+    LOOP_SCOPE_CANONICAL="mode=${key_mode} own=${LOOP_SCOPE_TOUCHED:--} scope=${LOOP_SCOPE_APPS:--} always=${LOOP_SCOPE_ALWAYS_DIGEST} tests=${LOOP_SCOPE_TESTS_ONLY:--} seeded=${LOOP_SCOPE_SEEDED_TESTS:--} alwayson=${LOOP_SCOPE_ALWAYS_ON_DIGEST} map=${LOOP_SCOPE_MAP_SHA:--}"
 
     if [ -n "$LOOP_SCOPE_APPS" ]; then
         # "own app" IS THE HOUSE'S WORD FOR IT and this sentence keeps it. The
@@ -950,10 +1711,52 @@ loop_tier_own_apps() {
 # `full` (shared test infrastructure moved) there is no scope to narrow to, and
 # a caller that appended a `--djb-scope-narrow` with an empty scope would run
 # the always-on set alone while believing it ran everything.
+#
+# AND WHEN THE MAP ANSWERED, THE SCOPE FLAGS ARE NOT EMITTED AT ALL. A
+# selection and a scope are two answers to the same question, and the one this
+# emits is the narrower: `--djb-impact-select` plus the always-on set pytest
+# derives for itself. The three flags that ride on both paths ride for reasons
+# the map has no opinion about — `--djb-own-app` (which apps run their organ
+# tests, emitted by the caller), `--djb-changed-test` (a module the rung
+# edited or a census the declarations seeded) and `--djb-changed` (the
+# population test above).
 loop_scope__pytest_args() {
     local counts=${1:-} label path
     [ "$LOOP_TIER_MODE" != "full" ] || return 0
     [ -n "$LOOP_SCOPE_NARROW" ] || return 0
+    # THE CHANGED FILES THEMSELVES, ON BOTH OF THE ORDINARY LOOP'S PATHS.
+    # `--djb-changed` narrows nothing on its own: it is what lets a DECLARED
+    # cross-app census with a `population=` clause sit out a run whose changed
+    # files are all outside it. A selecting run and a fallback run both owe it,
+    # because a census population is a declaration about files and not a
+    # projection of one measurement.
+    #
+    # BEHIND THE SAME ONE SWITCH AS THE MAP, deliberately: `--pr` and `--mine`
+    # emit exactly the flags they emitted before this section existed, so
+    # the ordinary `--loop` is the only belt whose selection moved, and it is
+    # the only one that was measured.
+    if [ -n "${LOOP_IMPACT:-}" ]; then
+        for path in $LOOP_SCOPE_CHANGED_FILES; do
+            printf -- '--djb-changed=%s\n' "$path"
+        done
+    fi
+    if [ -n "$LOOP_SCOPE_IMPACT_SELECT" ]; then
+        # THE SELECTION IS THE WHOLE QUESTION. No `--djb-scope-narrow` and no
+        # `--djb-scope=` beside it: those would widen back exactly what the map
+        # was asked to narrow, and a caller that handed over a list of nodeids
+        # did not ask for the closure as well. The own-app and edited-module
+        # flags below still ride, because they answer the OTHER question — the
+        # organ tier — which the map has no opinion about.
+        printf -- '--djb-impact-select=%s\n' "$LOOP_SCOPE_IMPACT_SELECT"
+        for path in $LOOP_SCOPE_CHANGED_TESTS; do
+            printf -- '--djb-changed-test=%s\n' "$path"
+        done
+        for path in $LOOP_SCOPE_SEEDED_TESTS; do
+            printf -- '--djb-changed-test=%s\n' "$path"
+        done
+        [ -z "$counts" ] || printf -- '--djb-scope-counts=%s\n' "$counts"
+        return 0
+    fi
     printf '%s\n' "--djb-scope-narrow"
     for label in $LOOP_SCOPE_APPS; do
         printf -- '--djb-scope=%s\n' "$label"
@@ -962,6 +1765,15 @@ loop_scope__pytest_args() {
         printf -- '--djb-tests-only=%s\n' "$label"
     done
     for path in $LOOP_SCOPE_CHANGED_TESTS; do
+        printf -- '--djb-changed-test=%s\n' "$path"
+    done
+    # THE SAME FLAG THE EDITED TEST MODULES USE, and that is the point rather
+    # than a shortcut: `--djb-changed-test=<module>` already means exactly "keep
+    # this ONE module in the selection and do not deselect it for the organ
+    # tier" (`apps/conftest.py`, `is_changed_test`). A second flag would be a
+    # second answer to one question. What differs is where the path came from —
+    # the rung edited that one, and a declaration seeded this one.
+    for path in $LOOP_SCOPE_SEEDED_TESTS; do
         printf -- '--djb-changed-test=%s\n' "$path"
     done
     [ -z "$counts" ] || printf -- '--djb-scope-counts=%s\n' "$counts"

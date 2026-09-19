@@ -23,7 +23,7 @@ from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.audit import AuditEntry
 from apps.core.exceptions import Conflict, Forbidden, NotFound, refusal_message
 from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import add_membership, set_role
+from apps.core.services import add_membership, root_organization, set_role
 
 pytestmark = pytest.mark.django_db
 
@@ -42,7 +42,10 @@ def second_owner(tenant: Tenant, member: User) -> User:
         tenant=tenant,
         membership=Membership.objects.get(user_id=member.pk, tenant=tenant),
         role=Membership.Role.OWNER,
-        actor=system_actor(tenant=tenant),
+        # R1-F4.2: `set_role` asks `may_be_named` first, and a hatless system
+        # actor names no node. The hat is the root, which is where this
+        # membership sits.
+        actor=system_actor(tenant=tenant, org=root_organization(tenant=tenant)),
     )
     return member
 

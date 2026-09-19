@@ -239,6 +239,16 @@ class WebhookEndpoint(TenantScopedModel):
     row carries.
     """
 
+    #: The key vocabulary predates the class name. Every door, every refusal
+    #: sentence and every `require` in this app has said `endpoint.*` since the
+    #: app landed, and `snake_case(WebhookEndpoint)` would have made the
+    #: vocabulary say `webhook_endpoint.*` — two words for one noun, which is the
+    #: defect house rule 54 (a) exists to refuse. The class keeps its name
+    #: because `Endpoint` alone says nothing in a tree that also has an API
+    #: endpoint in every docstring; the KIND is the shorter word the doors
+    #: already use.
+    authz_kind: ClassVar[str | None] = "endpoint"
+
     #: ADR core-13. Configuration, not traffic: a row arrives when somebody
     #: adds an integration and leaves when somebody removes it. Retirement is a
     #: state (`is_active=False`), and `Delivery.endpoint` is PROTECT, so an

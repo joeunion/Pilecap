@@ -139,6 +139,20 @@ dev = [
     # a pass-2 red is state left behind, never a different order.
     "pytest-xdist>=3.6",
     "pytest-randomly>=3.15",
+    # The SPLIT, and it is a different question from the two above (principle 12,
+    # recorded in full in the P20 lane-G plan's decision 11). What it provides
+    # that `xdist` cannot: a DETERMINISTIC partition of ONE collection into N
+    # groups, selectable from N SEPARATE PROCESSES on N separate machines
+    # (`--splits N --group k`), balanced by recorded durations. `xdist`
+    # distributes a collection among the workers of ONE session and has no
+    # cross-invocation group selection at all, so it cannot split a suite across
+    # CI runners however many workers it is given. Health: MIT; 24 releases since
+    # 2020-02, 0.11.0 on 2026-02-03; `requires-python >=3.10,<4.0`; ONE
+    # dependency (`pytest`). Exit: two flags in `scripts/check.sh` and one
+    # derived JSON file — `--shard 1/1` carries no flags at all and is the whole
+    # unit without the plugin; nothing under `apps/` or `quality/` imports it, so
+    # removal is this line and `scripts/pytest_durations.json`.
+    "pytest-split>=0.10",
     # The liveness guard. A suite with no per-test ceiling cannot tell a
     # hang from work: an earlier merge gate sat 22 minutes at 96% with every
     # xdist worker at 0% CPU, and the only instrument that found the frame was a
@@ -148,6 +162,43 @@ dev = [
     # `[tool.pytest.ini_options]` below, so every pytest entry point — the gate
     # legs, `scripts/test.sh`, a bare `uv run pytest` — inherits the same one.
     "pytest-timeout>=2.4",
+    # THE TEST-IMPACT MAP'S RECORDER (principle 12, scrutinised here rather
+    # than in a commit message).
+    #
+    # WHAT IT PROVIDES that nothing here already has: per-test coverage
+    # CONTEXTS collected across an xdist session and COMBINED into one
+    # `.coverage` file. `--cov-context=test` switches coverage's context at
+    # every test's setup, so each measured line carries the nodeid that
+    # executed it; that join — nodeid → source files — is the whole input to
+    # the test-impact map (`scripts/test_impact.py`), which is what lets the
+    # inner loop run the tests a change can reach instead of a closure.
+    #
+    # WHY THE PLATFORM LACKS IT. `coverage` alone can do the context half:
+    # `dynamic_context = test_function` in its own config records a context per
+    # test function without any plugin. It cannot do the OTHER half. The gate's
+    # pytest legs run under `pytest-xdist` (`-n $GATE_SLOT_WORKERS`), and every
+    # xdist worker is a separate process writing its OWN `.coverage.<host>.<pid>`
+    # — a map built from one of them is a map of one worker's share of the
+    # suite, silently. Combining those files at the right moment, under the
+    # controller, after the last worker has flushed, is exactly what
+    # `pytest-cov` owns (`--cov-append`/combine handling in its xdist hooks),
+    # and re-implementing it here would be a second mechanism for a job a
+    # maintained plugin already does. `dynamic_context` also names the test
+    # FUNCTION rather than the nodeid, so a parametrised case cannot be
+    # selected from it.
+    #
+    # MAINTENANCE AND UPGRADE RISK. MIT; the pytest-dev organisation, the same
+    # home as `pytest-xdist` and `pytest-timeout` above; continuously released
+    # since 2010 and the de-facto coverage plugin. Two dependencies, both
+    # already implied by the job: `pytest` and `coverage`. It is a DEV-GROUP
+    # dependency — nothing under `apps/` or `config/` imports it, so it can
+    # never reach a deployment, and an upgrade that broke it would redden one
+    # measurement box outside the composed verdict, never the gate.
+    # REPLACEMENT COST: this line, the acceptance box's two pytest passes in
+    # `scripts/pm_push.sh`, and `scripts/test_impact.py`'s reader — the map
+    # then stops being regenerated and the loop falls back to the closure
+    # scope it uses today, which is the designed degradation and not an outage.
+    "pytest-cov>=7.0",
 ]
 
 [tool.ruff]
@@ -374,7 +425,13 @@ exhaustive = false
 # `AppConfig.depends_on`, and the names are constants in one module; what is
 # gone is the import. Nothing in `apps/core` may reach upward again.
 ignore_imports = [
-    "apps.core.tests.* -> apps.accounts.*",
+    # `**` and not `*`: import-linter's single star matches ONE segment, so the
+    # exemption covered `apps.accounts.services` and silently did not cover
+    # `apps.accounts.management.commands.zitadel_seed` — a test module reaching
+    # a command's constants was refused by an exemption written to allow
+    # exactly that. Widened at A5, which is the first test to reach that deep.
+    # The three globs below have the same narrowness and have not needed it yet.
+    "apps.core.tests.* -> apps.accounts.**",
     "apps.core.tests.* -> apps.workflows.*",
     # `core`'s own tests drive the worked example app, because the example is
     # what proves `@service`, the audit row and idempotency end to end. Now that

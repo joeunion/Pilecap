@@ -175,6 +175,9 @@ def list_widgets_route(
       a filter value was malformed. The response says what you may sort by.
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role here does not let you read widgets. A role
+      with no read of this kind reads none of them: ask an administrator for
+      the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -187,7 +190,8 @@ def list_widgets_route(
     # Scoped first, and only ever narrowed after: the type widens from
     # `ScopedQuerySet` to `QuerySet` here because filtering returns the plain
     # one, and narrowing a queryset cannot widen its tenant.
-    widgets: QuerySet[Widget] = list_widgets(tenant=request.tenant, org=request.org)
+    actor, tenant = _acting(request)
+    widgets: QuerySet[Widget] = list_widgets(tenant=tenant, org=request.org, actor=actor)
     widgets = filters.filter(widgets)
     widgets = searched(widgets, q, fields=SEARCH_FIELDS)
     return ordered_by(widgets, ordering, allowed=ORDERING, default="-created_at")
@@ -217,7 +221,9 @@ def resolve_named_policy(
     """
     if policy_id is None:
         return None
-    return get_governing_widget_policy(tenant=tenant, org=actor.org, policy_id=policy_id)
+    return get_governing_widget_policy(
+        tenant=tenant, org=actor.org, policy_id=policy_id, actor=actor
+    )
 
 
 @router.post("/", response={201: WidgetOut}, url_name="widget-create")
@@ -275,7 +281,7 @@ def create_widget_route(request: TenantRequest, payload: WidgetIn) -> Status[Wid
     return Status(201, widget)
 
 
-def widget_stats(*, tenant: Tenant | None, org: Any) -> WidgetStatsOut:
+def widget_stats(*, tenant: Tenant | None, org: Any, actor: Actor) -> WidgetStatsOut:
     """The measured widget count for one hat — **one implementation, both doors**.
 
     It lives here rather than in `selectors.py` because it does not return a
@@ -294,7 +300,15 @@ def widget_stats(*, tenant: Tenant | None, org: Any) -> WidgetStatsOut:
     Two `COUNT`s rather than one plus a subtraction, because a subtraction would
     make one of the two inputs unmeasured and the basis would be decorative.
     """
-    visible = list_widgets(tenant=tenant, org=org)
+    # authz: the read IS asked, one hop further down than rule 41's one-step walk
+    # reaches. This function is a wire shape assembled out of `list_widgets`, and
+    # `list_widgets` calls `require(actor, "widget.read")` — the check lives in
+    # the selector, once, and every door pays it (ADR core-27, §C6). Asking here
+    # as well would be the second copy of the rule that seam exists to delete,
+    # and it would ask the same question at the same node. The refusal the stats
+    # route's contract promises is driven by
+    # `tests/test_reads_ask.py::test_widget_stats_asks_widget_read`.
+    visible = list_widgets(tenant=tenant, org=org, actor=actor)
     onboarded = visible.filter(onboarded_at__isnull=False).count()
     pending = visible.filter(onboarded_at__isnull=True).count()
     return WidgetStatsOut(
@@ -332,6 +346,9 @@ def widget_stats_route(request: TenantRequest) -> WidgetStatsOut:
 
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role here does not let you read widgets. A role
+      with no read of this kind reads none of them: ask an administrator for
+      the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -344,7 +361,8 @@ def widget_stats_route(request: TenantRequest) -> WidgetStatsOut:
     answers with a single object rather than a collection. The query pin in
     `tests/test_api.py` is what keeps its two `COUNT`s from becoming three.
     """
-    return widget_stats(tenant=request.tenant, org=request.org)
+    actor, tenant = _acting(request)
+    return widget_stats(tenant=tenant, org=request.org, actor=actor)
 
 
 @router.get("/policies/", response=list[WidgetPolicyOut], url_name="widget_policies-list")
@@ -371,6 +389,9 @@ def list_widget_policies_route(request: TenantRequest) -> QuerySet[WidgetPolicy]
       a filter value was malformed. The response says what you may sort by.
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role here does not let you read widget policies. A role
+      with no read of this kind reads none of them: ask an administrator for
+      the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -382,7 +403,10 @@ def list_widget_policies_route(request: TenantRequest) -> QuerySet[WidgetPolicy]
     list: a policy has a name and a branch and nothing worth narrowing on yet.
     The day it does, they arrive the same declared way they did there.
     """
-    policies: QuerySet[WidgetPolicy] = list_widget_policies(tenant=request.tenant, org=request.org)
+    actor, tenant = _acting(request)
+    policies: QuerySet[WidgetPolicy] = list_widget_policies(
+        tenant=tenant, org=request.org, actor=actor
+    )
     return policies
 
 
@@ -451,6 +475,9 @@ def get_governing_widget_policy_route(request: TenantRequest) -> WidgetPolicy:
       nor anything above it has one.
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role here does not let you read widget policies. A role
+      with no read of this kind reads none of them: ask an administrator for
+      the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -459,7 +486,8 @@ def get_governing_widget_policy_route(request: TenantRequest) -> WidgetPolicy:
     route on purpose: upward *config resolution*, never upward *visibility*.
     The 404 is the selector's, the same one a missing widget gets.
     """
-    return get_governing_widget_policy(tenant=request.tenant, org=request.org)
+    actor, tenant = _acting(request)
+    return get_governing_widget_policy(tenant=tenant, org=request.org, actor=actor)
 
 
 @router.get("/entries/", response=list[WidgetEntryOut], url_name="widget_entries-list")
@@ -487,6 +515,9 @@ def list_widget_entries_route(
       a filter value was malformed. The response says what you may sort by.
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role here does not let you read ledger entries. A role
+      with no read of this kind reads none of them: ask an administrator for
+      the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -494,8 +525,9 @@ def list_widget_entries_route(
     one; `introspect` is where that is checkable — the route list for this app
     has no update or delete for entries at all.
     """
+    actor, tenant = _acting(request)
     entries: QuerySet[WidgetEntry] = list_widget_entries(
-        tenant=request.tenant, org=request.org, widget_id=widget_id
+        tenant=tenant, org=request.org, widget_id=widget_id, actor=actor
     )
     return entries
 
@@ -547,7 +579,7 @@ def record_widget_entry_route(
     matters.
     """
     actor, tenant = _acting(request)
-    widget = get_widget(tenant=tenant, widget_id=payload.widget_id, org=actor.org)
+    widget = get_widget(tenant=tenant, widget_id=payload.widget_id, org=actor.org, actor=actor)
     if not may_be_named(actor, widget):
         raise NotFound()
     entry = record_widget_entry(
@@ -581,9 +613,13 @@ def retrieve_widget(request: TenantRequest, widget_id: UUID) -> Widget:
       `X-Org` hat covers. A widget in a sibling branch answers this too.
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role here does not let you read widgets. A role
+      with no read of this kind reads none of them: ask an administrator for
+      the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    return get_widget(tenant=request.tenant, widget_id=widget_id, org=request.org)
+    actor, tenant = _acting(request)
+    return get_widget(tenant=tenant, widget_id=widget_id, org=request.org, actor=actor)
 
 
 @router.patch("/{widget_id}/", response=WidgetOut, url_name="widget-update")
@@ -617,7 +653,7 @@ def update_widget_route(request: TenantRequest, widget_id: UUID, payload: Widget
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org)
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
     policy = resolve_named_policy(tenant=tenant, actor=actor, policy_id=payload.policy_id)
     if policy is not None and not may_be_named(actor, policy):
         raise NotFound()
@@ -676,7 +712,7 @@ def approve_widget_route(request: TenantRequest, widget_id: UUID) -> Widget:
     when somebody remembered it is missing on the day it matters.
     """
     actor, tenant = _acting(request)
-    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org)
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
     if not may_be_named(actor, widget):
         raise NotFound()
     return approve_widget(tenant=tenant, actor=actor, widget=widget)
@@ -710,7 +746,7 @@ def delete_widget_route(request: TenantRequest, widget_id: UUID) -> Status[None]
     organization's subtree and it can only agree.
     """
     actor, tenant = _acting(request)
-    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org)
+    widget = get_widget(tenant=tenant, widget_id=widget_id, org=actor.org, actor=actor)
     if not may_be_named(actor, widget):
         raise NotFound()
     delete_widget(tenant=tenant, actor=actor, widget=widget)

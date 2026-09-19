@@ -74,7 +74,29 @@ def _receiver() -> Any:
 # ADR core-18 took one statement OFF this pin: the default list issues no
 # COUNT any more — `has_more` comes from fetching one row more than asked
 # for. `?include_count=true` puts it back, and costs exactly one more.
-LIST_QUERY_BUDGET = 7
+#
+# **+3 since Phase R** (ADR core-27, rule 5): `list_connections` asks
+# `connection.read` at the acting hat, and resolution reads three tables — this
+# person's memberships in the tenant, the grants on them, and the role deltas
+# for the roles on the chain. It is paid ONCE per actor instance whatever the
+# number of `require`s (the PR0 memo), so a route that asked twice would still
+# be +3 and not +6.
+#
+# **House rule 55 put a root read on this path; the register took it off again,
+# and this number did not move.** The kind is TENANT-WIDE and names no
+# organization, so the selector used to resolve the tenant's ROOT to ask at.
+# Since PR5.5 sight is the ACTING HAT's — the read asks with no node — while the
+# write half is untouched: a connection is still CREATED, re-credentialled and
+# revoked at the root, so a branch's people see which providers the tenant is
+# joined to (never a credential — no `Out` carries one) and change none of them.
+#
+# **11 -> 10 -> 10.** The memo on the tenant instance had already taken the root
+# read off a request whose hat IS the root, which this one's is (it sends no
+# `X-Org` and lands on the owner's default membership). Dropping the root read
+# entirely therefore changed nothing HERE; what it changed is the number a
+# BRANCH-hat request pays, which used to be one more, once per request. The hat
+# this budget runs under is the root, said here rather than inferred.
+LIST_QUERY_BUDGET = 10
 
 
 def _body(response: Any) -> dict[str, Any]:

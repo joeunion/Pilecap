@@ -47,21 +47,35 @@ from apps.core.api.routes import (
     MEMBERSHIP_ORDERING,
     ORGANIZATION_ORDERING,
     ORGANIZATION_SEARCH_FIELDS,
+    _permission_matches,
+    _role_matches,
+    _sorted_roles,
     add_membership_route,
     create_organization_route,
+    create_role_route,
+    delete_grant_route,
+    delete_role_route,
     get_flags_route,
     get_organization_route,
+    get_role_route,
     get_settings_route,
     invite_member_route,
+    list_grants_route,
     list_invitations_route,
     list_memberships_route,
     list_organizations_route,
+    list_permissions_route,
+    list_roles_route,
+    membership_permissions_route,
     move_organization_route,
     rename_organization_route,
     revoke_invitation_route,
     revoke_membership_route,
     set_flag_route,
+    set_grant_route,
+    set_role_permissions_route,
     set_role_route,
+    update_role_route,
     update_settings_route,
 )
 from apps.core.api.scopes import (
@@ -74,6 +88,7 @@ from apps.core.api.scopes import (
     within_ceiling,
 )
 from apps.core.api.scopes import InsufficientScope as InsufficientScope
+from apps.core.authz import refusal_sentence
 from apps.core.exceptions import (
     NON_FIELD_KEY,
     Conflict,
@@ -89,9 +104,11 @@ from apps.core.exceptions import (
     wire_refusal,
 )
 from apps.core.flags import enabled_for
-from apps.core.models import Invitation, Membership, Organization, Tenant
+from apps.core.models import Grant, Invitation, Membership, Organization, Role, Tenant
 from apps.core.schemas import (
     FlagsOut,
+    GrantOut,
+    GrantPage,
     InvitationFilter,
     InvitationIssuedOut,
     InvitationOut,
@@ -99,23 +116,39 @@ from apps.core.schemas import (
     MembershipFilter,
     MembershipOut,
     MembershipPage,
+    MembershipPermissionsOut,
     OrganizationFilter,
     OrganizationOut,
     OrganizationPage,
+    PermissionFilter,
+    PermissionOut,
+    PermissionPage,
     PingOut,
+    RoleFilter,
+    RoleOut,
+    RolePage,
     TenantSettingsOut,
 )
 from apps.core.selectors import (
     get_invitation,
     get_membership,
+    get_membership_permissions,
     get_organization,
+    get_role,
+    list_grants,
     list_invitations,
     list_memberships,
     list_organizations,
+    list_permissions,
+    list_roles,
 )
 from apps.core.services import (
     add_membership,
+    create_grant,
     create_organization,
+    create_role,
+    delete_grant,
+    delete_role,
     invite_member,
     move_organization,
     rename_organization,
@@ -123,6 +156,8 @@ from apps.core.services import (
     revoke_membership,
     set_flag,
     set_role,
+    set_role_collection,
+    update_role,
     update_tenant_settings,
 )
 from apps.core.throttling import ScopeSubject, refusal
@@ -1414,7 +1449,9 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
     ) -> OrganizationPage:
         with tool_call(ctx) as acting:
             rows: models.QuerySet[Organization] = OrganizationFilter(name=name, depth=depth).filter(
-                list_organizations(tenant=acting.tenant, org=acting_org(acting))
+                list_organizations(
+                    tenant=acting.tenant, org=acting_org(acting), actor=acting.actor()
+                )
             )
             rows = searched(rows, q, fields=ORGANIZATION_SEARCH_FIELDS)
             rows = ordered_by(rows, ordering, allowed=ORGANIZATION_ORDERING, default="path")
@@ -1440,6 +1477,7 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
                     tenant=acting_tenant(acting),
                     org=acting_org(acting),
                     organization_id=organization_id,
+                    actor=acting.actor(),
                 )
             )
 
@@ -1449,8 +1487,13 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
     ) -> OrganizationOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            # ONE actor for the whole tool body, not one per call: the read and
+            # the write are two questions in one request, and PR0's memo is on
+            # the instance — two `acting.actor()` calls would pay the three
+            # statements twice.
+            actor = acting.actor()
             parent = get_organization(
-                tenant=tenant, org=acting_org(acting), organization_id=parent_id
+                tenant=tenant, org=acting_org(acting), organization_id=parent_id, actor=actor
             )
             return OrganizationOut.from_orm(
                 create_organization(
@@ -1458,7 +1501,7 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
                     parent=parent,
                     name=name,
                     slug=slug,
-                    actor=acting.actor(),
+                    actor=actor,
                 )
             )
 
@@ -1468,12 +1511,16 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
     ) -> OrganizationOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            actor = acting.actor()
             organization = get_organization(
-                tenant=tenant, org=acting_org(acting), organization_id=organization_id
+                tenant=tenant,
+                org=acting_org(acting),
+                organization_id=organization_id,
+                actor=actor,
             )
             return OrganizationOut.from_orm(
                 rename_organization(
-                    tenant=tenant, organization=organization, name=name, actor=acting.actor()
+                    tenant=tenant, organization=organization, name=name, actor=actor
                 )
             )
 
@@ -1484,14 +1531,19 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
             hat = acting_org(acting)
-            organization = get_organization(tenant=tenant, org=hat, organization_id=organization_id)
-            new_parent = get_organization(tenant=tenant, org=hat, organization_id=new_parent_id)
+            actor = acting.actor()
+            organization = get_organization(
+                tenant=tenant, org=hat, organization_id=organization_id, actor=actor
+            )
+            new_parent = get_organization(
+                tenant=tenant, org=hat, organization_id=new_parent_id, actor=actor
+            )
             return OrganizationOut.from_orm(
                 move_organization(
                     tenant=tenant,
                     organization=organization,
                     new_parent=new_parent,
-                    actor=acting.actor(),
+                    actor=actor,
                     started_by=acting.user,
                 )
             )
@@ -1511,7 +1563,9 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             rows: models.QuerySet[Membership] = MembershipFilter(
                 role=role, organization_id=organization_id
-            ).filter(list_memberships(tenant=acting.tenant, org=acting_org(acting)))
+            ).filter(
+                list_memberships(tenant=acting.tenant, org=acting_org(acting), actor=acting.actor())
+            )
             rows = ordered_by(rows, ordering, allowed=MEMBERSHIP_ORDERING, default="role")
             page = cursor_page(
                 rows,
@@ -1537,9 +1591,13 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
     ) -> MembershipOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            actor = acting.actor()
             organization = (
                 get_organization(
-                    tenant=tenant, org=acting_org(acting), organization_id=organization_id
+                    tenant=tenant,
+                    org=acting_org(acting),
+                    organization_id=organization_id,
+                    actor=actor,
                 )
                 if organization_id is not None
                 else None
@@ -1552,7 +1610,7 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
                     organization=organization,
                     is_default=is_default,
                     role=role,
-                    actor=acting.actor(),
+                    actor=actor,
                 )
             )
 
@@ -1560,24 +1618,266 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
     def update_membership_tool(ctx: Context[Any], membership_id: UUID, role: str) -> MembershipOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            actor = acting.actor()
             membership = get_membership(
-                tenant=tenant, org=acting_org(acting), membership_id=membership_id
+                tenant=tenant, org=acting_org(acting), membership_id=membership_id, actor=actor
             )
             return MembershipOut.from_orm(
-                set_role(tenant=tenant, membership=membership, role=role, actor=acting.actor())
+                set_role(tenant=tenant, membership=membership, role=role, actor=actor)
             )
 
     @server.tool(name="delete_membership", description=contract_of(revoke_membership_route))
     def delete_membership_tool(ctx: Context[Any], membership_id: UUID) -> dict[str, bool]:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            actor = acting.actor()
             membership = get_membership(
-                tenant=tenant, org=acting_org(acting), membership_id=membership_id
+                tenant=tenant, org=acting_org(acting), membership_id=membership_id, actor=actor
             )
-            revoke_membership(tenant=tenant, membership=membership, actor=acting.actor())
+            revoke_membership(tenant=tenant, membership=membership, actor=actor)
             # The HTTP twin answers 204 with no body; a tool has no status code
             # to carry that, so it says the same thing in the one word it can.
             return {"revoked": True}
+
+    # --- Roles, grants and the vocabulary --------------------------------------
+    #
+    # Eleven twins of the eleven routes, over the same selectors, the same
+    # services and the same schemas. Every `description=` is `contract_of(...)`
+    # of its own route, which is what makes `scope_for_tool` derive
+    # `roles:read`/`roles:write` from the twin rather than from a second table.
+
+    @server.tool(name="list_roles", description=contract_of(list_roles_route))
+    def list_roles_tool(
+        ctx: Context[Any],
+        kind: str | None = None,
+        q: str | None = None,
+        ordering: str = "key",
+        cursor: str | None = None,
+        limit: int | None = None,
+        include_count: bool = False,
+    ) -> RolePage:
+        with tool_call(ctx) as acting:
+            # The HTTP route's own narrowing and sorting functions, imported
+            # rather than reimplemented: a list assembled twice is two answers
+            # waiting to differ, which is exactly what rule 46 exists to catch.
+            filters = RoleFilter(kind=kind, q=q)
+            views = [
+                view
+                for view in list_roles(tenant=acting_tenant(acting), actor=acting.actor())
+                if _role_matches(view, filters)
+            ]
+            rows = _sorted_roles(views, ordering)
+            page = cursor_page(
+                rows,
+                tenant=acting.tenant,
+                cursor=cursor,
+                limit=limit,
+                include_count=include_count,
+                ordering=("key",),
+            )
+            return RolePage(
+                items=list(page.items),
+                has_more=page.has_more,
+                next_cursor=page.next_cursor,
+                count=page.count,
+            )
+
+    @server.tool(name="get_role", description=contract_of(get_role_route))
+    def get_role_tool(ctx: Context[Any], key: str) -> RoleOut:
+        with tool_call(ctx) as acting:
+            return RoleOut.of(get_role(tenant=acting_tenant(acting), key=key, actor=acting.actor()))
+
+    @server.tool(name="create_role", description=contract_of(create_role_route))
+    def create_role_tool(
+        ctx: Context[Any],
+        key: str,
+        name: str,
+        description: str = "",
+        permissions: list[str] | None = None,
+    ) -> RoleOut:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            actor = acting.actor()
+            create_role(
+                tenant=tenant,
+                actor=actor,
+                key=key,
+                name=name,
+                description=description,
+                permissions=permissions or [],
+            )
+            return RoleOut.of(get_role(tenant=tenant, key=key, actor=actor))
+
+    @server.tool(name="update_role", description=contract_of(update_role_route))
+    def update_role_tool(
+        ctx: Context[Any],
+        key: str,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> RoleOut:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            actor = acting.actor()
+            row = Role.objects.for_tenant(tenant).filter(key=key).first()
+            if row is None:
+                raise NotFound()
+            update_role(tenant=tenant, actor=actor, role=row, name=name, description=description)
+            return RoleOut.of(get_role(tenant=tenant, key=key, actor=actor))
+
+    @server.tool(name="set_role_permissions", description=contract_of(set_role_permissions_route))
+    def set_role_permissions_tool(
+        ctx: Context[Any], key: str, permissions: list[str] | None = None
+    ) -> RoleOut:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            actor = acting.actor()
+            set_role_collection(
+                tenant=tenant, actor=actor, role_key=key, permissions=permissions or []
+            )
+            return RoleOut.of(get_role(tenant=tenant, key=key, actor=actor))
+
+    @server.tool(name="delete_role", description=contract_of(delete_role_route))
+    def delete_role_tool(ctx: Context[Any], key: str) -> dict[str, bool]:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            actor = acting.actor()
+            row = Role.objects.for_tenant(tenant).filter(key=key).first()
+            if row is None:
+                raise NotFound()
+            delete_role(tenant=tenant, actor=actor, role=row)
+            # The HTTP twin answers 204 with no body; a tool has no status code
+            # to carry that, so it says the same thing in the one word it can.
+            return {"deleted": True}
+
+    @server.tool(name="list_grants", description=contract_of(list_grants_route))
+    def list_grants_tool(
+        ctx: Context[Any],
+        membership_id: UUID,
+        cursor: str | None = None,
+        limit: int | None = None,
+        include_count: bool = False,
+    ) -> GrantPage:
+        with tool_call(ctx) as acting:
+            rows = list_grants(
+                tenant=acting_tenant(acting),
+                org=acting_org(acting),
+                membership_id=membership_id,
+                actor=acting.actor(),
+            )
+            page = cursor_page(
+                rows,
+                tenant=acting.tenant,
+                cursor=cursor,
+                limit=limit,
+                include_count=include_count,
+            )
+            return GrantPage(
+                items=[
+                    GrantOut.of(row, sentence=refusal_sentence(str(row.permission)))
+                    for row in page.items
+                ],
+                has_more=page.has_more,
+                next_cursor=page.next_cursor,
+                count=page.count,
+            )
+
+    @server.tool(name="set_grant", description=contract_of(set_grant_route))
+    def set_grant_tool(
+        ctx: Context[Any], membership_id: UUID, permission: str, effect: str
+    ) -> GrantOut:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            actor = acting.actor()
+            membership = get_membership(
+                tenant=tenant,
+                org=acting_org(acting),
+                membership_id=membership_id,
+                actor=actor,
+            )
+            grant = create_grant(
+                tenant=tenant,
+                actor=actor,
+                membership=membership,
+                permission=permission,
+                effect=effect,
+            )
+            return GrantOut.of(grant, sentence=refusal_sentence(permission))
+
+    @server.tool(name="delete_grant", description=contract_of(delete_grant_route))
+    def delete_grant_tool(
+        ctx: Context[Any], membership_id: UUID, permission: str
+    ) -> dict[str, bool]:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            actor = acting.actor()
+            membership = get_membership(
+                tenant=tenant,
+                org=acting_org(acting),
+                membership_id=membership_id,
+                actor=actor,
+            )
+            row = (
+                Grant.objects.for_tenant(tenant)
+                .filter(membership=membership, permission=permission)
+                .first()
+            )
+            if row is None:
+                raise NotFound()
+            delete_grant(tenant=tenant, actor=actor, grant=row)
+            return {"deleted": True}
+
+    @server.tool(
+        name="get_membership_permissions",
+        description=contract_of(membership_permissions_route),
+    )
+    def get_membership_permissions_tool(
+        ctx: Context[Any], membership_id: UUID
+    ) -> MembershipPermissionsOut:
+        with tool_call(ctx) as acting:
+            return MembershipPermissionsOut.of(
+                get_membership_permissions(
+                    tenant=acting_tenant(acting),
+                    org=acting_org(acting),
+                    membership_id=membership_id,
+                    actor=acting.actor(),
+                )
+            )
+
+    @server.tool(name="list_permissions", description=contract_of(list_permissions_route))
+    def list_permissions_tool(
+        ctx: Context[Any],
+        kind: str | None = None,
+        verb: str | None = None,
+        decided_by: str | None = None,
+        is_read: bool | None = None,
+        q: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+        include_count: bool = False,
+    ) -> PermissionPage:
+        with tool_call(ctx) as acting:
+            filters = PermissionFilter(
+                kind=kind, verb=verb, decided_by=decided_by, is_read=is_read, q=q
+            )
+            rows = [
+                PermissionOut.of(word)
+                for word in list_permissions(actor=acting.actor())
+                if _permission_matches(word, filters)
+            ]
+            page = cursor_page(
+                rows,
+                tenant=acting.tenant,
+                cursor=cursor,
+                limit=limit,
+                include_count=include_count,
+                ordering=("key",),
+            )
+            return PermissionPage(
+                items=list(page.items),
+                has_more=page.has_more,
+                next_cursor=page.next_cursor,
+                count=page.count,
+            )
 
     # --- Invitations ----------------------------------------------------------
 
@@ -1596,7 +1896,11 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             rows: models.QuerySet[Invitation] = InvitationFilter(
                 status=status, email=email, organization_id=organization_id
-            ).filter(list_invitations(tenant=acting_tenant(acting), org=acting_org(acting)))
+            ).filter(
+                list_invitations(
+                    tenant=acting_tenant(acting), org=acting_org(acting), actor=acting.actor()
+                )
+            )
             rows = searched(rows, q, fields=INVITATION_SEARCH_FIELDS)
             rows = ordered_by(rows, ordering, allowed=INVITATION_ORDERING, default="-created_at")
             page = cursor_page(
@@ -1622,12 +1926,16 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
     ) -> InvitationIssuedOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            actor = acting.actor()
             # Resolved through the hat's own subtree, the same way
             # `add_membership_tool` and both HTTP twins resolve theirs (ADR
             # core-20): a node outside it is `not_found`, never a placement.
             organization = (
                 get_organization(
-                    tenant=tenant, org=acting_org(acting), organization_id=organization_id
+                    tenant=tenant,
+                    org=acting_org(acting),
+                    organization_id=organization_id,
+                    actor=actor,
                 )
                 if organization_id is not None
                 else None
@@ -1638,7 +1946,7 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
                 role=role,
                 organization=organization,
                 invited_by=acting.user,
-                actor=acting.actor(),
+                actor=actor,
             )
             return InvitationIssuedOut(invitation=InvitationOut.from_orm(invitation), token=token)
 
@@ -1646,11 +1954,12 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
     def delete_invitation_tool(ctx: Context[Any], invitation_id: UUID) -> InvitationOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            actor = acting.actor()
             invitation = get_invitation(
-                tenant=tenant, org=acting_org(acting), invitation_id=invitation_id
+                tenant=tenant, org=acting_org(acting), invitation_id=invitation_id, actor=actor
             )
             return InvitationOut.from_orm(
-                revoke_invitation(tenant=tenant, invitation=invitation, actor=acting.actor())
+                revoke_invitation(tenant=tenant, invitation=invitation, actor=actor)
             )
 
     # --- The tenant's own configuration ---------------------------------------

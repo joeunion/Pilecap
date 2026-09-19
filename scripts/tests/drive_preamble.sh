@@ -432,7 +432,7 @@ drive_tripwire_check() {
 #     thing it has to be told about first.
 DRIVE_CI_VARS="CI GITHUB_ACTIONS"
 
-# --- 4a · THE GATE'S OWN EXEMPTION VARIABLES, stripped for section 4's reason -
+# --- 4a · THE GATE'S OWN INPUT VARIABLES, stripped for section 4's reason -----
 #
 # THE SAME INCIDENT AGAIN, ONE GUARD OVER, and it was found by the run that was
 # supposed to prove this cycle's work rather than by reasoning. `check.sh`'s
@@ -464,7 +464,64 @@ DRIVE_CI_VARS="CI GITHUB_ACTIONS"
 # where it wants it). This strip is the belt that makes the doctrine hold for
 # every drive that has not thought about it yet — including the ones nobody has
 # written.
-DRIVE_GATE_VARS="DJB_GATE_SANCTION DJB_GATE_CALLER"
+#
+# A THIRD TIME, AND THE THIRD ONE IS NOT AN EXEMPTION — it is an INPUT, which is
+# why the section's title is now the wider word. `DJB_GATE_PYTEST_SEED` types
+# the random seed both pytest passes carry, and `.github/workflows/ci.yml` sets
+# it on the step that runs the gate so that every shard of one run splits the
+# same collection order. That step is also the step that runs the selftest leg,
+# so on a runner every drive inherits a TYPED seed — and
+# `test_list_legs.sh::case_a_typed_seed_reaches_both_passes` has a third
+# assertion that runs the seam with no assignment of its own and expects the
+# gate to MINT one:
+#
+#     FAILED  and an untyped seed is minted, and says THAT
+#            | an untyped run did not print a minted seed with its provenance
+#
+# One red on three CI shards, green on every laptop, over identical bytes:
+# the case asked for the minted path and the runner's environment handed it the
+# typed one. Same shape as the sanction leak above, one variable over — a case
+# whose verdict depends on who started it is not a case — so the belt widens
+# rather than that one case learning to clear it.
+#
+# THE LIST HAS A TOOTH TOO, and it is about the CLASS rather than this one
+# variable: `test_drive_preamble.sh::case_every_variable_the_workflow_sets_is_accounted_for`
+# lifts EVERY name `.github/workflows/ci.yml` puts into the step that runs a
+# unit — the workflow-level `env:` block, the gate step's own `env:`, and what
+# the derivation step writes into `$GITHUB_ENV` — and asserts each one is either
+# stripped here or DECLARED inherited in section 4b below. A knob CI grows and
+# nobody thinks about is then a red case, not a green drive measuring somebody
+# else's branch.
+DRIVE_GATE_VARS="DJB_GATE_SANCTION DJB_GATE_CALLER DJB_GATE_PYTEST_SEED"
+
+# --- 4b · WHAT CI SETS THAT A DRIVE IS MEANT TO INHERIT -----------------------
+#
+# THE OTHER HALF OF THE CENSUS, and it exists because "strip everything CI sets"
+# is the wrong answer. Most of what `ci.yml` exports is THE WORLD'S COORDINATES
+# — where Postgres is, what it is called, where the object store is and with
+# what credential — and a drive that unset those would be a drive that cannot
+# reach the stack it is measuring. Section 4's rule is about a variable that
+# changes what a case CONCLUDES; these change what the case can DIAL.
+#
+# So they are named rather than ignored. A name here is a claim that somebody
+# looked at it and decided a drive should stand on it — which is what makes the
+# census above able to say "this one is new" instead of "this one is unlisted".
+#
+# AND A NAME HERE IS NOT A PROMISE THAT NO CASE CARES. `DATABASE_NAME` is the
+# worked example of exactly that, and it cost three red assertions on the same
+# CI run: `scripts/db.sh:216` exports it WITH a provenance label, and
+# `test_db_pin.sh`'s `run_leg_in` set the name for its scratch checkout and left
+# the launcher's label in place — so on a runner, where the name arrives
+# exported, the label said `exported` and the leg looked up a database nothing
+# had created. The fix was at the case, which is section 4's declared doctrine
+# for exactly this population ("a drive whose expectation turns on
+# `DATABASE_NAME` pins that itself, at the case"). This list is where a reader
+# finds out that such a case is possible.
+# Read by the census in `test_drive_preamble.sh`, never by this file: unlike
+# `DRIVE_GATE_VARS` this list is a DECLARATION rather than an instruction, so
+# there is nothing here to act on it.
+# shellcheck disable=SC2034
+DRIVE_INHERITED_VARS="DATABASE_NAME DATABASE_HOST DATABASE_PORT DATABASE_USER DATABASE_PASSWORD REDIS_URL CACHE_URL AWS_S3_ENDPOINT_URL AWS_S3_REGION_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY PYTHON_VERSION PYTEST_SHARDS UNIT SHARD PR_BASE"
 
 DRIVE_GATE_STRIPPED=""
 for _drive_gate_var in $DRIVE_GATE_VARS; do
@@ -476,7 +533,7 @@ done
 unset _drive_gate_var
 
 if [ -n "$DRIVE_GATE_STRIPPED" ]; then
-    echo "${DRIVE_NAME}: gate exemption variables unset for this drive: ${DRIVE_GATE_STRIPPED}"
+    echo "${DRIVE_NAME}: gate input variables unset for this drive: ${DRIVE_GATE_STRIPPED}"
 fi
 
 DRIVE_CI_STRIPPED=""
@@ -659,6 +716,17 @@ trap drive_epilogue EXIT
 # reports without the trap, so a caller reading the status sees exactly what it
 # saw before (143 for TERM, 130 for INT) and never a pass.
 #
+# AND A CONSUMER READS THAT STATUS OUT OF `drive_epilogue`'S OWN `local rc`.
+# Bash scopes locals dynamically, so a cleanup this epilogue `eval`s runs inside
+# this frame and can see `rc` — which is the ONLY place a signal status is
+# visible at cleanup time, since the epilogue is the frame that captured `$?`.
+# `scripts/tests/test_gate_explain.sh::census_status_floor` does exactly that
+# (reading it defensively: unset or non-numeric and it is not consulted) so a
+# TERM-killed drive's 143 is never lowered to its census's 1. The name `rc` is
+# therefore part of this section's contract and not an internal detail: renaming
+# it would silently drop that floor with every case still green, which is the
+# reason the fourth cell of that drive's floor case now pins it.
+#
 # WHY THESE THREE. `INT` is Ctrl-C and is what an operator does. `TERM` is what
 # every harness, `kill` and supervisor sends. `HUP` is a closed terminal. `KILL`
 # cannot be trapped by anything, ever, and is therefore this section's first
@@ -695,3 +763,56 @@ drive_on_signal() {
 trap 'drive_on_signal INT 2' INT
 trap 'drive_on_signal TERM 15' TERM
 trap 'drive_on_signal HUP 1' HUP
+
+# --- 7 · A CAPTURE A CASE CANNOT READ IS COULD-NOT-LOOK, NEVER A PASS ---------
+#
+# THE SHAPE THIS CLOSES, and it is the one shape a green drive can be made of
+# nothing. Every drive in this directory runs a subject, redirects its combined
+# output into a file, and then asserts over that file — `says`, `says_not`,
+# `grep -q`, a count. Three of those readers answer the same way about a capture
+# that is EMPTY as about one that is there and does not carry the needle:
+#
+#   * a NEGATIVE assertion (`says_not`, "the run printed no clamp line") is
+#     TRUE of a file with nothing in it, and prints `ok`;
+#   * a count over an empty file is `0`, which is what several floors want;
+#   * a `grep` handed a path that does not exist exits 2 and a reader that only
+#     branches on "did it match" reads that as "it did not".
+#
+# So a subject that never started — a `uv` that is not on PATH, a clone that was
+# not made, a variable a refactor emptied — produces a drive that passes without
+# looking at anything. That is the failure mode `rung-execution` §2 names as the
+# one an instrument cannot find in itself, and it is why this floor lives here
+# rather than in one drive: four drives assert over captures, and four copies of
+# a floor is three that drift.
+#
+# WHAT IT IS NOT. It is not an assertion about the SUBJECT's exit status — a
+# refusal that exits 2 and prints its sentence is a perfectly good capture, and
+# several cases here want exactly that. It is an assertion about the CAPTURE:
+# there is a path, there is a file at it, and it has bytes. The exit code is
+# carried into the refusal's sentence so a reader is never told "empty" without
+# being told what the run that produced it returned.
+#
+# drive_capture_refusal <label> <path> <exit code> — the sentence to refuse
+# with, on stdout, and exit 0 when the capture cannot be read; exit 1 (printing
+# nothing) when it can. The caller turns a returned sentence into its own
+# `cannot_look`, because each drive's refusal names itself and this file does
+# not know which drive is speaking.
+drive_capture_refusal() {
+    local label=$1 path=$2 rc=${3:-<none>}
+    if [ -z "$path" ]; then
+        printf '%s asserts over a capture with no path at all (the run it names exited %s). A reader handed an empty path answers "no match" to every question, so every negative assertion below it would have printed ok without looking.\n' \
+            "${label:-an unnamed case}" "$rc"
+        return 0
+    fi
+    if [ ! -f "$path" ]; then
+        printf '%s asserts over %s, which is not a file (the run it names exited %s). Nothing was captured, so nothing below it was measured.\n' \
+            "${label:-an unnamed case}" "$path" "$rc"
+        return 0
+    fi
+    if [ ! -s "$path" ]; then
+        printf '%s asserts over %s, which is EMPTY (the run it names exited %s). An empty capture answers "no" to every needle, so a negative assertion over it is a pass nobody looked at.\n' \
+            "${label:-an unnamed case}" "$path" "$rc"
+        return 0
+    fi
+    return 1
+}

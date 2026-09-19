@@ -29,6 +29,7 @@ from apps.core.service import service
 from apps.events import selectors, services
 from apps.events.events import ENDPOINT_REGISTERED, declared_names
 from apps.events.models import Delivery, Event, Outbox, WebhookEndpoint
+from apps.events.tests.bodies import in_the_root
 from apps.example.events import WIDGET_CREATED
 from apps.workflows.models import WorkflowRun
 
@@ -45,7 +46,7 @@ def test_emit_writes_the_event_its_outbox_row_and_a_dispatch_run(
     event = services.emit(
         name=WIDGET_CREATED,
         tenant=tenant,
-        payload={"id": "x", "name": "A widget"},
+        payload=in_the_root(tenant, {"id": "x", "name": "A widget"}),
         actor=owner_actor,
     )
 
@@ -81,7 +82,7 @@ def test_an_emit_that_rolls_back_promises_nobody_anything(
         services.emit(
             name=WIDGET_CREATED,
             tenant=tenant,
-            payload={"id": "x"},
+            payload=in_the_root(tenant, {"id": "x"}),
             actor=system_actor(tenant=tenant),
         )
         raise Deliberate
@@ -97,7 +98,7 @@ def test_an_undeclared_name_is_refused_and_writes_nothing(tenant: Tenant) -> Non
         services.emit(
             name="example.widget.creted",
             tenant=tenant,
-            payload={},
+            payload=in_the_root(tenant),
             actor=system_actor(tenant=tenant),
         )
     assert "events.py" in raised.value.errors["name"][0]
@@ -134,20 +135,30 @@ def test_another_tenant_cannot_see_the_event(
     mine = services.emit(
         name=WIDGET_CREATED,
         tenant=tenant,
-        payload={"id": "mine"},
+        payload=in_the_root(tenant, {"id": "mine"}),
         actor=system_actor(tenant=tenant),
     )
     services.emit(
         name=WIDGET_CREATED,
         tenant=other_tenant,
-        payload={"id": "theirs"},
+        payload=in_the_root(other_tenant, {"id": "theirs"}),
         actor=system_actor(tenant=other_tenant),
     )
 
-    assert [event.pk for event in selectors.list_events(tenant=tenant)] == [mine.pk]
-    assert selectors.list_events(tenant=other_tenant).count() == 1
+    # The system actor, because this test is about WHICH rows each tenant sees —
+    # rule 24's question — and `list_events` also asks `event.read` since Phase R
+    # (`test_reads_ask.py` is that half's subject). `allows` passes `system` at
+    # step 1, so the capability is constant here and the scoping is what moves.
+    assert [
+        event.pk
+        for event in selectors.list_events(tenant=tenant, actor=system_actor(tenant=tenant))
+    ] == [mine.pk]
+    assert (
+        selectors.list_events(tenant=other_tenant, actor=system_actor(tenant=other_tenant)).count()
+        == 1
+    )
     # Fails closed: no tenant reads an empty table, not the table.
-    assert selectors.list_events(tenant=None).count() == 0
+    assert selectors.list_events(tenant=None, actor=system_actor()).count() == 0
 
 
 def test_the_correlation_chain_is_carried_onto_the_event(tenant: Tenant) -> None:
@@ -156,7 +167,10 @@ def test_the_correlation_chain_is_carried_onto_the_event(tenant: Tenant) -> None
 
     with context.bound(correlation_id="chain-1", door="rest"):
         event = services.emit(
-            name=WIDGET_CREATED, tenant=tenant, payload={}, actor=system_actor(tenant=tenant)
+            name=WIDGET_CREATED,
+            tenant=tenant,
+            payload=in_the_root(tenant),
+            actor=system_actor(tenant=tenant),
         )
 
     assert event.correlation_id == "chain-1"
@@ -223,7 +237,9 @@ def test_an_endpoint_in_another_tenant_is_invisible(
         tenant=other_tenant, actor=stranger_actor, url="https://example.com/theirs", secret="s"
     )
 
-    assert [e.url for e in selectors.list_endpoints(tenant=tenant)] == ["https://example.com/mine"]
+    assert [
+        e.url for e in selectors.list_endpoints(tenant=tenant, actor=system_actor(tenant=tenant))
+    ] == ["https://example.com/mine"]
 
 
 # --- Deliveries and replay ---------------------------------------------------
@@ -235,7 +251,10 @@ def test_recording_the_same_attempt_twice_keeps_one_row(tenant: Tenant, owner_ac
         tenant=tenant, actor=owner_actor, url="https://example.com/hook", secret="s"
     )
     event = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant),
+        actor=system_actor(tenant=tenant),
     )
 
     first = services.record_delivery_attempt(
@@ -275,7 +294,10 @@ def test_giving_up_does_not_rewrite_what_the_server_said(
         tenant=tenant, actor=owner_actor, url="https://example.com/hook", secret="s"
     )
     event = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant),
+        actor=system_actor(tenant=tenant),
     )
     for _ in range(6):
         services.record_delivery_attempt(
@@ -316,7 +338,10 @@ def test_a_delivery_parked_before_any_attempt_was_recorded_still_says_why(
         tenant=tenant, actor=owner_actor, url="https://example.com/hook", secret="s"
     )
     event = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant),
+        actor=system_actor(tenant=tenant),
     )
 
     parked = services.dead_letter_delivery(
@@ -335,7 +360,10 @@ def test_a_delivery_parked_before_any_attempt_was_recorded_still_says_why(
 def test_a_replay_re_enqueues_and_starts_a_distinct_run(tenant: Tenant) -> None:
     """Deterministic enough to be idempotent, distinct enough to be a replay."""
     event = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant),
+        actor=system_actor(tenant=tenant),
     )
     services.close_outbox(
         tenant=tenant, event_id=event.pk, status=Outbox.Status.FAILED, error="nope"
@@ -364,10 +392,16 @@ def test_purging_leaves_the_failures_alone(tenant: Tenant) -> None:
     from apps.core.time import now
 
     dispatched = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={"n": 1}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant, {"n": 1}),
+        actor=system_actor(tenant=tenant),
     )
     failed = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={"n": 2}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant, {"n": 2}),
+        actor=system_actor(tenant=tenant),
     )
     services.close_outbox(tenant=tenant, event_id=dispatched.pk, status=Outbox.Status.DISPATCHED)
     services.close_outbox(tenant=tenant, event_id=failed.pk, status=Outbox.Status.FAILED)
@@ -382,7 +416,7 @@ def test_purging_leaves_the_failures_alone(tenant: Tenant) -> None:
 def test_a_system_actor_may_emit(tenant: Tenant) -> None:
     """A workflow, a schedule and a command act for the product itself."""
     event = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={}, actor=system_actor(tenant)
+        name=WIDGET_CREATED, tenant=tenant, payload=in_the_root(tenant), actor=system_actor(tenant)
     )
     assert event.actor_kind == "system"
     assert event.actor_user_id is None
@@ -398,12 +432,15 @@ def test_the_surveyor_can_see_what_never_dispatched(
     columns rather than log lines.
     """
     delivered = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={"n": 1}, actor=system_actor(tenant=tenant)
+        name=WIDGET_CREATED,
+        tenant=tenant,
+        payload=in_the_root(tenant, {"n": 1}),
+        actor=system_actor(tenant=tenant),
     )
     stuck = services.emit(
         name=WIDGET_CREATED,
         tenant=other_tenant,
-        payload={"n": 2},
+        payload=in_the_root(other_tenant, {"n": 2}),
         actor=system_actor(tenant=other_tenant),
     )
     services.close_outbox(tenant=tenant, event_id=delivered.pk, status=Outbox.Status.DISPATCHED)
@@ -417,9 +454,17 @@ def test_the_surveyor_can_see_what_never_dispatched(
         tenant=tenant, endpoint_id=endpoint.pk, event_id=delivered.pk, error="gone"
     )
 
-    assert [d.event_id for d in selectors.dead_lettered(tenant=tenant)] == [delivered.pk]
+    assert [
+        d.event_id
+        for d in selectors.dead_lettered(tenant=tenant, actor=system_actor(tenant=tenant))
+    ] == [delivered.pk]
     # A tenant sees its own dead letters and nobody else's.
-    assert selectors.dead_lettered(tenant=other_tenant).count() == 0
+    assert (
+        selectors.dead_lettered(
+            tenant=other_tenant, actor=system_actor(tenant=other_tenant)
+        ).count()
+        == 0
+    )
 
 
 def test_an_endpoint_is_unique_per_tenant_and_url(tenant: Tenant, owner_actor: Actor) -> None:
@@ -550,11 +595,14 @@ def test_a_microsecond_timestamp_is_stored_the_way_the_rest_door_writes_it(
     event = services.emit(
         name=WIDGET_CREATED,
         tenant=tenant,
-        payload={
-            "id": "x",
-            "from_pydantic": "2026-08-20T12:34:56.123456Z",
-            "from_python": MICROSECONDS,
-        },
+        payload=in_the_root(
+            tenant,
+            {
+                "id": "x",
+                "from_pydantic": "2026-08-20T12:34:56.123456Z",
+                "from_python": MICROSECONDS,
+            },
+        ),
         actor=system_actor(tenant=tenant),
     )
 
@@ -612,17 +660,22 @@ def test_a_payload_with_nothing_over_precise_in_it_is_stored_byte_identical(
     arrived — a normalisation that rewrote those would be widening its own
     licence, and a date-shaped string that is not an instant would be next.
     """
+    # The branch is part of the body being compared, not something wrapped
+    # around it: `emit` refuses a widget event that names none (house rule 59),
+    # and what this test is about is that the chokepoint reshapes nothing —
+    # so the key has to be inside the dictionary on both sides of the equality.
+    untouched = in_the_root(tenant, dict(UNTOUCHED))
     event = services.emit(
         name=WIDGET_CREATED,
         tenant=tenant,
-        payload=dict(UNTOUCHED),
+        payload=untouched,
         actor=system_actor(tenant=tenant),
     )
 
     payload = stored(tenant, event)
     assert payload.pop("v") == 1
-    assert payload == UNTOUCHED
-    assert json.dumps(payload, sort_keys=True) == json.dumps(UNTOUCHED, sort_keys=True)
+    assert payload == untouched
+    assert json.dumps(payload, sort_keys=True) == json.dumps(untouched, sort_keys=True)
 
 
 def test_an_emit_that_rolls_back_still_promises_nobody_anything(
@@ -643,7 +696,7 @@ def test_an_emit_that_rolls_back_still_promises_nobody_anything(
         services.emit(
             name=WIDGET_CREATED,
             tenant=tenant,
-            payload={"id": "x", "at": "2026-08-20T12:34:56.123456Z"},
+            payload=in_the_root(tenant, {"id": "x", "at": "2026-08-20T12:34:56.123456Z"}),
             actor=owner_actor,
         )
         raise Deliberate
@@ -707,3 +760,65 @@ def test_the_encoder_renders_exactly_as_the_mounted_api_does() -> None:
         assert json.dumps(value, cls=services.DOOR_ENCODER) == json.dumps(
             value, cls=door_encoder
         ), value
+
+
+# --- R4-F2 · the narrowing key is a contract, both ways ------------------------
+
+
+def test_an_org_scoped_kind_without_its_branch_is_refused(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    """**R4's F4, as the belt.** A widget belongs to a branch; say which.
+
+    `_subject_organization` reads only the payload's top-level
+    `organization_id`, and an absent key becomes NULL — which
+    `bridge.group_for` reads as TENANT-WIDE. So an org-scoped row announced
+    without its branch is broadcast to every socket in the tenant, while the
+    REST list under a sibling hat never shows the row. House rule 59 is the
+    static half over emit SITES; this is the half that also catches a body
+    assembled somewhere the scan cannot follow.
+
+    The refusal names both halves — the key and the kind — because a caller
+    reading `organization_id is required` with no kind beside it cannot tell
+    which of the three payloads in the function is wrong.
+    """
+    with pytest.raises(Invalid) as raised:
+        services.emit(
+            name=WIDGET_CREATED,
+            tenant=tenant,
+            payload={"id": "x", "name": "A widget"},
+            actor=owner_actor,
+        )
+
+    message = raised.value.errors["organization_id"][0]
+    assert "widget" in message, message
+    assert "organization_id" in message, message
+    assert not Event.objects.for_tenant(tenant).exists()
+
+
+def test_an_org_less_kind_with_a_branch_is_refused(tenant: Tenant, owner_actor: Actor) -> None:
+    """**R4's F5, as the belt.** The engine being down is nobody's branch.
+
+    The other direction, and it is not symmetry for its own sake:
+    `consumers._may_read` answers True for a `None` kind whatever branch the
+    frame carries, so a `None`-kind event that names a branch would be the
+    widest delivery this product has — every connection in the tenant, and the
+    read set skipped. `search.engine.degraded` is the declared `None` on this
+    tree and the only honest body for it is one with no branch in it at all.
+    """
+    from apps.core.services import root_organization
+    from apps.search.events import SEARCH_ENGINE_DEGRADED
+
+    where = root_organization(tenant=tenant)
+
+    with pytest.raises(Invalid) as raised:
+        services.emit(
+            name=SEARCH_ENGINE_DEGRADED,
+            tenant=tenant,
+            payload={"organization_id": str(where.pk), "engine": "meilisearch"},
+            actor=owner_actor,
+        )
+
+    message = raised.value.errors["organization_id"][0]
+    assert "an org-less event cannot name a branch" in message, message
+    assert not Event.objects.for_tenant(tenant).exists()

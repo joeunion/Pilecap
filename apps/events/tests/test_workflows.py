@@ -43,6 +43,7 @@ from apps.core.models import Tenant
 from apps.core.time import in_days, now
 from apps.events import activities, services
 from apps.events.models import Delivery, Event, Outbox, WebhookEndpoint
+from apps.events.tests.bodies import in_the_root
 from apps.events.types import (
     DispatchEvent,
     DispatchOutcome,
@@ -802,7 +803,7 @@ async def test_the_relay_delivers_an_event_whose_dispatch_never_started(
                 return services.emit(
                     name=WIDGET_CREATED,
                     tenant=tenant,
-                    payload={"v": 1, "id": "widget-1"},
+                    payload=in_the_root(tenant, {"v": 1, "id": "widget-1"}),
                     actor=system_actor(tenant=tenant),
                 )
 
@@ -1056,7 +1057,7 @@ async def test_a_resume_beside_a_live_dispatch_delivers_once(
             return services.emit(
                 name=WIDGET_CREATED,
                 tenant=tenant,
-                payload={"v": 1, "id": "widget-1"},
+                payload=in_the_root(tenant, {"v": 1, "id": "widget-1"}),
                 actor=system_actor(tenant=tenant),
             )
 

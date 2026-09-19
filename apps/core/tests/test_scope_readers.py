@@ -1,3 +1,4 @@
+# census: cross-app population=apps/**/*.py,config/**/*.py for readers of the scope keys
 """Who is allowed to read a token's ceiling, measured over the whole tree.
 
 ADR ident-7 part 1: scopes are read in the door seams and **nowhere below**. A

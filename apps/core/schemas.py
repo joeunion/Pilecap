@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 from uuid import UUID
 
 from ninja import FilterLookup, FilterSchema, Schema
@@ -403,6 +403,267 @@ class InvitationFilter(FilterSchema):
     )
 
 
+# --- The permission surface (ADR core-25, ADR core-27) ------------------------
+
+
+class RoleOut(Schema):
+    """One role, from whichever of the three layers owns it.
+
+    `kind` is which layer: `owner` is the platform's one role and IS the
+    vocabulary, `declared` is a role an app named in its `roles.py`, `custom` is
+    a row this tenant made for itself. The distinction is on the wire because it
+    decides what a caller may do with the row — a declared role's collection can
+    be adjusted and its name cannot, and a custom role is the other way round.
+
+    `permissions` is the EFFECTIVE collection in this tenant;
+    `default_permissions` is the declaration's own half (`null` for a custom
+    role, which has no code layer to differ from), and `added`/`removed` are the
+    difference. A reader gets "what this role does here" and "what this tenant
+    changed" without computing either.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    #: What the cursor pages over. `key` and not `name`: a display name is
+    #: renamable and not unique, and a cursor over a non-total field skips and
+    #: repeats rows at the page boundary the day two roles share one.
+    cursor_ordering: ClassVar[tuple[str, ...]] = ("key",)
+
+    key: str = Field(json_schema_extra=example("approver"))
+    name: str = Field(json_schema_extra=example("Approver"))
+    description: str = Field(json_schema_extra=example("May approve widgets, and read."))
+    kind: str = Field(json_schema_extra=example("custom"))
+    permissions: list[str] = Field(json_schema_extra=example(["widget.approve", "widget.read"]))
+    default_permissions: list[str] | None = Field(default=None, json_schema_extra=example(None))
+    added: list[str] = Field(default_factory=list, json_schema_extra=example([]))
+    removed: list[str] = Field(default_factory=list, json_schema_extra=example([]))
+    is_default_for_new_members: bool = Field(json_schema_extra=example(False))
+    #: `null` for `owner` and for a declared role: those live in code and were
+    #: never created here, which is a different fact from "created at an unknown
+    #: time" and is said differently.
+    created_at: datetime | None = Field(
+        default=None, json_schema_extra=example("2026-09-16T09:30:00Z")
+    )
+    updated_at: datetime | None = Field(
+        default=None, json_schema_extra=example("2026-09-16T09:30:00Z")
+    )
+
+    @staticmethod
+    def of(view: Any) -> RoleOut:
+        """Build one from a `selectors.RoleView`. The one place the sets are sorted."""
+        return RoleOut(
+            key=view.key,
+            name=view.name,
+            description=view.description,
+            kind=view.kind,
+            permissions=sorted(view.permissions),
+            default_permissions=(
+                None if view.default_permissions is None else sorted(view.default_permissions)
+            ),
+            added=sorted(view.added),
+            removed=sorted(view.removed),
+            is_default_for_new_members=view.is_default_for_new_members,
+            created_at=view.created_at,
+            updated_at=view.updated_at,
+        )
+
+
+class RoleIn(StrictIn):
+    """A role this tenant is making for itself.
+
+    `permissions` accepts fnmatch PATTERNS as well as keys — `"*.read"` is how a
+    role is given every read this deployment has — and they are expanded to keys
+    at write time, so the row that lands names real permissions and a pattern
+    that matches nothing is refused rather than stored.
+    """
+
+    key: str = Field(min_length=1, max_length=64, json_schema_extra=example("approver"))
+    name: str = Field(min_length=1, max_length=255, json_schema_extra=example("Approver"))
+    description: str = Field(default="", json_schema_extra=example("May approve widgets."))
+    permissions: list[str] = Field(
+        default_factory=list, json_schema_extra=example(["widget.approve", "*.read"])
+    )
+
+
+class RolePatch(StrictIn):
+    """The two columns a role's own row may move. **Never the key** (§D10).
+
+    A membership, a pending invitation and every delta row join on the key, so
+    renaming it would be a migration of three tables; the display name is the
+    renamable half by construction.
+    """
+
+    name: str | None = Field(default=None, max_length=255, json_schema_extra=example("Reviewer"))
+    description: str | None = Field(default=None, json_schema_extra=example("Reviews widgets."))
+
+
+class RolePermissionsIn(StrictIn):
+    """What a role holds, as the WHOLE set rather than a diff.
+
+    A caller sends the collection they want and the server works out the delta —
+    which is what makes the request idempotent and what lets a declared role
+    keep its code layer underneath. Patterns are expanded exactly as on create.
+    """
+
+    permissions: list[str] = Field(
+        default_factory=list, json_schema_extra=example(["widget.approve", "*.read"])
+    )
+
+
+class RoleFilter(FilterSchema):
+    """Narrow the role list by which layer owns it, or by a word in it."""
+
+    kind: str | None = Field(default=None, json_schema_extra=example("custom"))
+    q: str | None = Field(default=None, json_schema_extra=example("approv"))
+
+
+class GrantOut(Schema):
+    """One exception standing on one membership.
+
+    `organization_id` is the membership's node, which is what makes this row an
+    answer to "where" as well as "what" — an exception granted in one branch
+    says nothing about the branch beside it.
+
+    `sentence` travels beside the key because the key is a word for this
+    codebase and the sentence is the one a person reads.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b31"))
+    membership_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b32"))
+    organization_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b30"))
+    permission: str = Field(json_schema_extra=example("widget.approve"))
+    sentence: str = Field(json_schema_extra=example("You may not approve that widget."))
+    effect: str = Field(json_schema_extra=example("allow"))
+    created_at: datetime = Field(json_schema_extra=example("2026-09-16T09:30:00Z"))
+
+    @staticmethod
+    def of(grant: Any, *, sentence: str) -> GrantOut:
+        """Build one from a `Grant` row and the key's own prose."""
+        return GrantOut(
+            id=grant.pk,
+            membership_id=grant.membership_id,
+            organization_id=grant.membership.organization_id,
+            permission=str(grant.permission),
+            sentence=sentence,
+            effect=str(grant.effect),
+            created_at=grant.created_at,
+        )
+
+
+class GrantIn(StrictIn):
+    """Which way the exception points. `allow` widens, `withhold` narrows.
+
+    One field, because the membership and the permission are in the path: a
+    grant is addressed rather than described, which is what makes `PUT` the
+    honest verb for it.
+    """
+
+    effect: str = Field(json_schema_extra=example("allow"))
+
+
+class PermissionOut(Schema):
+    """One key in the vocabulary, with everything a role editor needs to choose it.
+
+    `decided_by` is the honest half: `derived` means the model registry produced
+    this key and nobody typed it, `declared` means an app's prose did, `reserved`
+    means the platform did and only `owner` holds it.
+
+    `has_row_predicate` says whether holding the key is the whole answer: a key
+    with a predicate is also asked about the ROW, so a role that names it grants
+    the capability and not the outcome.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    #: `key` is unique across the vocabulary by construction — it IS the
+    #: dictionary key — so it is total and a cursor over it never ties.
+    cursor_ordering: ClassVar[tuple[str, ...]] = ("key",)
+
+    key: str = Field(json_schema_extra=example("widget.approve"))
+    kind: str = Field(json_schema_extra=example("widget"))
+    verb: str = Field(json_schema_extra=example("approve"))
+    sentence: str = Field(json_schema_extra=example("You may not approve that widget."))
+    app: str = Field(json_schema_extra=example("example"))
+    decided_by: str = Field(json_schema_extra=example("declared"))
+    is_read: bool = Field(json_schema_extra=example(False))
+    default_roles: list[str] = Field(json_schema_extra=example(["admin", "owner"]))
+    has_row_predicate: bool = Field(json_schema_extra=example(True))
+    renamed_from: list[str] = Field(default_factory=list, json_schema_extra=example([]))
+
+    @staticmethod
+    def of(word: Any) -> PermissionOut:
+        """Build one from an `authz.Permission`."""
+        return PermissionOut(
+            key=word.action,
+            kind=word.kind,
+            verb=word.verb,
+            sentence=word.sentence,
+            app=word.app,
+            decided_by=word.decided_by,
+            is_read=word.is_read,
+            default_roles=list(word.default_roles),
+            has_row_predicate=word.predicate is not None,
+            renamed_from=list(word.renamed_from),
+        )
+
+
+class PermissionFilter(FilterSchema):
+    """Narrow the vocabulary by kind, verb, who decided it, or a word in it."""
+
+    kind: str | None = Field(default=None, json_schema_extra=example("widget"))
+    verb: str | None = Field(default=None, json_schema_extra=example("approve"))
+    decided_by: str | None = Field(default=None, json_schema_extra=example("derived"))
+    is_read: bool | None = Field(default=None, json_schema_extra=example(True))
+    q: str | None = Field(default=None, json_schema_extra=example("widget"))
+
+
+class HeldPermissionOut(Schema):
+    """One key somebody holds, and where it came from.
+
+    `via` is `role`, `grant` or `inherited`; on `inherited`, `membership_id`
+    names the ANCESTOR membership that carries it rather than the one asked
+    about, because "a role you hold further up the tree" is the answer and a
+    screen that pointed at this row would be pointing at the wrong one.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str = Field(json_schema_extra=example("widget.approve"))
+    sentence: str = Field(json_schema_extra=example("You may not approve that widget."))
+    via: str = Field(json_schema_extra=example("role"))
+    membership_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b32"))
+
+
+class MembershipPermissionsOut(Schema):
+    """**The one read every permissions screen needs.**
+
+    What this membership may do at its own node, each key with its provenance,
+    and separately what has been taken away. A withhold is kept rather than
+    subtracted-and-forgotten: it is a decision somebody made, and the screen
+    that hides it is the screen where "why has this stopped working" has no
+    answer.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    membership_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b32"))
+    organization_id: UUID = Field(json_schema_extra=example("019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b30"))
+    held: list[HeldPermissionOut] = Field(json_schema_extra=example([]))
+    withheld: list[HeldPermissionOut] = Field(json_schema_extra=example([]))
+
+    @staticmethod
+    def of(view: Any) -> MembershipPermissionsOut:
+        """Build one from a `selectors.MembershipPermissionsView`."""
+        return MembershipPermissionsOut(
+            membership_id=view.membership_id,
+            organization_id=view.organization_id,
+            held=[HeldPermissionOut.from_orm(found) for found in view.held],
+            withheld=[HeldPermissionOut.from_orm(found) for found in view.withheld],
+        )
+
+
 class TenantSettingsOut(Schema):
     """A tenant's own configuration, as both doors return it.
 
@@ -525,3 +786,21 @@ class InvitationPage(ListPage):
     """One page of invitations, in the envelope the HTTP list uses."""
 
     items: list[InvitationOut]
+
+
+class RolePage(ListPage):
+    """One page of roles, in the envelope the HTTP list uses."""
+
+    items: list[RoleOut]
+
+
+class GrantPage(ListPage):
+    """One page of grants, in the envelope the HTTP list uses."""
+
+    items: list[GrantOut]
+
+
+class PermissionPage(ListPage):
+    """One page of the vocabulary, in the envelope the HTTP list uses."""
+
+    items: list[PermissionOut]

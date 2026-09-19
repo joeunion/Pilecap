@@ -37,9 +37,14 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from apps.accounts.models import User
 from apps.core.actor import Actor, actor_for, system_actor
-from apps.core.exceptions import Conflict, Forbidden, refusal_message
+from apps.core.exceptions import Conflict, Forbidden, NotFound, refusal_message
 from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import revoke_membership, set_role
+from apps.core.services import (
+    add_membership,
+    revoke_membership,
+    root_organization,
+    set_role,
+)
 from apps.core.tests.test_last_owner import LAST_OWNER, membership_of, role_url
 from apps.core.tests.test_mcp_tenancy import context_for, tool
 
@@ -320,15 +325,81 @@ def test_the_product_acting_for_itself_is_not_measured(
     Signup, an invitation being accepted, a management command, a system actor:
     there is no actor to measure, and these paths are the product acting for
     itself rather than a person reaching above their own role.
+
+    **The product acting for itself still names WHERE it acts** (R1-F4.2): the
+    hat every workflow start already carries (`org=actor.org`). `may_be_named`
+    has no system exemption by design — its own docstring says a platform run
+    that acts tenant-wide says so at the call site — so a HATLESS system actor
+    is `NotFound` here exactly as it is in `revoke_membership`, and the one line
+    that changes in this test is the actor's hat.
     """
     demoted = set_role(
         tenant=tenant,
         membership=membership_of(owner, tenant),
         role=Membership.Role.MEMBER,
-        actor=system_actor(tenant=tenant),
+        actor=system_actor(tenant=tenant, org=root_organization(tenant=tenant)),
     )
 
     assert demoted.role == Membership.Role.MEMBER
+
+
+# --- R1-F4 · reach before capability, on the demotion road --------------------
+
+
+def test_set_role_refuses_a_membership_of_another_tenant(
+    tenant: Tenant,
+    other_tenant: Tenant,
+    owner: User,
+    stranger: User,
+    owner_actor: Actor,
+) -> None:
+    """**A foreign row is not-found before it is anything else.**
+
+    Roots of two tenants share the path `"0000"`, so the data half read an owner
+    of one as an owner of the other's root and `set_role` — which asked no reach
+    question at all — wrote that tenant's data. `revoke_membership` has called
+    `may_be_named` first since SEC-1's MED-1; this now mirrors it exactly.
+
+    Not-there and not-yours are one answer: a `Forbidden` here would confirm the
+    row exists.
+    """
+    foreign = membership_of(stranger, other_tenant)
+    before = foreign.role
+
+    with pytest.raises(NotFound):
+        set_role(tenant=tenant, membership=foreign, role=Membership.Role.ADMIN, actor=owner_actor)
+
+    assert Membership.objects.get(pk=foreign.pk).role == before
+
+
+def test_set_role_refuses_a_row_in_a_branch_the_actor_holds_no_hat_over(
+    tenant: Tenant, root_org: Organization, admin_member: User, member: User
+) -> None:
+    """The sibling case: the service now agrees with its own door.
+
+    The REST and MCP doors have answered `404` for this since PR1.2, because
+    they fetch through `get_membership(org=<hat>)`. The service answered
+    `Forbidden` with the escalation wall's "you hold no role over that part"
+    sentence — a different answer to the same question one layer down, which is
+    rule 46's property read inward.
+    """
+    from apps.core.services import create_organization
+
+    system = system_actor(tenant=tenant, org=root_org)
+    a = create_organization(tenant=tenant, parent=root_org, name="A", slug="a-f4", actor=system)
+    b = create_organization(tenant=tenant, parent=root_org, name="B", slug="b-f4", actor=system)
+    admin_at_a = add_membership(
+        user=admin_member, tenant=tenant, organization=a, role=Membership.Role.ADMIN, actor=system
+    )
+    in_b = add_membership(
+        user=member, tenant=tenant, organization=b, role=Membership.Role.MEMBER, actor=system
+    )
+    acting = actor_for(user=admin_at_a.user, tenant=tenant, org=a)
+
+    with pytest.raises(NotFound):
+        set_role(tenant=tenant, membership=in_b, role=Membership.Role.ADMIN, actor=acting)
+
+    assert Membership.objects.get(pk=in_b.pk).role == Membership.Role.MEMBER
 
 
 # --- the doors ----------------------------------------------------------------

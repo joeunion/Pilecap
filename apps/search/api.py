@@ -129,6 +129,12 @@ def list_search_kinds_route(
     nothing searchable answers with an empty list, which is a true and useful
     answer — it is what tells you that no search here will ever find anything.
 
+    **It does not shrink to what YOU may read**, and that is deliberate: a kind
+    you may not read is still a kind this product has, and this list is the
+    product's vocabulary rather than your entitlement. The search endpoint is
+    where your entitlement applies — it searches the kinds you may read and
+    refuses a kind you name and may not.
+
     Refusals you can get here:
 
     * `403 forbidden` — the request resolved no account. Send `X-Tenant` naming
@@ -242,10 +248,15 @@ def search_route(
     Refusals you can get here:
 
     * `403 forbidden` — the request resolved no account or no acting
-      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+      organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
+      `kinds` named a kind your role does not include reading. Leave `kinds` out
+      to search everything you can read; a kind you may not read is simply not
+      in the results.
     * `400 invalid` — `kinds` named something this product cannot search. The
       message says what you sent and lists what it does have;
-      `GET /search/kinds/` is the same list.
+      `GET /search/kinds/` is the same list. **`403` and `400` are different
+      answers on purpose**: `400` means no such kind anywhere, `403` means that
+      kind exists and is not yours.
     * `400 invalid_cursor` — the cursor was edited, or came from a different
       endpoint. Start the walk again without one.
     * `404 not_found` — the cursor was minted for a different account.

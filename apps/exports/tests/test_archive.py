@@ -35,6 +35,7 @@ import pytest
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
+from apps.core.actor import actor_for
 from apps.core.models import Membership, Organization
 from apps.example.models import Widget, WidgetEntry
 from apps.exports.activities import MANIFEST_NAME, MODELS_DIRECTORY, _write_the_archive
@@ -141,16 +142,22 @@ def test_the_manifest_the_archive_and_the_database_agree_model_by_model(
     # exact equality about the same moment. A row the walk missed still fails it.
     as_of = manifest["generated_at"]
 
+    # The owner, as somebody who can be told no — `_reader_for`'s shape, which
+    # is what the walk itself passes (Phase R: the archive asks `<kind>.read`
+    # per model). `system_actor` would answer True at `allows`' first step and
+    # this count would stop being the same read the walk made.
+    reader = actor_for(user=world.owner, tenant=world.tenant, org=world.root, kind="agent")
+
     for label, disposition in dispositions().items():
         # Counted through the selector the walk itself reads through, and that is
         # not circular: the selector answers a QUERYSET and this counts rows in
         # the database, where the two numbers above counted lines the writer
         # emitted and lines the reader found in the file.
-        in_the_database = (
-            list_exportable_rows(tenant=world.tenant, org=world.root, disposition=disposition)
-            .filter(created_at__lte=as_of)
-            .count()
+        readable = list_exportable_rows(
+            tenant=world.tenant, org=world.root, disposition=disposition, actor=reader
         )
+        assert readable is not None, f"the owner may not read {label}"
+        in_the_database = readable.filter(created_at__lte=as_of).count()
         assert counted[label] == in_the_database, f"manifest disagrees with the DB for {label}"
         assert len(rows[label]) == in_the_database, f"archive disagrees with the DB for {label}"
 

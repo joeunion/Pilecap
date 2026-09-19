@@ -25,10 +25,32 @@ recipient's own preferences, where no caller can reach around them.
 Changing a template, granting or revoking consent, or lifting a suppression is
 the other kind of act: it changes what the product may say to somebody, on that
 person's behalf, so it takes a privileged role. Those services landed with
-C1-1b and every one of them calls `require` against an entry below — which is
-what makes the asymmetry a property of the app rather than a claim in a
-docstring: a service with no `require` is a house-rule-13 violation, and an
-action with no policy is invisible in `introspect`.
+C1-1b and every one of them calls `require` — which is what makes the asymmetry
+a property of the app rather than a claim in a docstring: a service with no
+`require` is a house-rule-13 violation, and an action with no policy is
+invisible in `introspect`.
+
+**The privileged half of that asymmetry is no longer a rank comparison.** This
+file used to answer "how much authority does this person have" by reading a role
+by value off the membership row, which is a second opinion about a role no
+tenant can edit (rule 54 (c), architect §C7). The predicate is gone and the keys
+it guarded — archiving a contact, the templates, the delivery policies and
+consent — are held by `admin`'s `*` pattern and by `owner`, which is the same
+answer said once instead of twice. Nothing a caller can see moved:
+`tests/test_authz_sweep.py` measures every cell of this app's matrix against the
+baseline and 0 of them did.
+
+**DEFERRED, and deliberately: `DEFAULT_ROLES` for the member half.** The other
+predicates here admit any membership (`can_send`, `can_keep_devices`), and the
+shape they will eventually take is a `DEFAULT_ROLES` entry saying so as data.
+They stay predicates for now because a `DEFAULT_ROLES` write entry moves what a
+plain `member` DECLAREDLY holds, which is a pin of the flat product
+(`apps/core/tests/test_vocabulary.py`'s template-roles test, and the scope echo
+at the mint that reads the declaration and not the transitional set) — a
+cross-app move that belongs to one later rung rather than to eight per-app
+sweeps, each moving it a little. Until then the compat residue in
+`core.authz._attach_default_roles` clause (5) admits `member` exactly as it
+always did, and the predicate narrows it exactly as it always did.
 """
 
 from __future__ import annotations
@@ -47,12 +69,15 @@ from apps.core.models import Tenant
 log = get_logger("apps.comms.policies")
 
 
-def _is_privileged(actor: Actor) -> bool:
-    membership = membership_for(actor)
-    return membership is not None and membership.is_privileged
-
-
 def _is_member(actor: Actor) -> bool:
+    """Whether this actor holds any membership in the tenant they are acting in.
+
+    **Not a role read.** It asks whether there is a membership at all, never
+    which one — the whole of rule 54 (c)'s subject is comparing the ROLE on that
+    row against a rank, and there is no comparison here to make. What a
+    membership gets by default is the role's collection, which is data a tenant
+    owns and can edit; this is the reach question underneath it.
+    """
     return membership_for(actor) is not None
 
 
@@ -66,11 +91,6 @@ def can_send(actor: Actor, obj: Any = None) -> bool:
     tell the caller that somebody else's customer exists.
     """
     return _is_member(actor)
-
-
-def can_administer(actor: Actor, obj: Any = None) -> bool:
-    """Only an owner or an admin changes what the tenant may say."""
-    return _is_privileged(actor)
 
 
 def can_record_status(actor: Actor, obj: Any = None) -> bool:
@@ -147,61 +167,90 @@ def can_record_surge(actor: Actor, obj: Any = None) -> bool:
     return False
 
 
+#: **Four keys that named a plain row op in a second word.** Registering a device
+#: IS creating one; a provider's report IS a `MessageEngagement` row; a tripwire
+#: opening IS a `SuppressionSurge` row; and `preference.set` was a second
+#: spelling of `channel_preference.update` — same act, same sentence, named by no
+#: `require` anywhere in this tree.
+#:
+#: **A rename is not a deletion and that is the point.** `resolve_renamed` runs
+#: before the vocabulary lookup and `refusal_sentence` resolves the alias first,
+#: so a product still calling `device.register` gets the same answer with the
+#: same words it always got. What changes is the census: the vocabulary stops
+#: carrying four synonyms for verbs the model registry already derives, and rule
+#: 54 (a)'s ratchet loses this app's names.
+#:
+#: **What a deployment owes after this lands.** A `Grant` or `RolePermission` row
+#: stored under an old key goes inert the day the sweep ships — the resolution
+#: layers match on the key as written, and only `manage.py rename_permission`
+#: moves the rows. A template clone with no such rows observes nothing; a product
+#: that handed one of these out runs the command, which is why every renamed key
+#: belongs in the release note by name.
+RENAMED_PERMISSIONS: dict[str, str] = {
+    "device.register": "device.create",
+    "message_engagement.record": "message_engagement.create",
+    "suppression_surge.record": "suppression_surge.create",
+    "preference.set": "channel_preference.update",
+}
+
+
 POLICIES: dict[str, Policy] = {
     "message.send": can_send,
     # Observed, not asserted — see `can_record_status`. The system webhook is
     # the only caller and it does not reach this entry.
     "message.record_status": can_record_status,
     # And its sibling one table over (ADR comms-9): an open or a click is a
-    # provider's report about a person, not a claim a client may make. The noun
-    # is the ROW that gets written — `message_engagement`, the way
-    # `suppression_surge.record` is — because house rule 13's model half looks
-    # for a policy noun matching the scoped model this app writes.
-    "message_engagement.record": can_record_engagement,
+    # provider's report about a person, not a claim a client may make. The key
+    # is the ROW's plain create — house rule 13's model half looks for a policy
+    # noun matching the scoped model this app writes, and `message_engagement`
+    # is that model.
+    "message_engagement.create": can_record_engagement,
     # Likewise, one layer up: the tripwire's own state. See `can_record_surge`.
-    "suppression_surge.record": can_record_surge,
+    "suppression_surge.create": can_record_surge,
     # The management surface. Recipients are ordinary contact data anybody in
     # the tenant may keep; closing one, and everything about consent and
     # templates, is an owner's or an admin's.
     # Cancelling a scheduled send is the same trust as making one: whoever may
-    # send may change their mind. Not the privileged role — a person who
-    # can put a message in the queue and cannot take it back out is a person who
-    # will reach for the database.
+    # send may change their mind. Not the privileged role — a person who can put
+    # a message in the queue and cannot take it back out is a person who will
+    # reach for the database.
     "message.cancel": can_send,
     "recipient.create": can_send,
     "recipient.update": can_send,
-    "recipient.archive": can_administer,
     # The push address book. Ordinary contact data, so the same role that keeps
     # a phone number keeps a device — see `can_keep_devices` for why this is not
     # the privileged one and why it is not a consent decision.
-    "device.register": can_keep_devices,
+    "device.create": can_keep_devices,
     "device.retire": can_keep_devices,
-    "message_template.create": can_administer,
-    "message_template.retire": can_administer,
-    # A delivery policy decides how hard the product chases a person — how many
-    # times, on how many channels, how fast. That is the same kind of decision
-    # as what the product is allowed to say, and it takes the same role.
-    "delivery_policy.create": can_administer,
-    "delivery_policy.retire": can_administer,
-    "channel_preference.update": can_administer,
+    #
+    # **And SEVEN keys are no longer here at all**, where `can_administer` — a
+    # rank comparison on the membership row — used to sit:
+    # `recipient.archive`, `message_template.create`, `message_template.retire`,
+    # `delivery_policy.create`, `delivery_policy.retire` and
+    # `channel_preference.update` (`preference.set` renames onto that last one).
+    # "Only an owner or an admin" is what `admin`'s `*` pattern and `owner`'s
+    # whole-vocabulary collection already say, so the predicate was a second
+    # opinion about a role a tenant owns and can edit — which is the thing rule
+    # 54 (c) is against. Dropping it moves no cell: a key with no predicate is
+    # held by `owner` and by every declared role whose pattern matches, and
+    # `member`'s pattern is `*.read`.
 }
 
 
 # The sentence a refused caller reads, per action. See `core/policies.py`.
-# `preference.set` is here although no policy above names it: `require` is
-# called with it and the role fallback answers it.
+# A renamed key needs no line of its own: `refusal_sentence` resolves the alias
+# first, so `device.register` reads `device.create`'s sentence, byte for byte.
 ACTION_PROSE: dict[str, str] = {
     "message.send": "You may not send messages from this organization.",
     "message.record_status": "You may not record delivery results for this tenant's messages.",
-    "message_engagement.record": ("You may not record opens or clicks for this tenant's messages."),
-    "suppression_surge.record": "You may not record a blocked-address surge for this tenant.",
+    "message_engagement.create": ("You may not record opens or clicks for this tenant's messages."),
+    "suppression_surge.create": "You may not record a blocked-address surge for this tenant.",
     "message.cancel": "You may not cancel this organization's scheduled messages.",
     "recipient.create": "You may not add contacts to this organization.",
     "recipient.update": "You may not change this organization's contacts.",
     "recipient.archive": "You may not archive this organization's contacts.",
-    "device.register": "You may not register devices for this organization's contacts.",
+    "device.create": "You may not register devices for this organization's contacts.",
     "device.retire": "You may not retire devices for this organization's contacts.",
-    "preference.set": "You may not change what a contact has agreed to receive.",
     "channel_preference.update": "You may not change what a contact has agreed to receive.",
     "message_template.create": "You may not create message templates for this organization.",
     "message_template.retire": "You may not retire this organization's message templates.",

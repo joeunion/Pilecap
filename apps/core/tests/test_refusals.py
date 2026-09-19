@@ -1,3 +1,4 @@
+# census: cross-app population=apps/*/api.py,apps/*/mcp.py for HttpError and refusal dicts
 """The refusal registry: every code declared, once, with a boundary and a remedy.
 
 A `code` is the half of a refusal a client branches on and an audit row is

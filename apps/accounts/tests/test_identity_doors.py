@@ -27,12 +27,9 @@ from django.core.exceptions import ValidationError
 from django.http import HttpRequest
 from django.test import Client
 
-from apps.accounts.adapter import (
-    GOOGLE_PROVIDER,
-    SocialAccountAdapter,
-    platform_provider_id,
-)
+from apps.accounts.adapter import GOOGLE_PROVIDER, SocialAccountAdapter
 from apps.accounts.models import SsoConnection, SsoIdentity, User
+from apps.accounts.selectors import get_platform_provider_id
 from apps.accounts.services import create_user, update_sso_connection
 from apps.accounts.tests.conftest import assertion
 from apps.core.actor import Actor
@@ -206,13 +203,16 @@ def test_a_fresh_workforce_login_lands_with_nothing(
 
     api.force_login(newcomer)
     response = api.get("/api/v1/auth/sso-connections/")
-    assert response.status_code == 200
-    assert response.json() == {
-        "items": [],
-        "has_more": False,
-        "next_cursor": None,
-        "count": None,
-    }
+    # **403, and it used to be `200 []`** — the `accounts` read sweep. The
+    # property this test exists for is unchanged and strictly stronger: this
+    # person never sees Acme's connection. What moved is the sentence they
+    # read. A hatless request resolves no tenant, so `effective_permissions`
+    # fails closed at `frozenset()` and `sso_connection.read` is refused —
+    # which is the same fact the second half of this test has always asserted
+    # for the named-tenant case, now said on both roads instead of one. An
+    # empty page would have read as "Acme has no identity provider", which is
+    # a claim about Acme and was never true.
+    assert response.status_code == 403, response.content
 
     # And asking for Acme by name does not help — it is now refused out loud
     # rather than answered empty (ADR core-21): a header that was sent and
@@ -239,7 +239,7 @@ def test_an_assertion_through_a_connection_provisions_and_connects(
     domain is what says whose person it is.
     """
     login = assertion(
-        provider=platform_provider_id(),
+        provider=get_platform_provider_id(),
         subject="okta|00u1",
         email="newcomer@acme.com",
     )
@@ -267,7 +267,7 @@ def test_a_refused_assertion_becomes_a_page_not_a_traceback(
         adapter(login_request).pre_social_login(
             login_request,
             assertion(
-                provider=platform_provider_id(),
+                provider=get_platform_provider_id(),
                 subject="okta|00u1",
                 email="newcomer@acme.com",
                 verified=False,
@@ -305,7 +305,7 @@ def test_a_disabled_connection_cannot_complete_a_login(
     )
     adapter(login_request).pre_social_login(
         login_request,
-        assertion(provider=platform_provider_id(), subject="okta|00u1", email="x@acme.com"),
+        assertion(provider=get_platform_provider_id(), subject="okta|00u1", email="x@acme.com"),
     )
     assert SsoIdentity.objects.for_tenant(sso_connection.tenant).count() == 0
     assert not Membership.objects.filter(tenant=sso_connection.tenant, user__email="x@acme.com")

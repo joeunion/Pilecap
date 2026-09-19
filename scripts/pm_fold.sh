@@ -30,12 +30,41 @@ esac
 # — or refuse, loudly, having committed nothing.
 #
 #   ./scripts/pm_fold.sh        # fold this checkout
+#   ./scripts/pm_fold.sh --only <steps> [--no-commit]
 #   ./scripts/pm_fold.sh --help
 #
-# It takes no other argument. `--bank` and `--no-fold` belong to the two
-# callers (`scripts/pm_push.sh`, `scripts/pm_merge.sh`) and are not this
-# script's: a flag that LOOKS like the wiring's own flag is still not this
-# script's, and it is refused here like any other unknown one.
+# `--bank` and `--no-fold` belong to the two callers (`scripts/pm_push.sh`,
+# `scripts/pm_merge.sh`) and are not this script's: a flag that LOOKS like the
+# wiring's own flag is still not this script's, and it is refused here like any
+# other unknown one.
+#
+# --ONLY AND --NO-COMMIT, AND WHY THEY ARE HERE RATHER THAN IN A SECOND WRITER.
+# `scripts/rung_tidy.sh --secrets` needs the baseline re-scanned INSIDE a rung,
+# in the working tree, with nothing committed. The one thing it must not do is
+# run `detect-secrets scan --baseline` itself: this file's step (c) is the
+# tree's ONE LEGAL BASELINE WRITER (`.claude/skills/rung-execution/SKILL.md` §3,
+# `scripts/tests/test_secrets_baseline_guard.sh::case_the_fold_is_the_only_
+# baseline_writer_and_names_no_paths`), and a second invocation anywhere is the
+# measured hazard that guard exists to refuse. So the tidy INVOKES this script
+# with the two flags below and the one line stays where it is, under this
+# script's exit guard, its dirty-path rule and its census.
+#
+#   --only <steps>   a comma-joined subset of the four step names, which are a
+#                    CLOSED list: contract|schema|secrets|budgets (steps a-d).
+#                    An unknown name is exit 2, never a silently smaller fold.
+#   --no-commit      regenerate and leave the result in the WORKING TREE. The
+#                    census still runs — a stray is still exit 2 — and nothing
+#                    is staged and nothing is committed. Legal only WITH
+#                    `--only`, because a whole fold that commits nothing is a
+#                    bank that vouches for a tree nobody wrote down.
+#
+# WHAT THEY DO NOT LIFT, and it is not an oversight: CLAUSE 1 STANDS. A fold
+# folds a COMMITTED tree whichever flags it was handed, so `rung_tidy --secrets`
+# is a BOUNDARY command — which is where it is wanted anyway. The sentence that
+# sends a builder to it is the previous bank's `BASELINE SHIFTED`, read at the
+# START of the next rung, on a tree that has just been reset to main. A flag
+# that lifted clause 1 would buy a mid-leg convenience and pay for it with a
+# working tree nobody can partition.
 #
 # EXIT: 0 folded, or nothing to fold · 1 NEVER — no finding this instrument can
 # make is a "I looked, and it is wrong"; a derived file that disagrees with the
@@ -148,6 +177,21 @@ cd "$(dirname "$0")/.." || {
 }
 ROOT="$(pwd -P)"
 
+# THE BUDGET SENTENCE READER, shared with `scripts/rung_tidy.sh`. Sourced before
+# the exit guard is armed so an absent library is a plain bash failure naming
+# the file rather than this script's "DIED part-way" banner, which would name a
+# cause it had not proven.
+[ -r "$ROOT/scripts/budget_notes.sh" ] || {
+    echo "!! pm_fold: scripts/budget_notes.sh is not in this checkout." >&2
+    echo "   Step (d) reads the engine's budget sentences through it, and so does" >&2
+    echo "   scripts/rung_tidy.sh. Without it this run would have to reimplement the" >&2
+    echo "   parser — the one thing that file exists to prevent. Nothing was" >&2
+    echo "   regenerated and nothing was committed." >&2
+    exit 2
+}
+# shellcheck source=scripts/budget_notes.sh
+. "$ROOT/scripts/budget_notes.sh"
+
 # >>> exit-guard >>>
 # A DRIVE THAT DIED IS NOT A DRIVE THAT PASSED, and the same sentence for an
 # instrument that COMMITS. MEASURED on the bash this repository actually runs
@@ -198,38 +242,114 @@ refuse() {
     exit 2
 }
 
-case "${1:-}" in
-"") ;;
--h | --help)
-    cat <<'USAGE'
+# --- THE STEP NAMES, A CLOSED LIST -------------------------------------------
+# Four names for the four steps, in the order they run. TYPED here for the same
+# reason `DERIVED_PATHS` is typed: a computed list is a list that grows whenever
+# something misbehaves, and the whole value of `--only` is that a name it does
+# not recognise is exit 2 rather than a silently smaller fold.
+FOLD_STEP_NAMES='contract schema secrets budgets'
+FOLD_ONLY=""
+FOLD_NO_COMMIT=""
+
+# fold_step_selected <name> — with no `--only`, every step. With one, exactly
+# the named subset.
+fold_step_selected() {
+    [ -n "$FOLD_ONLY" ] || return 0
+    case ",${FOLD_ONLY}," in
+    *",$1,"*) return 0 ;;
+    esac
+    return 1
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    -h | --help)
+        cat <<'USAGE'
 THE FOLD. Regenerate this checkout's derived files and commit exactly those.
 
-  ./scripts/pm_fold.sh        fold this checkout
+  ./scripts/pm_fold.sh                        fold this checkout
+  ./scripts/pm_fold.sh --only <steps>         run only those steps
+  ./scripts/pm_fold.sh --only <steps> --no-commit
+                                              …and leave the result in the
+                                              working tree, staging nothing
   ./scripts/pm_fold.sh --help
 
-It takes no other argument. `--bank` and `--no-fold` are the CALLERS' flags
-(scripts/pm_push.sh, scripts/pm_merge.sh), never this script's.
+<steps> is a comma-joined subset of a CLOSED list, the four steps in order:
+contract, schema, secrets, budgets. An unknown name is exit 2.
+
+`--no-commit` is legal only WITH `--only`: a whole fold that commits nothing is
+a bank that vouches for a tree nobody wrote down. `scripts/rung_tidy.sh
+--secrets` is the caller these two exist for — step (c)'s scan line, the tree's
+one legal baseline writer, stays in this file rather than being copied into a
+second writer. (The command itself is deliberately not spelled here: a censused
+string counts wherever it appears, prose included.)
+
+`--bank` and `--no-fold` are the CALLERS' flags (scripts/pm_push.sh,
+scripts/pm_merge.sh), never this script's.
 
 Exit: 0 folded, or nothing to fold · 1 never · 2 refused, or could not look.
 
 The four clauses: a dirty tree is refused; only the typed derived list may be
 touched; a ceiling is never raised; a pipe and an unknown flag are refused.
-Read the header of this file for what each one is made of.
+None of them is lifted by the flags above. Read the header of this file for
+what each one is made of.
 USAGE
-    FOLD_REACHED_THE_END=1
-    exit 0
-    ;;
-*)
-    refuse "unknown argument '${1}'." \
-        "pm_fold takes no arguments (or --help). It folds the checkout it lives in," \
-        "which is ${ROOT}. \`--bank\` and \`--no-fold\` belong to pm_push.sh and" \
-        "pm_merge.sh; a flag that looks like the wiring's own flag is still not this" \
-        "script's." \
-        "Nothing was regenerated and nothing was committed."
-    ;;
-esac
-[ "$#" -le 1 ] ||
-    refuse "one argument at most; got: $*" \
+        FOLD_REACHED_THE_END=1
+        exit 0
+        ;;
+    --only)
+        FOLD_ONLY="${2:-}"
+        [ -n "$FOLD_ONLY" ] ||
+            refuse "--only takes a comma-joined subset of: ${FOLD_STEP_NAMES}" \
+                "It was given nothing. Nothing was regenerated and nothing was committed."
+        shift 2
+        ;;
+    --only=*)
+        FOLD_ONLY="${1#--only=}"
+        [ -n "$FOLD_ONLY" ] ||
+            refuse "--only takes a comma-joined subset of: ${FOLD_STEP_NAMES}" \
+                "It was given nothing. Nothing was regenerated and nothing was committed."
+        shift
+        ;;
+    --no-commit)
+        FOLD_NO_COMMIT=1
+        shift
+        ;;
+    *)
+        refuse "unknown argument '${1}'." \
+            "pm_fold takes --only <steps>, --no-commit and --help, and nothing else. It" \
+            "folds the checkout it lives in, which is ${ROOT}. \`--bank\` and" \
+            "\`--no-fold\` belong to pm_push.sh and pm_merge.sh; a flag that looks like" \
+            "the wiring's own flag is still not this script's." \
+            "Nothing was regenerated and nothing was committed."
+        ;;
+    esac
+done
+
+# THE STEP LIST IS CLOSED, AND A NAME OUTSIDE IT IS EXIT 2. A typo that fell
+# through to "select nothing" would be a fold that ran no step and said so in
+# the voice of a clean tree.
+if [ -n "$FOLD_ONLY" ]; then
+    IFS=',' read -r -a _fold_wanted <<<"$FOLD_ONLY"
+    for _fold_step in "${_fold_wanted[@]}"; do
+        case " ${FOLD_STEP_NAMES} " in
+        *" ${_fold_step} "*) ;;
+        *)
+            refuse "--only names '${_fold_step}', which is not a step of this fold." \
+                "The steps are a closed list, in the order they run: ${FOLD_STEP_NAMES}." \
+                "Nothing was regenerated and nothing was committed."
+            ;;
+        esac
+    done
+    unset _fold_wanted _fold_step
+fi
+
+[ -z "$FOLD_NO_COMMIT" ] || [ -n "$FOLD_ONLY" ] ||
+    refuse "--no-commit is legal only with --only." \
+        "A WHOLE fold that commits nothing leaves every derived file regenerated in a" \
+        "working tree nobody wrote down, and the next bank keys its verdict on that" \
+        "tree. --only names the one subject a caller is tidying; --no-commit says the" \
+        "rung's own commit will carry it." \
         "Nothing was regenerated and nothing was committed."
 
 # --- THE DERIVED LIST, TYPED ---------------------------------------------------
@@ -358,7 +478,9 @@ FOLD_UV="${DJB_FOLD_UV:-uv}"
 
 # --- (a) the contract: the committed document and the generated client -------
 echo "== (a) contract · ${FOLD_PIN_CLIENT} --write"
-if [ ! -f "$ROOT/frontend/openapi.json" ] && [ ! -f "$ROOT/frontend/src/api/generated/schema.d.ts" ]; then
+if ! fold_step_selected contract; then
+    step_skipped "--only ${FOLD_ONLY} does not name this step"
+elif [ ! -f "$ROOT/frontend/openapi.json" ] && [ ! -f "$ROOT/frontend/src/api/generated/schema.d.ts" ]; then
     step_skipped "neither frontend/openapi.json nor the generated client is in this checkout"
 elif [ ! -x "$FOLD_PIN_CLIENT" ]; then
     refuse "the committed contract is here but ${FOLD_PIN_CLIENT} is not executable." \
@@ -398,7 +520,9 @@ echo ""
 echo "== (b) schema · manage.py introspect -> .rung/introspect.json (git-ignored, never committed)"
 FOLD_RUNG_IGNORED=0
 git check-ignore -q .rung/introspect.json 2>/dev/null && FOLD_RUNG_IGNORED=1
-if [ ! -f "$ROOT/manage.py" ]; then
+if ! fold_step_selected schema; then
+    step_skipped "--only ${FOLD_ONLY} does not name this step"
+elif [ ! -f "$ROOT/manage.py" ]; then
     step_skipped "no manage.py in this checkout — there is no schema to dump"
 elif [ "$FOLD_RUNG_IGNORED" != "1" ]; then
     step_skipped ".rung/introspect.json is NOT git-ignored in this checkout, so writing it
@@ -457,7 +581,9 @@ echo ""
 # A STRIP THAT COULD NOT RUN IS A REFUSAL, never a "shift", and never a file
 # written half-stripped.
 echo "== (c) secrets · ${FOLD_UV} run detect-secrets scan --baseline .secrets.baseline"
-if [ ! -f "$ROOT/.secrets.baseline" ]; then
+if ! fold_step_selected secrets; then
+    step_skipped "--only ${FOLD_ONLY} does not name this step"
+elif [ ! -f "$ROOT/.secrets.baseline" ]; then
     step_skipped "no .secrets.baseline in this checkout — there is no baseline to shift"
 elif ! command -v "$FOLD_UV" >/dev/null 2>&1; then
     refuse ".secrets.baseline is here but there is no ${FOLD_UV} on PATH." \
@@ -503,6 +629,28 @@ else
     # `json.dumps(..., indent=2) + "\n"`, which is byte for byte what
     # detect-secrets' own `save_to_file` writes, so the stripped file is exactly
     # the file the scanner would have produced had it not stamped it.
+    #
+    # AND THE SECOND NORMALISATION: `line_number`, REMOVED FROM EVERY RESULT.
+    # It is the same class as the stamp, one field over, and it is the half the
+    # consumer pays: a secret's RECORDED LINE moves whenever anything is
+    # inserted above it, so two lanes that each touch a file with a recorded
+    # result rewrite the same `"line_number": N` lines to two different numbers
+    # and conflict on them — measured on this fixture shape, two conflicted
+    # regions in `.secrets.baseline` and no other file.
+    #
+    # NOTHING READS IT. detect-secrets 1.5.0 compares a result on
+    # `['filename', 'secret_hash', 'type']` (`potential_secret.py`,
+    # `fields_to_compare`) and says so in that file's own words — "line numbers
+    # aren't included because they are subject to change" — and
+    # `load_secret_from_dict` treats the key as OPTIONAL. So the key the tools
+    # use is already content; only the writer was re-stamping lines.
+    # `scripts/tests/test_secrets_baseline_guard.sh` drives the installed
+    # scanner against a numberless baseline in both directions and prints the
+    # version each verdict belongs to.
+    #
+    # ONE REWRITE, NOT TWO PASSES. Stripping in a second walk would mean a
+    # second place for the JSON shape to be wrong; `data.pop` for the stamp and
+    # `entry.pop` for the number are the same function's two lines.
     fold_strip_stamp() { # <src> <dst>
         python3 - "$1" "$2" <<'STRIP'
 import json
@@ -511,6 +659,9 @@ import sys
 with open(sys.argv[1]) as fh:
     data = json.load(fh)
 data.pop("generated_at", None)
+for entries in (data.get("results") or {}).values():
+    for entry in entries:
+        entry.pop("line_number", None)
 with open(sys.argv[2], "w") as fh:
     fh.write(json.dumps(data, indent=2) + "\n")
 STRIP
@@ -535,18 +686,39 @@ STRIP
             "conflict class straight back." \
             "Nothing was committed."
     fi
+    NUMBERS_STRIPPED="$(grep -c '"line_number"' "$FOLD_WORK/after.stripped" || true)"
+    if [ "$NUMBERS_STRIPPED" != "0" ]; then
+        refuse "the strip left ${NUMBERS_STRIPPED} line_number key(s) behind." \
+            "The same sentence as the stamp one field over: a strip that does not strip" \
+            "commits a number that moves whenever anything is inserted above a recorded" \
+            "secret, and two lanes then conflict on it." \
+            "Nothing was committed."
+    fi
 
+    # THE RESTORE BRANCH ASKS ABOUT BOTH FIELDS, and the second half is not
+    # decoration: a committed baseline carrying line numbers strips to the same
+    # bytes the fresh scan strips to, so a restore keyed on the stamp alone
+    # would put the NUMBERED file back on every fold and the migration would
+    # never happen. The condition is "the committed file is already in the
+    # normal form", not "the committed file has no stamp".
+    NUMBERS_BEFORE="$(grep -c '"line_number"' "$FOLD_WORK/baseline.before" || true)"
     if cmp -s "$FOLD_WORK/before.stripped" "$FOLD_WORK/after.stripped"; then
-        if [ "$STAMPS_BEFORE" = "0" ]; then
+        if [ "$STAMPS_BEFORE" = "0" ] && [ "$NUMBERS_BEFORE" = "0" ]; then
             cp "$FOLD_WORK/baseline.before" "$ROOT/.secrets.baseline"
             echo "  no shift — only the generated_at stamp the scan writes on every run differed, so the baseline was restored"
         else
             cp "$FOLD_WORK/after.stripped" "$ROOT/.secrets.baseline"
-            echo "  the generated_at stamp was removed — the results did not shift, but the committed baseline carried a stamp that conflicts between lanes"
+            echo "  the always-moving fields were removed (${STAMPS_BEFORE} generated_at, ${NUMBERS_BEFORE} line_number) — the results did not shift, but the committed baseline carried fields that conflict between lanes"
         fi
     else
         cp "$FOLD_WORK/after.stripped" "$ROOT/.secrets.baseline"
         echo "  BASELINE SHIFTED — the scan found a different tree than the baseline recorded"
+        # THE NEXT RUNG'S COMMAND, NAMED AT THE SITE OF THE SHIFT. A builder who
+        # reads this line in a bank log is a builder whose own checkout's
+        # baseline is now behind main's, and the answer used to be something to
+        # go and look up. It is one command and it runs the line above rather
+        # than a second copy of it.
+        echo "  the next rung brings its own checkout level with: ./scripts/rung_tidy.sh --secrets"
     fi
 fi
 echo ""
@@ -580,7 +752,9 @@ echo ""
 # silently raised ceiling.
 echo "== (d) budgets · quality.gate.check_budgets(), lowerings only"
 BUDGETS_LOWERED=0
-if [ ! -f "$ROOT/quality/budgets.yaml" ]; then
+if ! fold_step_selected budgets; then
+    step_skipped "--only ${FOLD_ONLY} does not name this step"
+elif [ ! -f "$ROOT/quality/budgets.yaml" ]; then
     step_skipped "no quality/budgets.yaml in this checkout — there are no floors to lower"
 elif ! command -v "$FOLD_UV" >/dev/null 2>&1; then
     refuse "quality/budgets.yaml is here but there is no ${FOLD_UV} on PATH." \
@@ -588,22 +762,8 @@ elif ! command -v "$FOLD_UV" >/dev/null 2>&1; then
 else
     STEPS_RUN=$((STEPS_RUN + 1))
 
-    cat >"$FOLD_WORK/budget_notes.py" <<'READER'
-import sys
-
-sys.path.insert(0, ".")
-import quality.gate as gate  # noqa: E402
-
-problems = gate.check_budgets()
-for problem in problems:
-    print(problem)
-for note in gate.notes:
-    print(note)
-print("### budget-check: notes=%d problems=%d" % (len(gate.notes), len(problems)))
-READER
-
     BUDGET_RC=0
-    "$FOLD_UV" run python "$FOLD_WORK/budget_notes.py" >"$FOLD_WORK/budget.out" 2>&1 || BUDGET_RC=$?
+    budget_notes_collect "$FOLD_UV" "$FOLD_WORK" || BUDGET_RC=$?
     if [ "$BUDGET_RC" != "0" ]; then
         cat "$FOLD_WORK/budget.out" >&2
         refuse "the budgets check exited ${BUDGET_RC} (output above)." \
@@ -621,39 +781,25 @@ READER
     # <<< budgets: the engine's whole output <<<
 
     # THE SHAPE GUARD: exactly one summary line, and it must name a note count.
-    SUMMARY="$(grep -c '^### budget-check: ' "$FOLD_WORK/budget.out" || true)"
+    SUMMARY="$(budget_notes_summary_lines "$FOLD_WORK/budget.out")"
     [ "$SUMMARY" = "1" ] ||
         refuse "the budgets check printed ${SUMMARY} summary line(s), not exactly one." \
             "This parser reads the engine's own sentences; a run whose shape it does not" \
             "recognise is a could-not-look, never an empty set of lowerings." \
             "Nothing was committed."
-    NOTES_CLAIMED="$(sed -n 's/^### budget-check: notes=\([0-9]*\) .*/\1/p' "$FOLD_WORK/budget.out")"
+    NOTES_CLAIMED="$(budget_notes_claimed "$FOLD_WORK/budget.out" notes)"
     [ -n "$NOTES_CLAIMED" ] ||
         refuse "the budgets check's summary line did not name a note count." \
             "Nothing was committed."
 
-    # THE PARSER. Anchored on the engine's lowering sentence, which must END the
-    # line; the record line that follows must start with exactly two spaces and
-    # end `: <digits>`. `match(..., /: [0-9]+[ \t]*$/)` finds the LAST `": N"`,
-    # so a key carrying `::` (every `out_schema_fields` key does:
-    # `apps/x/schemas.py::ThingOut`) splits correctly.
-    awk '
-        /a human may commit the lower number:$/ {
-            if ($1 == "budget" && $2 == "note:") { sect = $3; pend = 1; next }
-            pend = 0; next
-        }
-        pend == 1 {
-            pend = 0
-            line = $0
-            if (substr(line, 1, 2) != "  ") next
-            if (match(line, /: [0-9]+[ \t]*$/) == 0) next
-            key = substr(line, 3, RSTART - 3)
-            val = substr(line, RSTART + 2)
-            sub(/[ \t]+$/, "", val)
-            printf "%s\t%s\t%s\n", sect, key, val
-        }
-    ' "$FOLD_WORK/budget.out" >"$FOLD_WORK/lowerings.tsv"
-    BUDGETS_LOWERED="$(grep -c . "$FOLD_WORK/lowerings.tsv" || true)"
+    # THE PARSER LIVES IN `scripts/budget_notes.sh`, sourced above, because
+    # `scripts/rung_tidy.sh` reads the SAME output for the two shapes this step
+    # deliberately does not apply. Two copies of a parser over one interface is
+    # a parser that drifts in one of them silently, which is the exact failure
+    # the note-count cross-check below exists to make loud — and a cross-check
+    # in one copy protects one copy.
+    budget_notes_lowerings "$FOLD_WORK/budget.out" "$FOLD_WORK/lowerings.tsv"
+    BUDGETS_LOWERED="$(budget_notes_count "$FOLD_WORK/lowerings.tsv")"
 
     [ "$BUDGETS_LOWERED" = "$NOTES_CLAIMED" ] ||
         refuse "the budgets check wrote ${NOTES_CLAIMED} note(s) and this parser recognised ${BUDGETS_LOWERED}." \
@@ -807,10 +953,18 @@ READER
 fi
 echo ""
 
-[ "$STEPS_RUN" -gt 0 ] ||
+if [ "$STEPS_RUN" -eq 0 ]; then
+    if [ -n "$FOLD_ONLY" ]; then
+        refuse "--only ${FOLD_ONLY} selected no step this checkout can run." \
+            "The named step's artifact is not here, so this run regenerated nothing and" \
+            "cannot say the file a caller asked about is current. A caller reading a 0" \
+            "would read 'already current' off a run that never looked." \
+            "Nothing was committed."
+    fi
     refuse "this checkout has none of the four things a fold folds — no committed contract, no manage.py, no .secrets.baseline, no quality/budgets.yaml." \
         "That is a reader looking at the wrong tree, not a tree with nothing to fold." \
         "Nothing was committed."
+fi
 
 # --- CLAUSE 2: the fold's own footprint --------------------------------------
 #
@@ -857,6 +1011,27 @@ fi
 if [ -z "$CHANGED" ]; then
     echo "  nothing moved — every derived file already agrees with this checkout."
     echo "pm_fold: NOTHING TO FOLD. No commit was made; HEAD is still $(git rev-parse --short "$PRE_HEAD")."
+    FOLD_REACHED_THE_END=1
+    exit 0
+fi
+
+# --- --NO-COMMIT: the census ran, and the result is the RUNG'S to commit ------
+# Clause 2 above is what makes this safe to stop here: a stray was still exit 2
+# with nothing staged, so what is left in the working tree is derived files and
+# derived files only. The one thing this branch must not do is stage them — the
+# staged set is the caller's claim, and this run is not the caller.
+if [ -n "$FOLD_NO_COMMIT" ]; then
+    echo ""
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        echo "  changed  ${p}"
+    done <<EOF
+$CHANGED
+EOF
+    echo ""
+    echo "pm_fold: --no-commit. The regenerated file(s) above are in the WORKING TREE,"
+    echo "  unstaged and uncommitted; HEAD is still $(git rev-parse --short "$PRE_HEAD"). They"
+    echo "  belong in the rung's own diff, where a reviewer reads them."
     FOLD_REACHED_THE_END=1
     exit 0
 fi

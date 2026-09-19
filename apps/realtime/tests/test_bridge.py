@@ -99,3 +99,37 @@ async def test_a_push_with_nobody_listening_is_not_an_error() -> None:
         tenant_id=UUID("018f3a2b-0000-7000-8000-00000000abcd"),
         event=EventMessage(name="example.widget.created", payload={}, occurred_at=timezone.now()),
     )
+
+
+@pytest.mark.asyncio
+async def test_an_org_bearing_frame_on_an_org_less_kind_is_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """**R4's F5, at the push side.** An org-less kind may not name a branch.
+
+    `consumers._may_read` answers True for a `None` kind whatever branch the
+    frame carries — the org-less contract, and the right answer for
+    `search.engine.degraded`, which nobody holds a read on. That makes a frame
+    combining the two a door: a `None` kind carrying an `organization_id` is
+    delivered to every connection in the tenant AND bypasses the read set, which
+    is the widest delivery this product has.
+
+    `emit()` refuses the combination at the write (house rule 59). This is the
+    belt on the other side of the wire, for a body composed before that refusal
+    existed or by a producer that is not `emit` — dropped rather than raised,
+    because a raise inside a channel-layer handler takes the connection down and
+    one bad frame would become a reconnect storm. `realtime.frame.
+    org_on_orgless_kind` at ERROR is what an operator finds instead.
+    """
+    import logging
+
+    frame = EventMessage(
+        name="search.engine.degraded",
+        payload={},
+        organization_id=UUID("018f3a2b-0000-7000-8000-0000000abcde"),
+        occurred_at=timezone.now(),
+    )
+    with caplog.at_level(logging.ERROR):
+        await push_event(tenant_id=UUID("018f3a2b-0000-7000-8000-00000000abcd"), event=frame)
+
+    assert "realtime.frame.org_on_orgless_kind" in caplog.text

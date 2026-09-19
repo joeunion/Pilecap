@@ -1,0 +1,799 @@
+{
+  "_": "DERIVED, never typed. Every cell is `allows(actor, key, obj)` for the comms app's own keys on a tenant shaped root -> A -> A1 with a sibling B, three people hatted at A, one per template role, and one Recipient row per node. The test re-runs the same census on this tree and asserts equality; a moved answer prints (key, role, state, before, after).",
+  "_baseline": "4f4fbc69",
+  "_command": "uv run python manage.py shell -c \"from apps.comms.tests.test_authz_sweep import write_authz_baseline as w; w('apps/comms/tests/authz_baseline.json')\" \u2014 run IN PLACE on the rung's own baseline tree (4f4fbc69, the tree `rung_start.sh` reset to, before a byte of the rung was written), which IS the baseline rather than a scratch clone of it",
+  "accepted_deltas": {},
+  "answers": {
+    "channel_preference.create": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "channel_preference.delete": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "channel_preference.read": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "channel_preference.update": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "delivery_policy.create": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "delivery_policy.delete": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "delivery_policy.read": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "delivery_policy.retire": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "delivery_policy.update": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "device.create": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "device.delete": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "device.read": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "device.retire": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "device.update": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message.cancel": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message.create": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message.delete": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message.read": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message.record_status": {
+      "admin": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message.send": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message.update": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message_engagement.create": {
+      "admin": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message_engagement.delete": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message_engagement.read": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message_engagement.update": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message_template.create": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message_template.delete": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message_template.read": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message_template.retire": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "message_template.update": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "recipient.archive": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "recipient.create": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "recipient.delete": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "recipient.read": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "recipient.update": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "suppression_surge.create": {
+      "admin": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "suppression_surge.delete": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "suppression_surge.read": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    },
+    "suppression_surge.update": {
+      "admin": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      },
+      "member": {
+        "none": false,
+        "row_at_the_hat": false,
+        "row_below_the_hat": false,
+        "row_in_a_sibling_branch": false
+      },
+      "owner": {
+        "none": true,
+        "row_at_the_hat": true,
+        "row_below_the_hat": true,
+        "row_in_a_sibling_branch": false
+      }
+    }
+  },
+  "roles": [
+    "owner",
+    "admin",
+    "member"
+  ],
+  "row_states": [
+    "none",
+    "row_at_the_hat",
+    "row_below_the_hat",
+    "row_in_a_sibling_branch"
+  ]
+}

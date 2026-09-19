@@ -29,7 +29,6 @@ from apps.accounts.auth import API_AUTH
 from apps.core.actor import Actor, actor_from_request
 from apps.core.api import CursorPagination, ordered_by
 from apps.core.api.docs import Tag
-from apps.core.authz import require
 from apps.core.exceptions import NotFound
 from apps.core.models import Tenant
 from apps.core.requests import TenantRequest
@@ -144,7 +143,8 @@ def list_exports_route(
     * `400 invalid` — `?ordering=` named a field this list does not accept, or
       a filter value was malformed. The response says what you may sort by.
     * `403 forbidden` — the request resolved no tenant or no acting
-      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+      organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
+      your role does not include reading exports here.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -152,7 +152,9 @@ def list_exports_route(
     `ScopedQuerySet` to `QuerySet` here: filtering returns the plain one, and
     narrowing a queryset cannot widen its tenant.
     """
-    exports: QuerySet[Export] = list_exports(tenant=request.tenant, org=request.org)
+    exports: QuerySet[Export] = list_exports(
+        tenant=request.tenant, org=request.org, actor=actor_from_request(request)
+    )
     exports = filters.filter(exports)
     return ordered_by(exports, ordering, allowed=ORDERING, default="-created_at")
 
@@ -241,11 +243,17 @@ def retrieve_export(request: TenantRequest, export_id: UUID) -> Export:
     Refusals you can get here:
 
     * `403 forbidden` — the request resolved no tenant or no acting
-      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+      organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
+      your role does not include reading exports here.
     * `404 not_found` — nothing has that id where you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    return get_export(tenant=request.tenant, export_id=export_id, org=request.org)
+    return get_export(
+        tenant=request.tenant,
+        export_id=export_id,
+        org=request.org,
+        actor=actor_from_request(request),
+    )
 
 
 def downloadable_export(*, tenant: Tenant, actor: Actor, export_id: UUID) -> Export:
@@ -257,14 +265,20 @@ def downloadable_export(*, tenant: Tenant, actor: Actor, export_id: UUID) -> Exp
     because "there is no file here" and "there is no such export" are the same
     answer to somebody holding a URL.
 
+    **The middle one is the SELECTOR's now** (§C6). `get_export` asks
+    `export.read` at the row's own node after the scoped fetch, so this function
+    no longer repeats the question: two `require`s for one key would be two
+    places for the answer to be decided, and the one that would eventually
+    disagree is the one a reviewer forgets is there. The refusal a caller sees
+    is byte-identical, because it is the same key and the same sentence.
+
     It lives here rather than in `selectors.py` because it refuses rather than
     narrowing, and here rather than being written twice because `mcp.py` imports
     it: the two doors then cannot come to disagree about when an archive is
     fetchable, which is the kind of disagreement no value-by-value test would
     catch.
     """
-    export = get_export(tenant=tenant, export_id=export_id, org=actor.org)
-    require(actor, "export.read", export)
+    export = get_export(tenant=tenant, export_id=export_id, org=actor.org, actor=actor)
     if not export.is_downloadable:
         raise NotFound()
     return export
@@ -279,9 +293,11 @@ def download_export_route(request: TenantRequest, export_id: UUID) -> HttpRespon
     Inside it there is one `models/<app>.<Model>.jsonl` file per table — one JSON
     object per line, in the table's own column names — and a `manifest.json`
     listing every table in the archive with its row count, the columns that were
-    left out and why, and the tables a single-organization export could not
-    carry. The manifest is the same document the export record shows you, so you
-    can check what you are about to download before you download it.
+    left out and why, the tables a single-organization export could not carry,
+    and the tables left out because whoever asked for the archive may not read
+    them (`omitted_models`, each with the reason `unreadable`). The manifest is
+    the same document the export record shows you, so you can check what you are
+    about to download before you download it.
 
     **This route redirects.** It answers `302` with a short-lived signed link to
     the archive in object storage, and your client follows it to the bytes — the
@@ -301,7 +317,8 @@ def download_export_route(request: TenantRequest, export_id: UUID) -> HttpRespon
     Refusals you can get here:
 
     * `403 forbidden` — the request resolved no tenant or no acting
-      organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+      organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
+      your role does not include reading exports here.
     * `404 not_found` — nothing has that id where you can see, or there is no
       archive on it to fetch.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.

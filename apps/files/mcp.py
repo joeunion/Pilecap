@@ -103,7 +103,7 @@ def register(server: MCPServer[Any]) -> None:
             # `api.py`: filtering returns the plain one, and narrowing a queryset
             # cannot widen its tenant.
             files: QuerySet[StoredFile] = FileFilter(purpose=purpose, filename=filename).filter(
-                list_files_selector(tenant=acting.tenant, org=acting.org)
+                list_files_selector(tenant=acting.tenant, org=acting.org, actor=acting.actor())
             )
             files = ordered_by(files, ordering, allowed=ORDERING, default="-created_at")
             page = cursor_page(
@@ -130,7 +130,12 @@ def register(server: MCPServer[Any]) -> None:
             # `not_found` exactly as it is over HTTP: a refusal that distinguished
             # the two would tell the caller the document exists.
             return StoredFileOut.model_validate(
-                document_of(tenant=acting_tenant(acting), org=acting.org, file_id=file_id)
+                document_of(
+                    tenant=acting_tenant(acting),
+                    org=acting.org,
+                    file_id=file_id,
+                    actor=acting.actor(),
+                )
             )
 
     @server.tool(
@@ -172,7 +177,9 @@ def register(server: MCPServer[Any]) -> None:
                 add_version(
                     tenant=tenant,
                     actor=acting.actor(),
-                    file=document_of(tenant=tenant, org=acting.org, file_id=file_id),
+                    file=document_of(
+                        tenant=tenant, org=acting.org, file_id=file_id, actor=acting.actor()
+                    ),
                     content_type=content_type,
                     size_bytes=size_bytes,
                 )
@@ -190,8 +197,12 @@ def register(server: MCPServer[Any]) -> None:
     ) -> FileVersionOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            document = document_of(tenant=tenant, org=acting.org, file_id=file_id)
-            row = get_version(tenant=tenant, file=document, version=version, org=acting.org)
+            document = document_of(
+                tenant=tenant, org=acting.org, file_id=file_id, actor=acting.actor()
+            )
+            row = get_version(
+                tenant=tenant, file=document, version=version, org=acting.org, actor=acting.actor()
+            )
             return FileVersionOut.model_validate(
                 confirm_upload(
                     tenant=tenant,
@@ -214,9 +225,11 @@ def register(server: MCPServer[Any]) -> None:
         include_count: bool = False,
     ) -> FileVersionPage:
         with tool_call(ctx) as acting:
-            document = document_of(tenant=acting.tenant, org=acting.org, file_id=file_id)
+            document = document_of(
+                tenant=acting.tenant, org=acting.org, file_id=file_id, actor=acting.actor()
+            )
             versions: QuerySet[FileVersion] = list_versions(
-                tenant=acting.tenant, file=document, org=acting.org
+                tenant=acting.tenant, file=document, org=acting.org, actor=acting.actor()
             )
             versions = ordered_by(versions, ordering, allowed=VERSION_ORDERING, default="-version")
             page = cursor_page(
@@ -264,6 +277,8 @@ def register(server: MCPServer[Any]) -> None:
                 archive_file(
                     tenant=tenant,
                     actor=acting.actor(),
-                    file=document_of(tenant=tenant, org=acting.org, file_id=file_id),
+                    file=document_of(
+                        tenant=tenant, org=acting.org, file_id=file_id, actor=acting.actor()
+                    ),
                 )
             )

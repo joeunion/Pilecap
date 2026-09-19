@@ -1,3 +1,4 @@
+# census: cross-app population=apps/core/**/*.py for an import of an app above core
 """The bridge: what a lower layer gets when it calls upward, and what it does not.
 
 Three properties, and the third is the one that makes the design honest:

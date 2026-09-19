@@ -268,9 +268,17 @@ fe_leg_run() {
             done
             echo "  The committed client and document may now disagree with this checkout, and"
             echo "  a stale generated client still COMPILES. Nothing is re-run here and this is"
-            echo "  not a finding: assert it with ./frontend/scripts/pin_client.sh, regenerate"
-            echo "  with --write, or let scripts/pm_fold.sh do it at the bank — where a shift is"
-            echo "  committed under its own subject and a failure is a refusal."
+            echo "  not a finding."
+            # ONE COMMAND, AT THE SITE OF THE DISCLOSURE, IN PLACE OF FOUR LINES
+            # OF ADVICE. The advice named three different things a builder could
+            # do and left them to pick; every builder who met this state then
+            # went looking for which. The offer is the same command whether this
+            # leg discloses (here) or a consumer's leg refuses, so the sentence
+            # travels — `docs/product/build-contract.md` says so.
+            echo "  offer: ./scripts/rung_tidy.sh --client"
+            echo "    It regenerates both files through ./frontend/scripts/pin_client.sh"
+            echo "    --write, into the working tree, staging nothing — so the shift lands in"
+            echo "    the caller's own diff instead of in the bank's fold commit."
             return 0
         fi
         FE_LEG_STATE=untouched

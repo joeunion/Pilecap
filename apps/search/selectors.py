@@ -126,7 +126,8 @@ from django.db import DatabaseError
 from django.db.models import F, Q, QuerySet
 
 from apps.core.api.pagination import MAX_LIMIT, decode_cursor, encode_cursor
-from apps.core.exceptions import SearchUnavailable
+from apps.core.authz import allows, kind_of, refusal_sentence
+from apps.core.exceptions import Forbidden, SearchUnavailable
 from apps.core.log import get_logger
 from apps.core.models import ORG_FIELD, PATH_SEPARATOR, Organization, Tenant
 from apps.search import engine as engine_module
@@ -266,6 +267,48 @@ def list_visible_org_ids(*, tenant: Tenant | None, actor: Any) -> tuple[UUID, ..
     return tuple(
         Organization.objects.for_tenant(tenant).filter(subtree).values_list("id", flat=True)
     )
+
+
+def list_readable_kinds(actor: Any) -> frozenset[str]:
+    """Which declared kinds this actor may READ, at their hat. **Phase R's half.**
+
+    `list_`-prefixed because rule 16 asks every public selector to be guessable
+    from its name, and outside rule 54 (d)'s population because it returns
+    labels rather than a model — there is no row here to ask a read key about;
+    this IS the asking.
+
+    A search is a read of every kind it touches, so it asks the same question
+    every list door asks — `<kind>.read`, through `core.authz.allows`, at the
+    acting hat — once per declared kind. WHICH ROWS come back is still the
+    injected `ScopeFilter`'s answer and is untouched (BVB-4: the row filter is a
+    query, not a check); this decides WHETHER this kind, here.
+
+    **It costs three statements, once, however many kinds are declared.** The
+    actor carries the permission memo, so the first `allows` reads the three
+    tables and every kind after it reads none. That is what makes asking
+    per-kind affordable at the chokepoint instead of per-hit at the engine.
+
+    **A model with no authorization kind is not searchable for anybody.**
+    `authz_kind = None` is a model's own declaration that no door reaches a row
+    of it and nobody can be given a capability over it — so there is no key to
+    hold, and the honest answer is no rather than a key invented here. The
+    registry already refuses an unscoped model, so on a well-formed build this
+    branch is unreachable; it is written because failing closed is the only
+    direction this function is allowed to fail in.
+    """
+    readable: set[str] = set()
+    for declaration in registry.declarations():
+        kind = kind_of(declaration.model)
+        if kind is not None and allows(actor, f"{kind}.read"):
+            readable.add(declaration.label)
+    return frozenset(readable)
+
+
+def _read_key_for(label: str) -> str:
+    """The read key behind one declared label, for a refusal's own sentence."""
+    declaration = registry.by_label(label)
+    kind = kind_of(declaration.model) if declaration is not None else None
+    return f"{kind}.read" if kind is not None else "read"
 
 
 class PostgresEngine:
@@ -551,6 +594,13 @@ def search(
     from the one composer, and the engine is never asked about a name nobody
     could have meant.
 
+    **And a kind this ACTOR may not read refuses too, before the engine is
+    asked** (ADR core-27, Phase R). A read is a permission now: `kinds` left out
+    searches every kind you may read, and naming one you may not is `Forbidden`
+    with that key's own sentence. The two refusals are different on purpose —
+    `Invalid` is "no such kind anywhere", `Forbidden` is "that kind, not you" —
+    because they want different actions from the caller.
+
     **The circuit is here and not at the door**, for the reason every other
     decision in this app is here: both doors call this function, and a failover
     written at one of them would be a failover the other did not have.
@@ -587,9 +637,31 @@ def search(
         return empty
 
     labels = registry.resolve_kinds(kinds)
+
+    # **Phase R: kinds ∩ readable, and the engine is never asked otherwise.**
+    # The vocabulary check came first (`resolve_kinds` above) because a name
+    # nobody could have meant is a different mistake from a name you may not
+    # read, and the two want different actions from the caller. Then:
+    #
+    # * an EXPLICIT `kinds` naming a declared kind this actor may not read
+    #   refuses, with that key's own sentence. The vocabulary is a published
+    #   door (`GET /search/kinds/`), so naming it leaks nothing a `GET` did not
+    #   already hand over — and the alternative, silently searching fewer kinds
+    #   than were asked for, is exactly the shape `resolve_kinds`' own docstring
+    #   records as the defect a field test found.
+    # * `kinds` left OUT means "everything", and everything is everything you
+    #   may read. Narrowing there is not a refusal: nobody named the kind.
+    readable = list_readable_kinds(actor)
+    if kinds:
+        refused = [label for label in labels if label not in readable]
+        if refused:
+            raise Forbidden(refusal_sentence(_read_key_for(refused[0])))
+    labels = tuple(label for label in labels if label in readable)
     if not labels:
-        # A build that declares no searchable kind at all. Reachable only that
-        # way now: a kind the build does not declare was refused above.
+        # A build that declares no searchable kind at all, or an actor who may
+        # read none of the ones it declares. The SAME empty page either way, and
+        # deliberately: a page you are not entitled to is byte-identical to a
+        # page that matched nothing — the posture this whole module is built on.
         return empty
 
     size = max(min(limit or DEFAULT_LIMIT, MAX_LIMIT), 1)

@@ -155,6 +155,19 @@ reaping means `db_sweep.sh --all-checkouts --orphans --roots <dir-holding-the-cl
 is an absence of evidence, never a licence. A reap run without `--roots` reaps
 nothing and says so.
 
+**The bank is per tree, not per rung (S2, owner 2026-09-18).** A banked
+verdict vouches for one tree; six verified rungs merged and banked once are
+exactly as honest as six banks, and cost one full gate instead of six. The
+PM merges a WAVE — every rung whose verification returned MET since the last
+bank — and banks once, then pushes; a bank between two merges of one wave is
+the cost the P20 ledger measured (BANK-6…BANK-10, 25–70 min each, the whole
+machine held) and it bought nothing. The exceptions, each stated in the
+ledger row: a hotfix whose merge the next rung's baseline needs (bank it
+alone); a box push that must carry a specific tree (the field-test rule: no commit between
+the bank and the push). Verification follows the same shape: one verifier
+takes the wave's rungs in one clone when they share a territory, the
+cost-baseline's lever 2, applied.
+
 ## Scaling the wave
 
 **The stages split by what they need.** DESIGN, ratification and CLOSE are

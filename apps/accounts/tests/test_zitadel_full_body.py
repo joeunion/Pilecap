@@ -120,6 +120,13 @@ def surfaces(instance: FakeZitadel, monkeypatch: pytest.MonkeyPatch) -> Surfaces
     instance.instance_login_policy["allowRegister"] = True
     instance.lockout_policy.pop("maxPasswordAttempts", None)
     instance.restrictions.pop("disallowPublicOrgRegistration", None)
+    # And the machine credential back to the state `scripts/setup.sh` leaves
+    # it in — `IAM_OWNER` and no login-client role — because that is the state
+    # in which its writer takes the `PUT` branch at all. The shared fixture
+    # grants the role so that every identity test about something else agrees;
+    # a census run against an already-granted credential would send no `PUT`
+    # and judge nothing.
+    instance.instance_members[str(instance.machine["id"])] = ["IAM_OWNER"]
     original: Callable[[str, str, dict[str, Any]], dict[str, Any]] = instance._route
 
     def routed(method: str, path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -213,6 +220,51 @@ def _drive_restrictions(instance: FakeZitadel) -> None:
     zitadel.ensure_restrictions(is_public_org_registration_disallowed=True)
 
 
+def _drive_oidc_app_config(instance: FakeZitadel) -> None:
+    """The browser client, created and then RECONCILED onto a new origin.
+
+    The second call is the one that `PUT`s: the first had no application to
+    update and took the create branch, which is the same two-step every IdP
+    drive above uses. The origin moves, because a reconcile with nothing to
+    reconcile sends no body at all — which is the writer's idempotence and
+    would make this drive prove nothing.
+    """
+    project = zitadel.ensure_project(name="Pilecap")
+    zitadel.ensure_web_application(
+        project_id=project.id,
+        name="Web",
+        redirect_uris=["http://localhost:8000/accounts/oidc/zitadel/login/callback/"],
+        post_logout_uris=["http://localhost:8000/"],
+        dev_mode=True,
+    )
+    zitadel.ensure_web_application(
+        project_id=project.id,
+        name="Web",
+        redirect_uris=["http://localhost:9000/accounts/oidc/zitadel/login/callback/"],
+        post_logout_uris=["http://localhost:9000/"],
+        dev_mode=True,
+    )
+
+
+def _drive_iam_member(instance: FakeZitadel) -> None:
+    """The machine credential, granted the role the login-v2 finalize needs.
+
+    The credential is already an `IAM_OWNER` — every deployment's is — so this
+    writer takes the `PUT` branch on its first call rather than on its second,
+    unlike every drive above: `POST /admin/v1/members` is the create path and
+    it is reached only by a user who holds no instance role at all.
+
+    This is the smallest declared field set in the module and the one with the
+    largest blast radius: a body naming only `IAM_LOGIN_CLIENT` takes
+    `IAM_OWNER` off the user every other call in `zitadel.py` authenticates as,
+    and the next run would fail on its first management call with nothing left
+    that could grant it back.
+    """
+    zitadel.ensure_instance_member_role(
+        user_id=str(instance.machine["id"]), role=zitadel.LOGIN_CLIENT_ROLE
+    )
+
+
 #: Every declared resource, and the drive that makes its writer send a `PUT`.
 #: The census asserts this covers `zitadel.PUT_FIELD_SETS` exactly, so the
 #: population is discoverable rather than remembered.
@@ -223,6 +275,8 @@ DRIVES: dict[str, Callable[[FakeZitadel], None]] = {
     "/policies/label": _drive_label_policy,
     "/idps/generic_oidc/{id}": _drive_oidc_identity_provider,
     "/idps/google/{id}": _drive_google_identity_provider,
+    "/projects/{id}/apps/{id}/oidc_config": _drive_oidc_app_config,
+    "/members/{id}": _drive_iam_member,
 }
 
 

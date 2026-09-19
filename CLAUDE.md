@@ -64,6 +64,7 @@ service contract, the doors' contracts, the app map and ADR formats — where
 | What the schema actually is | `uv run python manage.py introspect` — read it, never guess it |
 | The house rules | `docs/product/architecture.md` numbers them; `quality/rules.yaml` is the text and `quality/gate.py` runs them |
 | Whether the loop is healthy | `python3 scripts/loop_health.py` over `docs/product/readouts.md` |
+| How to get running, from a fresh clone | `README.md` § "Quickstart, from a fresh clone" — `./scripts/setup.sh` first; the primer's READ NOW step 0 points here |
 
 ## The gate
 

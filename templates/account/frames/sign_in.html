@@ -1,0 +1,88 @@
+{% load static %}
+{% comment %}
+FRAME `sign_in` — design J2-a. The returning person, on any device.
+
+One column, one primary action, two quiet ones. The two fields are the
+labelled-text and password-with-Show primitives from the one token block; the
+alert slot under the `h1` is where every J7 refusal sentence lands, and it
+carries the standing second line that is printed on EVERY refusal, because a
+person who is locked out reads the same sentence as a person who mistyped —
+naming the lockout would be an oracle over which addresses exist and have been
+attacked.
+
+WHAT IS MARKUP AND WHAT IS NOT. The form posts to its own URL with
+`action=password`; `Forgot your password?` is still a same-page query link
+until J4 names its destination; and NOTHING here is inline script — the
+production CSP is `script-src 'self'` and the entrance fetches nothing it
+cannot serve itself.
+
+THE PASSKEY AFFORDANCE IS DRAWN IN TWO STEPS, AND BOTH CAN SAY NO.
+
+(1) The DOOR decides whether the road exists on this deployment at all
+(`passkey_road`, from `signin.passkey_road_open`): a relying-party id has to
+be a domain, an IP address is not one, and no browser will run a ceremony
+against `127.0.0.1` — which is what the shipped `PUBLIC_BASE_URL` is. Where
+the answer is no there is no button and no script tag: the page is exactly
+what it was.
+
+(2) The BROWSER decides whether it can do it, and that is the static file's
+one job here — the button ships `hidden` and `static/accounts/signin.js`
+unhides it where `PublicKeyCredential` exists. A button revealed by the
+server would be a button on a browser that cannot press it.
+
+A passkey enrolled on the identity platform's own pages does not work here —
+it is bound to THEIR relying-party id, measured — and the sentence for that
+is `passkey_elsewhere`, rendered in the alert slot above like every other
+refusal.
+{% endcomment %}
+<h1>Sign in</h1>
+{% if note %}
+    <p class="alert" role="alert">{{ note }}<span class="remedy">If this keeps happening, ask whoever runs your organization to reset your sign-in.</span></p>
+{% endif %}
+<form method="post" id="sign-in-form">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="password">
+    <label for="id_email">Email</label>
+    <input type="email" name="email" id="id_email" value="{{ email|default:'' }}"
+           autocomplete="username" autocapitalize="none" spellcheck="false" required>
+    <label for="id_password">Password</label>
+    <div class="field">
+        <input type="password" name="password" id="id_password" autocomplete="current-password" required>
+        <button type="button" class="reveal" data-reveal="id_password">Show</button>
+    </div>
+    <button type="submit">Sign in</button>
+</form>
+<p class="quiet">
+    <a href="{{ forgot|default:'?forgot=1' }}">Forgot your password?</a>
+</p>
+{% if passkey_road %}
+    {% comment %}
+    THE BUTTON BELONGS TO THE FORM ABOVE, AND THAT IS THE WHOLE FIX.
+
+    It shipped in a form of its own carrying nothing but a CSRF token, so
+    the POST arrived with no `email` at all, the ceremony was begun for
+    nobody, the platform answered 400 and the person read "that email and
+    password don't match" about a password they had never typed (V-A-W3).
+    `form="sign-in-form"` submits the email field with it — markup, not
+    script, because a value the page already has should not need JavaScript
+    to travel and because the road has to work before the script loads.
+    `formnovalidate` because the password field beside it is `required` and
+    a person signing in with a passkey has no password to give.
+    {% endcomment %}
+    <div class="chips" data-needs="publickey-credential" hidden>
+        <button type="submit" form="sign-in-form" name="action" value="passkey_start"
+                formnovalidate>Sign in with a passkey</button>
+    </div>
+{% endif %}
+{% if passkey_options %}
+    <form method="post" data-passkey-ceremony>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="passkey">
+        <input type="hidden" name="options" value="{{ passkey_options }}">
+        <input type="hidden" name="assertion" value="">
+    </form>
+    <p class="note" data-passkey-cancelled hidden>Your device didn&#x27;t finish. Try again, or use your password.</p>
+{% endif %}
+{% if passkey_road %}
+    <script src="{% static 'accounts/signin.js' %}" defer></script>
+{% endif %}

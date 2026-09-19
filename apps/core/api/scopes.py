@@ -524,30 +524,47 @@ def effective_scopes(
     cheapest moment there is.
 
     **What it is derived from, said plainly, because it is a guide and not a
-    promise.** The role this person holds in the token's tenant, against this
-    product's default rule: reading is something any member may do, and
-    writing needs an administrator unless an app has written a policy that
-    says otherwise. So a write scope missing from this list means *most* of
-    that family will refuse; it does not mean all of it will, because a policy
-    is free to let a member act on their own records and several do. The
-    reverse never happens — a scope in this list is one the default rule
-    admits, and a policy can still refuse an individual call for a reason
-    about the row rather than about the person.
+    promise.** What this person holds in the token's tenant, at the hat —
+    `core.authz.effective_permissions`, which is the one derivation of "what
+    may this person do here" and reads all three layers: the role their
+    membership names, this tenant's own deltas on it, and their own grants. If
+    every key they hold is a read, the write half of what they asked for is
+    dead weight and the echo says so. One granted write key anywhere — a
+    tenant's custom role, one `allow` grant — and the write scopes stand.
+
+    It used to read a ROLE and compare it against a rank, which could not see a
+    grant at all: somebody given exactly one write capability was told their
+    write scopes were dead, and they were not.
+
+    **The declaration, not the transition** (`compat=False`). A key a role
+    holds today only because the app that owns it has not been swept yet is a
+    capability its own predicate still narrows — and an echo is a claim about
+    what a credential can back, so it is made from what the roles and the rows
+    actually say. Reading the transitional set here would promise a member the
+    write half of every family with an un-swept predicate in it.
+
+    So a write scope missing from this list means *most* of that family will
+    refuse; it does not mean all of it will, because a policy is free to let a
+    member act on their own records and several do. The reverse never happens —
+    a scope in this list is one the data layer admits, and a policy can still
+    refuse an individual call for a reason about the row rather than about the
+    person.
 
     `None` in, `None` out: a token with no ceiling asked for nothing in
     particular, so there is nothing to answer about.
     """
     if scopes is None:
         return None
-    from apps.core.authz import ADMIN_RANK, effective_role, rank
+    from apps.core.authz import effective_permissions, vocabulary
 
     # What was ASKED FOR, plus what asking for it carried: a write scope brings
     # its family's read, and the echo is where somebody sees that rather than
     # having to know it. Explicitness lives at the mint; the wire just answers.
     granted = sorted(granted_scopes(scopes))
-    held = rank(effective_role(user, tenant, org))
-    if held == 0:
+    held = effective_permissions(user, tenant, org, compat=False)
+    if not held:
         return []
-    if held >= ADMIN_RANK:
+    words = vocabulary()
+    if any(not words[action].is_read for action in held if action in words):
         return granted
     return [scope for scope in granted if (parse_scope(scope) or ("", WRITE))[1] == READ]

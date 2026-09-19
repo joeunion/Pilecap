@@ -37,6 +37,11 @@ esac
 #   ./scripts/pm_push.sh <sha>        # pin it to that commit instead
 #   ./scripts/pm_push.sh --dry-run    # everything except the push
 #   ./scripts/pm_push.sh --bank       # bank a verdict for this tree FIRST, then push
+#   ./scripts/pm_push.sh --bank --on-boxes 8
+#                                     # the same verdict, measured on 8 verifier boxes
+#                                     # instead of on this laptop: one unit of the gate
+#                                     # per box, every shard's verdict fetched, ONE
+#                                     # composed row banked for the post-fold tree.
 #
 # WHY THIS EXISTS, and it is a scar rather than a convenience. On
 # 2026-08-23 a `cd` into the pm-push worktree persisted as the PM session's
@@ -100,7 +105,29 @@ BANK=0
 # the flag is a loud refusal, and `pm_merge.sh` carries the identical semantic
 # at its own parser: `--no-fold` is legal only where a fold would otherwise run,
 # which in both scripts is the bank.
+#
+# `--on-boxes N` IS LIFTED HERE FOR THE SAME REASON AND REFUSED THE SAME WAY.
+# It takes a VALUE, which is the one difference: the loop below walks exactly
+# the original argument count, and each argument is either taken out or rotated
+# to the tail, so at iteration `i` the head of the list is original argument
+# `i+1` — which is how `--on-boxes` can consume the next one. An `--on-boxes`
+# with nothing after it is a refusal rather than an empty count.
 NO_FOLD=0
+ON_BOXES=""
+#: THE FLOOR, AND IT IS A RULE RATHER THAN A ROUND NUMBER. Below five boxes one
+#: unit of the gate would have no box at all (the criteria's § 1: N = 3 + P + S
+#: over today's five units). It is checked twice on purpose and neither check is
+#: the other's copy: THIS one is syntactic and costs nothing, so a typo refuses
+#: before the fold and before anything is launched; the DERIVED one below reads
+#: `--list-legs` and refuses when N is short of the units that listing actually
+#: has, which is the check that stays right when a unit is added.
+ON_BOXES_FLOOR=5
+#: HOW LONG THE ONE DETACH RETRY WAITS. `up` returns on the SSM agent's
+#: `Online`, and the SSH tunnel is a few seconds behind it; a `leg` fired in
+#: that window comes back with ssh's own 255 and an empty log. Fifteen seconds
+#: is longer than that gap has been measured to be and short enough that a box
+#: which is genuinely unreachable is still said so in one breath.
+BANK_DETACH_RETRY_SECONDS="${DJB_BANK_DETACH_RETRY_SECONDS:-15}"
 _pm_push_total=$#
 _pm_push_i=0
 while [ "$_pm_push_i" -lt "$_pm_push_total" ]; do
@@ -108,6 +135,13 @@ while [ "$_pm_push_i" -lt "$_pm_push_total" ]; do
     shift
     case "$_pm_push_arg" in
     --no-fold) NO_FOLD=1 ;;
+    --on-boxes)
+        [ "$_pm_push_i" -lt "$((_pm_push_total - 1))" ] ||
+            die "--on-boxes takes a box count: ./scripts/pm_push.sh --bank --on-boxes 8"
+        ON_BOXES="$1"
+        shift
+        _pm_push_i=$((_pm_push_i + 1))
+        ;;
     *) set -- ${@+"$@"} "$_pm_push_arg" ;;
     esac
     _pm_push_i=$((_pm_push_i + 1))
@@ -169,6 +203,38 @@ if [ "$NO_FOLD" = "1" ] && [ "$BANK" != "1" ]; then
    scripts/pm_merge.sh refuses the same combination in the same words."
 fi
 
+# --on-boxes, THE SAME NEVER-SILENT CLAUSE, AND BEFORE ANYTHING LAUNCHES.
+# `--on-boxes` says WHERE the bank measures. Outside a bank there is nothing
+# measuring, so the flag would be a word the operator typed that changed
+# nothing — the class `--no-fold` above refuses, in the same place and for the
+# same reason.
+if [ -n "$ON_BOXES" ] && [ "$BANK" != "1" ]; then
+    die "--on-boxes is only meaningful with --bank, and this is not a --bank run.
+   --on-boxes says WHERE the bank's full gate runs: one unit of it per verifier
+   box instead of every unit on this laptop. A plain push measures nothing here
+   — the pre-push hook consults the ledger and runs the gate itself when there
+   is no verdict — so there is nothing for --on-boxes to place.
+   Accepting it silently would be a flag that did nothing with no line printed.
+   The form is: ./scripts/pm_push.sh --bank --on-boxes ${ON_BOXES}"
+fi
+if [ -n "$ON_BOXES" ]; then
+    case "$ON_BOXES" in
+    '' | *[!0-9]*)
+        die "--on-boxes takes a whole number of boxes, got '${ON_BOXES}'.
+   Nothing was folded, nothing was launched and nothing was pushed."
+        ;;
+    esac
+    [ "$ON_BOXES" -ge "$ON_BOXES_FLOOR" ] ||
+        die "--on-boxes ${ON_BOXES} is below the floor of ${ON_BOXES_FLOOR}.
+   THE RULE: one \`--leg\` per box, N = 3 + P + S over the gate's own units —
+   the indivisible units one box each, pytest-x2 split P ways and selftest S
+   ways. Below ${ON_BOXES_FLOOR} at least one unit would have NO box, and a bank
+   that silently dropped a unit is a green that vouches for less than it says.
+   ./scripts/check.sh --list-legs names the units; the floor this run would
+   derive from that listing is checked again after the fold.
+   Nothing was folded, nothing was launched and nothing was pushed."
+fi
+
 ROOT="$(git rev-parse --show-toplevel)" || die "not inside a git checkout"
 
 # The commit to push, resolved to a full sha HERE, in the checkout the operator
@@ -202,6 +268,1549 @@ if [ -n "$(git -C "$PM_PUSH" status --porcelain)" ]; then
     echo "   will not decide that for you." >&2
     exit 2
 fi
+
+# =============================================================================
+# --on-boxes N — ONE UNIT OF THE GATE PER VERIFIER BOX
+# =============================================================================
+#
+# WHAT IT MOVES, AND WHY THAT IS THE WHOLE POINT. A `--bank` on this laptop
+# takes the machine-wide lease and EVERY pytest slot for its whole run, so the
+# builders' `--loop`s queue behind it — the bank is the one thing on this box
+# that stops everybody else. `--on-boxes N` runs the SAME units on N throwaway
+# verifier boxes instead: the Mac folds, reads `--list-legs`, launches, waits,
+# fetches every shard's log and COMPOSES one verdict row for the post-fold tree.
+# It measures nothing itself, so it takes no lease and no slot, and the wall
+# the PM waits is the slowest shard rather than the sum of all of them.
+#
+# THE PLAN IS DERIVED, NEVER TYPED. `./scripts/check.sh --list-legs` is the
+# authority on what a unit is and which units take a `k/N` (column 3), exactly
+# as `.github/workflows/ci.yml` derives its matrix from the same listing. The
+# split rule is one sentence with its arithmetic: the indivisible units take one
+# box each; of the N-capable ones, every unit but the last takes two shards once
+# there are seven boxes or more and one below that, and the LAST takes every box
+# that is left. A bin-packer over measured leg durations was rejected: a second
+# durations concept for four small units buys about ninety seconds, and the
+# measurement row is what tells the PM which N to type.
+#
+# THE ROW HAS ONE WRITER, AND IT IS `gate_ledger_record`. There is no second
+# grammar for a verdict line and no second place a full row is written — the
+# composition is the Mac's arithmetic over N logs, and the line it produces is
+# the ordinary full row with the sanction naming how it was earned
+# (`sanction=push-wall boxes=N shards=<labels>`), so the hook honours it through
+# exactly the lookup it already does and every existing reader still parses it.
+#
+# WHAT IT DOES NOT COVER, declared rather than discovered:
+#
+#   * THE TUNNEL, THE SPOT MARKET AND THE BOX ITSELF. Everything past
+#     `scripts/verifier_box.sh`'s argv is that wrapper's and its drive's. This
+#     file asserts the seam — the arguments, the order, the ids — and reads what
+#     comes back; a shard whose gate LIED is invisible here exactly as it is to
+#     CI, whose per-runner `--leg` is the same authority.
+#   * A BOX LAUNCHED BY AN `up` THAT WAS STILL IN FLIGHT WHEN THE BANK WAS
+#     KILLED. `up` returns after the launch, so the id reaches `boxes.tsv` only
+#     once it has; a signal in that window leaves a box the teardown cannot
+#     name. What is underneath it is the box's own `djb:expires` tag, its idle
+#     reaper and `verifier_box.sh census` — the same three things that are
+#     underneath a SIGKILL, and for the same reason.
+#   * THE CROSS-SHARD IDEMPOTENCY NARROWING `docs/product/build-contract.md`
+#     ALREADY DECLARES FOR CI. An on-box bank shards `pytest-x2` the same way,
+#     so it inherits that blind spot, and the row's `shards=` field is what says
+#     so to a reader afterwards.
+#   * THE `terminate_or_by_hand` SENTENCE IS A COPY. `scripts/verifier_box.sh`
+#     is an executable wrapper rather than a sourceable library, so the sentence
+#     a failed `down` prints below is the same words rather than the same code;
+#     nothing pins the two equal, and a reworded original would leave this one
+#     reading as the wrapper's when it is not.
+
+#: The wrapper, the exit sink and the ids the teardown has to take down. They
+#: are globals because a TRAP reads them, and a trap has no arguments.
+BANK_BOXES_VB=""
+BANK_BOXES_SINK=""
+BANK_BOXES_TSV=""
+BANK_BOXES_WORKERS=""
+# THE ACCEPTANCE BOX — the ninth machine, and the one that is NOT a shard.
+# It measures the test-impact map and its answer is a FILE; it is in
+# `boxes.tsv` so the teardown reaps it, and in nothing else.
+BANK_BOXES_ACCEPT_ID=""
+BANK_BOXES_ACCEPT_NOTE=""
+
+# bank_boxes_kill_workers — the bank's OWN children, by pid and nothing else.
+# An `up` still in flight after the teardown has read `boxes.tsv` would land a
+# box nobody is going to name, so the children go first and the census second.
+bank_boxes_kill_workers() {
+    local p
+    for p in $BANK_BOXES_WORKERS; do
+        kill -TERM "$p" 2>/dev/null || true
+    done
+    BANK_BOXES_WORKERS=""
+}
+
+# bank_boxes_down_all — `down` every id recorded, once. Exit 0 iff every one of
+# them went down.
+#
+# THE LIST IS EMPTIED AS IT IS WALKED, which is what makes a second call a
+# no-op: the green path takes the boxes down itself (this script `exec`s git at
+# the end, and an `exec` never runs an EXIT trap), and the trap must not then
+# terminate the same ids again.
+bank_boxes_down_all() {
+    local label id frc=0
+    [ -n "$BANK_BOXES_TSV" ] && [ -f "$BANK_BOXES_TSV" ] || return 0
+    while IFS='	' read -r label id; do
+        [ -n "$id" ] || continue
+        if "$BANK_BOXES_VB" down "$id" </dev/null; then
+            continue
+        fi
+        frc=1
+        # `terminate_or_by_hand`'s sentence (scripts/verifier_box.sh), copied
+        # rather than sourced — see the header's last blind spot. What it owes
+        # is the id, the command that takes the box down, and the command that
+        # reads the FLEET back, because a call that failed may also have half
+        # worked and this box is not necessarily the only one on the clock.
+        echo "!! pm_push --bank --on-boxes: could not terminate ${id} (${label}) — IT IS STILL UP" >&2
+        echo "   AND IT IS STILL BILLING, and nothing else is going to notice except its" >&2
+        echo "   expiry tag. TAKE IT DOWN BY HAND:" >&2
+        echo "     scripts/verifier_box.sh down ${id}" >&2
+        echo "   then read the fleet back:" >&2
+        echo "     scripts/verifier_box.sh census" >&2
+    done <"$BANK_BOXES_TSV"
+    : >"$BANK_BOXES_TSV"
+    return "$frc"
+}
+
+# bank_boxes_teardown — EVERY way out of the bank after the first `up` takes the
+# boxes with it: a green, a red, an exit 2, a Ctrl-C, a TERM.
+#
+# IT IS A TRAP AND NOT N CALL SITES, for `cmd_bake`'s reason one file over: N
+# call sites are the N failures somebody thought of and the trap covers the
+# N+1th. INT and TERM route through it by exiting. No shell covers a SIGKILL,
+# and the box's own expiry tag and idle reaper are what sit under that.
+#
+# AND IT SPEAKS THROUGH ITS OWN DESCRIPTORS, fds 8 and 9, duplicated from the
+# real stdout and stderr before anything is armed: a trap runs inside whatever
+# redirection was in force where it FIRED, and this bank's phases redirect their
+# children's output into the sink. The cost is two inherited duplicates of the
+# operator's own terminal for the length of one bank, which is `cmd_bake`'s
+# accepted cost and its argument.
+bank_boxes_teardown() {
+    local rc=$?
+    set +e
+    trap - EXIT
+    {
+        bank_boxes_kill_workers
+        if [ -n "$BANK_BOXES_TSV" ] && [ -s "$BANK_BOXES_TSV" ]; then
+            echo "!! pm_push --bank --on-boxes: the bank stopped (exit ${rc}) with boxes still up;" >&2
+            echo "   taking them down so they cannot become a stale bill." >&2
+            if ! bank_boxes_down_all; then
+                # THE STATUS STAYS THE ORIGINAL FAILURE'S — `bake_teardown`'s
+                # rule and its argument: the teardown is the cleanup and not the
+                # verdict. The one substitution is the belt underneath it: a
+                # teardown firing on a CLEAN exit with a box still up must not
+                # report success over an orphan.
+                [ "$rc" != "0" ] || rc=2
+            fi
+        fi
+        if [ -n "$BANK_BOXES_SINK" ]; then
+            echo "   the bank's logs are under ${BANK_BOXES_SINK}" >&2
+        fi
+    } >&8 2>&9
+    exit "$rc"
+}
+
+#: THE ONE LEG NAME THIS FILE SPELLS, and it is spelled because ADR gate-1's
+#: amendment bends the two-pass rule for THAT leg and for nothing else. The
+#: same name is spelled for the same reason in `scripts/gate_ledger.sh`'s
+#: reader (`onepass_unit`) and in `scripts/check.sh`'s refusal; a second
+#: two-pass leg means editing three names rather than three files inheriting
+#: an exemption by accident. WHICH SHARD carries it is still derived — out of
+#: the listing's own legs column, never out of a unit name.
+BANK_SUITE_LEG="pytest-x2"
+
+# bank_boxes_plan <listing file> <N> <passes> — one line per shard on stdout:
+#   <label>\t<unit>\t<k/P or empty>\t<passes, on suite shards only>
+#
+# THE PASS COUNT IS DECIDED HERE, BEFORE ANY BOX IS LAUNCHED, and it is one
+# decision for the whole bank rather than one per shard: `<passes>` is 1 on
+# every shard of every N-capable unit whose legs include the suite leg when the
+# caller could read an acceptance checkout, and 2 on every one of them when it
+# could not. A bank that mixed the two would compose a row whose legs field
+# could not say which half of the suite ran twice.
+#
+# THE COLUMN IS EMPTY ON EVERY OTHER ROW, and that is not a default — it is
+# "this unit runs no suite, so it has no passes to have one of". An
+# indivisible unit gets no count either: `check.sh` refuses `--passes 1`
+# without a `--shard`, because the whole-suite belt is a whole unit's own.
+#
+# Exit 2 having said why when N cannot cover the units the listing declares.
+bank_boxes_plan() {
+    local listing=$1 n=$2 passes=$3
+    local unit needs shards legs
+    local indiv="" capable="" ci=0 ii=0 suite="" rowpasses
+    while IFS='	' read -r unit needs shards legs; do
+        [ -n "$unit" ] || continue
+        case ",${legs}," in
+        *",${BANK_SUITE_LEG},"*) suite="${suite}${suite:+ }${unit}" ;;
+        esac
+        case "$shards" in
+        N-capable)
+            capable="${capable}${capable:+ }${unit}"
+            ci=$((ci + 1))
+            ;;
+        *)
+            indiv="${indiv}${indiv:+ }${unit}"
+            ii=$((ii + 1))
+            ;;
+        esac
+    done <"$listing"
+    if [ "$ii" = "0" ] && [ "$ci" = "0" ]; then
+        echo "!! pm_push --bank --on-boxes: the unit listing declared no units at all." >&2
+        return 2
+    fi
+    local need=$((ii + ci))
+    if [ "$n" -lt "$need" ]; then
+        echo "!! pm_push --bank --on-boxes ${n}: this gate declares ${need} units (${ii} indivisible," >&2
+        echo "   ${ci} shardable) and ${n} boxes cannot give every one of them a box." >&2
+        echo "   The floor is DERIVED from ./scripts/check.sh --list-legs, never typed: a bank" >&2
+        echo "   that silently dropped a unit is a green that vouches for less than it says." >&2
+        echo "   Nothing was launched." >&2
+        return 2
+    fi
+    local rest=$((n - ii)) per=1 remaining idx=0 take k
+    # TWO SHARDS FOR EVERY N-CAPABLE UNIT BUT THE LAST, once there are seven
+    # boxes or more; one below that. The LAST takes whatever is left, which is
+    # what makes the arithmetic add up for any N at or above the floor.
+    if [ "$n" -ge 7 ]; then
+        per=2
+    fi
+    remaining=$((rest - ci))
+    for unit in $indiv; do
+        printf '%s\t%s\t\t\n' "$unit" "$unit"
+    done
+    for unit in $capable; do
+        rowpasses=""
+        case " ${suite} " in
+        *" ${unit} "*) rowpasses="$passes" ;;
+        esac
+        idx=$((idx + 1))
+        if [ "$idx" -lt "$ci" ]; then
+            take=$((per - 1))
+            [ "$take" -le "$remaining" ] || take=$remaining
+            take=$((take + 1))
+            remaining=$((remaining - (take - 1)))
+        else
+            take=$((1 + remaining))
+            remaining=0
+        fi
+        k=0
+        while [ "$k" -lt "$take" ]; do
+            k=$((k + 1))
+            printf '%s-%sof%s\t%s\t%s/%s\t%s\n' "$unit" "$k" "$take" "$unit" "$k" "$take" "$rowpasses"
+        done
+    done
+    return 0
+}
+
+# =============================================================================
+# the acceptance box — ONE box carrying TWO answers of different kinds
+# =============================================================================
+#
+# WHAT IT IS. One extra box, outside `bank_boxes_plan` and outside the shard
+# table, that runs the WHOLE suite twice under ONE seed: pass 1 with per-test
+# coverage contexts (`--cov-context=test`, so every measured line carries the
+# nodeid that executed it) and pass 2 plain. `scripts/test_impact.py` then
+# inverts pass 1's database into `scripts/test_impact.json` — for every
+# collected test, the source files it executed — which is what lets the inner
+# loop run the tests a change can REACH instead of the whole dependency closure.
+#
+# AND IT CARRIES TWO ANSWERS THAT ARE NOT THE SAME KIND OF THING. This is the
+# whole design and the reason one box has two paragraphs:
+#
+#   * THE MAP IS A MEASUREMENT. A measurement that could refuse a claim would
+#     mean a coverage run that died — a box that would not come up, a
+#     `pytest-cov` that changed its flags, a disk that filled — reddening a
+#     tree every shard passed. So its status enters `lost`, `red`, `foreign`
+#     and `kbad` nowhere: it is PRINTED and the bank carries on. The cost of a
+#     missing map is one wave of the loop keeping the closure scope it has
+#     today, which is the designed degradation and not an outage.
+#   * THE LEAK PROOF IS A CLAIM. Two whole passes under one seed are the
+#     idempotency belt: a test that passes alone and fails behind its own
+#     leftovers reds in pass 2 and nowhere else. Since ADR gate-1's 2026-09-18
+#     amendment the pytest SHARDS run ONE pass (`--passes 1`) and THIS box's
+#     two passes are what the row rests on — so the proof's own statuses are
+#     composed exactly like a shard's: unreadable is `lost` (exit 2, no row),
+#     a red pass is `red` (exit 1, no row), and only a green one reaches
+#     `gate_ledger_record` as `leak-proof=acceptance:<box> rc=0`.
+#
+# THE TWO ROLES SEPARATE AT THE `rc`, and they separate in the box's own
+# `proof.txt`: `pass1=` and `pass2=` are the claim, `map=` is the measurement.
+# A bank whose passes are green and whose map writer died writes the row and
+# prints that the map was not written; there is no state in which a map
+# refuses a tree every pass passed.
+#
+# WHEN THE PLAN IS TWO PASSES there is no acceptance box at all — the plan is
+# one pass exactly when this box's checkout path could be read — so nothing
+# fetches a proof, nothing reads one, and the bank is byte-for-byte the one it
+# was before the amendment.
+#
+# AND IT IS HANDED `run`, NEVER `--leg`. A unit is a part of the composed
+# verdict by definition — `bank_boxes_plan` derives the plan from
+# `./scripts/check.sh --list-legs` and the composition adds the shards' leg sets
+# up against it — so a `--leg` for this box would be a unit whose legs have to
+# add up. `run` is the wrapper's own verb for "a command on that box", its exit
+# status is the remote command's passed through untouched, and it is the seam
+# this measurement belongs at.
+
+# bank_boxes_box_checkout — the path the box's checkout lives at, or exit 1.
+#
+# READ, NEVER GUESSED, and read from the ONE place it is written down:
+# `deploy/verifier/bake.sh`'s two knob defaults. `scripts/verifier_box.sh`'s
+# `verifier_checkout_path` reads the same two lines with the same two `sed`
+# programs and is the OWNER of the question; this is a second READER and not a
+# second answer, and it exists because this file does not source that wrapper —
+# it invokes it as an executable. A bake.sh this cannot read costs the map and
+# never the bank, so it RETURNS rather than dying.
+bank_boxes_box_checkout() {
+    local bake="$ROOT/deploy/verifier/bake.sh" user path
+    [ -r "$bake" ] || return 1
+    user="$(sed -n 's|^BAKE_USER="\${DJB_VERIFIER_BAKE_USER:-\(.*\)}"$|\1|p' "$bake")"
+    user="${user%%$'\n'*}"
+    path="$(sed -n 's|^BAKE_CHECKOUT="\${DJB_VERIFIER_CHECKOUT:-\(.*\)}"$|\1|p' "$bake")"
+    path="${path%%$'\n'*}"
+    { [ -n "$user" ] && [ -n "$path" ]; } || return 1
+    printf '%s\n' "${path//\$\{BAKE_USER\}/$user}"
+}
+
+# bank_boxes_acceptance_remote <checkout> <rung> — the ONE command string the
+# box's shell runs. ONE LINE, and every `$` that belongs to the BOX is escaped:
+# the wrapper joins its arguments with spaces and the box's shell re-parses
+# them, so a `$VAR` of ours would be expanded here and a newline would split the
+# command in two.
+#
+# THE REDIRECTS ARE ON THE BOX, for `cmd_leg`'s reason: nothing is piped, each
+# phase writes its own log, and the status that comes home is the command's own.
+#
+# ONE SEED, MINTED ON THE BOX, ON BOTH PASSES. That is what makes this a LEAK
+# PROOF rather than two runs of the suite: with the collection order and the
+# worker assignment identical across the pair, a red pass 2 can only be state
+# pass 1 left behind — ADR gate-1's own argument, and `scripts/check.sh`'s
+# `pytest_x2_passes` reasons the same way about the same pair. Unseeded, a red
+# pass 2 means "order or state, cannot tell", which proves nothing and would be
+# banked as if it had.
+#
+# BOTH PASSES UNDER `set +e`, EACH WRITING ITS OWN rc, and the whole command
+# still `exit 0`. The wrapper's status stays "the command ran", and the three
+# statuses that matter travel home as DATA in one file rather than as one
+# collapsed exit code that cannot say which of them failed. `set -e` still
+# covers the setup up to pass 1, where a failure is the box and not the suite.
+#
+# THE MAP WRITER RUNS ONLY AFTER A GREEN PASS 1 — today's `set -e` ordering,
+# made explicit now that pass 1 no longer kills the command. A map inverted out
+# of a coverage database a red pass abandoned would be a projection of half a
+# run; `map=2` in the proof is "could not look", which is what a writer that
+# never ran honestly is.
+#
+# AND THE MAP IS WRITTEN OUTSIDE THE CHECKOUT — `~/verify/<rung>/`, beside the
+# proof and the two pass logs, and NEVER into `scripts/test_impact.json` on the
+# box. A MEASUREMENT MAY NOT DIRTY THE TREE IT MEASURED, and this one did:
+# `scripts/test_impact.json` is TRACKED, so writing it left `git diff HEAD`
+# non-empty on that box for ever after — and the image step runs on that same
+# box, a few seconds later, and asks `deploy/provision.sh image-tag` what tree
+# this is. A bank came home green, banked and pushed, with
+# `!! image: refusing to build under 'tree-ee9be431c7b9-dirty'`: the refusal was
+# right (a tag that says the tree was uncommitted names an image nobody can
+# reproduce) and the cause was here.
+#
+# NOTHING ON THE MAC MOVED WITH IT. The fetch already reads
+# `~/verify/<rung>/test_impact.json` — the box used to `cp` the file there
+# after writing it into the tree — so this deletes the copy and the write that
+# needed it, and the map lands in this checkout exactly as before.
+bank_boxes_acceptance_remote() {
+    local checkout="$1" rung="$2" v
+    v="\$HOME/verify/${rung}"
+    printf '%s' "set -e; mkdir -p ${v}; cd ${checkout}; \
+rm -f ${v}/impact.coverage ${v}/impact.coverage.* ${v}/proof.txt; \
+SEED=\$((\$RANDOM * 32768 + \$RANDOM)); \
+T0=\$(date +%s); \
+./scripts/test.sh --collect-only -q -p no:randomly > ${v}/collected.txt 2>&1; \
+set +e; \
+COVERAGE_FILE=${v}/impact.coverage ./scripts/test.sh -n 16 --randomly-seed=\${SEED} \
+--cov=apps --cov=config --cov-context=test --cov-report= > ${v}/pass1.log 2>&1; P1=\$?; \
+T1=\$(date +%s); \
+MAP=2; \
+if [ \"\${P1}\" = 0 ]; then \
+.venv/bin/python scripts/test_impact.py write --coverage ${v}/impact.coverage \
+--collected ${v}/collected.txt --root . --out ${v}/test_impact.json > ${v}/map.log 2>&1; \
+MAP=\$?; \
+fi; \
+./scripts/test.sh -n 16 --randomly-seed=\${SEED} > ${v}/pass2.log 2>&1; P2=\$?; T2=\$(date +%s); \
+printf 'seed=%s workers=16 pass1=%s pass2=%s map=%s\\n' \"\${SEED}\" \"\${P1}\" \"\${P2}\" \"\${MAP}\" > ${v}/proof.txt; \
+echo \"acceptance: pass1 (contexts) \$((T1-T0))s · pass2 (plain) \$((T2-T1))s rc1=\${P1} rc2=\${P2} map=\${MAP}\"; \
+cat ${v}/proof.txt; cat ${v}/map.log; exit 0"
+}
+
+# bank_boxes_acceptance_report <the acceptance box's rc> — what the ninth box
+# measured, said in full, on every exit path.
+#
+# IT NEVER RETURNS NON-ZERO. Every branch here ends in a printed line and a 0:
+# this function's entire contract is that nothing it can discover changes what
+# the bank decides about the tree.
+#
+# THE FILE LANDS IN THE WORKING TREE AND IS NOT COMMITTED — the
+# `scripts/pytest_durations.json` practice, and a bank takes no commit
+# (`pm_push.sh` refuses a dirty checkout BEFORE it starts, which is a different
+# rule from this one). It is safe against the verdict for a reason worth
+# writing down: the row was keyed on the tree read at the top of the bank and
+# `gate_ledger_record` is handed that value, and the pre-push hook consults the
+# PUSHED COMMIT's tree — so a map modified in the working tree afterwards moves
+# neither.
+bank_boxes_acceptance_report() {
+    local arc="${1:-}" fetched="${BANK_BOXES_SINK}/test_impact.json" line mrc
+    echo ""
+    if [ -n "$BANK_BOXES_ACCEPT_NOTE" ]; then
+        echo "${BANK_BOXES_ACCEPT_NOTE}"
+        echo ""
+        return 0
+    fi
+    if [ -z "$BANK_BOXES_ACCEPT_ID" ]; then
+        echo "acceptance: no box — none was asked for."
+        echo ""
+        return 0
+    fi
+    # THE BOX'S OWN TWO WALLS, out of its own output. The Mac's elapsed is the
+    # command PLUS a transport; the numbers a person compares against the
+    # shards are the ones the box timed.
+    line="$(awk '/^acceptance: pass1/ { print; exit }' "${BANK_BOXES_SINK}/acceptance.log" 2>/dev/null || true)"
+    [ -z "$line" ] || echo "  ${line}"
+    echo "  acceptance box ${BANK_BOXES_ACCEPT_ID} · $(cat "${BANK_BOXES_SINK}/acceptance.wall" 2>/dev/null || echo '?')s from this Mac"
+    if [ "${arc:-1}" != "0" ]; then
+        echo "acceptance: map NOT written (exit ${arc:-<no status>}) — the loop keeps the closure scope"
+        echo "   Its whole log is ${BANK_BOXES_SINK}/acceptance.log. NOTHING about the verdict"
+        echo "   above depends on it: a measurement may not refuse a claim every shard passed."
+        echo ""
+        return 0
+    fi
+    if [ ! -s "$fetched" ]; then
+        # WHY NO FILE CAME BACK, WHEN THE BOX ITSELF SAYS SO. The command
+        # always exits 0 (its three statuses travel home in `proof.txt`
+        # instead), so "the box said 0" is true of a dead map writer and of a
+        # fetch that could not reach the file, and those are two different
+        # things to go and look at. `map=` is read here — the same field the
+        # composition reads and deliberately does NOT act on — so the line
+        # names the cause the box already proved rather than the one the
+        # absence of a file merely suggests.
+        mrc="$(bank_boxes_proof_field "${BANK_BOXES_SINK}/acceptance.proof" map)"
+        case "${mrc:-}" in
+        '' | 0)
+            echo "acceptance: map NOT written (the box said 0 and no file came back) — the loop keeps the closure scope"
+            echo "   The fetch log is ${BANK_BOXES_SINK}/fetch-acceptance.log."
+            ;;
+        *)
+            echo "acceptance: map NOT written (the box's map writer exited ${mrc}) — the loop keeps the closure scope"
+            echo "   Its log is ${BANK_BOXES_SINK}/acceptance.log and the fetch log is"
+            echo "   ${BANK_BOXES_SINK}/fetch-acceptance.log. NOTHING about the verdict above"
+            echo "   depends on it: a measurement may not refuse a claim every pass passed."
+            ;;
+        esac
+        echo ""
+        return 0
+    fi
+    if ! cp "$fetched" "$ROOT/scripts/test_impact.json"; then
+        echo "acceptance: map NOT written (it came back and could not be copied into ${ROOT}) —"
+        echo "   the loop keeps the closure scope. It is at ${fetched}."
+        echo ""
+        return 0
+    fi
+    echo "acceptance: scripts/test_impact.json rewritten from ${BANK_BOXES_ACCEPT_ID}"
+    # The map's own census line and its generated block, read out of the file
+    # rather than restated: one grep, and a file that is not the shape this
+    # bank expects prints as the shape it is.
+    awk '
+        /"tree"/ { t = $0 }
+        /"at"/   { a = $0 }
+        /"pytest"/ { p = $0 }
+        END {
+            gsub(/^[ \t]+|[ \t]+$/, "", t); gsub(/^[ \t]+|[ \t]+$/, "", a); gsub(/^[ \t]+|[ \t]+$/, "", p)
+            printf "  generated  %s %s %s\n", t, a, p
+        }
+    ' "$ROOT/scripts/test_impact.json"
+    echo "  It is MODIFIED IN THE WORKING TREE AND NOT COMMITTED — a bank takes no commit."
+    echo "  Commit it the way scripts/pytest_durations.json is committed:"
+    echo "     git add scripts/test_impact.json"
+    echo ""
+    return 0
+}
+
+# bank_boxes_field <file> <awk program> — read the file WHOLE and slice it.
+# Never `grep | head`: the exit status of a reader is not the exit status of the
+# thing being read, and nothing here branches on a reader's status.
+bank_boxes_first_match() {
+    awk "$2" "$1" 2>/dev/null || true
+}
+
+# bank_boxes_proof_field <file> <key> — the value of `<key>=` in the box's
+# `proof.txt`, or NOTHING. Never a default: the caller distinguishes "the box
+# said 0" from "the box said nothing", and a reader that answered 0 for an
+# absent key would turn an unreadable proof into a green one.
+#
+# THE WHOLE FILE IS READ AND SLICED, `bank_boxes_first_match`'s rule: no pipe
+# whose exit status anything branches on, and no `head` in front of a `grep`.
+bank_boxes_proof_field() {
+    awk -v k="$2" '
+        {
+            for (i = 1; i <= NF; i++) {
+                n = index($i, "=")
+                if (n && substr($i, 1, n - 1) == k) { print substr($i, n + 1); exit }
+            }
+        }
+    ' "$1" 2>/dev/null || true
+}
+
+# bank_boxes_table — the per-shard table, printed on EVERY exit path, green or
+# not. A composition that refused and said only "a shard was red" is a
+# composition nobody can act on.
+bank_boxes_table() {
+    local label unit shard passes id rc wall tree market
+    echo ""
+    printf '  %-26s %-21s %-9s %-6s %-3s %-7s %s\n' \
+        "shard" "box" "market" "passes" "rc" "wall" "tree"
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        id="$(cat "${BANK_BOXES_SINK}/${label}.id" 2>/dev/null || echo '-')"
+        rc="$(cat "${BANK_BOXES_SINK}/${label}.rc" 2>/dev/null || echo '?')"
+        wall="$(cat "${BANK_BOXES_SINK}/${label}.legwall" 2>/dev/null ||
+            cat "${BANK_BOXES_SINK}/${label}.wall" 2>/dev/null || echo '?')"
+        tree="$(cat "${BANK_BOXES_SINK}/${label}.tree" 2>/dev/null || echo '-')"
+        # THE MARKET THE WRAPPER READ BACK OFF THE INSTANCE, not the one the
+        # launch asked for: `up` prints it from EC2's `InstanceLifecycle` and
+        # this is where it is kept, because afterwards the boxes are gone and
+        # this table is all there is to cost the bank from.
+        market="$(cat "${BANK_BOXES_SINK}/${label}.market" 2>/dev/null || true)"
+        case "$market" in '') market="-" ;; esac
+        # THE PASS COUNT THE PLAN DECIDED, out of the plan itself. A dash is
+        # "this unit runs no suite", never "two" — a column that guessed a
+        # default would read as a claim about a shard that made none.
+        case "$passes" in '') passes="-" ;; esac
+        printf '  %-26s %-21s %-9s %-6s %-3s %-7s %s\n' \
+            "$label" "$id" "$market" "$passes" "$rc" "${wall}s" "$tree"
+    done <"${BANK_BOXES_SINK}/plan.tsv"
+    # THE VALVE, PRINTED WHEREVER THE TABLE IS. An on-demand row in the column
+    # above is only readable beside the reason somebody typed for it, and a
+    # bank with no valve set is the ordinary case that should say so once.
+    if [ -n "${DJB_VERIFIER_ON_DEMAND_OK:-}" ]; then
+        echo "  on-demand valve: ${DJB_VERIFIER_ON_DEMAND_OK}"
+    else
+        echo "  on-demand valve: unset — a shard whose Spot request is refused could not"
+        echo "    launch, and this bank refuses rather than buying on-demand for it."
+    fi
+    echo ""
+}
+
+# =============================================================================
+# THE IMAGE, BUILT ONCE, BY THE BANK, FROM THE BANKED TREE (ADR deploy-4a)
+# =============================================================================
+#
+# WHY IT IS HERE AND NOT IN CI. CI's `images` job sits behind `needs: verdict`
+# — a second full gate on GitHub runners — and its OIDC push role has failed on
+# every run since the role was last touched, so the registry's newest image was
+# a month old while every green tree went by. The bank already has what an
+# image build needs and nothing else in the system does: a tree that a composed
+# verdict has just passed, N boxes of the right architecture still up, and a
+# moment after the row is written where nothing is waiting on a measurement.
+#
+# THE IMAGE IS NEVER PART OF THE VERDICT, and every branch below is written to
+# that rule: no registry coordinate, a tag that does not match, a build that
+# failed, a push the role was refused — each is PRINTED and each returns 0 with
+# the row standing. The verdict is a claim about bytes a gate measured; an
+# image is an artefact derived from those bytes afterwards, and a registry that
+# was down may not retract a green. The fallback when this step does nothing is
+# the one CI has always had: its `images` job builds the tag that is missing.
+#
+# bank_boxes_image_remote <checkout> <tag> <registry> <region> <web ref> <worker ref>
+# — the ONE command string the box's shell runs, `bank_boxes_acceptance_remote`'s
+# grammar exactly: one line, and every `$` that belongs to the BOX escaped,
+# because the wrapper joins its arguments with spaces and the box re-parses them.
+#
+# THE TOKEN IS THE BOX'S OWN. `aws ecr get-login-password` runs THERE, under the
+# instance profile, and never on this Mac: a token piped from here would make
+# every bank depend on the operator's credentials and would put a registry
+# password in a local process's argv. `deploy/iam/verifier_bootstrap.sh` grants
+# the box role exactly the two repositories.
+#
+# AND IT LOGS OUT AT THE END, `|| true`. `docker login` writes the token into
+# `~/.docker/config.json` and leaves it there: the box is terminated a few
+# lines later, so this buys minutes rather than days — but a registry
+# credential resting on disk for no reason is the kind of thing that is only
+# ever cheap to remove before somebody reuses the box for something else. It
+# comes AFTER the digest reads, which go to the registry and need the token,
+# and it may never fail the step: an image that was built and pushed must not
+# read as `NOT built` because a logout was unhappy.
+#
+# AND IT IS A VARIABLE, NOT A PIPE. `set -o pipefail` is bash's and the box's
+# login shell is not promised to be one, so a piped `get-login-password` whose
+# `aws` half failed would hand `docker login` an empty password and the pipeline
+# would carry docker's status. An assignment fails under plain `set -e`.
+bank_boxes_image_remote() {
+    local checkout="$1" tag="$2" registry="$3" region="$4" web="$5" worker="$6"
+    printf '%s' "set -e; cd ${checkout}; export DJB_IMAGE_REGISTRY=${registry}; \
+t=\$(./deploy/provision.sh image-tag); \
+if [ \"\$t\" != \"${tag}\" ]; then \
+echo \"!! image: refusing to build under '\$t' — this bank keys on ${tag}\"; \
+echo '   what moved under it (git status --short, first 10):'; \
+git status --short | sed -n '1,10p'; exit 3; fi; \
+p=\$(aws ecr get-login-password --region ${region}); \
+printf '%s' \"\$p\" | docker login --username AWS --password-stdin ${registry%%/*}; \
+T0=\$(date +%s); \
+docker build --target web --tag ${web} .; docker push ${web}; \
+T1=\$(date +%s); \
+docker build --target worker --tag ${worker} .; docker push ${worker}; \
+T2=\$(date +%s); \
+echo \"image: seconds web \$((T1-T0)) worker \$((T2-T1))\"; \
+echo \"image: digest web \$(./deploy/provision.sh image-digest web ${tag})\"; \
+echo \"image: digest worker \$(./deploy/provision.sh image-digest worker ${tag})\"; \
+echo \"image: platform \$(docker image inspect --format '{{.Os}}/{{.Architecture}}' ${web})\"; \
+docker logout ${registry%%/*} || true"
+}
+
+# bank_boxes_image <checkout> <tag> — the whole step. ALWAYS 0.
+#
+# THE TAG IS THIS BANK'S OWN TREE and it is composed here, not asked for: the
+# row was just keyed on `$tree` and the image has to carry the same name or the
+# registry and the ledger are talking about different bytes. The BOX asserts the
+# equality from its own side (`provision.sh image-tag` in its own checkout) —
+# which is the half this Mac cannot do, and the half that catches a box parked
+# off the pushed tree.
+#
+# THE REFS COME FROM `deploy/provision.sh image-ref`, the one function that
+# composes a registry name in this tree. Asking it is also how the registry
+# coordinate is CHECKED: it refuses with `require_image_registry`'s own text
+# when there is none, and the refusal is this step's "not built" branch.
+bank_boxes_image() {
+    local checkout="$1" tag="$2"
+    local ref_web ref_worker registry host region id label why log rc cmd
+    local secs_web secs_worker dg_web dg_worker platform
+    echo ""
+    if [ -z "$checkout" ]; then
+        echo "image: not built — deploy/verifier/bake.sh does not say where a box's checkout"
+        echo "   lives, so there is nothing to build FROM. The row above stands."
+        return 0
+    fi
+    if ! ref_web="$(cd "$ROOT" && ./deploy/provision.sh image-ref web "$tag" 2>/dev/null)" ||
+        ! ref_worker="$(cd "$ROOT" && ./deploy/provision.sh image-ref worker "$tag" 2>/dev/null)"; then
+        echo "image: not built — no registry coordinate"
+        echo "   DJB_IMAGE_REGISTRY is unset here and deploy/.env carries none, so there is"
+        echo "   no name to push under. The verdict row above STANDS: the image is not the"
+        echo "   verdict. Set it and the next bank builds one; CI builds it meanwhile."
+        return 0
+    fi
+    # THE REGISTRY, RECOVERED FROM THE ONE COMPOSITION rather than parsed a
+    # second time out of the environment or the env file: `image_ref` is
+    # `<registry>/djb-<service>:<tag>`, so the registry is what is left when the
+    # rest is taken off. A second reader of `deploy/.env` here would be a second
+    # answer to "which registry", which is the C1 disease this file argues about
+    # everywhere else.
+    registry="${ref_web%"/djb-web:${tag}"}"
+    if [ "$registry" = "$ref_web" ] || [ -z "$registry" ]; then
+        echo "image: not built — deploy/provision.sh image-ref answered '${ref_web}', which is"
+        echo "   not <registry>/djb-web:${tag}. Nothing here will guess a registry. The row stands."
+        return 0
+    fi
+    host="${registry%%/*}"
+    # THE REGION IS DERIVED FROM THE HOST, never typed and never taken from this
+    # Mac's own environment: an ECR registry name IS its account and its region
+    # (`<account>.dkr.ecr.<region>.amazonaws.com`), and the token has to be
+    # minted in the region the repositories are in. A coordinate that is not an
+    # ECR host is a registry whose login this step does not know how to do.
+    case "$host" in
+    *.dkr.ecr.*.amazonaws.com) region="$(printf '%s' "$host" | awk -F. '{ print $4 }')" ;;
+    *)
+        echo "image: not built — ${host} is not an ECR registry, and this step only knows"
+        echo "   how to mint an ECR token from a box's own role. The row above stands."
+        return 0
+        ;;
+    esac
+    # WHICH BOX. The acceptance box, whenever there is one: it is the one box in
+    # the bank that is NOT part of the composed verdict (`run`, never `--leg`),
+    # so nothing a build does to it can ever be confused with a measured leg,
+    # and its own work finished in phase 3. Failing that, the first shard — by
+    # then every shard's log and status are home and its box is idle too. Never
+    # all of them: N boxes building one tree is N images of it (rejected in the
+    # criteria by name).
+    id="$BANK_BOXES_ACCEPT_ID"
+    why="the acceptance box — the one box outside the composed verdict"
+    if [ -z "$id" ]; then
+        label="$(awk -F'\t' 'NF { print $1; exit }' "${BANK_BOXES_SINK}/plan.tsv" 2>/dev/null || true)"
+        [ -z "$label" ] || id="$(cat "${BANK_BOXES_SINK}/${label}.id" 2>/dev/null || true)"
+        why="shard ${label} — this bank has no acceptance box"
+    fi
+    if [ -z "$id" ]; then
+        echo "image: not built — no box is still up to build on. The row above stands."
+        return 0
+    fi
+    log="${BANK_BOXES_SINK}/image.log"
+    cmd="$(bank_boxes_image_remote "$checkout" "$tag" "$registry" "$region" "$ref_web" "$ref_worker")"
+    echo "pm_push --bank --on-boxes: building the image on ${id} (${why})."
+    echo "  tag           ${tag}"
+    echo "  refs          ${ref_web}"
+    echo "                ${ref_worker}"
+    rc=0
+    "$BANK_BOXES_VB" run "$id" -- "$cmd" >"$log" 2>&1 </dev/null || rc=$?
+    if [ "$rc" != "0" ]; then
+        echo "image: NOT built (exit ${rc}) — and the verdict row above STANDS."
+        echo "   An image is downstream of a verdict and never part of one: the gate measured"
+        echo "   the tree, this step only names it in a registry. CI's images job builds a tag"
+        echo "   the registry does not have, which is the fallback ADR deploy-4a argues from."
+        sed 's/^/     | /' "$log" | tail -15
+        return 0
+    fi
+    secs_web="$(bank_boxes_first_match "$log" '/^image: seconds / { print $4; exit }')"
+    secs_worker="$(bank_boxes_first_match "$log" '/^image: seconds / { print $6; exit }')"
+    dg_web="$(bank_boxes_first_match "$log" '/^image: digest web / { print $4; exit }')"
+    dg_worker="$(bank_boxes_first_match "$log" '/^image: digest worker / { print $4; exit }')"
+    platform="$(bank_boxes_first_match "$log" '/^image: platform / { print $3; exit }')"
+    echo "image: ${tag} pushed (web ${secs_web:-?}s, worker ${secs_worker:-?}s)"
+    # THE DIGEST THE REGISTRY HOLDS, read back through `provision.sh
+    # image-digest` on the box AFTER the push — out of the registry and not out
+    # of the build log, because the registry is what a deploy will pull. A
+    # verifier replays the same command from its own clone and compares.
+    echo "image: web ${dg_web:-<no digest read back>} worker ${dg_worker:-<no digest read back>}"
+    echo "  platform      ${platform:-<unread>} — the box's own architecture, built natively"
+    echo "  box log       ${log}"
+    return 0
+}
+
+# bank_on_boxes <N> — the whole of it. Exit 0 with ONE row banked, 1 with a red
+# shard named and NO row, 2 with the reason named and NO row. Boxes down on all
+# three.
+bank_on_boxes() {
+    local n=$1
+    local vb="$ROOT/scripts/verifier_box.sh"
+    local tree tree8 declared listing lrc plan prc planned
+    local label unit shard log rc treev composed wallv legwall
+    local lost red foreign union pytest_wall failed
+    local kbad needsv shardsv legsv lunit lshard kk pp seen kmax
+    local shard_legs listing_legs declared_legs missing extra uncovered labels drc
+    local acheckout arung acmd arc hid passes planpasses onepass
+    local proof_file pseed pworkers ppass1 ppass2 pmap member sawpasses
+    [ -x "$vb" ] ||
+        die "no executable verifier wrapper at ${vb} — there is nothing to bank on"
+    BANK_BOXES_VB="$vb"
+
+    # SOURCED HERE AND NOT AT FILE SCOPE, so an ordinary push is byte-for-byte
+    # the script it was: the row writer is only needed where a row is written.
+    # The precedent is `scripts/githooks/pre-push`, which sources the same file
+    # to ask the same library the same question.
+    [ -r "$ROOT/scripts/gate_ledger.sh" ] ||
+        die "no ${ROOT}/scripts/gate_ledger.sh — a composed verdict has no writer without it"
+    # shellcheck source=scripts/gate_ledger.sh
+    . "$ROOT/scripts/gate_ledger.sh"
+
+    # THE SINK IS OUTSIDE THE CHECKOUT, and it is checked rather than assumed:
+    # a log written beside the tree is a file that moves the very hash this
+    # bank is about to key a verdict on.
+    BANK_BOXES_SINK="$(mktemp -d "${TMPDIR:-/tmp}/djb-bank-boxes.XXXXXX")" ||
+        die "could not make an exit sink for the bank"
+    case "$BANK_BOXES_SINK" in
+    "$ROOT" | "$ROOT"/*)
+        die "the exit sink (${BANK_BOXES_SINK}) landed inside ${ROOT}. Every byte in the
+   checkout is part of the tree this bank keys a verdict on; point TMPDIR
+   somewhere outside it."
+        ;;
+    esac
+    BANK_BOXES_TSV="${BANK_BOXES_SINK}/boxes.tsv"
+    : >"$BANK_BOXES_TSV"
+
+    # THE KEY, READ ONCE, BEFORE ANYTHING IS LAUNCHED. It is the post-fold tree
+    # of this clean checkout — the same function the gate and the pre-push hook
+    # call, so there is one opinion about it and no second arithmetic.
+    #
+    # THE SUBSHELL IS THE `cd`, AND IT IS THE ONLY KIND THIS FILE HAS. The
+    # header's first property is that no cwd is left behind in another checkout
+    # for the next command to inherit; a subshell cannot leave one, and
+    # `gate_measured_tree` reads the repository it is STANDING in.
+    tree="$(cd "$ROOT" && gate_measured_tree)" ||
+        die "could not read the measured tree of ${ROOT} — there is nothing to key a verdict on"
+    [ -n "$tree" ] ||
+        die "the measured tree of ${ROOT} read empty — there is nothing to key a verdict on"
+    tree8="${tree:0:8}"
+    declared="$(cd "$ROOT" && gate_full_legs)"
+    [ -n "$declared" ] ||
+        die "scripts/check.sh declares no FULL_LEGS — a composed row could name no leg set"
+
+    # THE PASS COUNT IS DECIDED HERE, BEFORE THE LISTING IS EVEN READ, because
+    # the plan below is what hands it to every shard and a plan that decided it
+    # halfway through would be a bank with two kinds of shard in it. There is
+    # exactly one input: whether this bank can have an acceptance box at all —
+    # one pass per shard is only legal while a whole-suite two-pass proof is
+    # running somewhere, and that somewhere is the acceptance box.
+    arung="bank-${tree8}-acceptance"
+    acheckout="$(bank_boxes_box_checkout || true)"
+    planpasses=2
+    [ -z "$acheckout" ] || planpasses=1
+
+    echo "pm_push --bank --on-boxes ${n}: the full gate, one unit per verifier box."
+    echo "  tree          ${tree}"
+    echo "  sink          ${BANK_BOXES_SINK}"
+    echo "  wrapper       ${vb}"
+    echo "  This Mac MEASURES NOTHING: it takes no machine lease and no pytest slot,"
+    echo "  so every builder's --loop on this box keeps its own slot throughout."
+    echo ""
+
+    # --- the listing, and the plan derived from it --------------------------
+    listing="${BANK_BOXES_SINK}/list-legs.tsv"
+    lrc=0
+    echo "pm_push --bank --on-boxes: reading the units — ${GATE} --list-legs"
+    set +e
+    "$GATE" --list-legs >"$listing" 2>"${BANK_BOXES_SINK}/list-legs.err"
+    lrc=$?
+    set -e
+    if [ "$lrc" != "0" ]; then
+        cat "${BANK_BOXES_SINK}/list-legs.err" >&2 || true
+        die "./scripts/check.sh --list-legs exited ${lrc}. A gate that cannot say what its
+   units are cannot be split across boxes, and a plan guessed from anything else
+   is the hand list this repository refuses everywhere.
+   Nothing was launched, nothing was banked and nothing was pushed."
+    fi
+
+    plan="${BANK_BOXES_SINK}/plan.tsv"
+    prc=0
+    set +e
+    bank_boxes_plan "$listing" "$n" "$planpasses" >"$plan" 2>"${BANK_BOXES_SINK}/plan.err"
+    prc=$?
+    set -e
+    if [ "$prc" != "0" ]; then
+        cat "${BANK_BOXES_SINK}/plan.err" >&2 || true
+        die "the bank could not draw a plan for ${n} boxes. Nothing was launched."
+    fi
+    planned="$(grep -c . "$plan" || true)"
+    if [ "$planned" != "$n" ]; then
+        die "the plan came to ${planned} shards for ${n} boxes. One shard is one box and
+   one box is one shard; a plan that does not add up is never a smaller bank."
+    fi
+    # A PLAN ROW'S PASS COUNT IS PRINTED ONLY WHERE IT IS NOT THE DEFAULT.
+    # `--passes 2` is what every shard has always run and what `check.sh`
+    # normalises to nothing, so a two-pass bank's echo, argv and transcript are
+    # the ones they were before the amendment; `--passes 1` is the departure
+    # and it says so, beside the `--shard` it is only legal next to.
+    echo "pm_push --bank --on-boxes: the plan, derived from that listing —"
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        if [ "$passes" = "1" ]; then
+            echo "    ${label}	--leg ${unit}${shard:+ --shard ${shard}} --passes 1"
+        else
+            echo "    ${label}	--leg ${unit}${shard:+ --shard ${shard}}"
+        fi
+    done <"$plan"
+    if [ "$planpasses" = "1" ]; then
+        echo "    ONE pass per suite shard (ADR gate-1's amendment): the whole-suite"
+        echo "    two-pass leak proof runs on the acceptance box below, and the row is"
+        echo "    not written until it comes home green."
+    fi
+    echo ""
+
+    # --- the acceptance box, named before anything is launched --------------
+    #
+    # OUTSIDE THE PLAN, and the plan's own arithmetic above has already been
+    # checked against `n`: this box is the (n+1)th machine and it takes no unit.
+    # Its checkout path was read BEFORE the plan, because the plan's pass count
+    # is decided by whether this box can exist.
+    if [ -z "$acheckout" ]; then
+        BANK_BOXES_ACCEPT_NOTE="acceptance: no box — deploy/verifier/bake.sh could not be read, so
+   the box's checkout path is unknown. The map is NOT written and the loop keeps
+   the closure scope; the bank is unaffected."
+        echo "pm_push --bank --on-boxes: NO acceptance box — ${ROOT}/deploy/verifier/bake.sh"
+        echo "    could not be read for the box's checkout path. The test-impact map will"
+        echo "    not be rewritten by this bank; nothing else changes."
+        echo ""
+    else
+        echo "pm_push --bank --on-boxes: and ONE more box, outside the verdict —"
+        echo "    ${arung}	the whole suite twice (contexts, then plain) -> scripts/test_impact.json"
+        echo "    Its status is PRINTED and composed nowhere: a measurement may not refuse"
+        echo "    a claim every shard passed."
+        echo ""
+    fi
+
+    # --- the trap, armed BEFORE the first up --------------------------------
+    exec 8>&1 9>&2
+    trap 'bank_boxes_teardown' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    # --- phase 1: N boxes, each carrying the fold commit's tree -------------
+    echo "pm_push --bank --on-boxes: bringing ${n} boxes up, concurrently."
+    BANK_BOXES_WORKERS=""
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        (
+            set +e
+            # DJB_VERIFIER_BANK_SHARD IS WHAT MAKES THIS A SHARD'S `up` AND NOT
+            # AN OPERATOR'S. The wrapper's Spot→on-demand fallback is right for
+            # one box somebody is standing in front of and wrong for a bank:
+            # N shards each answering a Spot refusal with an on-demand box is N
+            # on-demand boxes against a quota an order of magnitude smaller
+            # than the Spot one, bought without anybody deciding to. With this
+            # set the shard is `could not launch` instead, and the refusal
+            # below is the one that fires. `DJB_VERIFIER_ON_DEMAND_OK` is the
+            # valve, and it is inherited from the operator's own environment so
+            # that one typed sentence covers the whole bank.
+            DJB_VERIFIER_BANK_SHARD=1 "$vb" up --for "bank-${tree8}-${label}" \
+                >"${BANK_BOXES_SINK}/up-${label}.log" 2>&1 </dev/null
+            urc=$?
+            printf '%s\n' "$urc" >"${BANK_BOXES_SINK}/${label}.up.rc"
+            [ "$urc" = "0" ] || exit 0
+            uid="$(awk '$1 == "instance" { print $2; exit }' "${BANK_BOXES_SINK}/up-${label}.log")"
+            if [ -z "$uid" ]; then
+                printf '2\n' >"${BANK_BOXES_SINK}/${label}.up.rc"
+                exit 0
+            fi
+            printf '%s\n' "$uid" >"${BANK_BOXES_SINK}/${label}.id"
+            awk '$1 == "market" { print $2; exit }' \
+                "${BANK_BOXES_SINK}/up-${label}.log" >"${BANK_BOXES_SINK}/${label}.market"
+            # One short line, appended: the teardown's whole census, and the
+            # only thing standing between a signal and a box nobody names.
+            printf '%s\t%s\n' "$label" "$uid" >>"$BANK_BOXES_TSV"
+        ) &
+        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
+    done <"$plan"
+    if [ -n "$acheckout" ]; then
+        (
+            set +e
+            "$vb" up --for "$arung" \
+                >"${BANK_BOXES_SINK}/up-acceptance.log" 2>&1 </dev/null
+            urc=$?
+            printf '%s\n' "$urc" >"${BANK_BOXES_SINK}/acceptance.up.rc"
+            [ "$urc" = "0" ] || exit 0
+            uid="$(awk '$1 == "instance" { print $2; exit }' "${BANK_BOXES_SINK}/up-acceptance.log")"
+            if [ -z "$uid" ]; then
+                printf '2\n' >"${BANK_BOXES_SINK}/acceptance.up.rc"
+                exit 0
+            fi
+            printf '%s\n' "$uid" >"${BANK_BOXES_SINK}/acceptance.id"
+            printf '%s\t%s\n' acceptance "$uid" >>"$BANK_BOXES_TSV"
+        ) &
+        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
+    fi
+    set +e
+    wait
+    set -e
+    BANK_BOXES_WORKERS=""
+
+    # THE ACCEPTANCE BOX'S OWN UP, READ FIRST AND SEPARATELY. A shard that would
+    # not launch is exit 2 with nothing measured; this one is a printed line,
+    # because there is no unit of the gate behind it to leave uncovered.
+    if [ -n "$acheckout" ]; then
+        BANK_BOXES_ACCEPT_ID="$(cat "${BANK_BOXES_SINK}/acceptance.id" 2>/dev/null || true)"
+        if [ -z "$BANK_BOXES_ACCEPT_ID" ]; then
+            # THE LAST CLAUSE IS THE PLAN'S, and it stopped being a constant
+            # at ADR gate-1's amendment. Under a two-pass plan this box was
+            # only ever the map's, so "every shard is unaffected" is true. Under
+            # a ONE-pass plan every shard has already been handed `--passes 1`
+            # on the strength of a proof that was going to run here — so the
+            # bank is about to refuse, and a note that said the shards were
+            # unaffected would be printed moments before the refusal that says
+            # they were not. A message may not name a cause it has not proven,
+            # and it may not deny one that is already certain.
+            if [ "$planpasses" = "1" ]; then
+                BANK_BOXES_ACCEPT_NOTE="acceptance: no box — it did not come up (see
+   ${BANK_BOXES_SINK}/up-acceptance.log). The map is NOT written, and this bank will be
+   REFUSED — one pass was measured and nothing can prove it left nothing behind."
+            else
+                BANK_BOXES_ACCEPT_NOTE="acceptance: no box — it did not come up (see
+   ${BANK_BOXES_SINK}/up-acceptance.log). The map is NOT written and the loop keeps
+   the closure scope; every shard is unaffected."
+            fi
+        fi
+    fi
+
+    failed=""
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        if [ "$(cat "${BANK_BOXES_SINK}/${label}.up.rc" 2>/dev/null || echo 2)" != "0" ]; then
+            failed="${failed}${failed:+ }${label}"
+        fi
+    done <"$plan"
+    if [ -n "$failed" ]; then
+        bank_boxes_table
+        echo "!! pm_push --bank --on-boxes: a box did not come up: ${failed}" >&2
+        echo "   Their up logs are under ${BANK_BOXES_SINK}. Nothing was measured and no" >&2
+        echo "   verdict was composed; every box that DID come up is being taken down." >&2
+        if [ -z "${DJB_VERIFIER_ON_DEMAND_OK:-}" ]; then
+            echo "   If a log above says Spot was refused: a shard NEVER falls back to on-demand" >&2
+            echo "   on its own — N shards doing that is N on-demand boxes nobody asked for. To" >&2
+            echo "   buy them deliberately, type the reason and run the bank again:" >&2
+            echo "     DJB_VERIFIER_ON_DEMAND_OK=\"<why this wave is worth on-demand money>\" \\" >&2
+            echo "       ./scripts/pm_push.sh --bank --on-boxes <N>" >&2
+        fi
+        exit 2
+    fi
+
+    # --- phase 2: one leg per box, the seam's exact argv --------------------
+    echo "pm_push --bank --on-boxes: detaching one unit of the gate on each box."
+    BANK_BOXES_WORKERS=""
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        (
+            set +e
+            lid="$(cat "${BANK_BOXES_SINK}/${label}.id")"
+            printf '%s\n' "$(date +%s)" >"${BANK_BOXES_SINK}/${label}.began"
+            # 255 IS SSH'S OWN STATUS AND IT GETS ONE MORE GO. `up` returns
+            # when SSM reports the agent Online, and the agent answers before
+            # the SSH tunnel does — so a detach fired in that window comes back
+            # 255 with an EMPTY log: no gate ran, nothing was measured, and a
+            # whole bank refused with every box up and paid for while the
+            # socket was answering seconds later. ONE retry, after a short
+            # printed wait, and ONLY for 255: any other status is the wrapper
+            # or the box saying something real, and retrying it would risk a
+            # second copy of a leg that is already running.
+            # THE SEAM'S ARGV, COMPOSED ONCE AND HANDED TO BOTH TRIES. An
+            # array rather than three nested `if`s, because the retry below
+            # runs the same argv a second time and two spellings of one
+            # command are two commands to keep in step. `--passes 1` is
+            # appended only where the plan said one: `--passes 2` is the
+            # default `check.sh` normalises away, so a two-pass bank's argv is
+            # byte-for-byte the one it was before the amendment.
+            legargv=(leg "$lid" --unit "$unit")
+            [ -z "$shard" ] || legargv+=(--shard "$shard")
+            [ "$passes" != "1" ] || legargv+=(--passes 1)
+            legargv+=(--log leg)
+            drc=0
+            for try in 1 2; do
+                "$vb" "${legargv[@]}" \
+                    >"${BANK_BOXES_SINK}/leg-${label}.log" 2>&1 </dev/null
+                drc=$?
+                [ "$drc" = "255" ] && [ "$try" = "1" ] || break
+                echo "pm_push --bank --on-boxes: ${label}: the detach exited 255 — that is ssh, not the gate, and the tunnel is usually a few seconds behind the agent. Waiting ${BANK_DETACH_RETRY_SECONDS}s and retrying the detach, once."
+                sleep "$BANK_DETACH_RETRY_SECONDS"
+            done
+            printf '%s\n' "$drc" >"${BANK_BOXES_SINK}/${label}.leg.rc"
+        ) &
+        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
+    done <"$plan"
+    set +e
+    wait
+    set -e
+    BANK_BOXES_WORKERS=""
+
+    failed=""
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        if [ "$(cat "${BANK_BOXES_SINK}/${label}.leg.rc" 2>/dev/null || echo 2)" != "0" ]; then
+            failed="${failed}${failed:+ }${label}"
+        fi
+    done <"$plan"
+    if [ -n "$failed" ]; then
+        bank_boxes_table
+        echo "!! pm_push --bank --on-boxes: a unit could not be detached: ${failed}" >&2
+        echo "   That is the transport or the wrapper, never a red tree: nothing was" >&2
+        echo "   measured and no verdict was composed." >&2
+        exit 2
+    fi
+
+    # --- phase 3: wait on every box -----------------------------------------
+    #
+    # A NON-ZERO `wait` IS NOT A REFUSAL HERE, and that is deliberate: `wait`
+    # passes the shard's own gate status through, so a RED shard exits 1 and the
+    # bank still has to fetch its log and name it. The authority on what each
+    # shard decided is the `.rc` the box itself wrote, fetched below.
+    echo "pm_push --bank --on-boxes: waiting on every shard (the wall is the slowest one)."
+    BANK_BOXES_WORKERS=""
+    # THE ACCEPTANCE RUN STARTS HERE AND NOT IN PHASE 2, so that it is
+    # CONCURRENT with the shards' legs rather than in front of them: phase 2's
+    # `wait` is a bare one and would block on it. `run` is synchronous — its
+    # status is the remote command's, passed through — so the worker below is
+    # the detach, the wait and the status all at once, and the bank's wall grows
+    # only if this box outlasts the slowest shard.
+    if [ -n "$BANK_BOXES_ACCEPT_ID" ]; then
+        acmd="$(bank_boxes_acceptance_remote "$acheckout" "$arung")"
+        (
+            set +e
+            began="$(date +%s)"
+            "$vb" run "$BANK_BOXES_ACCEPT_ID" -- "$acmd" \
+                >"${BANK_BOXES_SINK}/acceptance.log" 2>&1 </dev/null
+            printf '%s\n' "$?" >"${BANK_BOXES_SINK}/acceptance.rc"
+            printf '%s\n' "$(($(date +%s) - began))" >"${BANK_BOXES_SINK}/acceptance.wall"
+        ) &
+        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
+    fi
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        (
+            set +e
+            wid="$(cat "${BANK_BOXES_SINK}/${label}.id")"
+            "$vb" wait "$wid" leg >"${BANK_BOXES_SINK}/wait-${label}.log" 2>&1 </dev/null
+            printf '%s\n' "$?" >"${BANK_BOXES_SINK}/${label}.wait.rc"
+            began="$(cat "${BANK_BOXES_SINK}/${label}.began" 2>/dev/null || echo 0)"
+            printf '%s\n' "$(($(date +%s) - began))" >"${BANK_BOXES_SINK}/${label}.wall"
+        ) &
+        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
+    done <"$plan"
+    set +e
+    wait
+    set -e
+    BANK_BOXES_WORKERS=""
+
+    # --- phase 4: fetch every shard's log and its status --------------------
+    echo "pm_push --bank --on-boxes: fetching every shard's log and exit status."
+    BANK_BOXES_WORKERS=""
+    # AND THE MAP, IF THERE IS ONE. Only when the acceptance box said 0: a fetch
+    # from a box that wrote nothing would bring home the PREVIOUS wave's file or
+    # nothing at all, and either would be a map claiming to be this tree's.
+    arc="$(tr -d ' \r\n' <"${BANK_BOXES_SINK}/acceptance.rc" 2>/dev/null || true)"
+    if [ -n "$BANK_BOXES_ACCEPT_ID" ] && [ "${arc:-1}" = "0" ]; then
+        (
+            set +e
+            "$vb" fetch "$BANK_BOXES_ACCEPT_ID" "~/verify/${arung}/test_impact.json" \
+                "${BANK_BOXES_SINK}/test_impact.json" \
+                >"${BANK_BOXES_SINK}/fetch-acceptance.log" 2>&1 </dev/null
+            printf '%s\n' "$?" >"${BANK_BOXES_SINK}/acceptance.fetch.rc"
+        ) &
+        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
+    fi
+    # AND THE LEAK PROOF, WHENEVER THERE IS A BOX TO ASK. It is fetched
+    # SEPARATELY from the map and on a laxer condition, and the difference is
+    # the two roles: the map is skipped when the box said anything but 0
+    # because a stale file would be a projection claiming to be this tree's,
+    # while the proof is the thing the row rests on and its ABSENCE has to be
+    # read rather than assumed. A proof that does not come back is `lost`
+    # below, never a quietly missing field.
+    if [ -n "$BANK_BOXES_ACCEPT_ID" ]; then
+        (
+            set +e
+            "$vb" fetch "$BANK_BOXES_ACCEPT_ID" "~/verify/${arung}/proof.txt" \
+                "${BANK_BOXES_SINK}/acceptance.proof" \
+                >"${BANK_BOXES_SINK}/fetch-proof.log" 2>&1 </dev/null
+            printf '%s\n' "$?" >"${BANK_BOXES_SINK}/acceptance.proof.fetch.rc"
+        ) &
+        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
+    fi
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        (
+            set +e
+            fid="$(cat "${BANK_BOXES_SINK}/${label}.id")"
+            "$vb" fetch "$fid" "~/verify/bank-${tree8}-${label}/leg.log" \
+                "${BANK_BOXES_SINK}/${label}.log" \
+                >"${BANK_BOXES_SINK}/fetch-${label}.log" 2>&1 </dev/null
+            "$vb" fetch "$fid" "~/verify/bank-${tree8}-${label}/leg.rc" \
+                "${BANK_BOXES_SINK}/${label}.rc" \
+                >>"${BANK_BOXES_SINK}/fetch-${label}.log" 2>&1 </dev/null
+        ) &
+        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
+    done <"$plan"
+    set +e
+    wait
+    set -e
+    BANK_BOXES_WORKERS=""
+
+    # --- the map, reported BEFORE the composition ---------------------------
+    #
+    # BEFORE, so that it is printed on EVERY exit path: a bank that refuses is
+    # exactly the bank whose operator most wants to know whether the
+    # measurement beside it survived, and a line printed only on the green path
+    # is a line nobody reads on the day it matters.
+    bank_boxes_acceptance_report "$arc"
+
+    # --- the composition ----------------------------------------------------
+    #
+    # ORDER MATTERS AND IT IS THE GATE'S OWN: 2 outranks a red. Every
+    # could-not-look is gathered FIRST across all shards — a missing log, an
+    # unreadable status, a 2, a reclaimed box, a foreign tree, a leg set that
+    # does not add up — because a bank that reported "one shard red" over a
+    # shard whose log it never read would be judging bytes nobody measured.
+    lost=""
+    red=""
+    foreign=""
+    union=""
+    kbad=""
+    pytest_wall=0
+    # ONE PASS WAS PLANNED IFF THE PLAN SAYS SO, read back out of the plan file
+    # rather than carried in a variable the launch set: the plan is what the
+    # boxes were actually handed, and it is the only thing entitled to decide
+    # whether this row may name a one-pass leg.
+    onepass=0
+    if awk -F'\t' '$4 == "1" { found = 1 } END { exit !found }' "$plan"; then
+        onepass=1
+    fi
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        log="${BANK_BOXES_SINK}/${label}.log"
+        if [ ! -s "$log" ]; then
+            lost="${lost}
+     ${label}: no log came back from the box (fetch log: ${BANK_BOXES_SINK}/fetch-${label}.log)"
+            continue
+        fi
+        rc="$(tr -d ' \r\n' <"${BANK_BOXES_SINK}/${label}.rc" 2>/dev/null || true)"
+        treev="$(bank_boxes_first_match "$log" '/The tree it ran on was/ { t = $NF; sub(/\.$/, "", t); print t; exit }')"
+        composed="$(bank_boxes_first_match "$log" '/^  composed-of: / { sub(/^  composed-of: /, ""); print; exit }')"
+        # THE LEG'S OWN WALL, out of the leg's own banner. The Mac measures the
+        # detach-to-return elapsed, which is the leg PLUS a transport; the
+        # number `took=` means everywhere else in this ledger is the leg's, so
+        # that is the one recorded when the log carries it.
+        legwall="$(bank_boxes_first_match "$log" '/^ok: all checks passed \(/ { t = $NF; sub(/^\(/, "", t); sub(/s\)$/, "", t); print t; exit }')"
+        case "${legwall:-}" in
+        '' | *[!0-9]*) legwall="$(cat "${BANK_BOXES_SINK}/${label}.wall" 2>/dev/null || echo 0)" ;;
+        esac
+        case "${legwall:-}" in '' | *[!0-9]*) legwall=0 ;; esac
+        printf '%s\n' "$legwall" >"${BANK_BOXES_SINK}/${label}.legwall"
+        printf '%s\n' "${treev:-}" >"${BANK_BOXES_SINK}/${label}.tree"
+        if grep -qF 'box reclaimed' "${BANK_BOXES_SINK}/wait-${label}.log" 2>/dev/null; then
+            lost="${lost}
+     ${label}: the box was RECLAIMED mid-flight — the verdict is LOST, never red"
+            continue
+        fi
+        case "$rc" in
+        0 | 1) ;;
+        2)
+            lost="${lost}
+     ${label}: the shard exited 2 — enforcement broken on that box, which outranks a pass"
+            continue
+            ;;
+        *)
+            lost="${lost}
+     ${label}: no exit status came back from the box (read '${rc:-<empty>}')"
+            continue
+            ;;
+        esac
+        if [ -z "$treev" ]; then
+            lost="${lost}
+     ${label}: the log names no tree — nothing says WHICH bytes that shard measured"
+            continue
+        fi
+        if [ "$treev" != "$tree" ]; then
+            foreign="${foreign}
+     ${label}: the box ran ${treev}
+              this bank keys on ${tree}"
+            continue
+        fi
+        if [ -z "$composed" ]; then
+            lost="${lost}
+     ${label}: the log carries no composed-of: line — nothing says WHICH legs that shard ran"
+            continue
+        fi
+        union="${union}${union:+,}${composed}"
+        # WHAT THE SHARD SAYS IT RAN, AGAINST WHAT THE PLAN TOLD IT TO RUN.
+        # The seam grammar is `<leg>[/<passes>]` and an absent suffix means 2,
+        # so a shard planned at one pass whose banner names a bare
+        # `pytest-x2` either ignored the flag or is a gate that predates it —
+        # and a row composed over it would say one pass ran twice, or two ran
+        # once. Neither is a claim anybody can act on, so it is exit 2 and no
+        # row, beside the other ways the plan and the shards can disagree.
+        if [ -n "$passes" ]; then
+            sawpasses=""
+            member=""
+            for member in $(printf '%s' "$composed" | tr ',' ' '); do
+                case "$member" in
+                "$BANK_SUITE_LEG")
+                    sawpasses=2
+                    break
+                    ;;
+                "${BANK_SUITE_LEG}"/*)
+                    sawpasses="${member#*/}"
+                    break
+                    ;;
+                *) member="" ;;
+                esac
+            done
+            if [ -z "$sawpasses" ]; then
+                kbad="${kbad}
+     ${unit}: planned --passes ${passes} and the shard's composed-of: names no ${BANK_SUITE_LEG} member at all (${label})"
+            elif [ "$sawpasses" != "$passes" ]; then
+                kbad="${kbad}
+     ${unit}: planned --passes ${passes} and the shard reports ${member} (${label})"
+            fi
+        fi
+        if [ "$rc" = "1" ]; then
+            red="${red}
+     ${label}: --leg ${unit}${shard:+ --shard ${shard}} on $(cat "${BANK_BOXES_SINK}/${label}.id" 2>/dev/null) exited 1"
+        fi
+        case ",${unit}," in
+        *,pytest-x2,*)
+            wallv="$legwall"
+            [ "$wallv" -le "$pytest_wall" ] || pytest_wall="$wallv"
+            ;;
+        esac
+    done <"$plan"
+
+    # THE SHARD'S OWN `k` IS CHECKED AGAINST THE LISTING, not against the plan
+    # that produced it: an N-capable unit with no shard, or a k outside 1..P, is
+    # a unit somebody would have run a part of with no parts. `kbad` is
+    # initialised with the rest of the composition's accumulators above,
+    # because the pass-count disagreement is the same kind of finding and
+    # reaches the same refusal.
+    while IFS='	' read -r unit needsv shardsv legsv; do
+        [ -n "$unit" ] || continue
+        seen=0
+        kmax=0
+        while IFS='	' read -r label lunit lshard lpasses; do
+            [ "$lunit" = "$unit" ] || continue
+            seen=$((seen + 1))
+            case "$shardsv" in
+            N-capable)
+                case "$lshard" in
+                '')
+                    kbad="${kbad}
+     ${unit}: shardable and its shard ${label} carries no k/N"
+                    continue
+                    ;;
+                esac
+                kk="${lshard%%/*}"
+                pp="${lshard##*/}"
+                kmax="$pp"
+                if [ "$kk" -lt 1 ] || [ "$kk" -gt "$pp" ]; then
+                    kbad="${kbad}
+     ${unit}: shard ${lshard} is outside 1..${pp}"
+                fi
+                ;;
+            *)
+                [ -z "$lshard" ] || kbad="${kbad}
+     ${unit}: indivisible, and ${label} was handed --shard ${lshard}"
+                ;;
+            esac
+        done <"$plan"
+        if [ "$seen" = "0" ]; then
+            kbad="${kbad}
+     ${unit}: the listing declares it and the plan gave it no box"
+        fi
+        case "$shardsv" in
+        N-capable)
+            if [ "$kmax" != "0" ] && [ "$seen" != "$kmax" ]; then
+                kbad="${kbad}
+     ${unit}: split ${kmax} ways and only ${seen} of those shards is in the plan"
+            fi
+            ;;
+        esac
+    done <"$listing"
+
+    # THE LEG SETS, ADDED UP. Three sets have to agree before a row is written:
+    # what the shards say they ran, what the listing says the units are made of,
+    # and what this gate declares a full run to be. The first two are compared
+    # for EQUALITY and the third for COVER — `gate_ledger_lookup`'s own
+    # semantic, and the honest one, because a unit's composed-of names the
+    # drives a shard walks as well as its legs, so the listing's union is a
+    # superset of FULL_LEGS by construction.
+    #
+    # AND THE MEMBER GRAMMAR IS `<leg>[/<passes>]`, so the pass count comes OFF
+    # before the three sets are compared. It is not part of the identity of a
+    # leg — it is a property of the RUN, checked against the plan one loop up,
+    # and the whole of its meaning downstream is the row's `leak-proof=` field.
+    # Left on, a one-pass shard's `pytest-x2/1` would read as a leg the listing
+    # has never heard of AND as a declared leg no shard covered: two refusals,
+    # both saying "the legs do not add up" about a bank whose legs add up
+    # exactly. `gate_ledger_lookup` is where the suffix means something, and it
+    # reads the same grammar there.
+    shard_legs="$(printf '%s' "$union" | tr ',' '\n' | sed 's|/[0-9][0-9]*$||' |
+        LC_ALL=C sort -u | grep -v '^$' || true)"
+    listing_legs="$(awk -F'\t' 'NF { print $4 }' "$listing" | tr ',' '\n' | LC_ALL=C sort -u | grep -v '^$' || true)"
+    declared_legs="$(printf '%s' "$declared" | tr ',' '\n' | LC_ALL=C sort -u | grep -v '^$' || true)"
+    missing="$(comm -13 <(printf '%s\n' "$shard_legs") <(printf '%s\n' "$listing_legs") | grep -v '^$' || true)"
+    extra="$(comm -23 <(printf '%s\n' "$shard_legs") <(printf '%s\n' "$listing_legs") | grep -v '^$' || true)"
+    uncovered="$(comm -13 <(printf '%s\n' "$shard_legs") <(printf '%s\n' "$declared_legs") | grep -v '^$' || true)"
+
+    # --- the LEAK PROOF, gathered like a shard's ----------------------------
+    #
+    # BEFORE `lost` IS DECIDED AND ONLY UNDER A ONE-PASS PLAN. Every shard
+    # above ran half the belt this bank claims; the other half ran on the
+    # acceptance box, and a row written without reading it would be a green
+    # vouching for one pass while naming two. So the proof enters the SAME two
+    # accumulators every shard enters: unreadable is `lost` (exit 2, no row —
+    # could-not-look outranks a pass), a red pass is `red` (exit 1, no row).
+    #
+    # AND `map=` ENTERS NEITHER. It is the measurement half of the same file
+    # (see the acceptance box's header): a coverage writer that died costs the
+    # loop one wave of its map and may not refuse a tree whose every pass was
+    # green. The two roles separate exactly here, at the `rc` each one wrote.
+    proof_file="${BANK_BOXES_SINK}/acceptance.proof"
+    if [ "$onepass" = "1" ]; then
+        pseed=""
+        ppass1=""
+        ppass2=""
+        pmap=""
+        pworkers=""
+        if [ -n "$BANK_BOXES_ACCEPT_ID" ] && [ -s "$proof_file" ]; then
+            pseed="$(bank_boxes_proof_field "$proof_file" seed)"
+            pworkers="$(bank_boxes_proof_field "$proof_file" workers)"
+            ppass1="$(bank_boxes_proof_field "$proof_file" pass1)"
+            ppass2="$(bank_boxes_proof_field "$proof_file" pass2)"
+            pmap="$(bank_boxes_proof_field "$proof_file" map)"
+        fi
+        # UNPARSABLE IS THE SAME ANSWER AS ABSENT, and it is reduced to one
+        # state here: an empty seed. A proof missing its seed proves nothing
+        # (two passes in different orders are not a pair), and an `rc` that is
+        # not a decimal is a status nobody can read as green or red.
+        if [ -z "$ppass1" ] || [ -z "$ppass2" ]; then
+            pseed=""
+        fi
+        case "$ppass1" in *[!0-9]*) pseed="" ;; esac
+        case "$ppass2" in *[!0-9]*) pseed="" ;; esac
+        if [ -z "$pseed" ]; then
+            lost="${lost}
+     acceptance: the leak proof could not be read — one pass was measured and nothing proved it left nothing behind.
+              Every pytest shard was planned --passes 1 under ADR gate-1's amendment, so
+              the whole-suite two-pass run on the acceptance box IS the belt, and this
+              bank cannot say whether it ran. Box: ${BANK_BOXES_ACCEPT_ID:-<none came up>}; the
+              fetch log is ${BANK_BOXES_SINK}/fetch-proof.log and the box's own log
+              is ${BANK_BOXES_SINK}/acceptance.log."
+        else
+            echo "acceptance: the leak proof — seed=${pseed} workers=${pworkers:-?} pass1=${ppass1} pass2=${ppass2} map=${pmap:-?}"
+            echo "  from ${BANK_BOXES_ACCEPT_ID}, the whole suite twice under one seed. pass1= and"
+            echo "  pass2= are the CLAIM this row rests on; map= is a measurement and decides nothing."
+            if [ "$ppass1" != "0" ] || [ "$ppass2" != "0" ]; then
+                red="${red}
+     acceptance: the leak proof is RED on ${BANK_BOXES_ACCEPT_ID} — pass1=${ppass1} pass2=${ppass2}
+              under seed ${pseed}. Both passes ran the whole suite in the same order
+              with the same worker assignment, so a red pass 2 is state pass 1 left
+              behind and nothing else. Its whole log is ${BANK_BOXES_SINK}/acceptance.log."
+            fi
+        fi
+    fi
+
+    bank_boxes_table
+
+    if [ -n "$lost" ]; then
+        echo "!! pm_push --bank --on-boxes: a shard's verdict could not be read. NO ROW WAS" >&2
+        echo "   WRITTEN and nothing was pushed — a bank is a claim about every unit, and 2" >&2
+        echo "   (could not look) outranks any pass:${lost}" >&2
+        exit 2
+    fi
+    if [ -n "$foreign" ]; then
+        echo "!! pm_push --bank --on-boxes: a box measured a DIFFERENT tree. NO ROW WAS" >&2
+        echo "   WRITTEN and nothing was pushed:${foreign}" >&2
+        echo "   A verdict composed from those shards would vouch for bytes no box ran." >&2
+        exit 2
+    fi
+    if [ -n "$kbad" ]; then
+        echo "!! pm_push --bank --on-boxes: the plan and the unit listing disagree. NO ROW" >&2
+        echo "   WAS WRITTEN and nothing was pushed:${kbad}" >&2
+        exit 2
+    fi
+    if [ -n "$missing" ] || [ -n "$extra" ] || [ -n "$uncovered" ]; then
+        echo "!! pm_push --bank --on-boxes: the shards' legs do not add up to a full gate." >&2
+        echo "   NO ROW WAS WRITTEN and nothing was pushed." >&2
+        [ -z "$missing" ] || {
+            echo "   in the listing's units and in NO shard's composed-of:" >&2
+            printf '     %s\n' $missing >&2
+        }
+        [ -z "$extra" ] || {
+            echo "   in a shard's composed-of and in NO unit of the listing:" >&2
+            printf '     %s\n' $extra >&2
+        }
+        [ -z "$uncovered" ] || {
+            echo "   declared by FULL_LEGS and covered by no shard:" >&2
+            printf '     %s\n' $uncovered >&2
+        }
+        exit 2
+    fi
+    if [ -n "$red" ]; then
+        echo "!! pm_push --bank --on-boxes: the gate is RED. NO ROW WAS WRITTEN and nothing" >&2
+        echo "   was pushed:${red}" >&2
+        echo "   Each shard's whole log is under ${BANK_BOXES_SINK}." >&2
+        exit 1
+    fi
+
+    # --- ONE row, written by the one writer ---------------------------------
+    labels=""
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        labels="${labels}${labels:+,}${label}"
+    done <"$plan"
+    # `waited=` is left to its own default of 0, which is the honest answer: this
+    # bank took neither the lease nor a slot, so it queued for nothing.
+    DJB_GATE_CALLER=pm-bank
+    GATE_RUN_SANCTION="push-wall boxes=${n} shards=${labels}"
+    GATE_PYTEST_TOOK="$pytest_wall"
+    # THE ROW SAYS WHAT RAN, AND UNDER A ONE-PASS PLAN THAT IS TWO EDITS, MADE
+    # HERE AND NOWHERE ELSE. The legs field's suite member gains its pass count
+    # in the seam grammar `<leg>[/<passes>]`, and the row gains the box that
+    # ran the belt instead. A row that said `pytest-x2` over one pass would be
+    # a green vouching for more than ran — the one failure this ledger exists
+    # to prevent — and `gate_ledger_lookup` refuses `pytest-x2/1` unless the
+    # proof beside it is green, so the two fields are written together or the
+    # row is not honoured.
+    #
+    # ONE SITE, AND THE REST OF `FULL_LEGS` IS UNTOUCHED: the substitution is
+    # anchored on the commas around the member, so a leg whose name merely
+    # CONTAINS the suite leg's is not rewritten.
+    if [ "$onepass" = "1" ]; then
+        declared=",${declared},"
+        declared="${declared/,${BANK_SUITE_LEG},/,${BANK_SUITE_LEG}/1,}"
+        declared="${declared#,}"
+        declared="${declared%,}"
+        GATE_RUN_LEAK_PROOF="acceptance:${BANK_BOXES_ACCEPT_ID} rc=0"
+    fi
+    # AND A RECORDER THAT REFUSED IS EXIT 2, NEVER A PUSH. `gate_ledger_record`
+    # returns 1 when the proof field will not parse, and it writes nothing in
+    # that case by design — so a caller that carried on would push a tree with
+    # no row at all behind it.
+    if ! (cd "$ROOT" && gate_ledger_record "$tree" "$declared"); then
+        die "the verdict ledger could not be written. Every shard was green and nothing
+   was pushed: a green nobody can read is not a verdict."
+    fi
+    echo "pm_push --bank --on-boxes: verdict banked for tree ${tree}"
+    echo "  caller=pm-bank sanction=push-wall boxes=${n} shards=${labels}"
+    if [ "$onepass" = "1" ]; then
+        echo "  legs=${declared}"
+        echo "  leak-proof=acceptance:${BANK_BOXES_ACCEPT_ID} rc=0"
+    fi
+    echo "  The pre-push hook will honour it and cost seconds."
+
+    # --- the drive rows come home, before the boxes go ----------------------
+    #
+    # A DRIVE ROW IS A CACHE THAT IS WORTH CARRYING BETWEEN MACHINES OF ONE
+    # IMAGE, and a bank's shards are exactly that: N boxes cut from one image,
+    # each of which has just driven some of the same drives the next bank will
+    # drive again. The rows live in the box's `.git/djb-gate-verdicts` and the
+    # box is about to be terminated, so this is the only moment they exist
+    # anywhere the Mac can reach — and `push` (which sends this checkout's
+    # drive rows OUT to the next box) has nothing image-keyed to send if none
+    # ever came back. A measured bank re-drove every drive with the selftest
+    # unit at over twenty minutes.
+    #
+    # AFTER THE ROW AND BEFORE THE DOWN, and only on a green: a red bank's
+    # shards are not a cache anybody should reuse, and a harvest before the
+    # composition would be work done for a bank that is about to refuse.
+    #
+    # THROUGH THE WRAPPER'S OWN DOOR. `harvest-drives <id> <tree>` reaches
+    # `harvest_drive_rows`, which owns the tree filter, the already-here rule
+    # and the ledger path; fetching the file here and appending it would be a
+    # second opinion about all three. It never refuses — a carrier that could
+    # not read costs a re-drive, never a verdict — so its status is not
+    # consulted and the bank's own green stands whatever it says.
+    echo "pm_push --bank --on-boxes: bringing the shards' drive rows home."
+    while IFS='	' read -r label unit shard passes; do
+        [ -n "$label" ] || continue
+        hid="$(cat "${BANK_BOXES_SINK}/${label}.id" 2>/dev/null || true)"
+        [ -n "$hid" ] || continue
+        "$BANK_BOXES_VB" harvest-drives "$hid" "$tree" </dev/null || true
+    done <"$plan"
+
+    # --- the image, built once, from the banked tree ------------------------
+    #
+    # AFTER THE HARVEST AND BEFORE THE DOWN. After, because the rows are a
+    # cache every later bank wants and a build that hung would otherwise cost
+    # them; before, because the boxes are the only machines in this system that
+    # hold the banked tree and the right architecture, and in four lines' time
+    # they do not exist. AFTER THE ROW, always: `gate_ledger_record` returned 0
+    # above, so nothing is ever pushed to a registry for a tree the gate has not
+    # passed — which is ADR deploy-4 (b)'s invariant, moved from `needs:
+    # verdict` onto the row itself.
+    bank_boxes_image "$acheckout" "tree-${tree:0:12}"
+
+    # --- the boxes, down, before the push -----------------------------------
+    #
+    # HERE AND NOT IN THE TRAP, because this script ends in `exec git push` and
+    # an `exec` never runs an EXIT trap. The list is emptied as it is walked, so
+    # the trap below has nothing left to do either way.
+    echo "pm_push --bank --on-boxes: taking every box down."
+    drc=0
+    bank_boxes_down_all || drc=$?
+    trap - EXIT INT TERM
+    exec 8>&- 9>&-
+    if [ "$drc" != "0" ]; then
+        echo "!! pm_push --bank --on-boxes: the verdict IS banked for ${tree} and a box did" >&2
+        echo "   NOT go down. Nothing was pinned and nothing was pushed: deal with the box" >&2
+        echo "   first, then ./scripts/pm_push.sh (no --bank) honours the row above." >&2
+        exit 2
+    fi
+    return 0
+}
 
 # --- --bank: the verdict, earned in front of the operator --------------------
 #
@@ -287,26 +1896,48 @@ if [ "$BANK" = "1" ]; then
         echo "   Nothing was banked, nothing was pinned and nothing was pushed." >&2
         exit 2
     fi
-    echo "pm_push: banking a verdict for ${ROOT} before the push — ${GATE} --bank"
-    echo "  This is the full gate: two whole-suite passes, the supply chain, the canary"
-    echo "  self-test and every shell refusal drive. It takes the machine-wide lease and"
-    echo "  one pytest slot, so every other full gate on this box waits behind it."
-    echo "  A red one stops here: nothing is pinned and nothing is pushed."
-    # NOT `exec`, and not piped. The push is still this script's job and the
-    # header's third property is about the PUSH, not about every command in the
-    # file — so the gate's status is captured and answered, and only a 0 goes
-    # on. check.sh's own exit 2 (enforcement broken) outranks a pass on the way
-    # through here exactly as it does everywhere else.
-    BANK_RC=0
-    "$GATE" --bank || BANK_RC=$?
-    if [ "$BANK_RC" != "0" ]; then
-        echo "!! pm_push --bank: the full gate exited ${BANK_RC}." >&2
-        echo "   2 is enforcement broken, 1 is a red tree; neither is a tree to push." >&2
-        echo "   Nothing was pinned and nothing was pushed." >&2
-        exit "$BANK_RC"
+    # WHERE THE BANK RUNS, AND IT IS ONE BRANCH RATHER THAN TWO RITUALS. Both
+    # arms earn the SAME verdict for the SAME post-fold tree through the SAME
+    # writer; what differs is the machine the legs run on. Everything above this
+    # line — the fold, the re-read SHA, the clean-tree refusal — is shared by
+    # construction, which is the reason `--on-boxes` is a flag on this script
+    # rather than a second one beside it.
+    if [ -n "$ON_BOXES" ]; then
+        BANK_RC=0
+        bank_on_boxes "$ON_BOXES" || BANK_RC=$?
+        if [ "$BANK_RC" != "0" ]; then
+            echo "!! pm_push --bank --on-boxes: the composed gate exited ${BANK_RC}." >&2
+            echo "   2 is enforcement broken or a shard nobody could read, 1 is a red tree;" >&2
+            echo "   neither is a tree to push, and no row was written for either." >&2
+            echo "   Nothing was pinned and nothing was pushed." >&2
+            exit "$BANK_RC"
+        fi
+        echo ""
+    else
+        echo "pm_push: banking a verdict for ${ROOT} before the push — ${GATE} --bank"
+        echo "  This is the full gate: two whole-suite passes, the supply chain, the canary"
+        echo "  self-test and every shell refusal drive. It takes the machine-wide lease and"
+        echo "  EVERY pytest slot on this box, so every other full gate waits behind it AND"
+        echo "  every builder's --loop waits for this run's pytest passes, naming this bank."
+        echo "  DJB_BANK_SHARES_SLOTS=1 takes one slot instead and shares the box."
+        echo "  --on-boxes N runs the same units on N verifier boxes and takes neither."
+        echo "  A red one stops here: nothing is pinned and nothing is pushed."
+        # NOT `exec`, and not piped. The push is still this script's job and the
+        # header's third property is about the PUSH, not about every command in the
+        # file — so the gate's status is captured and answered, and only a 0 goes
+        # on. check.sh's own exit 2 (enforcement broken) outranks a pass on the way
+        # through here exactly as it does everywhere else.
+        BANK_RC=0
+        "$GATE" --bank || BANK_RC=$?
+        if [ "$BANK_RC" != "0" ]; then
+            echo "!! pm_push --bank: the full gate exited ${BANK_RC}." >&2
+            echo "   2 is enforcement broken, 1 is a red tree; neither is a tree to push." >&2
+            echo "   Nothing was pinned and nothing was pushed." >&2
+            exit "$BANK_RC"
+        fi
+        echo "pm_push: verdict banked. The pre-push hook will honour it and cost seconds."
+        echo ""
     fi
-    echo "pm_push: verdict banked. The pre-push hook will honour it and cost seconds."
-    echo ""
 fi
 
 echo "pm_push: pinning ${WORKTREE_NAME} and pushing to ${REMOTE}/${TARGET_BRANCH}"

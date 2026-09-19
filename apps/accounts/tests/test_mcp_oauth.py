@@ -41,7 +41,7 @@ from apps.accounts.tests.stub_issuer import StubIssuer, sign_jwt, wrongly_signed
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.asyncdb import run_db
 from apps.core.audit import AuditEntry
-from apps.core.middleware import ORG_HEADER
+from apps.core.middleware import AUTHORIZATION_HEADER, ORG_HEADER
 from apps.core.models import Organization, Tenant
 from apps.core.services import create_organization
 from apps.core.tests.test_mcp import MCP_HEADERS, PROTOCOL_VERSION, running
@@ -82,6 +82,16 @@ CSRF_SOURCE_URL = "/admin/login/"
 # The person with a Zitadel identity and no membership anywhere. A separate
 # subject from `SUBJECT` because `User.zitadel_sub` is unique.
 NOMAD_SUBJECT = "zitadel-subject-nomad"
+
+# The remedy destination this door cannot honour, and the sentence a presented
+# bearer that resolves to nobody gets. Both written out rather than imported
+# from the door they pin, for `WIDGET_KEYS`' reason
+# (`apps/example/tests/test_doors_over_the_wire.py`): a pin derived from the
+# thing it pins cannot fail. These two strings are wire contract — an agent
+# branches on the first and reads the second — so a change to either has to
+# show up in a diff here, where a reviewer sees it.
+SESSION_DESTINATION = "self:session"
+BEARER_NOT_VALID = "That bearer token is not valid."
 
 
 # --- the wire -----------------------------------------------------------------
@@ -483,15 +493,72 @@ async def test_the_mcp_401_body_is_the_registry_refusal_and_keeps_the_pointer(
         challenge = response.headers["www-authenticate"]
         assert f'resource_metadata="{oauth.metadata_url()}"' in challenge
 
-    # The two doors say the same thing about the same refusal. Compared against
-    # the composer's own output rather than against a literal, so this cannot
-    # pass while the registry and the wire disagree.
-    assert bare.json()["remedies"] == wire_refusal(Unauthenticated())["remedies"]
+    # The two doors say the same thing about the same refusal — every remedy
+    # this door can honour, in the registry's own order. Compared against the
+    # composer's output rather than against a literal, so this cannot pass while
+    # the registry and the wire disagree; the one exclusion is the session,
+    # which this door cannot honour and which has its own test below.
+    honoured = [
+        remedy
+        for remedy in wire_refusal(Unauthenticated())["remedies"]
+        if remedy["destination"] != SESSION_DESTINATION
+    ]
+    assert bare.json()["remedies"] == honoured
     # The detail stays the SPECIFIC one this door knows — which of the two
     # unauthenticated shapes happened — rather than the registry's general
     # sentence.
     assert bare.json()["detail"] == "A bearer token is required."
-    assert refused.json()["detail"] == "That bearer token is not valid."
+    assert refused.json()["detail"] == BEARER_NOT_VALID
+
+
+async def test_the_mcp_401_never_offers_a_session_it_cannot_honour(
+    resource_server: StubIssuer,
+) -> None:
+    """A bearer-only door does not send a caller away to sign in.
+
+    `/mcp` reads `Authorization` and nothing else — a *valid* browser session on
+    this door is answered 401 "A bearer token is required." — so the remedy
+    "Sign in, and let the browser send the session it gives you" was the first
+    thing every refused agent read, and following it does not work here. A
+    remedy is the half of the grammar that says what the caller can DO, and one
+    the door cannot honour is worse than none: it is a dead end with a label on
+    it.
+
+    **The remedies are the DOOR's, the code and the fact are the refusal's**
+    (E9). Nothing here mints a second code, changes the fact or drops the
+    registry's other remedies — the header remedy and the mint remedy both act
+    on this door and both survive, which is what the equality below asserts.
+
+    Both probes, because they take different branches through `_unauthorized`:
+    no credential at all, and a bearer that resolves to nobody.
+    """
+    from config.asgi import build_application
+
+    application = build_application()
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url=BASE_URL) as client:
+            bare = await client.post(MCP_URL, headers=MCP_HEADERS, json=rpc("tools/list", {}))
+            refused = await client.post(
+                MCP_URL,
+                headers={**MCP_HEADERS, "authorization": "Bearer djb_not-a-real-token"},
+                json=rpc("tools/list", {}, request_id=2),
+            )
+
+    for response in (bare, refused):
+        assert response.status_code == 401, response.text
+        body = response.json()
+        destinations = [remedy["destination"] for remedy in body["remedies"]]
+        assert SESSION_DESTINATION not in destinations, body
+        # The label as well as the destination, because the label is the half a
+        # human and an assistant read out loud: a renderer that ignored the
+        # destination would still be quoting the sentence this closes.
+        assert "Sign in" not in response.text, response.text
+        # And the door is not left mute. A refusal with every remedy stripped
+        # would pass the two assertions above and be a worse dead end than the
+        # one they exist to close.
+        assert destinations, body
+        assert f"header:{AUTHORIZATION_HEADER}" in destinations, body
 
 
 async def test_the_protected_resource_metadata_resolves_and_names_the_issuer(

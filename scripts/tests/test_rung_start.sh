@@ -31,6 +31,8 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .env.example manage.py pyproject.toml scripts/db.sh scripts/fe_gate.sh scripts/kill_mine.sh scripts/pm_push.sh scripts/queue_cited.sh scripts/rung_start.sh scripts/sweep.sh
+# cites: scripts/tests/test_fe_leg.sh
 # The drive for `scripts/rung_start.sh` — the rung-start instrument, which is
 # made almost entirely of REFUSALS and one reset.
 #
@@ -98,6 +100,18 @@ esac
 #      three` reads that as text, the same weaker proof step 4 gets, for the
 #      same reason. The live half is the builder's report: a real worktree, a
 #      real primary checkout, and the announced key names in its output.
+#   6b. STEP 6'S INSTALL, EXCEPT THROUGH THE SEAM. Step 6 is in the same place
+#      as the carry — past step 2, which blind spot 1 says nothing here reaches
+#      — so the `case_step_six_*` cases SOURCE `rung_start.sh` and call
+#      `frontend_install` against fixture directories with a SHIMMED `FE_PNPM`,
+#      the shim pattern `scripts/tests/test_fe_leg.sh` uses for the same
+#      toolchain. What that cannot see is whether step 6 still CALLS the
+#      function, what `STEP_TOTAL` says, and whether a failure reaches the
+#      FOOTER rather than the exit status —
+#      `case_step_six_is_wired_and_is_not_fatal` reads those as text, the same
+#      weaker proof step 4 and the carry each get, for the same reason. The
+#      live half is a real worktree's `frontend/node_modules`, which the rung
+#      report records.
 #   7. WHETHER A CARRIED CREDENTIAL WORKS. Every value in these fixtures is a
 #      canary string invented here. Nothing reaches a Zitadel, and nothing here
 #      has an opinion about an expired PAT — `manage.py zitadel_audit` is the
@@ -758,6 +772,230 @@ case_no_local_main_is_refused() {
 
 # =============================================================================
 
+# =============================================================================
+# STEP 6 · FRONTEND. Driven through the sourced seam (blind spot 6b) because it
+# lives past step 2 and nothing here reaches step 2.
+#
+# THE COST IT REMOVES, measured on this repository before the step existed: a
+# worktree this script had just reported READY had NO `frontend/node_modules`,
+# so the first per-rung gate whose fe leg reached its FULL state paid a cold
+# `pnpm install` on the builder's clock — and the next worktree paid it again.
+# =============================================================================
+
+# fe_fixture <name> [with-frontend] — a scratch root, optionally carrying a
+# `frontend/` with a manifest and a lockfile. Its own victim, never this
+# checkout's `frontend/`.
+FE_ROOT=""
+fe_fixture() {
+    N=$((N + 1))
+    FE_ROOT="${WORK}/fe-${N}-$1"
+    drive_require_scratch FE_ROOT "${FE_ROOT:-}"
+    mkdir -p "$FE_ROOT"
+    if [ "${2:-}" = "with-frontend" ]; then
+        mkdir -p "${FE_ROOT}/frontend"
+        printf '{\n  "name": "fixture",\n  "private": true\n}\n' >"${FE_ROOT}/frontend/package.json"
+        printf 'lockfileVersion: "9.0"\n' >"${FE_ROOT}/frontend/pnpm-lock.yaml"
+    fi
+}
+
+# fe_shim <name> <exit> — a `pnpm` that RECORDS ITS ARGUMENT VECTOR and exits
+# with the code asked for. The record is what makes "it ran the fe leg's own
+# command" an assertion rather than a claim: the leg's later FULL run is a
+# no-op install only if the two commands are the same one.
+FE_SHIM=""
+FE_SHIM_LOG=""
+fe_shim() {
+    N=$((N + 1))
+    FE_SHIM="${WORK}/pnpm-shim-${N}"
+    FE_SHIM_LOG="${WORK}/pnpm-shim-${N}.log"
+    rm -f "$FE_SHIM_LOG"
+    cat >"$FE_SHIM" <<SHIM
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$FE_SHIM_LOG"
+printf 'pwd=%s\n' "\$(pwd -P)" >>"$FE_SHIM_LOG"
+mkdir -p ./node_modules
+printf 'hoistPattern:\n  - "*"\n' >./node_modules/.modules.yaml
+exit $1
+SHIM
+    chmod +x "$FE_SHIM"
+}
+
+# Calls `frontend_install` through the sourced seam. `set --` first, because a
+# sourced file with no arguments of its own inherits the CALLER'S positional
+# parameters in bash — and this script's own `$1` would walk into rung_start's
+# argument parser and be refused.
+frontend_install_in_fixture() {
+    CURRENT="$1"
+    local root="$2" pnpm="${3:-}"
+    N=$((N + 1))
+    OUT="${WORK}/out${N}.log"
+    RC=0
+    (
+        set --
+        [ -z "$pnpm" ] || export FE_PNPM="$pnpm"
+        # shellcheck source=scripts/rung_start.sh
+        . "$REAL"
+        frontend_install "$root"
+        printf 'FRONTEND_NOTE=[%s]\n' "${FRONTEND_NOTE:-}"
+    ) >"$OUT" 2>&1 || RC=$?
+}
+
+case_step_six_installs_when_frontend_and_pnpm_exist() {
+    fe_fixture install with-frontend
+    fe_shim 0
+    frontend_install_in_fixture \
+        "step 6 installs when frontend/ and pnpm are both here" "$FE_ROOT" "$FE_SHIM"
+    exits 0
+    # THE FE LEG'S OWN COMMAND, VERBATIM. That is the whole mechanism: the leg's
+    # later FULL run is a no-op install rather than a second one only if the two
+    # invocations are the same.
+    if [ -f "$FE_SHIM_LOG" ] && grep -qF -- "install --frozen-lockfile" "$FE_SHIM_LOG"; then
+        ok "it ran \`pnpm install --frozen-lockfile\` — the fe leg's own form"
+    else
+        bad "the shim was not called with \`install --frozen-lockfile\`: $(cat "$FE_SHIM_LOG" 2>/dev/null || echo '<never called>')"
+    fi
+    if grep -qF -- "pwd=$(cd "${FE_ROOT}/frontend" && pwd -P)" "$FE_SHIM_LOG"; then
+        ok "and it ran it INSIDE frontend/, not at the checkout root"
+    else
+        bad "the install ran somewhere else: $(grep '^pwd=' "$FE_SHIM_LOG" || echo '<no pwd recorded>')"
+    fi
+    says "FRONTEND_NOTE=[]"
+    # B.2 — the banner, asserted so it cannot go stale silently.
+    says "frontend/node_modules: for the fe leg's FULL state and pnpm pin:client; gen_client.sh uses npx and is unaffected"
+}
+
+case_step_six_skips_and_says_why_without_pnpm() {
+    fe_fixture nopnpm with-frontend
+    frontend_install_in_fixture \
+        "step 6 skips, and says why, with no pnpm on PATH" "$FE_ROOT" "${WORK}/no-such-pnpm"
+    exits 0
+    says "skipped — pnpm not on PATH"
+    says "the fe leg will be could-not-look"
+    says "FRONTEND_NOTE=[]"
+    if [ -d "${FE_ROOT}/frontend/node_modules" ]; then
+        bad "something installed anyway"
+    else
+        ok "nothing was installed"
+    fi
+}
+
+case_step_six_skips_without_a_frontend() {
+    fe_fixture nofrontend
+    fe_shim 0
+    frontend_install_in_fixture \
+        "step 6 skips on a tree with no frontend/" "$FE_ROOT" "$FE_SHIM"
+    exits 0
+    says "skipped — no frontend/ on this tree"
+    says "FRONTEND_NOTE=[]"
+    # THE TOOLCHAIN TRIPWIRE NEVER FIRED. A skip that still ran pnpm would be a
+    # skip in name only — `test_fe_leg.sh`'s own untouched case makes the same
+    # assertion for the same reason.
+    if [ -f "$FE_SHIM_LOG" ]; then
+        bad "pnpm was invoked on a tree with no frontend/"
+    else
+        ok "pnpm was never invoked"
+    fi
+}
+
+case_a_failing_install_joins_the_footer_and_does_not_change_the_verdict() {
+    fe_fixture failing with-frontend
+    fe_shim 1
+    frontend_install_in_fixture \
+        "a failing install joins the footer and does not change the verdict" "$FE_ROOT" "$FE_SHIM"
+    # THE WHOLE POINT: the act FAILED and the function still returns 0. Step 4's
+    # rule, one step over — almost no rung needs node_modules, and a refusal
+    # here would cost every machine without pnpm a ready worktree.
+    exits 0
+    says "pnpm install --frozen-lockfile exited 1"
+    says "THIS IS NOT FATAL"
+    # And the verdict rides in the variable the footer reads, not in the status.
+    says "FRONTEND_NOTE=[frontend/node_modules was not installed (pnpm exited 1)]"
+}
+
+# `--resume` runs step 6 too, and it is safe to because pnpm's own contract is
+# that a frozen-lockfile install over a satisfied lockfile changes nothing.
+# ASSERTED rather than trusted: twice-run, `node_modules/.modules.yaml` byte
+# for byte.
+case_step_six_is_idempotent_so_resume_may_run_it() {
+    fe_fixture idempotent with-frontend
+    fe_shim 0
+    frontend_install_in_fixture "step 6 is idempotent (first run)" "$FE_ROOT" "$FE_SHIM"
+    exits 0
+    local first="${WORK}/modules-first-${N}"
+    if [ -f "${FE_ROOT}/frontend/node_modules/.modules.yaml" ]; then
+        cp "${FE_ROOT}/frontend/node_modules/.modules.yaml" "$first"
+        ok "the first run left a node_modules"
+    else
+        bad "the first run left no node_modules — this case cannot speak"
+        return 0
+    fi
+    frontend_install_in_fixture "step 6 is idempotent (second run)" "$FE_ROOT" "$FE_SHIM"
+    exits 0
+    if cmp -s "$first" "${FE_ROOT}/frontend/node_modules/.modules.yaml"; then
+        ok "twice-run leaves node_modules/.modules.yaml byte-identical"
+    else
+        bad "the second run rewrote node_modules/.modules.yaml — --resume would not be a no-op"
+    fi
+}
+
+# READ AS TEXT, and named as the weaker proof it is (blind spot 6b) — the same
+# shape and the same reason as the storage case and the carry's. What the cases
+# above cannot see is whether step 6 exists at all.
+case_step_six_is_wired_and_is_not_fatal() {
+    CURRENT="step 6 is wired, and is not fatal"
+    OUT=""
+    local def call introspect_line
+    if [ "$STEP_TOTAL_IN_SCRIPT" = "6" ]; then
+        ok "STEP_TOTAL is 6"
+    else
+        bad "STEP_TOTAL is ${STEP_TOTAL_IN_SCRIPT}, and the frontend step makes it 6"
+    fi
+    # `|| true` throughout: under `set -euo pipefail` a grep that finds NOTHING
+    # takes the whole drive down mid-case, so the run that most needs a verdict
+    # — the one where the thing being looked for is absent — is the run that
+    # prints no tally at all.
+    def="$(grep -n '^frontend_install() {' "$REAL" | cut -d: -f1 || true)"
+    call="$(grep -n '^frontend_install "\$ROOT"' "$REAL" | cut -d: -f1 || true)"
+    introspect_line="$(grep -n '^# STEP 5 · INTROSPECT' "$REAL" | cut -d: -f1 || true)"
+    if [ -n "$def" ]; then
+        ok "frontend_install is defined (line ${def})"
+    else
+        bad "no frontend_install function — the cases above are driving nothing"
+    fi
+    if [ -n "$call" ] && [ -n "$introspect_line" ] && [ "$call" -gt "$introspect_line" ]; then
+        ok "step 6 (${call}) runs AFTER step 5 (${introspect_line}) — the schema dump is still the last thing a builder reads before it"
+    else
+        bad "frontend_install is defined and never called after step 5: call='${call}' step5='${introspect_line}'"
+    fi
+    # THE SEAM ORDER: the function must be defined ABOVE the sourced seam, or
+    # sourcing this file to reach it would run all six steps.
+    # THE SEAM LINE ITSELF, AT COLUMN ZERO, and not the first MENTION of it: the
+    # script's header argues the seam in prose and names the test verbatim, so a
+    # grep for the expression finds the comment thirteen dozen lines above the
+    # code and every function reads as "below the seam". Found by this case on
+    # its first green run.
+    local seam
+    seam="$(grep -n '^if \[ "\${BASH_SOURCE\[0\]}" != "\$0" \]; then' "$REAL" | cut -d: -f1 || true)"
+    if [ -n "$def" ] && [ -n "$seam" ] && [ "$def" -lt "$seam" ]; then
+        ok "it is defined above the sourced seam (${seam}), which is what makes it drivable"
+    else
+        bad "frontend_install at '${def}' is not above the seam at '${seam}'"
+    fi
+    if grep -q 'FRONTEND_NOTE' "$REAL"; then
+        ok "a failed install reaches the FOOTER through FRONTEND_NOTE, not the exit status"
+    else
+        bad "nothing carries a failed install to the footer — it would be invisible in the verdict line"
+    fi
+    # `FE_PNPM` AND NOT A SECOND NAME for the same toolchain: scripts/fe_gate.sh
+    # already owns it, and two names for one tool is the cost consistency
+    # exists to avoid.
+    if grep -q 'FE_PNPM' "$REAL"; then
+        ok "the toolchain is FE_PNPM — scripts/fe_gate.sh's own name, not a second one"
+    else
+        bad "step 6 names its own pnpm variable: a shimmed fe leg and a shimmed step 6 would then disagree"
+    fi
+}
+
 case_the_storage_step_is_wired_and_is_not_fatal() {
     # READ AS TEXT, and named as the weaker proof it is (blind spot 5). Step 4
     # needs a venv, a database and a MinIO, none of which a scratch repository
@@ -769,10 +1007,10 @@ case_the_storage_step_is_wired_and_is_not_fatal() {
     CURRENT="the storage step is wired, and is not fatal"
     OUT=""
     local db_line bucket_line introspect_line
-    if [ "$STEP_TOTAL_IN_SCRIPT" = "5" ]; then
-        ok "STEP_TOTAL is 5"
+    if [ "$STEP_TOTAL_IN_SCRIPT" -ge 5 ]; then
+        ok "STEP_TOTAL is ${STEP_TOTAL_IN_SCRIPT}, which is at least the 5 the storage step makes it"
     else
-        bad "STEP_TOTAL is ${STEP_TOTAL_IN_SCRIPT}, and the storage step makes it 5"
+        bad "STEP_TOTAL is ${STEP_TOTAL_IN_SCRIPT}, and the storage step makes it at least 5"
     fi
     if grep -q 'manage.py ensure_bucket' "$REAL"; then
         ok "it runs manage.py ensure_bucket — setup.sh's own door, not a second derivation"
@@ -785,7 +1023,7 @@ case_the_storage_step_is_wired_and_is_not_fatal() {
     # is a guard that teaches people to stop writing comments, and it is a
     # known class (prose spelling a censused marker counts as a registration).
     # What is being detected is a second DERIVATION, and a derivation is code.
-    if sed 's/#.*//' "$REAL" | grep -E 'shasum|sha256sum|derived_bucket_name' >/dev/null; then
+    if sed 's/#.*//' "$REAL" | grep -E 'shasum|sha256sum|sha256_of|derived_bucket_name' >/dev/null; then
         bad "it has grown its own bucket-name arithmetic — that is the second copy setup.sh:446 exists to avoid"
     else
         ok "it names no bucket itself; ensure_bucket's stdout is the name"
@@ -1036,6 +1274,13 @@ case_a_current_origin_main_prints_no_pool_block
 case_a_detached_head_is_refused
 case_no_local_main_is_refused
 case_the_storage_step_is_wired_and_is_not_fatal
+
+case_step_six_installs_when_frontend_and_pnpm_exist
+case_step_six_skips_and_says_why_without_pnpm
+case_step_six_skips_without_a_frontend
+case_a_failing_install_joins_the_footer_and_does_not_change_the_verdict
+case_step_six_is_idempotent_so_resume_may_run_it
+case_step_six_is_wired_and_is_not_fatal
 
 case_resume_keeps_a_branch_ahead_of_main_and_says_what_it_skipped
 case_resume_on_a_current_baseline_says_there_was_nothing_to_skip

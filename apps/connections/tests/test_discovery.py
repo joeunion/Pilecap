@@ -1,3 +1,4 @@
+# census: cross-app population=apps/connections/**/*.py for a sideways import of apps.events
 """Registration by discovery, and the sibling this app refuses to import.
 
 Two properties, and both of them are about a file that was *not* edited:
@@ -76,12 +77,30 @@ def test_the_event_names_are_declared_in_one_file() -> None:
         assert verb.endswith(("ed", "d")), f"{name} is not past tense"
 
 
-def test_the_policies_are_discovered_by_authz() -> None:
-    from apps.core.authz import policies, reset_policies
+def test_the_apps_keys_are_discovered_by_authz() -> None:
+    """The three keys are in the vocabulary. **They carry no predicate.**
+
+    They used to be in `policies()`, and the Phase-W sweep took them out: each
+    one asked "is this person an owner or an admin of the tenant", which is the
+    DATA half's question, and a predicate restating it was a second opinion
+    about rows the tenant owns (house rule 54 (c)). What has to stay true is
+    that the words still exist and still answer, and that is what this asserts —
+    the `vocabulary()`, not the predicate table.
+
+    The refusal sentences are the other half of "still answers", and
+    `refusal_sentence` is derived from `ACTION_PROSE`, so a key that lost its
+    prose would quietly change the words a refused caller reads.
+    """
+    from apps.connections import policies as connection_policies
+    from apps.core.authz import policies, refusal_sentence, reset_policies, vocabulary
 
     reset_policies()
-    found = policies()
-    assert {"connection.create", "connection.update", "connection.revoke"} <= set(found)
+    keys = {"connection.create", "connection.update", "connection.revoke"}
+    assert keys <= set(vocabulary())
+    for key in sorted(keys):
+        assert refusal_sentence(key) == connection_policies.ACTION_PROSE[key]
+    # And the predicate table is empty for this app, which is the sweep itself.
+    assert not {key for key in policies() if key.startswith("connection.")}
 
 
 def test_both_models_are_tenant_scoped() -> None:

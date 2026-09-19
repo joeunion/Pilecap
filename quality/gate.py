@@ -8,6 +8,12 @@
                                          scope and demand it fires for ITS rule;
                                          plant every negative and demand silence;
                                          restore everything, whatever happens
+    python -m quality.gate --selftest-inputs
+                                         every path on this tree that can change
+                                         the verdict above, derived and sorted,
+                                         one per line — what a banked verdict is
+                                         keyed on. Measures nothing; exit 2 and
+                                         NO list if any of it cannot be derived
 
 Exit codes: 0 clean · 1 violations · 2 ENFORCEMENT BROKEN (dead canary, noisy
 negative, unbound scope/floor, consistency failure, unknown flag, dirty tree
@@ -53,12 +59,15 @@ not tell its own plants from your work, and could not restore honestly.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -386,7 +395,12 @@ def run_rule(rule: dict, *, floors: bool = True) -> tuple[list[Finding], dict, s
     absent = verdict == "skip"
     impl = rule.get("check")
     if impl and not absent:
-        result: CheckResult = REGISTRY[impl](ROOT, rule)
+        # THE ONE CONSULT. `memo_consult` either replays this rule's last
+        # answer for a key nothing has moved, or calls the check and banks it —
+        # and everything below this line runs either way, so no memo can hide
+        # an unbound floor, a ratchet that grew or a valve that lost its
+        # reason. See THE PER-RULE MEMO, below.
+        result: CheckResult = memo_consult(rule, impl)
         targets.update(result.targets_matched)
         findings.extend(result.findings)
     if rule.get("runner") and not absent:
@@ -2448,6 +2462,1056 @@ def explain(rid: str) -> int:
     return 0
 
 
+# --- the third reader: --selftest-inputs ---------------------------------------
+#
+# WHAT IT ANSWERS. "Which bytes on this tree can change the engine's verdict?"
+# Nobody could answer it before, which is why the house-rules leg re-measured on
+# every rung: a verdict that cannot name its inputs cannot be banked against
+# them, so it was banked against nothing and paid for in full, every time.
+#
+# DERIVED, NEVER TYPED — the same discipline `scope:` itself carries. The list
+# is six populations, each read from something that already exists:
+#
+#   1. the engine's own text          `git ls-files -- quality`
+#   2. every enabled rule's scope     `_scope_paths()`, the SAME walker
+#                                     `consistency()` uses to refuse a scope
+#                                     naming a file that is not there
+#   3. every path a plant can touch   `plant_paths()`, already resolved
+#   4. the reads the engine SPELLS    the tuple below, and only those
+#   5. every enabled rule's DOC       `doc.file` — `consistency()` reads the
+#                                     anchor out of it on every run
+#   6. THE WALK                       `_kind_walk()` over the tracked set —
+#                                     `SCOPE_KINDS`' roots and suffixes, the
+#                                     files the live checks actually read
+#
+# 5 AND 6 WERE MISSING FROM THE FIRST CUT, and the verifier proved it with two
+# plants that each moved the engine's verdict while the listing stayed
+# byte-identical: a mangled anchor in `docs/product/architecture.md` (exit 2,
+# `rule 9: doc … no longer states the rule`) and an `httpx` import in
+# `apps/core/workflows.py` (exit 1, `rule 9: apps/core/workflows.py:160`). The
+# lesson is the one this section is now shaped around: **`scope:` is an
+# ALLOW-LIST OVER THE WALK, NOT THE WALK.** A rule that names no exemption reads
+# the whole of `apps/**/*.py` and contributes nothing to population 2.
+#
+# Population 4 is the one hand list, and it is hand-written because the thing it
+# describes is hand-written: a `ROOT.glob(...)` in this module's own source. It
+# is the declared blind spot rather than a hidden one — a check that grows a
+# fifth read and does not join it here keys a verdict that cannot see its own
+# input. The docstring below states it, and the mitigation is structural
+# rather than hopeful: every one of those reads lives in `quality/`, so
+# population 1 re-keys the moment somebody writes one.
+#
+# EXIT 2, NEVER A SHORTER LIST. Every failure here is could-not-look. A scope
+# that expands to nothing, a `git` that would not answer, an unresolved plant
+# placeholder: each of them would silently REMOVE inputs from the list, and a
+# key computed over a list that quietly lost a member is a key that reuses a
+# verdict for a tree it never saw. So a derivation that fails prints the rule id
+# and the path it could not derive, prints NO paths at all, and exits 2.
+
+#: Every path this module reads that no rule's `scope:` and no plant names —
+#: the engine's hard-coded reads, each beside the line that makes it. A glob
+#: here MUST expand to something on this tree; a plain path must exist.
+HARDCODED_READS: tuple[tuple[str, str], ...] = (
+    ("apps/*/services.py", "_measure_budgets_detailed: the service-length budget"),
+    ("apps/*/schemas.py", "_measure_budgets_detailed: the Out-schema field budget"),
+    ("apps/core/checks.py", "consistency: every rule's django_check_ids must be present"),
+    ("quality/budgets.yaml", "BUDGETS_PATH: the recorded ceilings"),
+)
+
+_GLOB_META = "*?["
+
+
+def _tracked_paths() -> tuple[frozenset[str], str]:
+    """Every path git has under version control here — and why it could not answer."""
+    proc = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-z", "--cached"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return frozenset(), (
+            f"could not read the tracked set: `git ls-files` exited {proc.returncode} — "
+            f"{proc.stderr.strip() or 'no stderr'}"
+        )
+    return frozenset(p for p in proc.stdout.split("\0") if p), ""
+
+
+def _expand_input(value: str, tracked: frozenset[str]) -> tuple[list[str], str]:
+    """One declared read, expanded to the paths it names on THIS tree.
+
+    A directory becomes the tracked files under it — a scope naming
+    `apps/comms/` is a statement about the code in there, so a byte changing in
+    any of it changes what the engine read. Tracked rather than walked: a walk
+    would carry `__pycache__` into a list whose whole purpose is to be stable.
+    """
+    value = value.strip().rstrip("/")
+    if not value:
+        return [], "names the empty path"
+    if any(ch in value for ch in _GLOB_META):
+        matched = sorted(str(p.relative_to(ROOT)) for p in ROOT.glob(value))
+        if not matched:
+            return [], f"names {value!r}, which expands to nothing on this tree"
+        out: list[str] = []
+        for m in matched:
+            if (ROOT / m).is_dir():
+                under = [p for p in tracked if p == m or p.startswith(m + "/")]
+                if not under:
+                    return [], f"names {value!r}, whose match {m!r} holds no tracked file"
+                out.extend(under)
+            else:
+                out.append(m)
+        return sorted(set(out)), ""
+    target = ROOT / value
+    if target.is_dir():
+        under = sorted(p for p in tracked if p.startswith(value + "/"))
+        if not under:
+            return [], f"names the directory {value!r}, which holds no tracked file"
+        return under, ""
+    if target.exists():
+        return [value], ""
+    return [], f"names {value!r}, which does not exist on this tree"
+
+
+def selftest_inputs_for(rules: list[dict]) -> tuple[list[str], list[str]]:
+    """(the sorted input paths, the derivations that failed).
+
+    Takes the rule list rather than reading `RULES`, so a canary can hand it a
+    scratch rule whose scope names nothing and watch it refuse — the victim is
+    created by the probe rather than found on the tree (rung-execution §2).
+
+    **does_not_cover:** a read this module SPELLS and `HARDCODED_READS` does not
+    carry (population 4 above); an untracked file anywhere — inside a scope
+    directory or inside the walk (the tracked set is the repository's own answer
+    about what is in there, and it is what keeps the list byte-stable); a
+    runner subprocess that reads outside its kind's declared roots
+    (`quality/runners/` mirrors `SCOPE_KINDS`, and a runner that walked
+    somewhere else would be a defect that rule's own drive owes); what a check
+    does with a path once it has read it. PATHS, NEVER BYTES: a byte changing
+    inside a listed file does not move this list — it is the key computed OVER
+    the list — the caller that banks a verdict on it — that hashes content.
+    """
+    tracked, trouble = _tracked_paths()
+    if trouble:
+        return [], [trouble]
+
+    problems: list[str] = []
+    paths: set[str] = set()
+
+    # 1. the engine's own text.
+    under_quality = sorted(p for p in tracked if p.startswith("quality/"))
+    if not under_quality:
+        problems.append(
+            "no tracked path under quality/ — the engine cannot be reading none of itself, "
+            "so this is a checkout `git ls-files` answered about something else"
+        )
+    paths.update(under_quality)
+
+    # 2. every enabled rule's scope, through the walker consistency() already uses.
+    for rule in rules:
+        if not rule.get("enabled", True):
+            continue
+        rid = str(rule.get("id", "?"))
+        for trail, value in _scope_paths(rule.get("scope") or {}):
+            found, why = _expand_input(value, tracked)
+            if why:
+                problems.append(f"rule {rid}: scope {trail} {why}")
+                continue
+            paths.update(found)
+
+    # 3. every path a plant can touch. `plant_paths()` resolves its placeholders
+    #    against today's tree and reports an unresolvable one by appending to
+    #    `broken` — which here is could-not-look, not a line to print.
+    before = len(broken)
+    planted = plant_paths()
+    problems.extend(broken[before:])
+    del broken[before:]
+    for p in planted:
+        if "{{" in p:
+            problems.append(f"plant path {p!r} still carries an unresolved placeholder")
+            continue
+        paths.add(p)
+    # The probe app is a directory this engine CREATES and removes; it is a read
+    # of the tree either way, and its absence is never a derivation failure.
+    paths.add(f"apps/{PROBE_APP}")
+
+    # 4. the reads this module spells.
+    for value, why_read in HARDCODED_READS:
+        found, why = _expand_input(value, tracked)
+        if why:
+            problems.append(f"hard-coded read ({why_read}) {why}")
+            continue
+        paths.update(found)
+
+    # 5. every enabled rule's DOC. `consistency()` reads the anchor text out of
+    #    that file and refuses the rule when the prose no longer states it, so a
+    #    rule's documentation is an input to the verdict exactly as its scope is
+    #    — derived from `doc.file`, the same way population 2 is derived from
+    #    `scope:`. A rule with no doc file is could-not-look: the check that
+    #    reads it is unconditional, so the path it would read cannot be unknown.
+    for rule in rules:
+        if not rule.get("enabled", True):
+            continue
+        rid = str(rule.get("id", "?"))
+        doc_file = str((rule.get("doc") or {}).get("file") or "").strip()
+        if not doc_file:
+            problems.append(
+                f"rule {rid}: doc names no file, so the anchor consistency() reads on every "
+                "run cannot be derived"
+            )
+            continue
+        found, why = _expand_input(doc_file, tracked)
+        if why:
+            problems.append(f"rule {rid}: doc {why}")
+            continue
+        paths.update(found)
+
+    # 6. THE WALK ITSELF — the population every live check reads, and the one a
+    #    scope-shaped derivation cannot see. `scope:` is an ALLOW-LIST over the
+    #    walk, not the walk: rule 9 reads every `apps/**/*.py` and names none of
+    #    them, so a violation planted in `apps/core/workflows.py` moves the
+    #    verdict while a scopes-and-plants listing stays byte-identical. Derived
+    #    from `_kind_walk()` — the same (root, suffix, skip_dirs) triples
+    #    `all_overrides()` walks — intersected with the tracked set, per the
+    #    tracked-files rule `_expand_input` already declares.
+    #
+    #    A root that is not on this checkout contributes nothing and says
+    #    nothing, which is `all_overrides()`'s own rule for the same triple. A
+    #    root that IS here and contributes no tracked file across ANY of its
+    #    kind's suffixes is could-not-look: the walk emptied, and an empty walk
+    #    is how every rule of that kind goes quietly green.
+    walked_per_root: dict[str, int] = {}
+    for root, suffix, skip in _kind_walk():
+        if not (ROOT / root).exists():
+            continue
+        walked_per_root.setdefault(root, 0)
+        for p in tracked:
+            if not p.startswith(root + "/") or not p.endswith(suffix):
+                continue
+            if skip & set(Path(p).parts):
+                continue
+            paths.add(p)
+            walked_per_root[root] += 1
+    for root, count in sorted(walked_per_root.items()):
+        if count == 0:
+            problems.append(
+                f"scope-kind root {root!r} is on this tree and holds no tracked file of any "
+                "suffix its kind declares — the walk every live check of that kind reads has "
+                "emptied, which is how a rule goes green over nothing"
+            )
+
+    if problems:
+        return [], problems
+    return sorted(paths), []
+
+
+def selftest_inputs() -> int:
+    """Print the engine's inputs, one per line. Any failed derivation → exit 2."""
+    paths, problems = selftest_inputs_for(RULES)
+    if problems:
+        say(
+            "‼ --selftest-inputs COULD NOT LOOK (exit 2). A list that quietly lost a member "
+            "would key a verdict for a tree nobody measured, so nothing is printed:"
+        )
+        for p in problems:
+            say(f"  !! {p}")
+        return 2
+    for path in paths:
+        say(path)
+    return 0
+
+
+# --- THE PER-RULE MEMO -----------------------------------------------------------
+#
+# WHAT IT ANSWERS. "Did anything this rule reads move since the last time it
+# was scanned?" Before it, the answer was never asked: the house-rules leg
+# re-ran all 57 rules on every gate, dozens of times a day, and a rule whose
+# every input was byte-identical to the run five minutes earlier paid its full
+# scan again. `--selftest-inputs` (the third reader) already derives the whole
+# engine's inputs; this is the same derivation PER RULE, and the memo is what
+# it keys.
+#
+# IT IS A PROJECTION OF THE SCAN, NEVER A SECOND OPINION (principle 9). The
+# rule's own scope is the owner of what the memo may say; the memo holds a copy
+# of ONE call's answer and nothing else. So a rule whose inputs cannot be
+# derived is not memoised — by construction, and it says so — and an
+# undecidable key never reads the cache: could-not-look outranks a hit exactly
+# as it outranks a pass.
+#
+# WHAT IS MEMOISED, AND WHAT IS NOT. The value is the `check:` call's
+# `(findings, targets)` and NOTHING further down the pipeline: overrides,
+# ratchets, floors, the runner, the floor proxy and the Django leg all run on
+# every rule on every run (`run_rule`), so a memo can never hide an unbound
+# floor, a valve that lost its reason, or a ratchet that grew.
+#
+# THE KEY, per rule, `rule-v1:<sha256>` over six components, each named so a
+# miss can be attributed to the one that moved:
+#
+#   rule    the rule's own mapping, dumped canonically — its statement, its
+#           scope, its ratchets, its doc anchor text. A byte in ONE rule's
+#           yaml re-keys THAT rule and no other, which is why this component
+#           exists beside `engine` rather than inside it.
+#   scope   population 2 of `selftest_inputs_for` — the `scope:` allow-list,
+#           expanded through `_expand_input` over the measured tree.
+#   walk    population 6, narrowed to THIS RULE'S KIND — `scope:` is an
+#           allow-list OVER the walk, not the walk, so a key that read only
+#           `scope:` would hit on a violation planted in a file no rule names.
+#   reads   population 4 — `HARDCODED_READS`, the reads this module spells.
+#   doc     population 5 — the doc file's blob and the anchor text
+#           `consistency()` looks for in it.
+#   engine  population 1 — every tracked path under `quality/` EXCEPT
+#           `rules.yaml`, plus the canonical dump of every top-level key of
+#           `rules.yaml` that is not `rules:` (`scope_kinds`, `seam`, the
+#           backlogs). `rules.yaml`'s own bytes are deliberately absent: they
+#           are covered per rule by `rule` above, and keying every rule on the
+#           whole file would make one rule's reword re-scan fifty-six others.
+#
+# THE BLOBS COME FROM THE MEASURED TREE, never from `git hash-object` over the
+# working tree: the same `git read-tree HEAD` + `git add -A` + `write-tree`
+# read `scripts/gate_ledger.sh::gate_measured_tree` banks every other verdict
+# in this system on. A row that vouches for bytes has to vouch for bytes
+# somebody can name (13: one tree reading, not two).
+#
+# WHERE IT LIVES. `<git common dir>/djb-rules-memo/<rule id>/<sha>.json` — per
+# checkout, shared across that checkout's worktrees exactly as the gate ledger
+# is, and never committed. `DJB_RULES_MEMO_DIR` is the scratch seam a drive
+# points at its own `mktemp -d`, refused when relative for
+# `gate_ledger_path`'s reason; `DJB_RULES_NO_MEMO=1` is the valve that scans
+# everything and is printed.
+#
+# WHAT IT CANNOT SEE, declared: a check that reads a path its walk does not
+# name (population 4's blind spot, inherited exactly — the mitigation is
+# structural rather than hopeful, since `engine` re-keys every rule the moment
+# anybody writes such a read into `quality/`); the installed environment, which
+# is why every rule whose check boots Django or shells out declines the memo in
+# `rules.yaml` with a reason; and the first run after any byte under a kind's
+# roots moves, which re-keys every rule of that kind — the memo pays on the
+# SECOND and later reads of one tree (the hook, the loop, the verifier's
+# consult and the push all measure one tree), never on the first.
+
+MEMO_SCHEMA = "rule-v1"
+
+#: How many entries per rule survive a write. A key is one tree, and a builder
+#: bouncing between two or three trees wants all of them warm; twenty is that
+#: with room, and the oldest by mtime go first.
+MEMO_KEEP = 20
+
+#: The run's memo state, in one mutable mapping rather than module globals, so
+#: that `main` and the census can set it without `global` and a drive can read
+#: it in process.
+memo_state: dict[str, object] = {"bypass": False, "home": None}
+
+#: Counted like every valve in this engine, and PRINTED on every live scan.
+memo_counts: dict[str, int] = {
+    "scanned": 0,
+    "hits": 0,
+    "misses": 0,
+    "undecidable": 0,
+    "declined": 0,
+}
+
+#: The ids that declared `memo: { no: ... }` and were reached this run, and the
+#: one-line sentence each miss or undecidable key owes its reader.
+memo_declined_ids: list[str] = []
+memo_lines: list[str] = []
+
+
+def memo_consistency(rules: list[dict] | None = None) -> None:
+    """Every `memo:` declaration is one shape and carries a reason, or exit 2.
+
+    The valve's own grammar (`consistency()`, `valve:`), one field over: a rule
+    that declines to be memoised is making a claim — that its check reads
+    something no key here can name — and a claim nobody wrote down is a claim
+    nobody can disagree with. The census of which rules decline IS the point of
+    the field, so a declaration that silently declined to answer would be the
+    one place the census cannot see.
+    """
+    for rule in rules if rules is not None else RULES:
+        rid = str(rule["id"])
+        declared = rule.get("memo")
+        if declared is None:
+            continue
+        if isinstance(declared, dict) and set(declared) == {False}:
+            # YAML 1.1, AND IT COSTS EVERY AUTHOR ONCE. A bare `no:` key parses
+            # as the BOOLEAN False, so the declaration reads back as
+            # `{False: '<reason>'}` and a reader looking for `no` finds
+            # nothing — which would silently memoise a rule that declined.
+            # Named here rather than left to be rediscovered.
+            broken.append(
+                f"rule {rid}: `memo:` declares a bare `no:` key, which yaml reads as the "
+                'BOOLEAN false — quote it (`"no": <reason>`), or this rule is memoised '
+                "while its yaml says it is not"
+            )
+            continue
+        if not isinstance(declared, dict) or set(declared) != {"no"}:
+            broken.append(
+                f"rule {rid}: `memo:` takes exactly one form — "
+                "`memo: { no: <why this rule's check cannot be keyed on blobs> }`. "
+                f"This one is {declared!r}, which the engine cannot read as a declaration; "
+                "a rule that is memoised by accident replays an answer for inputs nobody "
+                "named"
+            )
+            continue
+        reason = str(declared.get("no") or "").strip()
+        if len(reason) < MIN_REASON:
+            broken.append(
+                f"rule {rid}: `memo: no` with a {len(reason)}-character reason — declining "
+                "the memo says this rule reads something the key cannot name (a registry, a "
+                "Django boot, a population), and that is exactly the claim owing a sentence "
+                "a reviewer can disagree with"
+            )
+
+
+def memo_reset() -> None:
+    """Zero the run's counters. One live scan per process; a drive runs several."""
+    for key in memo_counts:
+        memo_counts[key] = 0
+    del memo_declined_ids[:]
+    del memo_lines[:]
+
+
+def memo_report() -> None:
+    """The two counted sentences, printed on every live scan.
+
+    TWO, not one, and each is a different closed question. The first is the
+    arithmetic a reader checks against the clock — how many of this run's
+    checks actually ran — and it is the line a drive asserts by its words. The
+    second is the memo's own census in the grammar every valve in this engine
+    prints: how many rules could be memoised, what the consult did, and WHICH
+    rules declined, by id. A silent memo is a memo nobody can catch quietly
+    turning itself off.
+    """
+    memoisable = sum(
+        1
+        for rule in RULES
+        if rule.get("enabled", True) and rule.get("check") and memo_declines(rule) is None
+    )
+    # THE DECLINING COUNT IS READ OFF THE POPULATION, never off the run. A
+    # rule that declares `memo: no` and has no `check:` to skip is never
+    # reached by the consult, so counting what the consult SAW would print a
+    # smaller number every run and make the census unfalsifiable: the closed
+    # question is "which rules declare they cannot be memoised", and the rule
+    # set is what answers it.
+    declining = [str(r["id"]) for r in RULES if r.get("memo") is not None]
+    say(f"  house rules: {memo_counts['scanned']} scanned · {memo_counts['hits']} memoized")
+    say(
+        f"  memo: {len(RULES)} rules · {memoisable} memoisable "
+        f"({memo_counts['hits']} hits, {memo_counts['misses']} misses, "
+        f"{memo_counts['undecidable']} undecidable) · "
+        f"{len(declining)} memo: no ({' '.join(declining) or 'none'}), "
+        f"{memo_counts['declined']} of them scanned here"
+    )
+    for line in memo_lines:
+        say(f"    {line}")
+
+
+def memo_home() -> tuple[Path | None, str]:
+    """This checkout's memo directory, and why there is none.
+
+    `--git-common-dir` for `gate_local_path`'s reason: one memo per CHECKOUT,
+    shared by its worktrees, never committed and never carried by a clone.
+    """
+    override = str(memo_state.get("home") or os.environ.get("DJB_RULES_MEMO_DIR") or "").strip()
+    if override:
+        if not override.startswith("/"):
+            return None, (
+                f"DJB_RULES_MEMO_DIR={override!r} is relative — it would resolve against "
+                "whatever directory a caller left behind, and a memo nobody can name is a "
+                "memo nobody can audit"
+            )
+        return Path(override), ""
+    proc = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    common = proc.stdout.strip()
+    if proc.returncode != 0 or not common:
+        return None, (
+            f"`git rev-parse --git-common-dir` exited {proc.returncode} — "
+            f"{proc.stderr.strip() or 'no stderr'}"
+        )
+    base = Path(common)
+    if not base.is_absolute():
+        base = ROOT / common
+    return base / "djb-rules-memo", ""
+
+
+_MEASURED: tuple[dict[str, str], str] | None = None
+
+
+def measured_blobs() -> tuple[dict[str, str], str]:
+    """path -> blob sha over the MEASURED tree, and why it could not be read.
+
+    `git read-tree HEAD` into a throwaway index, `git add -A` over it,
+    `write-tree`, `ls-tree -r` — `scripts/gate_ledger.sh::gate_measured_tree`'s
+    own read, in process. It sees the working tree (an uncommitted edit moves a
+    blob) and it sees a brand-new untracked file (`add -A` stages it), which is
+    what a walk-shaped check sees too. Read once per process: a gate run does
+    not re-derive its world half way through.
+    """
+    global _MEASURED
+    if _MEASURED is None:
+        _MEASURED = _read_measured_blobs()
+    return _MEASURED
+
+
+def _read_measured_blobs() -> tuple[dict[str, str], str]:
+    fd, index = tempfile.mkstemp(prefix="djb-rules-memo-index.")
+    os.close(fd)
+    os.unlink(index)  # git wants to create it, not inherit an empty one
+    env = dict(os.environ)
+    env["GIT_INDEX_FILE"] = index
+    try:
+        for argv in (["read-tree", "HEAD"], ["add", "-A"], ["write-tree"]):
+            proc = subprocess.run(
+                ["git", "-C", str(ROOT), *argv],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return {}, (
+                    f"`git {' '.join(argv)}` exited {proc.returncode} — "
+                    f"{proc.stderr.strip() or 'no stderr'}"
+                )
+        tree = proc.stdout.strip()
+        if not tree:
+            return {}, "`git write-tree` printed no tree"
+        listing = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-tree", "-r", "-z", tree],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        if listing.returncode != 0:
+            return {}, (
+                f"`git ls-tree -r {tree}` exited {listing.returncode} — "
+                f"{listing.stderr.strip() or 'no stderr'}"
+            )
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(index)
+    blobs: dict[str, str] = {}
+    for record in listing.stdout.split("\0"):
+        if not record:
+            continue
+        meta, _, path = record.partition("\t")
+        fields = meta.split()
+        if len(fields) < 3 or not path:
+            continue
+        blobs[path] = fields[2]
+    if not blobs:
+        return {}, "the measured tree named no path at all"
+    return blobs, ""
+
+
+def _paths_digest(paths: list[str], blobs: dict[str, str]) -> str:
+    """One component: `<path>\\0<blob>` per line, sorted, sha256 of the whole."""
+    digest = hashlib.sha256()
+    for path in sorted(set(paths)):
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(blobs[path].encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+_ENGINE_DIGEST: str | None = None
+
+
+def _engine_digest(blobs: dict[str, str]) -> str:
+    """Population 1, minus `rules.yaml`'s bytes and plus its non-rule content.
+
+    Every rule reads the engine, so the engine is in every rule's key. What is
+    NOT in it is `quality/rules.yaml`'s blob: one rule's reword would otherwise
+    re-scan the other fifty-six, and the per-rule `rule` component already
+    carries that rule's own text. The file's OTHER top-level keys — the scope
+    kinds, the seam, the backlogs — are read here from the parse, because they
+    change what every rule scans.
+    """
+    global _ENGINE_DIGEST
+    if _ENGINE_DIGEST is None:
+        under = [p for p in blobs if p.startswith("quality/") and p != "quality/rules.yaml"]
+        rest = {k: v for k, v in _DOC.items() if k != "rules"}
+        digest = hashlib.sha256()
+        digest.update(_paths_digest(under, blobs).encode("utf-8"))
+        digest.update(b"\n")
+        digest.update(yaml.safe_dump(rest, sort_keys=True, allow_unicode=True).encode("utf-8"))
+        _ENGINE_DIGEST = digest.hexdigest()
+    return _ENGINE_DIGEST
+
+
+def memo_components(rule: dict) -> tuple[dict[str, str], str]:
+    """The six named halves of this rule's key, or why the key is undecidable.
+
+    Every failure here is could-not-look and returns the sentence: a component
+    that quietly derived to nothing would key a verdict for inputs nobody
+    measured, which is the one thing a memo must never do.
+    """
+    blobs, trouble = measured_blobs()
+    if trouble:
+        return {}, trouble
+    names = frozenset(blobs)
+    components: dict[str, str] = {}
+
+    components["rule"] = hashlib.sha256(
+        yaml.safe_dump(rule, sort_keys=True, allow_unicode=True).encode("utf-8")
+    ).hexdigest()
+
+    scoped: list[str] = []
+    for trail, value in _scope_paths(rule.get("scope") or {}):
+        found, why = _expand_input(value, names)
+        if why:
+            return {}, f"scope {trail} {why}"
+        scoped.extend(found)
+    components["scope"] = _paths_digest(scoped, blobs)
+
+    kind = W.scope_kind(rule, SCOPE_KINDS)
+    skip = W.kind_skip_dirs(kind)
+    suffixes = tuple(str(s) for s in (kind.get("suffixes") or []))
+    if not suffixes:
+        return {}, "its kind declares no suffix, so the walk it reads cannot be derived"
+    walked: list[str] = []
+    for root in (str(r) for r in (kind.get("roots") or [])):
+        if not (ROOT / root).exists():
+            continue
+        here = [
+            p
+            for p in names
+            if p.startswith(root + "/") and p.endswith(suffixes) and not (skip & set(Path(p).parts))
+        ]
+        if not here:
+            return {}, (
+                f"the walk root {root!r} is on this tree and holds no file of any suffix its "
+                "kind declares — an emptied walk is how a rule goes green over nothing"
+            )
+        walked.extend(here)
+    components["walk"] = _paths_digest(walked, blobs)
+
+    reads: list[str] = []
+    for value, why_read in HARDCODED_READS:
+        found, why = _expand_input(value, names)
+        if why:
+            return {}, f"hard-coded read ({why_read}) {why}"
+        reads.extend(found)
+    components["reads"] = _paths_digest(reads, blobs)
+
+    doc = rule.get("doc") or {}
+    doc_file = str(doc.get("file") or "").strip()
+    if not doc_file:
+        return {}, "doc names no file, so the anchor consistency() reads cannot be derived"
+    found, why = _expand_input(doc_file, names)
+    if why:
+        return {}, f"doc {why}"
+    anchor = hashlib.sha256(_paths_digest(found, blobs).encode("utf-8"))
+    anchor.update(str(doc.get("contains", "")).encode("utf-8"))
+    components["doc"] = anchor.hexdigest()
+
+    components["engine"] = _engine_digest(blobs)
+    return components, ""
+
+
+def memo_key(rule: dict) -> tuple[str | None, dict[str, str], str]:
+    """(`rule-v1:<sha256>`, its components, "") or (None, {}, why it is undecidable)."""
+    components, why = memo_components(rule)
+    if why:
+        return None, {}, why
+    digest = hashlib.sha256()
+    digest.update(MEMO_SCHEMA.encode("utf-8"))
+    for name in sorted(components):
+        digest.update(b"\0")
+        digest.update(name.encode("utf-8"))
+        digest.update(b"=")
+        digest.update(components[name].encode("utf-8"))
+    return f"{MEMO_SCHEMA}:{digest.hexdigest()}", components, ""
+
+
+def memo_declines(rule: dict) -> str | None:
+    """The reason this rule declines the memo, or None when it takes one.
+
+    An empty string is a declaration with no reason — `consistency()` is where
+    that is exit 2; here it still declines, because a rule that said it cannot
+    be memoised is not memoised while somebody argues about the sentence.
+    """
+    declared = rule.get("memo")
+    if declared is None:
+        return None
+    if isinstance(declared, dict):
+        return str(declared.get("no") or "").strip()
+    return ""
+
+
+def _entry_path(home: Path, rid: str, key: str) -> Path:
+    return home / rid / (key.split(":")[-1] + ".json")
+
+
+def memo_read(home: Path, rid: str, key: str) -> CheckResult | None:
+    """The banked answer for this key, or None. A file that will not parse is a miss."""
+    path = _entry_path(home, rid, key)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("key") != key:
+        return None
+    try:
+        findings = [
+            Finding(str(f[0]), int(f[1]), str(f[2]), str(f[3])) for f in payload["findings"]
+        ]
+        targets = {str(k): int(v) for k, v in dict(payload["targets"]).items()}
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+    with contextlib.suppress(OSError):
+        os.utime(path)  # newest-first is what attribution and pruning read
+    return CheckResult(findings=findings, targets_matched=targets)
+
+
+def memo_write(
+    home: Path, rid: str, key: str, components: dict[str, str], result: CheckResult
+) -> None:
+    """Bank one answer, then prune this rule to the last MEMO_KEEP keys.
+
+    Written through a temporary file in the same directory and renamed, so a
+    killed run leaves no half-written entry a later run would read as an
+    answer. A memo that cannot be written is not a failure: the scan already
+    happened and its verdict stands.
+    """
+    path = _entry_path(home, rid, key)
+    payload = {
+        "key": key,
+        "components": components,
+        "findings": [[f.path, f.line, f.msg, f.klass] for f in result.findings],
+        "targets": dict(result.targets_matched),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".writing-")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError:
+        return
+    entries = sorted(
+        (p for p in path.parent.glob("*.json")),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+        reverse=True,
+    )
+    for stale in entries[MEMO_KEEP:]:
+        with contextlib.suppress(OSError):
+            stale.unlink()
+
+
+def memo_attribute(home: Path, rid: str, components: dict[str, str]) -> str:
+    """Which component moved, read off the newest entry this rule already holds.
+
+    A rule with no entry at all misses `cold` — there is nothing to have moved
+    against, and saying so is the difference between a first run and a
+    regression in the key.
+    """
+    folder = home / rid
+    try:
+        entries = sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return "cold"
+    for entry in entries:
+        try:
+            previous = json.loads(entry.read_text(encoding="utf-8")).get("components")
+        except (OSError, ValueError):
+            continue
+        if not isinstance(previous, dict):
+            continue
+        moved = [name for name in sorted(components) if previous.get(name) != components[name]]
+        if moved:
+            return ",".join(moved)
+        return "key"  # the components agree and the key did not: a schema move
+    return "cold"
+
+
+def memo_consult(rule: dict, impl: str) -> CheckResult:
+    """The `check:` call, through the memo. THE ONLY PLACE A SCAN IS SKIPPED.
+
+    Everything `run_rule` does after this — the runner, the floor proxy, the
+    overrides, the ratchets and the floors — runs on every rule on every run,
+    so no memo can hide an unbound floor or a ratchet that grew.
+    """
+    rid = str(rule["id"])
+
+    def scan() -> CheckResult:
+        memo_counts["scanned"] += 1
+        return REGISTRY[impl](ROOT, rule)
+
+    if memo_state.get("bypass") or os.environ.get("DJB_RULES_NO_MEMO"):
+        return scan()
+    declined = memo_declines(rule)
+    if declined is not None:
+        memo_counts["declined"] += 1
+        if rid not in memo_declined_ids:
+            memo_declined_ids.append(rid)
+        return scan()
+    home, why_home = memo_home()
+    if home is None:
+        key, components, why = None, {}, why_home
+    else:
+        key, components, why = memo_key(rule)
+    if key is None:
+        memo_counts["undecidable"] += 1
+        memo_lines.append(f"rule {rid}: memo undecidable — {why}; scanned")
+        return scan()
+    assert home is not None
+    banked = memo_read(home, rid, key)
+    if banked is not None:
+        memo_counts["hits"] += 1
+        return banked
+    memo_counts["misses"] += 1
+    memo_lines.append(f"rule {rid}: miss({memo_attribute(home, rid, components)})")
+    result = scan()
+    memo_write(home, rid, key, components, result)
+    return result
+
+
+def memo_census() -> None:
+    """The memo, driven: the key, the bypass, and every way the consult must refuse.
+
+    A FOURTH counted sentence beside the trailer, CLI and inputs censuses, and
+    the same grammar: the count is in the line, so deleting a probe is visible
+    rather than silent.
+
+    IT RUNS INSIDE `--selftest`, WHERE THE BYPASS IS ON — which is exactly
+    where a memo most needs driving, because a bypass that stopped working
+    would make every canary below it a canary that could replay yesterday's
+    green. Every probe builds its own victim: a scratch rule appended to
+    `RULES` for the length of one probe (`inputs_census`' idiom), a stub check
+    registered in `REGISTRY` and removed, and a memo directory under
+    `mktemp -d` that is deleted whatever happens — nothing here reads or writes
+    the checkout's own memo, which is the claim probe 6 asserts about the
+    self-test as a whole.
+    """
+    probes = 8
+    answered = 0
+    memoisable = [
+        rule
+        for rule in RULES
+        if rule.get("enabled", True) and rule.get("check") and memo_declines(rule) is None
+    ]
+    if not memoisable:
+        broken.append(
+            "memo census: no rule is memoisable at all — either every rule declined or the "
+            "declaration reads as something this engine cannot see, and a memo with no "
+            "subject cannot be driven"
+        )
+        say(f"memo census: answered {answered} of {probes} probes")
+        return
+
+    # -- 1. BYTE-STABILITY. Two passes over one tree, same keys. -------------
+    first = {str(r["id"]): memo_key(r)[0] for r in memoisable}
+    second = {str(r["id"]): memo_key(r)[0] for r in memoisable}
+    if first == second and all(k for k in first.values()):
+        answered += 1
+    else:
+        undecided = sorted(rid for rid, key in first.items() if not key)
+        broken.append(
+            "memo census: the per-rule key is not byte-stable on one tree "
+            f"(undecidable: {undecided[:5] or 'none'}; disagreed: "
+            f"{sorted(r for r in first if first[r] != second.get(r))[:5]}) — a key that "
+            "moves while nothing else does reuses nothing and re-keys everything"
+        )
+
+    # -- 2. ONE RULE'S BYTE RE-KEYS ONE RULE. --------------------------------
+    # The isolation the whole per-rule shape exists for: a reword of rule A's
+    # statement must not re-scan rule B. Driven on a COPY of the mapping, so
+    # the tree and `RULES` are untouched.
+    victim = memoisable[0]
+    vid = str(victim["id"])
+    moved = dict(victim)
+    moved["statement"] = str(victim.get("statement", "")) + " "
+    after = {str(r["id"]): memo_key(moved if str(r["id"]) == vid else r)[0] for r in memoisable}
+    rekeyed = sorted(rid for rid in first if first[rid] != after.get(rid))
+    if rekeyed == [vid]:
+        answered += 1
+    else:
+        broken.append(
+            f"memo census: one byte in rule {vid}'s statement re-keyed {len(rekeyed)} rule(s) "
+            f"({rekeyed[:6]}) — a per-rule key that moves its neighbours is one key wearing "
+            "fifty-seven names"
+        )
+
+    # -- 3-7. THE CONSULT, over a stub check and a scratch memo of its own. --
+    home = Path(tempfile.mkdtemp(prefix="djb-memo-census."))
+    calls: dict[str, int] = {"n": 0}
+
+    def stub(root: Path, rule: dict) -> CheckResult:
+        calls["n"] += 1
+        result = CheckResult()
+        result.hit("apps/example/services.py", 1, f"the census stub's finding for {rule['id']}")
+        result.count("probe", 1)
+        return result
+
+    scratch = {
+        "id": "zzz-memo-census",
+        "enabled": True,
+        "check": "zzz_memo_census_stub",
+        "doc": {"file": "quality/rules.yaml", "contains": "rules"},
+        "scope": {},
+    }
+    saved_state = dict(memo_state)
+    REGISTRY["zzz_memo_census_stub"] = stub
+    try:
+        memo_state["bypass"] = False
+        memo_state["home"] = str(home)
+
+        # 3. A COLD CONSULT SCANS AND BANKS; THE SECOND IS A HIT THAT REPLAYS
+        #    THE RED. A hit that printed `ok` over a banked violation is the
+        #    failure this engine cannot survive, so the finding is compared
+        #    rather than the count.
+        memo_reset()
+        cold = memo_consult(scratch, "zzz_memo_census_stub")
+        warm = memo_consult(scratch, "zzz_memo_census_stub")
+        replayed = [str(f) for f in warm.findings] == [str(f) for f in cold.findings]
+        if (
+            calls["n"] == 1
+            and memo_counts["hits"] == 1
+            and memo_counts["misses"] == 1
+            and replayed
+            and warm.targets_matched == cold.targets_matched
+        ):
+            answered += 1
+        else:
+            broken.append(
+                f"memo census: two consults on one tree ran the check {calls['n']} time(s) "
+                f"for {memo_counts['hits']} hit(s) and {memo_counts['misses']} miss(es), "
+                f"replaying the finding: {replayed} — a hit that does not replay the red is a "
+                "cache that turned a violation into a pass"
+            )
+
+        # 4. A MOVED INPUT MISSES THAT RULE AND NAMES THE COMPONENT.
+        memo_reset()
+        moved_scratch = dict(scratch)
+        moved_scratch["statement"] = "one byte the previous key never saw"
+        memo_consult(moved_scratch, "zzz_memo_census_stub")
+        named = [ln for ln in memo_lines if "miss(rule)" in ln]
+        if memo_counts["misses"] == 1 and memo_counts["hits"] == 0 and named:
+            answered += 1
+        else:
+            broken.append(
+                "memo census: a moved byte in the rule's own text did not print "
+                f"`rule <id>: miss(rule)` ({memo_lines or 'nothing printed'}) — a miss that "
+                "cannot name what moved is a re-scan nobody can attribute"
+            )
+
+        # 5. `memo: no` SCANS ALWAYS, AND A BARE DECLARATION IS EXIT 2.
+        memo_reset()
+        declining = dict(scratch)
+        declining["memo"] = {"no": "the census's own scratch rule, declining on purpose"}
+        before = calls["n"]
+        memo_consult(declining, "zzz_memo_census_stub")
+        memo_consult(declining, "zzz_memo_census_stub")
+        bare = dict(scratch)
+        bare["memo"] = {"no": ""}
+        before_broken = len(broken)
+        memo_consistency([bare])
+        refused = broken[before_broken:]
+        del broken[before_broken:]
+        if (
+            calls["n"] - before == 2
+            and memo_counts["hits"] == 0
+            and memo_counts["declined"] == 2
+            and refused
+        ):
+            answered += 1
+        else:
+            broken.append(
+                f"memo census: a declining rule was consulted {calls['n'] - before} time(s) "
+                f"with {memo_counts['hits']} hit(s), and a reasonless declaration was refused "
+                f"{len(refused)} time(s) — a `memo: no` nobody has to justify is an off switch"
+            )
+
+        # 6. AN UNDECIDABLE KEY SCANS, PRINTED, AND NEVER HITS. Its victim is a
+        #    scratch rule whose scope names a directory no tree has — the shape
+        #    `--selftest-inputs`' own canaries use, and it carries no made-up
+        #    docs path (the dangling-docs census reads those).
+        memo_reset()
+        blind = dict(scratch)
+        blind["scope"] = {"allow_import": [{"path": "apps/nowhere/*.py"}]}
+        before = calls["n"]
+        memo_consult(blind, "zzz_memo_census_stub")
+        memo_consult(blind, "zzz_memo_census_stub")
+        said = [ln for ln in memo_lines if "memo undecidable" in ln and "scanned" in ln]
+        if (
+            calls["n"] - before == 2
+            and memo_counts["undecidable"] == 2
+            and memo_counts["hits"] == 0
+            and len(said) == 2
+        ):
+            answered += 1
+        else:
+            broken.append(
+                "memo census: a rule whose scope cannot be derived was consulted "
+                f"{calls['n'] - before} time(s) for {memo_counts['hits']} hit(s) and said "
+                f"{len(said)} undecidable line(s) — an undecidable key that reads the cache is "
+                "a verdict for a tree nobody measured"
+            )
+
+        # 7. PRUNING. Twenty-five keys planted, twenty survive — the newest.
+        memo_reset()
+        planted = []
+        for n in range(MEMO_KEEP + 5):
+            keyed = dict(scratch)
+            keyed["statement"] = f"pruning probe {n}"
+            key, components, why = memo_key(keyed)
+            if not key:
+                break
+            memo_write(home, "zzz-memo-census", key, components, CheckResult())
+            planted.append(key)
+        kept = sorted((home / "zzz-memo-census").glob("*.json"))
+        if len(planted) == MEMO_KEEP + 5 and len(kept) == MEMO_KEEP:
+            answered += 1
+        else:
+            broken.append(
+                f"memo census: {len(planted)} keys banked left {len(kept)} entries where "
+                f"{MEMO_KEEP} was recorded — a memo directory that only grows is a cache with "
+                "no resource limit, which is the line every cache in this system owes"
+            )
+
+        # 8. THE BYPASS IS REAL, AND A PLANTED FALSE ENTRY IS THE PROOF.
+        #    A word printed by the thing under test is not evidence that it did
+        #    anything. So: bank an entry saying THIS RULE FOUND NOTHING, under
+        #    the very key the consult will compute, and then ask for the answer
+        #    twice — once with the bypass off, where the false entry MUST win
+        #    (that is what makes it a real plant), and once with it on, where
+        #    the check MUST run and its finding MUST come back.
+        memo_reset()
+        lying = dict(scratch)
+        lying["statement"] = "the planted false entry's rule"
+        key, components, _why = memo_key(lying)
+        memo_write(home, str(lying["id"]), str(key), components, CheckResult())
+        memo_state["bypass"] = False
+        suppressed = memo_consult(lying, "zzz_memo_census_stub")
+        memo_state["bypass"] = True
+        through = memo_consult(lying, "zzz_memo_census_stub")
+        if not suppressed.findings and len(through.findings) == 1:
+            answered += 1
+        else:
+            broken.append(
+                "memo census: the planted false entry returned "
+                f"{len(suppressed.findings)} finding(s) with the memo on and "
+                f"{len(through.findings)} with the self-test's bypass on — the bypass is "
+                "proved by a plant the memo would otherwise have silenced, never by a printed "
+                "word, and one of those two halves did not behave"
+            )
+    finally:
+        memo_state.clear()
+        memo_state.update(saved_state)
+        REGISTRY.pop("zzz_memo_census_stub", None)
+        shutil.rmtree(home, ignore_errors=True)
+        memo_reset()
+
+    say(f"memo census: answered {answered} of {probes} probes")
+
+
 def _captured(argv: list[str]) -> tuple[int, str]:
     """`main(argv)`'s status and stdout, for the CLI census below."""
     buf = io.StringIO()
@@ -2512,6 +3576,163 @@ def cli_census() -> None:
     # probes are the only thing standing between the `next:` line on every red
     # and a flag somebody deleted. A silent pass is a pass nobody can miss.
     say(f"cli census: --explain/--rules answered {answered} of {probes} probes")
+    inputs_census()
+
+
+def inputs_census() -> None:
+    """The third reader, driven: `--selftest-inputs` and the ways it must refuse.
+
+    A SECOND SENTENCE rather than four more probes on the one above, and the
+    reason is the census grammar itself: `cli census: --explain/--rules answered
+    4 of 4 probes` is a claim a drive asserts by its exact words
+    (`scripts/tests/test_gate_explain.sh:937`), and growing its count would edit
+    a file outside `quality/` to say nothing new. Two readers, two counted
+    sentences, one prefix — the same shape the seam and residence censuses
+    already print.
+
+    Driven through `main`'s own argv dispatch, never through `selftest_inputs()`,
+    because the claim under test includes the FLAG: a reader that works and a
+    flag nobody wired to it look identical from inside the printer.
+    """
+    probes = 6
+    answered = 0
+
+    rc, text = _captured(["--selftest-inputs"])
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    relative = all(not ln.startswith("/") and ".." not in ln.split("/") for ln in lines)
+    if rc == 0 and lines and lines == sorted(lines) == sorted(set(lines)) and relative:
+        answered += 1
+    else:
+        broken.append(
+            f"cli census: `--selftest-inputs` exited {rc} with {len(lines)} line(s) that are not "
+            "a sorted, duplicate-free, checkout-relative list — a key computed over it would "
+            "depend on the order the engine happened to walk the tree in"
+        )
+
+    rc2, text2 = _captured(["--selftest-inputs"])
+    if (rc, text) == (rc2, text2):
+        answered += 1
+    else:
+        broken.append(
+            "cli census: `--selftest-inputs` printed two different things on one tree — a "
+            "printer that is not byte-stable cannot key anything"
+        )
+
+    # EVERY POPULATION IS REPRESENTED, checked without re-using `_expand_input`
+    # — a probe that re-derives through the code under test proves only that the
+    # code is deterministic. A scope naming a directory is COVERED when the
+    # listing carries something under it, which is the claim a key needs.
+    listed = set(lines)
+
+    def covered(want: str) -> bool:
+        want = want.rstrip("/")
+        return want in listed or any(p.startswith(want + "/") for p in listed)
+
+    scoped = [
+        p
+        for rule in RULES
+        if rule.get("enabled", True)
+        for _trail, p in _scope_paths(rule.get("scope") or {})
+    ]
+    docs = [
+        str((rule.get("doc") or {}).get("file") or "")
+        for rule in RULES
+        if rule.get("enabled", True)
+    ]
+    # The walk, re-derived here from SCOPE_KINDS rather than from `_kind_walk()`
+    # — two spellings of one population on purpose, so a triple dropped from the
+    # walk is a disagreement rather than a shared blind spot.
+    walked = [
+        str(p.relative_to(ROOT))
+        for kind in SCOPE_KINDS.values()
+        for root in kind.get("roots") or []
+        if (ROOT / str(root)).is_dir()
+        for suffix in kind.get("suffixes") or []
+        for p in (ROOT / str(root)).rglob(f"*{suffix}")
+        if not (W.kind_skip_dirs(kind) & set(p.relative_to(ROOT).parts))
+    ]
+    tracked_now = _tracked_paths()[0]
+    populations = {
+        "the engine's own text": ["quality/rules.yaml", "quality/gate.py"],
+        "a rule's scope": scoped,
+        "a plant path": plant_paths(),
+        # Every enabled rule's doc anchor — `consistency()` reads it on every
+        # run, so a rule's prose is an input (the verifier's F1).
+        "a rule's doc": docs,
+        # The SCOPE_KINDS walk, tracked half — the files the live checks read
+        # and no `scope:` names (the verifier's F2).
+        "the scope-kind walk": sorted(set(walked) & tracked_now),
+    }
+    missing = {
+        name: sorted(w for w in want if not covered(w))[:3]
+        for name, want in populations.items()
+        if not all(covered(w) for w in want)
+    }
+    if not missing and all(want for want in populations.values()):
+        answered += 1
+    else:
+        broken.append(
+            f"cli census: `--selftest-inputs` did not carry every population it derives: "
+            f"{missing or 'one population derived to nothing'} — an input it cannot see is a "
+            "byte that changes the verdict without changing the key"
+        )
+
+    hard_ok = True
+    for value, why_read in HARDCODED_READS:
+        found, why = _expand_input(value, _tracked_paths()[0])
+        if why or not set(found) <= listed:
+            hard_ok = False
+            broken.append(
+                f"cli census: the hard-coded read {value!r} ({why_read}) is not in "
+                f"`--selftest-inputs` — {why or 'its expansion is not all listed'}"
+            )
+    if hard_ok:
+        answered += 1
+
+    # THE TWO CANARIES, and each builds its own victim: a rule that exists for
+    # the length of one probe — one whose scope names a directory no tree has,
+    # one whose DOC names a file no tree has. The listing must refuse each BY ID
+    # and print nothing; a shorter list is the failure this reader is shaped
+    # against, and it is the exact shape the verifier's F1/F2 plants had.
+    for probe_id, scratch in (
+        (
+            "zzz-census-no-such-scope",
+            {
+                "id": "zzz-census-no-such-scope",
+                "enabled": True,
+                "doc": {"file": "quality/rules.yaml"},
+                "scope": {"allow_import": [{"path": "apps/nowhere/*.py"}]},
+            },
+        ),
+        # The doc half of the canary carries NO PATH LITERAL, deliberately: a
+        # made-up `docs/…md` spelled here is a dangling pointer to the
+        # documentation census (`scripts/check.sh`'s dangling-docs leg caught
+        # exactly that), and a canary may not buy its victim with a second
+        # census's red. A rule with no doc file at all reaches the same branch.
+        (
+            "zzz-census-no-such-doc",
+            {"id": "zzz-census-no-such-doc", "enabled": True, "doc": {}},
+        ),
+    ):
+        RULES.append(scratch)
+        try:
+            rc3, text3 = _captured(["--selftest-inputs"])
+        finally:
+            RULES.remove(scratch)
+        printed = [
+            ln for ln in text3.splitlines() if ln.strip() and not ln.strip().startswith(("‼", "!!"))
+        ]
+        if rc3 == 2 and probe_id in text3 and not printed:
+            answered += 1
+        else:
+            broken.append(
+                f"cli census: the scratch rule {probe_id} left `--selftest-inputs` at exit "
+                f"{rc3} with {len(printed)} path(s) printed — a population it cannot derive is "
+                "could-not-look naming the rule, never a shorter list"
+            )
+
+    say(f"cli census: --selftest-inputs answered {answered} of {probes} probes")
+    memo_census()
 
 
 def live_scan(diff_ref: str | None, *, terse: bool = False) -> None:
@@ -2520,6 +3741,7 @@ def live_scan(diff_ref: str | None, *, terse: bool = False) -> None:
     # reader of the count line has to be able to add them back up.
     per_rule: list[tuple[str, str]] = []
     counts = {"ok": 0, "RED": 0, "skipped": 0}
+    memo_reset()
     django_findings = [] if os.environ.get("GATE_SKIP_DJANGO_LEG") else run_django_leg()
     diff_results = C.diff_checks(ROOT, diff_ref, RULES_BY_ID) if diff_ref else {}
 
@@ -2579,6 +3801,7 @@ def live_scan(diff_ref: str | None, *, terse: bool = False) -> None:
         f"House rules: {len(RULES)} rules · {counts['ok']} ok · {counts['RED']} RED · "
         f"{counts['skipped']} skipped"
     )
+    memo_report()
     # `--terse`: the ok rows are ~50 lines of other apps' good news
     # between a builder and their own finding, and the count line above already
     # holds the number. What it drops is EXACTLY the rows whose status is `ok`
@@ -2622,6 +3845,8 @@ def main(argv: list[str]) -> int:
         arg = args.pop(0)
         if arg == "--selftest":
             mode = "selftest"
+        elif arg == "--selftest-inputs":
+            mode = "inputs"
         elif arg == "--terse":
             terse = True
         elif arg == "--rules":
@@ -2642,27 +3867,48 @@ def main(argv: list[str]) -> int:
         else:
             # A mistyped flag must never be a silently different run.
             say(
-                f"‼ unknown argument {arg!r}: quality.gate takes --selftest, --diff <ref>, "
-                "--terse, --explain [<id>] or --rules"
+                f"‼ unknown argument {arg!r}: quality.gate takes --selftest, "
+                "--selftest-inputs, --diff <ref>, --terse, --explain [<id>] or --rules"
             )
             return 2
 
-    # THE TWO READERS RETURN BEFORE ANYTHING MEASURES. `--explain` and the
-    # listing read the parsed yaml and nothing else: they are how a builder
-    # holding a red finds out what to do about it, so they must answer on a
-    # tree whose plants are dirty or whose consistency is broken — the states
-    # in which a reader most needs them.
+    # THE THREE READERS RETURN BEFORE ANYTHING MEASURES. `--explain`, the
+    # listing and `--selftest-inputs` read the parsed yaml and the tree's own
+    # file names, and nothing else: the first two are how a builder holding a
+    # red finds out what to do about it, and the third is what a banked verdict
+    # is keyed on — so all three must answer on a tree whose plants are dirty or
+    # whose consistency is broken, the states in which a reader most needs them.
+    # The inputs reader in particular must answer on a tree the self-test cannot
+    # run on, or a could-not-look would silently become a cache hit.
     if mode == "listing":
         return rules_listing()
     if mode == "explain":
         return explain(str(explain_id))
+    if mode == "inputs":
+        return selftest_inputs()
 
     # BEFORE ANYTHING MEASURES ANYTHING. A tree carrying a dead run's fixtures
     # is a tree every leg below would read wrongly, and the failure is silent in
     # the direction that matters: a planted negative reports nothing at all.
     refuse_stale_plants()
     consistency()
+    # THE MEMO'S OWN SHAPE, refused in the same breath and for the same reason
+    # every other declared field is: a `memo: no` nobody has to justify is an
+    # off switch. It is a SIBLING of `consistency()` rather than a clause
+    # inside it because the criteria that asked for the memo put `consistency()`
+    # out of territory; the position in `main` is what makes it identical in
+    # effect — before anything measures, and exit 2 outranks a pass.
+    memo_consistency()
     if mode == "selftest":
+        # THE SELF-TEST NEVER CONSULTS OR WRITES THE MEMO, and the line is
+        # printed rather than assumed. Every canary plants a violation into the
+        # real tree and demands its rule finds it; a rule that replayed a
+        # banked answer would go green over a tree it never read, and the
+        # dead-canary exit 2 this whole engine turns on would be the thing the
+        # memo silenced. The proof that the bypass is real, rather than a
+        # printed word, is `memo_census`'s planted FALSE entry below.
+        memo_state["bypass"] = True
+        say("memo: bypassed (selftest) — every rule scans; the memo is neither read nor written")
         if not broken:
             selftest()
     elif not broken:

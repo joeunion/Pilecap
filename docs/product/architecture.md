@@ -30,7 +30,7 @@ it is not a port of one.** The product ledgers ship as skeletons.
 | Database | **PostgreSQL**, always — including tests and every worktree. Never SQLite, even locally: the Postgres-specific fields, constraints and query behaviour are part of the contract. |
 | Containers | `compose.yaml` with **Postgres, Redis (channel layer + cache), and the Temporal dev server**; the app and the worker run on the host against them. |
 | API layer | **django-ninja, Pydantic v2 schemas. Decided.** One contract language across every door: the same schema is the REST response, the MCP tool output, the webhook body and the socket payload. Every route declares `auth=`; every list uses `@paginate`; OpenAPI at `/api/v1/docs` (the API is mounted under `/api/v1/`; `config/urls.py` owns the version segment). DRF was the earlier default and lost once the door set (MCP, webhooks, sockets) made a second schema system inevitable. |
-| Auth & identity | **Zitadel is THE identity system — B, all at once ("we're fresh, let's do it right so we pay the cost once"; supersedes the earlier app-is-its-own-IdP approach).** Self-hosted Zitadel (Apache-2.0) in compose from day zero, its config **as code, driven through our services via its management API — the Zitadel console is NOT a door**: an identity-config change that did not go through our audited services did not legitimately happen (house-rule-shaped invariant). Browser login: the app is an OIDC relying party against Zitadel (allauth reduced to RP plumbing). **Workforce**: Google federated through Zitadel, domain-restricted. **Customers**: per-org external IdPs (Okta, Entra, SAML/OIDC) — `SsoConnection` survives as the audited config-of-record whose services re-point from allauth internals to Zitadel's API; home-realm discovery, enforced-SSO, domain claiming, JIT membership keep their A9 wire-proven properties, re-proven against the new engine. **MCP**: OAuth 2.1 with Zitadel as the authorization server; tokens exchanged into the org-bound principal; DCR/consent are Zitadel's. **SCIM**: Zitadel's, maturity verified at the first customer demand (WorkOS stays the named fallback if it falls short). The suite-IdP end-state arrives at day zero instead of at the second product. A fresh clone's `setup.sh` seeds Zitadel — a deliberate DX rung, not an accident. An IdP answers *who*; `Membership`/roles/policies/audit stay ours, unmoved. |
+| Auth & identity | **Zitadel is THE identity system — B, all at once ("we're fresh, let's do it right so we pay the cost once"; supersedes the earlier app-is-its-own-IdP approach).** Self-hosted Zitadel (Apache-2.0) in compose from day zero, its config **as code, driven through our services via its management API — the Zitadel console is NOT a door**: an identity-config change that did not go through our audited services did not legitimately happen (house-rule-shaped invariant). Browser login: the app is an OIDC relying party against Zitadel (allauth reduced to RP plumbing). **Workforce**: Google federated through Zitadel, domain-restricted. **Customers**: per-org external IdPs (Okta, Entra, SAML/OIDC) — `SsoConnection` survives as the audited config-of-record whose services re-point from allauth internals to Zitadel's API; home-realm discovery, enforced-SSO, domain claiming, JIT membership keep their A9 wire-proven properties, re-proven against the new engine. **MCP**: OAuth 2.1 with Zitadel as the authorization server; tokens exchanged into the org-bound principal; DCR/consent are Zitadel's. **SCIM**: Zitadel's, maturity verified at the first customer demand (WorkOS stays the named fallback if it falls short). The suite-IdP end-state arrives at day zero instead of at the second product. A fresh clone's `setup.sh` seeds Zitadel — a deliberate DX rung, not an accident. An IdP answers *who*; `Membership`/roles/policies/audit stay ours, unmoved. **Amended 2026-09-15 (owner, DESIGN-I decision A, on P20's evidence: a 21-minute first admin on the hosted page):** ADR ident-4 reads "Zitadel holds every credential and decides what is required; OUR page renders" — the hosted page stops being the front door; lane I-A's sign-in remedies and A1's join at sign-in are the first instances. |
 | Custom user model | **Set on day zero**, before the first migration, and boring: `AbstractBaseUser` + `PermissionsMixin`, email as the identifier, no product fields. Own the table; do not design the user. House rule: `auth.User` is never imported; `get_user_model()` / `settings.AUTH_USER_MODEL` only. |
 | Base model | Every concrete model inherits `core.models.BaseModel` (**UUIDv7** pk — time-sortable — `created_at`, `updated_at`). House rule. |
 | Business logic | **Explicit `services.py` for writes and `selectors.py` for reads, per app. Decided.** Services own writes; routes and schemas are thin; models carry invariants and derived properties, not workflows. **No business logic in signals** — signals are where agents hide logic. House rule. |
@@ -39,7 +39,7 @@ it is not a port of one.** The product ledgers ship as skeletons.
 | Frontend | **Opinionated default — Next.js/React/TypeScript consuming the GENERATED OpenAPI client. Owner-ratified 2026-09-02, superseding "bring your own"** (which had drifted false against the tree: `frontend/` ships Next 16.3.3/React 19.2.8 since the P16 SCAFFOLD merge, `fe-conventions` is written at those pins, rules 51–53 enforce the layer — the register said none while main shipped one; the drift was caught by the owner's own question). The halves meet ONLY at the OpenAPI document (P16 strategy pillar 1): doors serve it, the client is generated never hand-typed, the byte-pin makes drift loud; the backend never imports or assumes the client. **Bring-your-own remains legal as a recorded product divergence** in the product's own architecture.md — at the cost of the scaffold, fe-conventions and rules 51–53's enforcement, which that product replaces or forgoes. Rejected: keeping "bring your own" settled with `frontend/` demoted to a non-normative example (weakens the JS rules' standing on every product that takes the default); reversing the frontend package (the ratified P16 strategy's frontend half, built and verified). |
 | Background work & workflows | **Temporal, from day zero. Decided.** Durable execution for everything that must survive a restart or wait: webhook delivery with backoff, integration syncs, multi-step processes that wait for a human or a signal, schedules. **Activities** call services; **workflow code is deterministic** — no ORM, no I/O, no clock, no randomness inside a workflow function (house rule 9). Local: the Temporal dev server in `compose.yaml`; a `worker` process beside the web process. Production: Temporal Cloud by default, self-hosted as the recorded alternative. **There is no Celery, no beat, no `django.tasks` backend** — Temporal is the one engine for tasks, retries, schedules and workflows. |
 | Server | **ASGI by default** (`uvicorn`), because sockets and async endpoints are day-zero. The CRUD core stays on the sync ORM; async where an endpoint is I/O-bound. |
-| Sockets | **Django Channels** with the Redis channel layer; one authenticated consumer; services emit events that the realtime bridge pushes. **The hierarchy reaches this door (ADR realtime-2):** the socket used to push every fanned event to one group per tenant while REST read the same rows through `visible_to`, so a branch-B seller's socket received branch-A's rows — two doors, one question, two answers. Now `Event` carries the **row's** organization (ADR realtime-2a: it rides the `EventOut` envelope, the one body both the webhook and socket doors are handed, so the fan-out narrows on a field it can see and the spine's bridge signature never changed); an org-bearing event is pushed to `org_group(tenant, org)` and **only** an org-less one to the bare tenant group; and a consumer joins its hat's **subtree** org groups at connect — the socket's half of house rule 24, narrowing *subscriptions* where REST narrows rows, downward-only and failing closed on an unresolved hat. A flat product is a depth-one tree whose root hat joins three constant groups, so the depth-one property is preserved. Every consumer also joins `user_group(user_id)`, and the bridge name **`realtime.kick`** (shape `KicksUser`) closes that group's sockets — connect-time-only auth is right for a channel that stays open for hours and wrong the moment a token is revoked, so revocation and erasure reach the connection instead of the connection eventually noticing. **The channel is declaredly lossy and the seam is poll-on-reconnect** (`apps/realtime/bridge.py`'s docstring says it in full): no replay buffer, no cursor, none planned — a reconnecting client re-reads the REST list it cares about and treats a frame as a hint that something changed, and a hat switched mid-connection applies on reconnect. Rejected: **ancestor-chain publish** (cheaper joins, but the fan-out cost rides every emit including the socketless majority, where subtree-join cost rides only connected sockets) — RECORDED, with M4's measured join count at the 1,200-org hat as the trigger to revisit; a `visible_to` query per push (a DB read per event per connection — the N+1 the harness exists to refuse); connect-time-only auth with shorter tokens (narrows the window, closes nothing). |
+| Sockets | **Django Channels** with the Redis channel layer; one authenticated consumer; services emit events that the realtime bridge pushes. **The hierarchy reaches this door (ADR realtime-2):** the socket used to push every fanned event to one group per tenant while REST read the same rows through `visible_to`, so a branch-B seller's socket received branch-A's rows — two doors, one question, two answers. Now `Event` carries the **row's** organization (ADR realtime-2a: it rides the `EventOut` envelope, the one body both the webhook and socket doors are handed, so the fan-out narrows on a field it can see and the spine's bridge signature never changed); an org-bearing event is pushed to `org_group(tenant, org)` and **only** an org-less one to the bare tenant group; and a consumer joins its hat's **subtree** org groups at connect — the socket's half of house rule 24, narrowing *subscriptions* where REST narrows rows, downward-only and failing closed on an unresolved hat. A flat product is a depth-one tree whose root hat joins three constant groups, so the depth-one property is preserved. Every consumer also joins `user_group(user_id)` **FIRST, before either of its reads** (R4 F3 — a narrowing that commits while `connect` is still resolving would otherwise kick into a group the connection has not joined, and the kick is lost), and the bridge name **`realtime.kick`** (shape `KicksUser`) closes that group's sockets — connect-time-only auth is right for a channel that stays open for hours and wrong the moment a token is revoked, so revocation and erasure reach the connection instead of the connection eventually noticing. **Clause (d) has a second primitive: `realtime.kick_tenant`** (shape `KicksTenant`), a `KICK_TYPE` frame on `tenant_group`, because a tenant that is suspended or closed is not a fact about one person — `suspend_tenant` and `close_tenant` register it through `core.services.close_tenant_sockets_on_commit`, and before they did, a darkened tenant was refused at the next handshake and nowhere else while every live socket went on hearing (R4 F2). A **resume** kicks nobody: a widening takes nothing away, which is `kick_if_reads_narrowed`'s asymmetry one level up. **The channel is declaredly lossy and the seam is poll-on-reconnect** (`apps/realtime/bridge.py`'s docstring says it in full): no replay buffer, no cursor, none planned — a reconnecting client re-reads the REST list it cares about and treats a frame as a hint that something changed, and a hat switched mid-connection applies on reconnect. Rejected: **ancestor-chain publish** (cheaper joins, but the fan-out cost rides every emit including the socketless majority, where subtree-join cost rides only connected sockets) — RECORDED, with M4's measured join count at the 1,200-org hat as the trigger to revisit; a `visible_to` query per push (a DB read per event per connection — the N+1 the harness exists to refuse); connect-time-only auth with shorter tokens (narrows the window, closes nothing). |
 | MCP | The official Python MCP SDK mounted on the ASGI app at `/mcp` (Streamable HTTP). Tools are thin over services; token auth bound to user + tenant. The machine door — same services as REST; a disagreement between doors is a finding. |
 | Webhooks & events | `apps/events`: services `emit()` domain events → an **outbox** row → a Temporal workflow fans out: signed outbound webhook deliveries (HMAC, retries, dead-letter) and realtime pushes. Inbound webhooks are verified, stored and handed to a workflow — never processed inline. |
 | External connections | `apps/connections`: per-tenant `Connection` (provider, **encrypted credentials** — Fernet, key from env — status), an `httpx` client factory (timeouts, retries, idempotency keys), the OAuth-callback pattern, one inbound-webhook receiver. Providers are product work. |
@@ -114,7 +114,7 @@ later, exactly like one that broke; the reconciler lumped Temporal's own
 *Decision*: **`cancel_run`** — `POST /api/v1/runs/{run_id}/cancel/` plus the
 MCP twin over `contract_of` — with `start_replay`'s four walls in
 `start_replay`'s order: tenant (`for_tenant` → `NotFound`), membership
-(`require(actor, "workflowrun.cancel", run)`, a named `policies.py` predicate),
+(`require(actor, "workflow_run.cancel", run)`, a named `policies.py` predicate),
 ownership (`started_by` null or not the actor's → `NotFound`, never
 `Forbidden`, the existence-oracle argument), state (non-RUNNING → `Conflict`
 naming the status). The Temporal cancel is dispatched on
@@ -590,6 +590,72 @@ deleted, not kept; or the hosted invite page becomes driveable headlessly, at
 which point the command's printed steps can be verified by machine instead of
 by a person once.
 
+**ADR ident-10 · 2026-09-15 · a domain claim routes nothing until verified.**
+*Context*: R2 (the sign-in surface review) F1 — any tenant admin claimed any
+domain and the platform sign-in routed on it: a lockout (a person elsewhere
+refused by a foreign claim) and an absorption (a stranger landed in the
+claimant), both confirmed over the wire. *Decision*: `SsoDomain.verified_at`,
+set only by `verify_sso_domain` (an operator's audited act through
+`manage.py verify_sso_domain`, permission `sso_domain.verify`); `for_domain`
+honours verified rows only; a claim reserves the name unverified; public mail
+providers are refused at the door by a declared knob
+(`SSO_REFUSED_MAIL_DOMAINS`) whose list is a courtesy, not the wall.
+*Rejected*: DNS TXT verification now (a resolver dependency and a workflow for
+a population of zero — the trigger is the first product wanting tenant
+self-serve, at which point the same service is the seam the activity calls); a
+backfill marking existing claims verified (grandfathers the hole). *Trigger to
+revisit*: that self-serve product; or a second verification road, which is
+refused as a second writer.
+
+**ADR ident-12 · 2026-09-19 · every Zitadel session the sign-in seam opens,
+it closes — except the one a client is about to spend.**
+*Context*: two things made this an ADR of ours rather than a comment. First,
+the rule itself has been cited in this tree as "ADR ident-10" since rung A3 —
+`apps/accounts/signin.py`, `apps/accounts/zitadel.py`, `apps/accounts/views.py`
+and `apps/accounts/tests/conftest.py`, eight comment lines — but **ident-10
+here is the domain-claim ADR**; the session rule is the CONSUMER's ident-10,
+which design I-A §J5 cited with the qualifier and the code dropped. Those
+eight citations should read ident-12 and do not yet (A11's territory reached
+one of the four files; the correction is booked, not done). This ADR is
+**ident-12 and not ident-11** for a second reason worth a line: house rule 57
+cites "ADR ident-11" and no ADR of that number is written anywhere in this
+file — a dangling citation older than this ADR, booked with the eight above. Second, rung A8
+found a case where the rule cannot hold. *Decision*: `apps.accounts.signin`
+opens a Session API session per ceremony and closes it at EVERY exit — the
+refusals, the outages, the person's *Never mind*, and a second `begin` over a
+ceremony already in flight — so a half-authenticated session is never left on
+the identity platform for a person who did not finish. `_forget` is the one
+place that closes, and every road leaves through it.
+
+**PROPOSED — awaiting the owner's signature.** *The amendment*: on the Mode A
+road (design C-10), a ceremony that FINALIZED an OIDC auth request leaves its
+session open to the platform's own lifetime. *Which principle bends*:
+principle 18 (least privilege, minimum necessary lifetime) and this ADR's own
+rule. *Why the default is insufficient*: MEASURED on v4.17.1, 2026-09-19 — the
+finalize answers a callback URL carrying a code, the CLIENT spends that code
+afterwards on its own connection, and Zitadel validates the session the code
+was minted against at that moment. With the session closed on our way out the
+exchange answers `400 invalid_request "Errors.Session.Terminated"`, so the
+person is signed in nowhere and the app that sent them gets an error, after a
+sign-in that is perfect from both ends. *Alternatives*: close the session and
+have our server exchange the code (a second token road, and the client's own
+PKCE verifier is not ours to hold); delay the close behind a timer (a thread
+or a workflow for a ten-minute object on somebody else's server, and the
+client's timing is not knowable); keep it and accept the risk, which is this.
+*The risk*: an authenticated session exists at the identity platform that
+nothing of ours will close. *The mitigation, and why the risk is small*: the
+session TOKEN is the only handle on it and never leaves the process — the
+ceremony holding it is deleted in the same call — and M7 measured that the
+browser is left holding a device cookie and no session, so a second authorize
+with `prompt=none` answers the sign-in page rather than a code. The session
+expires on the instance's own clock. *Reversal*: one argument to `_forget`;
+`test_a_finalized_session_is_left_for_the_client_to_spend` and
+`test_every_other_road_still_closes_its_session` are the pair that would flip
+together. *Trigger to revisit*: a Zitadel build that validates the session at
+FINALIZE time instead of at exchange time (the measurement kit's M3 is the
+line that would notice), or a deployment whose session lifetime is long
+enough that an unclosed one is worth an operator's attention.
+
 **ADR accounts-1 · the invitation provisions the person; there is
 no signup door.** *Context*: an early from-zero persona walkthrough had one step with no door at
 all. `/accounts/signup/` 404s, the login page rendered a heading
@@ -838,7 +904,7 @@ The engineering lead **loads `.claude/skills/django-architect/SKILL.md`** before
 
 Boundaries: an app is one domain noun and its aggregate; dependency direction is `core` ← `accounts` ← platform (`workflows`, `events`, `connections`, `realtime`) ← domain; a domain app never imports another sideways — it emits an event or declares a dependency on its `AppConfig.depends_on` in the same rung; split when the second aggregate appears, never at a size.
 
-Authorization — **both layers, with a clear division**: the door authenticates and resolves the tenant (route `auth=`, MCP token, socket middleware); the service authorizes, object-level, via `core.authz.require(actor, action, obj)`, which consults **`Membership.role`** (`owner | admin | member`, extensible) and the app's **`policies.py`** predicates (`can(actor, "widget.void", obj)`). Roles are data; policies are code.
+Authorization — **both layers, with a clear division**: the door authenticates and resolves the tenant; the service authorizes, object-level, via `core.authz.require(actor, action, obj)`, and every scoped read asks in its selector. **The vocabulary is one shape, `<kind>.<verb>`**: every first-party model is a kind (`authz_kind`, derived from the class name, overridable), every kind carries `create/read/update/delete` by derivation, every other verb is a status transition or compound act declared on a kind in its app's `ACTION_PROSE` with its sentence, and one reserved verb, `tenant.own`, belongs to ownership. **Three layers, one owner each**: `owner`, the one platform role, IS the vocabulary; every other role is declared in an app's `roles.py` with a pattern collection (`apps/core/roles.py` ships `admin` and `member` and is the one product-editable file in `core`); a tenant's data is `core.Role` (custom roles), `core.RolePermission` (include/exclude deltas and custom collections, keyed by role key), `core.Grant` (one person's `allow` or `withhold`, withhold winning). `Membership.role` names a role by key and inherits downward as memberships do. `require` evaluates at the node the object names, answers no to anything outside the vocabulary, and composes `holds AND predicate`. **Nobody hands out what they do not hold and nobody takes back what they do not hold**; the root always keeps one un-withheld owner. Rule 13 proves a service asks for the kind it writes; rule 54 proves the vocabulary derives, the rows name it, and the reads ask.
 
 API contract: `/api/v1/` from day one (`NinjaAPI(version="1")`); additive changes only — a breaking change is a `v2` router beside `v1`, declared by the lead; every list `@paginate` (**cursor**: `?cursor=` and `?limit=` ≤ 200, envelope `{items, has_more, next_cursor, count}`, `count` computed only for `?include_count=true` — ADR core-18, owner-ratified, which retired `page`/`page_size` outright on the licence of the empty consumer register), filters via a `FilterSchema`, `ordering=` from a per-route allow-list, `q=` for search, errors `{detail, code, errors?}` from the single mapper, UUIDs in paths; one schema per shape shared across the doors; an `Out` never exposes another tenant's identifiers.
 
@@ -1114,6 +1180,50 @@ carried criterion's exact ban); declaring the blind spot in three places
 (three declarations of one fact drift). *Trigger to revisit*: a fourth reader
 appears.
 
+**ADR core-25 · the permission vocabulary is one shape, computed from the
+model registry, never stored.** *Context*: an administrator could not give
+one person one capability below `admin` without a deploy or a fourth role,
+and the action names the three role checks composed with were free-floating
+strings — a key could name anything, nothing could census them, and no
+instrument could say what permissions a deployment had. *Decision*: one
+vocabulary shape `<kind>.<verb>` — kinds and the four CRUD verbs **derived**
+from the model registry at import (`authz_kind` on the model is the immutable
+key under a renamable class name; `authz_kind_of` puts an owned `CASCADE`
+child under its aggregate's kind; `authz_kind = None` plus a reason opts a
+table out), other verbs **declared** on a kind in the owning app's
+`ACTION_PROSE` as one line with its sentence, one **reserved** ownership verb
+`tenant.own` that no pattern matches; three layers with one owner each —
+`owner` IS the vocabulary, product-declared roles live in `apps/<x>/roles.py`
+with pattern collections, tenant data is custom roles, deltas and grants both
+ways; `require` composes holds AND predicate at the node the object names; one
+hand-out / take-back rule replaces rank; rule 13 proves a service asks for the
+kind it writes. Nothing is materialised as rows — Django derives four
+permissions per model at `migrate` and this derives four per kind at import,
+because a table of permission names is a second owner of a fact the code
+already holds, and it goes stale the moment a product adds a model.
+*Rejected*: three platform built-in roles; free-floating action names; a
+`<app>.<model>.<verb>` three-part key (no collision exists, and one tomorrow is
+an import refusal resolved by an explicit `authz_kind` rather than a longer key
+for everybody); additive rank-bundles; person × action access lists; a
+`Permission` table synced from code; a parallel custom-role table; a rules
+engine; allow-only grants; snapshot collections; a foreign key from
+`Membership` to a role declaration; per-node role sets resolved through
+`governing()` (a tree walk per `require`). *Buy, rejected with the two exits
+recorded*: `contrib.auth` + guardian, django-rules, pycasbin, Oso, Cerbos,
+Topaz, Zitadel authorizations, SpiceDB, Keto, Auth0 FGA and WorkOS each
+contradict either the derived vocabulary or one owner of the membership graph;
+**Permify is AGPL-3.0 and house rule 23's licence leg refuses it outright**.
+*Trigger to revisit*: **OpenFGA, self-hosted**, when a product needs a
+relationship graph beyond the organization path — it would replace the data
+half of resolution and keep the vocabulary; **AWS Verified Permissions**, when
+a product is AWS-native and wants the decision out of process under a business
+associate agreement. Either exit is taken behind `require`, which is the one
+function every door already asks. Also revisit at the first product whose
+tenants need *conditions* on a grant — time-boxed, approval-gated, "under
+$1k" — which is a predicate over data and wants a check registry, not a wider
+vocabulary; and at a product measuring O(people) withholds where a per-node
+role set would be O(1).
+
 ## The platform the template ships
 
 | Area | Ruling |
@@ -1167,6 +1277,40 @@ meaning intact, since a pass-2 red can then only be state left behind and never
 a different order. `-n auto` is applied in the gate legs and deliberately not
 in `addopts`: every worker creates and migrates its own database, so a default
 would make running one test file pay one database creation per core.
+
+**Amended 2026-09-18 (owner ruling, PROPOSED — awaiting the owner's
+signature).** *Which principle bends:* 7 — the critical synchronous path
+carries no unnecessary dependency — and gate-1's own "two passes on one
+machine": under `pm_push.sh --bank --on-boxes N` the sharded `pytest-x2` unit
+runs **one** pass (`--passes 1`) and the whole-suite two-pass leak proof runs
+on the acceptance box, composed into the row as
+`leak-proof=acceptance:<box> rc=0`. *Why the default is insufficient now:* the
+second pass on every shard is a within-shard proof (`build-contract.md`
+§ SHARDED) that costs a whole pass of box-time per shard, while a whole-suite
+two-pass run under one seed already executes on the acceptance box and was
+composed nowhere — the bank paid for the stronger proof and banked the weaker
+one. *Alternatives:* drop the second pass (rejected — the leak class is real);
+run it on the Mac (rejected — the constraint); a provisional row honoured
+before the proof (rejected below). *Risk:* the acceptance box's two passes
+(≈ 320 s measured) are longer than one sharded pass, so the proof is the
+bank's wall at every N; a leak found there after a push would red a tree
+already on origin. *Decision:* **the row is not written until the proof is
+in** — the push waits on the acceptance box, by construction: the pre-push
+wall consults the row, and a row that ran one pass and carries no green
+`leak-proof=` field is refused as a missing leg, so a push before the proof
+cannot pass the wall and a provisional row would be a green vouching for less
+than it says (the one failure the ledger exists to prevent). The cost is that
+this change lowers the wall only where the acceptance box's two passes are
+faster than a sharded pair; the wall lever is that box's instance class and
+`-n`, measured in the cycle's own measurement row. The local `pm_push.sh
+--bank` (no `--on-boxes`) is unchanged: two whole passes on one machine.
+*Reversal:* `if:` a red `leak-proof` rc is observed on a tree whose sharded
+one pass was green AND the acceptance box's two-pass wall exceeds the sharded
+two-pass wall by more than one whole pass at the N in use — restore
+`--passes 2` in `bank_boxes_plan` (one line) and the field becomes an ignored
+extra. *Trigger to revisit:* the first bank at N ≥ 7 where the composed wall
+is the acceptance box by more than 60 s — then the proof box's size is the
+next rung, not this ADR.
 
 **The envelope is measured, never vibed** (ADR perf-1). A reusable
 seeded-scale harness lives in `perf/` — measurement territory beside
@@ -1254,6 +1398,74 @@ sampled canary corpus is a corpus with a hole somebody has to remember).
 Revisit when a dead canary is traced to a merge and the delay to push
 actually cost work, or when the selftest's wall time falls below ~10s.
 
+**ADR core-26 · `core` says what happened, through the bridge.** *Accepted
+2026-09-15 (P20, P4).* *Context*: `core` emitted no events at all. It sits
+BELOW `apps/events` in the layer contract (rule 7), so it may not import the app
+that owns the outbox — and the six most consequential writes in the platform
+(a role made, renamed, deleted; a role's collection edited; a permission handed
+to or taken from one person) were therefore invisible to every webhook
+subscriber and every socket, while a widget creation was not. *Decision*:
+`apps/core/events.py` declares `core.role.created`, `core.role.updated`,
+`core.role.deleted`, `core.membership.updated`, `core.grant.created`,
+`core.grant.deleted` — names only, house rule 16's grammar, the noun being the
+authorization KIND the row belongs to — and `services.py` publishes each one
+through `bridge.get(bridge.EMIT)` **inside the transaction of the write it
+describes** (principle 8; the relay is outside it). Payload v1 is flat:
+`tenant_id` always, `organization_id` wherever the row belongs to one part of
+the tenant (rule 38), then the fact — `role_key`, or `membership_id` +
+`permission` + `effect`. *Rejected*: importing `apps.events` from `core` (rule
+7 — and the spine apps are removable, so a checkout stripped back to `core` must
+still run); emitting from the door (rule 10); shipping the hand-out family with
+no events at all (rule 42's class — a write nobody can subscribe to). *The one
+collision, named*: `services.KICK_MEMBERSHIP_REVOKED` is the string
+`"core.membership.revoked"` — a channel-layer close reason, read by
+`apps/realtime` and by nobody else. The two vocabularies share a prefix because
+they are about the same rows; no name appears in both, nothing reads both, and
+`apps/core/events.py`'s docstring is where that is written down. *Trigger to
+revisit*: the first `core.membership.*` event beyond `updated` — a creation or a
+revocation published as an event rather than only kicked — at which point the
+two lists are close enough together that one of them is renamed.
+
+**ADR core-27 · a read is a permission.** *Accepted 2026-09-15 (P20, Phase R).*
+*Context*: through v2.0 a `<kind>.read` key was free to any membership in the
+tenant — `allows` step 3 short-circuited it and `visible_to` was the whole read
+gate. That answered "which rows" and never "whether this kind at all", so a
+role could say nothing about what a person may see, a custom role could not be
+narrowed to a subject area, and a `withhold` had no effect on a read.
+*Decision*: a `<kind>.read` resolves through the same three layers as every
+other key — `owner` holds it (the vocabulary), `admin` holds it (`*`), `member`
+holds it (`*.read`), a custom role holds what its collection names, an `allow`
+grant adds it and a `withhold` subtracts it. **The check lives in the selector,
+once** (§C6), and every door pays it: a `list_` asks at the acting hat
+(`obj=None` → `where_of`) before it builds the queryset; a `get_` asks after
+the scoped fetch with `obj=row`. **`visible_to`/`for_tenant` still decide WHICH
+rows and `require` decides WHETHER this kind, here** (rule 24, BVB-4) — a
+selector never filters rows by permission. A `system` actor passes at step 1.
+*The grammar* (§C8): outside your subtree → `not_found` (the scoped fetch,
+unchanged) · inside it without the key → `forbidden` with
+`refusal_sentence("<kind>.read")` · a list without the key → `forbidden`,
+because a list has no row to hide. Reach before capability. *Consequences*: a
+membership with **no role reads nothing**; a **custom role reads nothing until
+its collection names reads**, so the role services accept `"*.read"` as a
+pattern and expand it at write time; **the socket narrows per HAT, not per
+org** — a connection's read set is the read half of `effective_permissions` at
+the acting hat, computed once at connect and checked per frame (a per-org set
+would disagree with the REST list, which rule 46 forbids); a write that shrinks
+somebody's read set at any node they hold a membership on closes their sockets
+on commit (`core.permissions.narrowed`), a widening kicks nobody; the token
+echo drops the read half when no read is held; `READ_VERBS` and `is_read()`
+remain as deprecated shims read by nothing until v3.0; **a tenant-wide kind — one
+whose model names no organization — is READ at the acting hat and WRITTEN at the
+root** (PR5.5, 2026-09-17), which is the v2.1 stopgap and is declared as one: it
+makes this door agree with the socket, the search and the admin today, every such
+site wears a dated `hat-scoped` valve that house rule 55 counts, and universal
+homing replaces it in v2.2 by giving those kinds a home (the universal-homing
+proposal, 2026-09-17 — every record homed at a node). *A flat product observes
+nothing* — the 288-cell census in `apps/core/tests/flat_product_baseline.json`
+is the proof, and 0 write cells moved when it was re-derived. *Trigger to
+revisit*: the first product that wants per-FAMILY read precision in the token
+echo, or the first family-shaped withhold.
+
 ### Enforcement design ("fold it in")
 
 Reviews are the weakest rung; every architect rule that can move from review
@@ -1322,7 +1534,7 @@ rule, and the declared blind spots are the surveyor's rotation map.
 10. Every door calls services: MCP tools, socket consumers, API routes, activities, webhook receivers and admin import services/selectors/schemas — never `models` for writes, never `.save()`/`.delete()` directly.
 11. Every app has the canonical shape: `models · services · selectors · schemas · api · mcp · workflows + activities · consumers · events · policies · admin · tests`; a different file name for the same job (`utils`, `helpers`, `logic`, `managers` holding business rules) is a violation.
 12. Reads and writes are separate: `selectors.py` never writes; `services.py` never returns a queryset for display.
-13. Every function in `services.py` is decorated `@service` (keyword-only, typed, `tenant`/`actor` for tenant-owned writes, returns an object or dataclass — never `dict`/`None` for a write) and calls `authz.require(actor, action, obj)` before a write to a scoped model (or carries `# authz: <reason>`). A door that contains permission logic is the same violation from the other side.
+13. Every function in `services.py` is decorated `@service` (keyword-only, typed, `tenant`/`actor` for tenant-owned writes, returns an object or dataclass — never `dict`/`None` for a write) and calls `authz.require(actor, action, obj)` before a write to a scoped model (or carries `# authz: <reason>`). A door that contains permission logic is the same violation from the other side. **And a service that asks asks about what it WRITES**: every kind its body writes — resolved by AST through the model registry's `authz_kind` / `authz_kind_of` / `snake_case(ClassName)` — is a kind it required, or the write line carries `# authz-kind: <reason>`; and every key it requires is one the vocabulary holds, written as a literal or a module-level string constant, or the ask carries `# authz-key: <reason>`. A `require` proves only that somebody asked something — `create_widget` guarded by `widget_policy.create` is a perfectly shaped service that authorizes the wrong noun, and every other layer reads as green over it. The mismatch count is a per-app ratchet each Phase-W sweep drives to zero; a service that asks for nothing at all stays the `# authz:` clause's subject, said in the rule's `does_not_cover` rather than left to be inferred from silence.
 14. Services raise `core.exceptions.*`; `HttpError`/`Http404`/status codes never appear in `services.py`/`selectors.py`; the one mapper lives in `config/api.py`.
 15. Models: `on_delete` explicit (`PROTECT` default; `CASCADE` only for owned children; `SET_NULL` with a reason comment); invariants in `Meta.constraints`; no business logic in `save()`; `TextChoices` for enumerations; **no `FloatField` on money/quantity/rate** (Decimal 19,4 + ISO-4217 currency); `DateTimeField`s end `_at`, `DateField`s `_on`; no `is_deleted` booleans (`archived_at` if a product needs it). **And a secret-shaped field is encrypted at rest**: a field named `secret`, `token`, `password`, `credentials`, `signing_key`, `api_key`, `private_key`, `access_token`, `refresh_token`, `client_secret` — or any of those as a suffix — is an `EncryptedCharField`/`EncryptedJSONField`, or is allow-listed in `quality/rules.yaml` with the reason. A database dump, a replica, a backup and a traceback are four ways a plaintext credential leaves, and one field sitting in the clear beside encrypted neighbours is never a decision somebody made — it is one nobody noticed. A name ending `_hash` is a digest, not a recoverable secret, and is out of the population by construction: encrypting it would protect nothing and would break the unique lookup that authenticates every request.
 16. Naming: apps plural nouns; models singular; services are verbs; selectors `get_`/`list_`/`_for_tenant`; events `<app>.<noun>.<past-verb>` declared in the app's `events.py`; schemas `XIn`/`XOut`; booleans `is_`/`has_`.
@@ -1336,7 +1548,7 @@ rule, and the declared blind spots are the surveyor's rotation map.
 24. Every read of an `OrgScopedModel` in a door, service or selector chains `.visible_to(actor)` after `.for_tenant(...)`; a bare tenant-scoped read of an org-scoped model is a violation. **Or `.governing(org)`** — upward *config* resolution, never upward *visibility* (ADR core-3) — and that half is fenced in the same breath: `.governing(...)` is legal only on a model that declared `InheritedDownward`, and a call on an unmarked model is a violation here for the same reason it is a `TypeError` there. Grants above the granter's effective role, or outside their subtree, are refused in the membership service. Re-parenting outside its service is a violation.
 25. **`comms.send()` is the only legal sender.** No module under `apps/` imports `django.core.mail` or `apps.core.mail` outside the allow-list in `quality/rules.yaml` — `apps/comms/**` (the transport itself), `apps/core/mail.py` (the platform mailer), `apps/workflows/activities.py` (that mailer's I/O edge) and tests. Consent, quiet hours and suppression are enforced *inside* `send()`, so a feature that reaches for a mail module reaches around all three. The one standing caller — `core.services.invite_member` — is ratcheted at 1 and named for a follow-on rung (ADR comms-2), not exempted.
 26. **A service names nothing the actor could not have reached** (ADR core-4). A `@service` that writes an org-scoped row and takes a parameter annotated with an org-scoped model passes it through `core.authz.may_be_named(actor, obj)` — refusing when it is False — or carries `# reach: <reason>` on the parameter. Tenancy cannot catch a reference into a branch the actor holds no membership over, because the row *is* in the tenant; the policy cannot, because the policy is about the verb. The annotation is the declaration the gate reads: which kwargs are FK targets is an open set, and an annotation naming a model in the tree is the closed half of it. Gate-tier and **ratcheted over a measured backlog** (measured before enforced, per app); every `# reach:` is counted and printed, and a bare one is itself a violation.
-27. **One door to the identity platform** (ADR ident-2). Identity configuration is written through our audited services onto our rows, and *materialised* in Zitadel by `apply_identity_config` — **the row is the intent, Zitadel is the materialisation, and the console is a window, not a door**. The enforceable half: no module outside `apps/accounts/zitadel.py` names the `ZITADEL_PAT` setting (`config/settings/` excepted — it is where the environment is read), and nothing outside the `quality/rules.yaml` allow-list imports that module at all: the activity, where a management failure is a Temporal retry, and the two `zitadel_*` commands, which are the shell door. A service that reached the management API would put external I/O inside its transaction, and a Zitadel hiccup would roll back a legitimate row (C2). The honest half, declared rather than implied: **a check cannot see Zitadel's own console**, so `manage.py zitadel_audit` — read-only, changes nothing — is the runtime tripwire, and the auto-repairing reconciler is deliberately not built, with its trigger named in the ADR.
+27. **One door to the identity platform** (ADR ident-2). Identity configuration is written through our audited services onto our rows, and *materialised* in Zitadel by `apply_identity_config` — **the row is the intent, Zitadel is the materialisation, and the console is a window, not a door**. The enforceable half: no module outside `apps/accounts/zitadel.py` names the `ZITADEL_PAT` setting (`config/settings/` excepted — it is where the environment is read), and nothing outside the `quality/rules.yaml` allow-list imports that module at all, except through the rule's own `# rule-27:` valve: the allow-list is the activity, where a management failure is a Temporal retry, plus the `zitadel_*` commands that are the shell door (`python -m quality.gate --explain 27` prints which, and the count moves without this file changing), and `manage.py zitadel_reconcile` is the one VALVED importer — its reason says it takes `configured()` and `ZitadelError` and writes nothing at all (`apps/accounts/management/commands/zitadel_reconcile.py:198-204`). A service that reached the management API would put external I/O inside its transaction, and a Zitadel hiccup would roll back a legitimate row (C2). The honest half, declared rather than implied: **a check cannot see Zitadel's own console**, so `manage.py zitadel_audit` — read-only, changes nothing — is the runtime tripwire, and `manage.py zitadel_reconcile` asks the services to close what that audit reports, by hand, as a deploy step, with `--dry-run` and the 0/1/2 exits shaped for one. What is deliberately not built is a SCHEDULED run of the reconciler, and that command's own docstring names the trigger for building one (ADR ident-2 amended, below): a drift found in production that nobody in this deployment caused.
 28. **Workflows close their runs** (ADR workflows-5). A start writes a `WorkflowRun` row saying `running` — that row is the product's own answer to "what is happening", the one a selector, an admin page or a reconciler can actually read, because nothing here queries Temporal from a selector. So every class in an app's discovered `WORKFLOWS` list either reaches its app's finish seam from `@workflow.run` — **last**, after the work, so a failure after the mark cannot leave a `completed` row for a failed run — or **declares `owns_no_run = True`**, which is the schedule-started population: nobody asked for it through a service and no row exists to close. Two seams are live and both are right (`apps/workflows/workflows.py`'s module-level `_finish(work)` wrapper; the domain apps' `self._finish(status=, error=)` method), so the gate asks for a *reference* to a `_finish`-named seam rather than one call shape. Measured before enforced, and ratcheted over what the measurement found. Declared blind spot: the scanner sees the reference, not the path — whether the seam is reached on every branch, and whether an `owns_no_run` declaration is true, are review's and W4's reconciler's.
 29. **A role is never granted above the granter**. A `@service` that takes a role-shaped parameter (`role`, `default_role`, `*_role`) and puts it into a role position — a `role=` keyword on a call, or an assignment to a `.role` attribute — calls the escalation wall (`core.services._refuse_escalation`, or `accounts.services._refuse_role_above_the_configurer`, which wraps it) in the same body, or carries `# role-bound: <reason>`, counted and printed exactly as `# reach:` is. **Nobody grants above themselves**, and neither tenancy nor the policy catches a breach: the row *is* in the tenant, and the policy is about the verb, not about the relationship between the role being granted and the granter's own effective one. The honest exception is a path with no granter at all — an identity provider asserted an identity — where the wall short-circuits by design and the ceiling lives where a person actually acted. Measured before enforced. Declared blind spot: the population is name-shaped, so a role smuggled under another name is invisible; the named trigger for tightening is the day role parameters are annotated `Membership.Role` instead of `str`.
 30. **A retry clock that nothing reads is a promise nobody keeps** (ADR events-3). A `DateTimeField` matching the retry-clock grammar (`next_attempt_at`, `*_retry_at`, `retry_after_*`) must be **read** by production code outside its own declaring module and outside tests — a filter lookup, an `order_by`, a `values`/`only`, an `F()`. A write is not a read and a docstring is not a read, which is the whole rule: `Outbox.next_attempt_at` was written, indexed over `(status, next_attempt_at)` and documented in three modules while **nothing in production ever queried it**, so a row whose dispatch died held its promise for ever and only a human running `manage.py replay_events` could ever find it. The column was not broken; it was unread, and unread looks exactly like working. Measured before enforced. Declared blind spot: the grammar is the closed half (a fourth spelling of "try later" is outside it), and the rule sees that a reader exists, not that it is reachable.
@@ -1409,13 +1621,25 @@ authorizes it. Declared blind spots: planner choice at scale (M1-C, M4
 FINDING 1 — the measured instances), and queries not in the registry (the
 registry is a closed list; `docs/product/scale-envelope.md` says how an entry
 is added).
-36. **Socket fan-out discipline** (ADR gate-2, P3 E1; M4 §8's enumeration).
-An org-scoped payload is never pushed to a bare tenant group: every
-`group_send` under `apps/` takes its group from `bridge.group_for`'s decision
-or targets `user_group` (the kick — an instruction to hang up, never a
-payload). Exact-shape by design — the whole subject is one decision point and
-two call sites. Declared blind spot: a group name laundered through a
-variable; a payload whose org-scoping the AST cannot see.
+36. **Socket fan-out discipline, and a tenant that goes dark hangs up** (ADR
+gate-2, P3 E1; M4 §8's enumeration; the second class from R4 F2). An org-scoped
+**payload** is never pushed to a bare tenant group: every `group_send` under
+`apps/` takes its group from `bridge.group_for`'s decision, or carries a
+`KICK_TYPE` message — an instruction to hang up, never a payload — to
+`user_group` (one person's sockets) or to `tenant_group` (every socket in a
+tenant that has been suspended or closed). Exact-shape by design — the whole
+subject is one decision point and three call sites. **The second class is the
+status writer**: every `@service` assigning a non-`ACTIVE` `Tenant.Status` calls
+`close_tenant_sockets_on_commit` in the same body, because a darkened tenant was
+refused at the next **handshake** and nowhere else, so every socket already open
+went on hearing for the life of the connection while the REST door answered 403
+to the same credential — two doors, one question, two answers, and the handshake
+refusal is exactly what made it invisible. Declared blind spots: a group name
+laundered through a variable; a payload whose org-scoping the AST cannot see; a
+status written by `.update()`, a variable, a `setattr` or a data migration (a
+bulk suspension is the tests' road, not a shape); a kick registered in a callee
+rather than in the service's own body; and whether the kick **arrives**, which is
+`close_sockets`' own `robust=True` blind spot inherited whole.
 37. **No scoped model orders the whole deployment by time** (ADR core-11).
 `BaseModel` shipped `created_at db_index=True` behind
 `ordering = ["-created_at"]`, so every model inherited an index over the whole
@@ -1732,6 +1956,157 @@ excluded) to a quoted literal; the value arrives from the build environment
 and the module names it, the way the settings modules already do. Reads
 NAMES, never entropy — the declared trade a browser tree forces. On a tree
 with no `frontend/` the rule skips, printed, and every floor derives to 0.
+
+54. **The vocabulary is one shape** — one statement, five clauses, one census,
+because they are one question asked at five layers: *is the word for a
+capability decided in exactly one place?* **(a)** Every first-party concrete
+model yields one authorization kind — `authz_kind`, `authz_kind_of`, or
+`snake_case(ClassName)` — or opts out with a sentence beside it; four verbs per
+kind are the derived keys, and a key an app DECLARES in `ACTION_PROSE` is
+classified against them. A declared key that is a second spelling of a derived
+one (`gadget.view`, `endpoint.update`), or that names no kind at all, is
+non-conforming; the count is a ratchet that may shrink and never grow, and a
+rename goes through the app's own `RENAMED_PERMISSIONS`, which keeps the old
+word answering. **(b)** A declaration names declared things: a `roles.py` may
+not declare the platform's `owner` or a reserved permission as a role, two apps
+may not declare one role, and a `DEFAULT_ROLES` entry may not offer a capability
+to a role nobody declares — `djb.W054` is the half that reads a deployment's
+ROWS at `--deploy`, this is the half that reads the code where the gate can see
+it. **(c)** No role by value: outside `apps/core/authz.py` and
+`apps/core/models.py`, production code does not ask *what role is this* — not by
+the enum, not by rank, not by comparing `.role` to a string. A role is data a
+tenant owns, and a rank table is a second opinion about it that no tenant can
+edit; a predicate that needs "how much authority" asks
+`holds(actor, "<kind>.<verb>", at=…)`, which reads the same three layers the
+role editor writes. Ratcheted per app; each sweep drives its own app to zero.
+**(d)/(e)** Every public `get_`/`list_` selector whose return annotation names a
+model with a kind calls `require(actor, "<that kind>.read", …)`. The classes are
+hard since Phase R (PR5, 2026-09-17), because the read sweeps drove every one of
+them to zero and "measured before enforced" had been satisfied by then;
+`accounts.read` is the one class still ratcheted, at the number the gate prints,
+until the sweep behind lane I pays it. Valves, each demanding a
+sentence and each counted and printed: `# role-value:`, `# read-open:` (a
+machine read with no person behind it), `# read-kind:` (it returns one kind and
+is authorized under another). **This half never imports**: every derivation is
+AST, because the self-test plants a `models.py`, a `policies.py` and a
+`roles.py` into the tree and re-runs the check in the same process, and a cached
+`django.setup()` could not see any of them — so the two underivable cases (a
+kind claimed by two models, an opt-out with no sentence) are findings here where
+`djb.E025` refuses to load at all. *Rejected: five separate rule ids* — one
+statement, one census, and the ratchet lines are per clause already. *Rejected:
+a hard census at birth* — measured before enforced, which is the blueprint's own
+words. The Permify prior art is recorded beside the rule in `quality/rules.yaml`
+and is not a dependency: AGPL-3.0 would be refused by rule 23's licence leg.
+
+55. **A tenant-wide kind is asked at a node the caller resolved** (ADR core-4's
+sibling). `require`/`allows` on a key whose kind carries no `organization` —
+`tenant`, `role`, `grant`, `user`, `api_token`, `identity_branding`,
+`sso_connection`, `sso_domain`, `sso_identity`, and the eleven more the
+derivation finds — passes the root, an `Organization` parameter, or a row's
+`.organization`, or carries `# hat-scoped: <reason>`, counted and printed.
+Asked with no node, or with the row itself, `allows` falls back to the acting
+hat, where a branch administrator holds `*` — which is how an administrator of
+one branch came to administer the whole tenant's identity provider while every
+layer read as green. The population is DERIVED by the same two functions rule
+13 clause (i) and rule 24 already use, so a model that gains a node leaves this
+population on the run it enters rule 24's. And rule 26's population now
+includes every model that names its organization through a foreign key
+(`Membership`), with reach asked BEFORE capability: a `require` on a parameter
+above the `may_be_named` that clears it is this rule's finding, because a
+capability answered before reachability is a capability answered about a row
+the actor may never have been able to name. **And a READ of a tenant-wide kind asks at the ACTING HAT, under a dated valve,
+until v2.2 homes the kind.** Sight is the hat's; configuration is the root's. A
+tenant-wide kind is read where the caller is standing — so a member of one
+branch holding `*.read` sees the tenant's shared rows — and is still WRITTEN at
+a node the caller resolved, so an administrator of one branch reads the tenant's
+configuration and cannot change it. That is what three other doors already did
+(the socket narrows per hat, `search` asks at the hat, the admin changelist asks
+with `obj=None`), and it is a STOPGAP: every such site carries a dated
+`hat-scoped` valve, this rule counts it, and the rung that gives the model a
+home deletes it (PR5.5, 2026-09-17; the successor is the universal-homing
+proposal, 2026-09-17 — every record homed at a node). The rule's statement,
+population and valve grammar are unchanged — a read declares itself, it is not
+carved out. Declared blind spots: a node laundered through a local; a predicate
+that measures the root inside itself; `holds(at=None)`; and the four `core`
+read sites, which are a ratchet for the same reason and are swept when their
+kinds are homed.
+
+56. **One router for home-realm discovery** (ADR ident-10).
+`SsoDomain.objects.for_domain(` is called from the two pre-auth selectors and
+`.claim(` from `_apply_domains` and the verify door, and nowhere else; no module
+outside those filters `SsoDomain` by `domain=` at all. A second router is a
+second answer to a question that has one: two routers can disagree about whose
+person an address is — one honouring `verified_at` and one not — and the person
+is sent to one identity provider and provisioned into another tenant. Declared
+blind spots: a read through a related manager (`connection.domains.filter(...)`)
+and raw SQL; and whether the one router honours `verified_at`, which is
+`test_domain_claims.py`'s and not a shape any check can see.
+
+57. **One writer of the identity join** (ADR ident-11). The join is
+keyed on the subject, not the address. `User.zitadel_sub` is written by
+`record_zitadel_identity` and cleared by `unlink_zitadel_identity`, both
+`@service` and both audited; `sociallogin.connect(` lives in the adapter, after
+the writer has answered. Reads are out of the population by construction — and
+pinned there by a negative, because a rule that fenced reads would be a rule
+against using the column it protects. A second writer is how a join between two
+identity systems comes to disagree with itself, and the disagreement is an
+account takeover with an extra step. Declared blind spot: a write that precedes
+a refusal is a census (`test_refusals_write_nothing.py`), not a shape; so are
+`setattr`, a `User(...)` constructed with `zitadel_sub=`, and `SocialAccount.uid`,
+which is allauth's own column.
+
+58. **Socket join discipline: nobody names their own group, and nobody mounts
+an open socket** (R4 F1; ADR realtime-2's "nobody names their own group" made
+enforceable). Every `group_add` under `apps/` takes its group from one of the
+bridge's three derived builders — `tenant_group`, `org_group`, `user_group` —
+directly or through a name the same scope bound to one; and every entry in a
+module-level `websocket_urlpatterns` wraps its application in `token_auth(...)`
+and names a consumer extending `TenantEventsConsumer`. The sentence was a
+convention for ONE consumer and the review proved what that was worth: a planted
+`apps/example/consumers.py` doing `group_add(f"tenant.{query['tenant']}")` and
+`accept()`, mounted bare, is discovered by `config/asgi.py` exactly as the real
+one is, accepts with **no credential**, and hears that tenant's events — while
+rule 36 read only the `group_send` (push) side and rule 46 was answered by one
+`DOOR_PAIR` line in a test file, which its own `does_not_cover` says in capitals
+proves existence and never strength. Two classes, because closing either alone
+still leaves a door: `join` without `mount` is an anonymous subscriber to real
+branches, `mount` without `join` is somebody else's tenant read with a valid
+credential. Declared blind spots: a derived name laundered out of its scope (a
+finding here, so the cost is friction and not a hole — the valve is where such a
+site says why); a **late** join, which satisfies this rule completely and is
+R4-F4's defect, closed by a population-derived test rather than by a shape; an
+**overriding subclass**, which claims inheritance and not behaviour; and a
+consumer mounted by any road other than `websocket_urlpatterns`, which this
+template does not have.
+
+59. **An org-scoped event carries its branch, and an org-less kind names none**
+(R4 F4 and F5; ADR realtime-2a). `events.services._subject_organization` reads
+only the payload's **top-level** `organization_id`; absent is NULL, and
+`bridge.group_for` reads NULL as tenant-wide. Rule 38 keeps the key on an
+org-scoped model's `Out` schema and **nothing certified that an emit site passed
+one** — rule 36's own `does_not_cover` named the gap in as many words. The live
+instance: `usage.threshold.crossed` sent a `ThresholdCrossingOut` whose top level
+had no key while its nested `crossed_by` was an org-scoped `UsageEntryOut`, so a
+rival administrator at branch B received a ledger row `GET /usage/` under hat B
+never lists. So every `emit(name=<const>, payload=…)` whose noun resolves to an
+`OrgScopedModel` kind passes a payload that provably carries the key — a dict
+naming it, an expression mentioning a rule-38-certified `Out`, a name the scope
+bound to either, or a module-local helper whose returns are one of those (which
+is what thirteen honest sites on this tree really write). **The other end is the
+`None` mapping**: a noun an app maps to `None` in `EVENT_KINDS` while the app
+declares a model whose kind *is* that noun, because `consumers._may_read` answers
+True for a `None` kind whatever branch the frame carries — a real row's event
+declared org-less bypasses the read set for every connection in the tenant, and
+the `ImproperlyConfigured` text `kind_of_event` raises offers exactly that road.
+**The static rule ships with its runtime belt** (the two together, never one): 
+`emit()` refuses an org-scoped kind with no key and refuses an org-less kind that
+names a branch, and `push_event` drops an org-bearing frame on a `None` kind with
+`realtime.frame.org_on_orgless_kind` at ERROR. Declared blind spots: a name this
+walk cannot resolve (a parameter, an f-string, a table lookup — four such sites,
+covered by the runtime belt and not by the scan); a payload assembled across
+modules; the **value** rather than the key (a wrong branch is
+`_subject_organization`'s refusal, not a shape); and a nested certified `Out`,
+which is why the crossing is fixed by giving the **outer** schema the key.
 
 
 ## App map — data portability
@@ -2236,6 +2611,36 @@ as "ADR gate-4".
   **a second architecture or a second registry** (a product deploying to
   something other than one ECR account) — `DJB_IMAGE_REGISTRY` is one prefix
   today and that is deliberate, not permanent.
+- **ADR deploy-4a — PROPOSED — owner's signature pending.** The text below is
+  the amendment as the engineering lead wrote it, copied here unchanged for the
+  owner to sign; nothing in it is settled until they do, and the builder who
+  copied it may not flip this line. *"ADR deploy-4a (2026-09-\_\_, owner) — the
+  image is built by the acceptance box of the on-box bank, from the banked
+  tree, after the composed verdict row is written and before the boxes go down;
+  CI's `images` job keeps `needs: verdict` and skips a tag the registry already
+  holds. Which principle: 6 (reversible — the skip is one step; delete it and
+  CI builds again) and 7 (the critical path: a stage deploy no longer waits on
+  a second full gate on GitHub runners). Why the default is insufficient: the
+  CI build sits behind a 30-40 min gate re-run nobody here measures, so
+  `pushed → staged ≤ 5 min` is unreachable while it stands. Alternatives: a CI
+  job without `needs: verdict` (rejected — an ungated tag is a red tree one
+  command from prod, deploy-4 (b)); building on the stage box (rejected in
+  deploy-4). Risk: a box with push credentials — mitigated by the OIDC-shaped
+  least-privilege role scoped to two repositories and the namespace tag, and
+  the invariant that the build starts only after `gate_ledger_record` returned
+  0 for the same tree. Reversal: remove the bank step and the skip; CI builds
+  as before. Temporary or permanent: permanent, reviewed at the first
+  registry/verdict disagreement (the trigger: `image-digest` present for a tree
+  with no `full` row)."* · **one thing the signature also decides, surfaced by
+  the build and not in the text above:** what the bank pushes is what the box
+  can build natively — `linux/arm64` on a Graviton verifier box, measured at 39
+  s a service, where deploy-4 (a) says one manifest carrying `linux/amd64` AND
+  `linux/arm64`. Building both on the box means QEMU emulation for the half the
+  box is not, which is the cost deploy-4a exists to remove; skipping CI's job
+  for a bank-built tag therefore leaves that tree's tag single-architecture.
+  Every machine this template deploys to today is arm64, so nothing is
+  currently broken by it — but it is a narrowing of (a) and it is the owner's
+  to accept, refuse, or spend the emulation on.
 - **ADR events-1 — ERRATUM, not a decision.** This id is cited exactly
   once, in a fan-out totals note reading "the fan-out's total
   `1 + endpoints_for(t) x 5` — grows with subscribers — ADR events-1's
@@ -2289,6 +2694,26 @@ as "ADR gate-4".
   **the first product that manages login policy or SMTP through services**
   — at that point an intent row exists, the comparison becomes possible,
   and these two move from observed to reconciled.
+- **ADR ident-2, amended (2026-09-17) — the reconciler is BUILT; its
+  trigger fired, and the trigger that is still open is SCHEDULING it** ·
+  the original declined an auto-repairing reconciler and named its
+  trigger, *first observed drift or first production deploy*: both
+  happened (a one-field console edit to this deployment's own browser
+  application lands a person on raw JSON at the identity platform and
+  neither the audit nor the seed noticed; a one-way sync locked an owner
+  out of the sibling product for a morning) · decision:
+  **`manage.py zitadel_reconcile`** — a second command, not a flag on the
+  audit, reading through the audit's own section functions (one read, not
+  two), asking only services (the management call stays in the activity,
+  house rules 10 and 27), `--dry-run`, exit 0/1/2, and an **ownership
+  table in its docstring** naming every identity fact's authority, copy,
+  settlement, staleness and repair kind (principle 9); the SMTP sender's
+  OWNER is named and counted beside the audit's verdict, still judged by
+  nothing · rejected: a `--repair` flag on `zitadel_audit` (a writing path
+  inside the one command a deploy step trusts to change nothing) and a
+  **Temporal Schedule** around the reconciler · trigger, still open:
+  **a drift found in production that nobody in this deployment caused** —
+  the command prints that sentence on every run.
 - **ADR ident-5 — TWO decisions share this id**; both stand, both cited.
   **(a) test posture for Zitadel** · the settled decision: test posture
   for Zitadel mirrors the posture already settled for Temporal (ADR
@@ -2650,6 +3075,20 @@ it), moderate authenticated B2C, heavy background processing, large-file
 
 - **Seeding the template with a real product.** The template is a system, not a
   product; product state ships as skeletons with one marked example each.
+- **The hybrid sign-in door: our page for the password, the identity
+  platform's for everything harder.** The obvious compromise, and it is not a
+  design that loses on taste — it is one that cannot exist. With login v2
+  declared per application, a hand-off from our page to the hosted page is a
+  302 straight back to ours: a loop whose only exit is clearing cookies, which
+  locked a consumer's owner out of their own deployment for a morning (their
+  N1355, measured on the pinned build). So the two doors are a
+  WHOLE-DEPLOYMENT switch (`SIGN_IN_DOOR`, ADR ident-9's amendment and design
+  I-A §2) and never a per-step fallback: under `ours` a step this page cannot
+  ask for reads a sentence and ends the ceremony, and under `hosted` the
+  platform draws every screen. *Trigger to revisit*: a build where the hosted
+  page honours an inbound hand-off from a login-v2 application — which is a
+  fact about somebody else's product, so the measurement kit is where it
+  would show up first.
 - **django-tenants / schema-per-tenant as a template option.** Slow per-schema
   migrations, tenant context that must be threaded through jobs, admin and
   commands, and not cheaply reversible in either direction. Available to a

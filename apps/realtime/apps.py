@@ -23,6 +23,12 @@ class RealtimeConfig(AppConfig):
     cannot build this app's `EventMessage` because the two apps are siblings.
     `bridge.py` says both in full; `push_event` remains the async in-app API.
 
+    **`bridge.KICK_TENANT` is the third** (ADR realtime-2 d, second
+    primitive). A tenant suspended or closed is not a fact about one person,
+    and `core.services` — which owns those two writes and sits below this app
+    exactly as `accounts` does — could not import the closer any more than
+    the others could. Same inversion, third name.
+
     **`bridge.KICK` is the second name** (ADR realtime-2). Socket auth is
     resolved once, at the handshake, so a token revoked an hour into a
     connection kept delivering until the client happened to hang up.
@@ -42,7 +48,12 @@ class RealtimeConfig(AppConfig):
 
     def ready(self) -> None:
         from apps.core import bridge
-        from apps.realtime.bridge import kick_from_spine, push_from_spine
+        from apps.realtime.bridge import (
+            kick_from_spine,
+            kick_tenant_from_spine,
+            push_from_spine,
+        )
 
         bridge.register(bridge.REALTIME_PUSH, push_from_spine)
         bridge.register(bridge.KICK, kick_from_spine)
+        bridge.register(bridge.KICK_TENANT, kick_tenant_from_spine)

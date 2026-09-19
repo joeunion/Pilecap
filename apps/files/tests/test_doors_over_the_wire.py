@@ -514,3 +514,90 @@ async def test_issuing_over_the_wire_is_audited_as_the_machine_door(
     assert recorded == [
         ("mcp", f"files.FileVersion:{version.pk}", f"files.StoredFile:{document.pk}")
     ]
+
+
+@pytest.fixture
+def read_withheld(world: World) -> Any:
+    """One `withhold` row on the token holder's own membership. **`file.read`, gone.**
+
+    A withhold beats everything — "forbid overrides permit" — and it beats it
+    for an owner too, which is what makes this the smallest world in which a
+    perfectly ordinary credential is refused at both doors. Nothing about the
+    role, the hat or the document changes: the only difference between this test
+    and its neighbours is this row.
+    """
+    from apps.core.models import Grant, Membership
+
+    membership = Membership.objects.filter(tenant=world.tenant).get(user=world.owner)
+    return Grant.objects.create(
+        tenant=world.tenant,
+        membership=membership,
+        permission="file.read",
+        effect=Grant.Effect.WITHHOLD,
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
+    bearer: str, seeded: tuple[StoredFile, FileVersion], read_withheld: Any
+) -> None:
+    """**PR4.f.2 — rule 46's named case for Phase R.**
+
+    A read is a permission now (ADR core-27), so there is a new refusal on both
+    doors, and a new refusal is exactly where two doors come apart: one composes
+    a body and the other stringifies an exception. Both go through
+    `core.exceptions.wire_refusal`, and this says so — the code AND the sentence,
+    not just the status.
+
+    The door driven is the ISSUANCE, deliberately: it is the one that mints a
+    credential, so it is the one where "refused, and nothing was signed" matters
+    most. Read beside the `not_found` case above, the pair is the whole claim —
+    a document neither door can SEE is `not_found` at both, and one they can see
+    but may not READ is `forbidden` at both, and the two stay different from
+    each other in the same way at each door.
+
+    *Absent (the baseline):* 200 at both, each carrying a signed `download_url`.
+    """
+    from apps.core.authz import refusal_sentence
+    from config.asgi import build_application
+
+    document, _version = seeded
+    application = build_application()
+    credential = {"authorization": f"Bearer {bearer}"}
+    sentence = refusal_sentence("file.read")
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.post(
+                DOWNLOAD_URL.format(document.pk),
+                headers={**credential, "accept": JSON, "content-type": JSON},
+                json={},
+            )
+
+            headers = {**MCP_HEADERS, **credential}
+            await _initialize(client, headers, "files-read-parity")
+            called = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call",
+                    {"name": "issue_download_url", "arguments": {"file_id": str(document.pk)}},
+                    2,
+                ),
+            )
+
+    assert over_http.status_code == 403, over_http.text
+    rest_body = over_http.json()
+    assert rest_body["code"] == "forbidden"
+    assert rest_body["detail"] == sentence
+    assert "download_url" not in rest_body, "a URL was minted for a refused reader"
+
+    said = str(called.json())
+    assert "forbidden" in said, said
+    assert sentence in said, said
+    # Not `"download_url" not in said`: the TOOL is called `issue_download_url`
+    # and its name is in its own error line. What must be absent is a signed
+    # link, and a signed link is a URL.
+    assert "http" not in said, "a URL was minted for a refused reader"

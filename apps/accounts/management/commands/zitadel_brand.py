@@ -26,7 +26,7 @@ and a door calls services (house rule 10). Watch the run in Temporal, or read
 the result with `manage.py zitadel_audit`, which gained a branding clause the
 same rung this command did.
 
-**Who may.** `identity_platform.configure` — a superuser, not a tenant's owner
+**Who may.** `deployment.configure` — a superuser, not a tenant's owner
 (`apps/accounts/policies.py` says why: this is the deployment's own screen, and
 an owner of one customer's workspace has no business changing what everybody
 signs in through). `--as` names them, so the audit row carries a person rather

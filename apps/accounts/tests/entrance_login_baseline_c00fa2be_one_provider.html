@@ -1,0 +1,91 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sign In</title>
+<style>
+:root {
+  --entrance-tokens: 1;
+  color-scheme: light dark;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --ink: #17181a;
+  --muted: #575c63;
+  --faint: #878c93;
+  --surface: #fbfbfa;
+  --raised: #ffffff;
+  --line: #e2e3e5;
+  --accent: #3f4a5a;
+  --on-accent: #ffffff;
+  --s1: .375rem;
+  --s2: .75rem;
+  --s3: 1.25rem;
+  --s4: 2rem;
+  --s5: 3.5rem;
+  --radius: 8px;
+  --measure: 26rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #ecedee; --muted: #a7abb1; --faint: #787d84;
+    --surface: #121316; --raised: #1a1c1f; --line: #292c30;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: var(--s5) var(--s3); background: var(--surface); color: var(--ink);
+       font: 1rem/1.55 var(--font); -webkit-font-smoothing: antialiased; }
+main { max-width: var(--measure); margin: 0 auto; }
+h1 { font-size: 1.3125rem; line-height: 1.25; font-weight: 600; letter-spacing: -.01em;
+     margin: 0 0 var(--s2); }
+h2 { font-size: .8125rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+     color: var(--faint); margin: var(--s4) 0 var(--s2); }
+p { margin: 0 0 var(--s3); color: var(--muted); }
+p.lede { color: var(--ink); }
+small, .note { font-size: .8125rem; color: var(--faint); }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875em;
+       background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 0 .3em; }
+a { color: var(--accent); text-underline-offset: .15em; }
+ul { list-style: none; margin: 0 0 var(--s3); padding: 0; }
+li { margin: 0 0 var(--s1); }
+form { margin: 0 0 var(--s3); }
+button, .button, ul.doors a {
+  display: block; width: 100%; text-align: center; font: inherit; font-weight: 500;
+  padding: var(--s2) var(--s3); border-radius: var(--radius); border: 1px solid var(--accent);
+  background: var(--accent); color: var(--on-accent); text-decoration: none; cursor: pointer; }
+button:hover, .button:hover, ul.doors a:hover { filter: brightness(1.12); }
+ul.doors li + li a { background: var(--raised); color: var(--ink); border-color: var(--line); }
+dl { margin: 0 0 var(--s3); }
+dt { font-size: .8125rem; color: var(--faint); margin: 0 0 .125rem; }
+dd { margin: 0 0 var(--s2); }
+.messages li { color: var(--muted); border-left: 2px solid var(--line); padding-left: var(--s2); }
+</style>
+
+</head>
+<body>
+
+<main>
+
+
+    <h1>Sign In</h1>
+    
+
+
+
+    
+        
+        <a class="button" href="/accounts/oidc/idp0/login/?process=login">Continue with Identity 0</a>
+    
+    <p class="note">
+        You will finish signing in on Pilecap's identity platform,
+        then come back here.
+    </p>
+
+
+
+</main>
+
+
+</body>
+</html>

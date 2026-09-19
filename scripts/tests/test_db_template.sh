@@ -31,6 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: apps/ config/ quality/ scripts/check.sh scripts/db.sh scripts/kill_mine.sh scripts/lifecycle.sh scripts/queue_cited.sh scripts/rung_start.sh scripts/setup.sh scripts/sweep.sh scripts/test.sh scripts/tests/test_rung_start.sh
 # THE TEMPLATE-DATABASE DRIVE.
 #
 # WHAT IT DRIVES. `scripts/db.sh` grew a migrated TEMPLATE database: when the

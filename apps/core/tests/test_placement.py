@@ -342,6 +342,7 @@ def test_another_branchs_invitation_is_not_visible_to_revoke(
             tenant=tenant,
             org=branch_actor.org,
             invitation_id=_invited(tenant, "theirs@example.com").pk,
+            actor=branch_actor,
         )
 
 
@@ -369,9 +370,12 @@ def test_the_list_is_narrowed_to_the_acting_hats_subtree(
         invited_by=owner,
         actor=acting,
     )
-    seen = {row.email for row in list_invitations(tenant=tenant, org=branch_actor.org)}
+    seen = {
+        row.email
+        for row in list_invitations(tenant=tenant, org=branch_actor.org, actor=branch_actor)
+    }
     assert seen == {"mine@example.com"}
-    whole = {row.email for row in list_invitations(tenant=tenant, org=root_org)}
+    whole = {row.email for row in list_invitations(tenant=tenant, org=root_org, actor=acting)}
     assert whole == {"mine@example.com", "yours@example.com"}
 
 
@@ -503,7 +507,10 @@ def test_a_flat_product_behaves_exactly_as_it_did(
     )
     assert membership.organization_id == root_org.pk
 
-    assert {row.email for row in list_invitations(tenant=tenant, org=root_org)} == {nomad.email}
+    assert {
+        row.email
+        for row in list_invitations(tenant=tenant, org=root_org, actor=system_actor(tenant=tenant))
+    } == {nomad.email}
 
 
 # --- 8 · the wire says so -----------------------------------------------------

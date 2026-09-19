@@ -22,8 +22,17 @@ export type WireRemedy = components["schemas"]["RefusalRemedy"];
 export type RegistryCode = WireRefusal["code"];
 
 /**
- * THE CLOSED TRANSPORT VOCABULARY — two members, and they are NOT registry
- * codes (P16 ruling 2, "no fifth state").
+ * THE CLOSED TRANSPORT VOCABULARY — two HALVES, and no member of either is a
+ * registry code (P16 ruling 2, "no fifth state").
+ *
+ * The halves are `FETCH_TRANSPORT_CODES` (a request that never got an answer)
+ * and `SOCKET_CLOSE_STATES` (a socket that ended without one). It is one
+ * vocabulary because it is one question — *what happened instead of an answer*
+ * — and P16 ruling 2 says a vocabulary may GROW where a state list may not:
+ * the four `SurfaceState`s are a closed question a screen answers once, and
+ * the things that can go wrong are an open population. Growing this list is
+ * therefore legal and is deliberately LOUD: `refusals.test.ts` asserts the
+ * membership by set-equality, so a third half cannot arrive quietly.
  *
  * A dead origin, a CORS block or an aborted connection throws BEFORE any
  * response exists: there is no code, no fact and no remedies, and the refusal
@@ -33,7 +42,30 @@ export type RegistryCode = WireRefusal["code"];
  * refusal clothing. So transport failure gets its own vocabulary, its own copy,
  * and rides inside `error(E)` rather than earning a fifth state.
  */
-export const TRANSPORT_CODES = ["network_unreachable", "request_timeout"] as const;
+export const FETCH_TRANSPORT_CODES = ["network_unreachable", "request_timeout"] as const;
+
+/**
+ * THE CLOSE-FRAME HALF — `TransportCode`-ADJACENT, which is the phrase design
+ * P-14 uses and it is precise: these are transport codes, and they are minted
+ * by a different event.
+ *
+ * A socket ends with a close frame, not with a response. There is no status,
+ * no body and no envelope — so the refusal registry is the wrong authority for
+ * it by exactly the argument that put a dead origin here, and a synthesised
+ * registry code would fail OPEN in exactly the same way. The wire's own
+ * vocabulary (the `CLOSE_*` numbers) is the SERVER's and is read from
+ * `apps/realtime/schemas.py`; these two names are this CLIENT's, and
+ * `@/api/socket-close` is the one module that maps between them.
+ *
+ * TWO MEMBERS BECAUSE A REAL CLIENT OBSERVES TWO THINGS (WATCH F12), never
+ * because the server declares two codes. That is the whole content of the
+ * distinction: `apps/realtime` declares four codes and a browser can be handed
+ * two outcomes.
+ */
+export const SOCKET_CLOSE_STATES = ["socket_handshake_rejected", "socket_credential_withdrawn"] as const;
+export type SocketCloseState = (typeof SOCKET_CLOSE_STATES)[number];
+
+export const TRANSPORT_CODES = [...FETCH_TRANSPORT_CODES, ...SOCKET_CLOSE_STATES] as const;
 export type TransportCode = (typeof TRANSPORT_CODES)[number];
 
 /** `E` of `error(E)`, member one: what the server said, in the server's words. */

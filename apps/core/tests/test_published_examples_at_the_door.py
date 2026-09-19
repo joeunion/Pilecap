@@ -205,6 +205,11 @@ class World:
     endpoint_id: str
     document: StoredFile
     pending_document: StoredFile
+    #: A role this tenant made, so `{key}` names a row the doors may edit.
+    #: DELIBERATELY NOT `approver`, which is `RoleIn`'s own published example:
+    #: the create route is driven with that example and would answer `409` if
+    #: the world had already taken the key.
+    role_key: str
 
 
 @pytest.fixture
@@ -268,6 +273,14 @@ def world(settings: Any, tenant: Tenant, owner: User, root_org: Organization) ->
         client, "/api/v1/webhook-endpoints/", {"url": "https://seeded.example/hook"}
     )
 
+    # A role through its own door, like every other row this world makes.
+    made_role = client.post(
+        "/api/v1/roles/",
+        data=json.dumps({"key": "reviewer", "name": "Reviewer", "permissions": ["widget.approve"]}),
+        content_type="application/json",
+    )
+    assert made_role.status_code == 201, made_role.content
+
     return World(
         client=client,
         tenant=tenant,
@@ -297,6 +310,7 @@ def world(settings: Any, tenant: Tenant, owner: User, root_org: Organization) ->
         endpoint_id=str(endpoint["endpoint"]["id"]),
         document=_document(tenant=tenant, org=root_org, owner=owner, stored=2),
         pending_document=_document(tenant=tenant, org=root_org, owner=owner, stored=0),
+        role_key=str(made_role.json()["key"]),
     )
 
 
@@ -385,6 +399,8 @@ def _path_seeds(world: World) -> dict[str, str]:
         "endpoint_id": world.endpoint_id,
         "widget_id": str(world.widget.pk),
         "file_id": str(world.document.pk),
+        "key": world.role_key,
+        "permission": "widget.approve",
     }
 
 

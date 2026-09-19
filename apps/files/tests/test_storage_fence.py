@@ -1,3 +1,4 @@
+# census: cross-app population=apps/**/*.py for imports of the object-store SDK
 """Who is allowed to speak to an object store. **A pin, so the answer is a diff.**
 
 ADR files-2 ruled a storage wall, landed as house rule 48, with canaries, run

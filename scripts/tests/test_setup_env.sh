@@ -31,14 +31,18 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .env.example README.md apps/conftest.py compose.yaml deploy/tests/test_release.sh scripts/check.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/queue_cited.sh scripts/rung_start.sh scripts/secrets_scan.sh scripts/setup.sh scripts/sweep.sh scripts/verifier_box.sh scripts/verify_start.sh
 set -euo pipefail
 
-# The drive for two sentinel-fenced steps of `scripts/setup.sh`: the environment
-# step (`env_sync_from_example` and its two helpers) and the services step
-# (`services_up`, which pulls before it starts and refuses when the pull fails).
-# Both are fenced for the same reason — the rest of that script brings up docker,
-# syncs a venv and talks to an identity provider, and a drive that needed any of
-# that would be could-not-look on the machine that most needs it.
+# The drive for the sentinel-fenced blocks of `scripts/setup.sh`: the
+# environment step (`env_sync_from_example` and its two helpers), the services
+# step (`services_up`, which pulls before it starts and refuses when the pull
+# fails), the local-main step (`ensure_local_main`, the first step, which gives
+# a tag clone the `refs/heads/main` every scope tool in this tree reads by name)
+# and the step wall (`step`/`step_end`/`setup_total`, the clock). They are
+# fenced for the same reason — the rest of that script brings up docker, syncs a
+# venv and talks to an identity provider, and a drive that needed any of that
+# would be could-not-look on the machine that most needs it.
 #
 #   ./scripts/tests/test_setup_env.sh          run every case
 #   ./scripts/tests/test_setup_env.sh --list   name them and stop
@@ -100,8 +104,12 @@ set -euo pipefail
 #     calls the function and that the mode-600 line still follows it — and
 #     nothing here runs the step in a real checkout.
 #   * THE REAL DIGEST. The digest case below holds a COPY of the drop-by-key
-#     `awk` and the `shasum -a 256` that `gate_ledger.sh` uses, because sourcing
-#     that file would drag in a venv census, git and a working tree. The copy is
+#     `awk` and of the SHA-256 that `gate_ledger.sh` takes over its output,
+#     because sourcing that file would drag in a venv census, git and a working
+#     tree. The shipped side spells that digest `sha256_of` (one helper in
+#     `scripts/gate_refuse.sh` that resolves `shasum -a 256` or `sha256sum`
+#     depending on the machine); the model here resolves the same two tools
+#     inline, so this drive runs on a box that has only one of them. The copy is
 #     a MODEL: it proves the agreement property (identical files agree, a kept
 #     key differs) and it is anchored by one case that asserts the shipped
 #     digest still has the same shape. A rule change in `gate_ledger.sh` that
@@ -127,6 +135,31 @@ set -euo pipefail
 #   * THE REAL PULL, AND WHAT IT COSTS. Nothing here measures the wall clock a
 #     `compose pull` adds to a fresh `setup.sh`, nor the reuse path on a box
 #     where one service of seven is unhealthy (there the step pulls all seven).
+#   * A SHALLOW OR SINGLE-BRANCH TAG CLONE — HALF DRIVEN NOW, and the half that
+#     is not is named. `case_the_printed_remedy_runs_where_the_step_leaves_you`
+#     builds a REAL `--depth 1 --single-branch` tag clone (measured on it: no
+#     remote-tracking ref exists there at all, not merely no `origin/main`) and
+#     runs the step and the sentence's follow-up in it. What is still NOT driven
+#     on that shape is what the loop scope's merge-base and the secret scan's
+#     basis answer over a truncated history — the ref exists, its ancestry does
+#     not, and nothing here asks those two tools about it.
+#   * A DIRTY DETACHED CHECKOUT. `git switch` to a branch at the same commit
+#     carries uncommitted work across, and git allows it; the tag-clone case
+#     below runs on a clean clone and nothing here asserts what a dirty one
+#     does.
+#   * A REPOSITORY WHOSE DEFAULT BRANCH IS NOT `main`. `ensure_local_main`
+#     would create a `main` beside a product's `trunk`. Every scope tool in this
+#     tree reads `refs/heads/main` by name, so such a product has already forked
+#     the gate; declared rather than guarded.
+#   * WHAT THE CLOCK MEASURES. The timing case asserts the SHAPE of the lines —
+#     two steps, two walls, one total. Whether the number is the right number is
+#     a property of this box, and a stack pulling seven images on a slow link
+#     dominates any total this script can print.
+#   * `setup.sh` END TO END. Nothing here runs the script. The local-main step's
+#     POSITION is asserted as text (it is first, and the environment step
+#     follows it) and its BODY is driven in scratch clones; the two together are
+#     not the same as a real run, and the first-ten-minutes rehearsal on a fresh
+#     tag clone is the field test's, never a case's.
 
 [ -r scripts/tests/drive_preamble.sh ] || {
     echo "!! test_setup_env: scripts/tests/drive_preamble.sh is not in this tree." >&2
@@ -160,7 +193,8 @@ case "${1:-}" in
     ;;
 esac
 
-command -v shasum >/dev/null 2>&1 || cannot_look "no shasum on PATH — the digest case cannot be computed"
+command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1 ||
+    cannot_look "neither shasum nor sha256sum is on PATH — the digest case cannot be computed"
 [ -f scripts/setup.sh ] || cannot_look "scripts/setup.sh is not in this tree — there is nothing to drive"
 [ -f scripts/gate_ledger.sh ] || cannot_look "scripts/gate_ledger.sh is not in this tree — the digest anchor cannot be read"
 [ -f scripts/check.sh ] || cannot_look "scripts/check.sh is not in this tree — the wiring cannot be read"
@@ -254,6 +288,73 @@ command -v services_up >/dev/null 2>&1 ||
     cannot_look "sourcing the extracted services fence defined no services_up"
 command -v image_registry_host >/dev/null 2>&1 ||
     cannot_look "sourcing the extracted services fence defined no image_registry_host — the refusal cannot name a registry it cannot read"
+
+# --- THE THIRD FENCE: the local-main step -------------------------------------
+#
+# Same mechanism, third time. `ensure_local_main` is the FIRST step of
+# `setup.sh` and the one that has to work on a checkout nobody here can arrange
+# by hand: a clone of a published TAG, detached, with no `refs/heads/main`. The
+# cases below build exactly that — a scratch repository, a tag on it, and a real
+# `git clone --branch <tag>` of it — so the victim is made rather than found.
+SENT_MAIN_OPEN="# >>> local-main >>>"
+SENT_MAIN_CLOSE="# <<< local-main <<<"
+EXTRACT_MAIN="${WORK}/local_main.sh"
+
+sed -n "/^${SENT_MAIN_OPEN}\$/,/^${SENT_MAIN_CLOSE}\$/p" scripts/setup.sh >"$EXTRACT_MAIN" 2>/dev/null || true
+
+grep -qxF "$SENT_MAIN_OPEN" "$EXTRACT_MAIN" 2>/dev/null ||
+    cannot_look "scripts/setup.sh has no line reading exactly \`${SENT_MAIN_OPEN}\` — the local-main fence is gone (or was never there, which is what a baseline tree looks like). Every tag-clone case below sources the text between that sentinel and \`${SENT_MAIN_CLOSE}\`, so there is no step to drive."
+grep -qxF "$SENT_MAIN_CLOSE" "$EXTRACT_MAIN" 2>/dev/null ||
+    cannot_look "scripts/setup.sh opens the local-main fence with \`${SENT_MAIN_OPEN}\` and never closes it with \`${SENT_MAIN_CLOSE}\`. The extraction ran to the end of the file."
+grep -q '^ensure_local_main() {' "$EXTRACT_MAIN" ||
+    cannot_look "the local-main fence in scripts/setup.sh defines no ensure_local_main — the step this drive exists for is not inside its own sentinels."
+
+# shellcheck source=/dev/null
+. "$EXTRACT_MAIN"
+command -v ensure_local_main >/dev/null 2>&1 ||
+    cannot_look "sourcing the extracted local-main fence defined no ensure_local_main"
+
+# --- THE FOURTH FENCE: the step wall ------------------------------------------
+#
+# `step`, `step_end` and `setup_total` — the clock. Extracted for
+# the same reason as the rest: the timing case drives the WRAPPER over two
+# planted no-op steps, and running the whole of `setup.sh` to see two elapsed
+# lines would need docker, a venv and an identity provider.
+SENT_WALL_OPEN="# >>> step-wall >>>"
+SENT_WALL_CLOSE="# <<< step-wall <<<"
+EXTRACT_WALL="${WORK}/step_wall.sh"
+
+sed -n "/^${SENT_WALL_OPEN}\$/,/^${SENT_WALL_CLOSE}\$/p" scripts/setup.sh >"$EXTRACT_WALL" 2>/dev/null || true
+
+grep -qxF "$SENT_WALL_OPEN" "$EXTRACT_WALL" 2>/dev/null ||
+    cannot_look "scripts/setup.sh has no line reading exactly \`${SENT_WALL_OPEN}\` — the step-wall fence is gone (or was never there, which is what a baseline tree looks like). The timing case below sources the text between that sentinel and \`${SENT_WALL_CLOSE}\`, so there is no wrapper to drive."
+grep -qxF "$SENT_WALL_CLOSE" "$EXTRACT_WALL" 2>/dev/null ||
+    cannot_look "scripts/setup.sh opens the step-wall fence with \`${SENT_WALL_OPEN}\` and never closes it with \`${SENT_WALL_CLOSE}\`. The extraction ran to the end of the file."
+grep -q '^setup_total() {' "$EXTRACT_WALL" ||
+    cannot_look "the step-wall fence in scripts/setup.sh defines no setup_total — the run has no total for this drive to assert."
+
+# NOT SOURCED HERE. It defines `step`, which this drive has no use for, and sets
+# a RUN_START at source time that would make every total below the age of the
+# drive rather than the age of the run. The timing case sources it inside its
+# own subshell, which is also the only place its output can be captured whole.
+
+# --- THE CONTROL'S SUBJECT: the refusal a tag clone hits without the step ------
+#
+# The three real files, sourced from THIS checkout the way `test_loop_scope.sh`
+# sources them, and called with the cwd moved into a scratch clone. Nothing here
+# copies the refusal's text: the control asserts the SHIPPED derivation refuses,
+# so a rung that softened `loop_tier.sh` would take this case with it.
+[ -f scripts/gate_refuse.sh ] || cannot_look "scripts/gate_refuse.sh is not in this tree — the loop-scope control cannot read a refusal"
+[ -f scripts/secrets_scan.sh ] || cannot_look "scripts/secrets_scan.sh is not in this tree — the loop-scope control has no changed-file derivation"
+[ -f scripts/loop_tier.sh ] || cannot_look "scripts/loop_tier.sh is not in this tree — the refusal this step exists to close the trap in front of is gone"
+# shellcheck source=scripts/gate_refuse.sh
+. scripts/gate_refuse.sh
+# shellcheck source=scripts/secrets_scan.sh
+. scripts/secrets_scan.sh
+# shellcheck source=scripts/loop_tier.sh
+. scripts/loop_tier.sh
+command -v loop_tier_own_apps >/dev/null 2>&1 ||
+    cannot_look "scripts/loop_tier.sh defines no loop_tier_own_apps — the control has nothing to run"
 
 # --- the assertions -----------------------------------------------------------
 CURRENT=""
@@ -639,9 +740,9 @@ case_a_key_present_twice_collapses_to_its_last_value() {
 # --- the digest ---------------------------------------------------------------
 #
 # A MODEL OF `loop_env_fingerprint`'s env-file component, not the function
-# itself: the same drop-by-key `awk` and the same `shasum -a 256`. The case
-# below it anchors the model against the shipped text, so a rewritten rule is at
-# least visible here rather than silently modelled by the old one.
+# itself: the same drop-by-key `awk` and the same SHA-256 over its output. The
+# case below it anchors the model against the shipped text, so a rewritten rule
+# is at least visible here rather than silently modelled by the old one.
 env_file_digest() {
     # $1 file · $2 newline-separated keys to drop
     DJB_LOOP_ENV_KEYS="$2" awk '
@@ -657,7 +758,19 @@ env_file_digest() {
             if (name in drop) next
             print line
         }
-    ' "$1" | shasum -a 256 | awk '{print $1}'
+    ' "$1" | digest_stdin
+}
+
+# THE TWO SPELLINGS, RESOLVED HERE RATHER THAN BORROWED. `shasum -a 256` is
+# macOS's and `sha256sum` is a minimal Linux's, and this drive has to run on
+# both — but it must not call the shipped `sha256_of`, because a model that
+# borrows the implementation it is modelling asserts nothing.
+digest_stdin() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        sha256sum | awk '{print $1}'
+    fi
 }
 
 case_the_digest_agrees_when_the_files_agree() {
@@ -715,9 +828,15 @@ case_the_digest_model_still_matches_the_shipped_digest() {
     local missing=""
     grep -qF 'if (name in drop) next' scripts/gate_ledger.sh || missing="${missing} the drop-by-key line"
     grep -qF 'sub(/=.*$/, "", name)' scripts/gate_ledger.sh || missing="${missing} the key split"
-    grep -qF 'shasum -a 256' scripts/gate_ledger.sh || missing="${missing} shasum -a 256"
+    # THE DIGEST IS NAMED, NOT SPELLED, and that is the change this anchor
+    # records: the shipped line pipes into `sha256_of`, which resolves the
+    # machine's own tool. An anchor on `shasum -a 256` was an anchor on one
+    # machine's spelling, and it held while the gate could not key its own
+    # verdict on a Linux box.
+    grep -qF '| sha256_of' scripts/gate_ledger.sh || missing="${missing} the pipe into sha256_of"
+    grep -qE '^sha256_of\(\)' scripts/gate_refuse.sh || missing="${missing} sha256_of's definition in gate_refuse.sh"
     if [ -z "$missing" ]; then
-        ok "gate_ledger.sh still splits the key, drops the declared ones and hashes with shasum -a 256"
+        ok "gate_ledger.sh still splits the key, drops the declared ones and hashes through sha256_of"
     else
         bad "the shipped digest no longer carries:${missing} — the model above is stale and the agreement case proves less than it claims"
     fi
@@ -936,7 +1055,631 @@ case_the_minio_pin_names_the_registry_that_serves_it() {
     fi
 }
 
+# --- the tag-clone world ------------------------------------------------------
+#
+# THE VICTIM IS BUILT, NEVER FOUND (rung-execution §2). A destructive
+# demonstration of "this checkout has no local main" run against something that
+# already existed is a demonstration against somebody's afternoon: every
+# checkout on a working box has `main`, and the only way to get one that does
+# not is to make it. So each case here builds a scratch repository, tags a
+# commit on it, and takes a REAL `git clone --branch <tag>` of it — which is
+# git's own way of producing the detached, main-less checkout a consumer gets
+# from `git clone --branch <a published tag> <the repository>`.
+# Nothing below touches this checkout; `drive_require_scratch` refuses a path
+# inside it, and the preamble's tripwire re-checks the real repository at exit.
+REAL_GIT="$(command -v git)" || true
+[ -n "$REAL_GIT" ] || cannot_look "no git on PATH — the tag-clone cases cannot build a victim"
+
+SRC_REPO=""
+new_source_repo() {
+    N=$((N + 1))
+    SRC_REPO="${WORK}/src${N}"
+    drive_require_scratch SRC_REPO "${SRC_REPO:-}"
+    mkdir -p "$SRC_REPO"
+    git -C "$SRC_REPO" init -q
+    git -C "$SRC_REPO" symbolic-ref HEAD refs/heads/main
+    git -C "$SRC_REPO" config user.email drive@example.invalid
+    git -C "$SRC_REPO" config user.name "setup env drive"
+    echo "base" >"$SRC_REPO/README.md"
+    git -C "$SRC_REPO" add README.md
+    git -C "$SRC_REPO" commit -q -m "base"
+    git -C "$SRC_REPO" tag v0.0.1-drive
+    echo "           planted ${SRC_REPO##*/} — a repository with main at $(git -C "$SRC_REPO" rev-parse --short main) and the tag v0.0.1-drive on it"
+}
+
+# The two clones, and the difference between them is the whole subject: one is
+# taken at a TAG (detached, no local branch at all), the other at a BRANCH.
+CLONE=""
+new_tag_clone() {
+    N=$((N + 1))
+    CLONE="${WORK}/clone${N}"
+    drive_require_scratch CLONE "${CLONE:-}"
+    git clone --quiet --branch v0.0.1-drive "$SRC_REPO" "$CLONE" 2>/dev/null ||
+        cannot_look "could not clone the scratch repository at its tag — the victim could not be built"
+    echo "           planted ${CLONE##*/} — a tag clone: HEAD $(git -C "$CLONE" rev-parse --short HEAD), local branches [$(git -C "$CLONE" for-each-ref --format='%(refname:short)' refs/heads | tr '\n' ' ')]"
+}
+new_branch_clone() {
+    N=$((N + 1))
+    CLONE="${WORK}/clone${N}"
+    drive_require_scratch CLONE "${CLONE:-}"
+    git clone --quiet --branch main "$SRC_REPO" "$CLONE" 2>/dev/null ||
+        cannot_look "could not clone the scratch repository at its branch"
+    echo "           planted ${CLONE##*/} — a branch clone: local branches [$(git -C "$CLONE" for-each-ref --format='%(refname:short)' refs/heads | tr '\n' ' ')]"
+}
+
+# THE THIRD SHAPE, and the one that decides the sentence. `--depth 1
+# --single-branch` is what a CI job and a bandwidth-conscious stranger take, and
+# it is not "a full clone with less history": measured on this box, 2026-09-15,
+# it carries NO remote-tracking ref at all — `for-each-ref refs/remotes` is
+# empty, so `origin/main` is not merely behind, it does not exist. Any printed
+# remedy spelled against `origin/main` is a command that cannot run here, and
+# the only way to know that is to build one.
+new_shallow_tag_clone() {
+    N=$((N + 1))
+    CLONE="${WORK}/clone${N}"
+    drive_require_scratch CLONE "${CLONE:-}"
+    git clone --quiet --branch v0.0.1-drive --depth 1 --single-branch "$SRC_REPO" "$CLONE" 2>/dev/null ||
+        cannot_look "could not shallow-clone the scratch repository at its tag — the victim could not be built"
+    echo "           planted ${CLONE##*/} — a SHALLOW single-branch tag clone: HEAD $(git -C "$CLONE" rev-parse --short HEAD), local branches [$(git -C "$CLONE" for-each-ref --format='%(refname:short)' refs/heads | tr '\n' ' ')], remote-tracking [$(git -C "$CLONE" for-each-ref --format='%(refname:short)' refs/remotes | tr '\n' ' ')]"
+}
+
+# THE TAG MUST NOT BE THE TIP. "main ends at the remote's tip" is satisfied by a
+# remedy that did nothing at all when the tag IS the tip, which is the shape
+# `new_source_repo` leaves — so the remedy case moves the source's `main` one
+# commit past the tag first, which is also the shape a consumer meets: they
+# cloned v2.0.0 and the tree has moved on.
+advance_the_source_main() {
+    echo "past the tag" >>"$SRC_REPO/README.md"
+    git -C "$SRC_REPO" add README.md
+    git -C "$SRC_REPO" commit -q -m "one commit past the tag"
+    echo "           advanced ${SRC_REPO##*/} — main now at $(git -C "$SRC_REPO" rev-parse --short main), the tag still at $(git -C "$SRC_REPO" rev-parse --short 'v0.0.1-drive^{commit}')"
+}
+
+# THE SHIM LOGS AND DELEGATES. "No branch, no switch" is an ABSENCE, and an
+# absence nobody can see is not an assertion — so the log is asserted non-empty
+# first, which is what tells "the step ran git and never branched" apart from
+# "the shim was never on PATH".
+SHIM_BIN=""
+SHIM_LOG=""
+plant_git_logger() {
+    N=$((N + 1))
+    SHIM_BIN="${WORK}/bin${N}"
+    SHIM_LOG="${WORK}/git${N}.log"
+    drive_require_scratch SHIM_BIN "${SHIM_BIN:-}"
+    mkdir -p "$SHIM_BIN"
+    {
+        echo '#!/usr/bin/env bash'
+        printf 'printf "%%s\\n" "$*" >> %q\n' "$SHIM_LOG"
+        printf 'exec %q "$@"\n' "$REAL_GIT"
+    } >"${SHIM_BIN}/git"
+    chmod +x "${SHIM_BIN}/git"
+    : >"$SHIM_LOG"
+    echo "           planted ${SHIM_BIN##*/}/git — a logging shim in front of ${REAL_GIT}"
+}
+plant_git_failing_on() {
+    # $1 — the git subcommand this shim refuses. Everything else delegates, so
+    # the step gets as far as the command under test and no further.
+    N=$((N + 1))
+    SHIM_BIN="${WORK}/bin${N}"
+    drive_require_scratch SHIM_BIN "${SHIM_BIN:-}"
+    mkdir -p "$SHIM_BIN"
+    {
+        echo '#!/usr/bin/env bash'
+        printf 'if [ "$1" = %q ]; then echo "fatal: planted failure in the drive" >&2; exit 128; fi\n' "$1"
+        printf 'exec %q "$@"\n' "$REAL_GIT"
+    } >"${SHIM_BIN}/git"
+    chmod +x "${SHIM_BIN}/git"
+    echo "           planted ${SHIM_BIN##*/}/git — a shim that fails \`git $1\` and delegates everything else"
+}
+
+# THE STEP RUNS IN A SUBSHELL, because one of its answers is `exit 2` and a
+# sourced function that exits takes its caller with it — here, the whole drive,
+# which would then have cleared nothing while looking like a clean run.
+run_main_step() {
+    # $1 dir · $2 case label · $3 (optional) a PATH prefix, for the shims
+    local dir="$1" label="$2" pathpre="${3:-}"
+    CURRENT="$label"
+    N=$((N + 1))
+    OUT="${WORK}/main${N}.log"
+    RC=0
+    (
+        cd "$dir" || exit 3
+        if [ -n "$pathpre" ]; then
+            PATH="${pathpre}:${PATH}"
+            export PATH
+        fi
+        ensure_local_main
+    ) >"$OUT" 2>&1 || RC=$?
+    echo "           block:"
+    sed 's/^/             > /' "$OUT"
+}
+
+# THE REMEDY IS PARSED OUT OF THE SENTENCE, NEVER TYPED HERE. A drive holding
+# its own copy of the follow-up command agrees with `setup.sh` by construction
+# and would have stayed green through the whole of the defect this pair of
+# helpers exists for: the sentence read fine, the command in it could not run.
+# So the case takes the tail of the printed line and executes exactly that.
+REMEDY=""
+remedy_from_the_sentence() {
+    REMEDY="$(sed -n 's/^main created at .*to move to the tip: \(.*\))$/\1/p' "$OUT" | sed -n 1p)"
+    if [ -n "$REMEDY" ]; then
+        ok "the sentence names a follow-up: \`${REMEDY}\`"
+    else
+        bad "the printed sentence names nothing after \`to move to the tip: \` — there is no remedy to run"
+    fi
+}
+
+run_the_remedy() {
+    # $1 dir. In a subshell, in that checkout, as the shell a stranger pastes it
+    # into would run it — which is why it is `eval` and not a hand-split argv:
+    # the sentence contains a `&&`, and a remedy whose two halves the drive ran
+    # separately would not be the sentence.
+    N=$((N + 1))
+    OUT="${WORK}/remedy${N}.log"
+    RC=0
+    (cd "$1" && eval "$REMEDY") >"$OUT" 2>&1 || RC=$?
+    echo "           ran the printed remedy: ${REMEDY}"
+    sed 's/^/             > /' "$OUT"
+}
+
+run_the_superseded_remedy() {
+    # $1 dir. THE CONTROL, which keeps the red permanently instead of pasting
+    # it once into a report: the command the
+    # sentence used to print, run in the same clone, in the same state the step
+    # leaves. If it ever starts succeeding, the state the step leaves has
+    # changed and the argument above the new sentence needs re-reading.
+    N=$((N + 1))
+    OUT="${WORK}/superseded${N}.log"
+    RC=0
+    (cd "$1" && git branch -f main origin/main) >"$OUT" 2>&1 || RC=$?
+    echo "           ran the SUPERSEDED remedy: git branch -f main origin/main"
+    sed 's/^/             > /' "$OUT"
+}
+
+prints_nothing() {
+    if [ ! -s "$OUT" ]; then
+        ok "printed nothing"
+    else
+        bad "printed something, and a checkout that already has main must be silent"
+    fi
+}
+
+git_log_ran_but_never() {
+    # $1 — an ERE of the subcommands that must not appear as the first word.
+    if [ -s "$SHIM_LOG" ]; then
+        ok "the shim was entered ($(wc -l <"$SHIM_LOG" | tr -d ' ') git call(s)): $(tr '\n' ';' <"$SHIM_LOG")"
+    else
+        bad "the shim logged NOTHING — it was not on PATH, so the absence below proves nothing"
+    fi
+    if grep -qE "^($1) " "$SHIM_LOG"; then
+        bad "the step ran a \`git $1\` in a checkout whose repository already has main"
+    else
+        ok "no \`git $1\` in the log"
+    fi
+}
+
+has_no_local_main() {
+    # $1 dir · $2 what
+    if git -C "$1" rev-parse -q --verify refs/heads/main >/dev/null 2>&1; then
+        bad "$2 HAS a local refs/heads/main, and this case needs one that does not"
+    else
+        ok "$2 has no local refs/heads/main"
+    fi
+}
+
+case_a_tag_clone_gets_main_at_head_and_is_on_it() {
+    new_source_repo
+    local want
+    want="$(git -C "$SRC_REPO" rev-parse v0.0.1-drive^{commit})"
+    new_tag_clone
+    CURRENT="the victim is the shape a tag clone arrives in"
+    has_no_local_main "$CLONE" "the fresh tag clone"
+    if [ "$(git -C "$CLONE" symbolic-ref -q HEAD || echo detached)" = "detached" ]; then
+        ok "and its HEAD is detached, which is what \`clone --branch <tag>\` leaves"
+    else
+        bad "its HEAD is not detached — the clone is not the shape a tag clone takes"
+    fi
+
+    run_main_step "$CLONE" "a tag clone gets main at HEAD and is on it"
+    exits 0
+    local got
+    got="$(git -C "$CLONE" rev-parse -q --verify refs/heads/main || true)"
+    if [ "$got" = "$want" ]; then
+        ok "refs/heads/main is at the tag's commit (${got})"
+    else
+        bad "refs/heads/main is '${got:-absent}', wanted the tag's commit ${want}"
+    fi
+    got="$(git -C "$CLONE" symbolic-ref -q HEAD || echo detached)"
+    if [ "$got" = "refs/heads/main" ]; then
+        ok "HEAD is refs/heads/main — the checkout is ON the branch, not merely beside it"
+    else
+        bad "HEAD is '${got}', wanted refs/heads/main"
+    fi
+    # THE WHOLE SENTENCE, not a substring of it: a step that creates a ref and
+    # says nothing leaves the next command's behaviour unexplained, and the
+    # remedy for a reader who wanted the tip is inside these brackets.
+    says "main created at $(git -C "$CLONE" rev-parse --short main) (this checkout had no local main — a tag clone; the --loop scope and the database name derive from it; to move to the tip: git fetch origin main && git reset --hard FETCH_HEAD)"
+}
+
+case_the_printed_remedy_runs_where_the_step_leaves_you() {
+    # WHY THE SENTENCE SAYS `FETCH_HEAD` AND NOT `origin/main` — the paragraph,
+    # because the next reader's instinct will be to "tidy" it back.
+    #
+    # The step's last act is `git switch main`, so it hands the reader a
+    # checkout that is ON `main`. The sentence used to print
+    # `git branch -f main origin/main`, and git refuses to force-update a branch
+    # that is checked out: `fatal: cannot force update the branch 'main'
+    # checked out at …`, exit 128, measured on both clone shapes 2026-09-15.
+    # That is the whole of V-F's finding 1 — the message named a cause it had
+    # never run.
+    #
+    # Correcting only the VERB (`git fetch origin main && git reset --hard
+    # origin/main` — the shape the criteria name) fixes the full clone and
+    # leaves the shallow one broken: a `--depth 1 --single-branch` clone has no
+    # remote-tracking refs at all, so the fetch succeeds and the reset dies with
+    # `fatal: ambiguous argument 'origin/main'`, exit 128. Measured, both
+    # shapes, the same morning. `FETCH_HEAD` is the ref the fetch just wrote,
+    # it exists on every shape by construction, and it is the ONE sentence that
+    # runs everywhere — which is why the conditional sentence the criteria
+    # allowed as an alternative is not what shipped: a remedy that RUNS beats a
+    # remedy that explains why it cannot.
+    #
+    # `git merge --ff-only FETCH_HEAD` was measured too and is green on both
+    # shapes. It is not what shipped because it REFUSES when the tag is not an
+    # ancestor of the tip — a hotfix tag off a release branch — and the sentence
+    # promises movement to the tip, not a diagnosis.
+    #
+    # The remedy is PARSED from the printed line (`remedy_from_the_sentence`),
+    # so this case cannot pass on a command the script does not actually print.
+    new_source_repo
+    advance_the_source_main
+    local tip tag shape here
+    tip="$(git -C "$SRC_REPO" rev-parse main)"
+    tag="$(git -C "$SRC_REPO" rev-parse 'v0.0.1-drive^{commit}')"
+
+    for shape in full shallow; do
+        case "$shape" in
+        full) new_tag_clone ;;
+        shallow) new_shallow_tag_clone ;;
+        esac
+        here="$CLONE"
+
+        run_main_step "$here" "a ${shape} tag clone: the step leaves the reader ON main, at the tag"
+        exits 0
+        if [ "$(git -C "$here" symbolic-ref -q HEAD || echo detached)" = "refs/heads/main" ] &&
+            [ "$(git -C "$here" rev-parse HEAD)" = "$tag" ]; then
+            ok "HEAD is refs/heads/main at the tag ($(git -C "$here" rev-parse --short HEAD)) — the state every remedy below runs from"
+        else
+            bad "HEAD is $(git -C "$here" symbolic-ref -q HEAD || echo detached) at $(git -C "$here" rev-parse --short HEAD), wanted refs/heads/main at the tag"
+        fi
+        remedy_from_the_sentence
+        case "$REMEDY" in
+        *"branch -f main"*) bad "the sentence still names \`branch -f main\` against the branch the step just checked out" ;;
+        *) ok "the sentence does not name \`branch -f main\` — the shape git refuses here" ;;
+        esac
+
+        # THE RED, KEPT: the superseded command, in this clone, in this state.
+        CURRENT="a ${shape} tag clone: the SUPERSEDED remedy is refused where the step leaves you"
+        run_the_superseded_remedy "$here"
+        if [ "$RC" -ne 0 ]; then
+            ok "exit ${RC} — it does not run here, which is the defect this case closes"
+        else
+            bad "the superseded \`git branch -f main origin/main\` SUCCEEDED — the state the step leaves has changed"
+        fi
+        says "fatal:"
+        if [ "$(git -C "$here" rev-parse main)" = "$tag" ]; then
+            ok "and it moved nothing — main is still at the tag"
+        else
+            bad "main moved to $(git -C "$here" rev-parse --short main) despite the refusal"
+        fi
+        if [ "$shape" = shallow ]; then
+            # THE SECOND HALF of the finding, driven independently of the
+            # checked-out refusal: even detached, there is no `origin/main` here
+            # to aim at.
+            CURRENT="a shallow tag clone: origin/main does not exist at all"
+            N=$((N + 1))
+            OUT="${WORK}/originmain${N}.log"
+            RC=0
+            (cd "$here" && git rev-parse --verify origin/main) >"$OUT" 2>&1 || RC=$?
+            if [ "$RC" -ne 0 ]; then
+                ok "exit ${RC} — \`origin/main\` is not a revision in a --depth 1 --single-branch clone"
+            else
+                bad "origin/main resolved to $(cat "$OUT") — this clone is not the shape the case needs"
+            fi
+        fi
+
+        # THE GREEN: the sentence's own command, run as printed.
+        CURRENT="a ${shape} tag clone: the PRINTED remedy runs and lands on the remote's tip"
+        run_the_remedy "$here"
+        exits 0
+        if [ "$(git -C "$here" rev-parse main)" = "$tip" ]; then
+            ok "main is at the source's tip ($(git -C "$here" rev-parse --short main)), one commit past the tag it was created at"
+        else
+            bad "main is at $(git -C "$here" rev-parse --short main), wanted the tip $(git -C "$SRC_REPO" rev-parse --short main)"
+        fi
+        if [ "$(git -C "$here" symbolic-ref -q HEAD || echo detached)" = "refs/heads/main" ]; then
+            ok "and the checkout is still ON main — the remedy did not detach the reader"
+        else
+            bad "the checkout is no longer on main after the remedy"
+        fi
+    done
+}
+
+case_a_clone_with_main_is_untouched() {
+    new_source_repo
+    new_branch_clone
+    plant_git_logger
+    run_main_step "$CLONE" "a clone that already has main is untouched" "$SHIM_BIN"
+    exits 0
+    prints_nothing
+    git_log_ran_but_never 'branch|switch'
+}
+
+case_a_linked_worktree_of_a_repository_holding_main_is_untouched() {
+    # THE pm-push AND rung/* SHAPE, and the reason the negative is a criterion:
+    # every worktree on a working box is detached-or-branched inside a family
+    # whose common git dir HAS main, so this step must be a no-op there by
+    # construction rather than by luck.
+    new_source_repo
+    N=$((N + 1))
+    local wt="${WORK}/wt${N}"
+    drive_require_scratch wt "${wt:-}"
+    git -C "$SRC_REPO" worktree add --detach "$wt" HEAD >/dev/null 2>&1 ||
+        cannot_look "could not add a linked worktree to the scratch repository"
+    echo "           planted ${wt##*/} — a linked worktree of ${SRC_REPO##*/}, detached at $(git -C "$wt" rev-parse --short HEAD)"
+    plant_git_logger
+    run_main_step "$wt" "a linked worktree of a repository holding main is untouched" "$SHIM_BIN"
+    exits 0
+    prints_nothing
+    git_log_ran_but_never 'branch|switch'
+    if [ "$(git -C "$wt" symbolic-ref -q HEAD || echo detached)" = "detached" ]; then
+        ok "the worktree is still detached — nothing moved it"
+    else
+        bad "the worktree was switched onto a branch"
+    fi
+    git -C "$SRC_REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
+}
+
+case_an_unborn_head_prints_and_skips() {
+    N=$((N + 1))
+    local empty="${WORK}/empty${N}"
+    drive_require_scratch empty "${empty:-}"
+    mkdir -p "$empty"
+    git -C "$empty" init -q
+    git -C "$empty" symbolic-ref HEAD refs/heads/main
+    echo "           planted ${empty##*/} — an initialised repository with no commit at all"
+    run_main_step "$empty" "an unborn HEAD prints and skips"
+    exits 0
+    says "no commit to place main on — skipping"
+    has_no_local_main "$empty" "the empty repository"
+}
+
+case_a_failing_git_is_exit_2_naming_the_command() {
+    new_source_repo
+    new_tag_clone
+    plant_git_failing_on branch
+    run_main_step "$CLONE" "a git that cannot create the ref is exit 2 naming the command" "$SHIM_BIN"
+    exits 2
+    says 'git branch main HEAD` failed'
+    has_no_local_main "$CLONE" "the clone (nothing was half-created)"
+}
+
+case_the_loop_scope_refusal_is_what_a_tag_clone_hits_without_the_step() {
+    # THE CONTROL. It runs the SHIPPED `loop_tier_own_apps` — not a copy of its
+    # text — in the same scratch tag clone, before the step and after it. Before
+    # is the 0.8 s refusal the field test measured on a real `git clone --branch
+    # v2.0.0`; after is the scope deriving normally. A rung that softened that
+    # refusal, or one that stopped creating the ref, takes this case with it.
+    new_source_repo
+    new_tag_clone
+
+    local here="$PWD"
+    CURRENT="before the step: the tag clone hits the --loop scope refusal"
+    N=$((N + 1))
+    OUT="${WORK}/scope${N}.log"
+    RC=0
+    cd "$CLONE"
+    loop_tier_own_apps >"$OUT" 2>&1 || RC=$?
+    cd "$here"
+    exits 2
+    says "this checkout has NO local refs/heads/main"
+
+    run_main_step "$CLONE" "the step creates the ref the scope derivation reads"
+    exits 0
+
+    CURRENT="after the step: the scope derives, on the uncommitted-only basis"
+    N=$((N + 1))
+    OUT="${WORK}/scope${N}.log"
+    RC=0
+    cd "$CLONE"
+    loop_tier_own_apps >"$OUT" 2>&1 || RC=$?
+    cd "$here"
+    exits 0
+    case "${LOOP_TIER_BASIS:-}" in
+    *"on main itself"*) ok "the basis is the on-main one: ${LOOP_TIER_BASIS}" ;;
+    *) bad "the basis is '${LOOP_TIER_BASIS:-empty}', not the on-main uncommitted-only basis" ;;
+    esac
+}
+
+# THE CROSS-APP CENSUS THAT USED TO SIT HERE HAS ITS OWN DRIVE.
+# `case_the_siblings_census_names_every_script_that_depends_on_a_local_main`
+# moved to the `test_scripts_census.sh` drive beside this one, with its name,
+# its pattern and its argument. It is not a case about `setup.sh` — it
+# quantifies over every
+# script in that directory, which is a claim about the whole tree — and a census that runs
+# only inside a drive the full gate reaches is a census the per-rung gate cannot
+# see. The new file carries the `# census: cross-app` marker, so the `--loop`
+# always-on leg runs it at every scope. This drive keeps the cases that are
+# about the STEP: that `ensure_local_main` creates the ref, and that the scope
+# derivation refuses without it.
+
+# --- the clock ----------------------------------------------------------------
+
+case_every_step_prints_its_wall_and_the_run_its_total() {
+    # BY EXTRACTION, over two planted no-op steps: the wrapper is what is under
+    # test, and running the whole of `setup.sh` to see two elapsed lines would
+    # need docker, a venv and an identity provider — which is the reason every
+    # other case here is fenced too.
+    CURRENT="the step wrapper prints a wall per step and a total for the run"
+    N=$((N + 1))
+    OUT="${WORK}/wall${N}.log"
+    RC=0
+    (
+        # shellcheck source=/dev/null
+        . "$EXTRACT_WALL"
+        step "alpha"
+        step "beta"
+        setup_total
+    ) >"$OUT" 2>&1 || RC=$?
+    echo "           block:"
+    sed 's/^/             > /' "$OUT"
+    exits 0
+    local walls
+    walls="$(grep -cE '^  \([a-z]+: [0-9]+\.[0-9]+s\)$' "$OUT" || true)"
+    if [ "$walls" -eq 2 ]; then
+        ok "two steps, two elapsed lines"
+    else
+        bad "wanted 2 elapsed lines of the shape \`  (<name>: <n>s)\`, found ${walls}"
+    fi
+    if grep -qE '^  \(alpha: ' "$OUT" && grep -qE '^  \(beta: ' "$OUT"; then
+        ok "each line names its own step"
+    else
+        bad "the elapsed lines do not name alpha and beta"
+    fi
+    if grep -qE '^setup: total [0-9]+\.[0-9]+s$' "$OUT"; then
+        ok "the run prints \`setup: total <n>s\`"
+    else
+        bad "no line of the shape \`setup: total <n>s\`"
+    fi
+    # A step that has not ended has no wall: `step_end` called twice must not
+    # print twice, or the total below would be preceded by a phantom step.
+    if [ "$(grep -cE '^  \(beta: ' "$OUT" || true)" -eq 1 ]; then
+        ok "the last step's wall is printed exactly once, by setup_total"
+    else
+        bad "the last step's wall is printed more than once"
+    fi
+}
+
+case_the_clock_is_rung_starts_and_not_a_third_one() {
+    # Principle 13 as a CENSUS OVER A DISCOVERABLE POPULATION rather than a hand
+    # list: every file in `scripts/` that defines `now_ms` must either BE
+    # `rung_start.sh` — which owns the portability ladder — or name it, so a
+    # reader of any copy knows which one is the original and where a fix lands.
+    # `verify_start.sh` set that precedent first
+    # (`scripts/verify_start.sh:297`, "rung_start.sh's, deliberately identical")
+    # and `setup.sh` follows it. A genuinely third clock — a copy that cites
+    # nothing — is what this case is here to catch.
+    CURRENT="one clock, copied, every copy naming its source"
+    local defs f
+    defs="$(grep -rln '^now_ms() {' scripts/*.sh | sort)"
+    echo "           clock census: $(printf '%s' "$defs" | tr '\n' ' ')"
+    case "$defs" in
+    *scripts/rung_start.sh*) ok "scripts/rung_start.sh still defines it — the original is there" ;;
+    *) bad "scripts/rung_start.sh no longer defines now_ms — the file every copy cites is gone" ;;
+    esac
+    case "$defs" in
+    *scripts/setup.sh*) ok "scripts/setup.sh carries a copy — the first thing a stranger runs has a clock" ;;
+    *) bad "scripts/setup.sh defines no now_ms — the first thing a stranger runs has no clock" ;;
+    esac
+    for f in $defs; do
+        [ "$f" != "scripts/rung_start.sh" ] || continue
+        if grep -qF 'rung_start.sh' "$f"; then
+            ok "${f} names rung_start.sh as where the ladder is owned"
+        else
+            bad "${f} defines now_ms and cites nothing — that is a third clock"
+        fi
+    done
+    if grep -qF 'scripts/rung_start.sh' "$EXTRACT_WALL"; then
+        ok "the fence itself names scripts/rung_start.sh, so the copy is readable as a copy"
+    else
+        bad "the step-wall fence does not name the file it copied the clock from"
+    fi
+}
+
 # --- the wiring ---------------------------------------------------------------
+
+case_ensure_local_main_precedes_the_environment_step() {
+    # `.env` PERSISTS A DERIVED NAME: the database name carries the branch
+    # (scripts/db.sh), and on a detached HEAD there is no branch to carry. So
+    # the ref has to exist before the first file that remembers it — which is a
+    # POSITION in this script, and the only thing that can hold it is a case.
+    CURRENT="the local-main step comes before the environment step"
+    local banner call env_line
+    banner="$(grep -nF 'step "local main"' scripts/setup.sh | sed -n '1s/:.*//p' || true)"
+    call="$(grep -nx 'ensure_local_main' scripts/setup.sh | sed -n '1s/:.*//p' || true)"
+    env_line="$(grep -nF 'step "environment file"' scripts/setup.sh | sed -n '1s/:.*//p' || true)"
+    if [ -n "$banner" ] && [ -n "$call" ] && [ -n "$env_line" ] &&
+        [ "$call" -gt "$banner" ] && [ "$env_line" -gt "$call" ]; then
+        ok "banner at ${banner}, call at ${call}, the environment step at ${env_line}"
+    else
+        bad "banner at \"${banner:-none}\", call at \"${call:-none}\", environment step at \"${env_line:-none}\""
+    fi
+    # AND IT IS THE FIRST STEP, not merely an earlier one: no `step` banner
+    # above it.
+    local first
+    first="$(grep -n '^step "' scripts/setup.sh | sed -n '1s/:.*//p' || true)"
+    if [ "$first" = "$banner" ]; then
+        ok "it is the FIRST step banner in the file (line ${first})"
+    else
+        bad "the first step banner is at line ${first:-none}, not ${banner:-none}"
+    fi
+}
+
+case_the_total_is_the_last_thing_the_script_prints() {
+    # "The last line of a run reads `setup: total <n>s`" is a property of the
+    # SCRIPT's shape, not of the wrapper: a `printf` added below the call would
+    # take the last line back without changing anything the case above sees.
+    CURRENT="setup_total is the last statement that prints"
+    local tail_code lines has_call="" has_guard=""
+    tail_code="$(sed -n '/^setup_total$/,$p' scripts/setup.sh | sed 's/#.*$//' | grep -v '^[[:space:]]*$' || true)"
+    # NO `grep -q` AT THE TAIL OF A PIPELINE, and `scripts/sweep.sh`'s census is
+    # what caught the first draft of this case doing it: a reader that
+    # short-circuits its own producer under `pipefail` takes SIGPIPE over 64 KiB
+    # and the pipeline's status is then the wrong answer, every run. The same
+    # note sits over `case_the_minio_pin_names_the_registry_that_serves_it` for
+    # the same reason. `$tail_code` is already a shell string, so both
+    # membership tests need no process at all.
+    lines=$(printf '%s\n' "$tail_code" | wc -l)
+    lines=${lines// /}
+    case $'\n'"${tail_code}"$'\n' in
+    *$'\n'setup_total$'\n'*) has_call=1 ;;
+    esac
+    case "$tail_code" in
+    *'exit 1'*) has_guard=1 ;;
+    esac
+    if [ "$lines" -eq 2 ] && [ -n "$has_call" ] && [ -n "$has_guard" ]; then
+        ok "nothing but the SETUP_INCOMPLETE exit guard follows it: $(printf '%s' "$tail_code" | tr '\n' ';')"
+    else
+        bad "something else follows setup_total: $(printf '%s' "$tail_code" | tr '\n' ';')"
+    fi
+}
+
+case_the_readme_quickstart_names_the_tag_clone_shape_and_the_number() {
+    # README IS WHERE A STRANGER WHO NEVER LOADS A SKILL READS. The two
+    # sentences point at the mechanism — the step's name and the fact that a
+    # number is printed — and never repeat the script's text, which is the class
+    # the pointer-not-a-copy class: a second copy of a sentence is a second thing to keep
+    # true.
+    CURRENT="README's quickstart names the tag-clone shape and the number"
+    local section
+    section="$(sed -n '/^## Quickstart, from a fresh clone$/,/^## /p' README.md)"
+    if [ -z "$section" ]; then
+        bad "README.md has no section heading reading exactly '## Quickstart, from a fresh clone'"
+        return
+    fi
+    case "$section" in
+    *"clone --branch"*) ok "it names the tag-clone command shape" ;;
+    *) bad "it never names \`clone --branch\` — the shape every consumer's first clone takes" ;;
+    esac
+    case "$section" in
+    *"ensure_local_main"* | *"creates one"*) ok "it names the step that creates the ref" ;;
+    *) bad "it does not say setup.sh creates the ref" ;;
+    esac
+    case "$section" in
+    *"setup: total"* | *"total"*) ok "it says the run prints its total" ;;
+    *) bad "it does not say a total is printed" ;;
+    esac
+}
 
 case_the_step_calls_services_up() {
     CURRENT="setup.sh's services step calls the fenced function"
@@ -1007,6 +1750,8 @@ case_the_drive_is_registered_in_the_gate() {
 echo "test_setup_env: driving the two fences extracted from scripts/setup.sh"
 echo "           env-sync: $(wc -l <"$EXTRACT" | tr -d ' ') line(s) between the sentinels into ${EXTRACT}"
 echo "           services: $(wc -l <"$EXTRACT_SVC" | tr -d ' ') line(s) between the sentinels into ${EXTRACT_SVC}"
+echo "           local-main: $(wc -l <"$EXTRACT_MAIN" | tr -d ' ') line(s) between the sentinels into ${EXTRACT_MAIN}"
+echo "           step-wall: $(wc -l <"$EXTRACT_WALL" | tr -d ' ') line(s) between the sentinels into ${EXTRACT_WALL}"
 
 case_the_result_is_the_example_with_the_values_carried_over
 case_the_changed_value_sits_at_the_examples_position
@@ -1027,6 +1772,18 @@ case_a_healthy_stack_is_reused_without_a_pull
 case_a_clean_pull_starts_the_stack_and_then_waits
 case_a_reference_names_its_registry_the_way_docker_reads_one
 case_the_minio_pin_names_the_registry_that_serves_it
+case_a_tag_clone_gets_main_at_head_and_is_on_it
+case_the_printed_remedy_runs_where_the_step_leaves_you
+case_a_clone_with_main_is_untouched
+case_a_linked_worktree_of_a_repository_holding_main_is_untouched
+case_an_unborn_head_prints_and_skips
+case_a_failing_git_is_exit_2_naming_the_command
+case_the_loop_scope_refusal_is_what_a_tag_clone_hits_without_the_step
+case_every_step_prints_its_wall_and_the_run_its_total
+case_the_clock_is_rung_starts_and_not_a_third_one
+case_ensure_local_main_precedes_the_environment_step
+case_the_total_is_the_last_thing_the_script_prints
+case_the_readme_quickstart_names_the_tag_clone_shape_and_the_number
 case_the_step_calls_services_up
 case_the_step_calls_the_function
 case_the_superseded_sentence_is_gone

@@ -1,3 +1,4 @@
+# census: cross-app population=templates/**/*.html,config/settings/*.py,uv.lock walks every *.html
 """The entrance chain: one shell for the whole allauth surface, and no chooser at one door.
 
 Two properties, and neither of them is "a page renders".
@@ -41,15 +42,29 @@ from django.template.loader import get_template
 from django.test import Client
 
 from apps.accounts.templatetags.entrance import DEFAULT_ACCENT
+from apps.core.tests.template_shape import template_shape
 from apps.core.tests.tree_census import source_text
 from config.settings.base import DEFAULT_BRAND_ACCENT
 
 pytestmark = pytest.mark.django_db
 
-#: The custom property the entrance token block declares. Nothing else in the
-#: tree spells it, so its presence in a rendered document is proof that the
-#: document was built by our shell and not by allauth's.
-TOKEN_MARKER = "--entrance-tokens"
+
+def token_marker() -> str:
+    """The custom property THIS product's entrance token block declares.
+
+    Read from the declaration (`DJB_IDENTITY_SHAPE`, key `entrance_marker`;
+    `config/settings/base.py` is the authority) rather than pinned as a literal,
+    because the string is the template's own shape and the property it proves is
+    every product's: nothing else in a tree spells its shell's marker, so the
+    marker's presence in a rendered document is proof that the document was
+    built by that product's ONE shell and not by allauth's.
+
+    A function rather than a module constant so the value is read at call time —
+    a `settings` fixture, or a product's own declaration, reaches the census
+    without the module having to be re-imported.
+    """
+    return str(django_settings.IDENTITY_SHAPE["entrance_marker"])
+
 
 #: `{% extends "…" %}` with a literal name. A template that extends a VARIABLE
 #: is out of the census by construction and is reported rather than skipped
@@ -135,7 +150,7 @@ def _chain(name: str) -> list[str]:
             break
         loaded: Any = get_template(current)
         origins.append(str(loaded.template.origin.name))
-        if TOKEN_MARKER in source:
+        if token_marker() in source:
             break
         match = EXTENDS.search(source)
         current = match.group(1) if match else ""
@@ -147,7 +162,7 @@ def _resolves_through_our_shell(name: str) -> bool:
     # Through the seam, not `read_text`: this module walks directories, and a
     # file listed by the walk and gone by the open is SKIPPED rather than a
     # `FileNotFoundError` (`apps/core/tests/tree_census.py`).
-    return any(TOKEN_MARKER in source_text(Path(origin)) for origin in origins)
+    return any(token_marker() in source_text(Path(origin)) for origin in origins)
 
 
 # --- the census ---------------------------------------------------------------
@@ -222,6 +237,7 @@ def test_the_census_covers_pages_this_tree_never_wrote() -> None:
 # --- the shell itself ---------------------------------------------------------
 
 
+@template_shape("entrance_marker")
 def test_the_shell_fetches_nothing(client: Client) -> None:
     """No stylesheet, no font, no script. The design is the inline token block.
 
@@ -230,12 +246,13 @@ def test_the_shell_fetches_nothing(client: Client) -> None:
     element instead of a link.
     """
     body = client.get("/accounts/login/").content.decode()
-    assert TOKEN_MARKER in body
+    assert token_marker() in body
     assert "<link" not in body
     assert "<script" not in body
     assert "https://" not in body
 
 
+@template_shape("entrance_marker")
 def test_the_shell_declares_both_themes(client: Client) -> None:
     """A surface pair and `color-scheme`, so a dark-mode browser is not handed white."""
     body = client.get("/accounts/login/").content.decode()
@@ -244,9 +261,20 @@ def test_the_shell_declares_both_themes(client: Client) -> None:
 
 
 def test_the_accent_is_the_declared_one(client: Client, settings: Any) -> None:
-    """`BRAND_ACCENT` reaches the rendered page: declared once, consumed here."""
+    """`BRAND_ACCENT` reaches the rendered page: declared once, consumed here.
+
+    Asserted on the accent VALUE inside this product's own token block, and not
+    on the property spelling `--accent:`. The spelling is one shell's private
+    vocabulary — a product that draws its own entrance names its custom
+    properties whatever it likes — while "the declared colour reaches the
+    document the shell built" is the property every product has to hold. The
+    block is located by the declared marker (`entrance_marker`), which is what
+    stops this passing on a page our shell never touched.
+    """
     settings.BRAND_ACCENT = "#123456"
-    assert "--accent: #123456;" in client.get("/accounts/login/").content.decode()
+    body = client.get("/accounts/login/").content.decode()
+    assert token_marker() in body
+    assert "#123456" in body
 
 
 def test_a_junk_accent_falls_back_rather_than_breaking_the_block(
@@ -255,10 +283,12 @@ def test_a_junk_accent_falls_back_rather_than_breaking_the_block(
     """A value that is not a colour must not end the declaration and eat the rest."""
     settings.BRAND_ACCENT = "red; } body { display: none"
     body = client.get("/accounts/login/").content.decode()
+    assert token_marker() in body
     assert "display: none" not in body
-    assert f"--accent: {DEFAULT_ACCENT};" in body
+    assert DEFAULT_ACCENT in body
 
 
+@template_shape("template_files")
 def test_the_two_copies_of_the_shipped_accent_agree() -> None:
     """One declared value, and it is written down twice — so pin them together.
 
@@ -290,15 +320,34 @@ def _doors(count: int) -> None:
         app.sites.add(site)
 
 
+@template_shape("login_page")
 def test_no_provider_keeps_the_operator_sentence(client: Client) -> None:
-    """Nought doors: say what is missing and who fixes it. Never a blank page."""
+    """Nought doors: say what is missing and who fixes it. Never a blank page.
+
+    **And the remedy has to be the one that WORKS.** The page used to name
+    `./scripts/setup.sh` and say it "writes the client id into `.env`". It does
+    not: that script's whole `env_set` census is `ZITADEL_PAT`,
+    `DATABASE_NAME`, `ZITADEL_MCP_AUDIENCE` and `AWS_STORAGE_BUCKET_NAME`, so a
+    stranger who ran it landed back on this same page with the same sentence —
+    a closed loop whose one instruction is the command that just succeeded. The
+    step that actually changes the state is a person pasting the two values the
+    seed printed, so the page names those two variables by the names `.env`
+    knows them by, and the assertions below are what keeps it naming them.
+    """
     _doors(0)
     body = client.get("/accounts/login/").content.decode()
     assert "no sign-in provider configured yet" in body
     assert "./scripts/setup.sh" in body
+    assert "ZITADEL_CLIENT_ID" in body
+    assert "ZITADEL_CLIENT_SECRET" in body
+    # Collapsed, because the false clause used to straddle a line break — which
+    # is also why the plain grep for it in the criteria set could never fail.
+    collapsed = " ".join(body.split())
+    assert "writes the client id" not in collapsed
     assert "<li>" not in body
 
 
+@template_shape("login_page")
 def test_one_provider_is_one_action_and_no_chooser(client: Client) -> None:
     """The defect the entrance survey measured: a bulleted list with one bullet in it."""
     _doors(1)
@@ -308,6 +357,7 @@ def test_one_provider_is_one_action_and_no_chooser(client: Client) -> None:
     assert 'class="button"' in body
 
 
+@template_shape("login_page")
 def test_one_provider_names_the_hosted_hop(client: Client) -> None:
     """The seam is told, not smoothed: the person is about to leave this site."""
     _doors(1)
@@ -323,6 +373,7 @@ def test_one_provider_is_still_a_page(client: Client) -> None:
     assert social_settings.LOGIN_ON_GET is False
 
 
+@template_shape("login_page")
 def test_two_providers_bring_the_chooser_back(client: Client) -> None:
     """The chooser was wrong as a default at one, never wrong as a mechanism."""
     _doors(2)
@@ -333,6 +384,7 @@ def test_two_providers_bring_the_chooser_back(client: Client) -> None:
     assert "Continue with" not in body
 
 
+@template_shape("login_page")
 def test_the_count_is_the_population_and_not_a_setting() -> None:
     """Adding a row changes the page. Nothing in `.env` had to be touched.
 
@@ -363,7 +415,7 @@ def test_the_sign_out_page_is_ours_and_in_register(client: Client, owner: Any) -
     response = client.get("/accounts/logout/")
     assert response.status_code == 200
     body = response.content.decode()
-    assert TOKEN_MARKER in body
+    assert token_marker() in body
     assert "This ends your session here" in body
     assert "Menu:" not in body, "allauth's raw navigation is what the shell replaced"
 
@@ -373,7 +425,7 @@ def test_the_cancellation_page_is_ours_and_in_register(client: Client) -> None:
     response = client.get("/accounts/3rdparty/login/cancelled/")
     assert response.status_code == 200
     body = response.content.decode()
-    assert TOKEN_MARKER in body
+    assert token_marker() in body
     assert "Sign-in cancelled" in body
     assert "Menu:" not in body
 
@@ -381,7 +433,7 @@ def test_the_cancellation_page_is_ours_and_in_register(client: Client) -> None:
 def test_the_failure_page_is_ours_and_in_register() -> None:
     """The third-party failure page, rendered directly: it answers 401 in the flow."""
     body = get_template("socialaccount/authentication_error.html").render({})
-    assert TOKEN_MARKER in body
+    assert token_marker() in body
     assert "Sign-in did not complete" in body
     assert "third-party account" not in body
 

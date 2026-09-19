@@ -15,6 +15,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .gitignore .secrets.baseline apps/example/api.py apps/example/models.py frontend/openapi.json frontend/scripts/pin_client.sh frontend/src/api/generated/schema.d.ts manage.py quality/budgets.yaml quality/gate.py scripts/backup.sh scripts/budget_notes.sh scripts/fe_gate.sh scripts/gate_ledger.sh scripts/pm_fold.sh scripts/pm_merge.sh scripts/pm_push.sh scripts/rung_start.sh scripts/rung_tidy.sh scripts/sweep.sh scripts/tests/test_gate_lease.sh
 # THE FOLD'S REFUSAL DRIVE. `scripts/pm_fold.sh` COMMITS, UNATTENDED, from
 # inside `pm_push.sh --bank` and `pm_merge.sh --bank`, into the tree the gate's
 # verdict is about to vouch for. Every one of its teeth was proven once, by
@@ -94,8 +95,12 @@ LEDGER_SRC="$ROOT/scripts/gate_ledger.sh"
 # case_every_fixture_that_copies_a_seam_library_copies_the_seam in
 # scripts/tests/test_gate_lease.sh.
 REFUSE_SRC="$ROOT/scripts/gate_refuse.sh"
+# The budget sentence reader `pm_fold.sh` sources, and `rung_tidy.sh` beside it.
+NOTES_SRC="$ROOT/scripts/budget_notes.sh"
 
 [ -x "$FOLD_SRC" ] || drive_cannot_look "no executable ${FOLD_SRC} to drive"
+[ -r "$NOTES_SRC" ] ||
+    drive_cannot_look "no ${NOTES_SRC} — pm_fold.sh sources it and refuses without it, so every fixture below would refuse for this drive's reason"
 
 PASSED=0
 FAILED=0
@@ -173,6 +178,15 @@ make_repo() {
 
     cp "$FOLD_SRC" "$REPO/scripts/pm_fold.sh"
     chmod +x "$REPO/scripts/pm_fold.sh"
+    # THE SENTENCE READER, COPIED BESIDE IT. `pm_fold.sh` sources
+    # `scripts/budget_notes.sh` for step (d) — the same parser
+    # `scripts/rung_tidy.sh` reads the other two shapes with — and it refuses at
+    # exit 2 when the file is not there. A fixture that copied the script and
+    # not the library would red every case in this drive for the harness's
+    # reason: measured, 82 failed assertions on the first run of this change.
+    # It is the same class `test_gate_lease.sh::case_every_fixture_that_copies_a
+    # _seam_library_copies_the_seam` censuses one seam over.
+    cp "$NOTES_SRC" "$REPO/scripts/budget_notes.sh"
 
     # The non-derived victim. A destructive demonstration creates its own
     # victim; this is the fold's.
@@ -562,7 +576,8 @@ BASELINE
     echo "stamp" >"$REPO/secrets.act" # the results do NOT move
     run_fold
     holds "exit 0" 0 "$RC"
-    says "says the stamp was removed" "the generated_at stamp was removed" "$OUT"
+    says "says the always-moving fields were removed" "the always-moving fields were removed" "$OUT"
+    says "and names the counts it found" "(1 generated_at, 0 line_number)" "$OUT"
     holds "HEAD moved" "1" "$([ "$BEFORE_HEAD" != "$(git -C "$REPO" rev-parse HEAD)" ] && echo 1 || echo 0)"
     holds "the committed baseline carries no stamp" "0" \
         "$(git -C "$REPO" show HEAD:.secrets.baseline | grep -c '"generated_at"' || true)"
@@ -581,6 +596,192 @@ case_two_lanes_baselines_merge_clean_without_the_stamp() {
     holds "both lanes' results survived the merge" "yes yes" \
         "$(grep -q 'aaa_top.md' "$MERGE_FILE" && echo -n 'yes ' || echo -n 'no '
             grep -q 'zzz_bottom.md' "$MERGE_FILE" && echo 'yes' || echo 'no')"
+}
+
+# THE OTHER ALWAYS-MOVING FIELD, driven the same way and for the same reason.
+# `line_number` is the half the CONSUMER pays: this tree's own baseline records
+# zero results, so nothing here moves it, while a product with real results
+# rewrites every recorded line whenever anything is inserted above a secret.
+#
+# THE PLANT IS THE REAL MECHANISM AND NOT A TRANSCRIPTION OF IT. Both lanes run
+# the FOLD, against a stub scanner that computes real line numbers off the
+# tracked file — so the baselines being merged are the ones the fold actually
+# wrote. The two lanes insert their filler THIRTY LINES APART so the SOURCE file
+# merges cleanly on its own: a case whose source file also conflicted would be
+# naming the wrong cause. Measured on the baseline bytes before this change,
+# with the numbers kept: `git merge` exit 1, two conflicted regions in
+# `.secrets.baseline`, both of them a `"line_number": N` line, and no other file
+# conflicted.
+case_two_lanes_baselines_merge_clean_without_line_numbers() {
+    CURRENT="two lanes' numberless baselines merge clean"
+    _two_lane_fold_merge
+    holds "merge exit 0" 0 "$MERGE_RC"
+    says_not "no conflict marker in the merged file" "<<<<<<<" "$MERGE_FILE"
+    holds "the merged baseline carries no line numbers" "0" \
+        "$(grep -c '"line_number"' "$MERGE_FILE" || true)"
+    # BOTH LANES' RESULTS SURVIVED. A merge that resolved the conflict by
+    # losing a result would be a baseline that stopped looking for a secret.
+    holds "both lanes' results survived the merge" "yes yes" \
+        "$(grep -q 'mmm_keys.md' "$MERGE_FILE" && printf 'yes ' || printf 'no '
+            grep -q 'nnn_other.md' "$MERGE_FILE" && echo 'yes' || echo 'no')"
+}
+
+# _two_lane_fold_merge — a scratch repository whose committed baseline holds two
+# results in one file; lane A inserts ten lines at the top of that file, lane B
+# three lines thirty lines further down AND a secret in an unrelated file; both
+# lanes FOLD; lane A merges lane B. Sets MERGE_RC, MERGE_LOG, MERGE_FILE. Its
+# own victim, built here, never this checkout's.
+_two_lane_fold_merge() {
+    local R
+    CASE_N=$((CASE_N + 1))
+    R="$WORK/fold-merge-${CASE_N}"
+    drive_require_scratch R "$R"
+    mkdir -p "$R/scripts" "$R/bin"
+    cp "$FOLD_SRC" "$R/scripts/pm_fold.sh"
+    chmod +x "$R/scripts/pm_fold.sh"
+    cp "$NOTES_SRC" "$R/scripts/budget_notes.sh"
+
+    # The stub scanner: detect-secrets' own output shape, with REAL line
+    # numbers read off the tracked files, because the whole subject of this case
+    # is what happens to those numbers.
+    cat >"$R/bin/uv" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+*"detect-secrets scan"*)
+    python3 - . <<'PYSCAN'
+import hashlib
+import json
+import os
+import sys
+
+root = sys.argv[1]
+results = {}
+for name in sorted(os.listdir(root)):
+    if not name.endswith(".md"):
+        continue
+    entries = []
+    with open(os.path.join(root, name)) as fh:
+        for i, line in enumerate(fh, 1):
+            if "PLANTED-KEY" in line:
+                entries.append({
+                    "type": "Secret Keyword",
+                    "filename": name,
+                    "hashed_secret": hashlib.sha1(line.strip().encode()).hexdigest(),
+                    "is_verified": False,
+                    "line_number": i,
+                })
+    if entries:
+        results[name] = entries
+with open(".secrets.baseline", "w") as fh:
+    fh.write(json.dumps(
+        {"version": "1.5.0", "results": results,
+         "generated_at": "2026-06-06T06:06:06Z"}, indent=2) + "\n")
+PYSCAN
+    ;;
+esac
+STUB
+    chmod +x "$R/bin/uv"
+
+    python3 - "$R" <<'PYSEED'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+(root / "mmm_keys.md").write_text(
+    "".join("body line %d\n" % i for i in range(1, 41))
+    + "alpha PLANTED-KEY one\nalpha PLANTED-KEY two\n"
+)
+(root / "nnn_other.md").write_text("nothing here yet\n")
+(root / ".secrets.baseline").write_text('{\n  "version": "1.5.0",\n  "results": {}\n}\n')
+PYSEED
+
+    git -C "$R" init -q
+    git -C "$R" symbolic-ref HEAD refs/heads/main
+    git -C "$R" config user.email drive@example.invalid
+    git -C "$R" config user.name "fold drive"
+    git -C "$R" config commit.gpgsign false
+    printf 'bin/\n' >"$R/.git/info/exclude"
+    git -C "$R" add -A
+    git -C "$R" commit -q -m base
+    _fold_in "$R"
+
+    git -C "$R" checkout -q -b lane-a main
+    python3 - "$R" <<'PYLANEA'
+import pathlib
+import sys
+
+p = pathlib.Path(sys.argv[1]) / "mmm_keys.md"
+lines = p.read_text().splitlines(True)
+p.write_text("".join(["filler-a\n"] * 10 + lines))
+PYLANEA
+    git -C "$R" commit -q -am "lane A: ten lines at the top"
+    _fold_in "$R"
+
+    git -C "$R" checkout -q -b lane-b main
+    python3 - "$R" <<'PYLANEB'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+p = root / "mmm_keys.md"
+lines = p.read_text().splitlines(True)
+p.write_text("".join(lines[:30] + ["filler-b\n"] * 3 + lines[30:]))
+with open(root / "nnn_other.md", "a") as fh:
+    fh.write("beta PLANTED-KEY three\n")
+PYLANEB
+    git -C "$R" commit -q -am "lane B: three lines far from lane A's, and an unrelated file"
+    _fold_in "$R"
+
+    git -C "$R" checkout -q lane-a
+    MERGE_LOG="$WORK/fold-merge-${CASE_N}.log"
+    MERGE_FILE="$R/.secrets.baseline"
+    set +e
+    git -C "$R" merge --no-edit lane-b >"$MERGE_LOG" 2>&1
+    MERGE_RC=$?
+    set -e
+}
+
+# _fold_in <repo> — the fixture's own fold, with the stub toolchain on PATH.
+_fold_in() {
+    set +e
+    (cd "$1" && PATH="$1/bin:$PATH" DJB_FOLD_UV=uv ./scripts/pm_fold.sh) >>"$OUT" 2>&1
+    set -e
+}
+
+# ---------------------------------------------------------------------------
+# --ONLY AND --NO-COMMIT. `scripts/rung_tidy.sh --secrets` is the caller these
+# exist for, and the property that matters is that the tree's ONE legal baseline
+# writer is still this file: the tidy invokes the fold rather than growing a
+# second scan line of its own.
+# ---------------------------------------------------------------------------
+case_only_secrets_no_commit_rescans_and_stages_nothing() {
+    CURRENT="--only secrets --no-commit rescans, and stages nothing"
+    make_repo only_secrets
+    echo "shift" >"$REPO/secrets.act"
+    run_fold --only secrets --no-commit
+    holds "exit 0" 0 "$RC"
+    says "says which steps it skipped" "--only secrets does not name this step" "$OUT"
+    says "the scan ran" "BASELINE SHIFTED" "$OUT"
+    says "and it says nothing was committed" "pm_fold: --no-commit" "$OUT"
+    holds "HEAD did not move" "$BEFORE_HEAD" "$(git -C "$REPO" rev-parse HEAD)"
+    holds "nothing is staged" "" "$(git -C "$REPO" diff --cached --name-only)"
+    holds "the working tree shows only the baseline" " M .secrets.baseline" \
+        "$(git -C "$REPO" status --porcelain)"
+    holds "the rewritten baseline carries no stamp" "0" \
+        "$(grep -c '"generated_at"' "$REPO/.secrets.baseline" || true)"
+    holds "the rewritten baseline carries no line numbers" "0" \
+        "$(grep -c '"line_number"' "$REPO/.secrets.baseline" || true)"
+    # The step list is CLOSED. A typo that fell through to "select nothing"
+    # would be a fold that ran no step in the voice of a clean tree.
+    run_fold --only secretz --no-commit
+    holds "an unknown step name is exit 2" 2 "$RC"
+    says "names the step it does not know" "--only names 'secretz'" "$OUT"
+    # And --no-commit alone is a refusal: a WHOLE fold that commits nothing
+    # leaves a tree the next bank keys its verdict on and nobody wrote down.
+    run_fold --no-commit
+    holds "--no-commit without --only is exit 2" 2 "$RC"
+    says "says why" "legal only with --only" "$OUT"
 }
 
 case_the_stamp_is_what_conflicted() {
@@ -1188,8 +1389,11 @@ case_the_exit_guard_is_the_real_scripts_own() {
     CLOSE="$(grep -c '^# <<< exit-guard <<<$' "$FOLD_SRC" || true)"
     holds "exactly one guard region" "1|1" "${OPEN}|${CLOSE}"
     ENDS="$(grep -c '^ *FOLD_REACHED_THE_END=1$' "$FOLD_SRC" || true)"
-    # Three completion arms: --help, NOTHING TO FOLD, and the last line.
-    holds "three completion arms" 3 "$ENDS"
+    # Four completion arms: --help, NOTHING TO FOLD, --no-commit, and the last
+    # line. The count is asserted rather than the shape because the whole claim
+    # of the guard is that EVERY path out of this script sets one — an arm
+    # added and not counted here is an arm nobody checked.
+    holds "four completion arms" 4 "$ENDS"
 
     awk '/^# >>> exit-guard >>>$/{p=1;next} /^# <<< exit-guard <<<$/{p=0} p' \
         "$FOLD_SRC" >"$WORK/guard.sh"
@@ -1368,6 +1572,8 @@ case_a_committed_stamp_is_stripped_even_when_nothing_shifted
 case_an_unrecognised_stamp_shape_is_refused
 case_two_lanes_baselines_merge_clean_without_the_stamp
 case_the_stamp_is_what_conflicted
+case_two_lanes_baselines_merge_clean_without_line_numbers
+case_only_secrets_no_commit_rescans_and_stages_nothing
 case_contract_drift_is_one_commit_of_derived_paths
 case_an_unignored_rung_dir_is_skipped
 case_a_failed_generator_commits_nothing

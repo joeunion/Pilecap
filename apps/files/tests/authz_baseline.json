@@ -1,0 +1,218 @@
+{
+  "_": "DERIVED, never typed. Every cell is `allows(actor, key, row)` over the `files` keys, the three roles of `permissions_world.build_world`, and the row classes `test_authz_sweep._rows` names. The test re-runs the same function on this tree and asserts equality; a moved cell prints (key, row class, actor, before, after).",
+  "_baseline": "e34f7bac",
+  "_command": "uv run python manage.py shell -c \"from apps.files.tests.test_authz_sweep import write_baseline as w; w('apps/files/tests/authz_baseline.json')\"   # on e34f7bac, before the sweep",
+  "accepted_deltas": {
+    "file.archive/sibling_branch/admin_at_a": "ACCEPTED, and the reason is the sweep's whole point. Before it, `file.*` named no registry kind, so `core.authz.allows` skipped the data half entirely and the predicate was the whole rule \u2014 and not one of those predicates looked at the row, so the NODE never entered into the answer: an admin at A was told yes about a document in sibling branch B, where they hold nothing. `StoredFile.authz_kind = \"file\"` makes it a real kind, `where_of` asks at the row's own organization, and B answers no. Strictly a narrowing, never a widening, and unreachable through any door either way: `for_tenant(t).visible_to(org)` has answered `not_found` for a sibling's document since rule 24 landed. The four cells are one cell four times \u2014 one row class, one actor, four keys.",
+    "file.create/sibling_branch/admin_at_a": "ACCEPTED, and the reason is the sweep's whole point. Before it, `file.*` named no registry kind, so `core.authz.allows` skipped the data half entirely and the predicate was the whole rule \u2014 and not one of those predicates looked at the row, so the NODE never entered into the answer: an admin at A was told yes about a document in sibling branch B, where they hold nothing. `StoredFile.authz_kind = \"file\"` makes it a real kind, `where_of` asks at the row's own organization, and B answers no. Strictly a narrowing, never a widening, and unreachable through any door either way: `for_tenant(t).visible_to(org)` has answered `not_found` for a sibling's document since rule 24 landed. The four cells are one cell four times \u2014 one row class, one actor, four keys.",
+    "file.read/sibling_branch/admin_at_a": "ACCEPTED, and the reason is the sweep's whole point. Before it, `file.*` named no registry kind, so `core.authz.allows` skipped the data half entirely and the predicate was the whole rule \u2014 and not one of those predicates looked at the row, so the NODE never entered into the answer: an admin at A was told yes about a document in sibling branch B, where they hold nothing. `StoredFile.authz_kind = \"file\"` makes it a real kind, `where_of` asks at the row's own organization, and B answers no. Strictly a narrowing, never a widening, and unreachable through any door either way: `for_tenant(t).visible_to(org)` has answered `not_found` for a sibling's document since rule 24 landed. The four cells are one cell four times \u2014 one row class, one actor, four keys.",
+    "file.replace/sibling_branch/admin_at_a": "ACCEPTED, and the reason is the sweep's whole point. Before it, `file.*` named no registry kind, so `core.authz.allows` skipped the data half entirely and the predicate was the whole rule \u2014 and not one of those predicates looked at the row, so the NODE never entered into the answer: an admin at A was told yes about a document in sibling branch B, where they hold nothing. `StoredFile.authz_kind = \"file\"` makes it a real kind, `where_of` asks at the row's own organization, and B answers no. Strictly a narrowing, never a widening, and unreachable through any door either way: `for_tenant(t).visible_to(org)` has answered `not_found` for a sibling's document since rule 24 landed. The four cells are one cell four times \u2014 one row class, one actor, four keys."
+  },
+  "actors": [
+    "admin_at_a",
+    "member",
+    "owner"
+  ],
+  "answers": {
+    "file.archive": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "other_in_subtree": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "own_at_hat": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "version_in_subtree": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      }
+    },
+    "file.create": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "other_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "own_at_hat": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "version_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      }
+    },
+    "file.read": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "other_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "own_at_hat": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "version_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      }
+    },
+    "file.replace": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "other_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "own_at_hat": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "version_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      }
+    },
+    "file_version.read": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "other_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "own_at_hat": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": true,
+        "owner": true
+      },
+      "version_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      }
+    },
+    "stored_file.read": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "other_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "own_at_hat": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": true,
+        "owner": true
+      },
+      "version_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      }
+    }
+  },
+  "keys": [
+    "file.archive",
+    "file.create",
+    "file.read",
+    "file.replace",
+    "file_version.read",
+    "stored_file.read"
+  ]
+}

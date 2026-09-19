@@ -68,7 +68,7 @@ from apps.comms.selectors import get_preference
 from apps.comms.tests.conftest import make_preference
 from apps.comms.types import DeliverMessage, DeliveryAttempt, MessageOutcome
 from apps.comms.workflows import DeliverMessageWorkflow
-from apps.core.actor import Actor
+from apps.core.actor import Actor, system_actor
 from apps.core.asyncdb import run_db
 from apps.core.models import Organization, Tenant
 from apps.core.time import UTC
@@ -383,7 +383,13 @@ def test_a_temporal_lever_leaves_the_row_queued_and_says_how_long(
     refused_at = datetime.fromisoformat(attempt.edge_refused_at)
     # The exact identity: the deferral is the distance from the refusal to the
     # window's far edge, to the whole second, and never short of it.
-    judged = get_preference(tenant=tenant, recipient=recipient, channel=Channel.EMAIL, org=root_org)
+    judged = get_preference(
+        tenant=tenant,
+        recipient=recipient,
+        channel=Channel.EMAIL,
+        org=root_org,
+        actor=system_actor(tenant, root_org),
+    )
     assert judged is not None
     assert timedelta(seconds=attempt.defer_seconds) == judged.quiet_opens_in(refused_at)
     assert refused_at + timedelta(seconds=attempt.defer_seconds) >= closes_at

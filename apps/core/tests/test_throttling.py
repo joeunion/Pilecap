@@ -91,7 +91,16 @@ def test_a_request_with_no_tenant_is_not_counted_against_one(
     api: Client, nomad: User, tiny_limit: Any
 ) -> None:
     """Nothing to count against is not the same as a free pass: the
-    per-credential limit still applies."""
+    per-credential limit still applies.
+
+    **The first two answers are 403 since Phase R and the property is the same
+    one, said more sharply.** A person with no membership resolves no tenant, so
+    the widget list refuses them before it reads anything (ADR core-27) — and
+    the throttle runs at the door, ahead of the view, so a refused request is
+    still a counted request. That is exactly what has to be true: a limit that
+    only counted requests it liked would be a limit somebody could exhaust for
+    free by sending ones it did not.
+    """
     throttle = TenantRateThrottle()
 
     class Bare:
@@ -100,8 +109,8 @@ def test_a_request_with_no_tenant_is_not_counted_against_one(
     assert throttle.get_cache_key(Bare()) is None  # type: ignore[arg-type]
 
     api.force_login(nomad)
-    assert api.get(LIST_URL).status_code == 200
-    assert api.get(LIST_URL).status_code == 200
+    assert api.get(LIST_URL).status_code == 403
+    assert api.get(LIST_URL).status_code == 403
     assert api.get(LIST_URL).status_code == 429
 
 

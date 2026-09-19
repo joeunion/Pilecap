@@ -545,16 +545,21 @@ def test_visible_to_at_every_hat_position(
     The query count is the scale-free instrument; the row share is correctness
     riding along, recomputed from this world's own spec rather than declared.
     """
+    from apps.core.actor import system_actor
     from apps.example.selectors import list_widgets
 
     org = hats[position]
-    page = list_widgets(tenant=tenant, org=org)[:50]
+    # The system actor: this harness measures the QUERY, and since Phase R the
+    # selector asks `widget.read` at the hat first. A seeded perf world has no
+    # membership to answer with, and `allows` passes `system` at step 1.
+    actor = system_actor(tenant, org)
+    page = list_widgets(tenant=tenant, org=org, actor=actor)[:50]
     with measure.count_queries() as counted_page:
         materialized = list(page)
     flat(f"visible_to_page_{position}", counted_page.count)
 
     with measure.count_queries() as counted_total:
-        visible = list_widgets(tenant=tenant, org=org).count()
+        visible = list_widgets(tenant=tenant, org=org, actor=actor).count()
     flat(f"visible_to_count_{position}", counted_total.count)
 
     allocation = widget_allocation(spec)
@@ -569,7 +574,7 @@ def test_visible_to_at_every_hat_position(
     verdict = paginated_verdict(
         f"visible_to_page_{position}",
         f"visible_to_count_{position}",
-        list_widgets(tenant=tenant, org=org),
+        list_widgets(tenant=tenant, org=org, actor=actor),
     )
     breadth_note = ""
     if "Hash Join" in verdict:

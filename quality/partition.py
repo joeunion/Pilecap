@@ -812,23 +812,48 @@ def reference_environment() -> dict[str, str]:
     return _dotenv(ROOT / ".env.example")
 
 
+def suite_environment_names() -> tuple[str, ...]:
+    """Every environment name that can move what the suite DOES, sorted.
+
+    `environment_reads()` MINUS `config/settings/test.py`'s pins — the
+    neutralization seam, and what it pins the ambient environment can no longer
+    reach the suite through — MINUS the lockfile's tolerated names, which are
+    the harness knobs whose value provably cannot change a verdict about code.
+
+    **THIS IS THE ONE OWNER OF "what the suite reads from the environment", and
+    it has two consumers on purpose.** `bent_environment()` below is the full
+    gate's, and since R3's F2x the `--loop` ledger's environment fingerprint is
+    the other: `scripts/gate_ledger.sh::loop_env_reads` asks for this list
+    through `python -m quality.partition env-reads` rather than keeping a second
+    list of names in shell. A second list would be right on the day it was typed
+    and silent the day a setting was added — which is the exact shape of the
+    defect that bought this function, one level out: the full gate had
+    `bent_environment()` for this class and the loop had NOTHING, so
+    `DJB_DISABLED_APPS=example` derived the same key as a full-scope loop and a
+    narrower green was reusable as a wider one.
+    """
+    pinned = settings_pinned_names()
+    tolerated = tolerated_environment()
+    return tuple(
+        name for name in sorted(environment_reads()) if name not in pinned and name not in tolerated
+    )
+
+
 def bent_environment() -> list[str]:
     """Read env vars whose value differs from the declared reference, as sentences.
 
     Non-empty means the verdict RUNS and is NOT BANKED (§4's decision table):
     banked green under a bent environment is the stale-green class with no diff
-    at all. `config/settings/test.py`'s pins are subtracted first — that file is
-    the neutralization seam, and what it pins the ambient environment can no
-    longer reach the suite through.
+    at all. The population is `suite_environment_names()` above — the pins and
+    the tolerated knobs are already subtracted there, which is what makes this
+    check and the `--loop` fingerprint stand on one census rather than two.
     """
-    pinned = settings_pinned_names()
-    tolerated = tolerated_environment()
+    reads = environment_reads()
     reference = reference_environment()
     live = live_environment()
     bent: list[str] = []
-    for name, default in sorted(environment_reads().items()):
-        if name in tolerated or name in pinned:
-            continue
+    for name in suite_environment_names():
+        default = reads[name]
         value = live.get(name)
         if value is None:
             continue
@@ -1589,6 +1614,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub.add_parser("digest", help="internal: the digest sections, as JSON, in a loaded registry")
     sub.add_parser("labels", help="internal: the live app registry's labels, as JSON")
     sub.add_parser("paths", help="what pytest runs when the partition is skipped")
+    sub.add_parser(
+        "env-reads",
+        help="the environment names the suite reads, one per line, sorted "
+        "(scripts/gate_ledger.sh asks for this rather than keeping its own list)",
+    )
     arguments = parser.parse_args(argv)
 
     def say(line: str) -> None:
@@ -1636,6 +1666,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "paths":
             for path in product_paths():
                 say(path)
+            return EXIT_OK
+        if arguments.command == "env-reads":
+            # AN EMPTY ANSWER IS A BROKEN READ, NOT AN EMPTY ENVIRONMENT — the
+            # same disposition the `--loop` fingerprint's distribution census
+            # takes, and for the same reason: a caller that folded zero names
+            # into its key would be env-blind and green about it. Nothing here
+            # can legally return nothing; `config/settings/**` reads dozens.
+            names = suite_environment_names()
+            if not names:
+                raise Broken(
+                    "the environment read-set is empty. `config/settings/**` reads "
+                    "dozens of names, so an empty census is a read that did not "
+                    "answer — not an environment nothing depends on."
+                )
+            for name in names:
+                say(name)
             return EXIT_OK
     except Broken as error:
         print(f"!! {error}", file=sys.stderr)

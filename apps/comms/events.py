@@ -151,3 +151,15 @@ DEVICE_RETIRED = "comms.device.retired"
 #: transport has seen can reach this. The payload is `MessageOut`, the row as it
 #: now stands.
 MESSAGE_CANCELLED = "comms.message.cancelled"
+
+
+#: Which authorization kind each noun above is about, for the socket door's read
+#: check (`apps.realtime.bridge.kind_of_event`, ADR core-27). Only the nouns that
+#: are not themselves kinds need a line: `message` and `device` are kinds and
+#: answer for themselves.
+EVENT_KINDS: dict[str, str | None] = {
+    # The surge announcements are about the `SuppressionSurge` row they are
+    # raised and cleared from, so `suppression_surge.read` is the key that
+    # governs hearing them.
+    "suppression": "suppression_surge",
+}

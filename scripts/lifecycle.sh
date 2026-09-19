@@ -700,6 +700,42 @@ lc_sessions_on() {
 # census people run from one directory.
 LC_TEMPORAL_PY="$(dirname "${BASH_SOURCE[0]}")/lifecycle_temporal.py"
 
+# THE REFUSAL SEAM, sourced the way every other library in this directory
+# sources it and guarded against a second source. What this file needs from it
+# is `checkout_python`.
+#
+# WHY THE INTERPRETER IS NOT `python3`. `lifecycle_temporal.py` is a file this
+# repository ships, written and tested against the 3.12 the venv holds; a
+# verifier box's system `python3` is 3.9 and is first on PATH there. It is
+# TOLERATED by 3.9 as it stands today — measured, not assumed — and NOTHING
+# KEEPS IT SO: one `zip(…, strict=True)` is what took the queue-index leg down
+# on that box, in a file that looked just as safe. The reason not to wait for
+# that day here is the failure MODE: all three scans below discard stderr, so a
+# reader the interpreter refused prints nothing, every verdict built on it is
+# `nothing known`, and the census reads as a clean machine with nothing on it —
+# which is the one answer this frame must never invent.
+# shellcheck source=scripts/gate_refuse.sh
+if [ -z "${GATE_REFUSE_SOURCED:-}" ]; then
+    case "${BASH_SOURCE[0]:-}" in
+    */*) . "${BASH_SOURCE[0]%/*}/gate_refuse.sh" ;;
+    *) . scripts/gate_refuse.sh ;;
+    esac
+fi
+
+# lc_python — the interpreter the scans run under, resolved once, RELATIVE TO
+# THIS FILE for the reason the path above is: `sweep.sh` cd's to the repository
+# root and a drive need not.
+#
+# AND AN ABSENT ONE IS EMPTY, not a refusal, because this is a library: the
+# instruments that source it own their exit statuses, and `sweep.sh` asks this
+# question in its own preconditions where a refusal belongs. A scan reached with
+# no interpreter prints nothing and every verdict built on it is `nothing
+# known`, which is what the shapes below already fall back to.
+lc_python() {
+    checkout_python "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null || return 1
+}
+LC_PYTHON="$(lc_python || true)"
+
 # A count of seconds as a human reads it — `3d16h`, `7h52m`, `45s` — or the word
 # `unknown` for the `-1` the parser prints when it could not tell. Unknown is
 # never `0s`: "it has never fired" and "it fired this second" are different
@@ -739,7 +775,12 @@ lc_duration() {
 # sitting blocked behind its own last action, which is still RUNNING on that
 # queue and always will be.
 lc_scan_schedules() {
-    lc_temporal schedule list -o json 2>/dev/null | python3 "$LC_TEMPORAL_PY" schedules
+    # NO INTERPRETER IS NO SCAN, never a scan under somebody else's Python: the
+    # three readers below all return 1 and print nothing, and every verdict
+    # built on an empty scan is already `nothing known`. `sweep.sh` asks the
+    # question in its own preconditions, where a refusal belongs.
+    [ -n "${LC_PYTHON:-}" ] || return 1
+    lc_temporal schedule list -o json 2>/dev/null | "$LC_PYTHON" "$LC_TEMPORAL_PY" schedules
 }
 
 # `<task queue>\t<workflow id>\t<age in seconds>\t<workflow type>` per open
@@ -747,8 +788,9 @@ lc_scan_schedules() {
 # which noun, never which checkout — and that is what makes a sweep-start
 # stranded on a dead queue visible here. The AGE is how stranded it is.
 lc_scan_open_executions() {
+    [ -n "${LC_PYTHON:-}" ] || return 1
     lc_temporal workflow list --query 'ExecutionStatus="Running"' -o json 2>/dev/null |
-        python3 "$LC_TEMPORAL_PY" executions
+        "$LC_PYTHON" "$LC_TEMPORAL_PY" executions
 }
 
 # `<pollers>|<backlog>|<backlog age in seconds>` for one queue, out of ONE
@@ -762,8 +804,11 @@ lc_scan_open_executions() {
 # than as a name.
 lc_queue_stats() {
     local raw
-    raw="$(lc_temporal task-queue describe --task-queue "$1" -o json 2>/dev/null |
-        python3 "$LC_TEMPORAL_PY" queue 2>/dev/null)"
+    raw=""
+    if [ -n "${LC_PYTHON:-}" ]; then
+        raw="$(lc_temporal task-queue describe --task-queue "$1" -o json 2>/dev/null |
+            "$LC_PYTHON" "$LC_TEMPORAL_PY" queue 2>/dev/null)"
+    fi
     # A queue the server would not describe is `no pollers, nothing known`, which
     # is the shape that proves nothing — never an IN USE by accident.
     case "$raw" in

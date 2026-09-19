@@ -178,9 +178,99 @@ OUTSIDE_APPS_PLANTS = 38
 #: top-level-key census, planted into `config/api.py`, which is the module that
 #: OWNS the document and the only place a canary about it would be proving
 #: anything). No product app, no worked example.
-TOTAL_PLANTS = 387
-SCAFFOLD_PLANTS = 99
-EXAMPLE_PLANTS = 196
+#:
+#: The permissions lane's gate rung landed FIFTY-THREE more, every one of them
+#: into the SCAFFOLD (99 -> 152) and none into a product app or the worked
+#: example. Three rules moved and the reason is the same in all three: a rule
+#: about the authorization VOCABULARY needs a kind of its own to be about, and a
+#: kind no other app in the tree derives is the only way its negatives can be
+#: shown silent for the rule's restraint rather than for a real app's
+#: coincidence.
+#:
+#: * rule 13's four kind clauses — five forms, nineteen plants. Each plants a
+#:   `services.py` plus the probe app's `apps.py` and `models.py` (the registry
+#:   reads `apps/*/models.py` through the same app derivation `INSTALLED_APPS`
+#:   uses, so without an `apps.py` the model beside it is one nobody's registry
+#:   holds), and three of them a `policies.py` as well, so the planted app is a
+#:   whole app rather than a table nobody has a capability over.
+#: * rule 54, born here — thirteen forms, thirty-two plants, across a
+#:   `policies.py`, a `roles.py`, a `models.py`, a `services.py` and a
+#:   `selectors.py`, which is the five files the five clauses are about.
+#: * rule 24's extension to the permission rows — two forms, two plants, into
+#:   the scaffold's `api.py` and `services.py`: the two writers this rule
+#:   allow-lists are core's own, so no product app has a permission row to
+#:   write and the DOOR is the shape that matters.
+#:
+#: The permissions lane's ENFORCEMENT rung landed twenty-eight more — seventeen
+#: into the worked example (196 -> 213) and eleven into `apps/accounts`
+#: (52 -> 63), which is the largest arrival of product-app plants this census
+#: has recorded and the one with the plainest reason. Three rules landed:
+#:
+#: * rule 55 (`tenant-wide-kinds-ask-at-the-root`) — nine forms, one of them in
+#:   `accounts` because the defect it is named after happened there and the
+#:   tenant's identity provider is the only row in the tree that IS the shape;
+#: * rules 56 and 57 (`one-router-for-home-realm`,
+#:   `one-writer-of-the-identity-join`) — twelve forms, ten of them in
+#:   `accounts` for a mechanical reason rather than a habit: the scaffold is a
+#:   Django app with no identity provider, no `SsoDomain` and no
+#:   `zitadel_sub`, so a form planted there would be proving a recogniser
+#:   against a model nobody has. Every one carries the same dated trigger, and
+#:   the condition is a HEALTHY one — the day a second app reaches either
+#:   surface — never "the day this app stays ill";
+#: * rule 26's widening — three canaries and three negatives, all in the
+#:   worked example.
+#:
+#: HOTFIX-RATCHET landed TWO more, both into the SCAFFOLD (152 -> 154) and
+#: neither into a product app or the worked example: rule 54's seventh negative
+#: (`owned_child_via_constant.py` at `apps/zzz_canary/models.py`, plus the probe
+#: app's `apps.py` that every model plant in this rule carries). It is the form
+#: clause (a)'s owned-child skip had no fixture for — an `authz_kind_of` bound
+#: to a module constant rather than written as a literal, which the runtime
+#: registry skips and the AST census did not — and the scaffold is where it
+#: belongs for the reason every rule-54 plant is there: the kind has to be one
+#: nothing else in the tree derives, or the negative goes silent on a real app's
+#: coincidence rather than on the rule's restraint.
+#: The follow-up landed SEVEN more, again all into the SCAFFOLD (154 -> 161)
+#: and none into a product app or the worked example. All three close the same
+#: seam from different sides — how `authz_kind_of` is read — and each is a plant
+#: because the previous number moved without one and a regression rode in under
+#: it: a canary for the concrete `authz_kind_of = None` (the base class's own
+#: default restated, which is no declaration at all and which the runtime
+#: refuses to start on), a negative for the ABSTRACT base that really does ship
+#: that line, and a selector negative whose child's derived name differs from
+#: its aggregate's kind, so a reader that resolves the declaration and one that
+#: does not give visibly different answers.
+#: 468 -> 481 (P20 R4-F): the socket/realtime surface review's three rules.
+#: Rule 58 (join discipline) lands five — one whole plant of the fifteenth
+#: app's consumer in the worked example, two appended to the real consumer
+#: and two negatives; rule 59 (an org-scoped event carries its branch) lands
+#: five — three in the worked example and its `events.py`, two in
+#: `apps/usage`; and rule 36's new status-writer class lands three, two of
+#: them into `apps/core/services.py`, which is where the two operator
+#: services that darken a tenant are and nowhere else.
+#: The union of the two (R4-F folded onto RATCHET-F): 477 + 13 = 490 in total,
+#: the scaffold at 161 (RATCHET-F's) and the worked example at 218 (R4-F's);
+#: each side's arithmetic kept, the census below re-derives the number.
+#: 490 -> 495 (P20 PR5.1, the read ratchet's flip): FIVE more, every one into
+#: the SCAFFOLD (161 -> 166) and none into a product app or the worked example.
+#: Rule 54 gains two forms about the valve population, and each carries the
+#: probe app's `apps.py` the way every rule-54 plant does: a negative for the
+#: valve on a read the ANNOTATION puts outside clauses (d)/(e) — counted on the
+#: status line, never a finding — and a canary for a docstring that SPELLS the
+#: marker instead of opening a comment with it, which must still fire, because
+#: prose that silenced the clause would be an off switch written by accident.
+#: The scaffold is where both belong for this rule's standing reason: the kind
+#: has to be one nothing else in the tree derives.
+#: 495 -> 501 (P20 PR5.3, every key-bearing declaration censused): SIX more,
+#: again every one into the SCAFFOLD (166 -> 172) and none into a product app
+#: or the worked example. Rule 54 gains the pair for a `POLICIES` entry naming a
+#: key the vocabulary does not hold — a predicate for a capability nobody can be
+#: given, and a defect whose whole shape is that it is invisible — and each
+#: fixture carries the probe app and its models the way every rule-54 plant
+#: over a kind does.
+TOTAL_PLANTS = 501
+SCAFFOLD_PLANTS = 172
+EXAMPLE_PLANTS = 218
 
 #: The judgement: every plant into a real product app, by rule and site. Each
 #: one carries a dated MOVE-TRIGGER beside it in `quality/rules.yaml`; the test
@@ -197,6 +287,17 @@ PRODUCT_APP_PLANTS = {
     ("18", "canaries", "apps/workflows/services.py"),
     ("20", "canaries", "apps/events/services.py"),
     ("24", "canaries", "apps/events/services.py"),
+    ("55", "canaries", "apps/accounts/services.py"),
+    ("56", "canaries", "apps/accounts/adapter.py"),
+    ("56", "canaries", "apps/accounts/api.py"),
+    ("56", "negatives", "apps/accounts/adapter.py"),
+    ("56", "negatives", "apps/accounts/selectors.py"),
+    ("56", "negatives", "apps/accounts/services.py"),
+    ("57", "canaries", "apps/accounts/adapter.py"),
+    ("57", "canaries", "apps/accounts/services.py"),
+    ("57", "negatives", "apps/accounts/adapter.py"),
+    ("57", "negatives", "apps/accounts/oauth.py"),
+    ("57", "negatives", "apps/accounts/services.py"),
     ("24", "negatives", "apps/events/services.py"),
     ("25", "negatives", "apps/workflows/activities.py"),
     ("26", "canaries", "apps/comms/services.py"),
@@ -209,6 +310,28 @@ PRODUCT_APP_PLANTS = {
     ("35", "negatives", "apps/events/selectors.py"),
     ("36", "canaries", "apps/realtime/bridge.py"),
     ("36", "negatives", "apps/realtime/bridge.py"),
+    # Rule 36's status-writer class (P20 R4-F3). `apps/core/services.py` holds
+    # `suspend_tenant` and `close_tenant` — the only two services in the tree
+    # that put a tenant beyond use — and a scaffold copy would be proving the
+    # recogniser against a tenant nobody can suspend. The trigger is the
+    # healthy one, written beside the entries: the day a second app learns to
+    # darken a tenant.
+    ("36", "canaries", "apps/core/services.py"),
+    ("36", "negatives", "apps/core/services.py"),
+    # Rule 58's three (P20 R4-F1). The JOIN half and the MOUNT half both have
+    # to be demonstrated where the seam is: `apps/realtime/consumers.py` is
+    # the one consumer this template has, and a scaffold consumer would be
+    # proving the rule against a door nothing mounts. The whole-plant canary —
+    # the fifteenth app's open consumer — lives in the worked example instead,
+    # which is where a SECOND app growing a socket door can be shown at all.
+    ("58", "canaries", "apps/realtime/consumers.py"),
+    ("58", "negatives", "apps/realtime/consumers.py"),
+    # Rule 59's two (P20 R4-F2). `apps/usage` is where the finding was — the
+    # crossing whose branch was one level down — and its emit site is the only
+    # one in the tree that a canary can append beside. The trigger: the day
+    # `usage` stops emitting an org-scoped event.
+    ("59", "canaries", "apps/usage/services.py"),
+    ("59", "negatives", "apps/usage/services.py"),
     ("40", "canaries", "apps/core/exceptions.py"),
     ("40", "canaries", "apps/realtime/consumers.py"),
     ("40", "negatives", "apps/accounts/auth.py"),
@@ -293,8 +416,12 @@ PRODUCT_APP_PLANTS = {
 #: detection is TWO entries — a canary and a negative — and each plants TWO
 #: files, a source and an arrival, which is exactly the split these two counts
 #: exist to keep apart.
-PRODUCT_APP_PLANT_ENTRIES = 48
-PRODUCT_APP_PLANT_FILES = 52
+#:
+#: 59 -> 67 and 63 -> 71 (P20 R4-F): rules 36, 58 and 59's product-app plants,
+#: eight entries across four files — the two operator services in `core`, the
+#: one consumer in `realtime`, and the one org-scoped emit site in `usage`.
+PRODUCT_APP_PLANT_ENTRIES = 67
+PRODUCT_APP_PLANT_FILES = 71
 
 #: A trigger is DATED and says the word. Both halves matter: a condition with no
 #: date is a note somebody wrote once, and a date with no condition is a

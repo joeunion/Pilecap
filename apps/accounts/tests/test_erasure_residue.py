@@ -62,7 +62,7 @@ from apps.core import bridge
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.audit import AuditEntry
 from apps.core.models import Invitation, Membership, Tenant
-from apps.core.services import add_membership, invite_member
+from apps.core.services import add_membership, invite_member, root_organization
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from django.db.models import Model
@@ -324,10 +324,19 @@ def seed_an_event_carrying_the_address(*, tenant: Tenant) -> Any:
     the seam that exists for exactly this — the same one `apps/example` publishes
     through — and it resolves the real `events.services.emit` at run time.
     """
+    # `organization_id` is not decoration here: a widget is an `OrgScopedModel`,
+    # and since house rule 59 `emit` REFUSES an org-scoped event whose payload
+    # names no branch — an absent key is stamped NULL and the socket fan-out
+    # reads NULL as tenant-wide, so the subject's own row would reach every
+    # connection in the tenant. The root is the branch because this test is
+    # about a retained ADDRESS and not about the hierarchy.
     return bridge.get(bridge.EMIT)(
         tenant=tenant,
         name="example.widget.created",
-        payload={"contact": TARGET_EMAIL},
+        payload={
+            "contact": TARGET_EMAIL,
+            "organization_id": str(root_organization(tenant=tenant).pk),
+        },
         actor=system_actor(tenant),
     )
 

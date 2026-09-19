@@ -195,6 +195,26 @@ def _markers_payload(model: type[models.Model]) -> dict[str, Any]:
     return markers
 
 
+def _authz_kind_payload(model: type[models.Model]) -> tuple[str | None, str | None]:
+    """A model's authorization kind, or `null` with the reason it has none.
+
+    Two ways to be `null` and they are different facts, so the reason says
+    which: a third-party table this deployment did not design, or a first-party
+    model that opted out with a sentence of its own.
+    """
+    from apps.core.authz import kind_of
+
+    if not model.__module__.startswith("apps."):
+        return None, (
+            f"not a first-party model: {model.__module__} is a table this deployment did "
+            "not design, so a permission over it is one nobody could act on"
+        )
+    kind = kind_of(model)
+    if kind is None:
+        return None, str(getattr(model, "authz_kind_reason", "") or "")
+    return kind, None
+
+
 def _model_payload(model: type[models.Model]) -> dict[str, Any]:
     meta = model._meta
     bases = [
@@ -203,11 +223,14 @@ def _model_payload(model: type[models.Model]) -> dict[str, Any]:
         if isinstance(base, type) and issubclass(base, models.Model)
     ]
     fields: list[dict[str, Any]] = [_field_payload(field) for field in meta.get_fields()]
+    authz_kind, authz_kind_reason = _authz_kind_payload(model)
     return {
         "app": meta.app_label,
         "name": model.__name__,
         "table": meta.db_table,
         "bases": bases,
+        "authz_kind": authz_kind,
+        "authz_kind_reason": authz_kind_reason,
         "markers": _markers_payload(model),
         "fields": fields,
     }
@@ -358,20 +381,44 @@ def _activities_payload() -> list[dict[str, Any]]:
 
 
 def _policies_payload() -> list[dict[str, Any]]:
-    """Every authorization policy, read from the registry `core.authz` discovered.
+    """**The whole vocabulary**, not just the actions a predicate happens to name.
 
     An agent asking "may a member do this" reads it here rather than guessing
-    from a role name — and a *missing* action is the answer too: no policy means
-    the role defaults decide, and for a write that means no.
+    from a role name — and before this section printed the vocabulary it printed
+    the *policy registry*, which is a different and much smaller population: a
+    key with no predicate had no row at all, so the four derived verbs of every
+    kind were invisible to every instrument and an agent could only learn a
+    permission existed by being refused by it.
+
+    What each column answers:
+
+    * `decided_by` — `derived` (the model registry produced this key and nobody
+      typed it), `declared` (an app's `ACTION_PROSE` did), `reserved`
+      (`core` did, and no pattern matches it).
+    * `conforms` — whether the key fits `<kind>.<verb>` with a real kind and a
+      verb that is not a second spelling of one of the four. A `false` here is
+      **not** a refusal and changes no answer: the key is in the vocabulary and
+      the policy lookup is untouched. It is the census saying which keys a later
+      sweep owns.
+    * `default_roles` — who holds the key by default in the CODE layer: `owner`
+      always, plus every declared role whose patterns match, plus the app-side
+      `DEFAULT_ROLES` additions. A tenant's custom roles are rows and are
+      deliberately not here; this is the answer for a deployment nobody has
+      connected to.
+    * `predicate` — the dotted name of the callable that narrows the key, or
+      `null`. The narrowing seam a product edits is visible here on the day it
+      edits it.
+    * `renamed_from` — the old keys that still answer as this one, for one
+      release, with one deprecation printed per process.
 
     ## Why there is no `member_default` column any more
 
     There was one, and **every value it ever printed was a value that never
     applied.** `core.authz.allows` consults the policy FIRST and returns; the
     `is_read(action)` role default is the branch taken only when no policy names
-    the action — and every row in this section is, by construction, an action a
-    policy names. So the column answered a question about the rows that are not
-    here, in a table of the rows that are.
+    the action — and every row in this section was, by construction, an action a
+    policy named. So the column answered a question about the rows that were not
+    there, in a table of the rows that were.
 
     It was found the loudest way it could be: `usage.read_report` printed
     `deny` while every role in the deployment may read the report
@@ -380,35 +427,83 @@ def _policies_payload() -> list[dict[str, Any]]:
     `deny` with exactly as little authority, and both happened to agree with
     their predicate by luck rather than by derivation. A column that is right by
     coincidence is the kind of instrument reading that stops an agent from
-    looking further, which is worse than no column at all.
-
-    ## What replaces it
-
-    `roles` — the roles a **declaring** policy admits, read through
-    `core.authz.declared_roles`, and `null` for a policy that declares none.
-    That is the narrowing seam this makes visible: a product that narrows
-    `USAGE_READ_REPORT` to owners and admins sees the narrowing here, in the
-    instrument, on the same day it edits the declaration — where before it was
-    visible only in the diff and in the app's own file.
-
-    `decided_by` says which of the two this row is, so `null` is never read as
-    "nobody knows": `declaration` means the set beside it is the rule, and
-    `predicate` means the named callable is, and there is no set to publish.
+    looking further, which is worse than no column at all. `default_roles` is
+    derived from the declarations rather than from the verb, which is what the
+    old column could never be.
     """
-    from apps.core.authz import declared_roles, policies
+    from apps.core.authz import vocabulary
 
     found: list[dict[str, Any]] = []
-    for action, policy in policies().items():
-        roles = declared_roles(policy)
+    for action, permission in vocabulary().items():
         found.append(
             {
                 "action": action,
-                "policy": _callable_name(policy),
-                "decided_by": "declaration" if roles is not None else "predicate",
-                "roles": sorted(roles) if roles is not None else None,
+                "kind": permission.kind,
+                "verb": permission.verb,
+                "app": permission.app,
+                "decided_by": permission.decided_by,
+                "conforms": permission.conforms,
+                "non_conformance": permission.non_conformance or None,
+                "sentence": permission.sentence,
+                "is_read": permission.is_read,
+                "default_roles": sorted(permission.default_roles),
+                "predicate": (
+                    _callable_name(permission.predicate)
+                    if permission.predicate is not None
+                    else None
+                ),
+                "renamed_from": sorted(permission.renamed_from) or None,
             }
         )
     return sorted(found, key=lambda item: str(item["action"]))
+
+
+def _roles_payload() -> list[dict[str, Any]]:
+    """Every role this deployment declares in code, with the collection it resolves to.
+
+    `owner` is first and is not a declaration: it is the one platform role and
+    its collection IS the vocabulary, present and future, so it is printed with
+    the whole count rather than left out as "special".
+
+    `collection_size` is the number of keys the role holds by default —
+    patterns matched against the vocabulary plus the app-side additions — so a
+    product that narrows a role sees the number move in the instrument the same
+    day it edits the line. A tenant's own roles are rows in `core.Role` and are
+    not here: this section is the code layer.
+    """
+    from apps.core.authz import (
+        OWNER_ROLE,
+        defaults_for,
+        role_declarations,
+        role_declarers,
+        vocabulary,
+    )
+
+    declarers = role_declarers()
+    found: list[dict[str, Any]] = [
+        {
+            "key": OWNER_ROLE,
+            "name": "Owner",
+            "app": "core",
+            "declared_in": None,
+            "permissions": ["*"],
+            "is_default_for_new_members": False,
+            "collection_size": len(vocabulary()),
+        }
+    ]
+    for key, role in sorted(role_declarations().items()):
+        found.append(
+            {
+                "key": key,
+                "name": role.name,
+                "app": declarers.get(key, ""),
+                "declared_in": f"apps/{declarers.get(key, '')}/roles.py",
+                "permissions": list(role.permissions),
+                "is_default_for_new_members": role.is_default_for_new_members,
+                "collection_size": len(defaults_for(key)),
+            }
+        )
+    return found
 
 
 def _events_payload() -> list[dict[str, Any]]:
@@ -550,6 +645,7 @@ class Command(BaseCommand):
             "activities": _activities_payload(),
             "bridge": _bridge_payload(),
             "policies": _policies_payload(),
+            "roles": _roles_payload(),
             "events": _events_payload(),
             "refusals": _refusals_payload(),
             "settings": _redact(_settings_payload()),

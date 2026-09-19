@@ -1,22 +1,24 @@
 # The gate, run by GitHub Actions on every pull request and every push to main.
 #
-# **CI does not have its own list of legs. CI runs the gate.** One step,
-# `./scripts/check.sh` with no argument — the full mode — because a second
-# hand-written list of legs is a list that drifts: this file used to spell the
-# legs by hand and quietly omitted the house-rules engine entirely, so
+# **CI does not have its own list of legs. CI ASKS THE GATE FOR THE LIST**
+# (`./scripts/check.sh --list-legs`) **and runs each unit with `--leg`. The only
+# number CI owns is how many runners split the suite.** That is the same
+# doctrine this file has always carried, one turn further out: it used to spell
+# the legs by hand and quietly omitted the house-rules engine entirely, so
 # twenty-four rules and every canary self-test never ran on a pull request and
-# CI-green did not mean gate-green. The only way that cannot happen again is
-# for there to be nothing here to keep in sync.
+# CI-green did not mean gate-green. Then it ran the whole gate in one step,
+# which could not drift but also could not be split. Now the gate publishes its
+# own units and this file expands them — so there is still nothing here to keep
+# in sync, and a leg that joins the gate joins CI on the same commit.
 #
-# What the one call covers, in its own order: ruff (lint + format) · mypy
-# --strict · import-linter · the Django `djb` system checks · the house-rules
-# engine (`quality/rules.yaml`, live scan) · `makemigrations --check` ·
-# `check --deploy` · pytest twice (the second pass is where a non-idempotent
-# suite shows) · the canary self-test (every planted violation must fire, every
-# negative must stay silent) · the full house rules again · the supply chain
-# (pip-audit, licences, detect-secrets). `scripts/check.sh` is the authority on
-# that list; `docs/product/architecture.md` — "The gate" — is what it answers
-# to.
+# The one hand-typed number is `PYTEST_SHARDS` in the `env:` block below, and it
+# names what re-derives it in its own comment.
+#
+# What the units cover is not written here either, for the same reason: run
+# `./scripts/check.sh --list-legs` and read the `composed-of` column.
+# `scripts/check.sh` is the authority on that list; `docs/product/architecture.md`
+# — "The gate" — is what it answers to; `docs/product/build-contract.md` carries
+# a copy of the table that a drive compares against the command, line for line.
 #
 # Exit codes carry through: 0 clean · 1 violations · **2 enforcement broken**,
 # which outranks any pass. Nothing is piped, here or in the script — a pipe
@@ -98,11 +100,12 @@
 # where the choice is made. House rule 23's licence leg reads Python
 # distributions and cannot see a compose image.
 #
-# The one thing below that the gate does not do is `collectstatic` under
-# production settings: it needs the production static pipeline that a laptop
-# gate deliberately skips, and a broken static reference is a 500 on the admin
-# that shows up nowhere else. It is kept, named, and it is the one candidate to
-# fold into `check.sh` later rather than to leave growing here.
+# EVERYTHING THE GATE DOES, THE GATE DOES. There used to be one exception — a
+# step that built the production static manifest, kept here and named as "the
+# one candidate to fold into `check.sh` later". It is folded: it is a leg now,
+# in the `static` unit. Once CI runs UNITS, a step conditioned on which unit is
+# running would be CI typing a leg name, which is the one thing the paragraph at
+# the top of this file refuses.
 
 name: gate
 
@@ -124,6 +127,16 @@ permissions:
 env:
   # Matches `.python-version` and the `requires-python` floor in pyproject.
   PYTHON_VERSION: "3.12"
+  # THE ONE NUMBER THIS FILE OWNS, AND IT NAMES WHAT RE-DERIVES IT. How many
+  # runners a shardable unit is split across. Derived from the measurement, not
+  # chosen: pass 1 of the two-pass suite was 405 s on run 34748528964 at `-n 2`,
+  # so one runner's wall for a sharded unit is about
+  # `T(N) ≈ 2 × 405 × 1.1 / N + 150 s` — the two passes, a tenth for the split's
+  # imbalance, plus the runner's own ~150 s of checkout, uv and stack. Three is
+  # where that curve stops paying: N=3 is ~450 s, N=4 is ~370 s for a third more
+  # billed minutes. RE-DERIVE IT when the full gate's sharded unit's wall moves
+  # more than 20% from that 405 s, which is the trigger and the only one.
+  PYTEST_SHARDS: "3"
   # THE COMPOSE STACK'S ADDRESS AND CREDENTIALS, AND THEY ARE THE SOURCE, NOT A
   # COPY: the "start the stack" step below passes the two credentials straight
   # into compose as POSTGRES_USER / POSTGRES_PASSWORD, so the value Django dials
@@ -163,11 +176,159 @@ env:
   DATABASE_PASSWORD: djb  # pragma: allowlist secret — the published compose password, refused in production by config.settings.guards
   REDIS_URL: redis://127.0.0.1:6379/0
   CACHE_URL: redis://127.0.0.1:6379/1
+  # THE COMPOSE MinIO'S ADDRESS AND CREDENTIALS — the app side of the pair, and
+  # here for exactly the reason REDIS_URL is: the step below starts `minio`, and
+  # an object store the gate's own environment never names is a store the
+  # storage tests cannot dial. They could not dial it. Run 34748528964 ended
+  # `27 failed, 3283 passed, 9 skipped, 110 errors in 404.97s`, and all 110
+  # errors were `botocore.exceptions.NoCredentialsError` — out of
+  # `apps/files/tests/{test_api,test_workflows,test_doors_over_the_wire,
+  # test_presign_matrix,test_integrations}.py` and
+  # `apps/exports/tests/test_workflows.py` — boto3 finding no credentials
+  # anywhere, in the one environment that had a healthy MinIO on 9000.
+  #
+  # THESE FOUR ARE A COPY, AND COPY IS THE HONEST WORD — unlike the Postgres
+  # pair above, which the "start the stack" step passes straight into compose as
+  # POSTGRES_USER / POSTGRES_PASSWORD and which is therefore the SOURCE. Nothing
+  # passes these into compose: `compose.yaml`'s `minio` takes its root
+  # credentials from its own `${MINIO_ROOT_USER:-minioadmin}` defaults, so the
+  # value Django dials and the value the container is created with agree by
+  # being the same published constant, not by derivation. The drift that permits
+  # is small and real — change `compose.yaml`'s default and this block goes
+  # stale in silence. Making it a source is one line in the step below
+  # (`MINIO_ROOT_USER="$AWS_ACCESS_KEY_ID"`, the Postgres shape exactly), and
+  # that step belongs to the rung that owns the rest of this file; recorded here
+  # rather than reached for.
+  #
+  # The values are `.env.example`'s, unchanged, because that is the file a
+  # laptop copies: 9000 is the compose `minio`'s S3 API port (9001 is its
+  # console), and `us-east-1` is MinIO's own default, which MinIO ignores and
+  # boto3 insists on having named. `AWS_S3_REGION_NAME` is here because
+  # `config/settings/base.py` reads it from the environment —
+  # `env.str("AWS_S3_REGION_NAME", default="")` — and hands it to the boto3
+  # client as `region_name`; `config/settings/test.py` pins none of these three,
+  # so what is written here is what the suite dials with.
+  #
+  # AWS_STORAGE_BUCKET_NAME IS DELIBERATELY ABSENT, and for once not for
+  # DATABASE_NAME's reason. `config/settings/test.py` pins it to the empty
+  # string whatever the environment says — the ambient test world has no object
+  # storage on purpose — and a test that wants a bucket names one itself through
+  # the `settings` fixture (`apps/files/tests/conftest.py::bucket`, which
+  # derives it per checkout). A name here would be overridden and misleading.
+  AWS_S3_ENDPOINT_URL: http://127.0.0.1:9000
+  AWS_S3_REGION_NAME: us-east-1
+  AWS_ACCESS_KEY_ID: minioadmin  # pragma: allowlist secret — the published compose credential, worth nothing; the production refusal that would reject it is recorded in config/settings/guards.py as a named candidate, and recorded there as not landed
+  AWS_SECRET_ACCESS_KEY: minioadmin  # pragma: allowlist secret — the published compose credential, worth nothing; the production refusal that would reject it is recorded in config/settings/guards.py as a named candidate, and recorded there as not landed
 
 jobs:
-  gate:
-    name: gate
+  derive:
+    name: derive
     runs-on: ubuntu-latest
+
+    # WHAT TO RUN, ASKED RATHER THAN TYPED. This job's whole output is the
+    # matrix the next one expands, and it comes out of the gate itself. It
+    # needs no venv, no database, no docker and no network beyond the checkout,
+    # because the listing reads one file and prints — so the job is a checkout
+    # and one shell step, and it is the cheapest job in this workflow.
+    #
+    # AN EXIT 2 FROM THE LISTING FAILS THIS JOB, AND THERE IS NO FALLBACK. The
+    # listing refuses rather than print a table it cannot vouch for (a leg in no
+    # unit, a leg in two, a unit with no `needs`); a CI that fell back to some
+    # remembered list at that moment would be running the hand list this whole
+    # design exists to delete, at exactly the moment the gate said the list was
+    # wrong. `set -euo pipefail` and a bare invocation is the whole mechanism.
+    outputs:
+      matrix: ${{ steps.units.outputs.matrix }}
+      seed: ${{ steps.units.outputs.seed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The listing itself needs no history, but the base of a proposed
+          # change must resolve on every row below, and the rows check out the
+          # same way. Kept here so the two jobs' checkouts do not differ.
+          fetch-depth: 0
+
+      - name: ask the gate what its units are
+        id: units
+        # THE LISTING IS ASKED BARE, ON A PULL REQUEST TOO, AND THAT IS A
+        # DECLARED GAP rather than an oversight. The listing takes no arguments
+        # at all — `--list-legs <anything>` is exit 2 by design, so that a
+        # mistyped modifier is never answered with a smaller listing — which
+        # means it cannot yet be handed the proposed change's base and cannot
+        # print how many items the scope selected. The units and their shards do
+        # not depend on the scope, so the matrix is right either way; what is
+        # missing is the `selected=<n>` a reader would like on the row. The
+        # NARROWING itself is not missing: every row below carries
+        # `--pr --base <sha>` on a pull request.
+        run: |
+          set -euo pipefail
+          # The workflow-level `env:` block is exported into every step, so the
+          # one hand-typed number is read here rather than copied into a second
+          # place that could disagree with it.
+          SHARDS="$PYTEST_SHARDS"
+          # REDIRECTED, NEVER PIPED. The gate refuses a piped stdout (it would
+          # replace its exit status with the reader's) and the exit status here
+          # is the job's.
+          ./scripts/check.sh --list-legs > units.tsv
+          cat units.tsv
+          # ONE ROW PER RUNNER. A unit the listing calls `N-capable` expands to
+          # SHARDS rows carrying `k/N`; every other unit is one row carrying no
+          # shard at all. Nothing in this block names a unit: it reads the
+          # `shards` column, which is the listing's own answer to "does this
+          # unit's body take a k/N".
+          matrix='[]'
+          while IFS=$'\t' read -r unit needs shards _legs; do
+            [ -n "$unit" ] || continue
+            if [ "$shards" = "N-capable" ]; then
+              k=1
+              while [ "$k" -le "$SHARDS" ]; do
+                matrix="$(printf '%s' "$matrix" | jq -c --arg u "$unit" --arg n "$needs" --arg s "${k}/${SHARDS}" \
+                  '. + [{unit: $u, needs: $n, shard: $s}]')"
+                k=$((k + 1))
+              done
+            else
+              matrix="$(printf '%s' "$matrix" | jq -c --arg u "$unit" --arg n "$needs" \
+                '. + [{unit: $u, needs: $n, shard: ""}]')"
+            fi
+          done <units.tsv
+          if [ "$(printf '%s' "$matrix" | jq -r 'length')" -lt 1 ]; then
+            echo "::error::the listing produced no units — refusing to run a gate of nothing"
+            exit 2
+          fi
+          echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
+          printf '%s' "$matrix" | jq -r '.[] | "  row: \(.unit) \(.shard)"'
+          # ONE SEED FOR THE WHOLE RUN, MINTED ONCE HERE. Every shard of one run
+          # has to split the SAME collection order — the split is over a
+          # collection and the collection order is the seed's — so a seed minted
+          # per row would have the N shards splitting N different suites, and
+          # their union would be neither the suite nor a partition of it. The
+          # gate refuses an unparsable one rather than minting its own.
+          seed=$(((RANDOM << 15) | RANDOM))
+          echo "seed=$seed" >>"$GITHUB_OUTPUT"
+          echo "  seed: $seed (one for every row of this run)"
+
+  legs:
+    name: legs (${{ matrix.unit }}${{ matrix.shard && format(', {0}', matrix.shard) || '' }})
+    needs: derive
+    runs-on: ubuntu-latest
+
+    # ONE ROW PER UNIT, AND THE ROW NEVER DECIDES ANYTHING. Every row runs the
+    # SAME setup steps — uv, the derived database name, the stack, the frontend
+    # toolchain — whatever its unit needs, and then hands the gate a unit name.
+    # A row that skipped the stack because its unit's `needs` said `none` would
+    # be YAML acting on a declaration, which is the drift one layer down: the
+    # listing's `needs` column is a DECLARATION and the GATE is what refuses a
+    # unit whose organ is missing, at the leg. The cost of honouring that is
+    # about a minute on the rows that do not need it, paid in parallel.
+    #
+    # `fail-fast: false` IS A CRITERION. The point of splitting is to learn the
+    # whole red list in one run; cancelling the siblings of the first red would
+    # put a reader back to one failure per run, which is the thing the composed
+    # selftest exit was built to end one layer down.
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.derive.outputs.matrix) }}
 
     # NO `services:` BLOCK. There was one — postgres:16 and redis:7 as GitHub
     # service containers — and it is gone rather than kept alongside: a service
@@ -179,7 +340,8 @@ jobs:
         with:
           # The gate's diff layer asks what a change added, and its self-test
           # refuses to run against a tree it cannot read the git status of.
-          # A depth-1 clone answers both questions wrongly.
+          # A depth-1 clone answers both questions wrongly — and the base of a
+          # proposed change would not resolve at all.
           fetch-depth: 0
 
       - name: Install uv
@@ -304,30 +466,39 @@ jobs:
         with:
           package_json_file: frontend/package.json
 
-      - name: the gate (./scripts/check.sh, full)
+      - name: the gate, one unit (./scripts/check.sh --leg)
         # THE step. Not piped, not wrapped, not summarised: its exit status is
         # the job's. Which leg failed is printed by the script, with its wall
         # time beside it.
-        run: ./scripts/check.sh
-
-      - name: collectstatic (production settings)
-        # Proves the whitenoise compressed-manifest storage can actually
-        # post-process everything the admin and /api/v1/docs reference. A broken
-        # reference in a CSS file is a 500 on the admin, and it only shows up
-        # when the manifest is built. Throwaway credentials: the point is the
-        # settings, not the secrets.
+        #
+        # THE UNIT NAME IS DATA, NOT A LITERAL. It arrives from the matrix,
+        # which came from the listing, which came from the gate. Nothing in this
+        # file names a leg or a unit outside a comment, and that is checkable
+        # with one grep.
+        #
+        # `--shard` ONLY WHERE THE LISTING SAID SO — the row carries an empty
+        # shard for an indivisible unit, and the gate refuses a shard on one
+        # anyway (exit 2, never a smaller run), so the two agree by construction
+        # rather than by this file remembering which is which.
+        #
+        # `--pr --base <sha>` ON A PULL REQUEST AND NEVER ON `main`. A proposed
+        # change is graded at the scope of what it can reach; a push to `main`
+        # is graded whole, because that is the belt every narrowed run rests on.
+        # The variable is empty on a push, which is what makes the branch a
+        # property of the event rather than of an `if:` somebody has to keep
+        # right.
         env:
-          DJANGO_SETTINGS_MODULE: config.settings.production
-          DEBUG: "0"
-          ALLOWED_HOSTS: example.invalid
-          SECRET_KEY: ci-only-throwaway-0000000000000000000000000000000000000000000  # pragma: allowlist secret — a throwaway, minted for this one step
-          CONNECTIONS_ENCRYPTION_KEY: aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTI9
-          # Third throwaway, and it is required for the same reason as the two
-          # above: the workflow-level DATABASE_PASSWORD is the published `djb`,
-          # and production now refuses to start on it. This step reads no
-          # database — it renders a manifest — so any strong value will do.
-          DATABASE_PASSWORD: ci-only-throwaway-database-password-0000000000  # pragma: allowlist secret
-        run: uv run python manage.py collectstatic --noinput --clear
+          UNIT: ${{ matrix.unit }}
+          SHARD: ${{ matrix.shard }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          DJB_GATE_PYTEST_SEED: ${{ needs.derive.outputs.seed }}
+        run: |
+          set -euo pipefail
+          args=()
+          [ -z "${SHARD:-}" ] || args+=(--shard "$SHARD")
+          [ -z "${PR_BASE:-}" ] || args+=(--pr --base "$PR_BASE")
+          echo "-- ./scripts/check.sh --leg $UNIT ${args[*]-}"
+          ./scripts/check.sh --leg "$UNIT" ${args[@]+"${args[@]}"}
 
       - name: the stack, when something failed
         # DIAGNOSTICS, NOT A LEG. It asserts nothing, it can fail nothing, and
@@ -342,6 +513,62 @@ jobs:
         run: |
           docker compose ps
           docker compose logs --no-color --tail=200 db redis temporal
+
+  verdict:
+    name: verdict
+    needs: [derive, legs]
+    # `always()` IS WHAT MAKES THIS A VERDICT RATHER THAN A SUMMARY. Without it
+    # a cancelled or failed row would SKIP this job, and a skipped required
+    # check is not a red one — it is a check that never reported, which branch
+    # protection and a reader both mistake for "nothing to see".
+    if: always()
+    runs-on: ubuntu-latest
+
+    # THE ONE CHECK ANYTHING ELSE MAY DEPEND ON. The rows are a matrix, and a
+    # matrix's row names change whenever the listing changes — so a branch
+    # protection rule or a downstream `needs:` naming rows would go stale on the
+    # day a unit is added, silently, by requiring a check that no longer exists.
+    # This job's name is stable, it needs every row, and it is what the
+    # repository's required-status-check setting names.
+    #
+    # THAT SETTING IS NOT IN THIS TREE AND CANNOT BE PROVEN FROM IT. Branch
+    # protection lives in the repository's settings; a workflow file cannot
+    # assert what is required. The rung that landed this said so in its report
+    # and named who must set it.
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: which rows were not success
+        # READ OUT OF THE RUN, not out of `needs`. `needs.legs.result` collapses
+        # every row into one word, which is the right input for the decision
+        # below and the wrong output for a person: a reader of a red verdict
+        # needs the ROW. This step asserts nothing — the next one decides.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+            --jq '.jobs[] | select(.conclusion != null and .conclusion != "success") | "  not success: \(.name) — \(.conclusion)"' \
+            || echo "  (the run's jobs could not be listed — the decision below is unaffected)"
+
+      - name: the verdict
+        # PASSES IFF BOTH NEEDS SUCCEEDED. A matrix result is `success` only
+        # when every row succeeded, so this is the whole gate's verdict in two
+        # comparisons — and it is a comparison rather than an implicit `needs:`
+        # because `always()` above means this job runs whatever happened.
+        run: |
+          set -euo pipefail
+          echo "derive: ${{ needs.derive.result }}"
+          echo "rows:   ${{ needs.legs.result }}"
+          if [ "${{ needs.derive.result }}" = "success" ] && [ "${{ needs.legs.result }}" = "success" ]; then
+            echo "ok: every unit of the gate ran and passed"
+          else
+            echo "::error::the gate did not pass — see the rows named above"
+            exit 1
+          fi
 
   images:
     name: images
@@ -361,14 +588,20 @@ jobs:
     # Now: one build, `linux/amd64,linux/arm64`, pushed under the tree tag, and
     # every environment pulls it. The box builds nothing.
     #
-    # `needs: gate` IS A CRITERION, NOT A COURTESY. A registry tag is a
+    # `needs: verdict` IS A CRITERION, NOT A COURTESY. A registry tag is a
     # promotable artefact and `deploy/release.sh` will deploy anything the
     # registry has — so a tag for a tree the gate has not passed is a red tree
     # one command away from production. The build no longer runs beside the
     # suite; it runs behind its verdict. The cost is the gate's wall clock added
     # to the image's, paid once per tree, and it buys the invariant that
     # EVERYTHING IN THE REGISTRY IS GREEN.
-    needs: gate
+    #
+    # IT NAMES `verdict` AND NOT THE ROWS, and that is the whole reason the
+    # verdict job exists: the rows are a matrix whose names change with the
+    # listing, so a `needs:` over them would have to be edited every time a unit
+    # is added — which is CI keeping a list of legs again, wearing a dependency.
+    # ADR deploy-4 (b)'s invariant is unchanged; it moved one job name over.
+    needs: verdict
 
     permissions:
       contents: read
@@ -427,6 +660,50 @@ jobs:
         if: steps.push.outputs.push == 'true'
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: is this tag already in the registry
+        # THE BANK BUILDS THIS IMAGE NOW (ADR deploy-4a), on a verifier box,
+        # from the tree its own composed verdict has just passed. So by the
+        # time this job runs, the tag it is about to build usually EXISTS — and
+        # rebuilding it would push a second image under a name that already
+        # names one, which is two answers to "what is tree-abc123?" and the one
+        # thing the registry is supposed to settle.
+        #
+        # THE REGISTRY IS ASKED THROUGH `provision.sh image-digest` and not
+        # through a second `aws ecr describe-images` here: that function is the
+        # one place this tree composes a repository name and resolves a tag,
+        # and a describe-images beside it would be a second derivation of both.
+        # It exits non-zero both when the tag is absent AND when the registry
+        # could not be reached — and both answers are treated as ABSENT here,
+        # which is the safe direction: the cost of being wrong is one rebuild,
+        # and the cost of the other direction is a tag nobody ever built.
+        #
+        # BOTH SERVICES OR NEITHER. A half-present tag is not a tag: `web` and
+        # `worker` are one artefact of one tree, and a job that built only the
+        # missing half would leave two images of one tag from two builds.
+        id: have
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
+          PUSH: ${{ steps.push.outputs.push }}
+        run: |
+          set -uo pipefail
+          have=false
+          if [ "${PUSH:-false}" = "true" ]; then
+            have=true
+            for target in web worker; do
+              if digest="$(DJB_IMAGE_REGISTRY="$REGISTRY" ./deploy/provision.sh image-digest "$target" "$TAG" 2>/dev/null)"; then
+                echo "$target -> $digest"
+              else
+                have=false
+                echo "$target is NOT in the registry under $TAG"
+              fi
+            done
+          fi
+          if [ "$have" = "true" ]; then
+            echo "::notice::$TAG already in the registry — skipped"
+          fi
+          echo "have=$have" >>"$GITHUB_OUTPUT"
+
       - name: buildx, with a builder that can do two architectures
         # `docker build` on the runner's default builder produces ONE
         # architecture — the runner's, amd64 — and this deployment's box is
@@ -439,6 +716,7 @@ jobs:
       - uses: docker/setup-qemu-action@v3
 
       - name: build web and worker — ONE build, two architectures
+        if: steps.have.outputs.have != 'true'
         # `--push` when there is a registry, `--load` is not available for a
         # multi-arch build (the local image store holds one architecture), so a
         # no-push run builds both architectures and keeps neither: what it
@@ -474,7 +752,7 @@ jobs:
         # green build and a single-arch manifest — which fails, for the first
         # time, on the Graviton box at 3am. Read back OUT OF THE REGISTRY, not
         # out of the build log, because the registry is what the box will pull.
-        if: steps.push.outputs.push == 'true'
+        if: steps.push.outputs.push == 'true' && steps.have.outputs.have != 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
@@ -491,6 +769,12 @@ jobs:
           done
 
       - name: the images run as a non-root user
+        # SKIPPED WHEN THE TAG WAS ALREADY THERE, with the build. This step
+        # RUNS the image on the runner, and a runner cannot run an image it has
+        # no architecture for; more to the point, an image this job did not
+        # build is an image whose USER line this job did not change. The check
+        # belongs to the build, and it is skipped with it.
+        if: steps.have.outputs.have != 'true'
         # Cheap, and it catches the one mistake a Dockerfile refactor makes
         # most often: losing the USER line. Run against the runner's own
         # architecture, pulled back from the registry where there is one — so

@@ -142,6 +142,10 @@ def _announce_a_crossing(
         if not (before < line.quantity <= total.value):
             continue
         crossing = ThresholdCrossingOut(
+            # The ENTRY's branch, not `root` and not the actor's hat: the two
+            # differ exactly when somebody writes downward, and a hat-stamped
+            # event is a WRONG branch rather than a wide one (ADR realtime-2a).
+            organization_id=entry.organization_id,
             meter=entry.meter,
             period=line.kind.value,
             period_starts_on=period.starts_at.date(),
@@ -326,8 +330,8 @@ def record_correction(
     # writes the platform's own witnessed correction of its own ledger, and the
     # actor is carried so the audit row says who caused it rather than so
     # anybody can be refused. What a PERSON may do with this table is read it
-    # (`usage.read_report`, the declaration in `policies.py`), and that predicate
-    # is asked in `selectors.get_usage`.
+    # (`usage_entry.read`, the derived key `policies.py` gives the sentence and
+    # the alias for), and that key is asked in `selectors.get_usage`.
     check_meter(entry.meter)
     if not because.strip():
         raise Invalid(

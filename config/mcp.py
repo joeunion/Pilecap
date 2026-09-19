@@ -32,11 +32,11 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp_types import CallToolResult, TextContent
 
 from apps.accounts import oauth
-from apps.accounts.auth import Unauthenticated
+from apps.accounts.auth import BEARER_NOT_VALID, Unauthenticated
 from apps.accounts.services import authenticate_token
 from apps.core import context
 from apps.core.asyncdb import run_db
-from apps.core.exceptions import RateLimited, wire_refusal
+from apps.core.exceptions import REFUSALS, RateLimited, Remedy, wire_refusal
 
 # Where the machine door answers, declared down in `apps.core.mcp` so that
 # something under `apps/` — the door index at `/` — can name it without an app
@@ -219,6 +219,46 @@ def _header(scope: dict[str, Any], name: bytes) -> str | None:
     return None
 
 
+#: The remedy destination this door cannot honour, and the one thing about the
+#: `unauthenticated` refusal that is THIS DOOR'S rather than the refusal's.
+#:
+#: `/mcp` reads `Authorization` and nothing else: a caller who follows "sign in,
+#: and let the browser send the session it gives you" arrives back here with a
+#: perfectly good session and is answered 401 "A bearer token is required." So
+#: the registry's first remedy was, on this door, an instruction that cannot
+#: work — and a remedy is the half of the grammar that says what the caller can
+#: DO, which makes an unhonourable one worse than none: a dead end with a label
+#: on it. It is the only remedy on the code this door cannot act on; the header
+#: remedy and the mint remedy are both true here and both survive.
+SESSION_REMEDY = "self:session"
+
+
+def _honoured_remedies() -> tuple[Remedy, ...]:
+    """The `unauthenticated` remedies this door can actually honour.
+
+    **Derived from the registry, never re-typed.** The remedies are composed
+    once, beside the refusal, in `apps/accounts/auth.py`; a copy here would be a
+    second list to keep in step and the first thing the two doors would drift
+    on — which is the whole argument for one composer. So this filters what is
+    registered rather than declaring its own set, and a remedy added to the code
+    tomorrow reaches this door without anybody remembering to add it.
+
+    Read at refusal time rather than frozen at import, for the reason
+    `CODE_STATUS` is a live view (ADR core-23): this module is imported while
+    the app registry is still being walked, and a snapshot would depend on which
+    module got imported first.
+
+    The registry is consulted through `REFUSALS`, so an unregistered code — which
+    `DomainError.__init_subclass__` makes impossible for this one — would yield
+    an empty tuple and the refusal would fall back to the registered remedies
+    rather than shipping a body with none.
+    """
+    registered = REFUSALS.get(Unauthenticated.code)
+    if registered is None:  # pragma: no cover — the class cannot exist unregistered
+        return ()
+    return tuple(remedy for remedy in registered.remedies if remedy.destination != SESSION_REMEDY)
+
+
 async def _unauthorized(send: Any, detail: str, *, error: str = "") -> None:
     """401, carrying the discovery chain the MCP specification depends on.
 
@@ -237,13 +277,20 @@ async def _unauthorized(send: Any, detail: str, *, error: str = "") -> None:
     meeting the machine door's first refusal had nothing to branch on but the
     wording. It now goes through `wire_refusal`, the one composer, on the
     `unauthenticated` code `apps/accounts/auth.py` already registers: the same
-    code, the same fact and the same three remedies a REST caller gets, because
-    one refusal answered two ways is the drift the composer exists against. The
+    code, the same fact and the same remedies a REST caller gets — every one of
+    them this door can honour — because one refusal answered two ways is the
+    drift the composer exists against. The
     `detail` this door passes in is kept — it is the more specific sentence (a
     bearer is required / that bearer is not valid) — and a second twin code was
     NOT minted, deliberately: `unauthenticated` is what this is.
+
+    **The remedies are the DOOR'S.** The code, the fact and the sentence are the
+    refusal's and are shared; what a caller can do about it depends on which
+    door they are standing at, and this one accepts exactly one kind of
+    credential. `_honoured_remedies` above is that filter, and it is the only
+    thing this door changes about the body.
     """
-    body = json.dumps(wire_refusal(Unauthenticated(detail))).encode()
+    body = json.dumps(wire_refusal(Unauthenticated(detail, remedies=_honoured_remedies()))).encode()
     await send(
         {
             "type": "http.response.start",
@@ -410,7 +457,7 @@ class TokenAuthMiddleware:
                 return
             user, tenant = principal.user, principal.tenant
         else:
-            await _unauthorized(send, "That bearer token is not valid.", error="invalid_token")
+            await _unauthorized(send, BEARER_NOT_VALID, error="invalid_token")
             return
         # The hat, resolved by the SAME function the HTTP door calls, from the
         # same header. A tool never receives an organization as an argument, so

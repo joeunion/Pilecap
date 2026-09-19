@@ -1,0 +1,129 @@
+{
+  "_": "DERIVED, never typed. Every cell is `allows(actor, key, row)` over the `exports` keys, the three roles of `permissions_world.build_world`, and the row classes `test_authz_sweep._rows` names. The test re-runs the same function on this tree and asserts equality; a moved cell prints (key, row class, actor, before, after).",
+  "_baseline": "11b1a765",
+  "_command": "uv run python manage.py shell -c \"from apps.exports.tests.test_authz_sweep import write_baseline as w; w('apps/exports/tests/authz_baseline.json')\"   # on 11b1a765, before the sweep",
+  "accepted_deltas": {},
+  "actors": [
+    "admin_at_a",
+    "member",
+    "owner"
+  ],
+  "answers": {
+    "export.build": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "org_scope_at_root": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "other_in_subtree": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "own_at_hat": {
+        "admin_at_a": true,
+        "member": false,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      },
+      "tenant_scope_at_root": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      }
+    },
+    "export.read": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "org_scope_at_root": {
+        "admin_at_a": false,
+        "member": true,
+        "owner": true
+      },
+      "other_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "own_at_hat": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": true,
+        "owner": true
+      },
+      "tenant_scope_at_root": {
+        "admin_at_a": false,
+        "member": true,
+        "owner": true
+      }
+    },
+    "export.request": {
+      "admin_branch": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "no_row": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "org_scope_at_root": {
+        "admin_at_a": false,
+        "member": true,
+        "owner": true
+      },
+      "other_in_subtree": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "own_at_hat": {
+        "admin_at_a": true,
+        "member": true,
+        "owner": true
+      },
+      "sibling_branch": {
+        "admin_at_a": false,
+        "member": true,
+        "owner": true
+      },
+      "tenant_scope_at_root": {
+        "admin_at_a": false,
+        "member": false,
+        "owner": true
+      }
+    }
+  },
+  "keys": [
+    "export.build",
+    "export.read",
+    "export.request"
+  ]
+}

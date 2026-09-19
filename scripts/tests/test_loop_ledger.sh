@@ -31,10 +31,19 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: README.md apps/ config/ docs/product/in-flight.md docs/product/queue.md docs/product/readouts.md quality/ scripts/archaeology_lib.sh scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks scripts/kill_mine.sh scripts/loop_health.py scripts/loop_tier.sh scripts/pm_push.sh scripts/publish.sh scripts/queue_cited.sh scripts/rung_start.sh scripts/secrets_scan.sh scripts/sweep.sh scripts/test.sh scripts/tests scripts/verify_start.sh
+# cites: uv.lock
 
 # The drive for the `--loop` LEDGER — the key, the environment fingerprint with
 # its deriver-declared exclusions, and the fail-closed direction of every doubt
 # (`scripts/gate_ledger.sh`, loop-ledger section).
+#
+# AND, SINCE R3's F3x AND F4x, THE TWO PLACES THE **FULL** LEDGER IS CONSULTED:
+# the legs field its lookup compares, and `scripts/githooks/pre-push`, the belt
+# that reads it. They live here rather than in a drive of their own because the
+# two ledgers are one file with one set of properties — `gate_has_green` is the
+# consult both belts make, and a verdict cache's failure mode is the same on
+# either side of the file. Each has its own section, below its own argument.
 #
 #   ./scripts/tests/test_loop_ledger.sh          run every case
 #   ./scripts/tests/test_loop_ledger.sh --list   name them
@@ -62,6 +71,15 @@ esac
 #     of `check.sh`'s source: that the consult exists, that recording happens
 #     only after the green, and that the key is re-derived and compared at the
 #     end. A drive that re-implemented the leg would be proving a copy of it.
+#   * A REAL PARTIAL INSTALL. The failing-sync branch is driven through a fake
+#     `uv` that writes one distribution, prints an error and exits non-zero —
+#     which proves the DISPOSITION (the status stays the legs', uv's output is
+#     printed, and the end-of-run refusal can still name `dists:`). What no
+#     case here reaches is a real `uv sync --frozen` dying halfway through a
+#     real resolve: a half-written wheel, a corrupt cache entry, a venv uv
+#     itself considers broken. Those are uv's failure modes and the drive would
+#     be measuring uv; the belt is that this branch cannot turn any of them
+#     into a gate verdict.
 #   * The trust class. This is a cache and never a security boundary — a local
 #     file an agent could echo a line into, exactly as `git push --no-verify` is
 #     one flag away. No case here pretends to defend against a forged row; the
@@ -119,7 +137,12 @@ case "${1:-}" in
 esac
 
 command -v git >/dev/null 2>&1 || cannot_look "no git on PATH"
-command -v shasum >/dev/null 2>&1 || cannot_look "no shasum on PATH — every digest here is one"
+# EITHER SPELLING, because the machine is now part of the subject. `shasum -a
+# 256` is macOS's and `sha256sum` is a minimal Linux's; the library under test
+# resolves both, so a drive that could only run where one of them lives would
+# be unrunnable on exactly the box this case exists for.
+command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1 ||
+    cannot_look "neither shasum nor sha256sum is on PATH — every digest here is one"
 [ -f scripts/gate_ledger.sh ] || cannot_look "scripts/gate_ledger.sh is not in this tree"
 [ -f scripts/db.sh ] || cannot_look "scripts/db.sh is not in this tree — it declares a derived key"
 [ -f scripts/rung_start.sh ] || cannot_look "scripts/rung_start.sh is not in this tree — it declares a derived key"
@@ -239,17 +262,31 @@ in_repo() {
 
 # A 64-hex digest from a seed, so a crafted row is shaped exactly like a real
 # one and the malformed-component read below has something to be satisfied by.
-hex64() { printf '%s' "$1" | shasum -a 256 | awk '{print $1}'; }
+# RESOLVED HERE AND NOT THROUGH `sha256_of`, deliberately: this is the drive's
+# own reference implementation, and a case that compared the library's answer
+# with the library's answer would assert nothing at all.
+hex64() {
+    if command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+    else
+        printf '%s' "$1" | sha256sum | awk '{print $1}'
+    fi
+}
 # A 40-hex commit-shaped value, likewise.
 sha40() { hex64 "$1" | cut -c1-40; }
 
 # The five components a case hands the recorder or the attributor, in the fixed
 # field order. Every crafted row in this drive is built through this, so a case
 # that means to move ONE component moves exactly one.
+#
+# `$6` is `env-reads`, appended to the PARAMETER list so no existing caller
+# moved, and printed in the FIELD order `LOOP_ENV_COMPONENT_FIELDS` declares —
+# the two orders are different on purpose and only the printed one is read.
 crafted_components() {
-    printf 'env-file=%s excluded=%s dists=%s head=%s merge-base=%s' \
+    printf 'env-file=%s excluded=%s dists=%s env-reads=%s head=%s merge-base=%s' \
         "${1:-$(hex64 envfile)}" "${2:-AWS_STORAGE_BUCKET_NAME,DATABASE_NAME}" \
-        "${3:-$(hex64 dists)}" "${4:-$(sha40 head)}" "${5:-$(sha40 base)}"
+        "${3:-$(hex64 dists)}" "${6:-$(hex64 reads)}" \
+        "${4:-$(sha40 head)}" "${5:-$(sha40 base)}"
 }
 
 case_the_row_carries_tree_and_env_appended_after_passes() {
@@ -937,6 +974,270 @@ case_the_merge_base_is_used_and_not_mains_tip() {
     same "$before" "$after" "the fingerprint carries the MERGE-BASE, not main's tip"
 }
 
+# --- the environment the suite STANDS ON, not the file that configures it -----
+#
+# R3's F2. The fingerprint hashed the `.env` FILE, and `read_env(overwrite=False)`
+# — `config/settings/base.py`'s own call — SETDEFAULTS: an exported name wins
+# over the file and never touches it. So a terminal that exported a
+# suite-affecting variable derived a key byte-identical to one that had not, and
+# a narrower green was reusable as a wider one. The full gate has had
+# `quality/partition.py::bent_environment()` for this class since the partition
+# landed; the loop had nothing.
+#
+# THE NAMES HAVE ONE OWNER AND IT IS NOT A SHELL SCRIPT.
+# `quality/partition.py::suite_environment_names()` derives them from
+# `config/settings/**` and subtracts the pins and the tolerated harness knobs;
+# `loop_env_reads` asks for them. The cases below drive the two halves
+# separately — the VALUE FOLDING in a scratch checkout, over a planted name list
+# (a scratch checkout has no `quality/` tree, which is what `DJB_LOOP_ENV_READS`
+# is for and the same seam `DJB_LOOP_LEDGER` already is), and the OWNERSHIP on
+# this repository's own tree, where the real census is the subject.
+#
+# `does_not_cover`, DECLARED WITH THE FIX (R3's F2x.4):
+#
+#   * THE HARNESS KNOBS ARE OUT OF THE KEY ON PURPOSE, and they are not listed
+#     here — they are `quality/partition.yaml` §3's `environment.tolerated`,
+#     each with the argument for it written beside it, and the full gate's
+#     `bent_environment()` subtracts the same four. The class is: a name whose
+#     value provably cannot change a verdict ABOUT CODE — which database the
+#     suite migrates into, which template it clones, which bucket it names, who
+#     called the gate. They are set to a non-default on every honest run in
+#     every worktree, so folding them would key every verdict to one directory
+#     and no verdict would ever be reused anywhere. That is the dividend
+#     deleted rather than protected, and it is the same argument the `.env`
+#     digest's DERIVED-KEY exclusions already stand on. The cost is real and
+#     stated: a name wrongly tolerated is a name the loop is blind to, and the
+#     belt under it is that the list is short, reasoned, and in a diff a human
+#     reads.
+#   * `config/settings/test.py`'s PINS, likewise subtracted and likewise not
+#     listed: what that file pins, the ambient environment cannot reach the
+#     suite through at all, so folding it would move the key over a value the
+#     suite never sees.
+#   * WHAT A NAME'S VALUE MEANS. The fold is a digest: it sees that a value
+#     moved, never whether the move could have changed an outcome. Two spellings
+#     of the same truth (`1` and `true`) are two keys. That is the fail-closed
+#     direction — a re-measure, never a reuse — and it is the reason this is a
+#     fingerprint and not a judgment.
+#   * COLLECTION-TIME READS OUTSIDE `config/settings/**`. The census is an AST
+#     read of the settings package; a name read only by `apps/conftest.py` and
+#     never by settings would be invisible to it. Today the population that
+#     matters is reached anyway, because the settings layer reads it too — but
+#     that is a fact about this tree, not a property of the census.
+
+#: A names file for the scratch checkout, and the one place these cases say a
+#: name out loud. Two names, and they are placed rather than picked: one that a
+#: planted `.env` also carries (so the precedence half has something to
+#: disagree about) and one it does not.
+plant_env_reads() {
+    N=$((N + 1))
+    DJB_LOOP_ENV_READS="${WORK}/env-reads${N}"
+    printf '%s\n' "$@" >"$DJB_LOOP_ENV_READS"
+    export DJB_LOOP_ENV_READS
+    echo "  PLANT TOOK · ${DJB_LOOP_ENV_READS##*/}: $*"
+}
+
+#: A key derived in `$REPO` with names exported for that derivation only. Never
+#: a prefix assignment on the function call: bash's persistence rules for those
+#: differ between POSIX mode and not, and a case whose plant outlives its own
+#: line would quietly plant for every case after it.
+key_with_env() {
+    local assignment
+    (
+        cd "$REPO" || exit 1
+        for assignment in "$@"; do
+            export "${assignment?}"
+        done
+        loop_ledger_key treeone "mode=fast scope=- always=abc"
+    )
+}
+
+case_an_exported_suite_variable_moves_the_key() {
+    fresh_checkout
+    local plain exported empty offcensus
+    plant_env_reads DRIVE_SUITE_KNOB DRIVE_ABSENT_KNOB
+
+    CURRENT="an exported name the census returns moves the key"
+    plain=$(key_with_env)
+    exported=$(key_with_env DRIVE_SUITE_KNOB=narrower)
+    differs "$plain" "$exported" "the key under an exported suite variable"
+
+    # THE SETDEFAULT SUBTLETY, AND IT IS THE WHOLE REASON THE FOLD SPELLS AN
+    # UNSET NAME AS `<unset>` RATHER THAN AS EMPTY. `read_env` SETDEFAULTS, so
+    # an exported EMPTY value is SET and wins over the file exactly as a
+    # non-empty one does — a fold that read it as absent would be blind to the
+    # one case where a name being present at all is the entire difference.
+    CURRENT="an exported EMPTY value is not the same as an unset name"
+    empty=$(key_with_env DRIVE_SUITE_KNOB=)
+    differs "$plain" "$empty" "the key under an exported empty value"
+
+    CURRENT="a name the census does NOT return moves nothing"
+    offcensus=$(key_with_env DRIVE_OFF_CENSUS_KNOB=whatever)
+    same "$plain" "$offcensus" "the key under a name outside the census"
+
+    unset DJB_LOOP_ENV_READS
+}
+
+case_the_process_environment_wins_over_the_env_file() {
+    # `read_env(overwrite=False)`'s precedence, driven rather than described:
+    # the file is the FALLBACK and the process is the answer. Both halves are
+    # asserted, because a fold that ignored the file would pass the half above
+    # and be blind to every laptop that configures the suite with `.env` alone.
+    fresh_checkout
+    local from_file moved_file shadowed_before shadowed_after
+    plant_env_reads DRIVE_SUITE_KNOB
+
+    # THE VALUES ARE `one`, `two`, `three` AND NOTHING LONGER, which is not
+    # laziness: a hyphenated slug of the right length after a `NAME=` is a
+    # Base64 high-entropy string to `detect-secrets`, and the first draft of
+    # this case reddened the `--loop` secrets leg three times over. What the
+    # case needs is values that DIFFER; nothing here needs them to look real.
+    printf 'DRIVE_SUITE_KNOB=one\n' >>"$REPO/.env"
+    from_file=$(key_with_env)
+
+    CURRENT="the .env value is the fallback, and moving it moves the key"
+    printf 'DRIVE_SUITE_KNOB=two\n' >>"$REPO/.env"
+    moved_file=$(key_with_env)
+    differs "$from_file" "$moved_file" "the key after the .env value moved"
+
+    CURRENT="and an exported value SHADOWS the file rather than joining it"
+    # Two `.env` files that disagree, one exported value over both: the READ-SET
+    # component must not move, which is what "the process wins" means and what a
+    # digest of the file alone could never say. The whole KEY still moves,
+    # because the `.env` digest is its own component and the file did change —
+    # so the comparison is made on the component, not on the key.
+    shadowed_before=$(
+        cd "$REPO" && export DRIVE_SUITE_KNOB=exported && loop_env_reads
+    )
+    printf 'DRIVE_SUITE_KNOB=three\n' >>"$REPO/.env"
+    shadowed_after=$(
+        cd "$REPO" && export DRIVE_SUITE_KNOB=exported && loop_env_reads
+    )
+    is "$shadowed_after" "$shadowed_before" \
+        "the read-set digest over two different .env files under one exported value"
+
+    unset DJB_LOOP_ENV_READS
+}
+
+case_the_read_set_census_has_one_owner_and_this_file_names_nothing() {
+    # THE OWNERSHIP HALF, ON THIS REPOSITORY'S OWN TREE. The scratch cases above
+    # drive the folding over a planted list; this one drives the LIST, because a
+    # fold of the wrong names is a fold of nothing.
+    local owner="$ROOT/quality/partition.py" names digest spelled name
+    [ -f "$owner" ] ||
+        cannot_look "quality/partition.py is not in this tree — the census has no owner to drive"
+    [ -x "$ROOT/.venv/bin/python" ] ||
+        cannot_look "this checkout has no .venv/bin/python — the owner cannot be asked"
+
+    CURRENT="the owner prints a census, and it is not empty"
+    N=$((N + 1))
+    OUT="${WORK}/env-reads-owner${N}.log"
+    RC=0
+    (cd "$ROOT" && ./.venv/bin/python -m quality.partition env-reads) >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the owner's exit status"
+    names=$(cat "$OUT")
+    if [ "$(printf '%s\n' "$names" | wc -l | tr -d ' ')" -gt 10 ]; then
+        ok "the census returns a real population ($(printf '%s\n' "$names" | wc -l | tr -d ' ') names)"
+    else
+        bad "the census returned $(printf '%s\n' "$names" | wc -l | tr -d ' ') names — config/settings/** reads dozens"
+    fi
+    OUT=""
+
+    CURRENT="and on THIS tree the fingerprint folds it rather than declaring no census"
+    digest=$(cd "$ROOT" && loop_env_reads) || digest=""
+    case "$digest" in
+    no-census) bad "loop_env_reads says no-census in the checkout that OWNS the census" ;;
+    "") bad "loop_env_reads could not look on this tree" ;;
+    *)
+        if printf '%s' "$digest" | grep -E '^[0-9a-f]{64}$' >/dev/null; then
+            ok "the read-set component is a digest of the live census"
+        else
+            bad "the read-set component is not a digest: '${digest}'"
+        fi
+        ;;
+    esac
+
+    # PRINCIPLE 9, MADE CHECKABLE. A name spelled in the shell is a second list
+    # with extra steps — right on the day it is typed, unmaintained after, and
+    # read as authoritative by whoever finds it. The population is asked of the
+    # owner, so this cannot go stale either.
+    CURRENT="no name the census returns is spelled anywhere in scripts/gate_ledger.sh"
+    spelled=""
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        if grep -F "$name" "$ROOT/scripts/gate_ledger.sh" >/dev/null 2>&1; then
+            spelled="${spelled}${spelled:+, }${name}"
+        fi
+    done <<EOF
+$names
+EOF
+    is "$spelled" "" "the census names gate_ledger.sh spells (comments included)"
+}
+
+case_a_moved_read_set_is_attributed_by_name() {
+    # THE FIFTH MISS REASON. `env:env-reads` has to reach the banner, or a
+    # reader holding a miss on an identical tree cannot tell the new component
+    # from the four that were always there — which is the exact legibility the
+    # components were added for.
+    fresh_checkout
+    local scope="mode=fast_scope=-_always=abc" want="mode=fast scope=- always=abc"
+    local E D H token
+    E=$(hex64 envfile)
+    D=$(hex64 dists)
+    H=$(sha40 head)
+    : >"$DJB_LOOP_LEDGER"
+    plant_row "$scope" SAMETREE ENVA "$(crafted_components "$E" "" "$D" "$H" "$H" "$(hex64 reads-as-banked)")"
+    LOOP_ENV_COMPONENTS=$(crafted_components "$E" "" "$D" "$H" "$H" "$(hex64 reads-as-now)")
+
+    CURRENT="an identical tree whose read-set moved is attributed to env-reads"
+    token=$(attr_token SAMETREE ENVB "$want")
+    is "$token" "env:env-reads" "the token"
+
+    CURRENT="and the four it has always named still name themselves"
+    LOOP_ENV_COMPONENTS=$(crafted_components "$(hex64 other)" "" "$D" "$H" "$H" "$(hex64 reads-as-banked)")
+    is "$(attr_token SAMETREE ENVB "$want")" "env:env-file" "the token when the .env digest moved"
+    LOOP_ENV_COMPONENTS=$(crafted_components "$E" "" "$(hex64 other)" "$H" "$H" "$(hex64 reads-as-banked)")
+    is "$(attr_token SAMETREE ENVB "$want")" "env:dists" "the token when the distribution census moved"
+    LOOP_ENV_COMPONENTS=$(crafted_components "$E" "" "$D" "$(sha40 elsewhere)" "$H" "$(hex64 reads-as-banked)")
+    is "$(attr_token SAMETREE ENVB "$want")" "env:head" "the token when HEAD moved"
+    LOOP_ENV_COMPONENTS=$(crafted_components "$E" "" "$D" "$H" "$(sha40 elsewhere)" "$(hex64 reads-as-banked)")
+    is "$(attr_token SAMETREE ENVB "$want")" "env:merge-base" "the token when the merge-base moved"
+    LOOP_ENV_COMPONENTS=""
+}
+
+case_a_checkout_with_no_census_says_so_and_a_broken_read_refuses() {
+    # THE THREE ANSWERS, AND THEY ARE DIFFERENT THINGS. A scratch checkout is
+    # NOT this tree and every one of them answers `no-census`, deterministically
+    # — which is what lets every other case in this drive keep a stable key. An
+    # owner that is HERE and could not be read is could-not-look: no key, no
+    # reuse, the same disposition the distribution census takes.
+    fresh_checkout
+    CURRENT="a checkout with no quality/partition.py declares the absence"
+    is "$(cd "$REPO" && loop_env_reads)" "no-census" "the read-set component"
+
+    CURRENT="and the declared absence is a legal component, not a malformation"
+    is "$(loop_components_malformed "$(crafted_components "" "" "" "" "" no-census)")" "" \
+        "the malformed-field report for a no-census row"
+    if [ -z "$(loop_components_malformed "$(crafted_components "" "" "" "" "" "not-a-digest")")" ]; then
+        bad "a read-set component that is neither a digest nor no-census reads as well-formed"
+    else
+        ok "anything else in the field is refused by name: $(loop_components_malformed "$(crafted_components "" "" "" "" "" "not-a-digest")")"
+    fi
+
+    CURRENT="a seam file that is empty is a read that did not answer"
+    N=$((N + 1))
+    DJB_LOOP_ENV_READS="${WORK}/env-reads-empty${N}"
+    : >"$DJB_LOOP_ENV_READS"
+    export DJB_LOOP_ENV_READS
+    RC=0
+    (cd "$REPO" && loop_env_reads) >/dev/null 2>&1 || RC=$?
+    is "$RC" "1" "loop_env_reads' exit status on an empty census"
+    CURRENT="and no key is derived when the census could not answer"
+    RC=0
+    (cd "$REPO" && loop_ledger_key treeone "mode=fast scope=- always=abc") >/dev/null 2>&1 || RC=$?
+    is "$RC" "1" "loop_ledger_key's exit status"
+    unset DJB_LOOP_ENV_READS
+}
+
 # --- the key, and the scope field --------------------------------------------
 
 case_the_same_tree_at_two_scopes_is_two_keys() {
@@ -1073,7 +1374,14 @@ case_every_doubt_is_a_miss_and_never_an_exit_2_on_the_consult_path() {
 
     CURRENT="a row missing a component is unmatched, and the field is named"
     : >"$DJB_LOOP_LEDGER"
-    plant_row "$scope" TREEA ENVA "env-file=${E} excluded=X dists=${D} head=$(sha40 h)"
+    # EVERY FIELD BUT THE LAST ONE, so the case keeps naming the field it says
+    # it names. `loop_components_malformed` reports the FIRST field it cannot
+    # read, in `LOOP_ENV_COMPONENT_FIELDS` order, so a row that omitted an
+    # earlier one would go on passing while asserting about a different field —
+    # which is what this line stopped doing when `env-reads` was inserted ahead
+    # of `head` (R3's F2x).
+    plant_row "$scope" TREEA ENVA \
+        "env-file=${E} excluded=X dists=${D} env-reads=$(hex64 reads) head=$(sha40 h)"
     N=$((N + 1))
     OUT="${WORK}/missingfield${N}.log"
     RC=0
@@ -1209,7 +1517,7 @@ case_the_local_loop_really_is_one_pass() {
     n=$(grep -cE '^[[:space:]]*uv run pytest' "$ROOT/scripts/test.sh")
     is "$n" "1" "the number of pytest invocations in test.sh"
     CURRENT="the full gate's two passes are still the full gate's"
-    n=$(grep -cE '^\./scripts/test\.sh .*--randomly-seed="\$PYTEST_SEED"' "$ROOT/scripts/check.sh")
+    n=$(grep -cE '^[[:space:]]*\./scripts/test\.sh .*--randomly-seed="\$PYTEST_SEED"' "$ROOT/scripts/check.sh")
     is "$n" "2" "the number of seeded whole-suite passes (the pytest-x2 leg)"
 }
 
@@ -1776,9 +2084,1985 @@ case_an_empty_derived_declaration_leaves_the_key_unchanged() {
     differs "$before" "$after" "and the churn still moves the key, because nothing was declared"
 }
 
+# --- the docs-only pytest reuse, and the rider that made it a default line ----
+#
+# THE PROPERTY THESE CASES ARE ABOUT. A `--loop` that misses on `tree` alone,
+# over a delta that is entirely under `docs/`, spends 200-250 s re-deriving a
+# pytest result no path in the delta can have moved. The mechanism lets the
+# banked pytest verdict stand in for that ONE pass while every other leg runs —
+# and the whole of the risk is in when it must NOT, so most of what follows is
+# refusals: a mixed delta, a dirty tree, a docs path some module under `apps/`
+# spells, and every belt that is not `--loop`.
+#
+# WHAT THEY DO NOT COVER, in the register of this drive's own header: the
+# END-TO-END reuse through a real `scripts/check.sh` run, which needs a
+# provisioned checkout, a database and a complete green `--loop` — minutes per
+# case. That is the BUILDER's measurement and it is pasted in the rung's report.
+# What is covered here is the decision function driven over real git state, and
+# the WIRING read out of `check.sh`'s source: that the pytest invocations are
+# inside the guard, that the REUSED line exists, and that no belt but `--loop`
+# can reach the decision at all.
+#
+# AND ONE MORE, DECLARED BY THE FIX THAT ADDED IT (R3's F1x.4): A DIRTY PORTION
+# THAT IS ITSELF DOCS-ONLY. The basis check refuses any bank whose `tree=` is
+# not its head's committed tree, and it refuses it WITHOUT LOOKING AT WHAT WAS
+# DIRTY — so a bank taken with nothing uncommitted but a `docs/` edit, which the
+# reuse's own argument would have been happy to inherit, is refused exactly as a
+# bank taken over a half-finished `apps/` change is. That is the fail-closed
+# direction and it is deliberate: the row records ONE hash and no inventory, so
+# "which paths were dirty when this was banked" is not a question the ledger can
+# answer, and a reuse that guessed at it would be guessing in the direction that
+# hands out a green. The cost is a re-measure the round could in principle have
+# skipped; the alternative is a check that has to trust a bank to describe its
+# own dirt. If that cost is ever measured to matter, the honest fix is upstream —
+# a `--loop` that refuses to BANK a dirty tree at all, which is a different rung
+# and a much louder change than this one.
+
+check_sh_function() {
+    # Copy one function DEFINITION out of scripts/check.sh and source it, so a
+    # case drives the bytes check.sh ships rather than a re-implementation of
+    # them. check.sh itself cannot be sourced — it IS the gate, and sourcing it
+    # would start one — and a drive may not run a nested gate either, because
+    # the per-checkout lock refuses it. The function is the seam. The same
+    # helper, for the same reason, as `scripts/tests/test_loop_scope.sh`'s.
+    local name="$1" out
+    out="${WORK}/fn-${name}.sh"
+    awk -v want="${name}() {" '
+        index($0, want) == 1 { on = 1 }
+        on { print }
+        on && $0 == "}" { exit }
+    ' "${ROOT}/scripts/check.sh" >"$out"
+    grep -q "^${name}() {" "$out" ||
+        cannot_look "scripts/check.sh no longer defines ${name}() — the case cannot drive bytes it cannot find"
+    grep -q '^}$' "$out" ||
+        cannot_look "the ${name}() definition in scripts/check.sh has no closing brace at column 1 — the extraction cannot be trusted"
+    # shellcheck source=/dev/null
+    . "$out"
+}
+
+# Run `loop_docs_only_reuse` IN THIS SHELL with the working directory moved to a
+# scratch checkout. Never `in_repo`: that is a subshell, and this function's
+# whole answer is three globals a subshell would take with it — which is the
+# same trap `check.sh` spells out beside its fingerprint call, so a helper that
+# hid it here would be driving a shape the gate does not have.
+REUSE_RC=0
+reuse_in() {
+    local dir="$1" saved="$PWD"
+    shift
+    REUSE_RC=0
+    cd "$dir"
+    loop_docs_only_reuse "$@" || REUSE_RC=$?
+    cd "$saved"
+}
+
+# A scratch checkout with an `apps/` tree that spells no docs path, one banked
+# head, and whatever commits the case puts on top. Returns with `BANKED_HEAD`
+# set. `apps/` must EXIST: the refusal greps it, and a case whose `apps/` is
+# missing would pass for the wrong reason.
+BANKED_HEAD=""
+reuse_checkout() {
+    fresh_checkout
+    mkdir -p "$REPO/apps/zzz_probe/tests" "$REPO/docs/product"
+    printf '"""A module that names no docs path at all."""\n' \
+        >"$REPO/apps/zzz_probe/tests/test_nothing.py"
+    echo "the queue" >"$REPO/docs/product/queue.md"
+    git -C "$REPO" add apps docs >/dev/null
+    git -C "$REPO" commit -q -m "a tree with apps/ and docs/"
+    BANKED_HEAD=$(git -C "$REPO" rev-parse HEAD)
+    echo "  PLANT TOOK · banked head is $(git -C "$REPO" log -1 --oneline)"
+}
+
+# The attributor's own answer for a scratch checkout whose banked row sits at
+# `BANKED_HEAD`. Driving the REAL attributor rather than crafting a detail by
+# hand is the point: the reuse reads `reuse-basis:`, and a case that typed that
+# line itself would never notice the day the attributor stopped printing it.
+REUSE_TOKEN=""
+REUSE_DETAIL=""
+#: The tree the banked row carries, and the one every case that does not say
+#: otherwise banks. It is `BANKED_HEAD`'s own COMMITTED tree — which is what a
+#: bank taken on a clean working tree records, and what the docs-only reuse
+#: requires of the row it rests on (R3's F1x). Before that requirement existed
+#: every case here planted the literal `BANKEDTREE`, a token no `git rev-parse`
+#: would ever answer, and the reuse was happy with it: the cases could not tell
+#: a bank that measured its own head from one that measured a builder's
+#: half-finished checkout, because nothing asked. Planting the real tree makes
+#: "their banks are clean-tree by construction" a fact the cases ASSERT rather
+#: than a sentence about them.
+BANKED_TREE=""
+attribute_for_reuse() {
+    local scope="mode=fast_scope=-_always=abc" want="mode=fast scope=- always=abc"
+    local E D answer banked
+    BANKED_TREE=$(git -C "$REPO" rev-parse "${BANKED_HEAD}^{tree}") ||
+        cannot_look "the scratch checkout has no committed tree at ${BANKED_HEAD}"
+    # `$1` is the tree to bank, for the ONE case that means to bank a dirty one.
+    banked="${1:-$BANKED_TREE}"
+    E=$(hex64 envfile)
+    D=$(hex64 dists)
+    : >"$DJB_LOOP_LEDGER"
+    plant_row "$scope" "$banked" ENVA \
+        "$(crafted_components "$E" "" "$D" "$BANKED_HEAD" "$BANKED_HEAD")"
+    LOOP_ENV_COMPONENTS=$(crafted_components "$E" "" "$D" \
+        "$(git -C "$REPO" rev-parse HEAD)" "$(git -C "$REPO" rev-parse HEAD)")
+    answer=$(in_repo "$REPO" loop_ledger_attribute NEWTREE ENVA "$want")
+    REUSE_TOKEN=${answer%%$'\n'*}
+    REUSE_DETAIL=${answer#*$'\n'}
+    LOOP_ENV_COMPONENTS=""
+}
+
+case_a_miss_prints_the_docs_only_line_by_default() {
+    # THE V-I2 RIDER. A verifier's `--loop` missed on `tree`, the whole delta
+    # was two ledger files, and the DEFAULT banner offered `DJB_LOOP_VERBOSE=1`
+    # instead of saying so — so 2302 s were spent re-measuring and the
+    # transcript could not tell anyone it need not have been. The line prints on
+    # every `miss(tree)` now, and this drives check.sh's own printer.
+    check_sh_function loop_miss_narrative
+    LOOP_LEDGER_KEY="loop-v1:planted0000000000000000000000000000000000000000000000000000"
+    LOOP_LEDGER_TREE="planted-tree"
+    LOOP_MISS_CENSUS="7 rows (0 seeded — planted by the drive)"
+    local why
+    why=$(printf '%s\n%s\n%s\n%s\n' "tree" "banked row: a planted row" \
+        "since banked head abcd1234: 2 path(s) changed; docs-only: yes" \
+        "reuse-basis: head=abcd1234 tree=BANKEDTREE")
+
+    CURRENT="a miss(tree) says whether the miss was docs-only, with no flag set"
+    N=$((N + 1))
+    OUT="${WORK}/docsline-default${N}.log"
+    RC=0
+    (unset DJB_LOOP_VERBOSE; loop_miss_narrative "$why") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the printer's exit status"
+    is "$(wc -l <"$OUT" | tr -d ' ')" "3" "the number of lines a miss(tree) prints by default"
+    if grep -F "since banked head abcd1234: 2 path(s) changed; docs-only: yes" "$OUT" >/dev/null; then
+        ok "the docs-only line is in the DEFAULT banner"
+    else
+        bad "the default banner still hides the docs-only line behind DJB_LOOP_VERBOSE=1"
+    fi
+    if grep -F "MISSED: miss(tree)" "$OUT" >/dev/null &&
+        grep -F "DJB_LOOP_VERBOSE=1" "$OUT" >/dev/null; then
+        ok "the two lines it always printed are still the first two"
+    else
+        bad "the token line or the key line went missing"
+    fi
+
+    CURRENT="the 'not derivable' forms reach the default banner too"
+    why=$(printf '%s\n%s\n%s\n' "tree" "banked row: a planted row" \
+        "since banked head: not derivable (the row carries no usable head=)")
+    N=$((N + 1))
+    OUT="${WORK}/docsline-nd${N}.log"
+    RC=0
+    (unset DJB_LOOP_VERBOSE; loop_miss_narrative "$why") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the printer's exit status on a named absence"
+    if grep -F "since banked head: not derivable (the row carries no usable head=)" "$OUT" >/dev/null; then
+        ok "a named absence is printed rather than silently dropped"
+    else
+        bad "the 'not derivable' form does not reach the default banner"
+    fi
+
+    CURRENT="a token that is not 'tree' gains no third line"
+    why=$(printf '%s\n%s\n' "env:env-file" "banked row: a planted row")
+    N=$((N + 1))
+    OUT="${WORK}/docsline-env${N}.log"
+    RC=0
+    (unset DJB_LOOP_VERBOSE; loop_miss_narrative "$why") >"$OUT" 2>&1 || RC=$?
+    is "$(wc -l <"$OUT" | tr -d ' ')" "2" "the number of lines an env: miss prints by default"
+    OUT=""
+}
+
+case_a_docs_only_commit_reuses_the_pytest_verdict_and_banks_a_reuse_row() {
+    reuse_checkout
+    printf 'one more row\n' >>"$REPO/docs/product/queue.md"
+    git -C "$REPO" add docs/product/queue.md >/dev/null
+    git -C "$REPO" commit -q -m "queue row rowed [docs-only]"
+    echo "  PLANT TOOK · one docs-only commit on top: $(git -C "$REPO" log -1 --oneline)"
+    attribute_for_reuse
+
+    CURRENT="the attributor says tree, and hands the reuse its untruncated basis"
+    is "$REUSE_TOKEN" "tree" "the token"
+    if printf '%s\n' "$REUSE_DETAIL" | grep -F "reuse-basis: head=${BANKED_HEAD} tree=${BANKED_TREE}" >/dev/null; then
+        ok "the detail carries the WHOLE banked head and tree, not the reader's 8 and 12 characters"
+    else
+        bad "the attributor prints no reuse-basis line — the reuse can only rest on a row it cannot name"
+    fi
+
+    CURRENT="a docs-only delta from a banked green is REUSABLE"
+    if ! command -v loop_docs_only_reuse >/dev/null 2>&1; then
+        bad "scripts/gate_ledger.sh defines no loop_docs_only_reuse — there is no reuse to decide"
+    else
+        reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
+        is "$REUSE_RC" "0" "the decision"
+        is "$LOOP_REUSE_TREE" "$BANKED_TREE" "the tree the reuse rests on"
+        is "$LOOP_REUSE_N" "1" "the size of the docs-only delta"
+        is "$LOOP_REUSE_WHY" "" "the refusal sentence (there is none to print)"
+    fi
+
+    # F1x.3, ASSERTED RATHER THAN ASSUMED. This case's bank is clean-tree BY
+    # CONSTRUCTION — it was taken at `BANKED_HEAD` with nothing uncommitted —
+    # and that is now a precondition of the reuse rather than an accident of the
+    # fixture, so the case says it in its own voice. Without this line, the
+    # basis check could be deleted tomorrow and this case would go on passing.
+    CURRENT="and this case's own bank measured its head's COMMITTED tree"
+    is "$LOOP_REUSE_TREE" "$(git -C "$REPO" rev-parse "${BANKED_HEAD}^{tree}")" \
+        "the banked tree, against the banked head's committed tree"
+
+    CURRENT="and the row it banks SAYS it is a reuse, and is itself a legal hit"
+    local key scope row
+    scope="mode=fast scope=- always=abc"
+    : >"$DJB_LOOP_LEDGER"
+    key=$(in_repo "$REPO" loop_ledger_key NEWTREE "$scope")
+    in_repo "$REPO" loop_ledger_record "$key" "$scope" 1 NEWTREE ENVA BANKEDTREE ||
+        cannot_look "loop_ledger_record would not take a reuse marker"
+    row=$(in_repo "$REPO" loop_ledger_lookup "$key") || row=""
+    if [ -n "$row" ]; then
+        ok "the reuse row is itself reusable — a later --loop on these bytes hits it"
+    else
+        bad "the reuse row is not a legal hit: a reuse that cannot be reused is a re-measure with extra steps"
+    fi
+    case "$row" in
+    *" reuse=BANKEDTREE"*) ok "the row names the banked tree its pytest verdict rests on" ;;
+    *) bad "the row does not say what it rests on: 'reuse=' is absent, so a reuse is recorded as a measurement" ;;
+    esac
+    case "$row" in
+    "loop-v1 ${key} loop "*) ok "the row's third field is still the literal 'loop' — verify_start.sh's LOOP SEED can still inherit it" ;;
+    *) bad "the row's third field moved: scripts/verify_start.sh's seed matches '^loop-v1 loop-v1:<64> loop ' and would drop every reuse row" ;;
+    esac
+
+    CURRENT="check.sh prints the REUSED line, and runs no pytest on that path"
+    if grep -F 'pytest: REUSED from the banked verdict on' "$ROOT/scripts/check.sh" >/dev/null; then
+        ok "the REUSED line exists in the leg"
+    else
+        bad "check.sh never announces a reuse — a leg that silently did not run is the failure this whole mechanism must not have"
+    fi
+    # THE "NO PYTEST INVOCATION" PROOF, READ STATICALLY OUT OF THE LEG. Running
+    # the leg would mean running a gate inside a gate, which the per-checkout
+    # lock refuses by design — so the assertion is that EVERY `./scripts/test.sh`
+    # line in the `--loop` pytest leg sits inside the reuse guard's `else` arm.
+    # A pytest invocation outside it is a reuse that measures anyway.
+    local outside
+    outside=$(awk '
+        /# >>> loop-docs-only-reuse >>>/ { inguard = 1 }
+        inguard && /^    else$/ { inelse = 1 }
+        /# <<< loop-docs-only-reuse <<</ { inguard = 0; inelse = 0 }
+        # An INVOCATION, never a mention: the line must BEGIN with the command.
+        # `check.sh` names `./scripts/test.sh` in a dozen comments and a
+        # censusing grep that counts those is a census of prose.
+        { line = $0; sub(/^[[:space:]]+/, "", line) }
+        line !~ /^\.\/scripts\/test\.sh/ { next }
+        line ~ /--randomly-seed/ { next }
+        !inelse { print FNR ": " line }
+    ' "$ROOT/scripts/check.sh")
+    # The two seeded whole-suite passes are the FULL gate's and are excluded by
+    # name above; what is left is the `--loop` leg's own invocations.
+    if [ -z "$outside" ]; then
+        ok "every --loop pytest invocation is inside the reuse guard's else arm"
+    else
+        bad "a --loop pytest invocation sits outside the reuse guard: ${outside}"
+    fi
+}
+
+case_a_mixed_delta_measures_in_full() {
+    reuse_checkout
+    printf 'one more row\n' >>"$REPO/docs/product/queue.md"
+    printf '\n# a source change\n' >>"$REPO/apps/zzz_probe/tests/test_nothing.py"
+    git -C "$REPO" add docs apps >/dev/null
+    git -C "$REPO" commit -q -m "one docs path and one apps path"
+    attribute_for_reuse
+    CURRENT="one path outside docs/ and the whole delta measures"
+    reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
+    is "$REUSE_RC" "1" "the decision"
+    is "$LOOP_REUSE_TREE" "" "the tree the reuse would have rested on"
+    is "$LOOP_REUSE_WHY" "" "the sentence — an ordinary mixed delta is not news and must not print on every miss"
+}
+
+case_a_dirty_tree_is_never_docs_only() {
+    reuse_checkout
+    printf 'one more row\n' >>"$REPO/docs/product/queue.md"
+    git -C "$REPO" add docs/product/queue.md >/dev/null
+    git -C "$REPO" commit -q -m "queue row rowed [docs-only]"
+    attribute_for_reuse
+    CURRENT="the same delta is reusable while the working tree is clean"
+    reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
+    is "$REUSE_RC" "0" "the decision on a clean tree — the control"
+    CURRENT="and an uncommitted byte anywhere refuses it, by name"
+    printf 'a half-finished change nobody can name\n' >>"$REPO/apps/zzz_probe/tests/test_nothing.py"
+    reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
+    is "$REUSE_RC" "1" "the decision on a dirty tree"
+    is "$LOOP_REUSE_TREE" "" "the tree the reuse would have rested on"
+    case "$LOOP_REUSE_WHY" in
+    *"WORKING TREE is not clean"*) ok "the refusal says the working tree is what refused it" ;;
+    *) bad "a dirty tree refused silently, or did not refuse: '${LOOP_REUSE_WHY}'" ;;
+    esac
+}
+
+case_a_bank_measured_on_a_dirty_tree_is_no_basis_for_a_docs_only_reuse() {
+    # R3's F1, DRIVEN. A `--loop` verdict is keyed on the MEASURED WORKING TREE
+    # (`gate_measured_tree` reads through `git add -A`), and a builder's working
+    # tree is routinely dirty — so a banked row can name a head whose COMMITTED
+    # tree nothing ever measured. The reuse asked three questions (ancestry, a
+    # docs-only committed delta, and THIS run's clean tree) and never the fourth,
+    # so the reviewer's sequence came out green: commit a red test, leave the
+    # uncommitted edit that greens it, `--loop` banks `head=C tree=T'`, restore
+    # the red bytes, put a `docs/` commit on top — and the next `--loop` reuses
+    # green over a red COMMITTED suite, banking a reusable reuse row on top of it.
+    #
+    # THE VICTIM IS BUILT HERE AND NEVER FOUND. `T'` is a real
+    # `gate_measured_tree` reading of a real uncommitted edit in a scratch
+    # checkout, taken and then restored, so the hash the planted row carries is
+    # the hash the gate would genuinely have banked — not a token chosen to be
+    # unequal, which is a case that proves the comparison and not the property.
+    reuse_checkout
+    local dirty red saved
+    red="$REPO/apps/zzz_probe/tests/test_nothing.py"
+    N=$((N + 1))
+    saved="${WORK}/committed-bytes${N}.py"
+    cp "$red" "$saved"
+    printf '\n# the uncommitted edit that greens the committed red\n' >>"$red"
+    dirty=$(in_repo "$REPO" gate_measured_tree) ||
+        cannot_look "gate_measured_tree would not read the scratch checkout — the dirty bank cannot be built"
+    cp "$saved" "$red"
+    echo "  PLANT TOOK · dirty-tree bank ${dirty} at head $(git -C "$REPO" rev-parse --short HEAD)"
+
+    CURRENT="the planted bank is genuinely a dirty-tree bank"
+    differs "$dirty" "$(git -C "$REPO" rev-parse "${BANKED_HEAD}^{tree}")" \
+        "the measured tree under one uncommitted edit is not the head's committed tree"
+    is "$(git -C "$REPO" status --porcelain)" "" "the checkout after the restore"
+
+    printf 'one more row\n' >>"$REPO/docs/product/queue.md"
+    git -C "$REPO" add docs/product/queue.md >/dev/null
+    git -C "$REPO" commit -q -m "queue row rowed [docs-only]"
+    attribute_for_reuse "$dirty"
+
+    CURRENT="a basis row whose tree is not its head's committed tree is refused"
+    reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
+    is "$REUSE_RC" "1" "the decision"
+    is "$LOOP_REUSE_TREE" "" "the tree the reuse would have rested on"
+    case "$LOOP_REUSE_WHY" in
+    *"the banked verdict was measured on a tree that is not its head's committed tree"*)
+        ok "the refusal names the BASIS row as what refused it, in the criterion's own words"
+        ;;
+    *) bad "a dirty-tree bank was reused, or refused without saying so: '${LOOP_REUSE_WHY}'" ;;
+    esac
+
+    # THE NEGATIVE, IN THE SAME CASE AND OVER THE SAME DELTA, because the two
+    # differ in exactly one input: what the basis row's `tree=` says. A refusal
+    # proved against a delta the control never ran is a refusal that might have
+    # been bought by the delta.
+    CURRENT="and the SAME delta over a clean-tree bank still reuses"
+    attribute_for_reuse
+    reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
+    is "$REUSE_RC" "0" "the decision on a bank that measured its own head"
+    is "$LOOP_REUSE_TREE" "$BANKED_TREE" "the tree the reuse rests on"
+    is "$LOOP_REUSE_WHY" "" "the refusal sentence (there is none to print)"
+}
+
+case_a_docs_path_spelled_under_apps_forces_a_measure() {
+    # RENAMED 2026-09-15 to what it asserts. The old name said "a docs path a
+    # test READS", and the mechanism is wider and fail-closed: the question is
+    # whether the path is SPELLED in any module under `apps/` — the first hit
+    # wins, it need not be a test (`apps/core/integrations.py` is a real one),
+    # and a mention in a docstring refuses exactly as a real read does. A name
+    # that claims the narrower thing is a claim nothing proved.
+    reuse_checkout
+    # THE POPULATION IS DERIVED, SO THE CASE PLANTS A MEMBER OF IT. A module
+    # under `apps/` that spells the changed path is the whole refusal; the
+    # CONTROL is the case above, where nothing under `apps/` names it.
+    printf '"""Reads %s for a census."""\n' "docs/product/queue.md" \
+        >"$REPO/apps/zzz_probe/tests/test_reads_docs.py"
+    printf 'one more row\n' >>"$REPO/docs/product/queue.md"
+    git -C "$REPO" add apps docs >/dev/null
+    git -C "$REPO" commit -q -m "a docs commit under a path a test reads"
+    # The delta must be docs-only, so the module that reads it is committed in
+    # the SAME commit as the banked head's tree would have had it. Rebuild the
+    # basis on top of a head that already carries the reader.
+    BANKED_HEAD=$(git -C "$REPO" rev-parse HEAD)
+    printf 'and one more\n' >>"$REPO/docs/product/queue.md"
+    git -C "$REPO" add docs/product/queue.md >/dev/null
+    git -C "$REPO" commit -q -m "queue row rowed [docs-only]"
+    attribute_for_reuse
+    CURRENT="a docs path a module under apps/ spells refuses the reuse"
+    reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
+    is "$REUSE_RC" "1" "the decision"
+    is "$LOOP_REUSE_TREE" "" "the tree the reuse would have rested on"
+    case "$LOOP_REUSE_WHY" in
+    "docs-only delta touches a path spelled in a module under apps/: docs/product/queue.md (named in apps/zzz_probe/tests/test_reads_docs.py) — measuring")
+        ok "the refusal names the path AND the module, in the criterion's own words"
+        ;;
+    *) bad "the refusal sentence is not the one the criterion names: '${LOOP_REUSE_WHY}'" ;;
+    esac
+}
+
+case_mine_and_pr_never_reuse_on_a_docs_only_delta() {
+    # THE BELTS, READ OUT OF check.sh. `--mine` derives NO key (so it never
+    # consults, never attributes and never reaches the decision); `--pr` and the
+    # full gate never enter the `--loop` block at all. The assertion is
+    # structural because the property is: there is no second guard to get wrong.
+    CURRENT="the reuse decision is called from inside the --loop block only"
+    if awk '/^if \[ "\$MODE" = "--loop" \]; then/ { on = 1 }
+        on && /^fi$/ { on = 0 }
+        /loop_docs_only_reuse "\$LOOP_MISS_TOKEN"/ { called = 1; inloop = on }
+        END { exit (called && inloop) ? 0 : 1 }' "$ROOT/scripts/check.sh"; then
+        ok "the only call site is inside check.sh's --loop block: --pr and the full gate cannot reach it"
+    else
+        bad "loop_docs_only_reuse is called outside the --loop block, or not at all"
+    fi
+    CURRENT="--mine derives no key, so it never consults and never reuses"
+    if grep -F '[ -z "$GATE_MINE" ]; then' "$ROOT/scripts/check.sh" >/dev/null &&
+        grep -F 'LOOP_LEDGER_KEY=$(loop_ledger_key' "$ROOT/scripts/check.sh" >/dev/null; then
+        ok "the key derivation is guarded on GATE_MINE being empty — the one mechanism, unchanged"
+    else
+        bad "--mine's no-key guard is gone: the reuse would become reachable from a narrowed run"
+    fi
+    CURRENT="the reuse is decided in the MISS arm, which --mine does not enter"
+    if awk '/== the --loop ledger was NOT consulted: --mine ==/ { mine = 1; next }
+        # The --mine ARM ends at the next `elif`, which is where the MISS arm
+        # (the one that decides a reuse) begins. Clearing on anything later
+        # would read the miss arm as part of --mine and this case would be
+        # asserting the opposite of what it says.
+        /^    elif / { mine = 0 }
+        mine && /loop_docs_only_reuse/ { found = 1 }
+        END { exit found ? 1 : 0 }' "$ROOT/scripts/check.sh"; then
+        ok "the --mine arm reaches no reuse decision"
+    else
+        bad "the --mine arm can reach the reuse decision"
+    fi
+    CURRENT="the full gate's ledger section is still a different section"
+    if grep -F 'loop_ledger_record' "$ROOT/scripts/check.sh" >/dev/null &&
+        ! grep -F 'gate_ledger_record "$LOOP' "$ROOT/scripts/check.sh" >/dev/null; then
+        ok "no --loop row is ever written by, or read by, the full path"
+    else
+        bad "the two ledgers' sections have been crossed"
+    fi
+}
+
+case_loop_health_reads_a_reuse_row() {
+    # THE READOUTS READER MUST NOT CHOKE ON THE NEW CELL FORM. `loop:` cells are
+    # typed by verifiers into the round's ledger rows and read back by
+    # `scripts/loop_health.py`; a form the reader cannot parse would take the
+    # health verdict down with it, which is the one instrument that says whether
+    # the loop is working at all.
+    # THE CHECKOUT'S OWN INTERPRETER, and the skip is about THAT rather than
+    # about `python3` off PATH. `scripts/loop_health.py` is this repository's
+    # file and it uses `zip(…, strict=True)`, which a 3.9 — a verifier box's
+    # system python — refuses with `TypeError: zip() takes no keyword
+    # arguments`. A run under it would report the reader as broken.
+    if [ ! -x "$ROOT/.venv/bin/python" ]; then
+        echo "  SKIPPED  ${CURRENT:-loop_health} — this checkout has no .venv/bin/python"
+        return 0
+    fi
+    [ -f "$ROOT/docs/product/readouts.md" ] ||
+        cannot_look "docs/product/readouts.md is not in this tree — the reader has nothing to read"
+    N=$((N + 1))
+    local plain="${WORK}/readouts-plain${N}.md" marked="${WORK}/readouts-reuse${N}.md"
+    cp "$ROOT/docs/product/readouts.md" "$plain"
+    # The new cell form, planted into the board the reader actually parses.
+    {
+        cat "$plain"
+        echo
+        echo "V-ZZZ: loop: docs-only reuse of 0123456789abcdef0123456789abcdef01234567"
+    } >"$marked"
+    local rc_plain=0 rc_marked=0
+    OUT="${WORK}/loophealth-plain${N}.log"
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" scripts/loop_health.py "$plain") >"$OUT" 2>&1 || rc_plain=$?
+    OUT="${WORK}/loophealth-marked${N}.log"
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" scripts/loop_health.py "$marked") >"$OUT" 2>&1 || rc_marked=$?
+    CURRENT="loop_health reads a board carrying the new cell form"
+    is "$rc_marked" "$rc_plain" "the verdict, against the same board without the cell"
+    if grep -qE 'Traceback|CANNOT JUDGE' "$OUT"; then
+        bad "loop_health could not read the board once the new cell form was on it"
+    else
+        ok "the reader takes 'docs-only reuse of <tree>' in its stride"
+    fi
+    OUT=""
+}
+
+case_the_two_ledger_files_that_bought_a_2302s_remeasure_are_a_reuse() {
+    # V-I2's RIDER, DRIVEN. The verifier's 2302-second re-measure was bought
+    # entirely by `docs/product/in-flight.md` and the cycle plan — two files
+    # nothing under `apps/` reads. This is that exact delta, and it asserts the
+    # reuse rather than describing it.
+    reuse_checkout
+    # THE FIXTURE'S NAME IS ASSEMBLED, and the suffix is why. A literal
+    # `docs/<…>.md` anywhere in this file is a POINTER to the `dangling-docs`
+    # censuses, which ask that every one of them resolve — in the tree at every
+    # commit, and in the published ARTIFACT at release. The cycle plans are
+    # build history the artifact does not carry, and this world's plan is not a
+    # file at all; spelling either whole would be a dead pointer for the next
+    # reader. Split here, the path is only a path where it is used.
+    local plan="docs/product/cycles/the-cycle-plan"
+    mkdir -p "$REPO/docs/product/cycles"
+    echo "in flight" >"$REPO/docs/product/in-flight.md"
+    echo "the plan" >"$REPO/$plan.md"
+    git -C "$REPO" add docs >/dev/null
+    git -C "$REPO" commit -q -m "the two ledger files [docs-only]"
+    attribute_for_reuse
+    CURRENT="the delta V-I2 paid 2302 s for is a reuse"
+    reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
+    is "$REUSE_RC" "0" "the decision"
+    is "$LOOP_REUSE_N" "2" "the number of paths in the delta"
+    is "$LOOP_REUSE_TREE" "$BANKED_TREE" "the tree the reuse rests on"
+    # F1x.3's second named case, asserting its own precondition for the same
+    # reason the first does: this bank measured its head's committed tree.
+    is "$LOOP_REUSE_TREE" "$(git -C "$REPO" rev-parse "${BANKED_HEAD}^{tree}")" \
+        "the banked tree, against the banked head's committed tree"
+    # AND THE SAME TWO PATHS ON THE REAL TREE, because the population is this
+    # repository's own and a scratch checkout cannot speak for it. If a module
+    # under `apps/` ever spells either path, this case goes red and the rider's
+    # own example stops being a reuse — which is the correct outcome and the
+    # reason the assertion is here rather than in prose.
+    #
+    # THE CYCLE-PLAN PATH IS THE WORLD'S OWN FIXTURE NAME, and deliberately so:
+    # the cycle plans live in a directory the published artifact does not carry
+    # (`publish.sh`'s bucket census sets them aside), so a drive that spelled a
+    # real plan's filename would be a pointer into trimmed history for every
+    # consumer reading this file — the `dangling-docs` defect. The world above
+    # writes `$plan.md`, this census asks about `$plan.md`, and the property
+    # the case asserts is unchanged: a docs-only delta is not spelled by a
+    # module under `apps/`.
+    CURRENT="and neither path is spelled by any module under apps/ on THIS tree"
+    local hit
+    hit=$(cd "$ROOT" && grep -rlF 'docs/product/in-flight.md' apps/ --include='*.py' 2>/dev/null) || hit=""
+    is "$hit" "" "the modules naming docs/product/in-flight.md"
+    hit=$(cd "$ROOT" && grep -rlF "$plan.md" apps/ --include='*.py' 2>/dev/null) || hit=""
+    is "$hit" "" "the modules naming the cycle plan"
+}
+
+# --- the FULL ledger's legs field, which nobody read (R3's F3) ----------------
+
+#: A scratch checkout whose `scripts/check.sh` DECLARES a leg set, so
+#: `gate_full_legs` has something to read. `$1` is the declaration.
+legs_checkout() {
+    fresh_checkout
+    printf '#!/usr/bin/env bash\nFULL_LEGS=%s\n' "$1" >"$REPO/scripts/check.sh"
+    chmod +x "$REPO/scripts/check.sh"
+}
+
+#: One full-ledger row with the legs field set, planted into the scratch repo's
+#: own verdict ledger — the file `gate_ledger_path` resolves through
+#: `--git-common-dir`, so this forges nothing anywhere else.
+#:
+#: `$4` is APPENDED VERBATIM after `caller=drive`, and it is how the leak-proof
+#: cases plant a ` leak-proof=…` field (the row's last token pair) without a
+#: second plant helper that could drift from this one. Absent — every caller
+#: that existed before that field — plants exactly the row it always did.
+plant_full_row() {
+    local repo="$1" tree="$2" legs="$3" extra="${4:-}" path
+    path=$(cd "$repo" && gate_ledger_path) ||
+        cannot_look "gate_ledger_path would not answer in the scratch checkout"
+    printf 'v1 %s full 2026-09-16T00:00:00Z %s caller=drive%s\n' "$tree" "$legs" "$extra" >>"$path"
+    echo "  PLANT TOOK · full row: tree=${tree} legs=${legs}${extra}"
+}
+
+case_a_banked_row_whose_legs_do_not_cover_this_gate_is_not_honoured() {
+    # THE REVIEW'S OWN FINDING, DRIVEN. The row said which legs ran and the
+    # lookup matched tree and `full` only, so a SHORTER set was honoured
+    # exactly as a complete one. Not
+    # unsound on this tree — `check.sh` is inside the measured tree and `--leg`
+    # banks nothing — which is why nothing could reach this state without a
+    # plant, and why the plant is how it has to be shown.
+    # THE TREE IS ASSEMBLED, NEVER SPELLED — the drive's own rule, one case
+    # over: forty hex characters in a row after a `=` is a high-entropy string
+    # to every scanner in this tree, and the `--loop` secrets leg said so.
+    local tree
+    tree=$(sha40 legs-row)
+    legs_checkout "ruff,mypy,pytest-x2,selftest"
+
+    CURRENT="a row naming fewer legs than the gate declares is not a hit"
+    plant_full_row "$REPO" "$tree" "ruff,mypy"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "1" "gate_has_green on a short-legs row"
+
+    CURRENT="and the refusal says which leg the row does not cover"
+    N=$((N + 1))
+    OUT="${WORK}/shortlegs${N}.log"
+    (cd "$REPO" && gate_ledger_lookup "$tree") >"$OUT" 2>&1 || true
+    if grep -F "missing 'pytest-x2'" "$OUT" >/dev/null; then
+        ok "the note names the first leg the row does not cover"
+    else
+        bad "the lookup refused without saying what it refused for"
+    fi
+    OUT=""
+
+    CURRENT="a row naming exactly the declared set IS a hit"
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2,selftest"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "0" "gate_has_green on a complete row"
+
+    CURRENT="and a row naming MORE is a hit too — a superset is a stronger claim"
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2,selftest,something-new"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "0" "gate_has_green on a superset row"
+}
+
+case_a_checkout_with_no_gate_declares_no_leg_set_and_compares_nothing() {
+    # THE DECLARED GAP, ASSERTED SO IT IS VISIBLE RATHER THAN IMPLIED. The leg
+    # set is a property of the gate in this checkout; a directory with no
+    # `scripts/check.sh` declares none, so there is nothing to compare against
+    # and the lookup is what it always was. `scripts/tests/test_gate_lease.sh`
+    # consults exactly such a repo, with a two-leg row from before the caller
+    # field existed, and that row must go on being honoured.
+    local tree
+    tree=$(sha40 no-gate-row)
+    fresh_checkout
+    rm -f "$REPO/scripts/check.sh"
+
+    CURRENT="a checkout with no gate reads no declaration"
+    is "$(cd "$REPO" && gate_full_legs)" "" "the declared leg set"
+
+    CURRENT="so a two-leg row from the ledger's own history is still honoured"
+    plant_full_row "$REPO" "$tree" "ruff,mypy"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "0" "gate_has_green where nothing declares a leg set"
+}
+
+# --- the LEAK PROOF: written last, read as a condition on one pass ----------
+#
+# WHY THE FIELD EXISTS. Under `pm_push.sh --bank --on-boxes N` the sharded
+# `pytest-x2` unit runs ONE pass and the whole-suite two-pass leak proof runs on
+# the acceptance box (ADR gate-1, amended 2026-09-18). A row that ran one pass
+# and names `pytest-x2` is a green vouching for more than ran, so the row
+# carries the proof it stood on — `leak-proof=acceptance:<box-id> rc=<n>`, the
+# LAST field, appended exactly as `sanction=`/`waited=`/`took=` were and with
+# the schema tag unmoved — and the reader honours a `<leg>/1` member only when
+# that proof is present and green.
+#
+# `does_not_cover`, declared beside the cases rather than discovered:
+#
+#   * WHETHER THE ACCEPTANCE BOX'S PROOF WAS HONEST. A local row is a local
+#     line — the ledger's standing trust class, `scripts/gate_ledger.sh:31-33`.
+#     These cases prove that a one-pass row WITHOUT a green proof is refused,
+#     which is a different property and the only one a local file can have.
+#   * WHETHER THE BOX-ID IN THE FIELD NAMES A BOX THAT EXISTED. The grammar is
+#     checked; the instance is not looked up, here or anywhere.
+#   * THE COMPOSITION THAT SETS THE GLOBAL. `GATE_RUN_LEAK_PROOF` is written by
+#     `scripts/pm_push.sh`'s bank and read here; these cases set it by hand,
+#     so a bank that computed the wrong value would write a well-formed row
+#     saying the wrong thing and nothing below would see it.
+#   * A SECOND UNIT EVER EARNING THE ONE-PASS EXEMPTION. Which unit may run a
+#     single pass is pinned BY NAME to `pytest-x2` — ADR gate-1's amendment
+#     sanctions the sharded pytest unit alone, and a case below proves a green
+#     pytest proof buys nothing for a one-pass `selftest`. What is not covered
+#     is the day a second two-pass unit is added: that means editing the name
+#     in `gate_ledger_lookup`, and nothing here would notice it had not been.
+
+#: The last FULL row in a repo's own verdict ledger, or nothing.
+last_full_row() {
+    local repo="$1" path
+    path=$(cd "$repo" && gate_ledger_path) ||
+        cannot_look "gate_ledger_path would not answer in the scratch checkout"
+    [ -f "$path" ] || return 0
+    grep -F ' full ' "$path" | tail -1
+}
+
+#: How many FULL rows the repo's ledger holds. "Writes NOTHING" is a count, and
+#: a refusal that wrote a half-row would pass a substring assertion.
+full_row_count() {
+    local repo="$1" path n
+    path=$(cd "$repo" && gate_ledger_path) ||
+        cannot_look "gate_ledger_path would not answer in the scratch checkout"
+    [ -f "$path" ] || {
+        echo 0
+        return 0
+    }
+    n=$(grep -c -F ' full ' "$path") || n=0
+    echo "$n"
+}
+
+case_the_leak_proof_field_is_appended_last_or_the_row_is_refused() {
+    # THE WRITER (b.1). The field is LAST — after `took=` — one space-separated
+    # token pair; newlines are stripped exactly as `sanction`'s are, so a value
+    # carrying one can never become two rows; a value that does not match
+    # `acceptance:<id> rc=<digits>` is REFUSED and writes nothing, because a row
+    # nothing can parse is worse than a row that says nothing; and an empty
+    # value writes today's row, which is every row ever banked before now.
+    local tree row before after
+    tree=$(sha40 leak-proof-writer)
+    fresh_checkout
+
+    CURRENT="a well-formed proof is appended LAST, after took="
+    (cd "$REPO" && GATE_PYTEST_TOOK=7 GATE_RUN_LEAK_PROOF="acceptance:i-0123abc rc=0" \
+        gate_ledger_record "$tree" "ruff,pytest-x2/1") ||
+        bad "gate_ledger_record refused a well-formed leak proof"
+    row=$(last_full_row "$REPO")
+    case "$row" in
+    *" waited=0 took=7 leak-proof=acceptance:i-0123abc rc=0")
+        ok "the row ends ' waited=0 took=7 leak-proof=acceptance:i-0123abc rc=0'"
+        ;;
+    *) bad "the row does not end with the proof: ${row}" ;;
+    esac
+
+    CURRENT="and the row is still one line, and still a hit for its own tree"
+    is "$(full_row_count "$REPO")" "1" "the ledger's full-row count"
+    RC=0
+    (cd "$REPO" && gate_ledger_lookup "$tree" >/dev/null) 2>/dev/null || RC=$?
+    is "$RC" "0" "gate_ledger_lookup on the row it just wrote"
+
+    CURRENT="a newline in the value is stripped, never allowed to make two rows"
+    before=$(full_row_count "$REPO")
+    (cd "$REPO" && GATE_PYTEST_TOOK=7 GATE_RUN_LEAK_PROOF="acceptance:i-0123abc rc=0
+" gate_ledger_record "$tree" "ruff,pytest-x2/1") ||
+        bad "a trailing newline made the recorder refuse a well-formed proof"
+    after=$(full_row_count "$REPO")
+    is "$((after - before))" "1" "rows added by a value with a trailing newline"
+    row=$(last_full_row "$REPO")
+    case "$row" in
+    *"leak-proof=acceptance:i-0123abc rc=0")
+        ok "the stripped value is what reached the row"
+        ;;
+    *) bad "the newline reached the row or the value did not: ${row}" ;;
+    esac
+
+    CURRENT="a value whose newline would forge a second row is malformed, and refused"
+    before=$(full_row_count "$REPO")
+    N=$((N + 1))
+    OUT="${WORK}/leakproof-forge${N}.log"
+    RC=0
+    (cd "$REPO" && GATE_RUN_LEAK_PROOF="acceptance:i-0123abc rc=0
+v1 forged full 2026-09-18T00:00:00Z everything caller=nobody" \
+        gate_ledger_record "$tree" "ruff,pytest-x2/1") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "1" "gate_ledger_record's status on a value carrying a second row"
+    is "$(full_row_count "$REPO")" "$before" "the ledger's full-row count after the refusal"
+    OUT=""
+
+    CURRENT="every malformed shape is refused, writes nothing, and says so on stderr"
+    local badvalue
+    for badvalue in \
+        "i-0123abc rc=0" \
+        "acceptance:i-0123abc" \
+        "acceptance:i-0123abc rc=" \
+        "acceptance:i-0123abc rc=x" \
+        "acceptance: rc=0" \
+        "acceptance:i 0123abc rc=0" \
+        "acceptance:i-0123abc rc=0 and more" \
+        "acceptance:i-0123abc rc=00" \
+        "acceptance:i-0123abc rc=01"; do
+        # THE LAST TWO ARE THE WRITER MEETING THE READER'S GRAMMAR. The reader
+        # honours exactly `rc=0`, so a writer that took `rc=00` would bank a
+        # row whose green the reader reads as red — a disagreement neither end
+        # can flag, refused at the only end that can still fix it.
+        before=$(full_row_count "$REPO")
+        N=$((N + 1))
+        OUT="${WORK}/leakproof-bad${N}.log"
+        RC=0
+        (cd "$REPO" && GATE_RUN_LEAK_PROOF="$badvalue" \
+            gate_ledger_record "$tree" "ruff,pytest-x2/1") >"$OUT" 2>&1 || RC=$?
+        if [ "$RC" = "1" ] && [ "$(full_row_count "$REPO")" = "$before" ]; then
+            ok "'${badvalue}' → exit 1, nothing written"
+        else
+            bad "'${badvalue}' → exit ${RC}, rows ${before} → $(full_row_count "$REPO")"
+        fi
+        if grep -F "leak-proof" "$OUT" >/dev/null; then
+            ok "'${badvalue}' → the note on stderr names the field"
+        else
+            bad "'${badvalue}' → refused without saying what it refused for"
+        fi
+        OUT=""
+    done
+
+    CURRENT="an EMPTY value writes today's row — no field, byte-for-byte"
+    fresh_checkout
+    tree=$(sha40 leak-proof-empty)
+    (cd "$REPO" && GATE_PYTEST_TOOK=7 GATE_RUN_LEAK_PROOF="" \
+        gate_ledger_record "$tree" "ruff,pytest-x2") ||
+        bad "the recorder refused an empty leak proof — every row banked before this field existed carries one"
+    row=$(last_full_row "$REPO")
+    case "$row" in
+    *"leak-proof"*) bad "an empty value still wrote a field: ${row}" ;;
+    *" waited=0 took=7") ok "the row ends ' waited=0 took=7', exactly as it did before the field existed" ;;
+    *) bad "the row is not today's shape: ${row}" ;;
+    esac
+}
+
+case_a_one_pass_row_is_honoured_only_with_a_green_leak_proof() {
+    # THE READER (b.2), AND IT IS THE ONE CHANGE TO THE COVER RULE. A required
+    # leg is covered when a row member IS the leg name (today), OR when it is
+    # `<leg>/1` AND the row carries a green `leak-proof=acceptance:<id> rc=0`.
+    #
+    # THE TREE IS ASSEMBLED, NEVER SPELLED — the drive's own rule, two cases
+    # over: forty hex characters after a `=` is a high-entropy string to every
+    # scanner in this tree, and the `--loop` secrets leg said so.
+    local tree
+    legs_checkout "ruff,mypy,pytest-x2,selftest"
+
+    CURRENT="(i) a one-pass member WITH a green proof is honoured"
+    tree=$(sha40 onepass-green)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2/1,selftest" \
+        " waited=0 took=131 leak-proof=acceptance:i-0f1e2d3c rc=0"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "0" "gate_has_green on a one-pass row with a green proof"
+
+    CURRENT="(ii) a one-pass member whose proof is RED is not honoured"
+    tree=$(sha40 onepass-red)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2/1,selftest" \
+        " waited=0 took=131 leak-proof=acceptance:i-0f1e2d3c rc=1"
+    RC=0
+    N=$((N + 1))
+    OUT="${WORK}/onepass-red${N}.log"
+    (cd "$REPO" && gate_ledger_lookup "$tree") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "1" "gate_ledger_lookup on a one-pass row whose proof is red"
+    if grep -F "missing 'pytest-x2' — the row ran ONE pass and carries no green leak proof (leak-proof=acceptance:i-0f1e2d3c rc=1)" "$OUT" >/dev/null; then
+        ok "the note names the proof it refused and quotes it"
+    else
+        bad "the note does not name the red proof"
+    fi
+    OUT=""
+
+    CURRENT="(iii) a one-pass member with NO proof at all is not honoured"
+    tree=$(sha40 onepass-none)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2/1,selftest"
+    RC=0
+    N=$((N + 1))
+    OUT="${WORK}/onepass-none${N}.log"
+    (cd "$REPO" && gate_ledger_lookup "$tree") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "1" "gate_ledger_lookup on a one-pass row with no proof"
+    if grep -F "missing 'pytest-x2' — the row ran ONE pass and carries no green leak proof (leak-proof=none)" "$OUT" >/dev/null; then
+        ok "the note says the field is absent rather than implying it was read"
+    else
+        bad "the note does not say the proof is absent"
+    fi
+    OUT=""
+
+    CURRENT="(iii·b) a one-pass member whose proof is MALFORMED is not honoured"
+    tree=$(sha40 onepass-malformed)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2/1,selftest" \
+        " waited=0 took=131 leak-proof=acceptance:i-0f1e2d3c"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "1" "gate_has_green on a one-pass row whose proof will not parse"
+
+    CURRENT="(iv) today's two-pass row, with no field, is unchanged — the negative"
+    tree=$(sha40 twopass-today)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2,selftest"
+    RC=0
+    N=$((N + 1))
+    OUT="${WORK}/twopass-today${N}.log"
+    (cd "$REPO" && gate_ledger_lookup "$tree") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "gate_ledger_lookup on today's complete row"
+    if grep -F "leak-proof" "$OUT" >/dev/null; then
+        bad "a row with no proof drew a note about one"
+    else
+        ok "no note — a row that needed no proof is read exactly as it was"
+    fi
+    OUT=""
+
+    CURRENT="(v) a proof on a TWO-pass row is honoured anyway, and SAID — never silently taken"
+    tree=$(sha40 twopass-extra-proof)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2,selftest" \
+        " waited=0 took=131 leak-proof=acceptance:i-0f1e2d3c rc=1"
+    RC=0
+    N=$((N + 1))
+    OUT="${WORK}/twopass-extra${N}.log"
+    (cd "$REPO" && gate_ledger_lookup "$tree") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "gate_ledger_lookup on a two-pass row carrying an unneeded proof"
+    if grep -F "leak-proof ignored: the row ran two passes" "$OUT" >/dev/null; then
+        ok "the reader prints the field it did not need — the valve rule"
+    else
+        bad "a red proof rode along on a honoured row and nothing said so"
+    fi
+    OUT=""
+
+    CURRENT="(vi) '<leg>/2' is the leg, spelled with its pass count"
+    tree=$(sha40 twopass-spelled)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2/2,selftest"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "0" "gate_has_green on a row spelling 'pytest-x2/2'"
+
+    CURRENT="(vi·b) and a two-digit pass count is still a pass count"
+    tree=$(sha40 tenpass-spelled)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2/10,selftest"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "0" "gate_has_green on a row spelling 'pytest-x2/10'"
+
+    # THE SUFFIX IS A DECIMAL, AND A GLOB IS NOT. A `<leg>/*` pattern honours
+    # every one of these — two of which claim LESS than one pass, one of which
+    # is empty and one of which is not a pass count at all — while the rule's
+    # own prose promises "at or above the default". A cover rule wider than its
+    # sentence is a green nothing argued for, so each shape is planted and each
+    # must fall through to the generic missing-leg refusal: a member this
+    # reader cannot interpret is not a member it may honour.
+    local shape
+    for shape in "pytest-x2/0" "pytest-x2/" "pytest-x2/x" "pytest-x2/1/1"; do
+        CURRENT="(vi·c) a '${shape}' member is not a pass count and is not honoured"
+        tree=$(sha40 "suffix-${shape}")
+        plant_full_row "$REPO" "$tree" "ruff,mypy,${shape},selftest" \
+            " waited=0 took=131 leak-proof=acceptance:i-0f1e2d3c rc=0"
+        RC=0
+        N=$((N + 1))
+        OUT="${WORK}/suffix${N}.log"
+        (cd "$REPO" && gate_ledger_lookup "$tree") >"$OUT" 2>&1 || RC=$?
+        is "$RC" "1" "gate_ledger_lookup on a row whose member is '${shape}'"
+        if grep -F "missing 'pytest-x2'" "$OUT" >/dev/null; then
+            ok "'${shape}' → the note names the leg the row does not cover"
+        else
+            bad "'${shape}' → refused without naming the leg, or was honoured"
+        fi
+        OUT=""
+    done
+
+    CURRENT="(vii) ONE PASS IS SANCTIONED FOR ONE UNIT — a pytest proof does not vouch for 'selftest'"
+    # ADR gate-1's amendment bends the two-pass rule for the SHARDED PYTEST
+    # UNIT and nothing else. The acceptance box runs a whole-suite two-pass
+    # PYTEST run, so it has nothing to say about what a one-pass `selftest`
+    # left behind; a generic rule would let one leg's proof buy another leg's
+    # second pass, which is the exact claim this ledger exists to refuse.
+    tree=$(sha40 onepass-wrong-unit)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2,selftest/1" \
+        " waited=0 took=131 leak-proof=acceptance:i-0f1e2d3c rc=0"
+    RC=0
+    N=$((N + 1))
+    OUT="${WORK}/wrongunit${N}.log"
+    (cd "$REPO" && gate_ledger_lookup "$tree") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "1" "gate_ledger_lookup on a one-pass 'selftest' carrying a GREEN pytest proof"
+    if grep -F "missing 'selftest' — the row ran ONE pass of a leg that is not 'pytest-x2', and one pass is sanctioned for that unit alone" "$OUT" >/dev/null; then
+        ok "the note says WHICH unit may run one pass, rather than blaming the proof"
+    else
+        bad "a green pytest proof bought a second pass for another leg, or the note does not say why not"
+    fi
+    OUT=""
+
+    CURRENT="and a SUPERSET of the declared set still hits, proof or no proof"
+    tree=$(sha40 onepass-superset)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2/1,selftest,something-new" \
+        " waited=0 took=131 leak-proof=acceptance:i-0f1e2d3c rc=0"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "0" "gate_has_green on a one-pass superset row with a green proof"
+
+    CURRENT="and a row still SHORT of the declared set is refused as it always was"
+    tree=$(sha40 onepass-short)
+    plant_full_row "$REPO" "$tree" "ruff,mypy" \
+        " waited=0 took=131 leak-proof=acceptance:i-0f1e2d3c rc=0"
+    RC=0
+    N=$((N + 1))
+    OUT="${WORK}/onepass-short${N}.log"
+    (cd "$REPO" && gate_ledger_lookup "$tree") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "1" "gate_ledger_lookup on a short row carrying a green proof"
+    if grep -F "missing 'pytest-x2'" "$OUT" >/dev/null; then
+        ok "a green proof does not buy a leg the row never names"
+    else
+        bad "the short-row refusal lost its note"
+    fi
+    OUT=""
+}
+
+#: One DRIVE row — the ledger's second kind, third field `drive` — planted into
+#: scratch repo's own verdict ledger. Its key is handed in, so a case can make it
+#: equal a tree sha and ask whether the full belt can be made to read it.
+plant_drive_row() {
+    local repo="$1" key="$2" name="$3" path
+    path=$(cd "$repo" && gate_ledger_path) ||
+        cannot_look "gate_ledger_path would not answer in the scratch checkout"
+    printf 'v1 %s drive 2026-09-18T00:00:00Z %s exit=0 took=7 tree=%s\n' \
+        "$key" "$name" "$key" >>"$path"
+    echo "  PLANT TOOK · drive row: key=${key} name=${name}"
+}
+
+case_a_drive_row_is_never_a_full_verdict() {
+    # THE ONE FILE, AND THE ONE RULE THAT MAKES IT SAFE. The drive verdicts are a
+    # KIND in `djb-gate-verdicts` rather than opening a second file, which is the
+    # shape the partition's separate ledger argues against. The whole safety of
+    # that decision is this: `gate_ledger_lookup` matches ` <tree> full ` and a
+    # drive row's third field is `drive`, so no drive row can ever be honoured as
+    # a full verdict — not even one whose KEY is, by construction, exactly a tree
+    # sha. That is the adversarial case, and it is the only way to show the
+    # property rather than assert it.
+    local tree
+    tree=$(sha40 drive-row-not-a-full-verdict)
+    legs_checkout "ruff,mypy,pytest-x2,selftest"
+
+    CURRENT="a drive row whose key IS a tree sha is not a full verdict for that tree"
+    plant_drive_row "$REPO" "$tree" "sweep"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "1" "gate_has_green where the only row for the tree is a drive row"
+
+    CURRENT="and a real full row for the same tree still is one"
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2,selftest"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "0" "gate_has_green once a full row exists beside the drive row"
+}
+
+# --- the machine half of a drive key -----------------------------------------
+#
+# WHY IT IS HERE AND NOT IN THE SELFTEST LEG'S DRIVE. This is a property of
+# `drive_key` — one function in `scripts/gate_ledger.sh` — and it is asked of it
+# directly, with the machine planted, rather than through a leg that would have
+# to run a whole drive set to show one digest. The LEG's half (the REUSED line,
+# the ingest, the could-not-look) is `test_selftest_leg.sh`'s.
+#
+# THE DEFECT IT CLOSES, measured on main before it: the machine half was
+# `bash --version`/`git --version`/`uname -sr`, so a row banked on this laptop
+# keyed `drive-v1:088c3cc6…` and the SAME drive over the SAME inputs on a Linux
+# box keyed `drive-v1:e156a225…`. Correct — a Darwin verdict is not a Linux
+# verdict — and it also meant a fresh verifier box arrived with an empty ledger
+# and re-drove all thirty drives, every bank. Two boxes cut from ONE IMAGE are
+# the same machine in every way this key cares about; the image id is one token
+# that says so, and it is a stronger claim than three version strings rather
+# than a weaker one.
+case_the_machine_half_is_the_image_on_a_box_and_the_host_elsewhere() {
+    local dir="${WORK}/machine-half"
+    rm -rf "$dir"
+    mkdir -p "$dir/set" "$dir/shim"
+
+    # A SCRATCH DRIVE SET AND A FABRICATED LISTING, so the only thing that moves
+    # between the arms below is the machine. The declared path is one this tree
+    # really has, and the listing is the three fields `git ls-tree -r` prints.
+    printf '# a scratch drive set preamble — never sourced, always keyed\n' \
+        >"$dir/set/drive_preamble.sh"
+    printf '#!/bin/sh\n# drives: scripts/gate_ledger.sh\nexit 0\n' \
+        >"$dir/set/test_machinehalf.sh"
+    printf '100644 blob %s\tscripts/gate_ledger.sh\n' "$(sha40 machine-half-blob)" \
+        >"$dir/listing"
+
+    # A `bash` THAT ANSWERS A DIFFERENT VERSION, on PATH and nothing else. It is
+    # what makes "two boxes of one image agree" a claim rather than a tautology:
+    # without it the two arms would be the same machine twice.
+    printf '#!/bin/sh\necho "GNU bash, version 9.9.9(1)-release"\n' >"$dir/shim/bash"
+    chmod +x "$dir/shim/bash"
+
+    printf 'ami-0aaaa1111aaaa1111\n' >"$dir/image-a"
+    printf 'ami-0bbbb2222bbbb2222\n' >"$dir/image-b"
+
+    # "NO MACHINE FILE" IS PLANTED TOO, AND THAT IS NOT BELT-AND-BRACES. This
+    # drive runs on a verifier box as well as on a laptop, and a box HAS
+    # `/etc/djb/image-id` — so an arm that meant "the host digest" by simply
+    # not setting the seam measured the box's own image there and the case
+    # failed on the one machine the mechanism is for. It paid for itself on the
+    # first box run: two arms red, for the drive's assumption and not the code's.
+    : >"$dir/absent-marker"
+    rm -f "$dir/absent-marker"
+
+    # EVERY ARM IN ITS OWN SUBSHELL WITH THE MEMO UNSET. `drive_machine_digest`
+    # memoises through the ENVIRONMENT so a leg pays one read; a case that
+    # planted a second machine in the same shell would be reading the first
+    # one's answer and would pass whatever the code did.
+    keyof() {
+        (
+            unset DRIVE_MACHINE_DIGEST DRIVE_MACHINE_LABEL
+            export DJB_DRIVE_MACHINE_FILE="${1:-$dir/absent-marker}"
+            [ -z "${2:-}" ] || export PATH="$2:$PATH"
+            drive_key "$dir/set/test_machinehalf.sh" fake-tree "$dir/listing" 2>&1
+        )
+    }
+
+    local host_out imga_out imga_shim_out imgb_out
+    host_out="$(keyof "" "")"
+    imga_out="$(keyof "$dir/image-a" "")"
+    imga_shim_out="$(keyof "$dir/image-a" "$dir/shim")"
+    imgb_out="$(keyof "$dir/image-b" "")"
+
+    local host_key imga_key imga_shim_key imgb_key
+    host_key="$(printf '%s\n' "$host_out" | awk '{print $2}')"
+    imga_key="$(printf '%s\n' "$imga_out" | awk '{print $2}')"
+    imga_shim_key="$(printf '%s\n' "$imga_shim_out" | awk '{print $2}')"
+    imgb_key="$(printf '%s\n' "$imgb_out" | awk '{print $2}')"
+
+    CURRENT="a planted image-id is the machine half"
+    case "$imga_out" in
+    "ok drive-v1:"*" machine=image:ami-0aaaa1111aaaa1111") ok "the key line ends \`machine=image:<ami>\`" ;;
+    *) bad "the key line does not name the image: ${imga_out}" ;;
+    esac
+
+    CURRENT="and with no machine file the label is the host"
+    case "$host_out" in
+    "ok drive-v1:"*" machine=host:"*) ok "the key line ends \`machine=host:<12 hex>\`" ;;
+    *) bad "the key line does not name the host: ${host_out}" ;;
+    esac
+
+    CURRENT="two boxes of ONE image share a key"
+    same "$imga_key" "$imga_shim_key" \
+        "the same image id under a different \`bash --version\` keys identically"
+
+    CURRENT="two images never do"
+    differs "$imga_key" "$imgb_key" "a different ami is a different key"
+
+    CURRENT="and a box never shares a key with this laptop"
+    differs "$imga_key" "$host_key" "the image key and the host key"
+    differs "$imgb_key" "$host_key" "the other image key and the host key"
+
+    # THE CANARY. A drive that only asserted the three equalities above would
+    # still be green if the machine half stopped being in the key at all — the
+    # arms would agree for the wrong reason. This is the plant that fires.
+    CURRENT="the machine half is IN the key at all"
+    local shim_only_key
+    shim_only_key="$(printf '%s\n' "$(keyof "" "$dir/shim")" | awk '{print $2}')"
+    differs "$host_key" "$shim_only_key" \
+        "with NO machine file, a different \`bash --version\` still re-keys — the host digest is live"
+
+    CURRENT="an unreadable machine file cannot key"
+    printf 'ami-0cccc3333cccc3333\n' >"$dir/image-locked"
+    chmod 000 "$dir/image-locked"
+    local locked_out locked_rc=0
+    locked_out="$(keyof "$dir/image-locked" "")" || locked_rc=$?
+    chmod 644 "$dir/image-locked"
+    is "$locked_rc" "1" "drive_key's status over a machine file it cannot read"
+    case "$locked_out" in
+    "err this machine could not be digested"*)
+        ok "and it says so — never the host key, which would be a Mac row and a box row under one label"
+        ;;
+    *) bad "an unreadable machine file did not refuse: ${locked_out}" ;;
+    esac
+
+    CURRENT="a RELATIVE machine file is refused, like DJB_GATE_LEDGER"
+    local rel_out rel_rc=0
+    rel_out="$(keyof "not/absolute/image-id" "")" || rel_rc=$?
+    is "$rel_rc" "1" "drive_key's status over a relative DJB_DRIVE_MACHINE_FILE"
+    case "$rel_out" in
+    *"is relative — refusing it"*)
+        ok "and the note names the variable and the value"
+        ;;
+    *) bad "a relative machine file was not refused by name: ${rel_out}" ;;
+    esac
+
+    unset -f keyof
+}
+
+case_the_declaration_is_read_from_check_sh_and_not_kept_here() {
+    # THE POPULATION IS THE GATE'S OWN LINE. A drive that typed the leg set
+    # would be the second list this whole file exists to refuse, and it would
+    # pass on the day a leg was added and assert nothing ever after.
+    CURRENT="gate_full_legs reads this repository's own FULL_LEGS assignment"
+    local declared shipped
+    declared=$(cd "$ROOT" && gate_full_legs)
+    shipped=$(sed -n 's/^FULL_LEGS=//p' "$ROOT/scripts/check.sh")
+    shipped=${shipped%%$'\n'*}
+    is "$declared" "$shipped" "the declaration, against check.sh's own line"
+    if [ -n "$declared" ]; then
+        ok "and it is not empty on this tree, so the comparison is live here"
+    else
+        bad "check.sh declares no FULL_LEGS — the comparison is inert in the repository that owns it"
+    fi
+
+    CURRENT="and the verdict for THIS repository's own rows is unaffected by it"
+    # Every row this gate writes carries `$FULL_LEGS` verbatim
+    # (`scripts/check.sh`'s one `gate_ledger_record` call), so the comparison
+    # can only ever refuse a row this gate did not write.
+    if grep -F 'gate_ledger_record "$MEASURED_START" "$FULL_LEGS"' "$ROOT/scripts/check.sh" >/dev/null; then
+        ok "the only recorder passes the same declaration the lookup compares against"
+    else
+        bad "the recorder no longer writes FULL_LEGS — a row this gate writes could now fail its own comparison"
+    fi
+}
+
+# --- the belt that consults the FULL ledger: the pre-push hook ----------------
+#
+# R3's F4, and it is the one case in this file about the FULL verdict ledger
+# rather than the loop's. It lives here because the two ledgers are one file and
+# one set of properties — `gate_has_green` is the consult both belts make — and
+# because the alternative was a new drive, which is a `check.sh` registration
+# and an instruments row for four cases about a thirty-line hook.
+#
+# THE DEFECT. `scripts/githooks/pre-push` ignored stdin and consulted the
+# verdict for the local WORKING TREE, so from a green-banked `main`,
+# `git push <remote> <unmeasured-red-branch>` printed "already measured green …
+# verdict honoured" and pushed. `scripts/pm_push.sh` was safe by coincidence
+# rather than by construction: its `pm-push` worktree is detached to the SHA it
+# pushes, so the two trees happened to agree, and nothing bound them.
+#
+# THE WORLD IS BUILT, NEVER FOUND. Every case below runs in a throwaway repo
+# with a scratch remote and its OWN verdict ledger (`gate_ledger_path` resolves
+# through `--git-common-dir`, so the scratch repo's `.git` is the ledger), and
+# the gate it would run is a STUB that prints a marker and exits 0 — the drive
+# must be able to tell "it measured" from "it honoured a verdict" without
+# spending eight minutes, and a real `./scripts/check.sh` inside a drive is
+# refused by the per-checkout lock anyway.
+#
+# `does_not_cover`, declared with the fix (R3's F4x.4):
+#
+#   * FORCE PUSHES. `--force` changes what the push OVERWRITES, never what it
+#     carries: the tree being pushed is the same tree either way, and this hook
+#     vouches for what is carried. What a force push destroys on the remote is a
+#     different question and no local verdict has ever spoken to it.
+#   * MULTI-REF PUSHES ARE HANDLED, NOT DECLARED — every pushed tree must be
+#     measured green or the hook does not honour — but the CASE below drives two
+#     refs, not N, and the interaction with a partial push failure (some refs
+#     accepted, some rejected by the remote) is after this hook's time and is
+#     not covered.
+#   * WHETHER THE VERDICT WAS HONEST. This is the ledger's standing trust class,
+#     one belt over: a row is a local line an agent could write, and the hook
+#     asks whether a row EXISTS for the tree being pushed, never whether the run
+#     that wrote it was sound.
+#   * THE REMOTE'S OWN STATE. A tree measured green here may be a merge that has
+#     never existed anywhere; CI re-runs from a fresh checkout for that reason.
+
+#: A throwaway repo with a scratch remote, a stub gate, the real hook and the
+#: real ledger library. Sets PUSH_WORK (the pushing checkout), PUSH_REMOTE and
+#: PUSH_MAIN_SHA.
+#:
+#: `PUSH_HOOK` overrides which hook is installed, and it exists for ONE use: a
+#: red-first measurement against a hook read out of history —
+#: `PUSH_HOOK=$(...shipped copy...) ./scripts/tests/test_loop_ledger.sh` runs the
+#: whole section against the old bytes, where the canary below goes red and the
+#: three negatives stay green. That is the shape a red-first claim is supposed
+#: to have, and it is cheaper than a second script that would drift from this one.
+PUSH_WORK=""
+PUSH_REMOTE=""
+PUSH_MAIN_SHA=""
+push_world() {
+    N=$((N + 1))
+    local base="${WORK}/push${N}"
+    PUSH_WORK="${base}/work"
+    PUSH_REMOTE="${base}/origin.git"
+    drive_require_scratch PUSH_WORK "${PUSH_WORK:-}"
+    drive_require_scratch PUSH_REMOTE "${PUSH_REMOTE:-}"
+    mkdir -p "$PUSH_WORK/scripts/githooks"
+    git init -q --bare "$PUSH_REMOTE"
+    git -C "$PUSH_WORK" init -q 2>/dev/null || git init -q "$PUSH_WORK"
+    git -C "$PUSH_WORK" symbolic-ref HEAD refs/heads/main
+    git -C "$PUSH_WORK" config user.email drive@example.invalid
+    git -C "$PUSH_WORK" config user.name "pre-push drive"
+    git -C "$PUSH_WORK" config core.hooksPath scripts/githooks
+    git -C "$PUSH_WORK" remote add origin "$PUSH_REMOTE"
+    cp "$ROOT/scripts/gate_ledger.sh" "$PUSH_WORK/scripts/gate_ledger.sh"
+    cp "$ROOT/scripts/gate_refuse.sh" "$PUSH_WORK/scripts/gate_refuse.sh"
+    cp "${PUSH_HOOK:-$ROOT/scripts/githooks/pre-push}" "$PUSH_WORK/scripts/githooks/pre-push"
+    chmod +x "$PUSH_WORK/scripts/githooks/pre-push"
+    # THE STUB GATE. It is the observable difference between "honoured" and
+    # "measured", and it is why this drive can exist at all.
+    printf '#!/usr/bin/env bash\necho "STUB GATE RAN"\nexit 0\n' \
+        >"$PUSH_WORK/scripts/check.sh"
+    chmod +x "$PUSH_WORK/scripts/check.sh"
+    echo "the measured content" >"$PUSH_WORK/README.md"
+    git -C "$PUSH_WORK" add -A >/dev/null
+    git -C "$PUSH_WORK" commit -q -m "main, and this is the tree the gate measured"
+    PUSH_MAIN_SHA=$(git -C "$PUSH_WORK" rev-parse HEAD)
+    # BANK A GREEN VERDICT FOR MAIN'S TREE, through the real recorder in the
+    # scratch repo, so the row is shaped exactly as a full gate writes one.
+    (cd "$PUSH_WORK" && gate_ledger_record "$(git rev-parse "${PUSH_MAIN_SHA}^{tree}")" "drive-legs") ||
+        cannot_look "gate_ledger_record would not write into the scratch repo's ledger"
+    echo "  PLANT TOOK · scratch remote + a green verdict for main $(git -C "$PUSH_WORK" rev-parse --short HEAD)"
+}
+
+#: A branch whose tree NO verdict names. Returns with PUSH_RED_SHA set.
+PUSH_RED_SHA=""
+push_unmeasured_branch() {
+    local name="${1:-red}"
+    git -C "$PUSH_WORK" checkout -q -b "$name"
+    printf 'a test that has never been run\n' >"$PUSH_WORK/RED.md"
+    git -C "$PUSH_WORK" add RED.md >/dev/null
+    git -C "$PUSH_WORK" commit -q -m "bytes no gate has measured"
+    PUSH_RED_SHA=$(git -C "$PUSH_WORK" rev-parse HEAD)
+    git -C "$PUSH_WORK" checkout -q main
+}
+
+case_a_push_of_a_ref_that_is_not_the_measured_tree_is_not_honoured() {
+    # THE CANARY. On the shipped hook this case is RED in exactly the shape R3
+    # reported: the working tree is green-banked `main`, the ref carries bytes
+    # nothing measured, and the hook says "verdict honoured".
+    push_world
+    push_unmeasured_branch
+    N=$((N + 1))
+    OUT="${WORK}/prepush-red${N}.log"
+    RC=0
+    git -C "$PUSH_WORK" push origin "${PUSH_RED_SHA}:refs/heads/red" >"$OUT" 2>&1 || RC=$?
+
+    CURRENT="a push whose ref is not the tree this checkout measured is refused"
+    if grep -F "verdict honoured" "$OUT" >/dev/null; then
+        bad "the hook honoured main's verdict for a ref main's verdict never measured"
+    else
+        ok "the hook did not hand the working tree's verdict to another ref"
+    fi
+    if grep -F "REFUSED — the ref being pushed is not the tree in this checkout" "$OUT" >/dev/null; then
+        ok "the refusal names the mismatch"
+    else
+        bad "the hook neither refused nor named the mismatch"
+    fi
+    is "$RC" "1" "the push's exit status"
+    CURRENT="and the unmeasured ref did not reach the remote"
+    RC=0
+    git -C "$PUSH_REMOTE" rev-parse -q --verify refs/heads/red >/dev/null 2>&1 || RC=$?
+    is "$RC" "1" "the remote's lookup of the ref that was refused"
+    OUT=""
+}
+
+case_pm_pushs_detached_sha_push_is_honoured_in_seconds() {
+    # THE NEGATIVE, AND IT IS THE SHAPE THE RITUAL ACTUALLY USES.
+    # `scripts/pm_push.sh` ends with `git -C "$PM_PUSH" push <remote>
+    # <SHA>:refs/heads/<branch>` from a worktree DETACHED to that SHA. The hook
+    # must honour the banked verdict there, and must not run a gate — which the
+    # stub makes visible rather than inferable.
+    push_world
+    local wt="${WORK}/pmpush${N}"
+    drive_require_scratch wt "${wt:-}"
+    git -C "$PUSH_WORK" worktree add -q --detach "$wt" "$PUSH_MAIN_SHA" ||
+        cannot_look "git worktree add refused in the scratch repo"
+    N=$((N + 1))
+    OUT="${WORK}/prepush-pm${N}.log"
+    RC=0
+    git -C "$wt" push origin "${PUSH_MAIN_SHA}:refs/heads/shipped" >"$OUT" 2>&1 || RC=$?
+
+    CURRENT="pm_push's detached-SHA push honours the banked verdict"
+    is "$RC" "0" "the push's exit status"
+    if grep -F "verdict honoured" "$OUT" >/dev/null; then
+        ok "the hook honoured the verdict for the tree being pushed"
+    else
+        bad "the ritual's own push no longer honours a banked verdict"
+    fi
+    if grep -F "STUB GATE RAN" "$OUT" >/dev/null; then
+        bad "the hook ran a gate on a tree that already had a verdict"
+    else
+        ok "no gate ran — the consult is the whole cost"
+    fi
+    CURRENT="and the ref reached the remote"
+    is "$(git -C "$PUSH_REMOTE" rev-parse refs/heads/shipped)" "$PUSH_MAIN_SHA" "the remote's tip"
+    git -C "$PUSH_WORK" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    OUT=""
+}
+
+case_an_ordinary_push_of_the_measured_branch_is_honoured() {
+    push_world
+    N=$((N + 1))
+    OUT="${WORK}/prepush-plain${N}.log"
+    RC=0
+    git -C "$PUSH_WORK" push origin main >"$OUT" 2>&1 || RC=$?
+    CURRENT="pushing the branch this checkout IS still honours the verdict"
+    is "$RC" "0" "the push's exit status"
+    if grep -F "verdict honoured" "$OUT" >/dev/null; then
+        ok "the everyday push is unchanged and still costs a lookup"
+    else
+        bad "the everyday push stopped honouring its own verdict: $(sed -n '1,3p' "$OUT")"
+    fi
+    OUT=""
+}
+
+case_a_multi_ref_push_is_vouched_for_only_when_every_tree_is_measured() {
+    # ONE GREEN AMONG SEVERAL IS ONE GREEN AMONG SEVERAL. The mixed push carries
+    # a measured ref and an unmeasured one; the hook may not let the pair
+    # through on the strength of the first.
+    push_world
+    push_unmeasured_branch
+    N=$((N + 1))
+    OUT="${WORK}/prepush-multi${N}.log"
+    RC=0
+    git -C "$PUSH_WORK" push origin \
+        "${PUSH_MAIN_SHA}:refs/heads/one" "${PUSH_RED_SHA}:refs/heads/two" >"$OUT" 2>&1 || RC=$?
+    CURRENT="a push carrying one measured and one unmeasured tree is not honoured"
+    is "$RC" "1" "the push's exit status"
+    if grep -F "verdict honoured" "$OUT" >/dev/null; then
+        bad "the hook honoured a mixed push on the strength of the measured half"
+    else
+        ok "the measured half did not vouch for the unmeasured one"
+    fi
+    CURRENT="and neither ref reached the remote"
+    RC=0
+    git -C "$PUSH_REMOTE" rev-parse -q --verify refs/heads/one >/dev/null 2>&1 || RC=$?
+    is "$RC" "1" "the remote's lookup of the measured half"
+    OUT=""
+}
+
+case_a_deletion_carries_no_tree_and_falls_back_to_the_working_tree() {
+    # A DELETE IS AN ALL-ZERO LOCAL SHA: nothing is being pushed, so there is no
+    # tree to vouch for, and the hook says which subject it fell back to rather
+    # than implying the stronger claim.
+    push_world
+    # NOT `main`: a bare repository's HEAD points at it, and `receive.denyDeleteCurrent`
+    # refuses the deletion at the REMOTE — which is the remote's own policy and
+    # not this hook's answer. Measured while writing this case; the first draft
+    # read git's refusal as the hook's.
+    git -C "$PUSH_WORK" push -q origin "main:refs/heads/scratch" >/dev/null 2>&1 ||
+        cannot_look "the scratch remote would not take the first push"
+    N=$((N + 1))
+    OUT="${WORK}/prepush-delete${N}.log"
+    RC=0
+    git -C "$PUSH_WORK" push origin :refs/heads/scratch >"$OUT" 2>&1 || RC=$?
+    CURRENT="a deletion-only push names the working tree as its subject"
+    is "$RC" "0" "the push's exit status"
+    if grep -F "no refs on stdin — consulting the verdict for the WORKING tree" "$OUT" >/dev/null; then
+        ok "the hook says which subject it consulted"
+    else
+        bad "a deletion-only push did not name its subject: $(sed -n '1,3p' "$OUT")"
+    fi
+    OUT=""
+}
+
+#: `push_world`, then a stub gate that DECLARES a leg set — committed, so the
+#: tree moves and the cover rule has something to compare against. `push_world`
+#: alone ships a gate with no `FULL_LEGS=` line, which is a checkout that
+#: declares no leg set and therefore compares nothing (the case two sections
+#: up); the wall cases need the comparison to be live. Sets WALL_TREE and
+#: re-points PUSH_MAIN_SHA at the new commit.
+WALL_TREE=""
+wall_world_with_a_declared_leg_set() {
+    push_world
+    printf '#!/usr/bin/env bash\nFULL_LEGS=ruff,pytest-x2\necho "STUB GATE RAN"\nexit 0\n' \
+        >"$PUSH_WORK/scripts/check.sh"
+    chmod +x "$PUSH_WORK/scripts/check.sh"
+    git -C "$PUSH_WORK" add scripts/check.sh >/dev/null
+    git -C "$PUSH_WORK" commit -q -m "a stub gate that declares the leg set it would run"
+    PUSH_MAIN_SHA=$(git -C "$PUSH_WORK" rev-parse HEAD)
+    WALL_TREE=$(git -C "$PUSH_WORK" rev-parse "${PUSH_MAIN_SHA}^{tree}")
+    echo "  PLANT TOOK · a gate declaring 'ruff,pytest-x2', and a tree no row names yet"
+}
+
+#: One push of the declared-leg-set world's `main` at a fresh remote ref, so
+#: every plant meets the hook (a second push of the same ref is "up to date"
+#: and the hook never runs). Leaves the transcript in OUT.
+wall_push() {
+    N=$((N + 1))
+    OUT="${WORK}/prepush-wall${N}.log"
+    RC=0
+    git -C "$PUSH_WORK" push origin "main:refs/heads/wall${N}" >"$OUT" 2>&1 || RC=$?
+}
+
+case_the_wall_refuses_a_one_pass_row_without_its_proof() {
+    # THE READER'S RULE THROUGH THE REAL HOOK. `scripts/githooks/
+    # pre-push` needs NO edit for any of this: it consults `gate_has_green`,
+    # and the refusal is `gate_ledger_lookup`'s. That is the claim this case
+    # exists to hold — if the hook ever has to learn about passes or proofs,
+    # this case is where it will be noticed.
+    #
+    # The observable difference between "honoured" and "measured" is the STUB
+    # GATE, exactly as in the four cases above: a wall that honoured spends a
+    # lookup, a wall that measured runs a gate.
+
+    CURRENT="(i) a one-pass row WITH a green proof is honoured at the wall, in seconds"
+    wall_world_with_a_declared_leg_set
+    plant_full_row "$PUSH_WORK" "$WALL_TREE" "ruff,pytest-x2/1" \
+        " waited=0 took=131 leak-proof=acceptance:i-0f1e2d3c rc=0"
+    wall_push
+    is "$RC" "0" "the push's exit status"
+    if grep -F "pre-push: wall honoured" "$OUT" >/dev/null; then
+        ok "the wall honoured a row that ran one pass and proved it"
+    else
+        bad "the wall did not honour a one-pass row carrying a green leak proof"
+    fi
+    if grep -F "STUB GATE RAN" "$OUT" >/dev/null; then
+        bad "the hook ran a gate on a tree whose row was honourable"
+    else
+        ok "no gate ran — the consult is the whole cost"
+    fi
+    OUT=""
+
+    CURRENT="(ii) the same row with a RED proof measures, and the note says why"
+    wall_world_with_a_declared_leg_set
+    plant_full_row "$PUSH_WORK" "$WALL_TREE" "ruff,pytest-x2/1" \
+        " waited=0 took=131 leak-proof=acceptance:i-0f1e2d3c rc=1"
+    wall_push
+    if grep -F "pre-push: wall measuring" "$OUT" >/dev/null; then
+        ok "the wall measured rather than honouring a one-pass row with a red proof"
+    else
+        bad "the wall did not measure a row whose leak proof was red"
+    fi
+    if grep -F "missing 'pytest-x2' — the row ran ONE pass and carries no green leak proof (leak-proof=acceptance:i-0f1e2d3c rc=1)" "$OUT" >/dev/null; then
+        ok "the lookup's note reached the hook's stderr, naming the proof"
+    else
+        bad "the hook refused the row without the note that says which proof it read"
+    fi
+    if grep -F "STUB GATE RAN" "$OUT" >/dev/null; then
+        ok "the gate ran once — the wall fell back to measuring"
+    else
+        bad "the wall neither honoured nor measured"
+    fi
+    OUT=""
+
+    CURRENT="(iii) a one-pass row with NO proof measures, and the note says it is absent"
+    wall_world_with_a_declared_leg_set
+    plant_full_row "$PUSH_WORK" "$WALL_TREE" "ruff,pytest-x2/1"
+    wall_push
+    if grep -F "pre-push: wall measuring" "$OUT" >/dev/null; then
+        ok "a one-pass row with nothing standing behind it is not a verdict"
+    else
+        bad "the wall honoured a one-pass row carrying no proof at all"
+    fi
+    if grep -F "missing 'pytest-x2' — the row ran ONE pass and carries no green leak proof (leak-proof=none)" "$OUT" >/dev/null; then
+        ok "the note reached the hook and said the field is absent"
+    else
+        bad "the hook's stderr does not carry the absent-proof note"
+    fi
+    if grep -F "STUB GATE RAN" "$OUT" >/dev/null; then
+        ok "the gate ran once"
+    else
+        bad "the wall neither honoured nor measured"
+    fi
+    OUT=""
+
+    CURRENT="(iv) today's two-pass row is honoured at the wall exactly as it was"
+    wall_world_with_a_declared_leg_set
+    plant_full_row "$PUSH_WORK" "$WALL_TREE" "ruff,pytest-x2"
+    wall_push
+    is "$RC" "0" "the push's exit status"
+    if grep -F "pre-push: wall honoured" "$OUT" >/dev/null; then
+        ok "the negative holds — nothing about a row without the field moved"
+    else
+        bad "a row shaped exactly as every row banked before this field existed stopped being honoured"
+    fi
+    OUT=""
+
+    CURRENT="and the hook itself learned nothing about passes or proofs"
+    # THE PATTERN IS THE TWO SPELLINGS AND NOT THE ENGLISH WORD. The hook's own
+    # first line says a measured green "passes in ~2s"; a bare `passes` here
+    # reds on prose that predates the leak-proof field by months, which is a case failing for
+    # the wrong reason. What must not appear is the FIELD and the SEAM.
+    #
+    # AND A GREP THAT COULD NOT LOOK IS NOT A GREP THAT FOUND NOTHING. An
+    # absent or unreadable hook makes `grep` exit 1 exactly as a clean one
+    # does, so the assertion below would print `ok` about a file it never
+    # opened — the silent-pass shape this whole drive is written against.
+    local hook="$ROOT/scripts/githooks/pre-push"
+    [ -r "$hook" ] ||
+        cannot_look "scripts/githooks/pre-push is not readable — the wall's own bytes cannot be asserted"
+    if grep -E 'leak-proof|--passes|pytest-x2' "$hook" >/dev/null; then
+        bad "scripts/githooks/pre-push now spells the proof — the refusal was supposed to stay the lookup's"
+    else
+        ok "the hook still only asks gate_has_green; the rule lives in one reader"
+    fi
+}
+
+# --- the machine's own spelling of SHA-256 -----------------------------------
+#
+# A PATH WITH NO `shasum` ON IT, BUILT RATHER THAN IMAGINED. `shasum -a 256` is
+# a Perl script macOS ships and a minimal Linux does not; that Linux spells the
+# same digest `sha256sum`. Every digest in this family was written on a Mac, and
+# the first off-box gate run printed `shasum: command not found` at
+# `scripts/loop_tier.sh`, censused zero installed distributions, derived no key
+# and banked nothing — a verdict cache that could not key itself on a machine
+# where nothing was wrong except the name of a program.
+#
+# THE SHIM IS A DIRECTORY OF SYMLINKS AND IT IS THE WHOLE PATH, not a prefix:
+# `command -v shasum` has to FAIL, and a prefix cannot hide what is behind it.
+# So the names these functions actually use are linked in one by one and
+# `shasum` is the one that is not. A tool this list forgot is a case that fails
+# for the wrong reason, which is why the shim asserts its own contents before a
+# single assertion is made.
+digest_shim_path() {
+    local dir="$1" name found d
+    mkdir -p "$dir"
+    # THE SEARCH IS OVER FIXED DIRECTORIES, not over `command -v`: this drive
+    # is bash and the interactive shell that debugs it may not be, and zsh
+    # answers `command -v find` with the word `find` where it carries a
+    # function of that name — which links a shim to itself.
+    for name in awk sed sort find tr cat cut head git env mktemp rm stat comm \
+        grep basename dirname date uname xargs wc printf ls sh bash perl \
+        sha256sum; do
+        found=""
+        for d in /usr/bin /bin /usr/sbin /sbin /opt/homebrew/bin /usr/local/bin; do
+            if [ -x "$d/$name" ]; then
+                found="$d/$name"
+                break
+            fi
+        done
+        [ -n "$found" ] || continue
+        ln -sf "$found" "$dir/$name"
+    done
+    [ -x "$dir/sha256sum" ] ||
+        cannot_look "this machine has no 'sha256sum' anywhere on the standard paths, so the
+   branch a Linux box takes cannot be driven here at all"
+    for name in awk sed sort find git grep; do
+        [ -x "$dir/$name" ] ||
+            cannot_look "the digest shim could not link '$name' — the case would fail for that
+   and be read as the digest's failure"
+    done
+    [ ! -e "$dir/shasum" ] || cannot_look "the digest shim linked 'shasum', which is the one name it exists to withhold"
+    printf '%s\n' "$dir"
+}
+
+case_the_ledgers_digest_is_the_same_where_only_sha256sum_exists() {
+    fresh_checkout
+    local shim normal shadowed nf sf
+    shim="$(digest_shim_path "${WORK}/shim${N}")" || return 0
+
+    CURRENT="the loop ledger's digest on a machine with no shasum"
+
+    # THE PRECONDITION, ASSERTED AND NOT ASSUMED: under the shim `shasum` is
+    # gone and `sha256sum` answers, which is Amazon Linux 2023's shape.
+    if in_repo "$REPO" env PATH="$shim" bash -c 'command -v shasum >/dev/null 2>&1'; then
+        bad "the shim PATH still resolves shasum — nothing below is about the fallback"
+        return 0
+    fi
+    ok "the shim PATH resolves no shasum and does resolve sha256sum"
+
+    # THE FINGERPRINT — the value the box could not derive at all.
+    normal="$(in_repo "$REPO" loop_env_fingerprint 2>/dev/null || true)"
+    shadowed="$(in_repo "$REPO" env PATH="$shim" bash -c '. '"$ROOT"'/scripts/gate_ledger.sh && loop_env_fingerprint' 2>/dev/null || true)"
+    case "$normal" in
+    [0-9a-f]*) ok "the fingerprint derives with shasum present (${normal:0:12}…)" ;;
+    *) bad "the fingerprint did not derive with the ordinary PATH: '${normal}'" ;;
+    esac
+    is "$shadowed" "$normal" "the fingerprint with shasum shadowed off PATH is the SAME key"
+
+    # AND THE HELPER ITSELF, both branches, against this drive's own reference
+    # digest rather than against the library's.
+    printf 'one line of it\n' >"${WORK}/digest-subject${N}"
+    nf="$(in_repo "$REPO" sha256_of "${WORK}/digest-subject${N}" || true)"
+    sf="$(in_repo "$REPO" env PATH="$shim" bash -c '. '"$ROOT"'/scripts/gate_refuse.sh && sha256_of "$1"' _ "${WORK}/digest-subject${N}" || true)"
+    is "$nf" "$(hex64 'one line of it
+')" "sha256_of over a file is the digest of its bytes"
+    is "$sf" "$nf" "sha256_of over the same file with only sha256sum present"
+
+    # NEITHER TOOL IS COULD-NOT-LOOK, never an empty answer wearing a digest's
+    # name: an empty component in a key is a key that vouches for nothing.
+    local empty_dir="${WORK}/no-digest-tool${N}" out rc=0
+    mkdir -p "$empty_dir"
+    ln -sf "$shim/bash" "$empty_dir/bash" 2>/dev/null || true
+    out="$(in_repo "$REPO" env PATH="$empty_dir" bash -c '. '"$ROOT"'/scripts/gate_refuse.sh && sha256_of "$1"' _ "${WORK}/digest-subject${N}" 2>/dev/null)" || rc=$?
+    is "$rc" "1" "sha256_of with NEITHER tool on PATH exits 1"
+    is "$out" "" "and prints nothing that could be mistaken for a digest"
+}
+
+case_no_site_in_this_family_spells_a_digest_tool_by_hand() {
+    CURRENT="every digest in the gate family goes through the one helper"
+    local f offenders=""
+    for f in scripts/gate_ledger.sh scripts/loop_tier.sh scripts/publish.sh \
+        scripts/check.sh scripts/docs_legs.sh scripts/archaeology_lib.sh \
+        scripts/secrets_scan.sh; do
+        [ -f "$ROOT/$f" ] || continue
+        # COMMENTS AND QUOTED RUNS STRIPPED, because these files both argue
+        # about the tools by name and NAME them in a refusal's remedy text —
+        # and neither is a call. What survives the two `sed`s is unquoted
+        # command text, which is the only place a digest can actually run.
+        # DECLARED BLIND SPOT, taken where it is paid: a call hidden inside a
+        # quoted string (`bash -c "… | sha256sum"`) is stripped with the
+        # remedy text and would not be seen here.
+        if sed -e 's/#.*//' -e "s/'[^']*'//g" -e 's/"[^"]*"//g' "$ROOT/$f" |
+            grep -nE 'shasum|sha256sum' >/dev/null; then
+            offenders="${offenders} ${f}"
+        fi
+    done
+    if [ -z "$offenders" ]; then
+        ok "no bare shasum/sha256sum call in the seven files that reach sha256_of"
+    else
+        bad "these still spell a digest tool by hand:${offenders} — a Mac-only spelling is what the box met"
+    fi
+    # AND THE HELPER IS WHERE BOTH LIBRARIES CAN SEE IT. gate_refuse.sh is the
+    # one file gate_ledger.sh and loop_tier.sh both source, which is the whole
+    # reason it is the home.
+    if grep -qE '^sha256_of\(\)' "$ROOT/scripts/gate_refuse.sh"; then
+        ok "sha256_of is defined in scripts/gate_refuse.sh, the seam both libraries source"
+    else
+        bad "scripts/gate_refuse.sh no longer defines sha256_of — the two libraries have no shared home for it"
+    fi
+}
+
+# --- the environment the LEGS run in, held still ahead of the key ------------
+#
+# THE DEFECT, measured on three verifier boxes on 2026-09-18 and driven here.
+# The fingerprint censuses the installed distributions under `.venv`, because a
+# dependency change moves the suite without moving a tracked file. The gate's
+# own first `uv run` SYNCS that venv: on a machine whose image predates a
+# package joining `uv.lock`, the first leg installed it, the census moved
+# between the start key and the end key, and a completely green `--loop` refused
+# to bank — with `git status` clean beside it, three times, on three trees.
+#
+# The three cases below are the cause, the fix and the wiring, in that order.
+
+case_a_package_installed_while_the_gate_runs_moves_the_env_half_of_the_key() {
+    fresh_checkout
+    OUT=""
+    local start end parts0 parts1 here
+    # PLAINLY, NOT THROUGH `in_repo`, and that is this drive's own subshell
+    # lesson one case up: `in_repo` is `( cd … && "$@" )`, so the COMPONENTS
+    # global the printer needs would die with the subshell and both ends would
+    # read identical — a case that could not fail.
+    here="$PWD"
+    cd "$REPO" || cannot_look "could not enter the scratch checkout"
+    LOOP_ENV_FINGERPRINT=""
+    LOOP_ENV_COMPONENTS=""
+    loop_env_fingerprint >/dev/null 2>&1 || true
+    start="$LOOP_ENV_FINGERPRINT"
+    parts0="$LOOP_ENV_COMPONENTS"
+    # THE PLANT IS THE CAUSE ITSELF: a distribution that was not installed when
+    # the run began and is installed when it ends. It is made here rather than
+    # found, exactly as every destructive demonstration in this tree is.
+    mkdir -p "$REPO/.venv/lib/python3.12/site-packages/planted_plugin-1.2.3.dist-info"
+    loop_env_fingerprint >/dev/null 2>&1 || true
+    end="$LOOP_ENV_FINGERPRINT"
+    parts1="$LOOP_ENV_COMPONENTS"
+    cd "$here" || cannot_look "could not return to the checkout under test"
+    CURRENT="a package installed mid-run moves the environment half of the key"
+    differs "$start" "$end" "the start and the end fingerprints"
+
+    CURRENT="and the end-of-run refusal NAMES which component moved"
+    if ! command -v loop_key_moved >/dev/null 2>&1; then
+        bad "gate_ledger.sh defines no loop_key_moved — the refusal can only say that something moved, which is a whole re-run with no subject"
+        return 0
+    fi
+    N=$((N + 1))
+    OUT="${WORK}/moved${N}.log"
+    loop_key_moved "atree" "$start" "$parts0" "atree" "$end" "$parts1" "mode=fast" >"$OUT" 2>&1
+    if grep -qF "THE ENVIRONMENT" "$OUT"; then
+        ok "it names the environment half"
+    else
+        bad "it does not name the environment half"
+    fi
+    if grep -qE '^ +dists: ' "$OUT"; then
+        ok "and it names the distribution census as the component that moved"
+    else
+        bad "it does not name the dists= component"
+    fi
+    if grep -qF "THE TREE" "$OUT"; then
+        bad "it blames the tree, which did not move in this case"
+    else
+        ok "and it does not blame the tree, which did not move"
+    fi
+}
+
+case_the_sync_installs_ahead_of_the_key_so_the_two_ends_agree() {
+    fresh_checkout
+    OUT=""
+    CURRENT="the loop leg syncs the environment before it derives the key"
+    if ! command -v loop_env_sync >/dev/null 2>&1; then
+        bad "gate_ledger.sh defines no loop_env_sync — nothing brings the venv to the lockfile before the key is derived, so the first leg's install still moves it"
+        return 0
+    fi
+    # A FAKE `uv` THAT INSTALLS, because what is under test is the ORDER and not
+    # uv. A real `uv sync --frozen` in a scratch checkout would be a resolve
+    # against the network to prove a sequencing property, which is the wrong
+    # instrument at any price.
+    local bin saved
+    bin="${WORK}/bin${N}"
+    mkdir -p "$bin"
+    {
+        echo "#!/bin/sh"
+        echo "[ \"\$1\" = sync ] || { echo \"the sync must be \\\`uv sync\\\`, got: \$*\" >&2; exit 64; }"
+        echo "case \" \$* \" in *\" --frozen \"*) ;; *) echo 'the sync must be --frozen: a bare uv sync may rewrite uv.lock, a TRACKED file' >&2; exit 65 ;; esac"
+        echo "mkdir -p '${REPO}/.venv/lib/python3.12/site-packages/planted_plugin-1.2.3.dist-info'"
+        echo "echo 'Installed 1 package in 30ms'"
+    } >"$bin/uv"
+    chmod +x "$bin/uv"
+    N=$((N + 1))
+    OUT="${WORK}/sync${N}.log"
+    saved="$PATH"
+    PATH="${bin}:${PATH}"
+    RC=0
+    # `|| RC=$?` AND NEVER `cmd; RC=$?`: `set -e` is on in this drive and a
+    # non-zero status kills the shell before the assignment ever runs.
+    in_repo "$REPO" loop_env_sync >"$OUT" 2>&1 || RC=$?
+    local start end
+    start=$(in_repo "$REPO" loop_env_fingerprint)
+    # THE FIRST LEG NOW INSTALLS NOTHING, because the sync above already did.
+    in_repo "$REPO" uv sync --frozen >/dev/null 2>&1 || true
+    end=$(in_repo "$REPO" loop_env_fingerprint)
+    PATH="$saved"
+    is "$RC" "0" "the sync's exit status"
+    same "$start" "$end" "the fingerprint either side of the leg's own sync"
+    if grep -qF "Installed 1 package" "$OUT"; then
+        ok "it prints uv's own summary of what it installed"
+    else
+        bad "it does not say what uv did — a run that banks nothing cannot be read backwards"
+    fi
+    if grep -qE 'uv sync --frozen, [0-9]+s' "$OUT"; then
+        ok "and it says what the sync cost in seconds"
+    else
+        bad "it does not count the seconds the sync took"
+    fi
+
+    # THE NO-OP ANSWER IS UV'S TOO, AND ITS WORDING IS NOT OURS TO PREDICT —
+    # this tool has renamed that line at least once (`Audited` → `Checked`).
+    # A banner that only knows today's words would read as broken on the day
+    # it changes, so the LAST line is the fallback and the case drives it with
+    # a word this function has never heard of.
+    CURRENT="a summary word the banner does not know is still reported, not swallowed"
+    {
+        echo "#!/bin/sh"
+        echo "echo 'Contemplated 156 packages in 1ms'"
+    } >"$bin/uv"
+    chmod +x "$bin/uv"
+    N=$((N + 1))
+    OUT="${WORK}/sync${N}.log"
+    PATH="${bin}:${PATH}"
+    in_repo "$REPO" loop_env_sync >"$OUT" 2>&1 || true
+    PATH="$saved"
+    if grep -qF "Contemplated 156 packages" "$OUT"; then
+        ok "uv's own last line reaches the banner"
+    else
+        bad "the banner dropped uv's answer because it did not recognise the word"
+    fi
+
+    # THE ONE CASE WHERE THIS STEP TAKES SOMETHING AWAY FROM A PERSON. A sync
+    # makes the venv MATCH the lockfile, so a hand-patched environment — a
+    # debugger, a pinned fork, a wheel built by hand — is reverted by a step
+    # designed to be invisible. It owes that reader a sentence AND the way out.
+    CURRENT="an UNINSTALL says so and names the valve that would have kept it"
+    {
+        echo "#!/bin/sh"
+        echo "echo 'Uninstalled 1 package in 12ms'"
+        echo "echo 'Installed 1 package in 30ms'"
+    } >"$bin/uv"
+    chmod +x "$bin/uv"
+    N=$((N + 1))
+    OUT="${WORK}/sync${N}.log"
+    PATH="${bin}:${PATH}"
+    in_repo "$REPO" loop_env_sync >"$OUT" 2>&1 || true
+    PATH="$saved"
+    if grep -qF "UNINSTALLED" "$OUT"; then
+        ok "the reverted environment is announced rather than quietly restored"
+    else
+        bad "a hand-patched venv was reverted in silence"
+    fi
+    if grep -qF "DJB_LOOP_NO_SYNC=1" "$OUT"; then
+        ok "and the line names the valve — a warning with no way out is an apology"
+    else
+        bad "the line does not name DJB_LOOP_NO_SYNC"
+    fi
+    CURRENT="and an ordinary sync does NOT print that sentence"
+    if grep -qF "UNINSTALLED" "${WORK}/sync$((N - 2)).log"; then
+        bad "the uninstall sentence prints on a sync that removed nothing"
+    else
+        ok "it prints only where something was removed"
+    fi
+}
+
+case_a_sync_that_cannot_run_is_printed_and_never_a_refusal() {
+    fresh_checkout
+    OUT=""
+    CURRENT="the sync never turns a leg's red into a ledger's exit 2"
+    if ! command -v loop_env_sync >/dev/null 2>&1; then
+        bad "gate_ledger.sh defines no loop_env_sync"
+        return 0
+    fi
+    N=$((N + 1))
+    OUT="${WORK}/nosync${N}.log"
+    RC=0
+    DJB_LOOP_NO_SYNC=1 in_repo "$REPO" loop_env_sync >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the exit status with the skip set"
+    if grep -qF "NOT synced" "$OUT"; then
+        ok "the skip says it skipped"
+    else
+        bad "the skip is silent — a run that banks nothing then names no reason"
+    fi
+    # NO `uv` AT ALL: an empty PATH is the checkout that has never been set up,
+    # and the legs below it are about to say so in their own words.
+    local saved emptybin
+    emptybin="${WORK}/empty-bin"
+    # MADE BEFORE THE PATH IS CLOBBERED, because afterwards there is no `mkdir`
+    # to make it with — which killed this drive once and left its exit trap
+    # running without `sort` or `awk`.
+    mkdir -p "$emptybin"
+    N=$((N + 1))
+    OUT="${WORK}/nouv${N}.log"
+    RC=0
+    saved="$PATH"
+    PATH="$emptybin"
+    in_repo "$REPO" loop_env_sync >"$OUT" 2>&1 || RC=$?
+    PATH="$saved"
+    is "$RC" "0" "the exit status with no uv on PATH"
+    if grep -qF "no \`uv\` on PATH" "$OUT"; then
+        ok "it names the absence rather than refusing"
+    else
+        bad "it does not name the missing uv"
+    fi
+}
+
+case_a_sync_that_exits_non_zero_is_the_legs_business_and_the_refusal_still_names_dists() {
+    fresh_checkout
+    OUT=""
+    CURRENT="a sync that failed does not become the gate's verdict"
+    if ! command -v loop_env_sync >/dev/null 2>&1; then
+        bad "gate_ledger.sh defines no loop_env_sync"
+        return 0
+    fi
+    # A PARTIAL INSTALL THAT THEN FAILS — the one shape where this function
+    # leaves the environment neither where it found it nor where the lockfile
+    # says it should be. It is the branch that must NOT refuse (the legs below
+    # are about to fail in their own words, with their own status) and it is
+    # also the branch where the key can still move, so the END-OF-RUN refusal
+    # has to stay able to say which component did it.
+    local bin saved
+    bin="${WORK}/binfail${N}"
+    mkdir -p "$bin"
+    {
+        echo "#!/bin/sh"
+        echo "mkdir -p '${REPO}/.venv/lib/python3.12/site-packages/half_landed-0.1.dist-info'"
+        echo "echo 'Prepared 2 packages in 500ms'"
+        echo "echo 'error: failed to install the second package' >&2"
+        echo "exit 2"
+    } >"$bin/uv"
+    chmod +x "$bin/uv"
+    N=$((N + 1))
+    OUT="${WORK}/syncfail${N}.log"
+    RC=0
+    saved="$PATH"
+    PATH="${bin}:${PATH}"
+    in_repo "$REPO" loop_env_sync >"$OUT" 2>&1 || RC=$?
+    PATH="$saved"
+    is "$RC" "0" "the failed sync's own exit status"
+    if grep -qF "exited 2" "$OUT"; then
+        ok "it says uv failed and with what status"
+    else
+        bad "it does not name uv's exit status"
+    fi
+    if grep -qF "failed to install the second package" "$OUT"; then
+        ok "and it prints uv's own output rather than summarising it"
+    else
+        bad "uv's output was swallowed — a sync nobody can read is a sync nobody can fix"
+    fi
+
+    CURRENT="and the end-of-run refusal still names dists: after a partial sync"
+    local start end parts0 parts1 here
+    here="$PWD"
+    cd "$REPO" || cannot_look "could not enter the scratch checkout"
+    LOOP_ENV_FINGERPRINT=""
+    LOOP_ENV_COMPONENTS=""
+    loop_env_fingerprint >/dev/null 2>&1 || true
+    start="$LOOP_ENV_FINGERPRINT"
+    parts0="$LOOP_ENV_COMPONENTS"
+    # THE FIRST LEG'S OWN `uv run` FINISHES WHAT THE SYNC COULD NOT — which is
+    # exactly the original defect, arrived at down the failure path.
+    mkdir -p "$REPO/.venv/lib/python3.12/site-packages/the_other_half-0.1.dist-info"
+    loop_env_fingerprint >/dev/null 2>&1 || true
+    end="$LOOP_ENV_FINGERPRINT"
+    parts1="$LOOP_ENV_COMPONENTS"
+    cd "$here" || cannot_look "could not return to the checkout under test"
+    differs "$start" "$end" "the fingerprint either side of the leg's completion"
+    N=$((N + 1))
+    OUT="${WORK}/movedfail${N}.log"
+    loop_key_moved "atree" "$start" "$parts0" "atree" "$end" "$parts1" "mode=fast" >"$OUT" 2>&1
+    if grep -qE '^ +dists: ' "$OUT"; then
+        ok "the refusal names the distribution census, so a failed sync is still legible"
+    else
+        bad "the refusal does not name dists: — a failed sync would leave the reader where three box loops already were"
+    fi
+}
+
+case_the_sync_is_wired_into_the_loop_leg_ahead_of_the_key() {
+    OUT=""
+    CURRENT="check.sh syncs the environment before it derives the loop key"
+    local sync_line key_line
+    # AWK OVER THE WHOLE FILE, NOT `grep -n … | head -1 | cut`. `head` closes
+    # the pipe on the first line it wants and a producer with more to write
+    # takes SIGPIPE, which `pipefail` reports as a failure — the GQ-1 class this
+    # drive pins one case away, and it would have fired here on the only file
+    # in the tree big enough to fill the buffer. awk reads to EOF, keeps the
+    # FIRST match's line number, and prints `0` for "not there" — so a missing
+    # wiring is a VALUE this case reports rather than a status that kills it.
+    #
+    # THE MATCH IS `index()` ON A FIXED STRING and the comment test beside it,
+    # because the call site's regex would need six escapes to survive awk and a
+    # pattern nobody can read is a pattern nobody can fix. A prose mention of
+    # the function — this file has several — is a comment line and excluded.
+    sync_line=$(awk '
+        index($0, "loop_env_sync") && $0 !~ /^[[:space:]]*#/ { if (!n) n = FNR }
+        END { print n + 0 }
+    ' "$ROOT/scripts/check.sh")
+    key_line=$(awk '
+        index($0, "LOOP_LEDGER_KEY=$(loop_ledger_key") { if (!n) n = FNR }
+        END { print n + 0 }
+    ' "$ROOT/scripts/check.sh")
+    if [ "$sync_line" = 0 ]; then
+        bad "nothing in check.sh calls loop_env_sync — the first leg's own \`uv run\` is still what installs, and it does it after the key"
+    elif [ "$key_line" != 0 ] && [ "$sync_line" -lt "$key_line" ]; then
+        ok "the sync (line ${sync_line}) comes before the key (line ${key_line})"
+    else
+        bad "the sync does not sit before the key derivation: sync=${sync_line} key=${key_line}"
+    fi
+    CURRENT="and the start's own environment is kept for the end to compare against"
+    if grep -qE '^[[:space:]]*LOOP_LEDGER_ENV=' "$ROOT/scripts/check.sh"; then
+        ok "the start fingerprint is captured — the end can say which half moved"
+    else
+        bad "nothing keeps the START fingerprint: loop_env_fingerprint overwrites its globals at the end, so the refusal can only say that something moved"
+    fi
+}
+
 # --- the cases, in the order they should run ---------------------------------
 
 case_the_declarations_are_read_from_the_derivers_not_a_list
+case_the_ledgers_digest_is_the_same_where_only_sha256sum_exists
+case_no_site_in_this_family_spells_a_digest_tool_by_hand
 case_the_row_carries_tree_and_env_appended_after_passes
 case_a_row_written_before_those_fields_existed_still_hits
 case_the_attributor_names_which_of_the_three_lines_moved
@@ -1792,7 +4076,17 @@ case_a_declared_key_changing_does_not_move_the_key
 case_an_undeclared_key_changing_does_move_the_key
 case_zero_declarations_is_a_broken_read_and_hashes_the_whole_file
 case_an_empty_distribution_census_is_could_not_look
+case_a_package_installed_while_the_gate_runs_moves_the_env_half_of_the_key
+case_the_sync_installs_ahead_of_the_key_so_the_two_ends_agree
+case_a_sync_that_cannot_run_is_printed_and_never_a_refusal
+case_a_sync_that_exits_non_zero_is_the_legs_business_and_the_refusal_still_names_dists
+case_the_sync_is_wired_into_the_loop_leg_ahead_of_the_key
 case_the_merge_base_is_used_and_not_mains_tip
+case_an_exported_suite_variable_moves_the_key
+case_the_process_environment_wins_over_the_env_file
+case_the_read_set_census_has_one_owner_and_this_file_names_nothing
+case_a_moved_read_set_is_attributed_by_name
+case_a_checkout_with_no_census_says_so_and_a_broken_read_refuses
 case_the_same_tree_at_two_scopes_is_two_keys
 case_a_wider_scope_never_reads_a_narrower_verdict
 case_the_tree_and_the_environment_are_both_in_the_key
@@ -1813,6 +4107,28 @@ case_a_churn_in_an_undeclared_path_still_moves_the_key
 case_an_unreadable_derived_declaration_excludes_nothing_and_says_so
 case_a_declaration_outside_the_reader_sources_is_named
 case_a_declaration_inside_the_reader_sources_prints_no_stray_note
+case_a_miss_prints_the_docs_only_line_by_default
+case_a_docs_only_commit_reuses_the_pytest_verdict_and_banks_a_reuse_row
+case_a_mixed_delta_measures_in_full
+case_a_dirty_tree_is_never_docs_only
+case_a_bank_measured_on_a_dirty_tree_is_no_basis_for_a_docs_only_reuse
+case_a_docs_path_spelled_under_apps_forces_a_measure
+case_mine_and_pr_never_reuse_on_a_docs_only_delta
+case_loop_health_reads_a_reuse_row
+case_the_two_ledger_files_that_bought_a_2302s_remeasure_are_a_reuse
+case_a_banked_row_whose_legs_do_not_cover_this_gate_is_not_honoured
+case_a_checkout_with_no_gate_declares_no_leg_set_and_compares_nothing
+case_the_leak_proof_field_is_appended_last_or_the_row_is_refused
+case_a_one_pass_row_is_honoured_only_with_a_green_leak_proof
+case_a_drive_row_is_never_a_full_verdict
+case_the_machine_half_is_the_image_on_a_box_and_the_host_elsewhere
+case_the_declaration_is_read_from_check_sh_and_not_kept_here
+case_a_push_of_a_ref_that_is_not_the_measured_tree_is_not_honoured
+case_pm_pushs_detached_sha_push_is_honoured_in_seconds
+case_an_ordinary_push_of_the_measured_branch_is_honoured
+case_a_multi_ref_push_is_vouched_for_only_when_every_tree_is_measured
+case_a_deletion_carries_no_tree_and_falls_back_to_the_working_tree
+case_the_wall_refuses_a_one_pass_row_without_its_proof
 
 echo "test_loop_ledger: ${PASSED} passed · ${FAILED} failed"
 # Every case ran. Anything below here is a verdict on them, not another case —

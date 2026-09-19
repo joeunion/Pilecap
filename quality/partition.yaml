@@ -162,6 +162,26 @@ closure_classes:
       under its app's `templates/` directory inside `apps/{app}/**`, which C1
       already covers; this class is the platform's shared root tree.
 
+  - id: C10
+    what: the front-end test harness's own include list
+    members: ["frontend/vitest.config.ts"]
+    why: >-
+      FOUND BY `read_census` when the passkey reveal's static file landed, and
+      it is C8 and C9's finding class again.
+      `apps/accounts/tests/test_signin_door.py` censuses
+      `apps/accounts/static/accounts/signin.js` in PYTHON — no `fetch`, no
+      absolute URL, referenced by `{% static %}` and inlined by no frame —
+      because the vitest/jsdom suite cannot see a file outside `frontend/src`.
+      That is a claim ABOUT THIS FILE, so the test reads it and asserts the
+      include list still says so: the day the harness reaches `static/`, the
+      census reds and says to become a jsdom case instead. Editing this one
+      file therefore changes a platform test's answer with nothing else in the
+      tree moving, which is precisely the stale green a banked skip would
+      license. **ONE FILE, NOT `frontend/**`**: the rest of the front-end tree
+      is a product's churn and no platform test builds a path into it, so
+      widening this class would re-run the platform suite for every client
+      edit — the dividend deleted rather than protected.
+
 # --- §3 · the ONE enumerated exclusion ----------------------------------------
 
 # A SECOND ENTRY HERE IS A DESIGN CHANGE, NOT AN EDIT.

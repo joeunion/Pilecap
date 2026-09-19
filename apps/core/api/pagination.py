@@ -730,16 +730,40 @@ class CursorPagination(PaginationBase):
             "count": page.count,
         }
 
+    #: What an in-memory catalogue is ordered by when its shape declares
+    #: nothing. `GET /events/catalogue/` is the route this was written for and
+    #: `name` is unique there, so it is total on its own.
+    SEQUENCE_ORDERING: tuple[str, ...] = ("name",)
+
     @staticmethod
     def sequence_ordering(rows: Sequence[Any]) -> tuple[str, ...]:
         """The ordering of a route that returns a built list rather than rows.
 
-        `name` is the only thing an in-memory catalogue here is ordered by, and
-        it is unique in one (`GET /events/catalogue/`), so it is total on its
-        own. A second such route would declare its own instead of inheriting
-        this one — which is the point at which this becomes a parameter.
+        **Declared by the shape, and that is the parameterisation this function
+        said it was waiting for.** It returned a hardcoded `("name",)` while
+        exactly one route in the tree built its own list; the roles and
+        permissions catalogues are the second and third, and neither is ordered
+        by a display name — a role's `name` is renamable and not unique, so
+        paging over it would skip and repeat rows the day two roles share one.
+
+        A row class says what it is totally ordered by with a
+        `cursor_ordering` class attribute; anything that declares nothing keeps
+        the default. Read off the FIRST row rather than passed in, because the
+        paginator is chosen by a decorator at import time and the rows are the
+        only thing it holds — and an empty list has nothing to page, so the
+        default is never wrong there.
+
+        **The field it names must be TOTAL** (unique across the list). A cursor
+        is the last row's key; a tie means the next page starts in the middle of
+        the tied group and rows on either side of the cut are lost or repeated.
+        `key` is unique in both new catalogues by construction.
         """
-        return ("name",)
+        if not rows:
+            return CursorPagination.SEQUENCE_ORDERING
+        declared = getattr(type(rows[0]), "cursor_ordering", None)
+        if declared is None:
+            return CursorPagination.SEQUENCE_ORDERING
+        return tuple(declared)
 
 
 # --- the one predicate three instruments read (ADR core-24) --------------------

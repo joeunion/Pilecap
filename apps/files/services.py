@@ -503,9 +503,16 @@ def add_version(
     cover is refused with `not_found`, because a refusal that told not-there from
     not-yours apart would confirm the document exists.
     """
-    require(actor, "file.replace", file)
+    # REACH BEFORE CAPABILITY (rule 26's order, `core.services.revoke_membership`'s
+    # shape). A row in a branch this hat does not cover is `not_found`, and it has
+    # to answer BEFORE the wall does: a `Forbidden` about a row they cannot see
+    # confirms the row exists, which is the fact the scoping was hiding. Every one
+    # of these services takes a MODEL INSTANCE, so a caller who resolved one
+    # elsewhere hands it straight in. The two lines were the other way round until
+    # the Phase R sweep.
     if not may_be_named(actor, file):
         raise NotFound()
+    require(actor, "file.replace", file)
     hat = _the_hat(actor)
     _check_declared_size(size_bytes)
     _refuse_an_archived_document(file)
@@ -553,9 +560,16 @@ def confirm_upload(
     An already-`STORED` version returns quietly and starts nothing: the question
     it was asked has already been answered, by evidence.
     """
-    require(actor, "file.replace", version.file)
+    # REACH BEFORE CAPABILITY (rule 26's order, `core.services.revoke_membership`'s
+    # shape). A row in a branch this hat does not cover is `not_found`, and it has
+    # to answer BEFORE the wall does: a `Forbidden` about a row they cannot see
+    # confirms the row exists, which is the fact the scoping was hiding. Every one
+    # of these services takes a MODEL INSTANCE, so a caller who resolved one
+    # elsewhere hands it straight in. The two lines were the other way round until
+    # the Phase R sweep.
     if not may_be_named(actor, version):
         raise NotFound()
+    require(actor, "file.replace", version.file)
     # Refused here rather than an hour later, inside the run: the hat this
     # resolves is what rides on the workflow's headers, and it is what the meter
     # attributes the bytes to. A run started with no hat is a run whose finalize
@@ -760,9 +774,16 @@ def issue_download_url(
     "archived" read like "deleted" to a caller while the liability was unchanged,
     which is the one thing `StoredFile.lifecycle` exists to keep visible.
     """
-    require(actor, "file.read", file)
+    # REACH BEFORE CAPABILITY (rule 26's order, `core.services.revoke_membership`'s
+    # shape). A row in a branch this hat does not cover is `not_found`, and it has
+    # to answer BEFORE the wall does: a `Forbidden` about a row they cannot see
+    # confirms the row exists, which is the fact the scoping was hiding. Every one
+    # of these services takes a MODEL INSTANCE, so a caller who resolved one
+    # elsewhere hands it straight in. The two lines were the other way round until
+    # the Phase R sweep.
     if not may_be_named(actor, file):
         raise NotFound()
+    require(actor, "file.read", file)
     if version.file_id != file.pk:
         # A version and a document that do not belong together can only arrive
         # from a caller that resolved them separately. `not_found` rather than a
@@ -804,9 +825,16 @@ def archive_file(*, tenant: Tenant, actor: Actor, file: StoredFile) -> StoredFil
     The `emit` is inside the transaction, so an archive that rolled
     back said nothing.
     """
-    require(actor, "file.archive", file)
+    # REACH BEFORE CAPABILITY (rule 26's order, `core.services.revoke_membership`'s
+    # shape). A row in a branch this hat does not cover is `not_found`, and it has
+    # to answer BEFORE the wall does: a `Forbidden` about a row they cannot see
+    # confirms the row exists, which is the fact the scoping was hiding. Every one
+    # of these services takes a MODEL INSTANCE, so a caller who resolved one
+    # elsewhere hands it straight in. The two lines were the other way round until
+    # the Phase R sweep.
     if not may_be_named(actor, file):
         raise NotFound()
+    require(actor, "file.archive", file)
     if file.archived_at is not None:
         log.info("files.file.already_archived", file_id=str(file.pk))
         return file
@@ -920,9 +948,16 @@ def store_bytes(
             document.full_clean()
         document.save()
     else:
-        require(actor, "file.replace", file)
+        # REACH BEFORE CAPABILITY (rule 26's order, `core.services.revoke_membership`'s
+        # shape). A row in a branch this hat does not cover is `not_found`, and it has
+        # to answer BEFORE the wall does: a `Forbidden` about a row they cannot see
+        # confirms the row exists, which is the fact the scoping was hiding. Every one
+        # of these services takes a MODEL INSTANCE, so a caller who resolved one
+        # elsewhere hands it straight in. The two lines were the other way round until
+        # the Phase R sweep.
         if not may_be_named(actor, file):
             raise NotFound()
+        require(actor, "file.replace", file)
         hat = _the_hat(actor)
         _refuse_an_archived_document(file)
         document = file
@@ -1012,9 +1047,16 @@ def store_stream(
             document.full_clean()
         document.save()
     else:
-        require(actor, "file.replace", file)
+        # REACH BEFORE CAPABILITY (rule 26's order, `core.services.revoke_membership`'s
+        # shape). A row in a branch this hat does not cover is `not_found`, and it has
+        # to answer BEFORE the wall does: a `Forbidden` about a row they cannot see
+        # confirms the row exists, which is the fact the scoping was hiding. Every one
+        # of these services takes a MODEL INSTANCE, so a caller who resolved one
+        # elsewhere hands it straight in. The two lines were the other way round until
+        # the Phase R sweep.
         if not may_be_named(actor, file):
             raise NotFound()
+        require(actor, "file.replace", file)
         hat = _the_hat(actor)
         _refuse_an_archived_document(file)
         document = file

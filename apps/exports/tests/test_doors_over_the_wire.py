@@ -42,7 +42,9 @@ import pytest
 
 from apps.accounts.services import issue_token
 from apps.core.actor import actor_for
+from apps.core.authz import refusal_sentence
 from apps.core.ids import uuid7
+from apps.core.models import Grant, Membership
 from apps.core.services import root_organization
 
 # The transport harness, from the module that owns it. Copying it here would be
@@ -390,3 +392,88 @@ async def test_both_doors_refuse_the_same_export_to_a_stranger(
     answered = called.json()["result"]
     assert answered.get("isError") is True
     assert "not_found" in str(answered["content"])
+
+
+@pytest.fixture
+def read_withheld(tenant: Tenant, owner: User) -> Grant:
+    """One `withhold` row on the owner's own membership. **`export.read`, gone.**
+
+    A withhold beats everything — "forbid overrides permit" — and it beats it
+    for an owner too, which is what makes this the smallest world in which a
+    perfectly ordinary credential is refused a read at both doors. Nothing about
+    the role, the hat or the row changes: the only difference between this test
+    and the one above it is this row.
+    """
+    membership = Membership.objects.filter(tenant=tenant).get(user=owner)
+    return Grant.objects.create(
+        tenant=tenant,
+        membership=membership,
+        permission="export.read",
+        effect=Grant.Effect.WITHHOLD,
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
+    bearer: str, export: Export, read_withheld: Grant
+) -> None:
+    """**PR4.e.2 — rule 46's named case for Phase R.**
+
+    A read is a permission now (ADR core-27), so there is a new refusal on both
+    doors, and a new refusal is exactly where two doors come apart: one composes
+    a body and the other stringifies an exception. Both go through
+    `core.exceptions.wire_refusal`, and this is the test that says so — the code
+    AND the sentence, not just the status.
+
+    The sentence is read from `refusal_sentence` rather than typed, so the two
+    doors are compared against the key's own prose and not against a third copy
+    of it that could drift from both.
+
+    *Absent (baseline `11b1a765`):* 200 on both doors, with the export in the
+    body — the row a withheld reader could still read.
+    """
+    from config.asgi import build_application
+
+    application = build_application()
+    bearer_header = {"authorization": f"Bearer {bearer}"}
+    sentence = refusal_sentence("export.read")
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.get(
+                DETAIL_URL.format(export.pk), headers={**bearer_header, "accept": JSON}
+            )
+            headers = {**MCP_HEADERS, **bearer_header}
+            await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "initialize",
+                    {
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {"name": "exports-read-parity", "version": "1"},
+                    },
+                    1,
+                ),
+            )
+            called = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call",
+                    {"name": "get_export", "arguments": {"export_id": str(export.pk)}},
+                    2,
+                ),
+            )
+
+    assert over_http.status_code == 403, over_http.text
+    assert over_http.json()["code"] == "forbidden"
+    assert over_http.json()["detail"] == sentence
+
+    answered = called.json()["result"]
+    assert answered.get("isError") is True
+    assert "forbidden" in str(answered["content"])
+    assert sentence in str(answered["content"]), answered["content"]

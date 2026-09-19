@@ -16,6 +16,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .claude/skills/rung-execution/SKILL.md .secrets.baseline apps/core/services.py pyproject.toml quality/checks.py scripts/archaeology_lib.sh scripts/pm_fold.sh scripts/rung_tidy.sh scripts/secrets_scan.sh scripts/tests
 # The drive for THE BASELINE-REWRITE HAZARD — who is allowed to write
 # `.secrets.baseline`, and what happens when a partial file set meets it.
 #
@@ -555,6 +556,84 @@ case_the_loop_leg_names_the_preserving_subcommand() {
     fi
 }
 
+# baseline_stray_writers <scripts-dir> — every file in that directory, other
+# than `pm_fold.sh`, that INVOKES the full-tree baseline writer. One per line,
+# silent when there are none.
+#
+# A COMMENT IS NOT AN INVOCATION, and neither is a BANNER: `pm_fold.sh` echoes
+# the command it is about to run so the operator can read it, and
+# `scripts/rung_tidy.sh`'s header ARGUES the one-legal-writer doctrine by naming
+# the command it deliberately does not run. Both classes are stripped by the
+# command word at the head of the line, which is the only thing that tells an
+# invocation from a mention without parsing bash.
+#
+# THE DIRECTORY IS AN ARGUMENT SO THE CENSUS CAN BE AIMED AT A VICTIM. Nothing
+# else about it moved.
+baseline_stray_writers() {
+    local dir="$1" f out=""
+    for f in "$dir"/*.sh; do
+        [ -f "$f" ] || continue
+        case "$f" in
+        */pm_fold.sh) continue ;;
+        esac
+        if grep -n 'detect-secrets scan --baseline' "$f" |
+            grep -qvE '^[0-9]+:[[:space:]]*(#|echo |printf )'; then
+            out="${out}${f}
+"
+        fi
+    done
+    printf '%s' "$out"
+}
+
+# THE CANARY. A census that has never fired is a census nobody can distinguish
+# from a grep that stopped matching — and this one guards the single most
+# expensive silent failure in the tree, a second baseline writer narrowing the
+# file on every run. The victim is this case's OWN: a scratch copy of
+# `scripts/`, with the writer planted in the copy of `rung_tidy.sh`, because a
+# destructive demonstration never uses found state and never writes into the
+# checkout it is measuring.
+case_a_planted_second_writer_in_rung_tidy_is_caught() {
+    CURRENT="a planted second writer is caught"
+    N=$((N + 1))
+    OUT=""
+    local victim="${WORK}/stray-scripts-${N}"
+    mkdir -p "$victim"
+    local f
+    for f in scripts/*.sh; do
+        [ -f "$f" ] || continue
+        cp "$f" "$victim/"
+    done
+    if [ ! -f "$victim/rung_tidy.sh" ]; then
+        bad "scripts/rung_tidy.sh is not in this tree, so the census has nothing to be aimed at — this case cannot speak"
+        return
+    fi
+
+    # THE CONTROL FIRST: the real files, copied, unplanted. A canary that fires
+    # on the unplanted copy is a canary firing for the copy's reason.
+    local before
+    before="$(baseline_stray_writers "$victim")"
+    if [ -z "$before" ]; then
+        ok "the copied scripts/ has no stray writer — the control is clean"
+    else
+        bad "the copied scripts/ already names a stray writer, so the plant below proves nothing:
+$(printf '%s' "$before" | sed 's/^/             | /')"
+        return
+    fi
+
+    printf '\nuv run detect-secrets scan --baseline .secrets.baseline apps/core/services.py\n' \
+        >>"$victim/rung_tidy.sh"
+    local after
+    after="$(baseline_stray_writers "$victim")"
+    case "$after" in
+    *rung_tidy.sh*)
+        ok "the planted writer in rung_tidy.sh is named by the census — it is looking at the new file"
+        ;;
+    *)
+        bad "a planted \`scan --baseline\` in rung_tidy.sh is INVISIBLE to the stray census. The census walks scripts/*.sh, so a new script there is in its population by construction — unless it has stopped matching."
+        ;;
+    esac
+}
+
 case_the_fold_is_the_only_baseline_writer_and_names_no_paths() {
     CURRENT="one legal writer"
     N=$((N + 1))
@@ -612,19 +691,17 @@ $(printf '%s' "$offenders" | sed 's/^/             | /')"
     # And nobody ELSE in the root of scripts/ writes the baseline that way.
     # Root only, and not recursive: `scripts/tests/` is where the drives live
     # and this file itself names the string in every case above.
+    #
+    # THE CENSUS BODY MOVED INTO `baseline_stray_writers` AND THE ASSERTIONS DID
+    # NOT. A census that can only ever be pointed at the real `scripts/` is a
+    # census nothing can prove is looking — it goes green on a tree with a
+    # second writer in it exactly as it goes green on a tree without one, and
+    # the two are indistinguishable from here. `case_a_planted_second_writer_in
+    # _rung_tidy_is_caught` below points the SAME function at a scratch copy of
+    # `scripts/` with a writer planted in `rung_tidy.sh`, which is the only form
+    # of that proof that does not write into this checkout.
     local strays=""
-    local f
-    for f in scripts/*.sh; do
-        [ -f "$f" ] || continue
-        case "$f" in
-        scripts/pm_fold.sh) continue ;;
-        esac
-        if grep -n 'detect-secrets scan --baseline' "$f" |
-            grep -qvE '^[0-9]+:[[:space:]]*(#|echo |printf )'; then
-            strays="${strays}${f}
-"
-        fi
-    done
+    strays="$(baseline_stray_writers scripts)"
     if [ -z "$strays" ]; then
         ok "no other script in scripts/ writes the baseline through \`detect-secrets scan --baseline\`"
     else
@@ -640,6 +717,7 @@ case_the_loop_shaped_invocation_leaves_this_baseline_byte_identical
 case_a_stampless_baseline_is_accepted_by_the_installed_scanner
 case_the_loop_leg_names_the_preserving_subcommand
 case_the_fold_is_the_only_baseline_writer_and_names_no_paths
+case_a_planted_second_writer_in_rung_tidy_is_caught
 
 echo "test_secrets_baseline_guard: ${PASSED} passed · ${FAILED} failed · detect-secrets ${DS_VERSION}"
 drive_finished

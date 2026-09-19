@@ -133,6 +133,23 @@ def resolve_tenant(*, user: ActingUser, requested_slug: str | None) -> Tenant | 
     Resolution only: it answers `None` for anything it cannot honour and says
     nothing about whether that is a refusal. `addressing_refusal` is the half
     that decides, and every door asks it (the addressing-header law, above).
+
+    **A tenant that is not ACTIVE is a place nobody may act** (R1-F3). It
+    resolves exactly like a tenant you hold no membership in: `addressing_refusal`
+    then says so for a sent header, and the door's own no-tenant answer says so
+    for an omitted one (ADR core-21) — one law, one function, three doors, and
+    no new refusal code. `Tenant.status` had one owner
+    (`suspend_tenant`/`resume_tenant`/`close_tenant`) and, until this line, no
+    reader at all: a suspended tenant was fully alive on REST, MCP and the
+    socket. The predicate is `Tenant.is_active`, read here and at
+    `accounts.services.authenticate_token`'s pinned branch, never a second
+    spelling of `ACTIVE`.
+
+    It costs no statement: the row is already loaded by `select_related`.
+
+    The operator's own recovery path does not come through here —
+    `suspend_tenant` and `resume_tenant` take the `Tenant` ROW, from the admin
+    or from `manage.py` — so a dark tenant can still be resumed (principle 19).
     """
     if user is None or not user.is_authenticated:
         return None
@@ -146,9 +163,21 @@ def resolve_tenant(*, user: ActingUser, requested_slug: str | None) -> Tenant | 
         if not wanted:
             return None
         membership = memberships.filter(tenant__slug=wanted).first()
-        return membership.tenant if membership is not None else None
+        return _active(membership)
     membership = memberships.filter(is_default=True).first()
-    return membership.tenant if membership is not None else None
+    return _active(membership)
+
+
+def _active(membership: Membership | None) -> Tenant | None:
+    """The membership's tenant, or `None` when there is none or it is dark.
+
+    One function for the two branches, so "not ACTIVE" cannot come to mean two
+    things depending on whether a header was sent.
+    """
+    if membership is None:
+        return None
+    tenant = membership.tenant
+    return tenant if tenant.is_active else None
 
 
 def resolve_org(
@@ -162,6 +191,16 @@ def resolve_org(
     Fails closed at every step: no user, no tenant, an unknown slug, or a slug
     the user holds no role over all resolve to `None`, and `None` makes every
     org-scoped read empty.
+
+    **It also fills the tenant-root memo when the hat it resolved IS the root.**
+    This is the one function all four doors call, so it is the one place that
+    reliably holds an `Organization` before any service runs — and in a flat
+    product the hat is always the root, while in a networked one it is the root
+    for everybody administering the whole tenant. Handing it to
+    `Tenant.remember_root` costs a `parent_id is None` test and saves the
+    request's first tenant-wide read a second fetch of the row already in hand.
+    `remember_root` is the judge of whether the node qualifies; nothing here
+    takes the resolution's word for it. The contract is declared on `Tenant`.
     """
     if user is None or not user.is_authenticated or tenant is None:
         return None
@@ -184,8 +223,12 @@ def resolve_org(
             is_descendant_path(wanted.path, membership.organization.path)
             for membership in memberships
         )
-        return wanted if holds else None
+        if not holds:
+            return None
+        tenant.remember_root(wanted)
+        return wanted
     default = next((m for m in memberships if m.is_default), memberships[0])
+    tenant.remember_root(default.organization)
     return default.organization
 
 

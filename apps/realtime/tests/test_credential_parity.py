@@ -50,10 +50,12 @@ from apps.realtime.tests.test_consumers import (
     session_headers,
 )
 from apps.realtime.tests.test_hierarchy import (
+    ORG_LESS_EVENT,
     Network,
     _build_network,
     _emit_and_push,
     in_branch,
+    org_less_body,
 )
 from apps.realtime.tests.websocket import Handshake, Socket
 
@@ -200,14 +202,17 @@ async def test_every_credential_wearing_one_hat_receives_the_same_envelope(
         ]
 
         # Live: a tenant-wide event reaches all three, whatever authenticated them.
+        # The name is the declared ORG-LESS one since R4-F2: a widget always
+        # belongs to a branch, so `emit` refuses a widget body that names none.
         await run_db(
             _emit_and_push,
             tenant=network.tenant,
             actor=rival_hat,
-            payload=in_branch(None),
+            name=ORG_LESS_EVENT,
+            payload=org_less_body(),
         )
         for socket in (cookie, bearer, query):
-            assert (await socket.receive_json())["name"] == EVENT_NAME
+            assert (await socket.receive_json())["name"] == ORG_LESS_EVENT
 
         # The criterion: an org-bearing push, on all three credentials.
         await run_db(

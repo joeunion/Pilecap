@@ -60,7 +60,14 @@ pytestmark = pytest.mark.django_db
 # ADR core-18 took one statement OFF this pin: the default list issues no
 # COUNT any more — `has_more` comes from fetching one row more than asked
 # for. `?include_count=true` puts it back, and costs exactly one more.
-LIST_QUERY_BUDGET = 1
+#
+# **+3 since Phase R** (ADR core-27, rule 5): `list_widgets` asks `widget.read`
+# at the acting hat, and resolution reads three tables — this person's
+# memberships in the tenant, the grants on them, and the role deltas for the
+# roles on the chain. The machine door pays exactly what the human door pays,
+# which is the point: a tool that asked a cheaper question would be a tool
+# answering a different one (rule 46).
+LIST_QUERY_BUDGET = 4
 
 # The two doors this file compares, spelled once.
 JSON = "application/json"
@@ -320,9 +327,17 @@ def test_a_token_with_no_tenant_cannot_write(nomad: User) -> None:
 
 
 def test_a_token_with_no_tenant_reads_nothing(nomad: User) -> None:
-    page = tool("list_widgets")(ctx=context_for(nomad, None))
-    assert len(page.items) == 0
-    assert page.items == []
+    """Fails closed — and since Phase R it says so instead of answering blank.
+
+    **The refusal got stronger; the property did not move.** A token resolving
+    no tenant used to get an empty page; it now gets `forbidden`, because
+    `list_widgets` asks `widget.read` and a principal with no membership holds
+    nothing anywhere (ADR core-27). Reading nothing is still what happens, and
+    the assertion is what stops the day it becomes a page of somebody's rows.
+    """
+    with pytest.raises(ToolError) as refused:
+        tool("list_widgets")(ctx=context_for(nomad, None))
+    assert "forbidden" in str(refused.value)
 
 
 def test_a_call_with_no_principal_is_refused(tenant: Tenant) -> None:

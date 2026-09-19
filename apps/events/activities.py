@@ -59,6 +59,7 @@ from temporalio.client import (
 from temporalio.exceptions import ApplicationError
 
 from apps.core import bridge
+from apps.core.actor import system_actor
 from apps.core.exceptions import DomainError, NotFound
 from apps.core.idempotency import purge_expired
 from apps.core.log import get_logger
@@ -431,7 +432,9 @@ def load_delivery_targets(payload: DispatchEvent) -> LoadedTargets:
     try:
         tenant = acting_tenant()
         try:
-            event = selectors.get_event(tenant=tenant, event_id=UUID(payload.event_id))
+            event = selectors.get_event(
+                tenant=tenant, event_id=UUID(payload.event_id), actor=system_actor(tenant)
+            )
         except NotFound as missing:
             log.warning("events.dispatch.event_gone", event_id=payload.event_id)
             raise ApplicationError(str(missing), non_retryable=True) from missing
@@ -464,8 +467,12 @@ def deliver_webhook(payload: DeliverWebhook) -> DeliveryOutcome:
     close_old_connections()
     try:
         tenant = acting_tenant()
-        event = selectors.get_event(tenant=tenant, event_id=UUID(payload.event_id))
-        endpoint = selectors.get_endpoint(tenant=tenant, endpoint_id=UUID(payload.endpoint_id))
+        event = selectors.get_event(
+            tenant=tenant, event_id=UUID(payload.event_id), actor=system_actor(tenant)
+        )
+        endpoint = selectors.get_endpoint(
+            tenant=tenant, endpoint_id=UUID(payload.endpoint_id), actor=system_actor(tenant)
+        )
 
         body = json.dumps(schemas.envelope(event), separators=(",", ":"), sort_keys=True).encode(
             "utf-8"
@@ -538,8 +545,12 @@ def dead_letter_delivery(payload: DeadLetter) -> None:
     close_old_connections()
     try:
         tenant = acting_tenant()
-        event = selectors.get_event(tenant=tenant, event_id=UUID(payload.event_id))
-        endpoint = selectors.get_endpoint(tenant=tenant, endpoint_id=UUID(payload.endpoint_id))
+        event = selectors.get_event(
+            tenant=tenant, event_id=UUID(payload.event_id), actor=system_actor(tenant)
+        )
+        endpoint = selectors.get_endpoint(
+            tenant=tenant, endpoint_id=UUID(payload.endpoint_id), actor=system_actor(tenant)
+        )
         services.dead_letter_delivery(
             tenant=event.tenant,
             endpoint_id=endpoint.pk,
@@ -561,7 +572,9 @@ def close_outbox(payload: CloseOutbox) -> None:
     close_old_connections()
     try:
         tenant = acting_tenant()
-        event = selectors.get_event(tenant=tenant, event_id=UUID(payload.event_id))
+        event = selectors.get_event(
+            tenant=tenant, event_id=UUID(payload.event_id), actor=system_actor(tenant)
+        )
         services.close_outbox(
             tenant=event.tenant,
             event_id=event.pk,
@@ -596,7 +609,9 @@ def push_realtime(payload: PushRealtime) -> bool:
             log.info("events.realtime.absent", event_id=payload.event_id)
             return False
         tenant = acting_tenant()
-        event = selectors.get_event(tenant=tenant, event_id=UUID(payload.event_id))
+        event = selectors.get_event(
+            tenant=tenant, event_id=UUID(payload.event_id), actor=system_actor(tenant)
+        )
         push(tenant_id=event.tenant_id, event=schemas.envelope(event))
         log.info("events.realtime.pushed", event_id=str(event.pk), name=event.name)
         return True
@@ -680,7 +695,9 @@ def index_search(payload: IndexSearch) -> bool:
             log.info("events.search.absent", event_id=payload.event_id)
             return False
         tenant = acting_tenant()
-        event = selectors.get_event(tenant=tenant, event_id=UUID(payload.event_id))
+        event = selectors.get_event(
+            tenant=tenant, event_id=UUID(payload.event_id), actor=system_actor(tenant)
+        )
         indexed = bool(index(tenant_id=event.tenant_id, event=schemas.envelope(event)))
         log.info(
             "events.search.indexed",

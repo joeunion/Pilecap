@@ -1,154 +1,85 @@
-"""Who may read what this tenant has consumed. Policies are code.
+"""Who may read what this tenant has consumed. **Nothing here, and that is the news.**
 
-`core.authz.require(actor, "usage.read_report")` finds this by discovery — this
-file is never registered anywhere. The key is `<noun>.<verb>`, the predicate
-takes the acting `Actor` and the object, and it returns a bool.
+This file used to hold a small permissions system of its own — a
+`DeclaredPermission` dataclass, an `ALL_ROLES` set derived from `ROLE_RANK`, and
+a `USAGE_READ_REPORT` declaration a product narrowed by editing one line. It was
+the right answer to the question it was asked (an owner ruling: *declare the bar,
+do not argue it in a docstring*), and P20 answered that question for the whole
+platform instead. So the mechanism moves out and the app keeps the decision:
 
-**There is one key and not two, and the missing one is the design.** There is no
-`usage.record`: recording is not something anybody asks for. It is the
-platform's witnessed side-effect of an action that was already authorized — the
-completion ran, the file was stored — and `record_usage` carries rule 13's
-`# authz:` valve saying exactly that, with the actor kept for the audit row
-rather than asked for permission. A `usage.record` predicate would be a
-permission nobody could ever be refused, which is a permission that teaches a
-reader the wrong thing about what this app does.
+* **the key** is `usage_entry.read` — the derived read of `UsageEntry`, which is
+  the row every total here is a sum over. `usage.read_report` still answers, as
+  an alias, for one release (`RENAMED_PERMISSIONS` below);
+* **who holds it** is the three layers `core.authz` resolves — `owner` by the
+  vocabulary, `admin` by `("*",)`, `member` by `("*.read",)`, plus whatever a
+  custom role includes and a grant allows or withholds. The template's answer is
+  byte-identical to the declaration's: every role read the report before and
+  every role reads it now;
+* **narrowing is DATA, not an edit.** A product that wants only owners and
+  admins to see the bill no longer changes a line in this file and ships it —
+  its administrator writes a `RolePermission` exclude on `member`, or a `Grant`
+  withhold on one person, through the role editor's own doors, in a running
+  deployment, audited. `tests/test_policies.py` drives exactly that, which is
+  what the seven tests it used to have became.
 
-**The bar on reading is membership at ALL_ROLES, and it is now DECLARED rather
-than argued** (owner-ruled; `design-agreements.md` § Usage
-visibility). Rule 24 has already decided what a given hat can *see*:
-`for_tenant(t).visible_to(actor)` narrows a usage report to the actor's own
-subtree, so a branch manager reading their own consumption learns nothing they
-could not have derived by paging their own completions one at a time. What that
-argument leaves is a **root-hat member reading the tenant-wide bill**, which is
-a product decision and not a platform one — an earlier finding, and the
-owner's ruling was that the default stays as it is and stops being an argument
-buried in a docstring.
+**There is still no `usage.record`, and the missing key is still the design.**
+Recording is not something anybody asks for: it is the platform's witnessed
+side-effect of an action that was already authorized — the completion ran, the
+file was stored — and `services.record_usage` carries rule 13's `# authz:` valve
+saying exactly that, with the actor kept for the audit row rather than asked for
+permission. A `usage.record` predicate would be a permission nobody could ever be
+refused, which is a permission that teaches a reader the wrong thing about what
+this app does.
 
-So the bar is a **named permission**: one module-level declaration, all roles by
-default, and `can()` consults it. A product that wants a narrower bill narrows
-`USAGE_READ_REPORT`'s `default_roles` — one line, in a diff a reviewer sees —
-and never forks this file, never edits `core`, and never grows a second opinion
-about the same question somewhere else. A fresh clone behaves exactly as it did
-before the declaration existed, which is pinned by
-`tests/test_policies.py::test_a_fresh_clone_lets_every_role_read_the_report`.
-
-**Why the declaration lives here and not in `core`.** The declaration is the
-DATA half of "roles are data, policies are code" and its home is
-the app that owns the action — the same reason `POLICIES` and `ACTION_PROSE`
-live here. A central registry would be one file every app in a parallel wave has
-to edit, which is the collision this template is shaped around avoiding; if one
-is ever wanted it is a lead's decision, and this app deliberately did not take
-it. What IS handed up is the one thing this
-file cannot do from here: `manage.py introspect` prints the action and the
-predicate's name, and has no column for the declared roles — so a narrowing is
-visible in the diff and in this file, and not yet in the instrument. Recorded,
-not worked around.
+**And there is no predicate**, which is the other half of the same sentence.
+`POLICIES` is empty because the two questions a predicate could have asked are
+both answered elsewhere and better: *which rows* is `for_tenant(t).visible_to(actor)`
+in `selectors._ledger` (rule 24), and *whether this kind, here* is the key above,
+resolved by `core.authz.require` against rows a tenant can edit. A predicate here
+would be a third opinion nobody could change without a deploy. The dict stays so
+the discovery walk finds a shape it recognises and so a product's first predicate
+is an addition rather than a new file.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Any
+from apps.core.authz import Policy
 
-from django.core.exceptions import ImproperlyConfigured
-
-from apps.core.actor import Actor
-from apps.core.authz import ROLE_RANK, Policy, membership_for
-
-#: Every role this deployment has, **derived and never listed**. `ROLE_RANK` is
-#: the one place in the tree that says one role outranks another, and a product
-#: that adds a fourth role adds it there — so "all roles" keeps meaning all of
-#: them without this line changing. A hand-listed tuple here would be the second
-#: spelling of the role vocabulary, and the day they disagreed the quieter one
-#: would win silently.
-ALL_ROLES: frozenset[str] = frozenset(ROLE_RANK)
-
-
-@dataclass(frozen=True)
-class DeclaredPermission:
-    """One action, and the roles a product has decided may perform it.
-
-    Frozen because a permission that could be mutated at runtime is a permission
-    whose value in a log line and value at the check can differ. Narrowing is an
-    edit to the declaration below, in a commit, not a `setattr` at boot.
-    """
-
-    #: The `<noun>.<verb>` key `core.authz.require` is called with. Spelled ONCE
-    #: here so that a caller names the declaration rather than re-typing the
-    #: string — a typo'd action name is an authorization that never runs.
-    action: str
-
-    #: The roles that may perform it. A membership whose role is outside this
-    #: set is refused exactly as no membership at all is.
-    roles: frozenset[str]
-
-    def can(self, actor: Actor, obj: Any = None) -> bool:
-        """The predicate `core.authz` calls. **It consults the declaration.**
-
-        Never an inline role set: the whole point of the declaration is that the
-        answer to "who may read a bill here" is readable in one place and
-        changeable in one place. `obj` is unused and stays in the signature
-        because that is the shape a `Policy` is called with — a usage report is
-        not a row, it is a total over whatever `visible_to` already narrowed to,
-        so there is no per-row question to ask.
-
-        Membership first, and it is not redundant: `membership_for` narrows to
-        the acting hat's own ancestors, so somebody acting under a hat they hold
-        no role over is refused here rather than reading an empty report and
-        being told they consumed nothing.
-        """
-        membership = membership_for(actor)
-        if membership is None:
-            return False
-        return str(membership.role) in self.roles
-
-
-def declared_permission(*, action: str, default_roles: Iterable[str]) -> DeclaredPermission:
-    """Declare a permission, refusing a role name this deployment does not have.
-
-    The refusal is at import — so a typo in a product's narrowing stops the
-    process rather than surfacing as a permission that silently refuses
-    everybody. It is the same tier `apps/usage/meters.py::validate_declared_meters`
-    puts the meter grammar on, and for the same reason: a narrowing nobody can
-    see is worse than a narrowing that fails loudly.
-    """
-    roles = frozenset(str(role) for role in default_roles)
-    unknown = sorted(roles - ALL_ROLES)
-    if unknown:
-        raise ImproperlyConfigured(
-            f"apps/usage/policies.py declares {action!r} for role(s) {unknown} that this "
-            f"deployment does not have. The roles are {sorted(ALL_ROLES)}, derived from "
-            f"`core.authz.ROLE_RANK`. A permission declared for a role nobody holds is a "
-            f"permission that refuses everybody, quietly."
-        )
-    if not roles:
-        raise ImproperlyConfigured(
-            f"apps/usage/policies.py declares {action!r} for no roles at all. Deleting the "
-            f"capability is an edit to the door; a declaration nobody satisfies is a route "
-            f"that answers 403 to everyone with nothing saying why."
-        )
-    return DeclaredPermission(action=action, roles=roles)
-
-
-#: **The one place the usage read's bar is set.** All roles by default: a fresh
-#: clone behaves exactly as it did before this declaration existed (pinned red
-#: in `tests/test_policies.py`), and a product that wants only owners and admins
-#: to see the bill edits THIS LINE — never a fork of this file.
-USAGE_READ_REPORT = declared_permission(action="usage.read_report", default_roles=ALL_ROLES)
-
-
-POLICIES: dict[str, Policy] = {
-    USAGE_READ_REPORT.action: USAGE_READ_REPORT.can,
+#: The key this app renamed when the vocabulary became one shape, and the whole
+#: cost of renaming one (ADR core-25). `core.authz.allows` resolves the alias one
+#: line BEFORE the policy lookup, so a product still calling
+#: `require(actor, "usage.read_report")` gets exactly the answer it got before,
+#: with one deprecation printed per process. `manage.py rename_permission` is
+#: what rewrites rows once a deployment has grants naming the old word.
+#:
+#: The successor is the DERIVED key of the row the report totals rather than a
+#: second spelling of the report: `usage.read_report` named no kind at all —
+#: `usage` is an app, `UsageEntry` is the kind — so nothing a tenant wrote about
+#: the rows could reach the read that returns them.
+RENAMED_PERMISSIONS: dict[str, str] = {
+    "usage.read_report": "usage_entry.read",
 }
+
+
+#: **Empty, and it is a statement.** See the module docstring: the row filter is
+#: `visible_to`'s and the capability is the vocabulary's, so there is nothing
+#: left for a predicate to decide that a tenant could not decide for themselves.
+POLICIES: dict[str, Policy] = {}
 
 
 # The sentence a refused caller reads. Plain language, never the action name;
 # a product declares these beside its policies and never edits `core`.
+#
+# An override of the sentence a derived key would otherwise carry ("You may not
+# read this usage entry.", assembled from `verbose_name`): the reader of this
+# refusal asked for a REPORT, and a refusal that named a row they never asked
+# about would be true and useless. `decided_by` stays `derived` — an
+# `ACTION_PROSE` entry for a key the registry already derived is a sentence
+# override and not a second declaration (`core.authz._build`, step 1).
 ACTION_PROSE: dict[str, str] = {
-    USAGE_READ_REPORT.action: (
+    "usage_entry.read": (
         "You may not read this tenant's usage. A usage report covers the part of "
-        "the organization you are acting as, so signing in under a hat you hold "
-        "in this tenant is what opens it."
+        "the organization you are acting as, and reading it is a capability your "
+        "role or a grant has to carry."
     ),
 }

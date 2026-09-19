@@ -255,10 +255,18 @@ def test_the_retained_event_payload_is_excluded_rather_than_swept(
 
     from apps.core import bridge
 
+    # `organization_id` is not decoration, and it is the same sentence the
+    # deployment-side probe this module mirrors carries: a widget is an
+    # `OrgScopedModel`, and `emit` REFUSES an org-scoped event whose payload
+    # names no branch — an absent key is stamped NULL and the socket fan-out
+    # reads NULL as tenant-wide, so the subject's own row would reach every
+    # connection in the tenant. The root is the branch because this test is
+    # about a retained ADDRESS and not about the hierarchy, and it is the root
+    # the `world` fixture already resolved rather than a second read of it.
     bridge.get(bridge.EMIT)(
         tenant=world.tenant,
         name="example.widget.created",
-        payload={"contact": TARGET_EMAIL},
+        payload={"contact": TARGET_EMAIL, "organization_id": str(world.root.pk)},
         actor=system_actor(world.tenant),
     )
     erase_user(user=target, actor=eraser, tenant=world.tenant)

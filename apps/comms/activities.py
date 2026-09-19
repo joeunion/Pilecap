@@ -104,7 +104,12 @@ def deliver_message(payload: DeliverMessage) -> DeliveryAttempt:
     close_old_connections()
     try:
         tenant, _user_id, org = workflow_context()
-        message = get_message(tenant=tenant, message_id=UUID(payload.message_id), org=org)
+        message = get_message(
+            tenant=tenant,
+            message_id=UUID(payload.message_id),
+            org=org,
+            actor=system_actor(tenant, org),
+        )
         if message.status not in SENDABLE:
             # Either a replay of an attempt that already succeeded, or — since
             # C2-comms-b — a row the consent wall refused. Report what is
@@ -168,6 +173,7 @@ def deliver_message(payload: DeliverMessage) -> DeliveryAttempt:
                 recipient=current.recipient,
                 channel=current.channel,
                 org=current.organization,
+                actor=system_actor(message.tenant, current.organization),
             )
             # `None` cannot happen behind a quiet-hours refusal — the wall read
             # the row to make it — and it is handled rather than asserted
@@ -222,7 +228,12 @@ def finish_message(payload: MessageOutcome) -> str:
     close_old_connections()
     try:
         tenant, _user_id, org = workflow_context()
-        message = get_message(tenant=tenant, message_id=UUID(payload.message_id), org=org)
+        message = get_message(
+            tenant=tenant,
+            message_id=UUID(payload.message_id),
+            org=org,
+            actor=system_actor(tenant, org),
+        )
         actor = system_actor(message.tenant, org)
         if payload.status == Message.Status.SENT:
             recorded = services.record_message_sent(
@@ -270,7 +281,12 @@ def send_step(payload: SendStep) -> StepStarted:
     close_old_connections()
     try:
         tenant, _user_id, org = workflow_context()
-        anchor = get_message(tenant=tenant, message_id=UUID(payload.message_id), org=org)
+        anchor = get_message(
+            tenant=tenant,
+            message_id=UUID(payload.message_id),
+            org=org,
+            actor=system_actor(tenant, org),
+        )
         started = services.send_step(
             tenant=anchor.tenant,
             actor=system_actor(anchor.tenant, org),

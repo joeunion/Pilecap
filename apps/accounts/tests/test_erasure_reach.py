@@ -192,4 +192,4 @@ def test_the_policy_is_the_one_that_answers_and_not_the_role_fallback(
     """
     from apps.core.authz import policies
 
-    assert "accounts.user.erase" in policies()
+    assert "user.erase" in policies()

@@ -331,7 +331,18 @@ def test_with_no_thresholds_configured_recording_issues_no_aggregate_query(
     the hottest write path in the product. The count is a ceiling on the whole
     call, and the assertion under it is the one that names the property: no
     statement in this call aggregates.
+
+    **Measured COLD, deliberately.** Statement 2 is the tenant's root, and the
+    root is memoised on the tenant instance (`core.models.Tenant`), so whether
+    this call pays it depends entirely on whether something earlier in the
+    process already asked on this same instance — here, the `root_org` fixture
+    the world is built from. A pin that inherited that would be a pin measuring
+    fixture order rather than the call, so the memo is emptied through its one
+    invalidation first and the number below is what a recording costs with
+    nothing remembered. A caller that HAS already resolved the root — a door,
+    which fills the memo from the acting hat — pays twelve.
     """
+    world.tenant.forget_root()
     with django_assert_num_queries(RECORD_QUERY_BUDGET) as captured:
         _record(world)
     statements = [query["sql"] for query in captured.captured_queries]
@@ -343,7 +354,10 @@ def test_with_no_thresholds_configured_recording_issues_no_aggregate_query(
 #: order they run:
 #:
 #:   1  SAVEPOINT — `@service`'s transaction
-#:   2  the tenant's root organization
+#:   2  the tenant's root organization — **memoised on the tenant instance**
+#:      (`core.models.Tenant`), so it is paid once per instance and not once per
+#:      call; the test above empties the memo first so this number stays the
+#:      COLD cost of one recording rather than a fact about fixture order
 #:   3  the replay read on the idempotency key
 #:   4-5 `full_clean`: the tenant FK exists, the organization FK exists
 #:   6-7 `full_clean`: the pk is free, the (tenant, idempotency_key) pair is free
@@ -488,3 +502,31 @@ def test_the_crossing_is_measured_tenant_wide_across_branches(
     assert _crossings(world.tenant) == []
     _record(world, quantity=Decimal("100"), actor=world.south_actor, idempotency_key="s-1")
     assert len(_crossings(world.tenant)) == 1
+
+
+def test_a_crossing_is_stamped_with_the_entrys_branch(world: World, a_declared_meter: str) -> None:
+    """**R4's F4, the live instance.** A crossing IS about a branch's entry.
+
+    `ThresholdCrossingOut` carried the branch only inside `crossed_by`, and
+    `_subject_organization` reads the TOP level: absent meant NULL, and
+    `bridge.group_for` reads NULL as tenant-wide, so a rival administrator at a
+    sibling branch received a ledger row that `GET /usage/` under their own hat
+    never lists. The outer schema now carries `organization_id` too — the
+    entry's, never the actor's hat (ADR realtime-2a: the two differ exactly
+    when somebody writes downward, and a hat-stamped event is a WRONG branch
+    rather than a wide one).
+
+    The recording is made at `north`, so an assertion that merely found *a* UUID
+    would pass on the root's; the branch is named.
+    """
+    _configure_threshold(world, quantity="50")
+    entry = _record(world, quantity=Decimal("100"))
+
+    crossed = _crossings(world.tenant)
+    assert len(crossed) == 1
+    payload = crossed[0].payload
+    assert payload["organization_id"] == str(entry.organization_id)
+    assert payload["organization_id"] == str(world.north.pk)
+    assert payload["crossed_by"]["organization_id"] == str(world.north.pk)
+    # And the stamp reached the ROW the fan-out narrows on, not only the body.
+    assert crossed[0].organization_id == world.north.pk

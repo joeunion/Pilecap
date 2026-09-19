@@ -40,12 +40,16 @@ activity and the services above it.
 
 from __future__ import annotations
 
+import json
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
+from hashlib import sha256
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
+from uuid import uuid4
 
 import httpx
 from django.conf import settings
@@ -89,6 +93,20 @@ USER = "/v2"
 # Zitadel's number rather than ours, and `smtp_configuration`, because who this
 # instance's mail comes from is instance-wide and no row of ours claims it.
 ADMIN = "/admin/v1"
+
+# The **authenticated caller's own** surface, and the fourth prefix this module
+# speaks. One read: which user the machine PAT belongs to. Nothing else here
+# needs it, and nothing else should — it is how `ensure_instance_member_role`
+# finds the user it must grant `IAM_LOGIN_CLIENT` to without any deployment
+# having to write that id into `.env`, where it would be a second copy of a
+# fact Zitadel already knows (first principles 9).
+#
+# MEASURED against the pinned build (v4.17.1): `GET /auth/v1/users/me` with the
+# machine PAT answers `{"user": {"id", "userName", "machine": {...}}}` for the
+# service account the PAT was minted for. The management API has no such read —
+# a PAT cannot ask "who am I" on `/management/v1` at all — which is why this
+# prefix exists rather than the call being folded into one of the three above.
+AUTH = "/auth/v1"
 
 # Zitadel's id for "this person has already set credentials, so there is nothing
 # to invite them to set" — the answer `CreateInviteCode` gives for a user who is
@@ -145,6 +163,13 @@ class Resource:
     id: str
     created: bool
     detail: Mapping[str, Any] = field(default_factory=dict)
+    #: **The third state, and it is not `created`'s twin.** An `ensure_*` that
+    #: RECONCILES an object it found has three honest answers — I made it, I
+    #: found it and it agreed, I found it and made it agree — and a writer with
+    #: only two would have to call the third one `created`, which is the one
+    #: word a reader uses to decide whether a second object now exists. The
+    #: seed's `updated` verb reads this.
+    updated: bool = False
 
 
 def configured() -> bool:
@@ -163,7 +188,7 @@ def _token() -> str:
 
 
 @contextmanager
-def _client() -> Iterator[httpx.Client]:
+def _client(*, timeout: float | None = None) -> Iterator[httpx.Client]:
     """A client bound to this deployment's Zitadel, with the PAT attached.
 
     Private, and rule 27 keeps it that way: a caller that could build its own
@@ -171,6 +196,15 @@ def _client() -> Iterator[httpx.Client]:
     below. The retry policy is deliberately **not** here — it belongs to the
     Temporal activity that calls these functions, where a retry is durable and
     visible instead of a loop nobody can see from outside the process.
+
+    `timeout` is the ONE thing a caller may say, and it exists because the two
+    populations of call here run under different clocks: a management call is a
+    seed step or an activity and gets `ZITADEL_MANAGEMENT_TIMEOUT`, while a
+    sign-in check is a person waiting at a form and gets the much shorter
+    `ZITADEL_SIGNIN_TIMEOUT` (design I-A §3.2). It is a parameter rather than a
+    second client builder for the reason `_call`'s `prefix` is one: a copy of
+    this function is a second place the credential, the headers and the
+    never-log-the-body rule can drift.
     """
     issuer = _issuer()
     token = _token()
@@ -180,7 +214,8 @@ def _client() -> Iterator[httpx.Client]:
             "ZITADEL_PAT must both be set. ./scripts/setup.sh writes the PAT into "
             ".env from the zitadel_bootstrap volume."
         )
-    timeout = float(getattr(settings, "ZITADEL_MANAGEMENT_TIMEOUT", DEFAULT_TIMEOUT))
+    if timeout is None:
+        timeout = float(getattr(settings, "ZITADEL_MANAGEMENT_TIMEOUT", DEFAULT_TIMEOUT))
     with httpx.Client(
         base_url=issuer,
         timeout=httpx.Timeout(timeout),
@@ -311,6 +346,31 @@ def find_application(*, project_id: str, name: str) -> dict[str, Any] | None:
         if str(row.get("name", "")) == name:
             return row
     return None
+
+
+def get_application(*, project_id: str, app_id: str) -> dict[str, Any] | None:
+    """One application BY ID, as `GET /projects/{p}/apps/{a}` answers it.
+
+    The sibling of `find_application`, and the one a writer that was handed an
+    id needs: searching a project by name to re-find an application whose id
+    the caller already holds is a read that can answer with a DIFFERENT object
+    — two applications may share a name, and the search's first match is not
+    necessarily the one the caller meant.
+
+    MEASURED against the pinned build (v4.17.1): the answer is
+    `{"app": {"id", "state", "name", "oidcConfig": {...}}}` — the same
+    application shape `applications()` returns in its result list, wrapped in
+    one key — and `None` here is the 404 that path answers for an id this
+    project does not hold.
+    """
+    try:
+        body = _call("GET", f"/projects/{project_id}/apps/{app_id}")
+    except ZitadelError as error:
+        if " 404" in str(error):
+            return None
+        raise
+    app = body.get("app")
+    return dict(app) if isinstance(app, dict) else None
 
 
 def identity_providers() -> list[dict[str, Any]]:
@@ -461,6 +521,21 @@ def smtp_configuration() -> dict[str, Any]:
     return dict(_call("GET", "/smtp", prefix=ADMIN).get("smtpConfig") or {})
 
 
+def read_user(*, user_id: str) -> Probe:
+    """`GET /v2/users/{id}` — one person, by id, **ACROSS ORGANISATIONS**.
+
+    The sibling of `find_user` and the one that is not org-scoped. MEASURED
+    on the pinned build: the management search
+    (`POST /management/v1/users/_search`, which `find_user` uses) answers
+    only rows in the caller's own organisation, so a person invited into a
+    second org on the same instance is invisible to it — they authenticate
+    and then meet an outage at the landing (V-A-W3). This read answers 200
+    with `user.userId` and the same `human.email` block for a person in any
+    organisation.
+    """
+    return probe("GET", f"/users/{user_id}", prefix=USER)
+
+
 def find_user(*, username: str) -> dict[str, Any] | None:
     rows = _search(
         "/users/_search",
@@ -490,6 +565,71 @@ def ensure_project(*, name: str) -> Resource:
     return Resource(id=str(body.get("id", "")), created=True)
 
 
+#: **The OIDC application config's FULL field set**, read out of the API the
+#: pinned build serves: `ManagementServiceUpdateOIDCAppConfigBody` in
+#: `/openapi/v2/swagger/v2/zitadel/zitadel/management.swagger.json` on
+#: ghcr.io/zitadel/zitadel:v4.17.1 — **eighteen properties**, measured by
+#: counting that definition's own `properties` map. The GET's shape
+#: (`zitadelAppV1OIDCConfig`) carries twenty-three, and the five extra are
+#: read-only — `clientId`, `version`, `noneCompliant`, `complianceProblems`,
+#: `allowedOrigins` — so they are deliberately NOT here: sending a field the
+#: update body does not declare is how a writer starts getting 400s on a build
+#: that tightened its parser.
+#:
+#: The map is what an ABSENT key means and the field set derives from its keys,
+#: as every sibling declaration does. Proto3 omits its zero values, so an
+#: absent boolean is `False`, an absent array is `[]` and an absent Duration is
+#: `"0s"`.
+#:
+#: **`ios` and `android` are message fields, and their zero is `None`** —
+#: protojson's unset representation. That one cell is the only member of any
+#: field set in this module whose absent value could not be read off the
+#: swagger's type alone, so it was MEASURED instead, against the running stack:
+#: `PUT /management/v1/projects/0.../apps/0.../oidc_config` with
+#: `{"ios": null, "android": null}` answers `404 COMMAND-2n8uU` — "Application
+#: doesn't exist" — which is the LOOKUP failing, so the body parsed. A parser
+#: that had rejected the nulls would have answered 400 before reaching the
+#: command. The ids in that probe name nothing and it created nothing.
+#:
+#: **`loginVersion` is a field we state no opinion about** and it is here for
+#: the reason the login policy's five lifetimes are: so a body that carries our
+#: three also carries it back byte-identical, rather than resetting a
+#: deployment's login version as a side effect of fixing a redirect URI.
+OIDC_APP_CONFIG_ABSENT: dict[str, Any] = {
+    "redirectUris": [],
+    "responseTypes": [],
+    "grantTypes": [],
+    "appType": "OIDC_APP_TYPE_WEB",
+    "authMethodType": "OIDC_AUTH_METHOD_TYPE_BASIC",
+    "postLogoutRedirectUris": [],
+    "devMode": False,
+    "accessTokenType": "OIDC_TOKEN_TYPE_BEARER",
+    "accessTokenRoleAssertion": False,
+    "idTokenRoleAssertion": False,
+    "idTokenUserinfoAssertion": False,
+    "clockSkew": "0s",
+    "additionalOrigins": [],
+    "skipNativeAppSuccessPage": False,
+    "backChannelLogoutUri": "",
+    "loginVersion": None,
+    "ios": None,
+    "android": None,
+}
+OIDC_APP_CONFIG_FIELDS = frozenset(OIDC_APP_CONFIG_ABSENT)
+
+
+def oidc_app_config_of(application: Mapping[str, Any]) -> dict[str, Any]:
+    """One application's live OIDC config, as the update body's own field set.
+
+    The GET's extra read-only keys are dropped here rather than at each reader,
+    so "what this application says" and "what a PUT may say about it" are one
+    shape and a comparison between them cannot be a comparison of two
+    vocabularies.
+    """
+    live = dict(application.get("oidcConfig") or {})
+    return {key: live.get(key, absent) for key, absent in OIDC_APP_CONFIG_ABSENT.items()}
+
+
 def ensure_web_application(
     *,
     project_id: str,
@@ -503,14 +643,52 @@ def ensure_web_application(
     `authMethodType` is BASIC — a web application keeps a secret because it has
     a server to keep it on. The native client below is the opposite case and
     says so.
+
+    **It RECONCILES what it finds, and used to pin it at birth.** Finding an
+    application by name and returning its id meant every value declared here —
+    the redirect URI, the post-logout URI, `devMode` — was written exactly once,
+    at creation, and belonged to whoever edited the console after that. Two
+    ordinary moves broke sign-in with the seed still saying `exists`: a
+    deployment whose `PUBLIC_BASE_URL` changed kept the old callback and no
+    other, and a one-field console edit to the redirect URI left the person
+    signing in on raw JSON at the identity platform — upstream of the callback,
+    so no page of ours ever renders and no remedy is offered.
+
+    **Full body, and the idempotence is the comparison** (ADR ident-8). Zitadel's
+    `PUT` is a REPLACE, so the three fields this deployment states an opinion
+    about are merged over the live config and the whole of
+    `OIDC_APP_CONFIG_FIELDS` is sent; when the merged body equals the live one
+    nothing is written at all, which is what the run `scripts/setup.sh` makes on
+    every invocation needs and what keeps the fields nobody here manages
+    byte-identical.
+
+    **The declared values WIN, including by removal.** A URI that is no longer
+    declared is gone, not kept beside the new one: an application still
+    accepting a callback on an origin the deployment has moved off is a redirect
+    target somebody else may come to own.
     """
     existing = find_application(project_id=project_id, name=name)
     if existing is not None:
-        return Resource(
-            id=str(existing["id"]),
-            created=False,
-            detail={"clientId": str((existing.get("oidcConfig") or {}).get("clientId", ""))},
+        app_id = str(existing["id"])
+        client_id = str((existing.get("oidcConfig") or {}).get("clientId", ""))
+        live = oidc_app_config_of(existing)
+        desired = {
+            **live,
+            "redirectUris": list(redirect_uris),
+            "postLogoutRedirectUris": list(post_logout_uris),
+            "devMode": bool(dev_mode),
+        }
+        if desired == live:
+            log.info("accounts.zitadel.application_unchanged", application_name=name, kind="web")
+            return Resource(id=app_id, created=False, detail={"clientId": client_id})
+        _call("PUT", f"/projects/{project_id}/apps/{app_id}/oidc_config", desired)
+        log.info(
+            "accounts.zitadel.application_updated",
+            application_name=name,
+            kind="web",
+            redirect_uris=list(redirect_uris),
         )
+        return Resource(id=app_id, created=False, updated=True, detail={"clientId": client_id})
     body = _call(
         "POST",
         f"/projects/{project_id}/apps/oidc",
@@ -621,6 +799,137 @@ def ensure_api_application(*, project_id: str, name: str) -> Resource:
             "clientSecret": str(body.get("clientSecret", "")),
         },
     )
+
+
+#: **Which login UI an application sends a person to**, as Zitadel's own
+#: `v1LoginVersion` message: `{"loginV1": {}}`, `{"loginV2": {"baseUri": …}}`,
+#: or ABSENT, which means "whatever the instance default is" — read out of
+#: `management.swagger.json` on ghcr.io/zitadel/zitadel:v4.17.1 and MEASURED
+#: end to end against the running stack on 2026-09-18 with a throwaway
+#: application under a throwaway project, deleted afterwards:
+#:
+#:   no declaration  → `GET /oauth/v2/authorize` 302s to
+#:                     `/ui/login/login?authRequestID=<id>`
+#:   loginV2 baseUri → 302s to `<baseUri>/login?authRequest=V2_<id>`
+#:   `loginVersion: null` in a full-body PUT → the key is GONE from the next
+#:                     GET, and the authorize 302 is the first shape again
+#:
+#: That last line is the whole of "`None` CLEARS", and it is measured rather
+#: than assumed because it is the road back: the consumer locked an owner out
+#: of a deployment for a morning with a v2 declaration and no way to withdraw
+#: it (their ADR ident-9, amendment 4; design C-9's "the reconciler's CLEAR").
+#:
+#: **This product states an opinion about the field only through
+#: `ensure_application_login_version`.** `ensure_web_application` carries it
+#: back byte-identical — it is in `OIDC_APP_CONFIG_ABSENT` for exactly that
+#: reason — so fixing a redirect URI never changes which page a person lands
+#: on, and declaring a login version never changes a redirect URI.
+LOGIN_V2 = "loginV2"
+
+
+def login_version_declaration(base_uri: str | None) -> dict[str, Any] | None:
+    """The `loginVersion` value this deployment declares, from one base URI.
+
+    `None` in, `None` out, and that is the CLEAR: a full-body PUT carrying
+    `loginVersion: null` removes the declaration and the application goes back
+    to the instance default (measured above). It is deliberately NOT `{}` and
+    deliberately NOT `{"loginV1": {}}` — the first is a message with no field
+    set, which protojson accepts and Zitadel reads as "v1 pinned", and the
+    second pins v1 on an instance whose default may one day be v2. Neither is
+    "we state no opinion", which is what a deployment on the hosted page means.
+    """
+    if base_uri is None:
+        return None
+    return {LOGIN_V2: {"baseUri": base_uri}}
+
+
+def login_version_of(application: Mapping[str, Any]) -> dict[str, Any] | None:
+    """One application's LIVE `loginVersion`, in the same shape the writer sends.
+
+    One shape for the declaration and the observation, for the reason
+    `oidc_app_config_of` gives about the config as a whole: a comparison
+    between "what we declare" and "what is there" must not be a comparison of
+    two vocabularies. `None` is the absent key, which is the state a
+    deployment on the hosted page declares.
+    """
+    live = dict(application.get("oidcConfig") or {})
+    value = live.get("loginVersion")
+    return dict(value) if isinstance(value, dict) else None
+
+
+def login_base_uri_of(application: Mapping[str, Any]) -> str | None:
+    """Where a v2-declared application sends people, for a report's own words.
+
+    `None` covers three different states on purpose — no declaration, v1
+    pinned, and v2 at the instance's own URI — because none of them is a base
+    URI and a reader wanting the DECLARATION rather than the URI asks
+    `login_version_of`. The judgement is made on that; this is for the line.
+    """
+    version = login_version_of(application)
+    two = (version or {}).get(LOGIN_V2)
+    if not isinstance(two, dict):
+        return None
+    return str(two.get("baseUri", "")) or None
+
+
+def ensure_application_login_version(
+    *, project_id: str, app_id: str, base_uri: str | None
+) -> Resource:
+    """Declare which login UI one application uses — or withdraw the declaration.
+
+    **The whole of design C-9's writer half, and it goes BOTH ways.** A
+    deployment whose front door is our own page declares
+    `loginVersion.loginV2.baseUri = <PUBLIC_BASE_URL>/accounts` on the
+    application people sign in through, and Zitadel appends `/login`. A
+    deployment on the hosted page declares nothing — and "declares nothing" has
+    to be a value this function can WRITE, not merely a call it can skip,
+    because the state it has to reach is an instance where somebody else (a
+    console edit, a previous `SIGN_IN_DOOR=ours`, a sibling checkout) already
+    declared v2. `base_uri=None` therefore CLEARS.
+
+    **`None` is not "no applications to declare".** The consumer paid for that
+    distinction: a reconciler that expressed "clear it" as an empty list of
+    applications to write ran zero iterations and left the declaration exactly
+    where it was, green, with the owner still locked out. So the argument is a
+    value with three readings and one of them is the withdrawal, and
+    `test_none_clears_a_v2_declaration_the_console_set` is the case that keeps
+    it that way.
+
+    **Full body, and the idempotence is the comparison** (ADR ident-8).
+    Zitadel's `PUT` is a REPLACE: a body carrying only `loginVersion` would
+    zero every redirect URI the application has. So the declaration is merged
+    over the live config, the whole of `OIDC_APP_CONFIG_FIELDS` is sent, and a
+    declaration that AGREES with what is live sends no request at all — which
+    is what `scripts/setup.sh` running the seed on every invocation needs.
+
+    `updated` is the verb that carries news here, exactly as it does on
+    `ensure_web_application`: something outside this codebase had declared a
+    login version, and this run declared it back.
+    """
+    application = get_application(project_id=project_id, app_id=app_id)
+    if application is None:
+        raise ZitadelError(
+            f"Zitadel has no application {app_id} on project {project_id}: a login "
+            "version can only be declared on an application that exists. Run "
+            "manage.py zitadel_seed."
+        )
+    live = oidc_app_config_of(application)
+    desired = {**live, "loginVersion": login_version_declaration(base_uri)}
+    if desired == live:
+        log.info(
+            "accounts.zitadel.login_version_unchanged",
+            application_id=app_id,
+            declared=bool(base_uri),
+        )
+        return Resource(id=app_id, created=False)
+    _call("PUT", f"/projects/{project_id}/apps/{app_id}/oidc_config", desired)
+    log.info(
+        "accounts.zitadel.login_version_declared",
+        application_id=app_id,
+        declared=bool(base_uri),
+        base_uri=base_uri or "",
+    )
+    return Resource(id=app_id, created=False, updated=True)
 
 
 def ensure_human_user(
@@ -745,19 +1054,38 @@ def is_already_initialized(error: ZitadelError) -> bool:
 def invite_url(*, user_id: str, code: str) -> str:
     """The page where an invited person sets their password. **The email's link.**
 
-    Built here rather than in the template or the activity because it is a fact
-    about Zitadel's own front end, and this module is the only one allowed to
-    know facts about Zitadel. `INVITE_PATH` above records how it was measured.
+    Built here rather than in the template or the activity because the hosted
+    half is a fact about Zitadel's own front end, and this module is the only
+    one allowed to know facts about Zitadel. `INVITE_PATH` above records how it
+    was measured.
 
-    Both values are percent-encoded. Neither can contain a delimiter today — an
-    id is digits and a code is six uppercase alphanumerics — and that is exactly
-    why encoding costs nothing and is worth having when one of them changes
-    shape.
+    **It branches on `SIGN_IN_DOOR`** (design C-13, A5.5), and the two halves
+    are the same link at two front ends:
+
+    * `hosted` — Zitadel's own credential page, unchanged and still the
+      default. `_issuer()` is where this deployment's platform lives.
+    * `ours` — our entrance, which under that door is the one place a person
+      ever types a password. The QUERY IS THE PLATFORM'S, deliberately
+      (`userID` and `code`, the names Zitadel's own page reads): an operator
+      comparing two links sees one tail, and the invite road (rung A7) reads
+      the parameters the platform mints rather than a second spelling of them.
+
+    Both values are percent-encoded on both halves. Neither can contain a
+    delimiter today — an id is digits and a code is six uppercase
+    alphanumerics — and that is exactly why encoding costs nothing and is
+    worth having when one of them changes shape.
+
+    `reverse` at call time rather than a literal path: `config/urls.py` owns
+    where the sign-in door hangs, and a second spelling here would be the
+    fourth thing that has to agree about one URL.
     """
-    return (
-        f"{_issuer()}{INVITE_PATH}"
-        f"?userID={quote(str(user_id), safe='')}&code={quote(str(code), safe='')}"
-    )
+    tail = f"?userID={quote(str(user_id), safe='')}&code={quote(str(code), safe='')}"
+    if str(getattr(settings, "SIGN_IN_DOOR", "hosted")) == "ours":
+        from django.urls import reverse
+
+        base = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+        return f"{base}{reverse('account_login')}{tail}"
+    return f"{_issuer()}{INVITE_PATH}{tail}"
 
 
 def invite_code_lifetime() -> timedelta | None:
@@ -1388,6 +1716,108 @@ def ensure_restrictions(*, is_public_org_registration_disallowed: bool) -> Resou
     return Resource(id=owner, created=True)
 
 
+# --- the instance manager roles the machine credential holds ------------------
+#
+# A manager role is not a policy and not an object: it is what the PAT is
+# ALLOWED to do, and the design depends on one of them by name.
+
+#: **The manager role the login-v2 finalize needs, and `IAM_OWNER` does not
+#: carry it.** `POST /v2/oidc/auth_requests/{id}` — the call that turns a
+#: signed-in session into the OIDC code the relying party is waiting for —
+#: answers `403 AUTH-AWfge` for a machine user holding every other instance
+#: role there is. The consumer's whole V2-1 rung was BLOCKED on this one fact
+#: and their design calls it out as the thing not to re-buy (design I-A, fact
+#: 2). It is granted here, by the seed, rather than in a runbook step, because
+#: a permission a deployment needs and an operator has to remember is a
+#: deployment that works on the box where somebody remembered.
+LOGIN_CLIENT_ROLE = "IAM_LOGIN_CLIENT"
+
+#: **The IAM member's FULL field set** — one property, `roles` — read out of
+#: `AdminServiceUpdateIAMMemberBody` in
+#: `/openapi/v2/swagger/v2/zitadel/zitadel/admin.swagger.json` on
+#: ghcr.io/zitadel/zitadel:v4.17.1. One field is exactly why it is declared:
+#: `PUT /admin/v1/members/{userId}` REPLACES the role list, so a body carrying
+#: `["IAM_LOGIN_CLIENT"]` takes `IAM_OWNER` away from the credential this
+#: product administers Zitadel with — and the next seed run would then fail on
+#: its first management call, with nothing left that could grant it back. The
+#: full-body convention is not a nicety on this resource; it is the difference
+#: between adding a role and locking the deployment out of its own instance.
+IAM_MEMBER_FIELDS = frozenset({"roles"})
+
+
+def instance_members() -> list[dict[str, Any]]:
+    """Everyone holding a manager role on the INSTANCE, with their roles.
+
+    MEASURED against the pinned build: `POST /admin/v1/members/_search` with an
+    empty body answers `{"details": {...}, "result": [{"userId", "roles",
+    "preferredLoginName", "userType", …}]}`, and a machine user appears there
+    as `TYPE_MACHINE` exactly as a person appears as `TYPE_HUMAN`.
+    """
+    return _search("/members/_search", {}, prefix=ADMIN)
+
+
+def instance_member_roles(*, user_id: str) -> list[str]:
+    """The instance manager roles one user holds. Empty for a non-member.
+
+    Empty is deliberately not `None`: "holds no manager role" and "is not a
+    member" are the same thing to every reader here — the finalize refuses
+    both identically — and a caller that had to tell them apart would be a
+    caller asking the wrong question.
+    """
+    for row in instance_members():
+        if str(row.get("userId", "")) == user_id:
+            return [str(one) for one in (row.get("roles") or [])]
+    return []
+
+
+def machine_user() -> dict[str, Any]:
+    """Whoever the PAT belongs to, as Zitadel itself reports it.
+
+    The one read on the `AUTH` prefix, and the reason it exists rather than a
+    `ZITADEL_MACHINE_USER_ID` key in `.env`: the id is Zitadel's fact about the
+    credential, so a second copy in the environment is a copy that can be wrong
+    — and a role granted to the wrong user id is a grant that reads as done and
+    changes nothing (first principles 9).
+    """
+    body = _call("GET", "/users/me", prefix=AUTH)
+    user = body.get("user")
+    return dict(user) if isinstance(user, dict) else {}
+
+
+def ensure_instance_member_role(*, user_id: str, role: str) -> Resource:
+    """Give one user an instance manager role, keeping every role they hold.
+
+    **Additive, and that is the whole of it.** Zitadel's update is a REPLACE of
+    the role list (`IAM_MEMBER_FIELDS` says what that costs), so this reads the
+    live roles, appends, and sends the union — and sends nothing at all when
+    the role is already held, which is the readable idempotence every writer
+    here has.
+
+    Three states, and the third is the one a fresh instance is in for a
+    person but never for the machine user: already a member with the role
+    (nothing sent), already a member without it (`PUT`, the union), not a
+    member at all (`POST /admin/v1/members`, which is a CREATE and so reports
+    `created`).
+
+    **Nothing is ever taken away.** There is no `roles=` parameter and no
+    remove path: a reconciler that could compute a role list would eventually
+    compute one without `IAM_OWNER` on the credential it is reconciling with.
+    A role granted by hand in the console survives every run of this.
+    """
+    held = instance_member_roles(user_id=user_id)
+    if role in held:
+        log.info("accounts.zitadel.instance_role_unchanged", zitadel_user_id=user_id, role=role)
+        return Resource(id=user_id, created=False, detail={"roles": list(held)})
+    if not held:
+        _call("POST", "/members", {"userId": user_id, "roles": [role]}, prefix=ADMIN)
+        log.info("accounts.zitadel.instance_member_added", zitadel_user_id=user_id, role=role)
+        return Resource(id=user_id, created=True, detail={"roles": [role]})
+    union = [*held, role]
+    _call("PUT", f"/members/{user_id}", {"roles": union}, prefix=ADMIN)
+    log.info("accounts.zitadel.instance_role_granted", zitadel_user_id=user_id, role=role)
+    return Resource(id=user_id, created=False, updated=True, detail={"roles": union})
+
+
 def _settled_target(*, name: str, existing_id: str) -> str:
     """Which existing IdP an `ensure_*` should update, or `""` to create one.
 
@@ -1570,6 +2000,135 @@ def rotate_api_application_secret(*, project_id: str, app_id: str) -> Resource:
     )
 
 
+# --- the checks: two facts about the pinned build, measured on demand --------
+#
+# Design I-A's measurement kit (§3.7). These are NOT dialled by the suite —
+# ADR ident-5(a) is that the test suite never reaches a real instance — and
+# they are not `ensure_*` either: each one goes and LOOKS at the running
+# deployment and reports what it saw, for `manage.py zitadel_measure` to judge.
+# They live here because everything that speaks to Zitadel lives here (house
+# rule 27), and because M1 mutates: a check that needed a mutation and could
+# not make one through this module would be a second door.
+
+
+def deactivate_application(*, project_id: str, app_id: str) -> Resource:
+    """Stop an application being able to start a login, keeping the object.
+
+    **What a throwaway owes.** `check_login_version_redirects` below makes an
+    application to measure against, and an OIDC client left active on a real
+    project is a live sign-in door nobody meant to open. Deactivated rather
+    than deleted for the reason `deactivate_identity_provider` gives: the
+    object is the evidence a measurement was taken, and Zitadel's own audit
+    log reads better with a deactivation in it than with a gap.
+
+    Idempotent the same way its sibling is — "you asked for the state it is
+    already in" is the state the caller asked for.
+    """
+    try:
+        _call("POST", f"/projects/{project_id}/apps/{app_id}/_deactivate", {})
+    except ZitadelError as error:
+        if not _is_already_in_that_state(error):
+            raise
+        return Resource(id=app_id, created=False)
+    log.info("accounts.zitadel.application_deactivated", application_id=app_id)
+    return Resource(id=app_id, created=True)
+
+
+def authorize_redirect(*, client_id: str, redirect_uri: str) -> str:
+    """Where `GET /oauth/v2/authorize` sends a browser for one client. **A read.**
+
+    Not through `_call`: the answer is a 302 with an empty body and the whole
+    of the fact is in the `Location` header, so a helper that parsed JSON and
+    raised on non-2xx would throw away the only thing being measured. The PAT
+    rides along because `_client()` attaches it; this endpoint is a browser
+    endpoint and ignores it, which is measured rather than assumed — the 302
+    below was taken with the header on.
+
+    `""` when the answer is not a redirect at all, because "Zitadel answered
+    something else" is a fact the caller has to be able to report rather than
+    an exception that hides which client it was asking about.
+    """
+    with _client() as client:
+        try:
+            response = client.get(
+                "/oauth/v2/authorize",
+                params={
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "response_type": "code",
+                    "scope": "openid",
+                },
+            )
+        except httpx.HTTPError as error:
+            raise ZitadelError(f"Zitadel GET /oauth/v2/authorize failed: {error}") from error
+    return str(response.headers.get("location", ""))
+
+
+def check_login_version_redirects(*, project_id: str, base_uri: str) -> dict[str, str]:
+    """**M1**: where the authorize endpoint sends a person, per login version.
+
+    Design I-A's first measurement, and the one the whole front door rests on:
+    with no declaration the person goes to Zitadel's own hosted page, and with
+    `loginVersion.loginV2.baseUri` they go to OURS — which is only true if the
+    pinned build honours the per-application declaration at all. The consumer
+    measured it on v4.17.1; this is how a deployment measures it for itself,
+    and how a version bump stops being able to break the front door silently.
+
+    **It builds its own victim, and never touches the real Web application.**
+    A throwaway OIDC client under the project, measured twice, deactivated in a
+    `finally` so a failed measurement still closes the door it opened. The real
+    browser client is what people sign in through: measuring on it would mean
+    two live changes to the one object whose breakage locks everybody out.
+
+    Returns the two `Location` headers, unjudged — `{"undeclared": …,
+    "declared": …}` — because what counts as right is the measuring command's
+    to say and a function that returned a boolean would have thrown away the
+    string an operator needs to read when it is wrong.
+    """
+    # A NEW name every run, because `ensure_native_application` searches by
+    # name first: a stable one would find the deactivated victim of the
+    # previous run and measure the authorize endpoint against a client that
+    # can no longer start a login.
+    name = f"login-version-check-{uuid4().hex[:12]}"
+    redirect_uri = f"{base_uri.rstrip('/')}/login-version-check"
+    made = ensure_native_application(
+        project_id=project_id, name=name, redirect_uris=[redirect_uri], dev_mode=True
+    )
+    client_id = str(made.detail.get("clientId", ""))
+    try:
+        undeclared = authorize_redirect(client_id=client_id, redirect_uri=redirect_uri)
+        ensure_application_login_version(project_id=project_id, app_id=made.id, base_uri=base_uri)
+        declared = authorize_redirect(client_id=client_id, redirect_uri=redirect_uri)
+    finally:
+        deactivate_application(project_id=project_id, app_id=made.id)
+    return {"undeclared": undeclared, "declared": declared}
+
+
+def check_login_client_role() -> dict[str, Any]:
+    """**M2**: whether this deployment's credential may finalize a v2 login.
+
+    `POST /v2/oidc/auth_requests/{id}` answers `403 AUTH-AWfge` for a machine
+    user that holds `IAM_OWNER` and not `IAM_LOGIN_CLIENT`, which is the block
+    the consumer's V2-1 rung died on. The check is a READ rather than an
+    attempted finalize on purpose: a finalize needs a real auth request and a
+    real session, so measuring it directly would mean signing somebody in, and
+    the role is the whole of what the 403 is about.
+
+    Returns the machine user's id, its login name, every instance role it
+    holds and whether the one that matters is among them — unjudged, for the
+    same reason M1's is.
+    """
+    user = machine_user()
+    user_id = str(user.get("id", ""))
+    roles = instance_member_roles(user_id=user_id) if user_id else []
+    return {
+        "user_id": user_id,
+        "login_name": str(user.get("preferredLoginName", "") or user.get("userName", "")),
+        "roles": roles,
+        "may_finalize": LOGIN_CLIENT_ROLE in roles,
+    }
+
+
 #: **The full-body convention's declared population**: every PUT-shaped
 #: writer in this module, by the resource path it PUTs to, with that resource's
 #: FULL field set beside it.
@@ -1602,6 +2161,14 @@ PUT_FIELD_SETS: dict[str, frozenset[str]] = {
     "/policies/label": LABEL_POLICY_FIELDS,
     "/idps/generic_oidc/{id}": OIDC_IDENTITY_PROVIDER_FIELDS,
     "/idps/google/{id}": GOOGLE_IDENTITY_PROVIDER_FIELDS,
+    # TWO ids and a trailing segment, which is the shape `put_field_set`'s
+    # last-segment rule could not see. It resolves this one by pattern.
+    "/projects/{id}/apps/{id}/oidc_config": OIDC_APP_CONFIG_FIELDS,
+    # ONE field, and the smallest set here is the one with the largest blast
+    # radius: this PUT replaces the machine credential's instance manager
+    # roles, so a body naming only the role being added removes IAM_OWNER from
+    # the user every other call in this module authenticates as.
+    "/members/{id}": IAM_MEMBER_FIELDS,
 }
 
 
@@ -1618,11 +2185,1010 @@ def put_field_set(path: str) -> frozenset[str] | None:
     would make the census assert about the wrong thing.
     """
     resource = path
-    for prefix in (MANAGEMENT, ADMIN, USER):
+    for prefix in (MANAGEMENT, ADMIN, USER, AUTH):
         if resource.startswith(prefix):
             resource = resource[len(prefix) :]
             break
     if resource in PUT_FIELD_SETS:
         return PUT_FIELD_SETS[resource]
     head, _, tail = resource.rpartition("/")
-    return PUT_FIELD_SETS.get(f"{head}/{{id}}") if tail else None
+    by_last_segment = PUT_FIELD_SETS.get(f"{head}/{{id}}") if tail else None
+    if by_last_segment is not None:
+        return by_last_segment
+    # **Ids anywhere in the path, not only last.** The one-trailing-id rule
+    # above covers `/idps/<id>`; it cannot see
+    # `/projects/<id>/apps/<id>/oidc_config`, where the ids are in the middle
+    # and the resource's own word is at the end. Matched segment by segment
+    # against the declared templates, with `{id}` matching any one segment —
+    # which is narrower than a regex over the whole path and cannot make two
+    # different resources collide on a shared prefix.
+    parts = resource.split("/")
+    for template, fields in PUT_FIELD_SETS.items():
+        shape = template.split("/")
+        if len(shape) != len(parts):
+            continue
+        if all(want in ("{id}", got) for want, got in zip(shape, parts, strict=True)):
+            return fields
+    return None
+
+
+# --- the measurement door ----------------------------------------------------
+#
+# Everything above this line is a WRITER or a read a writer needs: it asks
+# Zitadel for the state a row declares, and a non-2xx is a `ZitadelError`
+# because the caller was trying to make something true. A MEASUREMENT is the
+# other shape entirely — `manage.py zitadel_measure` exists to find out what
+# this build answers, and on this surface a `404`, a `400` and a `500` are the
+# answers rather than the failures. Three of the design's eleven items ARE a
+# non-2xx status (`404 Org-M0sif`, `400 INSTANCE-5M9vdd`, the WebAuthn `500`),
+# so an instrument built on `_call` could only observe them as exceptions whose
+# status it would have to re-parse out of a message string.
+#
+# So `probe` below returns the status instead of raising on it. It is still the
+# one door (house rule 27): the same `_client()`, the same PAT, the same
+# timeout, the same never-log-the-request-body rule. What it adds is that the
+# caller is allowed to see a refusal, and it adds nothing a writer could use.
+#
+# It has TWO populations of caller now, and the second one is the reason this
+# sentence is amended rather than left as it was: the measurement command, and
+# the Session API functions at the bottom of this module. A sign-in check is
+# the other place in this tree where a refusal is an ANSWER — a wrong password
+# is a 4xx and the person has to be told so — and it reaches `probe` through
+# `_session_probe`, under its own clock, never directly. Nothing in `apps/`
+# outside this module calls `probe` itself.
+
+
+@dataclass(frozen=True)
+class Probe:
+    """One raw answer: the status, the parsed body if there was one, the text.
+
+    `ZitadelError` is still raised for the two things that are not answers — no
+    credential, and a transport that never got one — because "the instance was
+    unreachable" and "the instance said 404" are the two states an instrument
+    must never blur (principle 4). Everything Zitadel actually said comes back
+    here, refusals included.
+    """
+
+    method: str
+    path: str
+    status: int
+    body: dict[str, Any] = field(default_factory=dict)
+    text: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status < 300
+
+    @property
+    def error_id(self) -> str:
+        """Zitadel's STABLE error id, or `""`.
+
+        The prose in `message` is translated and the numeric `code` is gRPC's
+        coarse class; the id in `details[0].id` — `Org-M0sif`, `INSTANCE-5M9vdd`
+        — is the thing worth pinning, which is why `ALREADY_INITIALIZED` above
+        is matched on one. Read from the details block first and recovered from
+        the message's own parenthesis when a build sends only that.
+        """
+        for detail in self.body.get("details") or []:
+            if isinstance(detail, Mapping) and detail.get("id"):
+                return str(detail["id"])
+        message = str(self.body.get("message", ""))
+        if message.endswith(")") and "(" in message:
+            return message[message.rindex("(") + 1 : -1]
+        return ""
+
+
+def probe(
+    method: str,
+    path: str,
+    payload: Mapping[str, Any] | None = None,
+    *,
+    prefix: str = MANAGEMENT,
+    org_id: str = "",
+    timeout: float | None = None,
+) -> Probe:
+    """Ask, and report what came back — including a refusal. **Never writes intent.**
+
+    `prefix=""` reaches a path that carries no version segment at all: the
+    swagger documents this build serves, and the hosted credential page at
+    `INVITE_PATH`, both of which are measured subjects.
+
+    `org_id` sets `x-zitadel-orgid`, which is how Zitadel scopes an org-surface
+    call to an org that is not the credential's own. MEASURED on the pinned
+    build, and it is load-bearing rather than tidy: `POST /v2/sessions` with a
+    `checks.user.userId` naming a person in another organisation answers
+    `404 QUERY-Dfbg2` without it, and `201` with it — so an instrument that
+    omitted the header would report the Session API as broken.
+
+    No body is sent on a request that was given none, because a GET carrying
+    `{}` is a GET some servers answer differently and every one of these paths
+    is being measured for exactly what it answers.
+
+    `timeout` is `_client`'s, unchanged: the measurement kit runs under the
+    management clock and the sign-in seam below runs under its own.
+    """
+    with _client(timeout=timeout) as client:
+        headers = {"x-zitadel-orgid": org_id} if org_id else None
+        try:
+            response = client.request(
+                method,
+                f"{prefix}{path}",
+                json=dict(payload) if payload is not None else None,
+                headers=headers,
+            )
+        except httpx.HTTPError as error:
+            raise ZitadelError(f"Zitadel {method} {prefix}{path} failed: {error}") from error
+    body: dict[str, Any] = {}
+    if response.content:
+        try:
+            parsed = response.json()
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            body = dict(parsed)
+    return Probe(
+        method=method,
+        path=f"{prefix}{path}",
+        status=response.status_code,
+        body=body,
+        text=response.text,
+    )
+
+
+#: Where this build publishes the API documents `PUT_FIELD_SETS` was read out
+#: of. Not a doc page on the internet: the running container serves these, so
+#: the field sets can be compared against the build that is actually installed
+#: rather than against whatever the current release notes say.
+SWAGGER_PATH = "/openapi/v2/swagger/v2/zitadel/zitadel"
+
+
+def swagger_document(*, name: str) -> dict[str, Any]:
+    """One of this build's own API documents, parsed. Raises if it is not there.
+
+    `name` is `management` or `admin`. A document that will not parse is a
+    `ZitadelError` rather than an empty dict, because an instrument comparing
+    against `{}` would report every declared field set as a difference — a
+    could-not-look wearing a DIFFERS.
+    """
+    answer = probe("GET", f"/{name}.swagger.json", prefix=SWAGGER_PATH)
+    if not answer.ok or not answer.body:
+        raise ZitadelError(
+            f"Zitadel served no readable {name} swagger document at "
+            f"{SWAGGER_PATH}/{name}.swagger.json (status {answer.status})"
+        )
+    return answer.body
+
+
+def create_organization(*, name: str) -> Resource:
+    """A NEW organisation, every time. **Not an `ensure_*`, and deliberately not.**
+
+    Every writer above this line is idempotent by search-then-create, because
+    every one of them is materialising an intent some row holds. This one holds
+    no intent and must not be idempotent: it is the throwaway world
+    `manage.py zitadel_measure` builds to measure an org that has never been
+    configured, and a second run that FOUND the first run's org would be
+    measuring an org somebody had already written a policy onto.
+
+    MEASURED on the pinned build: `POST /management/v1/orgs` with `{"name":...}`
+    answers `200` with the new org's `id` — the id is also its own
+    `details.resourceOwner`, which is what makes a fresh org's inherited
+    policies tell themselves apart from the instance's.
+    """
+    body = _call("POST", "/orgs", {"name": name})
+    log.info("accounts.zitadel.organization_created", organization_name=name)
+    return Resource(id=str(body.get("id", "")), created=True)
+
+
+def remove_organization(*, org_id: str) -> bool:
+    """Delete one organisation and everything in it. Returns whether it is gone.
+
+    **The only destructive call in this module, and it exists for the victim
+    rule**: a measurement that needs a clean org has to build its own rather
+    than measure somebody's (rung-execution §2). So the caller creates one, and
+    this is how it does not leave it behind.
+
+    MEASURED on the pinned build: `DELETE /admin/v1/orgs/{id}` answers `200`,
+    and the org's users go with it. `POST /admin/v1/orgs/{id}/_deactivate` —
+    the gentler call an earlier draft of the measurement kit assumed — answers
+    a bare `404 Not Found` on this build: the admin API routes a deactivate for
+    `orgs/me` only, so deletion is the teardown there IS.
+
+    `False` rather than an exception when the delete is refused, because the
+    caller is already in a `finally` and an exception there would replace the
+    measurement's own verdict with the cleanup's.
+    """
+    if not str(org_id).strip():
+        return False
+    try:
+        answer = probe("DELETE", f"/orgs/{org_id}", prefix=ADMIN)
+    except ZitadelError:
+        return False
+    if answer.ok:
+        log.info("accounts.zitadel.organization_removed", zitadel_organization_id=org_id)
+    return answer.ok
+
+
+# --- the Session API: the surface a sign-in CHECK runs on (design C-8) -------
+#
+# Zitadel's fifth surface, and the second one on `USER`. Everything above this
+# line either materialises an intent (`ensure_*`) or measures the build
+# (`probe`). These are neither: they are the reads and writes ONE PERSON'S
+# SIGN-IN makes while they are standing at a form, and they are here for the
+# reason everything else is — house rule 27 fences the module, not a prefix, so
+# the seam in `apps/accounts/signin.py` gets functions rather than a client.
+#
+# **They return `Probe`, never raise on a refusal, and that is the whole
+# design.** A wrong password IS a 4xx, and a client that raised on it would
+# make the seam read the status back out of an exception message — which is the
+# shape that turns "your password is wrong" and "our credential expired" into
+# one string. The seam's fail-closed rules need the status, the error id and
+# the body separately; `Probe` is what already carries all three.
+#
+# **They run under the SIGN-IN clock**, not the management one: a person at a
+# form waits `ZITADEL_SIGNIN_TIMEOUT` per call, and `signin.py` bounds the
+# whole check with `ZITADEL_SIGNIN_DEADLINE` on top of that.
+#
+# **None of them logs a body.** `probe` never does, and the two request shapes
+# below are the only two in this module that would carry a person's password or
+# their one-time code.
+
+#: The Session API's own path segment under `USER`. Named once so a typo is an
+#: import error rather than a 404 a person reads as "your password is wrong".
+SESSIONS = "/sessions"
+
+#: Zitadel's stable error id for a WebAuthn begin that cannot produce a
+#: challenge. MEASURED by `manage.py zitadel_measure` (M9) against the pinned
+#: build, which answers it as a **500** — so a seam that read a 500 as an
+#: outage would retry a person who simply has no passkey, and the one id is
+#: what tells that apart from a platform that is down. The design's draft
+#: spelled this `WEBAU-3M9si` (the consumer's build); the tree's own
+#: measurement wins.
+#:
+#: **AND IT IS THREE CASES WEARING ONE ID, which A9's drive measured with a
+#: virtual authenticator on v4.17.1 (2026-09-19):** no credential at all; a
+#: credential registered against ANOTHER relying party (one bound to
+#: `localhost` asked for on `127.0.0.1`, and the reverse); and a `domain`
+#: neither party owns. Same status, same id, every time — the build does not
+#: validate the domain at begin, it fails on "nothing to challenge" first. So
+#: **this id alone can never say WHY**, and design J6's `passkey_elsewhere`
+#: sentence is reached by asking `authentication_methods` what the person
+#: actually owns (`signin._why_no_webauthn`). A reader who takes this
+#: constant to mean "no passkey" is reading it as the consumer's K1 was
+#: written and not as this build behaves.
+WEBAUTHN_NO_CREDENTIAL = "WEBAU-4G8sw"
+
+#: Zitadel's stable error id for a WebAuthn begin sent with NO user check —
+#: the usernameless, discoverable-credential road design J6's entrance (a)
+#: was drawn around. MEASURED by A9's drive: `POST /v2/sessions` carrying a
+#: `webAuthN` challenge and no `checks.user` answers **400 `COMMAND-eeR2e`
+#: "User ID missing"**, for our host and for the platform's alike. There is
+#: no discoverable passkey road on this build through this door, which is why
+#: `signin.passkey_begin` takes a login name.
+WEBAUTHN_USER_REQUIRED = "COMMAND-eeR2e"
+
+#: Zitadel's stable error id for a session id that no longer exists — the
+#: ten-minute ceremony window having closed under a tab somebody left open.
+#: The seam reads it as `ceremony_gone` and never as a refusal.
+SESSION_GONE = "QUERY-SFeaa"
+
+
+def signin_timeout() -> float:
+    """How long ONE sign-in call may take. Read here so the seam cannot differ."""
+    return float(getattr(settings, "ZITADEL_SIGNIN_TIMEOUT", 4.0))
+
+
+def _session_probe(
+    method: str,
+    path: str,
+    payload: Mapping[str, Any] | None = None,
+    *,
+    org_id: str = "",
+) -> Probe:
+    """One Session API call, under the sign-in clock. The only caller is below."""
+    return probe(method, path, payload, prefix=USER, org_id=org_id, timeout=signin_timeout())
+
+
+def open_session(
+    *,
+    checks: Mapping[str, Any],
+    challenges: Mapping[str, Any] | None = None,
+    org_id: str = "",
+) -> Probe:
+    """`POST /v2/sessions` — begin a ceremony, and check whatever is checkable now.
+
+    `checks` is Zitadel's own vocabulary (`{"user": {"loginName": …}}`,
+    `{"password": {"password": …}}`) and is passed through rather than
+    re-modelled, because the seam's job is to read the ANSWER: this module has
+    no opinion about which checks a ceremony sends, and a wrapper that named
+    them here would be a second vocabulary to keep in step with Zitadel's.
+
+    **A 201 is not a verified anything** (M5, measured): a session created with
+    a `user` check alone carries `factors.user` and no `factors.password`, so
+    the seam reads the factors back rather than the status. That is fail-closed
+    rule 1 and it lives in `signin.py`; what lives here is the note that this
+    function cannot answer the question, by construction.
+
+    `org_id` sets `x-zitadel-orgid`, and it is load-bearing rather than tidy —
+    MEASURED: a `checks.user.userId` naming a person in another organisation
+    answers `404 QUERY-Dfbg2` without it and `201` with it.
+    """
+    payload: dict[str, Any] = {"checks": dict(checks)}
+    if challenges:
+        payload["challenges"] = dict(challenges)
+    return _session_probe("POST", SESSIONS, payload, org_id=org_id)
+
+
+def read_session(*, session_id: str) -> Probe:
+    """`GET /v2/sessions/{id}` — the factors, which are the only verdict there is.
+
+    The read the fail-closed rule stands on: `session.factors.password.
+    verifiedAt` is what "the password was right" means, and nothing in the
+    create's own 201 says it.
+    """
+    return _session_probe("GET", f"{SESSIONS}/{session_id}")
+
+
+def check_session(
+    *,
+    session_id: str,
+    token: str,
+    checks: Mapping[str, Any] | None = None,
+    challenges: Mapping[str, Any] | None = None,
+    org_id: str = "",
+) -> Probe:
+    """`PATCH /v2/sessions/{id}` — answer a factor, or ask for a challenge.
+
+    **The answer's `sessionToken` is the one to carry forward, and it is not
+    always there** (M8, measured, and the half the design's own sentence
+    missed): a PATCH that VERIFIES something rotates the token, and a PATCH
+    that verifies nothing — a challenge request — answers **no `sessionToken`
+    at all** rather than the one it was sent. A ceremony that assumed a token
+    in every answer would carry `None` forward on the second shape and then
+    fail the next call as if the person had done something wrong.
+    """
+    payload: dict[str, Any] = {"sessionToken": token}
+    if checks:
+        payload["checks"] = dict(checks)
+    if challenges:
+        payload["challenges"] = dict(challenges)
+    return _session_probe("PATCH", f"{SESSIONS}/{session_id}", payload, org_id=org_id)
+
+
+def close_session(*, session_id: str, token: str) -> Probe:
+    """`DELETE /v2/sessions/{id}` — ADR ident-10's half: what we open, we close.
+
+    Called at EVERY exit of the ceremony, the refusals and the failures
+    included, which is why it is the one function here the seam calls from a
+    `finally`: a session left open is a credential-shaped object living for its
+    ten-minute lifetime with nobody watching it.
+    """
+    return _session_probe("DELETE", f"{SESSIONS}/{session_id}", {"sessionToken": token})
+
+
+def login_settings(*, org_id: str = "") -> Probe:
+    """`GET /v2/settings/login` — whether this org asks for a second step.
+
+    Read at ceremony time rather than cached, and deliberately: it is the
+    org's own policy and a product that changed it in the console should see
+    the change at the next sign-in, not at the next deploy. The two fields the
+    seam reads are `forceMfa`/`forceMfaLocalOnly` (is a second step required)
+    and `mfaInitSkipLifetime` (may the person say *Not now*, and for how long
+    — a zero means the skip is not offered at all, which is why the frame's
+    quiet action is conditional rather than always drawn).
+    """
+    query = f"?ctx.orgId={quote(org_id)}" if org_id else ""
+    return _session_probe("GET", f"/settings/login{query}")
+
+
+def password_complexity(*, org_id: str = "") -> Probe:
+    """`GET /v2/settings/password/complexity` — the rule sentence a frame prints.
+
+    **M11**, and the reason the Choose-your-password frame can say what the
+    rules ARE instead of refusing a password and letting the person guess why.
+    The answer is Zitadel's `settings` block — `minLength`, `requiresUppercase`
+    and the rest — unjudged here: which of them become a sentence is the
+    frame's, and a client that rendered prose would be composing copy in the
+    module that holds the credential.
+    """
+    query = f"?ctx.orgId={quote(org_id)}" if org_id else ""
+    return _session_probe("GET", f"/settings/password/complexity{query}")
+
+
+def authentication_methods(*, user_id: str) -> Probe:
+    """`GET /v2/users/{id}/authentication_methods` — what this person has enrolled.
+
+    The read that decides between *One more step* and *Set up two-factor*, and
+    the one that makes the `kind_unanswerable` sentence possible at all: a
+    person whose only enrolled kind this deployment cannot deliver (an emailed
+    code with no SMTP on the instance) has to be told that, and the alternative
+    — handing off to the hosted page — is a 302 loop under login v2 (K10).
+    """
+    return _session_probe("GET", f"/users/{user_id}/authentication_methods")
+
+
+def begin_totp_enrolment(*, user_id: str) -> Probe:
+    """`POST /v2/users/{id}/totp` — the URI and secret the enrolment frame draws.
+
+    The QR is rendered from the `uri` IN OUR TREE (design J2-c: no library, no
+    fetch), and the `secret` is printed under it for a person whose camera is
+    on the other device. Neither is a credential of ours and both are
+    single-person, single-purpose — but both are in the answer's BODY, which
+    `probe` never logs, and the seam never puts either in a log line.
+    """
+    return _session_probe("POST", f"/users/{user_id}/totp")
+
+
+def confirm_totp_enrolment(*, user_id: str, code: str) -> Probe:
+    """`POST /v2/users/{id}/totp/verify` — the six digits that finish enrolment.
+
+    **NO UNDERSCORE, and the underscore cost a rung.** A6 reported this leg
+    as unreachable head-lessly on the evidence of a 404 that every code
+    produced — the current window, the two either side, and a deliberately
+    wrong `000000`. The 404 was right and the reading was wrong: it is what
+    this build answers for a PATH IT DOES NOT HAVE, and `/totp/_verify` is
+    not a path it has. MEASURED side by side on v4.17.1, one person, one
+    secret, one code:
+
+        POST /v2/users/{id}/totp/_verify  -> 404 {"code":5,"message":"Not Found"}
+        POST /v2/users/{id}/totp/verify   -> 200, and `authentication_methods`
+                                             then reports …_TYPE_TOTP
+
+    The sibling calls nearby DO carry the underscore (`/_search`,
+    `/_verify` on other surfaces), which is exactly why the wrong spelling
+    read as plausible. A 404 with no error id still means "we could not
+    look" — `signin._judge`'s `not_on_this_build` arm is correct and stays —
+    and what it was protecting against here was a typo of ours, which is
+    the one thing a fail-closed reading cannot tell you.
+    """
+    return _session_probe("POST", f"/users/{user_id}/totp/verify", {"code": code})
+
+
+# --- the invite road (design C-11; rung A7) ----------------------------------
+#
+# Two calls, both MEASURED against the pinned build (v4.17.1) on 2026-09-19 by
+# hand, because `zitadel_measure` reaches the invite PAGE (C7), the code's
+# expiry and length (C2) and the org's default redirect (M10) — but never the
+# two verbs the road is actually made of. What the walk found:
+#
+#   POST /v2/users/{id}/invite_code/verify   {"verificationCode": "XJDXR7"}
+#       200 {"details": {...}} on the live code.
+#       400 COMMAND-Wgn4q "Code is invalid" — wrong, already used, or
+#           superseded by a later mint. One id for all three, which is why the
+#           page cannot tell them apart and does not try.
+#       400 COMMAND-F5g2h "User could not be found" for an id that is not there.
+#       The `_verify` spelling that the SEARCH verbs in this build use
+#       answers **404** here, and so does
+#       `/v2/users/human/{id}/invite_code/_verify`. The route is `verify`, and
+#       it is written down because the plausible guess is the wrong one.
+#       **The TOTP confirm is the same route shape and it was guessed wrong
+#       anyway** — this note said so and a later rung spelled
+#       `/totp/_verify`, read the 404 as "the build has no such leg", and
+#       shipped an enrolment road that 503'd on a correct code. A note is
+#       only a guard for whoever reads it.
+#
+#   POST /v2/users/{id}/password  {"newPassword": {"password", "changeRequired"}}
+#       200 · 400 DOMAIN-HuJf6 "Password is too short" for one the org's
+#       complexity policy refuses.
+#
+# **The second call carries no verification block, and that is the whole
+# security shape of this road.** Zitadel's own `verificationCode` field on
+# SetPassword is the PASSWORD-RESET code, not the invite code: handing it the
+# invite code answers `400 COMMAND-2M9fs "Code not found"` (measured). What
+# works is the machine PAT — and the PAT sets ANY person's password on a bare
+# user id, with no code at all (measured on a second throwaway world). So the
+# invite code is not something the platform checks on the write; it is
+# something WE check before we make it, and `signin.set_invited_password` is
+# the one place the two calls are allowed to happen, in that order.
+
+#: Zitadel's stable id for "that invite code is not the live one" — wrong,
+#: spent, or superseded. The seam reads it as `invite_gone`, never as an outage.
+INVITE_CODE_INVALID = "COMMAND-Wgn4q"
+
+#: And for a user id the platform does not know. Same road, same sentence: a
+#: page that told a link-holder which of the two it was would be an oracle
+#: over which user ids exist (the A9 posture).
+INVITE_USER_UNKNOWN = "COMMAND-F5g2h"
+
+
+def verify_invite_code(*, user_id: str, code: str) -> Probe:
+    """`POST /v2/users/{id}/invite_code/verify` — is this link still the live one?
+
+    **Single use.** Measured: the same code verified twice answers
+    `COMMAND-Wgn4q` the second time, so this is called once, on the act, and
+    never on a page render — a GET that verified would spend the code of
+    anybody who opened their link and then reloaded it.
+    """
+    return _session_probe(
+        "POST", f"/users/{user_id}/invite_code/verify", {"verificationCode": code}
+    )
+
+
+def set_first_password(*, user_id: str, password: str) -> Probe:
+    """`POST /v2/users/{id}/password` — the password an invited person chose.
+
+    `changeRequired` false, explicitly: they are choosing it now, and a
+    deployment that asked them to change it on the next page would be asking
+    twice for the one thing this screen exists to collect.
+
+    **Never called without `verify_invite_code` answering 200 first**, for the
+    reason in this section's header: the PAT authorises this write on its own.
+    """
+    return _session_probe(
+        "POST",
+        f"/users/{user_id}/password",
+        {"newPassword": {"password": password, "changeRequired": False}},
+    )
+
+
+def read_human(*, user_id: str) -> Probe:
+    """`GET /v2/users/{id}` — who the platform says a user id is.
+
+    The read behind the invited person's address, and it is a read by ID
+    because on this road there is no login name: the person has not typed
+    anything yet and the link carries only what Zitadel minted.
+
+    MEASURED shape (2026-09-19): `user.human.email.email` and
+    `user.human.email.isVerified` — v2's spelling. The v1 search row
+    `find_user` returns spells the same flag `isEmailVerified`, and a caller
+    that read v1's name off this body would get `False` for everybody.
+    """
+    return _session_probe("GET", f"/users/{user_id}")
+
+
+# --- Mode A: the OIDC auth request (design C-10; rung A8) --------------------
+#
+# The other half of the front door. Under `ours` an OIDC client's authorize
+# does not land on the identity platform's page at all: with `loginVersion`
+# declared (A2, A5) the platform answers the authorize with a 302 to
+# `{baseUri}/login?authRequest=V2_…` — OUR page — and the sign-in is finished
+# by handing the verified SESSION back to the auth request. What comes back is
+# the client's own callback URL, with the code on it.
+#
+# MEASURED end to end against the pinned build (v4.17.1) on 2026-09-19, on a
+# throwaway native client under this deployment's own project and a throwaway
+# human in a throwaway organisation:
+#
+#   GET  /v2/oidc/auth_requests/{id}
+#       200 {"authRequest": {"id", "creationDate", "clientId", "scope": [...],
+#            "redirectUri", and OPTIONALLY "prompt": ["PROMPT_CREATE"|
+#            "PROMPT_LOGIN"|"PROMPT_NONE"], "loginHint", "maxAge"}}
+#       404 QUERY-Thee9 "Auth Request does not exist".
+#       `prompt` is a LIST of enum names and is ABSENT when none was asked
+#       for — not an empty list, which is why every reader here uses `or []`.
+#   POST /v2/oidc/auth_requests/{id}  {"session": {"sessionId", "sessionToken"}}
+#       200 {"callbackUrl": "<the client's redirectUri>?code=…&state=…"}
+#       404 COMMAND-jae5P for an id that is not there,
+#       400 COMMAND-Sx208nt "Auth Request has already been handled" for a
+#       second finalize of one that is — a DIFFERENT id from the read's, which
+#       is why both are named below rather than one being reused.
+#       403 AUTH-AWfge when the machine credential lacks IAM_LOGIN_CLIENT (M2).
+#   POST /v2/oidc/auth_requests/{id}  {"error": {"error", "errorDescription"}}
+#       200 with a `callbackUrl` carrying `?error=…&error_description=…`.
+#
+# **M4, and it is the reason `REFUSE_*` below are spelled as enum members.**
+# MEASURED both ways: `ERROR_REASON_ACCESS_DENIED` comes out of the callback as
+# `error=access_denied`, and the RFC 6749 lowercase spelling `access_denied` —
+# the one a reader of the OAuth spec would reach for — is accepted with a 200
+# and DEGRADES to `error=server_error`. So the wrong spelling is not a refusal
+# anybody sees here; it is a client being told the authorization server broke.
+
+#: The auth-request surface, under `USER` (`/v2`). Named once: a typo would be
+#: a 404 the door would read as "the link expired".
+AUTH_REQUESTS = "/oidc/auth_requests"
+
+#: Zitadel's stable id for "no such auth request" on the READ, and on the
+#: WRITE. Two ids for one fact, measured — a door matching only one of them
+#: reads the other as an outage and answers 503 for an expired link.
+AUTH_REQUEST_GONE = "QUERY-Thee9"
+AUTH_REQUEST_GONE_ON_WRITE = "COMMAND-jae5P"
+
+#: And for a request that was already answered — a person who pressed the
+#: browser's Back button onto a finished sign-in. Same sentence as gone: from
+#: where the person stands there is nothing left to finish either way.
+AUTH_REQUEST_ALREADY_HANDLED = "COMMAND-Sx208nt"
+
+#: The one refusal reason this tree sends, in the ENUM spelling M4 measured.
+#: `ERROR_REASON_ACCESS_DENIED` is what "the person did not finish signing in"
+#: is in OAuth's own vocabulary, and it is the reason a client can act on.
+REFUSE_ACCESS_DENIED = "ERROR_REASON_ACCESS_DENIED"
+
+#: Zitadel's enum name for an OIDC client that asked for a registration
+#: screen. ADR accounts-1: there is no sign-up door here, so the page says so
+#: rather than pretending the client's request was honoured.
+PROMPT_CREATE = "PROMPT_CREATE"
+
+
+def read_auth_request(*, request_id: str) -> Probe:
+    """`GET /v2/oidc/auth_requests/{id}` — what the client that sent them asked for.
+
+    A read, and the page's whole knowledge of the journey it is standing in
+    the middle of: which client, what scopes, whether a registration screen
+    was asked for, and which address to prefill.
+    """
+    return _session_probe("GET", f"{AUTH_REQUESTS}/{request_id}")
+
+
+def finalize_auth_request(*, request_id: str, session_id: str, session_token: str) -> Probe:
+    """`POST /v2/oidc/auth_requests/{id}` — hand the verified session back.
+
+    **The session must still be OPEN.** The answer is the client's callback
+    URL with a code on it, and Zitadel mints that code against the session
+    named here — so a ceremony that closed its session first (ADR ident-10's
+    rule, which every other exit of `signin.py` obeys) has nothing to finalize
+    with. That ordering is `signin._finish`'s, and it is the one place in this
+    tree allowed to call this.
+
+    Needs `IAM_LOGIN_CLIENT` on the machine credential, which `IAM_OWNER` does
+    not carry (M2, measured): without it this answers `403 AUTH-AWfge` and the
+    seam reads it as an outage, never as the person's fault.
+    """
+    return _session_probe(
+        "POST",
+        f"{AUTH_REQUESTS}/{request_id}",
+        {"session": {"sessionId": session_id, "sessionToken": session_token}},
+    )
+
+
+def refuse_auth_request(*, request_id: str, reason: str, description: str) -> Probe:
+    """`POST /v2/oidc/auth_requests/{id}` — tell the client it did not happen.
+
+    The other half of the same verb, and it is a separate function rather than
+    a flag because the two are opposite acts with opposite consequences and a
+    boolean between them is one typo away from finalizing a ceremony that was
+    refused.
+
+    `reason` is an `ERROR_REASON_*` enum member (M4): the lowercase RFC
+    spelling is accepted and silently degrades to `server_error` at the
+    client, which is a client told we broke rather than a client told the
+    person declined.
+    """
+    return _session_probe(
+        "POST",
+        f"{AUTH_REQUESTS}/{request_id}",
+        {"error": {"error": reason, "errorDescription": description}},
+    )
+
+
+# --- M3 and M4: the Mode A round trip, measured (rung A8) --------------------
+
+
+def check_mode_a(
+    *,
+    project_id: str,
+    base_uri: str,
+    login_name: str,
+    password: str,
+    org_id: str,
+) -> dict[str, Any]:
+    """**M3, M4 and M7**: the whole v2 round trip, on a throwaway client. **Unjudged.**
+
+    One function for three items because they are one journey and one victim:
+    an OIDC client has to exist and declare login v2 before either can be
+    measured, and making two would be two objects on somebody's instance for
+    one run.
+
+    **It builds its own victim and never touches the real Web application**,
+    for `check_login_version_redirects`'s reason and with its `finally`: the
+    browser client is what every person signs in through, and a declaration
+    change on it is the one breakage that locks a deployment out of its own
+    front door. The throwaway is DEACTIVATED rather than deleted, so the
+    instance's audit log carries the act rather than a gap.
+
+    **No token, code or session token is in the return value.** M3 is about
+    which CLAIMS a token carries, so what comes back is claim names and the
+    two values the item is about; a function that handed a caller a live
+    access token would be a credential in whatever that caller printed.
+
+    Returns facts, never verdicts — `zitadel_measure` judges — with `trouble`
+    naming the leg that could not be reached when one could not.
+    """
+    name = f"mode-a-check-{uuid4().hex[:12]}"
+    redirect_uri = f"{base_uri.rstrip('/')}/mode-a-check/callback"
+    seen: dict[str, Any] = {"redirect_uri": redirect_uri, "trouble": ""}
+    made = ensure_native_application(
+        project_id=project_id, name=name, redirect_uris=[redirect_uri], dev_mode=True
+    )
+    client_id = str(made.detail.get("clientId", ""))
+    try:
+        ensure_application_login_version(project_id=project_id, app_id=made.id, base_uri=base_uri)
+
+        # --- M3: authorize -> session -> finalize -> token ------------------
+        verifier = uuid4().hex + uuid4().hex
+        request_id = _authorize_for_measurement(client_id, redirect_uri, verifier)
+        seen["request_id"] = request_id
+        if not request_id:
+            seen["trouble"] = (
+                "the authorize endpoint did not answer a v2 auth request for a client "
+                "that declares loginVersion — M1 is the item that says why"
+            )
+            return seen
+
+        opened = _session_probe(
+            "POST",
+            SESSIONS,
+            {"checks": {"user": {"loginName": login_name}, "password": {"password": password}}},
+            org_id=org_id,
+        )
+        if not opened.ok:
+            seen["trouble"] = (
+                f"POST /v2/sessions for the throwaway human answered {opened.status} "
+                f"{opened.error_id or opened.text[:120]!r}"
+            )
+            return seen
+
+        finished = finalize_auth_request(
+            request_id=request_id,
+            session_id=str(opened.body.get("sessionId", "")),
+            session_token=str(opened.body.get("sessionToken", "")),
+        )
+        seen["finalize_status"] = finished.status
+        seen["finalize_error_id"] = finished.error_id
+        callback = str(finished.body.get("callbackUrl", ""))
+        seen["callback_origin"] = callback.split("?", 1)[0]
+        if not finished.ok or "code=" not in callback:
+            seen["trouble"] = (
+                f"the finalize answered {finished.status} "
+                f"{finished.error_id or finished.text[:120]!r} — M2 is the item that "
+                "says whether this credential may make one at all"
+            )
+            return seen
+
+        seen |= _claims_of_the_code(
+            callback=callback,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            verifier=verifier,
+        )
+
+        # --- M4: the refusal enum, both spellings ---------------------------
+        for key, reason in (
+            ("enum", REFUSE_ACCESS_DENIED),
+            ("rfc", "access_denied"),
+        ):
+            fresh = _authorize_for_measurement(client_id, redirect_uri, uuid4().hex)
+            if not fresh:
+                seen[f"{key}_error"] = ""
+                continue
+            refused = refuse_auth_request(
+                request_id=fresh, reason=reason, description="a measurement"
+            )
+            back = str(refused.body.get("callbackUrl", ""))
+            seen[f"{key}_status"] = refused.status
+            seen[f"{key}_error"] = _query_value(back, "error")
+
+        seen |= _sso_after_finalize(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            login_name=login_name,
+            password=password,
+            org_id=org_id,
+        )
+        return seen
+    finally:
+        deactivate_application(project_id=project_id, app_id=made.id)
+
+
+def _sso_after_finalize(
+    *, client_id: str, redirect_uri: str, login_name: str, password: str, org_id: str
+) -> dict[str, Any]:
+    """**M7**: after a v2 round trip, does the BROWSER hold anything at the platform?
+
+    The question J5's sign-out sentence rests on. Under `ours` the browser's
+    only contact with the platform is the authorize redirect — the finalize is
+    our server's call, on our connection — so if a person's next authorize
+    still knows them, something was left in their cookie jar.
+
+    Driven with ONE jar across three hops, which is why it is here rather
+    than a `probe` in the measuring command: `_client()` mints a fresh client
+    per call and keeps no cookies, and a measurement of a cookie needs the
+    thing that holds cookies. A browser-shaped client, no PAT, because that
+    is what a person has.
+
+    `prompt=none` on the second authorize: the OAuth spelling of "answer
+    without showing anybody anything". A code coming back means an SSO
+    session exists; anything else means the person would type their password
+    again, which is what the sign-out page promises.
+    """
+    verifier = uuid4().hex + uuid4().hex
+    challenge = urlsafe_b64encode(sha256(verifier.encode()).digest()).decode().rstrip("=")
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    found: dict[str, Any] = {}
+    # **`_client()` held open across both hops, which is the jar.** One
+    # `httpx.Client` keeps cookies for its own lifetime, so the two authorize
+    # calls below share one — which is the whole measurement. The PAT rides
+    # along and is ignored: `authorize_redirect` records that as measured,
+    # and it is a browser endpoint. A bare client built here instead would
+    # also be the one call in this module that no test could intercept.
+    with _client() as browser:
+        try:
+            first = browser.get("/oauth/v2/authorize", params=params)
+        except httpx.HTTPError as error:
+            raise ZitadelError(f"Zitadel GET /oauth/v2/authorize failed: {error}") from error
+        found["sso_cookies"] = sorted(browser.cookies.keys())
+        request_id = _query_value(str(first.headers.get("location", "")), "authRequest")
+        if not request_id:
+            found["sso_trouble"] = "the authorize answered no v2 auth request to finish"
+            return found
+
+        opened = _session_probe(
+            "POST",
+            SESSIONS,
+            {"checks": {"user": {"loginName": login_name}, "password": {"password": password}}},
+            org_id=org_id,
+        )
+        finished = finalize_auth_request(
+            request_id=request_id,
+            session_id=str(opened.body.get("sessionId", "")),
+            session_token=str(opened.body.get("sessionToken", "")),
+        )
+        if not finished.ok:
+            found["sso_trouble"] = (
+                f"the finalize answered {finished.status} {finished.error_id or ''}"
+            )
+            return found
+
+        try:
+            again = browser.get("/oauth/v2/authorize", params={**params, "prompt": "none"})
+        except httpx.HTTPError as error:
+            raise ZitadelError(f"Zitadel GET /oauth/v2/authorize failed: {error}") from error
+    back = str(again.headers.get("location", ""))
+    found["sso_cookies_after"] = sorted(browser.cookies.keys())
+    found["sso_code"] = bool(_query_value(back, "code"))
+    found["sso_error"] = _query_value(back, "error")
+    found["sso_sent_to_sign_in"] = bool(_query_value(back, "authRequest"))
+    return found
+
+
+def _authorize_for_measurement(client_id: str, redirect_uri: str, verifier: str) -> str:
+    """Start one authorize with PKCE and report the auth request id it answered.
+
+    A separate helper from `authorize_redirect` above rather than a parameter
+    on it: that one exists to report a `Location` for M1 to judge, and this
+    one needs a code challenge because the code it is heading towards has to
+    be spendable by a public client.
+    """
+    challenge = urlsafe_b64encode(sha256(verifier.encode()).digest()).decode().rstrip("=")
+    with _client() as client:
+        try:
+            answer = client.get(
+                "/oauth/v2/authorize",
+                params={
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "response_type": "code",
+                    "scope": "openid email profile",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                },
+            )
+        except httpx.HTTPError as error:
+            raise ZitadelError(f"Zitadel GET /oauth/v2/authorize failed: {error}") from error
+    return _query_value(str(answer.headers.get("location", "")), "authRequest")
+
+
+def _claims_of_the_code(
+    *, callback: str, client_id: str, redirect_uri: str, verifier: str
+) -> dict[str, Any]:
+    """Spend the code and report WHICH CLAIMS came back. **Never the token.**
+
+    M3's whole question is whether a token carries `client_id` and not `azp` —
+    the claim the MCP resource server reads to know which client is calling.
+    So what leaves here is claim NAMES plus those two values, and the tokens
+    themselves are dropped on the floor of this function.
+    """
+    code = _query_value(callback, "code")
+    with _client() as client:
+        try:
+            exchanged = client.post(
+                "/oauth/v2/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": client_id,
+                    "code_verifier": verifier,
+                },
+                # **The one call in this module that is not JSON**, and the
+                # header has to be said or `_client`'s default wins: httpx
+                # form-encodes a `data=` body and then leaves the client's
+                # `Content-Type: application/json` on it, and the build
+                # answers `400 invalid_request "grant_type missing"` — a
+                # parse failure that reads exactly like a missing parameter.
+                # Measured, on the way to getting this line right.
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except httpx.HTTPError as error:
+            raise ZitadelError(f"Zitadel POST /oauth/v2/token failed: {error}") from error
+    found: dict[str, Any] = {"token_status": exchanged.status_code}
+    if exchanged.status_code != 200:
+        found["trouble"] = (
+            f"the token exchange answered {exchanged.status_code} {exchanged.text[:160]!r}"
+        )
+        return found
+    body = dict(exchanged.json())
+    for kind in ("access_token", "id_token"):
+        claims = _unverified_claims(str(body.get(kind, "")))
+        found[f"{kind}_claims"] = sorted(claims)
+        found[f"{kind}_client_id"] = claims.get("client_id")
+        found[f"{kind}_azp"] = claims.get("azp")
+    return found
+
+
+def _unverified_claims(token: str) -> dict[str, Any]:
+    """A JWT's payload, WITHOUT verifying it, for a measurement and nothing else.
+
+    Unverified is correct here and nowhere else in this tree: the question is
+    which claim names this build puts in a token, and verification is
+    `apps/accounts/oauth.py`'s job on the door where it matters. A second
+    verifier here would be a second opinion about token validity — the exact
+    shape principle 9 refuses — and it would also answer the wrong question,
+    because a token that failed verification still answers M3.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        return {}
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        parsed = json.loads(urlsafe_b64decode(payload))
+    except (ValueError, TypeError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _query_value(url: str, name: str) -> str:
+    """One query parameter off a URL, or `""`."""
+    return (parse_qs(urlsplit(url).query).get(name) or [""])[0]
+
+
+# --- the reset road's one write (design J5; rung A11b) ----------------------
+#
+# MEASURED against the pinned build (v4.17.1) on 2026-09-19, on a throwaway
+# human, with a real mail sink on the other end:
+#
+#   POST /v2/users/{id}/password_reset  {"sendLink": {}}
+#       200 {"details": {...}} and a mail leaves the instance. An EMPTY
+#       `sendLink` is the deliberate body: the channel, the template and the
+#       link are the platform's, and a `notificationType` of ours would be
+#       this tree having an opinion about somebody else's mail. Measured
+#       three ways — `{"sendLink": {}}`, no body at all, and
+#       `{"sendLink": {"notificationType": "NOTIFICATION_TYPE_Email"}}` — all
+#       200, all delivered; the empty one is chosen because it says the least.
+#       `{"returnCode": {}}` answers the code in the BODY and sends nothing,
+#       which is M6's road and not this one: a code in our process is a
+#       credential we would then have to transport.
+#   404 COMMAND-SAF4f "User could not be found" for an id that is not there.
+#
+# **Where the mail lands is the platform's page, and that is measured too**
+# (M6): `<issuer>/ui/login/password/init?authRequestID=&code=…&orgID=…&userID=…`
+# with an EMPTY `authRequestID` — a mail has no application context, so the
+# per-application login-v2 declaration cannot move it. The reset frame's
+# sentence says so rather than implying the person comes back here to type a
+# new password.
+
+#: Zitadel's stable id for "no such person" on the reset request. Read by
+#: nothing today and named anyway: the seam never reaches it, because it
+#: looks the person up first and does not ask for a reset it knows will 404
+#: — and a reader wondering why should find the id written down rather than
+#: absent.
+RESET_USER_UNKNOWN = "COMMAND-SAF4f"
+
+
+def request_password_reset(*, user_id: str) -> Probe:
+    """`POST /v2/users/{id}/password_reset` — ask the platform to mail its link.
+
+    **Rule 25 is not broken here and it is worth saying why.** The product has
+    exactly one sender, and this is not a second one: nothing of ours composes,
+    addresses or delivers anything. What this does is tell the identity
+    platform that one of ITS credentials needs resetting, and the platform
+    mails its own page to its own user about its own password — the same
+    division `create_invite_code` draws in the other direction, where
+    `returnCode` keeps the delivery ours because the invitation is ours.
+    """
+    return _session_probe("POST", f"/users/{user_id}/password_reset", {"sendLink": {}})

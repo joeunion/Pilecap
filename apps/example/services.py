@@ -262,8 +262,9 @@ def approve_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
     # The ledger line the done-line drives, written **after** the signal landed
     # and inside the same transaction, so an approval that was refused by the
     # run leaves no line claiming it happened. It is not a second
-    # authorization: `widget.approve` is strictly the stronger question
-    # (`policies.can_approve` wants admin over the row's own branch), and asking
+    # authorization: `widget.approve` is strictly the stronger question (it is
+    # held by `admin` over the row's own branch and by nobody else — the sweep
+    # moved that sentence from a rank table into the role layer), and asking
     # `widget_entry.record` again here would be a check that can only ever say
     # yes.
     _entry(
@@ -480,9 +481,13 @@ def record_widget_entry(
     `policy` is: it is a foreign-key target the caller named, so the door that
     named it answered `may_be_named(actor, widget)` where a reviewer can see it.
     """
-    require(actor, "widget_entry.record", widget)
+    # REACHABILITY FIRST, then the capability. `require` is asked at the node
+    # the ROW names, so asking it first turned a widget outside this hat's
+    # subtree into `forbidden` — which tells the caller the row exists.
+    # Not-there before not-yours, as `core.revoke_membership` orders it.
     if not may_be_named(actor, widget):
         raise NotFound()
+    require(actor, "widget_entry.record", widget)
     organization = widget.organization
     if organization_slug is not None:
         named = Organization.objects.for_tenant(tenant).filter(slug=organization_slug).first()

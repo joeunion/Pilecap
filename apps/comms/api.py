@@ -248,7 +248,8 @@ def list_messages_route(
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    messages: QuerySet[Message] = list_messages(tenant=request.tenant, org=request.org)
+    actor, tenant = _acting(request)
+    messages: QuerySet[Message] = list_messages(tenant=tenant, org=actor.org, actor=actor)
     messages = filters.filter(messages)
     return ordered_by(messages, ordering, allowed=ORDERING, default="-created_at")
 
@@ -327,7 +328,9 @@ def send_message_route(request: TenantRequest, payload: MessageIn) -> Status[Mes
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    recipient = get_recipient(tenant=tenant, recipient_id=payload.recipient_id, org=actor.org)
+    recipient = get_recipient(
+        tenant=tenant, recipient_id=payload.recipient_id, org=actor.org, actor=actor
+    )
     message = send(
         recipient=recipient,
         template=payload.template,
@@ -366,7 +369,8 @@ def retrieve_message(request: TenantRequest, message_id: UUID) -> Message:
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    return get_message(tenant=request.tenant, message_id=message_id, org=request.org)
+    actor, tenant = _acting(request)
+    return get_message(tenant=tenant, message_id=message_id, org=actor.org, actor=actor)
 
 
 @router.get(
@@ -425,9 +429,10 @@ def list_message_engagement_route(
       id, or `?cursor=` did not come from this list.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    message = get_message(tenant=request.tenant, message_id=message_id, org=request.org)
+    actor, tenant = _acting(request)
+    message = get_message(tenant=tenant, message_id=message_id, org=actor.org, actor=actor)
     rows: QuerySet[MessageEngagement] = list_engagements(
-        tenant=request.tenant, message=message, org=request.org
+        tenant=tenant, message=message, org=actor.org, actor=actor
     )
     return ordered_by(rows, ordering, allowed=ENGAGEMENT_ORDERING, default="-occurred_at")
 
@@ -471,7 +476,7 @@ def cancel_message_route(request: TenantRequest, message_id: UUID) -> Message:
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    message = get_message(tenant=tenant, message_id=message_id, org=actor.org)
+    message = get_message(tenant=tenant, message_id=message_id, org=actor.org, actor=actor)
     return cancel_message(tenant=tenant, actor=actor, message=message)
 
 
@@ -530,7 +535,8 @@ def list_templates_route(
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    templates: QuerySet[MessageTemplate] = list_templates(tenant=request.tenant)
+    actor, tenant = _acting(request)
+    templates: QuerySet[MessageTemplate] = list_templates(tenant=tenant, actor=actor)
     templates = filters.filter(templates)
     return ordered_by(templates, ordering, allowed=TEMPLATE_ORDERING, default="name")
 
@@ -686,7 +692,7 @@ def retire_template_route(request: TenantRequest, name: str) -> MessageTemplate:
     written, and this verb is the only thing that moves it.
     """
     actor, tenant = _acting(request)
-    template = get_template(tenant=tenant, name=name)
+    template = get_template(tenant=tenant, name=name, actor=actor)
     return retire_template(tenant=tenant, actor=actor, template=template)
 
 
@@ -716,7 +722,8 @@ def retrieve_template(request: TenantRequest, name: str) -> MessageTemplate:
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    return get_template(tenant=request.tenant, name=name)
+    actor, tenant = _acting(request)
+    return get_template(tenant=tenant, name=name, actor=actor)
 
 
 # --- delivery policies: how hard to try, as data ---------------------------------
@@ -771,7 +778,8 @@ def list_policies_route(
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    policies: QuerySet[DeliveryPolicy] = list_policies(tenant=request.tenant)
+    actor, tenant = _acting(request)
+    policies: QuerySet[DeliveryPolicy] = list_policies(tenant=tenant, actor=actor)
     policies = filters.filter(policies)
     ordered = ordered_by(policies, ordering, allowed=POLICY_ORDERING, default="name")
     # `ordered_by` **replaces** the ordering outright, so "newest version first
@@ -920,7 +928,7 @@ def retire_policy_route(request: TenantRequest, name: str) -> DeliveryPolicy:
     back, and this one decides what every future `send(policy=…)` will do.
     """
     actor, tenant = _acting(request)
-    policy = get_policy(tenant=tenant, name=name)
+    policy = get_policy(tenant=tenant, name=name, actor=actor)
     return retire_policy(tenant=tenant, actor=actor, policy=policy)
 
 
@@ -946,7 +954,8 @@ def retrieve_policy(request: TenantRequest, name: str) -> DeliveryPolicy:
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    return get_policy(tenant=request.tenant, name=name)
+    actor, tenant = _acting(request)
+    return get_policy(tenant=tenant, name=name, actor=actor)
 
 
 # --- recipients: the contact book ------------------------------------------------
@@ -986,8 +995,9 @@ def list_recipients_route(
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
+    actor, tenant = _acting(request)
     recipients: QuerySet[Recipient] = list_recipients(
-        tenant=request.tenant, org=request.org, include_archived=archived
+        tenant=tenant, org=actor.org, include_archived=archived, actor=actor
     )
     recipients = filters.filter(recipients)
     return ordered_by(recipients, ordering, allowed=RECIPIENT_ORDERING, default="email")
@@ -1067,7 +1077,8 @@ def retrieve_recipient(request: TenantRequest, recipient_id: UUID) -> Recipient:
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    return get_recipient(tenant=request.tenant, recipient_id=recipient_id, org=request.org)
+    actor, tenant = _acting(request)
+    return get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
 
 
 @router.patch("/recipients/{recipient_id}/", response=RecipientOut, url_name="recipient-update")
@@ -1110,7 +1121,7 @@ def update_recipient_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org)
+    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return update_recipient(
         tenant=tenant,
         actor=actor,
@@ -1157,7 +1168,7 @@ def archive_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recip
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org)
+    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return archive_recipient(tenant=tenant, actor=actor, recipient=recipient)
 
 
@@ -1208,9 +1219,10 @@ def list_preferences_route(
       owner-or-administrator acts.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    recipient = get_recipient(tenant=request.tenant, recipient_id=recipient_id, org=request.org)
+    actor, tenant = _acting(request)
+    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     preferences: QuerySet[ChannelPreference] = list_preferences(
-        tenant=request.tenant, recipient=recipient, org=request.org
+        tenant=tenant, recipient=recipient, org=actor.org, actor=actor
     )
     return preferences
 
@@ -1258,7 +1270,7 @@ def grant_consent_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org)
+    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return grant_consent(tenant=tenant, actor=actor, recipient=recipient, channel=payload.channel)
 
 
@@ -1305,7 +1317,7 @@ def revoke_consent_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org)
+    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return revoke_consent(tenant=tenant, actor=actor, recipient=recipient, channel=payload.channel)
 
 
@@ -1364,7 +1376,7 @@ def set_quiet_hours_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org)
+    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return set_quiet_hours(
         tenant=tenant,
         actor=actor,
@@ -1417,7 +1429,7 @@ def suppress_recipient_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org)
+    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return suppress_recipient(
         tenant=tenant, actor=actor, recipient=recipient, channel=payload.channel
     )
@@ -1464,7 +1476,7 @@ def unsuppress_recipient_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org)
+    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
     return unsuppress_recipient(
         tenant=tenant, actor=actor, recipient=recipient, channel=payload.channel
     )
@@ -1543,7 +1555,9 @@ def register_device_route(request: TenantRequest, payload: DeviceIn) -> Device:
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    recipient = get_recipient(tenant=tenant, recipient_id=payload.recipient_id, org=actor.org)
+    recipient = get_recipient(
+        tenant=tenant, recipient_id=payload.recipient_id, org=actor.org, actor=actor
+    )
     return register_device(
         tenant=tenant,
         actor=actor,
@@ -1593,5 +1607,5 @@ def retire_device_route(request: TenantRequest, device_id: UUID) -> Device:
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    device = get_device(tenant=tenant, device_id=device_id, org=actor.org)
+    device = get_device(tenant=tenant, device_id=device_id, org=actor.org, actor=actor)
     return retire_device(tenant=tenant, actor=actor, device=device)

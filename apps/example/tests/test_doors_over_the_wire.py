@@ -52,6 +52,17 @@ serializer between that object and the client.
 
 It is `transaction=True` because the transport runs a tool body on a worker
 thread with its own database connection, which cannot see an uncommitted row.
+
+## 4 · Parity BEFORE either door has a caller
+
+Sections 2 and 3 compare what the doors say when they answer and when they
+refuse a caller they identified. The 401 is the refusal that happens *before*
+that — no principal, no tool, no route — and it is the one refusal every
+integrator meets first, which is exactly why the two doors had drifted on it:
+REST told a caller holding a revoked token "We could not tell who is making
+this request", and `/mcp` told the same caller "That bearer token is not
+valid." The case below drives one revoked token at both doors and holds them to
+one `code` and one `detail`.
 """
 
 from __future__ import annotations
@@ -66,7 +77,7 @@ from django.conf import settings
 from django.test import Client
 
 from apps.accounts.models import User
-from apps.accounts.services import issue_token
+from apps.accounts.services import issue_token, revoke_token
 from apps.core.actor import Actor, actor_for
 from apps.core.models import Tenant
 
@@ -392,3 +403,188 @@ async def test_the_two_doors_agree_on_a_measured_number_and_its_basis(
     # And the one row this fixture made is really in there, so the agreement
     # above is not two doors agreeing on zero.
     assert recomputed == Decimal(1)
+
+
+# --- 3 · the read refusal, on both doors, in the same words --------------------
+
+
+@pytest.fixture
+def member_bearer(tenant: Tenant, member: User) -> str:
+    """A real token for the plain member — the credential both doors accept."""
+    _, plaintext = issue_token(
+        user=member,
+        tenant=tenant,
+        name="read-parity",
+        actor=actor_for(user=member, tenant=tenant),
+    )
+    return plaintext
+
+
+@pytest.fixture
+def withheld_widget_read(tenant: Tenant, member: User) -> str:
+    """A committed `withhold` of `widget.read` on the member, and its sentence.
+
+    A fixture rather than three lines in the test body, because the body is
+    `async def`: Django refuses a synchronous query from an async context, and
+    the row has to be COMMITTED before the transport's worker thread looks for
+    it anyway. Raw `Grant`, as everywhere in this lane until the hand-out
+    services land.
+    """
+    from apps.core.authz import refusal_sentence
+    from apps.core.models import Grant, Membership
+
+    membership = Membership.objects.get(user=member, tenant=tenant)
+    Grant.objects.create(
+        tenant=tenant,
+        membership=membership,
+        permission="widget.read",
+        effect=Grant.Effect.WITHHOLD,
+    )
+    return refusal_sentence("widget.read")
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
+    member_bearer: str, withheld_widget_read: str, widget: Widget
+) -> None:
+    """House rule 46, applied to the read gate Phase R added (PR4.a.2).
+
+    `test_the_two_doors_put_the_same_key_set_on_the_wire` above proves the two
+    doors agree when they ANSWER. This proves they agree when they REFUSE, which
+    is the half a parity test over happy paths cannot see — and refusals are
+    where the doors have the most room to drift, because each has its own error
+    envelope and neither shares the other's.
+
+    The withheld key is `widget.read`, written as a raw `Grant` row on the
+    member's own membership; the sentence both doors must speak is
+    `refusal_sentence("widget.read")`, which is derived from the key rather than
+    typed here, so a product that gives the key its own prose moves both doors at
+    once or fails here.
+
+    `transaction=True`, as everything in section 2 is: the MCP transport runs a
+    tool body on a worker thread with its own connection, which cannot see an
+    uncommitted `Grant`.
+    """
+    from config.asgi import build_application
+
+    sentence = withheld_widget_read
+    application = build_application()
+    bearer_header = {"authorization": f"Bearer {member_bearer}"}
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.get(
+                DETAIL_URL.format(widget.pk), headers={**bearer_header, "accept": JSON}
+            )
+
+            headers = {**MCP_HEADERS, **bearer_header}
+            initialize = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "initialize",
+                    {
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {"name": "read-parity", "version": "1"},
+                    },
+                    1,
+                ),
+            )
+            assert initialize.status_code == 200, initialize.text
+
+            called = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call",
+                    {"name": "get_widget", "arguments": {"widget_id": str(widget.pk)}},
+                    2,
+                ),
+            )
+
+    # The human door: a row INSIDE the hat's subtree, refused by capability and
+    # not hidden — 404 there would say "no such widget", which is false and is
+    # the answer the scoping gives for a row in a branch you cannot reach.
+    assert over_http.status_code == 403, over_http.text
+    body = over_http.json()
+    assert body["code"] == "forbidden"
+    assert body["detail"] == sentence
+
+    # The machine door: the same code and the same sentence, rendered through
+    # `wire_refusal`. Compared as text because a tool error is text on the wire
+    # — what matters is that the words a refused agent reads are the words a
+    # refused person reads.
+    answered = called.json()
+    rendered = json.dumps(answered)
+    assert "forbidden" in rendered, rendered
+    assert sentence in rendered, rendered
+
+
+# --- 4 · the 401, on both doors, in the same words ----------------------------
+
+# The sentence a presented-but-unresolvable bearer reads, written out rather
+# than imported from the door: a pin derived from the thing it pins cannot fail,
+# the reason `WIDGET_KEYS` above is written out. It is wire contract — the first
+# refusal most integrators ever meet.
+BEARER_NOT_VALID = "That bearer token is not valid."
+
+
+@pytest.fixture
+def revoked_bearer(tenant: Tenant, owner: User) -> str:
+    """A real token for a real person, withdrawn — and still in the caller's hand.
+
+    Through the services, so the state both doors meet is the state a revocation
+    really leaves; committed in a fixture, because the MCP transport runs on a
+    worker thread with its own connection and the revocation has to be visible
+    to it.
+    """
+    actor = actor_for(user=owner, tenant=tenant)
+    token, plaintext = issue_token(user=owner, tenant=tenant, name="withdrawn", actor=actor)
+    revoke_token(token=token, tenant=tenant, actor=actor)
+    return plaintext
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_refuse_one_revoked_token_with_the_same_code_and_sentence(
+    revoked_bearer: str,
+) -> None:
+    """House rule 46 at the door's own refusal, which has no principal behind it.
+
+    The two other parity cases in this module need a caller the doors have
+    identified. This one needs the opposite: the same string presented as a
+    bearer at both doors, refused by both, and the two refusals compared on the
+    two fields a client consumes — `code`, which it branches on, and `detail`,
+    which it reads.
+
+    `remedies` is deliberately NOT compared. The remedies are the DOOR's (E9):
+    `/mcp` reads `Authorization` and nothing else, so it drops the remedy that
+    sends a caller to sign in and REST — which honours a session — keeps it.
+    Asserting equality there would pin the two doors to a promise one of them
+    cannot keep, which is the defect the MCP door's own remedy test closes.
+    """
+    from config.asgi import build_application
+
+    application = build_application()
+    bearer_header = {"authorization": f"Bearer {revoked_bearer}"}
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.get(LIST_URL, headers={**bearer_header, "accept": JSON})
+            over_mcp = await client.post(
+                MCP_URL,
+                headers={**MCP_HEADERS, **bearer_header},
+                json=_rpc("tools/list", {}, 1),
+            )
+
+    assert over_http.status_code == 401, over_http.text
+    assert over_mcp.status_code == 401, over_mcp.text
+    rest_body = over_http.json()
+    mcp_body = over_mcp.json()
+
+    assert rest_body["code"] == mcp_body["code"] == "unauthenticated", (rest_body, mcp_body)
+    assert rest_body["detail"] == mcp_body["detail"] == BEARER_NOT_VALID, (rest_body, mcp_body)

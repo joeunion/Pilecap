@@ -59,6 +59,7 @@ from apps.accounts.models import (
     domain_of,
     normalise_domain,
 )
+from apps.accounts.selectors import get_platform_provider_id
 from apps.accounts.types import (
     KIND_IDENTITY_BRANDING,
     KIND_IDENTITY_REVOCATION,
@@ -69,13 +70,15 @@ from apps.accounts.types import (
 )
 from apps.core import authz, bridge
 from apps.core.actor import Actor, system_actor
+from apps.core.authz import OWNER_ROLE, default_role_key, role_declarations
 from apps.core.exceptions import Conflict, Invalid, NotFound, Remedy, as_invalid
 from apps.core.ids import uuid7
 from apps.core.log import get_logger
 from apps.core.middleware import resolve_tenant
-from apps.core.models import Membership, Tenant
+from apps.core.models import Grant, Membership, Role, Tenant
 from apps.core.service import service
 from apps.core.services import (
+    OWNERSHIP_PERMISSION,
     _refuse_escalation,
     add_membership,
     redact_invitations,
@@ -152,6 +155,20 @@ KICK_TOKEN_REVOKED = "accounts.token.revoked"
 KICK_USER_ERASED = "accounts.user.erased"
 KICK_USER_DEACTIVATED = "accounts.user.deactivated"
 KICK_IDENTITY_REVOKED = "accounts.identity.revoked"
+# A join cut on purpose, which is not a revocation and not a deactivation: the
+# account is untouched and the person simply has to prove who they are again.
+KICK_USER_IDENTITY_UNLINKED = "accounts.user.identity_unlinked"
+
+# THE ONE SENTENCE A SWITCHED-OFF ACCOUNT READS, at whichever of the three doors
+# it arrives at. One constant because three branches say it and a wall that says
+# three different things is three walls; and it names no tenant and no
+# connection, because the page it reaches is public — "this account is off" is
+# all a refused caller is owed, and anything more answers questions about the
+# deployment for anybody who can start a login.
+INACTIVE_SENTENCE = (
+    "This account has been switched off, so it cannot be used to sign in. "
+    "Ask an administrator of your workspace."
+)
 
 
 class Authenticated(NamedTuple):
@@ -246,7 +263,13 @@ def deactivate_user(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
     `tenant`; that sentence is stale and the correction is core's to make,
     not this app's (territory).
     """
-    authz.require(actor, "accounts.user.deactivate", user)
+    # hat-scoped: the third argument is the ROW because the predicate reads it —
+    # "themselves, or administers the whole tenant". The NODE is resolved inside
+    # `themselves_or_administers_the_whole_tenant`, which measures the tenant's
+    # ROOT (ADR ident-6) and not the acting hat, so a branch administrator's `*`
+    # never reaches here. Rule 55's own `does_not_cover` names this predicate as
+    # the code half it cannot see into; this is the sentence it asks for.
+    authz.require(actor, "user.deactivate", user)
     _refuse_a_person_outside_this_actors_tenant(user=user, actor=actor)
     user.is_active = False
     user.save(update_fields=["is_active", "updated_at"])
@@ -255,21 +278,51 @@ def deactivate_user(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
 
 
 def tenants_this_user_alone_owns(*, user: User) -> list[Tenant]:
-    """Tenants where this person is the only owner. A read, not a write.
+    """Tenants where this person is the only one holding ownership. A read.
 
     A tenant with no owner is a tenant nobody can administer: no one can invite
     a member, change a role, or close it. That is not a state an erasure is
     allowed to create, and it is not a state anybody notices until they need to
     do one of those things.
+
+    **The question is `tenant.own`, not the word in the `role` column, and it is
+    asked on the ROOT.** This used to count rows whose `role` read `owner` at
+    any node, which answered the question only while that column was the whole
+    story. It is not: ownership is the reserved key `tenant.own`, which `owner`
+    alone carries and a `withhold` grant can take away, and an owner of one
+    branch owns that branch rather than the tenant. So the algebra here is the
+    same one `core.services._refuse_orphaning_the_tenant` runs on the other road
+    into the same state — root memberships at `OWNER_ROLE`, minus the
+    memberships a `withhold` of `OWNERSHIP_PERMISSION` names — written against
+    the two constants core exports rather than against a second copy of the
+    words. `OWNER_ROLE` is read here as a KEY and never as a rank: there is no
+    comparison, only a set membership.
+
+    One tenant's grants at a time, because `Grant` is tenant-scoped and a
+    cross-tenant read of it fails closed (house rule 8) — which is the right
+    behaviour and the reason the withhold filter is inside the loop.
     """
-    owned = Membership.objects.filter(user_id=user.pk, role=Membership.Role.OWNER)
+    owned = Membership.objects.filter(user_id=user.pk, role=OWNER_ROLE).select_related("tenant")
     alone = []
-    for membership in owned.select_related("tenant"):
-        others = Membership.objects.filter(
-            tenant_id=membership.tenant_id, role=Membership.Role.OWNER
-        ).exclude(user_id=user.pk)
+    for membership in owned:
+        tenant = membership.tenant
+        root = root_organization(tenant=tenant)
+        if membership.organization_id != root.pk:
+            continue
+        withheld = (
+            Grant.objects.for_tenant(tenant)
+            .filter(permission=OWNERSHIP_PERMISSION, effect=Grant.Effect.WITHHOLD)
+            .values("membership_id")
+        )
+        if membership.pk in {row["membership_id"] for row in withheld}:
+            continue
+        others = (
+            Membership.objects.filter(tenant_id=tenant.pk, organization_id=root.pk, role=OWNER_ROLE)
+            .exclude(user_id=user.pk)
+            .exclude(pk__in=withheld)
+        )
         if not others.exists():
-            alone.append(membership.tenant)
+            alone.append(tenant)
     return alone
 
 
@@ -347,7 +400,13 @@ def erase_user(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
     # this action, so `allows` answered "is this membership privileged", which
     # is true of an admin of one branch — and a branch admin could erase the
     # branch next door. See `policies.administers_the_whole_tenant`.
-    authz.require(actor, "accounts.user.erase", user)
+    # hat-scoped: the third argument is the ROW because the predicate reads it —
+    # "themselves, or administers the whole tenant". The NODE is resolved inside
+    # `themselves_or_administers_the_whole_tenant`, which measures the tenant's
+    # ROOT (ADR ident-6) and not the acting hat, so a branch administrator's `*`
+    # never reaches here. Rule 55's own `does_not_cover` names this predicate as
+    # the code half it cannot see into; this is the sentence it asks for.
+    authz.require(actor, "user.erase", user)
     _refuse_a_person_outside_this_actors_tenant(user=user, actor=actor)
 
     orphaned = tenants_this_user_alone_owns(user=user)
@@ -361,6 +420,14 @@ def erase_user(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
         )
 
     address = user.email
+    # authz-kind: the rows written are `ApiToken`s and the key asked is
+    # `user.erase`, deliberately. An erasure is one act on one person, and every
+    # credential that person holds dies with them — a caller who could erase the
+    # account but not revoke its tokens would leave live keys behind a dead
+    # account, which is the exact residue erasure exists to remove. The tokens
+    # are not a second decision with a second wall; they are the first one
+    # reaching everything the person had. `api_token.revoke` is the key for
+    # revoking ONE token on a living account, and it has its own service.
     ApiToken.objects.filter(user_id=user.pk, revoked_at__isnull=True).update(
         revoked_at=timezone.now()
     )
@@ -754,9 +821,18 @@ def authenticate_token(
     the addressing-header law's half, and it lives in one place for every door
     (`core.middleware.addressing_refusal`; ADR core-21).
 
-    A token pinned to a tenant acts in that tenant and nowhere else, so this
-    returns the pin whatever `X-Tenant` asked for, and the door then refuses a
-    request that asked for a different one. It used to return `None` here — the
+    A token pinned to a tenant acts in that tenant and nowhere else **while that
+    tenant is ACTIVE**: a pinned token to a suspended or closed tenant
+    authenticates — it is a real credential, presented by a real person, and the
+    touch below records that it was used — and resolves NOWHERE, which the door
+    then says in its own words (ADR core-21). Suspension is an operator's act
+    that takes a tenant dark; a credential that kept working into it would make
+    the act a suggestion. The status is read through `Tenant.is_active`, the one
+    predicate that spells `ACTIVE`, so there is never a second spelling of it
+    here.
+
+    So this returns the pin whatever `X-Tenant` asked for, and the door then
+    refuses a request that asked for a different one. It used to return `None` here — the
     credential simply *failing* — and the wire said **401 "We could not tell who
     is making this request"** over a live, unrevoked token belonging to a real
     active user. That fact was false, which E9's
@@ -783,7 +859,7 @@ def authenticate_token(
         # used: a credential that authenticated and was then refused for where
         # it pointed is not the same event as a credential that did not work.
         touch_token(token=token)
-        return Authenticated(token.user, token.tenant, token)
+        return Authenticated(token.user, token.tenant if token.tenant.is_active else None, token)
     touch_token(token=token)
     return Authenticated(
         token.user,
@@ -806,9 +882,28 @@ def authenticate_token(
 _DOMAIN_PATTERN = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9-]+)+$")
 
 
+def _refused_mail_domains() -> frozenset[str]:
+    """The public mail providers no tenant may claim, from settings.
+
+    Read at call time rather than frozen at import so a deployment's own list —
+    and a test's `settings` fixture — is the one that answers. The list is
+    `SSO_REFUSED_MAIL_DOMAINS` in `config/settings/base.py`, where its own
+    comment says why it is a courtesy and not the wall: a claim routes nobody
+    until an operator verifies it (a domain claim routes nothing until it is verified), so a
+    consumer domain missing
+    from this list is a reserved claim that answers nobody, not a capture.
+    """
+    return frozenset(
+        str(domain).strip().lower().lstrip("@")
+        for domain in getattr(settings, "SSO_REFUSED_MAIL_DOMAINS", [])
+        if str(domain).strip()
+    )
+
+
 def _clean_domains(values: Sequence[str]) -> list[str]:
     """Normalise, validate and de-duplicate a set of claimed domains."""
     cleaned: list[str] = []
+    refused = _refused_mail_domains()
     for value in values:
         domain = normalise_domain(value)
         if not domain:
@@ -818,6 +913,24 @@ def _clean_domains(values: Sequence[str]) -> list[str]:
                 {"email_domains": [f"{value!r} is not an email domain."]},
                 detail=(
                     f"{value!r} is not an email domain. Give the part after the @, like acme.com."
+                ),
+            )
+        if domain in refused:
+            # **Caught where the mistake is made.** Somebody typing their own
+            # address's domain into "which domains does your identity provider
+            # own" is the common shape of this, and the honest place to say so
+            # is the response to that request — not a reserved claim nobody
+            # notices until an operator is asked to verify a domain the tenant
+            # plainly does not own.
+            raise Invalid(
+                {
+                    "email_domains": [
+                        f"{domain} is a public mail provider, not an organisation's domain."
+                    ]
+                },
+                detail=(
+                    f"{domain} is a public mail provider, not an organisation's domain. "
+                    "An identity provider claims the domains its organisation owns."
                 ),
             )
         if domain not in cleaned:
@@ -893,9 +1006,40 @@ def _refuse_role_above_the_configurer(*, tenant: Tenant, actor: Actor, role: str
     `_refuse_escalation` returns on `kind == "system"`, which since ADR
     core-22's L1 ruling is a NAMED audited altitude the row records, rather
     than the old accident of a granter who happened to have no user.
+
+    **And the key is checked against the roles that EXIST, before the wall.**
+    `SsoConnection.default_role` used to be a three-value enum, so the column
+    itself refused a word no role answered to; roles are rows a tenant owns now
+    and the enum is gone (`models.py`), which would have left a connection able
+    to store `default_role="auditr"` and mint memberships at a role nobody
+    declared — a membership holding nothing, discovered by the person who could
+    not do their job. So the key is validated here, where a human is typing it,
+    against the three places a role can come from: the reserved `owner`, the
+    roles this deployment DECLARES (`apps/*/roles.py`), and the `core.Role` rows
+    this tenant owns. `Invalid`, not `Forbidden` — this is a malformed field and
+    not a refused act, and the two read differently to the person reading them.
+
+    The validation runs BEFORE the ceiling for the reason every validator runs
+    first: "there is no such role" and "you may not grant that role" are
+    different sentences, and a caller who typed a name nobody has should not be
+    told they lack the authority for it.
     """
     if role is None:
         return
+    known = (
+        {OWNER_ROLE}
+        | set(role_declarations())
+        | set(Role.objects.for_tenant(tenant).values_list("key", flat=True))
+    )
+    if role not in known:
+        raise Invalid(
+            {"default_role": [f"There is no role {role!r} in this tenant."]},
+            detail=(
+                "A connection's default role has to be a role that exists: the "
+                "tenant's owner, a role this deployment declares, or a role this "
+                "tenant made."
+            ),
+        )
     _refuse_escalation(
         actor=actor,
         tenant=tenant,
@@ -923,7 +1067,7 @@ def create_sso_connection(
     client_secret: str,
     email_domains: Sequence[str],
     protocol: str = SsoConnection.Protocol.OIDC,
-    default_role: str = Membership.Role.MEMBER,
+    default_role: str = "",
     enforced: bool = False,
 ) -> SsoConnection:
     """Give a tenant its own identity provider.
@@ -941,8 +1085,31 @@ def create_sso_connection(
     `config/settings/base.py` carries the reason and the exact steps to turn it
     on; until they are taken, a customer who asks for SAML gets a sentence
     rather than a connection that never authenticates.
+
+    **RECORDED, not fixed.** An unsaid `default_role` resolves to
+    `default_role_key()`. A product whose `roles.py` marks NO role
+    `is_default_for_new_members` gets `""` from it, and
+    `_refuse_role_above_the_configurer` then refuses with *"There is no role
+    ''"*. That is failing closed — the alternative is a connection minting
+    roleless memberships on every SSO login — but the sentence names the empty
+    string rather than the missing declaration, which is a worse sentence than
+    the situation deserves. The fix is a refusal that says *this deployment
+    declares no default role*, and it belongs with `roles.py`'s own census
+    rather than in this app.
     """
-    authz.require(actor, "sso_connection.create", tenant)
+    # **AT THE ROOT, not at the acting hat.** A connection is the tenant's
+    # identity: its claims route every address at its domains and its
+    # `default_role` lands a membership on the root. Asked at the hat, an
+    # administrator of one branch held it — and renamed, re-claimed,
+    # enforced and deleted the owner's connection over the wire. The shape
+    # is `update_tenant_settings`' (`core/services.py`), for the same reason.
+    authz.require(actor, "sso_connection.create", root_organization(tenant=tenant))
+    # An unsaid `default_role` is "whatever this deployment says a new member
+    # is" — `default_role_key()`, the one answer `add_membership` would have
+    # reached for anyway — and never the word `member` spelled here. A product
+    # whose declared default is `viewer` used to get `member` out of this
+    # signature, which is a role its `roles.py` may not even declare.
+    default_role = default_role or default_role_key()
     _refuse_role_above_the_configurer(tenant=tenant, actor=actor, role=default_role)
 
     if protocol != SsoConnection.Protocol.OIDC:
@@ -1003,7 +1170,8 @@ def update_sso_connection(
     therefore also "leave it" — an admin who wants the connection to stop
     working disables it, which says so in the audit trail.
     """
-    authz.require(actor, "sso_connection.update", connection)
+    # At the root: this row is the tenant's, not a branch's (see `create`).
+    authz.require(actor, "sso_connection.update", root_organization(tenant=tenant))
     _refuse_role_above_the_configurer(tenant=tenant, actor=actor, role=default_role)
 
     if name is not None:
@@ -1045,7 +1213,8 @@ def disable_sso_connection(
     rather than honoured, and `enforced` stops applying, so the people it
     covered can use a password again instead of being locked out.
     """
-    authz.require(actor, "sso_connection.disable", connection)
+    # At the root: this row is the tenant's, not a branch's (see `create`).
+    authz.require(actor, "sso_connection.disable", root_organization(tenant=tenant))
     connection.status = SsoConnection.Status.DISABLED
     connection.disabled_at = now()
     connection.save(update_fields=["status", "disabled_at", "updated_at"])
@@ -1054,6 +1223,78 @@ def disable_sso_connection(
     # which, once Zitadel fronts every IdP, is the whole of the door still open.
     _materialise(tenant=tenant, actor=actor, connection=connection)
     return connection
+
+
+# door: `manage.py verify_sso_domain` is its door, at the deployment operator's
+# altitude — the same place `bootstrap_tenant` and `unlink_identity` stand. A
+# route onto this would be a tenant confirming its own claim, which is the
+# entire question this service exists to ask somebody else; the wall below is
+# written anyway (C7) so that the day a product ships self-serve verification
+# behind a real check, the seam and its refusal already exist.
+@service
+# rule-16: "verify" is the verb and it is the exact one — this CONFIRMS a claim
+# an administrator made and nothing else; `approve` is a judgement about
+# content, `confirm` is the second half of a two-phase write the first half
+# started, `check` is a predicate that answers rather than writes, and `mark`
+# describes the column instead of the act. Widening `service_verbs` for the
+# whole template is the other road and it belongs to whoever owns `quality/`
+# (R2-E1's rung), not to a fix rung in `accounts`.
+def verify_sso_domain(
+    *, tenant: Tenant, actor: Actor, connection: SsoConnection, domain: str
+) -> SsoDomain:
+    """Record that an operator confirmed this tenant owns this domain.
+
+    **The act that makes a claim route** (a domain claim routes nothing until it is verified).
+    Claiming a domain is
+    something any administrator of any tenant can do and it reserves a name;
+    ROUTING the platform's sign-in for everybody at that domain is something
+    else entirely, and until this service has run, `for_domain` sends those
+    people exactly where an unclaimed address goes.
+
+    **An operator's act, deliberately, and not the tenant's own.** The tenant
+    asking to be trusted cannot be the party that says it is trusted; the
+    deployment's operator is the trust root, `manage.py verify_sso_domain` is
+    the door they stand at, and the audit row is the trail. DNS TXT proof is
+    the obvious successor and is deliberately NOT here: it buys a resolver
+    dependency, a workflow and a token column for a population of zero, and the
+    trigger to build it is the first product that wants tenants to verify
+    themselves — at which point this service is the seam that activity calls,
+    unchanged.
+
+    **Not there is not yours.** A domain this connection does not claim is
+    `NotFound` whoever holds it — the same answer for "nobody claims it" and
+    "another tenant does", because a verification door that distinguished them
+    would answer "does anybody claim this domain" for anyone who can reach it.
+
+    **Idempotent, and audited every time.** A second call returns the row
+    unchanged and still files its receipt: "an operator asserted this domain
+    again" is a fact the ledger is being asked for, which is
+    `record_zitadel_identity`'s precedent exactly. The row is locked while it is
+    read and written so two operators verifying at once serialize rather than
+    race (E8).
+    """
+    # At the root, at the same height as the three keys above: a verified
+    # claim routes the whole tenant's sign-in.
+    authz.require(actor, "sso_domain.verify", root_organization(tenant=tenant))
+    cleaned = normalise_domain(domain)
+    row = (
+        SsoDomain.objects.for_tenant(tenant)
+        .select_for_update()
+        .filter(connection=connection, domain=cleaned)
+        .first()
+    )
+    if row is None:
+        raise NotFound(f"{cleaned or domain} is not one of this connection's claimed domains.")
+    if row.verified_at is not None:
+        return row
+    row.verified_at = now()
+    row.save(update_fields=["verified_at", "updated_at"])
+    log.info(
+        "accounts.sso_domain.verified",
+        tenant_id=str(tenant.pk),
+        connection_id=str(connection.pk),
+    )
+    return row
 
 
 # --- Identity configuration as code ------------------------------------------
@@ -1083,7 +1324,41 @@ SYNC_IDENTITY_CONFIG_WORKFLOW = "SyncIdentityConfigWorkflow"
 PLATFORM_RUN_SEGMENT = "platform"
 
 
-def _identity_config_key(connection: SsoConnection) -> str:
+def _with_observed(key: str, observed: str) -> str:
+    """The run key, plus a digest of WHAT WAS SEEN when the ask came from a reader.
+
+    **Why a key needs this at all.** A workflow id is deterministic (house rule
+    18) and keyed on the intent, so asking twice for the same intent is one run
+    — which is exactly right until the thing that changed is not our intent but
+    Zitadel's copy of it. A console edit leaves the intent byte-identical, so
+    the key is byte-identical, so `record_run` refuses the ask as a repeat of
+    the run that already landed ("running the same work again is a new job, not
+    a repeat of that one"). Correct in general, and fatal to a reconciler: the
+    one caller whose whole job is to re-ask for an intent nobody changed.
+
+    So the reconciler hands over the OBSERVATION — the audit's own line about
+    what Zitadel said — and it joins the key. What follows is the pair of
+    properties the reconciler needs and nothing more: **the same observation
+    twice is one run** (an operator running it again because they were not sure
+    the first one took is not a second ask), and **a different observation is a
+    second run** (this week's console edit is not last week's).
+
+    **A digest, never the sentence.** An observed line carries whatever somebody
+    else's console wrote, and Temporal's history is not the place for an
+    unbounded foreign string — the same reasoning that keeps a client secret out
+    of `_identity_config_key`'s output. Twelve hex characters, and a hyphen,
+    which is the separator every key in this family already uses.
+
+    **An empty observation changes nothing, byte for byte.** Every existing
+    caller passes one by not passing it, so the key they build has to be the key
+    they have always built; the reconciler is the only caller that says anything.
+    """
+    if not observed:
+        return key
+    return f"{key}-{hashlib.sha256(observed.encode()).hexdigest()[:12]}"
+
+
+def _identity_config_key(connection: SsoConnection, *, observed: str = "") -> str:
     """What makes one sync of this connection unique, and repeatable.
 
     The row's primary key **and a digest of the intent**, because a workflow id
@@ -1107,11 +1382,12 @@ def _identity_config_key(connection: SsoConnection) -> str:
     to keep a customer's client secret.
 
     **A re-sync of unchanged, already-applied configuration is therefore
-    refused**, with the `Conflict` `record_run` composes. That is not an
-    oversight: repairing drift somebody made in the console is the
-    auto-repairing reconciler ADR ident-2 deliberately did not build, with its
-    trigger named. `manage.py zitadel_audit` is what makes such drift visible
-    until then.
+    refused**, with the `Conflict` `record_run` composes — unless the caller
+    says what it SAW. That refusal was the right answer for as long as nobody
+    could act on console drift; `manage.py zitadel_reconcile` is the caller that
+    can, and `observed` (see `_with_observed`) is how it asks for the same
+    intent again without claiming the intent changed. `manage.py zitadel_audit`
+    is still what makes the drift visible in the first place.
     """
     intent = "|".join(
         [
@@ -1128,7 +1404,9 @@ def _identity_config_key(connection: SsoConnection) -> str:
             connection.status,
         ]
     )
-    return f"{connection.pk}-{hashlib.sha256(intent.encode()).hexdigest()[:12]}"
+    return _with_observed(
+        f"{connection.pk}-{hashlib.sha256(intent.encode()).hexdigest()[:12]}", observed
+    )
 
 
 #
@@ -1153,6 +1431,7 @@ def sync_identity_config(
     tenant: Tenant,
     actor: Actor,
     connection: SsoConnection,
+    observed: str = "",
     applied: IdentityConfigApplied | None = None,
 ) -> SsoConnection:
     """Make our row and Zitadel agree about this connection's identity config.
@@ -1173,13 +1452,21 @@ def sync_identity_config(
     this connection, so syncing the same row twice before the first run finishes
     is the same run rather than a second one racing it.
 
+    **`observed` is the reconciler's argument and nobody else's.** It names what
+    Zitadel was seen to say, it joins the run key through `_with_observed`, and
+    it is what lets an unchanged intent be asked for again after its first run
+    finished. A door, a command or a write's own materialisation passes nothing
+    and gets the key it has always got.
+
     **The start goes through `core.bridge`, not through an import.** `workflows`
     sits *above* `accounts` in the fixed layer contract, so naming it here would
     be the upward import that contract exists to refuse — the same inversion
     `core.mail` and `apps.events` already use, with the dependency still declared
     on this app's `AppConfig.depends_on`.
     """
-    authz.require(actor, "sso_connection.update", connection)
+    # At the root: the same key at the same height as the door that writes
+    # the row this run is materialising (see `create`).
+    authz.require(actor, "sso_connection.update", root_organization(tenant=tenant))
 
     if applied is not None:
         connection.zitadel_idp_id = applied.resource_id
@@ -1198,7 +1485,7 @@ def sync_identity_config(
         kind=KIND_SSO_CONNECTION,
         key=str(connection.pk),
         noun="identity_config",
-        run_key=_identity_config_key(connection),
+        run_key=_identity_config_key(connection, observed=observed),
     )
     connection.sync_state = SsoConnection.SyncState.PENDING
     connection.save(update_fields=["sync_state", "updated_at"])
@@ -1266,6 +1553,17 @@ def _start_identity_run(
         user=actor.user,
         org=actor.org if tenant is not None else None,
         id=run_id,
+        # **The honest retry, for all three kinds at once.** A materialisation
+        # that FAILED — Zitadel down, a PAT expired, a credential rotated —
+        # leaves a finished run under the intent's own deterministic key, and
+        # without this the only way to ask again is to change the intent, which
+        # is the opposite of what the operator wants. Identity configuration is
+        # idempotent by construction (`ensure_*` is given the id our row already
+        # recorded), so re-running it is safe and the receipt `record_run` files
+        # says what the re-ask replaced. A COMPLETED run is still a `Conflict`
+        # — this is a re-ask after failure, not a licence to re-run work that
+        # landed; `observed` is what asks about landed work.
+        reask_after_failure=True,
     )
 
 
@@ -1299,7 +1597,7 @@ def _materialise(*, tenant: Tenant, actor: Actor, connection: SsoConnection) -> 
         )
 
 
-def _workforce_config_key() -> str:
+def _workforce_config_key(*, observed: str = "") -> str:
     """What makes one sync of the workforce provider unique, and repeatable.
 
     A digest of the environment, because **the environment is the intent** for
@@ -1319,7 +1617,7 @@ def _workforce_config_key() -> str:
             ",".join(domains),
         ]
     )
-    return f"workforce-{hashlib.sha256(intent.encode()).hexdigest()[:12]}"
+    return _with_observed(f"workforce-{hashlib.sha256(intent.encode()).hexdigest()[:12]}", observed)
 
 
 @dataclass(frozen=True)
@@ -1354,7 +1652,9 @@ class WorkforceConfigAsked:
 
 
 @service
-def sync_workforce_identity_config(*, actor: Actor, tenant: Tenant | None) -> WorkforceConfigAsked:
+def sync_workforce_identity_config(
+    *, actor: Actor, tenant: Tenant | None, observed: str = ""
+) -> WorkforceConfigAsked:
     """Make Zitadel hold the workforce Google door this deployment is configured for.
 
     The sibling of `sync_identity_config`, for the provider that is nobody's
@@ -1371,7 +1671,22 @@ def sync_workforce_identity_config(*, actor: Actor, tenant: Tenant | None) -> Wo
     address it asserts is a door that looks open and is not, which is the worst
     of the three states. Fail closed, out loud.
 
-    **Who may ask.** `identity_platform.configure` (`policies.py`), which is a
+    **Except when the caller says it has LOOKED, and that is the take-down
+    road.** The refusal above reads an empty domain list as "you forgot to
+    configure this", which is the right reading of a bare ask — nobody asks a
+    materialiser to materialise nothing. It is the wrong reading of an ask that
+    arrives carrying an `observed` line, because the only caller that carries
+    one is `manage.py zitadel_reconcile`, and it has just read the instance:
+    empty here beside a live provider there is not a missing configuration, it
+    is the door this deployment has switched OFF and Zitadel has not been told
+    about. The ownership table calls this "env wins BOTH ways", and until this
+    rung only one of the two ways had a road — the audit has reported the other
+    as drift since the workforce section landed, and nothing could act on the
+    report. So an observed ask with an empty domain list skips both credential
+    refusals (taking a door down needs no credentials) and the activity
+    deactivates the provider rather than ensuring one.
+
+    **Who may ask.** `deployment.configure` (`policies.py`), which is a
     platform operator and not a tenant's owner: this is the deployment's own
     configuration, and an owner of one customer's workspace has no business
     changing the door the staff sign in through.
@@ -1403,28 +1718,33 @@ def sync_workforce_identity_config(*, actor: Actor, tenant: Tenant | None) -> Wo
     Returns the workflow id, so a command can print it and a test can find the
     run without rebuilding the key.
     """
-    authz.require(actor, "identity_platform.configure", tenant)
+    authz.require(actor, "deployment.configure", tenant)
 
-    if not settings.GOOGLE_OAUTH_CLIENT_ID or not settings.GOOGLE_OAUTH_CLIENT_SECRET:
-        raise Invalid(
-            {"google": ["GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET are required."]},
-            detail=(
-                "This deployment has no Google credentials, so there is no workforce "
-                "door to materialise. Set GOOGLE_OAUTH_CLIENT_ID and "
-                "GOOGLE_OAUTH_CLIENT_SECRET in .env first."
-            ),
-        )
-    if not settings.GOOGLE_WORKSPACE_DOMAINS:
-        raise Invalid(
-            {"google": ["GOOGLE_WORKSPACE_DOMAINS must name at least one domain."]},
-            detail=(
-                "GOOGLE_WORKSPACE_DOMAINS is empty, which means the workforce door is "
-                "off. Materialising a Google provider with no domain restriction would "
-                "put a door in Zitadel that this product refuses everybody at."
-            ),
-        )
+    # The take-down road: an ask from a caller that has read the instance,
+    # against a deployment whose door is switched off. See the docstring.
+    taking_down = bool(observed) and not settings.GOOGLE_WORKSPACE_DOMAINS
 
-    run_key = _workforce_config_key()
+    if not taking_down:
+        if not settings.GOOGLE_OAUTH_CLIENT_ID or not settings.GOOGLE_OAUTH_CLIENT_SECRET:
+            raise Invalid(
+                {"google": ["GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET are required."]},
+                detail=(
+                    "This deployment has no Google credentials, so there is no workforce "
+                    "door to materialise. Set GOOGLE_OAUTH_CLIENT_ID and "
+                    "GOOGLE_OAUTH_CLIENT_SECRET in .env first."
+                ),
+            )
+        if not settings.GOOGLE_WORKSPACE_DOMAINS:
+            raise Invalid(
+                {"google": ["GOOGLE_WORKSPACE_DOMAINS must name at least one domain."]},
+                detail=(
+                    "GOOGLE_WORKSPACE_DOMAINS is empty, which means the workforce door is "
+                    "off. Materialising a Google provider with no domain restriction would "
+                    "put a door in Zitadel that this product refuses everybody at."
+                ),
+            )
+
+    run_key = _workforce_config_key(observed=observed)
     # `tenant=None`, always — the argument above is the audit anchor and never
     # the run's scope. Passing it through here would be exactly the borrowing above.
     run = _start_identity_run(
@@ -1460,6 +1780,7 @@ def set_identity_branding(
     font_color_dark: str = "",
     logo_url: str = "",
     is_watermark_disabled: bool | None = None,
+    observed: str = "",
     applied: IdentityConfigApplied | None = None,
 ) -> IdentityBranding:
     """Say what the hosted sign-in screen should look like, and go and make it so.
@@ -1487,7 +1808,7 @@ def set_identity_branding(
     restrained neutral on both sides, identically. `_branding_field_values` is
     where this merge happens.
 
-    **Who may ask.** `identity_platform.configure` (`policies.py`) — the same
+    **Who may ask.** `deployment.configure` (`policies.py`) — the same
     permission the workforce door needs, and for the same reason: this is the
     deployment's own configuration, and an owner of one customer's workspace has
     no business changing the screen everybody signs in through.
@@ -1514,50 +1835,159 @@ def set_identity_branding(
     this records the *outcome* instead: the state becomes `applied` and no run
     is started, which is what keeps the activity from re-entering the workflow
     that is running it. The shape is `sync_identity_config`'s, deliberately.
+
+    **Called with `observed` — by `manage.py zitadel_reconcile`, and by nothing
+    else — this RE-ASKS the live row and writes no new one**, because a
+    reconciler is not stating a new intent. `_re_ask_the_standing_screen` is
+    that branch and carries the argument for it.
     """
-    authz.require(actor, "identity_platform.configure", tenant)
+    authz.require(actor, "deployment.configure", tenant)
 
     if applied is not None:
-        row = branding or _active_branding()
-        if row is None:
-            raise NotFound("There is no active identity branding to record against.")
-        row.sync_state = SsoConnection.SyncState.APPLIED
-        row.save(update_fields=["sync_state", "updated_at"])
-        return row
+        return _record_the_screen_as_applied(branding or _active_branding())
 
-    current = branding or _active_branding()
-    row = IdentityBranding(
-        **_branding_field_values(
-            current,
-            product_name=product_name,
-            accent=accent,
-            background_color=background_color,
-            font_color=font_color,
-            background_color_dark=background_color_dark,
-            font_color_dark=font_color_dark,
-            logo_url=logo_url,
-            is_watermark_disabled=is_watermark_disabled,
+    if observed:
+        row = _the_standing_screen(branding or _active_branding())
+    else:
+        current = branding or _active_branding()
+        row = IdentityBranding(
+            **_branding_field_values(
+                current,
+                product_name=product_name,
+                accent=accent,
+                background_color=background_color,
+                font_color=font_color,
+                background_color_dark=background_color_dark,
+                font_color_dark=font_color_dark,
+                logo_url=logo_url,
+                is_watermark_disabled=is_watermark_disabled,
+            )
         )
-    )
-    if current is not None:
-        current.is_active = False
-        current.save(update_fields=["is_active", "updated_at"])
-    with as_invalid():
-        row.full_clean()
-    row.save()
+        if current is not None:
+            current.is_active = False
+            current.save(update_fields=["is_active", "updated_at"])
+        with as_invalid():
+            row.full_clean()
+        # authz-kind: the row is an `IdentityBranding` and the key is
+        # `deployment.configure` — the branding IS this deployment's sign-in
+        # screen, which is what the virtual kind exists to name (see the
+        # docstring's "Who may ask"); no tenant owns the row.
+        row.save()
     # **The run is claimed after the row exists and before the transaction
     # closes**, so its key can name the row. `start_workflow_on_commit`
     # defers only the Temporal client call; the visibility row is written
-    # here, in this transaction, and a rollback takes both.
+    # here, in this transaction, and a rollback takes both. **One starter for
+    # both asking modes**: the supersede and the re-ask differ in which row
+    # they hand over and in whether the key carries an observation, and nothing
+    # else — a second copy of these six keywords is how one mode comes to build
+    # an id the other cannot find.
     _start_identity_run(
         tenant=None,
         actor=actor,
         kind=KIND_IDENTITY_BRANDING,
         key=str(row.pk),
         noun="identity_config",
-        run_key=f"branding-{row.pk}",
+        run_key=_branding_run_key(row, observed=observed),
     )
     return row
+
+
+# The stated fields — what this row says the screen should look like, and
+# therefore what a run about it is ABOUT. `product_name` is in the list because
+# it reaches the hosted screen too, and `is_watermark_disabled` because it is a
+# field of the intent even though it is the one the command can only turn off.
+BRANDING_STATED_FIELDS = (
+    "product_name",
+    "accent",
+    "background_color",
+    "font_color",
+    "background_color_dark",
+    "font_color_dark",
+    "logo_url",
+    "is_watermark_disabled",
+)
+
+
+def _record_the_screen_as_applied(row: IdentityBranding | None) -> IdentityBranding:
+    """`set_identity_branding`'s outcome mode, one `def` out.
+
+    **Not a service and deliberately not one**, and the shape is
+    `_start_identity_run`'s: private to this module, one caller, always inside
+    that caller's `@service` transaction, so the authorization, the audit row
+    and the log line are the caller's, one frame up. It is out here because the
+    function-length budget is the house's way of saying a service has grown a
+    second job, and this service now has three modes — state a new intent, ask
+    again about the standing one, record what a run made of it.
+    """
+    if row is None:
+        raise NotFound("There is no active identity branding to record against.")
+    row.sync_state = SsoConnection.SyncState.APPLIED
+    row.save(update_fields=["sync_state", "updated_at"])
+    return row
+
+
+def _the_standing_screen(row: IdentityBranding | None) -> IdentityBranding:
+    """The live intent row, moved back to `pending` for a re-ask. Same shape as above.
+
+    **It writes no new row, and that is the whole difference from a supersede.**
+    Supersede is right for a caller stating a new intent; a reconciler is not
+    stating one — it is saying Zitadel's copy of the STANDING intent has
+    drifted, so a new row would be a second identical intent in the ledger for
+    every reconcile anybody ever runs.
+
+    `pending` because that is what the row is: a run is in flight for it again,
+    and a reader of `zitadel_audit` should meet the same word they would meet
+    for a connection mid-sync.
+    """
+    if row is None:
+        raise NotFound(
+            "There is no active identity branding to re-ask for. Nothing states an "
+            "intent for the sign-in screen, so there is no drift to close — set one "
+            "with `manage.py zitadel_brand` first."
+        )
+    row.sync_state = SsoConnection.SyncState.PENDING
+    row.save(update_fields=["sync_state", "updated_at"])
+    return row
+
+
+# The stated fields — what this row says the screen should look like, and
+# therefore what a run about it is ABOUT. `product_name` is in the list because
+# it reaches the hosted screen too, and `is_watermark_disabled` because it is a
+# field of the intent even though it is the one the command can only turn off.
+BRANDING_STATED_FIELDS = (
+    "product_name",
+    "accent",
+    "background_color",
+    "font_color",
+    "background_color_dark",
+    "font_color_dark",
+    "logo_url",
+    "is_watermark_disabled",
+)
+
+
+def _branding_run_key(row: IdentityBranding, *, observed: str = "") -> str:
+    """What makes one materialisation of the sign-in screen unique, and repeatable.
+
+    **A digest of the stated fields, which is the same shape its two siblings
+    have.** `_identity_config_key` digests a connection's issuer, credentials
+    and status; `_workforce_config_key` digests the three `GOOGLE_*` values. The
+    branding key used to be the row's primary key alone, and that was the one
+    key in this family that said WHICH ROW rather than WHICH INTENT — so two
+    calls asking for identical colours were two runs, which is precisely the
+    thing `_identity_config_key`'s docstring argues against ("the same
+    configuration twice is the same run"). Digesting the intent makes the three
+    consistent (principle 13) and makes an unchanged restyle one run.
+
+    The consequence is stated rather than discovered: `zitadel_brand` run twice
+    with the same colours now asks once, and a second ask after that run
+    finished is the family's ordinary `Conflict` — "running the same work again
+    is a new job, not a repeat of that one". A caller who genuinely wants the
+    screen re-materialised without changing a colour is the reconciler, and it
+    says what it saw.
+    """
+    intent = "|".join(str(getattr(row, field, "") or "") for field in BRANDING_STATED_FIELDS)
+    return _with_observed(f"branding-{hashlib.sha256(intent.encode()).hexdigest()[:12]}", observed)
 
 
 def _active_branding() -> IdentityBranding | None:
@@ -1628,6 +2058,32 @@ class SsoRefused(Conflict):
     """
 
 
+def _verified_claims(*, tenant: Tenant, connection: SsoConnection) -> set[str]:
+    """The domains this connection claims **and an operator has verified**.
+
+    **The second belt, and the reason it is a second one** (a domain claim routes nothing until it
+    is verified).
+    `SsoDomainManager.for_domain` already refuses to route an unverified claim,
+    so in the login flow this question has been asked once already — but
+    `provision_sso_identity` is reachable from a test, a command and any door a
+    later rung gives it, and a service that trusted its caller to have checked
+    is one refactor away from not checking at all.
+
+    An unverified claim is therefore indistinguishable here from a domain the
+    connection never claimed, which is why the caller's refusal keeps its
+    existing sentence: from the person's side that is exactly what it is.
+
+    A function rather than two lines inside the service, because the service is
+    at its length ceiling and because the concept is worth a name: "claimed" and
+    "claimed and verified" are different sets, and every reader of this module
+    now has to know which one a site means.
+    """
+    rows = SsoDomain.objects.for_tenant(tenant).filter(
+        connection=connection, verified_at__isnull=False
+    )
+    return {row.domain for row in rows}
+
+
 # door: the browser SSO login flow is its door, and `apps/accounts/adapter.py`
 # is where allauth calls it — a door mounted the way a third-party integration
 # mounts one rather than the way the four mounts discover one, which is exactly
@@ -1651,16 +2107,41 @@ def provision_sso_identity(
     `system` actor, and by nothing else. It is the whole of JIT provisioning,
     and idempotent: a second login finds the identity, touches `last_seen_at`.
 
-    Three refusals, in order:
+    **Five refusals now, and two of them are about WHEN.** The first three are
+    about the assertion; the two the deactivation review added are about the
+    person, and they sit before the first write on each of the two paths
+    through this function — `last_seen_at` and `ensure_membership` on the
+    identity-found path, `ensure_membership` on the address-found path — so a
+    login this service is about to refuse has moved nothing on its way to the
+    refusal. A person who does not exist here yet cannot be switched off
+    (`create_user` sets the default), which is why the new-account branch
+    carries no such check and its absence there is a statement rather than an
+    oversight.
+
+    **An account this function creates has no password**, and that is the
+    point: an account that only ever exists because an IdP asserted it must not
+    also have a second way in that the IdP cannot revoke.
+
+    **Its key is asked at the acting hat and not at the root, unlike the four
+    keys a PERSON uses to configure a connection** (R1). This one is only ever
+    reached as the `system` actor the login flow calls with, and `allows()`
+    answers a system actor before any node is asked — so passing the root would
+    buy a query per sign-in and change no answer. The valve on the `require`
+    line says so in the one place a census can count it.
+
+    The three about the assertion, in order:
 
     1. **The IdP must say the address is verified.** An IdP that asserts an
        address it has not verified is asserting whatever the person typed into
        their profile — and this product links that address to a local account.
        Without the verified flag, `alice@acme.com` at the IdP is a claim, not a
        fact, and honouring it is account takeover with extra steps.
-    2. **The address must be in a domain this connection claims.** Otherwise a
+    2. **The address must be in a domain this connection claims AND AN OPERATOR
+       HAS VERIFIED** (`_verified_claims` below). Otherwise a
        tenant's own IdP could mint an identity for `someone@other-customer.com`,
-       authenticating for a domain it does not own.
+       authenticating for a domain it does not own — and, before the second
+       half of that sentence existed, a tenant could simply CLAIM the domain
+       through the API and be asked nothing further.
     3. **An address already belonging to somebody in another tenant** is not
        taken over. Domains are unique across tenants, so this can only happen
        when a claim moved; the refusal is loud rather than silent.
@@ -1671,7 +2152,7 @@ def provision_sso_identity(
     it has decided to trust — and no more than `connection.default_role` says,
     which `_refuse_role_above_the_configurer` bounded when a person wrote it.
     """
-    authz.require(actor, "sso_identity.provision", connection)
+    authz.require(actor, "sso_identity.create", connection)  # hat-scoped: system-only caller
 
     address = (email or "").strip().lower()
     if not email_verified:
@@ -1682,16 +2163,15 @@ def provision_sso_identity(
     if not address:
         raise SsoRefused("Your identity provider asserted no email address.")
 
-    claimed = {
-        row.domain for row in SsoDomain.objects.for_tenant(tenant).filter(connection=connection)
-    }
-    if domain_of(address) not in claimed:
+    if domain_of(address) not in _verified_claims(tenant=tenant, connection=connection):
         raise SsoRefused(
             "That email address is outside the domains this identity provider is configured for."
         )
 
     existing = SsoIdentity.objects.for_subject(connection=connection, subject=subject)
     if existing is not None:
+        if not existing.user.is_active:
+            raise SsoRefused(INACTIVE_SENTENCE)
         existing.email = address
         existing.last_seen_at = now()
         existing.save(update_fields=["email", "last_seen_at", "updated_at"])
@@ -1700,10 +2180,9 @@ def provision_sso_identity(
 
     user = User.objects.filter(email=address).first()
     if user is None:
-        # No password, and that is the point: an account that only ever exists
-        # because an IdP asserted it must not also have a second way in that the
-        # IdP cannot revoke.
         user = create_user(email=address, password=None)
+    elif not user.is_active:
+        raise SsoRefused(INACTIVE_SENTENCE)
     elif Membership.objects.filter(user_id=user.pk).exclude(tenant=tenant).exists() and not (
         Membership.objects.filter(user_id=user.pk, tenant=tenant).exists()
     ):
@@ -1817,6 +2296,24 @@ def record_zitadel_identity(
     identity again" is the fact the ledger is being asked for. The `subject`
     itself never reaches the row: it is not in this app's `LOG_KEYS`, so the
     trail says a join was recorded and for whom, and not what was asserted.
+
+    **Four states, and only one of them writes.** The paragraph above used to
+    describe one refusal and then take the other direction silently: a subject
+    already held by somebody else was a `Conflict`, and a person who already
+    held a DIFFERENT subject had theirs quietly replaced. Both are the same
+    claim — "this account is mine now" — arriving from opposite sides, and
+    refusing one while performing the other is the takeover the docstring says
+    it exists to stop. The states:
+
+    * `zitadel_sub` unset, the subject free → **written**; the first login;
+    * `zitadel_sub` equal to the subject → **no-op**; every login after it;
+    * `zitadel_sub` set and different → **`Conflict`**, nothing written;
+    * the subject held by another account → **`Conflict`**, nothing written.
+
+    The third is not a dead end: cutting a join on purpose — an issuer swap, a
+    re-seed, a person whose platform account was rebuilt — is
+    `unlink_zitadel_identity` below, which is an operator's audited act rather
+    than something a sign-in decides for itself.
     """
     cleaned = str(subject or "").strip()
     if not cleaned:
@@ -1827,10 +2324,189 @@ def record_zitadel_identity(
     if user.zitadel_sub == cleaned:
         return user
 
+    # BOTH DIRECTIONS, AND THE SAME SENTENCE FOR EACH. It says nothing about
+    # which account, which is the point on a page anybody who can start a login
+    # can reach: "that identity is already linked to a different account" is
+    # true whether the collision is on this row or on somebody else's, and a
+    # message that distinguished them would answer "does an account exist at
+    # this address" for free.
+    if user.zitadel_sub:
+        raise Conflict("That identity is already linked to a different account.")
+
     claimed = User.objects.filter(zitadel_sub=cleaned).exclude(pk=user.pk).first()
     if claimed is not None:
         raise Conflict("That identity is already linked to a different account.")
 
     user.zitadel_sub = cleaned
     user.save(update_fields=["zitadel_sub", "updated_at"])
+    return user
+
+
+# door: the shell, and only the shell. `manage.py unlink_identity` is the door,
+# at the deployment operator's altitude — the same place `bootstrap_tenant` and
+# `zitadel_first_admin` stand. A route onto this would be a way to cut somebody
+# else's identity join on request, which is the shape the refusal in
+# `record_zitadel_identity` exists to close.
+@service
+# rule-16: "unlink" is the verb, and it is the exact one — this cuts a join
+# somebody made, and `remove`/`revoke`/`delete` each claim something it does not
+# do (no row is removed, no credential is revoked, nothing is deleted). Widening
+# `service_verbs` for the whole template is the other road and it belongs to
+# whoever owns `quality/`, not to a fix rung in `accounts`.
+def unlink_zitadel_identity(
+    *, user: User, actor: Actor, tenant: Tenant | None, reason: str
+) -> User:
+    """Cut the join between a person here and their subject at the platform.
+
+    **The road that makes the refusal above survivable.** Once a differing
+    standing subject is refused, anything that legitimately changes subjects —
+    swapping the issuer, re-seeding the deployment's identity platform,
+    rebuilding one person's platform account — would lock out everybody it
+    touched with no way back. This is the way back, and it is deliberately an
+    operator's act at the shell door rather than a flag on the sign-in road: a
+    door that re-points a join because the request asked it to is the hole the
+    refusal closes, wearing a switch.
+
+    **It cuts every handle on the platform side, not just our column.** Three
+    tables can name a subject — `User.zitadel_sub` (ours), `SocialAccount.uid`
+    (allauth's) and `SsoIdentity.subject` (per-connection, a customer IdP's) —
+    and this service now clears the first two. **The allauth row is NOT
+    "replaced by the next successful sign-in"**; that sentence stood here for a
+    cycle and was false: a sign-in adds a second row, and the old one stays a
+    live handle on this account. allauth resolves `(provider, uid)` itself,
+    AFTER the adapter has had its say, so whoever the identity platform later
+    hands the old subject to signs in as this person — driven end to end and
+    measured at 302 with a session as the owner (V-R2F). A join an operator cut
+    that still lets somebody in is not cut.
+
+    **Only the platform provider's rows** — `provider=get_platform_provider_id()`.
+    A workforce (Google) row is a different door's join to a different issuer
+    and has nothing to do with the subject being cut; erasure is the service
+    that takes every provider's row, because erasure is about the person rather
+    than about one identity platform. Deleting a `SocialAccount` takes its
+    `SocialToken`s with it by cascade, which is the same act: the credential the
+    row carried is exactly what must stop working.
+
+    `SsoIdentity` still belongs to `provision_sso_identity` and is deliberately
+    untouched — it is per-connection, keyed on a customer IdP's own subject, and
+    reaching into it from here would be the second writer this app's identity
+    design is shaped around not having.
+
+    **How many rows went is counted and logged** (`accounts.identity.unlinked`),
+    and deliberately not on the audit row's `input`: `@service` builds that
+    payload from the CALL's keyword arguments before the body runs
+    (`core.service.call`), so a number the body computes has no seam into it.
+    Carrying it there would take a result-declared audit-input hook in
+    `apps/core/service.py`, beside `AUDIT_OBJECT_ATTR`, which is a decision for
+    whoever owns `apps/core` and not for a caller of it.
+
+    **Who may:** `policies.themselves_or_administers_the_whole_tenant`, the same
+    wall `deactivate_user` stands behind, so a door can carry this verb the day
+    a product wants one; a `system` actor passes as it does everywhere, which is
+    what the command below calls as.
+
+    The sockets close, because a person whose join was cut has to prove who they
+    are again before anything else they hold means anything — the same seam and
+    the same argument as a deactivation's.
+
+    `reason` is required and rides the audit row: "every subject changed" and
+    "this one person's platform account was rebuilt" are different acts, and six
+    months later the ledger is the only place that difference still exists.
+    """
+    # hat-scoped: the third argument is the ROW because the predicate reads it —
+    # "themselves, or administers the whole tenant". The NODE is resolved inside
+    # `themselves_or_administers_the_whole_tenant`, which measures the tenant's
+    # ROOT (ADR ident-6) and not the acting hat, so a branch administrator's `*`
+    # never reaches here. Rule 55's own `does_not_cover` names this predicate as
+    # the code half it cannot see into; this is the sentence it asks for.
+    authz.require(actor, "user.unlink", user)
+    _refuse_a_person_outside_this_actors_tenant(user=user, actor=actor)
+    rows = SocialAccount.objects.filter(user_id=user.pk, provider=get_platform_provider_id())
+    # Counted before the delete rather than read off its return value: that
+    # value totals every row the cascade took, `SocialToken`s included, and the
+    # number this reports is rows on the platform provider.
+    removed = rows.count()
+    rows.delete()
+    user.zitadel_sub = None
+    user.save(update_fields=["zitadel_sub", "updated_at"])
+    log.info(
+        "accounts.identity.unlinked",
+        user_id=str(user.pk),
+        social_accounts_removed=removed,
+    )
+    close_sockets_on_commit(user_id=user.pk, reason=KICK_USER_IDENTITY_UNLINKED)
+    return user
+
+
+# --- The admin's key, and why it is a service at all --------------------------
+#
+# ADR ident-4. Django's answer to "make this person staff" is
+# `createsuperuser`, and it is the wrong answer here three times over: it prompts
+# for a password and writes it into `User.password` — the second credential store
+# the ADR closed — it hands out `is_superuser` as well as `is_staff`, and it
+# leaves no record that anybody did it. `is_staff` is what opens `/admin/`, which
+# is a door onto every tenant's rows, so who holds it and who handed it over is
+# exactly the class of fact the audit ledger exists for (house rule 13).
+#
+# **`create_user`'s `is_staff=` keyword survives**, deliberately: it is the
+# fixture road (`apps/conftest.py`, the admin suites) and the shape the allauth
+# adapter provisions with, and both are creation rather than a later grant. What
+# this service owns is the GRANT — the act somebody performs on somebody else's
+# account after the fact — and that is the act with a policy and a row.
+#
+# **There is no `revoke_staff` and that is not an oversight.** `deactivate_user`
+# and `erase_user` both clear `is_staff` already, and those are the two acts a
+# product reaches for when somebody should stop being able to open the admin. A
+# third verb that clears the flag alone is a service with no caller; the recorded
+# trigger for one is a product that wants to demote a person without switching
+# their account off.
+#
+# door: only this tree's own hands reach it — `manage.py grant_staff`, the shell
+# door, and no route, tool or consumer. `is_staff` opens the admin onto every
+# tenant's rows, and the persona who grants it is somebody with ssh on the
+# deployment rather than a caller holding a credential: a REST or MCP door here
+# would make "can reach every tenant" a thing a token could hand out over the
+# wire, which is the opposite of what `deployment.configure` being
+# `is_superuser` and not a role is for (`policies.py`). The recorded trigger for
+# a door is a product that grows a deployment-operator console of its own.
+@service
+def grant_staff(*, user: User, actor: Actor, tenant: Tenant | None) -> User:
+    """Let this person open `/admin/` — the one audited road to `is_staff`.
+
+    **Who may:** `deployment.configure` (`policies.py`), which is a
+    platform operator and not a tenant's owner. The admin reaches every tenant's
+    rows, so an owner of one workspace handing out a key to all of them is not a
+    bigger version of their own permission; it is a different one.
+
+    **`tenant` is the audit anchor and nothing else.** Being staff is a fact
+    about the deployment, so the row lands in the platform population with
+    `tenant` NULL — readable through `AuditEntry.objects.for_platform()` and
+    through no customer's ledger — and the parameter is declared (never
+    defaulted) because that declaration is what makes `@service` audit at all
+    (`core.service._declares_tenant`, ADR core-8).
+
+    **Asking twice is one fact.** The flag is already set on the second call, so
+    the write is skipped and the row still lands: an operator who ran the command
+    again wanted to know the person is staff, and two ok rows for one state is
+    the honest record of two asks.
+    """
+    authz.require(actor, "deployment.configure", tenant)
+    if not user.is_active:
+        raise Conflict(
+            "That account is switched off, so it cannot sign in at all and being "
+            "staff would change nothing about what it can reach. Switch it back "
+            "on first, or grant this to somebody who can use it.",
+        )
+    if user.is_staff:
+        return user
+    user.is_staff = True
+    # authz-kind: the row written is a `User` and the key asked is
+    # `deployment.configure`, deliberately. `is_staff` is not a fact about
+    # this person that their tenant owns — it is a fact about THE DEPLOYMENT's
+    # admin, which reaches every tenant's rows — so a `user.*` key would put the
+    # grant behind the wall `user.deactivate` stands behind, where the
+    # person themselves and any root-level admin of their own workspace pass. The
+    # column is on `User` because that is where Django keeps it; the capability
+    # being handed over is the deployment's identity configuration.
+    user.save(update_fields=["is_staff", "updated_at"])
     return user

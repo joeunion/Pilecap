@@ -7,26 +7,82 @@
 > can reach (ADR platform-1 in
 > `docs/product/architecture.md`).
 
-A template repository for starting a Django product with the **agent team, the
-method, the quality gate and the guardrails already in place** — so cycle 1 of
-a new product starts with the loop running, instead of spending three cycles
-building it.
+**Start a serious product on day zero, not day ninety.**
 
-The method is a product-manager loop run through a small team of dispatched
-agents: the PM owns the order of work and never writes production code;
-acceptance criteria are written before the code exists; the agent that decides
-"done" is never the agent that built it. Around it sit a quality gate that
-cannot pass vacuously, a house-rules engine whose every rule carries planted
-canaries and a declared blind spot, and ledgers that let a cold PM resume.
+Pilecap is a starting point for building a business application with a small
+team and AI agents doing most of the coding. You clone it, describe your
+product, and begin on features. The parts every product needs, and every team
+gets wrong the first time, are already built, tested and enforced. And from the
+first day, an agent can operate your product and read its telemetry in the same
+conversation, which is the fastest feedback loop a builder can have.
 
-What makes it a *Django* system is everything that follows from running
-parallel agents against one schema: migration discipline as team structure,
-per-worktree databases, tenancy on from the first model, Django-native house
-rules, and agent skills that keep builders on current-version, convention-true
-Django. And it ships with **the doors every product turns out to need** —
-REST, MCP, sockets, webhooks, durable workflows — already meeting in one
-place: every door calls services, services emit events, workflows carry
-anything that waits or retries.
+### What you get
+
+- **Every feature reaches users five ways at once.** Build a capability once as
+  a service and it is available through a REST API, an AI tool interface (MCP),
+  live socket updates, webhooks in and out, and background workflows. They all
+  call the same code, so they cannot disagree.
+- **Talk to your running system.** Every capability is a tool an agent can
+  call, and the observability stack has the same kind of interface. Ask an agent
+  to create a record, then why a request was slow, then who changed a setting,
+  against the live system. No dashboards to learn first.
+- **Multi-tenant from the first line.** Each customer's data is isolated and
+  fails closed, with an optional organisation tree inside a customer (regions,
+  branches, teams) where access flows downward. A simple product pays nothing
+  for this. A complex one never retrofits it.
+- **Permissions that are data, not code.** Every action has a named permission
+  generated from your models. Roles are configured per customer. Reads are
+  permissions too, so who can see what is one rule enforced identically on
+  every door. Refusals explain themselves in plain language.
+- **Sign-in you do not build.** Enterprise identity (Google, Okta, SSO domains,
+  invitations, suspended tenants) is handled and hardened against the usual
+  account-takeover mistakes.
+- **Events as the nervous system.** Every change emits a versioned event inside
+  the transaction. You get outgoing webhooks with signed deliveries, retries,
+  dead letters and replay; incoming webhooks with signature checks; live
+  updates; and a retained outbox. Integrations cannot silently miss a change.
+  Anything that waits or retries is a durable workflow, never a fragile thread.
+- **An audit trail you did not write.** Every meaningful act records who,
+  acting as what, did what, to which record. Suspensions, erasures, secret
+  rotations and permission changes are audited acts, never raw edits.
+- **One place to see everything.** Logs, traces and metrics from the web
+  process, the worker and every door flow over OpenTelemetry into one sink.
+  Every row answers who, under which request, and when.
+- **Security as a default.** Credentials for external services are encrypted
+  at rest. Secrets are shown once and rotated, never re-read. Every write
+  accepts an idempotency key. Rate limits are on per tenant and per user. HIPAA
+  is the floor.
+- **The boring apps, done once.** Communications behind swappable providers,
+  files with versions and signed links, exports as workflows, search with a
+  degraded mode, usage metering with thresholds, external connections with
+  OAuth. Each respects tenancy and permissions the way your own apps will.
+- **Grows with you, without a rebuild.** Scale is measured, not assumed: query
+  counts are pinned and re-checked on every commit, hot paths are proven flat as
+  data doubles, and a scale envelope records what is proven. Caching is being
+  built into the platform (v2.2), permission-aware and invalidated from the
+  events it already records, so a builder writes no caching code. A
+  hundred-user product pays nothing; a hundred-thousand-user product turns a
+  setting on.
+- **A quality gate that checks itself.** Dozens of house rules run on every
+  change. Each rule proves it can still catch its own failure before it is
+  trusted. A dead check is an error, not a pass.
+- **A working method for agent teams.** A persistent product manager orders the
+  work, builders build in isolated checkouts with their own databases, a
+  separate verifier proves every change, and the plans and backlog live in the
+  repo so a new session picks up cold. Checks run in minutes, scoped to what
+  changed, mirrored in CI, and can run on disposable cloud machines.
+
+### Who it is for
+
+A founder or small team who wants their first product to behave like a mature
+platform on the day it ships, and who intends to build it with AI agents doing
+the volume of the work under real enforcement rather than trust.
+
+### What it is not
+
+Not a product. It has no screens for your domain and no opinion on what you
+sell. It is the system underneath, and the discipline that keeps it sound as
+the fifteenth app and the hundred-thousandth user arrive.
 
 ## What is here
 
@@ -74,6 +130,15 @@ uv run python manage.py seed   # a tenant, an owner, a member, and an API token 
 ./scripts/serve.sh        # uvicorn; it PRINTS the URL to open — add /api/v1/docs to it, and the MCP server is at /mcp
 ./scripts/worker.sh       # the Temporal worker, in a second terminal; the Temporal UI is at http://127.0.0.1:8233
 ```
+
+**A clone of a published tag — `git clone --branch v2.1.0 …` — arrives on a
+detached HEAD with no local `main`, and `setup.sh`'s first step creates one at
+the tag and says so on the line it prints** (the `--loop` scope, the secret
+scan's basis and this checkout's database name all read that ref by name; the
+step is `ensure_local_main`, and the sentence it prints carries the one-line
+move for anyone who wanted the tip instead). **It also prints how long each step
+took and a `setup: total` line at the end**, so "the first ten minutes" is a
+number this machine measured rather than an estimate.
 
 **`serve.sh` does not serve on 8000, and this README will not tell you a number
 it cannot know.** The port is **derived from this checkout** — the same

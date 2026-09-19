@@ -18,7 +18,7 @@ and house rule 8 is disabled with the reason recorded.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Final, TypeVar
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
@@ -217,6 +217,15 @@ def is_inherited_downward(model: type[models.Model]) -> bool:
     return bool(getattr(model, "inherited_downward", False))
 
 
+#: What `BaseModel.authz_kind` holds until a model says otherwise: "derive my
+#: kind from my class name" (ADR core-25). A sentinel rather than `None`
+#: because `None` is the OPT-OUT — a model declaring that it is not a kind at
+#: all — and the two have to be tellable apart, or the reason the opt-out
+#: demands could never be required of it. The value is deliberately outside the
+#: key grammar, so no product can type it by accident and mean something.
+AUTHZ_KIND_DERIVED: Final[str] = "*derive*"
+
+
 class BaseModel(models.Model):
     """UUIDv7 primary key and timestamps. Every concrete model inherits this.
 
@@ -236,6 +245,38 @@ class BaseModel(models.Model):
     # rule 30's discipline: no index without a proven reader.
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # --- The authorization kind (ADR core-25) -------------------------------
+    #
+    # **A model IS a kind, and a kind carries four verbs.** `core.authz`
+    # derives `<kind>.create/read/update/delete` for every first-party concrete
+    # model, so a product that adds a model gets its four permissions with no
+    # edit to `core` and no list anywhere for somebody to forget. None of these
+    # three attributes is a FIELD and none of them migrates: they are read off
+    # the class at import, the way `lifecycle` and `inherited_downward` are.
+    #
+    # The kind is the IMMUTABLE key under a renamable class name: a product
+    # that renames `Invoice` to `Bill` sets `authz_kind = "invoice"` and no
+    # grant row, no role collection and no product's `require` call breaks.
+
+    #: The kind this model is authorized as. The default says "derive it from
+    #: my class name"; a string overrides that; `None` opts the model out of
+    #: the vocabulary altogether and then `authz_kind_reason` is required.
+    #: `None` and the default have to be tellable apart, which is why the
+    #: default is a sentinel rather than `None`.
+    authz_kind: ClassVar[str | None] = AUTHZ_KIND_DERIVED
+
+    #: Why this model is not a kind. Required when `authz_kind` is `None`, and
+    #: a sentence rather than a marker, because an opt-out is a claim a
+    #: reviewer has to be able to disagree with.
+    authz_kind_reason: ClassVar[str] = ""
+
+    #: The name of a `CASCADE` foreign key to the aggregate this row belongs
+    #: to. An owned child is authorized under its parent's kind — writing a
+    #: line of a ledger IS writing the ledger — and the refusal at import when
+    #: the named key is not `CASCADE` is what keeps that from being asserted of
+    #: a row that outlives its parent and is therefore its own record.
+    authz_kind_of: ClassVar[str | None] = None
 
     class Meta:
         abstract = True
@@ -351,6 +392,56 @@ class Tenant(BaseModel):
     suspended_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
 
+    # --- THE TENANT-ROOT MEMO, AND IT IS A CACHE WITH A DECLARED CONTRACT ----
+    #
+    # The counterpart, one register down, of the permission memo declared on
+    # `core.actor.Actor._permission_rows` — written in the same five clauses and
+    # in the same place (on the carrier, beside the slot) so that a reader who
+    # has found one finds the other without being told. Two shapes for "resolve
+    # this once per request" would be the cost this states instead of paying.
+    #
+    # * **Source of truth** — the `core_organization` row of this tenant whose
+    #   `parent` is NULL. There is exactly one and the DATABASE holds that, not
+    #   a service remembering to look (`Organization.Meta`,
+    #   `organization_one_root_per_tenant`); `core.services.move_organization`
+    #   refuses to move a root, and `Organization.parent` is `PROTECT`ed. So the
+    #   row this remembers cannot become a different row, and cannot stop being
+    #   the root, while the instance that remembers it lives.
+    # * **Key** — this `Tenant` INSTANCE, which is the key and the carrier at
+    #   once. A memo on one tenant's instance is unreachable from another's, so
+    #   the cross-identity confusion the permission memo needs a gate to refuse
+    #   (`core.authz._memo_box`) cannot be expressed here at all.
+    # * **TTL** — the instance's lifetime, which is one request, one activity,
+    #   one command: a door builds `request.tenant` per request
+    #   (`core.middleware`) and hands that one object down to every service it
+    #   calls. **Never process-wide and never across requests**, which is why
+    #   the slot is a scalar `None` that every fill ASSIGNS over on the
+    #   instance: a mutable class attribute would be one box shared by every
+    #   tenant in the process, and that is a cache, not a memo.
+    #
+    #   **One carrier lives longer than that, and the clause is wrong in
+    #   letter for it**: a socket holds its `Tenant` for the life of the
+    #   CONNECTION, which `apps/realtime/bridge.py` expects to run for hours.
+    #   It is harmless in effect only because nothing on that path resolves the
+    #   root — `apps/realtime` never calls `root_organization`, so the slot on a
+    #   consumer's tenant is never filled — and the source-of-truth clause above
+    #   says why it would still be right if it were: the row a tenant's root is
+    #   cannot become a different row while the instance lives. Trigger for
+    #   revisiting: the first socket path that resolves the root, which is the
+    #   day the TTL sentence has to say "or one connection" and mean it.
+    # * **Invalidation** — `forget_root()`, and nothing else.
+    # * **Failure** — a miss is the one indexed read. A tenant with no root
+    #   raises (`core.services.root_organization`) and remembers NOTHING: a
+    #   broken database must not become an answer the rest of the request
+    #   agrees with.
+    # * **Stampede** — none: one instance, one thread, one call chain.
+    #
+    # **What it does NOT decide.** Whether a tenant-wide read should ask at the
+    # root or at the acting hat is open, and this is right under either answer:
+    # it makes the resolution happen once per request instead of once per call,
+    # and says nothing about which node the question is about.
+    _root_organization: Organization | None = None
+
     # NO RECENCY INDEX, and no reader wants one (ADR core-11). This is a
     # platform-cardinality table — one row per customer — and no measured
     # read ever used the bare `created_at` index that used to sit here by
@@ -366,6 +457,33 @@ class Tenant(BaseModel):
     @property
     def is_active(self) -> bool:
         return self.status == self.Status.ACTIVE
+
+    def remember_root(self, organization: Organization) -> None:
+        """Fill the memo from a node the caller is already holding. Else a no-op.
+
+        The other half of "one resolution": a site that has just resolved an
+        organization for its own reasons — `core.middleware.resolve_org` reading
+        the acting hat, which every door does on every request — hands it here
+        rather than letting the request's first tenant-wide read fetch the same
+        row again.
+
+        **The test is `parent is None`, and the database is why that is
+        enough**: at most one row per tenant can satisfy it
+        (`organization_one_root_per_tenant`), so a node that passes both clauses
+        IS this tenant's root and there is nothing to take the caller's word
+        about. Anything else is silently left alone, exactly as a memo lookup
+        about another identity misses rather than answers.
+        """
+        if organization.parent_id is None and organization.tenant_id == self.pk:
+            self._root_organization = organization
+
+    def forget_root(self) -> None:
+        """Drop the memoised root; the next question pays the one indexed read.
+
+        The one invalidation. An instance that never asked has nothing to drop,
+        which is why this is unconditional rather than guarded.
+        """
+        self._root_organization = None
 
 
 class Membership(BaseModel):
@@ -401,6 +519,16 @@ class Membership(BaseModel):
     #: a membership somebody still holds.
     lifecycle: ClassVar[Lifecycle] = Lifecycle(kind=LifecycleKind.BOUNDED)
 
+    # deprecated v2.1 → removed v3.0, and deliberately still here. These three
+    # are no longer this field's `choices` — a role is a key now, and two of the
+    # three layers behind it are not enum members at all (ADR core-25). What
+    # keeps the class is that `owner`, `admin` and `member` are still the
+    # template's own roles by those exact names, every fixture and every test in
+    # the tree spells them through here, and house rule 41 reads "which roles
+    # are privileged" off this body and `is_privileged` below by AST
+    # (`quality/checks.py::_privileged_role_words`). Removing it in the same
+    # release that moved the validation would have been two changes wearing one
+    # migration.
     class Role(models.TextChoices):
         OWNER = "owner", "Owner"
         ADMIN = "admin", "Admin"
@@ -423,7 +551,20 @@ class Membership(BaseModel):
         help_text="Where in the tenant's tree this membership sits. The root, by default.",
     )
     is_default = models.BooleanField(default=False)
-    role = models.CharField(max_length=16, choices=Role.choices, default=Role.MEMBER)
+    # A ROLE KEY, not an enum member (ADR core-25). The value is `owner`, a key
+    # some app declared in its `roles.py`, or the `key` of a `Role` row this
+    # tenant owns — three layers behind one string, and only the first is a
+    # constant. `choices` came off because two of the three layers are not
+    # knowable at import: a per-process list cannot hold a per-tenant row, and a
+    # field that validated against one would refuse every custom role a tenant
+    # ever made. The validation moved into the three services that write this
+    # column (`add_membership`, `set_role`, `invite_member`), which can read the
+    # tenant, and the deploy census (`djb.W054`) is the belt behind them.
+    #
+    # `blank=True, default=""` is the roleless membership: somebody who belongs
+    # here and holds nothing beyond what a grant gives them. It is a legal state
+    # of the column and never a state a door sets — `set_role` refuses it.
+    role = models.CharField(max_length=64, blank=True, default="")
 
     # NO RECENCY INDEX (ADR core-11). The reads ride
     # `membership_unique_user_per_organization` (measure_identity pins them
@@ -452,7 +593,16 @@ class Membership(BaseModel):
 
     @property
     def is_privileged(self) -> bool:
-        """Owner or admin — the roles that may write without a policy saying so."""
+        """Owner or admin — the roles that may write without a policy saying so.
+
+        **deprecated v2.1 → removed v3.0.** `core.authz.allows` no longer
+        consults it: what a person may do is a COLLECTION now, and two of the
+        three layers behind a role key are not these two words. A predicate
+        that wants "how much authority here" asks
+        `core.authz.holds(actor, "<kind>.<verb>", at=...)`; this stays through
+        v2.x because seven un-swept `policies.py` files read it and because
+        house rule 41 reads "which roles are privileged" off this body by AST.
+        """
         return self.role in {self.Role.OWNER, self.Role.ADMIN}
 
     # The wire needs the person's address, and it is a PROPERTY rather than a
@@ -964,11 +1114,12 @@ class Invitation(OrgScopedModel):
         REVOKED = "revoked", "Revoked"
 
     email = models.EmailField()
-    role = models.CharField(
-        max_length=16,
-        choices=Membership.Role.choices,
-        default=Membership.Role.MEMBER,
-    )
+    # The role key this offer names, validated by `invite_member` against the
+    # tenant's own three layers rather than by `choices` — see
+    # `Membership.role`, which this column becomes at acceptance. A key that
+    # stopped existing between the offer and the click is a `Conflict` at
+    # `accept_invitation`, not a 500 from an enum lookup.
+    role = models.CharField(max_length=64, blank=True, default="")
     token_hash = models.CharField(max_length=64, unique=True, editable=False)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     expires_at = models.DateTimeField()
@@ -1006,3 +1157,210 @@ class Invitation(OrgScopedModel):
     @property
     def is_pending(self) -> bool:
         return self.status == self.Status.PENDING
+
+
+# --- The three permission tables (ADR core-25) ---------------------------------
+#
+# **Three layers, one owner each.** `owner` is the platform's and is the whole
+# vocabulary; a declared role is an app's `roles.py` and is code; a tenant's own
+# roles, its deltas on the declared ones, and one person's exceptions are ROWS,
+# and these are those rows. Nothing below stores a permission the code layer
+# already knows: a `RolePermission` is a DIFFERENCE from a declared collection,
+# and a `Grant` is a difference from a membership's collection.
+#
+# Every one of them is read inside `core.authz` and written by a `core` service.
+# A door never touches them, which is what makes "who gave this person this
+# capability, and when" answerable from `AuditEntry` alone.
+
+
+class Role(TenantScopedModel):
+    """A role one tenant made for itself, named by a key nobody else uses.
+
+    The third layer. `owner` is the platform's one role and `admin`/`member` are
+    the template's declarations in `apps/core/roles.py`; a tenant that needs
+    "Approver" makes one of these, and its collection is assembled entirely out
+    of `RolePermission` rows — a custom role starts empty and holds exactly what
+    somebody put in it.
+
+    **`key` is the immutable half and `name` is the renamable one** (§D10): a
+    membership, an invitation and every delta row join on the key, so a tenant
+    that decides "Approver" should read "Reviewer" changes `name` and nothing
+    else has to be rewritten. `create_role` refuses a key that collides with
+    `owner`, with a declared role or with a reserved permission — a collision
+    against code is a service rule rather than a constraint, because the code
+    layer is not a table the database can join against.
+
+    Unique PER TENANT and not per node: reshaping a role for one branch is a
+    withhold on that branch's membership or a second role assigned there, not a
+    third copy of the role. `Role(OrgScopedModel)` resolved through `governing()`
+    was rejected — it is a tree walk on every `require`.
+    """
+
+    #: A tenant's own role vocabulary is small, deliberate and referenced by key
+    #: from three other tables; it dies only when somebody deletes it, and
+    #: `delete_role` refuses while any membership or pending invitation still
+    #: names the key.
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(
+        kind=LifecycleKind.UNBOUNDED,
+        reason=(
+            "a tenant's own role vocabulary. There is no sweeper and none is wanted: a "
+            "role nobody deleted is a role somebody still hands out, and the rows that "
+            "join to it — memberships, pending invitations, deltas — join on the KEY, so "
+            "a swept row would silently empty a collection rather than free anything."
+        ),
+        trigger=(
+            "2026-09-14 — the first tenant whose retired roles are worth archiving rather "
+            "than deleting buys an `archived_at` column and a `list_roles` filter then, "
+            "and this becomes a bounded declaration with the sweep behind it."
+        ),
+    )
+
+    key = models.SlugField(max_length=64)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+
+    class Meta(TenantScopedModel.Meta):
+        verbose_name = "role"
+        verbose_name_plural = "roles"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "key"],
+                name="role_unique_key_per_tenant",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.key})"
+
+
+class RolePermission(TenantScopedModel):
+    """One tenant's difference of opinion with a role's collection.
+
+    `include` adds a permission to a role; `exclude` takes one away. On a
+    DECLARED role both are legal and the row is a delta on what the code says;
+    on a CUSTOM role only `include` is — there is nothing to subtract from, and
+    `create_role_permission` refuses the other shape rather than storing a row
+    that can never do anything.
+
+    **`role_key` is a string and not a foreign key, on purpose.** Two of the
+    three role layers are code: `owner` is the platform's and a declared role
+    lives in an `apps/<x>/roles.py`, so half the keys this column names have no
+    row to point at. The join is the key, exactly as it is on `Membership.role`,
+    and the belt that catches a key naming nothing is the deploy census
+    (`djb.W054`), not a constraint.
+
+    **NOT A KIND OF ITS OWN, and the opt-out is the declaration** (§D10, rule
+    54 (a)'s sanctioned shape). Editing a role's collection is editing the role:
+    these rows are authorized under `role.update`, there is no second thing here
+    for anybody to be given a capability over, and a derived `role_permission`
+    kind would put four keys in the vocabulary that no door will ever ask for.
+
+    The other two spellings do not fit, and both were tried:
+    `authz_kind_of = "role"` names a `CASCADE` foreign key to the aggregate, and
+    this model has none by design — see the paragraph above. `authz_kind =
+    "role"` is refused at boot by `core.authz.kind_registry_of`, which reads a
+    declared kind another model already owns as a COLLISION (`core.Role and
+    core.RolePermission both claim the authorization kind 'role'`) and cannot
+    tell an alias from a mistake. The opt-out says the same thing in the one
+    grammar the registry has: this model is not a kind, and the sentence says
+    why.
+    """
+
+    authz_kind: ClassVar[str | None] = None
+    authz_kind_reason: ClassVar[str] = (
+        "a delta on a role's collection, authorized under `role.update` and never on its "
+        "own. No door reaches one of these rows except through the role it belongs to, and "
+        "a `role_permission.*` key would be four permissions nobody could be given a "
+        "reason to hold: the thing you are given authority over is the role."
+    )
+
+    #: A delta outlives every row that made it relevant: a tenant that excluded
+    #: `invoice.delete` from `admin` two years ago is still excluding it, and
+    #: the fact that nobody currently holds `admin` says nothing about that.
+    #: Custom-role rows die with `delete_role`, which is a cascade in the
+    #: service rather than in the schema — the key is not a foreign key.
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(
+        kind=LifecycleKind.UNBOUNDED,
+        reason=(
+            "a tenant's standing delta on a role's collection. It is a decision, not an "
+            "event: it applies to whoever holds the role today and to whoever holds it "
+            "next year, so there is no age at which a row of this table has stopped "
+            "meaning anything. `delete_role` removes a custom role's rows with it."
+        ),
+        trigger=(
+            "2026-09-14 — the first product that retires a DECLARED role from its "
+            "`roles.py` and wants the deltas naming it swept; that sweep is a management "
+            "command over `role_key not in role_declarations()`, and it buys the count."
+        ),
+    )
+
+    class Effect(models.TextChoices):
+        INCLUDE = "include", "Include"
+        EXCLUDE = "exclude", "Exclude"
+
+    role_key = models.CharField(max_length=64)
+    permission = models.CharField(max_length=255)
+    effect = models.CharField(max_length=8, choices=Effect.choices, default=Effect.INCLUDE)
+
+    class Meta(TenantScopedModel.Meta):
+        verbose_name = "role permission"
+        verbose_name_plural = "role permissions"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "role_key", "permission"],
+                name="rolepermission_unique_per_role",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.effect} {self.permission} for {self.role_key}"
+
+
+class Grant(TenantScopedModel):
+    """One permission handed to, or taken from, one person in one place.
+
+    The bottom layer, and the one an administrator reaches for when a role is
+    the wrong size for one person: `allow` gives this membership a capability
+    its role does not carry, `withhold` takes one away that it does. A withhold
+    beats an allow and beats every role — "forbid overrides permit" — because
+    the alternative is a subtraction somebody can undo by being given something.
+
+    **It hangs off the MEMBERSHIP and not off the person**, which is what makes
+    it positional: the same person holds a different set of exceptions in the
+    branch they run and in the branch they merely belong to, and a grant on the
+    user would have no answer to "where". `CASCADE` says the rest — an exception
+    to a membership that no longer exists is not an exception to anything, and a
+    row that outlived its membership would come back to life the day somebody
+    was re-added.
+    """
+
+    #: BOUNDED, and the cascade IS the lifecycle (ADR core-13's shape): a grant
+    #: dies with its membership, which dies with the person or the tenant. There
+    #: is no sweeper, because a grant nobody revoked is an exception somebody
+    #: still means.
+    lifecycle: ClassVar[Lifecycle] = Lifecycle(kind=LifecycleKind.BOUNDED)
+
+    class Effect(models.TextChoices):
+        ALLOW = "allow", "Allow"
+        WITHHOLD = "withhold", "Withhold"
+
+    membership = models.ForeignKey(
+        Membership,
+        on_delete=models.CASCADE,
+        related_name="grants",
+    )
+    permission = models.CharField(max_length=255)
+    effect = models.CharField(max_length=8, choices=Effect.choices, default=Effect.ALLOW)
+
+    class Meta(TenantScopedModel.Meta):
+        verbose_name = "grant"
+        verbose_name_plural = "grants"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["membership", "permission"],
+                name="grant_unique_permission_per_membership",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.effect} {self.permission} to {self.membership_id}"

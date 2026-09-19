@@ -29,6 +29,20 @@
 #                               one slot's share of the cores, fresh seed, TIERED
 #                               (see below) — the per-rung gate. The pytest leg is
 #                               nearly all of it.
+#                               TWO VALVES, AND BOTH PRINT WHEN THEY ARE OPEN —
+#                               listed together because they are the pair a
+#                               builder reaches for and nothing else here had
+#                               them side by side:
+#                                 DJB_LOOP_NO_CACHE=1  do not consult the loop
+#                                   ledger and bank nothing: measure this tree.
+#                                 DJB_LOOP_NO_SYNC=1   do not bring `.venv` to
+#                                   the lockfile before the key is derived. The
+#                                   escape for a hand-patched environment, and
+#                                   its price is the defect the sync closes:
+#                                   whatever the first `uv run` installs moves
+#                                   the key's env half, so a completely green
+#                                   run banks nothing (loop_env_sync,
+#                                   scripts/gate_ledger.sh).
 #   ./scripts/check.sh --loop --mine
 #                               `--loop` with ONE narrowing: the touched apps run
 #                               in full and the reverse `depends_on` closure is
@@ -39,6 +53,53 @@
 #                               no lock, no pytest slot, no leg banner — exiting
 #                               with the census's own status. See THE INSTRUMENT
 #                               CENSUS, AS A FUNCTION AND AS A MODE below.
+#   ./scripts/check.sh --list-legs
+#                               the gate's own legs, grouped into the UNITS a
+#                               runner can be handed one at a time — one
+#                               tab-separated line per unit, exit 0. No venv, no
+#                               database, no docker, no network, no lease, no
+#                               lock, no slot: it reads this file and the unit
+#                               declarations in it and prints. See THE UNIT
+#                               TABLE, AND `--list-legs` below.
+#   ./scripts/check.sh --leg <unit> [--shard k/N] [--passes 1] [--store-durations]
+#                               ONE UNIT of the full gate: its legs announced
+#                               and run in the full gate's own order, nothing
+#                               else announced and nothing else run, under the
+#                               full gate's exit contract. It takes NO machine
+#                               lease and NO checkout lock, RECORDS NO verdict
+#                               of any kind, and needs NO sanction — a unit is a
+#                               targeted drive the way the per-rung gate is
+#                               (rung-execution §3). A unit whose legs run a
+#                               suite takes ONE pytest slot, exactly as the
+#                               per-rung gate does. The unit names are
+#                               `--list-legs`'s and an unknown one is exit 2
+#                               pointing there. `--shard k/N` runs the k-th of N
+#                               parts of a unit the listing calls N-capable and
+#                               is exit 2 on any other. `--passes 1` runs ONE
+#                               whole pass of the suite leg instead of two, and
+#                               is legal ONLY beside a `--shard` on a unit that
+#                               runs the suite: the second pass is the
+#                               idempotency belt, and a shard drops it only
+#                               because the whole-suite two-pass leak proof runs
+#                               elsewhere — the bank's acceptance box, under
+#                               ADR gate-1's amendment. `--passes 2` is the
+#                               default and prints nothing new, and every
+#                               other value is exit 2.
+#                               `--store-durations` rewrites
+#                               scripts/pytest_durations.json, the file
+#                               the split balances by. It composes with
+#                               `--pr --base <sha>`. See RUNNING ONE UNIT below.
+#   ./scripts/check.sh --store-durations
+#                               THE FULL GATE, RUN TO BE TIMED. Every leg and
+#                               every drive as a bare full run does, and at the
+#                               end scripts/gate_member_durations.json is
+#                               rewritten from this run's own clock. It BANKS
+#                               NOTHING — a tracked file written during a run
+#                               moves the tree that run would have vouched for
+#                               — and the file is committed by whoever ran it,
+#                               as the measurement it is. The `--loop`
+#                               always-on set is derived from it: see the
+#                               `always-on-leg` fence below.
 #
 # THAT LIST IS THE WHOLE OF WHAT THE PARSER TAKES, and it is checked rather than
 # remembered: `scripts/tests/test_gate_lease.sh`'s
@@ -189,6 +250,87 @@ GATE_PR_BASE_SHA=""
 #: leg banner — and exits with the census's own status. See THE `--census` MODE
 #: below.
 GATE_CENSUS=""
+#: Set by `--list-legs`. A MODE, and the only one that runs no leg at all: it
+#: prints the unit table and exits. See THE UNIT TABLE, AND `--list-legs` below.
+GATE_LIST_LEGS=""
+#: Set by `--leg <unit>`. A MODE, and the only one that runs a SUBSET of the
+#: full gate's legs. It normalises to `MODE="--leg"` rather than to the full
+#: mode, which is what keeps a unit run out of the sanction block, out of the
+#: machine lease and out of every ledger: see RUNNING ONE UNIT below.
+GATE_LEG_UNIT=""
+#: The unit's members, comma-wrapped (`,a,b,`) for a substring membership test.
+#: EMPTY ON EVERY OTHER PATH, and that emptiness is the switch: `leg` and
+#: `gate_run_body` filter on it and on nothing else, so one variable decides
+#: both what is announced and what is run, and there is no second reader to
+#: fall out of step with the first.
+GATE_LEG_UNIT_LEGS=""
+#: Set by `--shard k/N`. Legal only on a unit the listing calls `N-capable`;
+#: 1-based, because the listing's grammar is. Whatever the unit's body wants is
+#: derived from these two and never re-parsed.
+GATE_SHARD=""
+GATE_SHARD_K=""
+GATE_SHARD_N=""
+#: Set the moment `--shard` is SEEN, whatever followed it. It is a separate
+#: variable from the value on purpose: `--shard` with nothing after it leaves
+#: the value empty, and a run that read only the value would take the flag as
+#: absent and run the WHOLE unit — a mistyped modifier answered with a bigger
+#: run, which is the same class of defect as a mistyped flag answered with a
+#: smaller one.
+GATE_SHARD_GIVEN=""
+#: Set by `--passes N` under `--leg`. The number of WHOLE PASSES the suite leg
+#: runs: `2` (the default, and the only thing that ever ran before ADR gate-1's
+#: amendment) or `1`.
+#: One pass is legal ONLY on a shard, because the second pass is this unit's
+#: idempotency belt and a run that drops it has to say where the belt went —
+#: under `pm_push.sh --bank --on-boxes N` it is the acceptance box's whole-suite
+#: two-pass run, composed into the verdict row's `leak-proof=` field. A whole
+#: unit asking for one pass is asking to drop the belt and name no replacement,
+#: which is a refusal (see the `--passes` block under RUNNING ONE UNIT).
+GATE_PASSES=""
+#: Set the moment `--passes` is SEEN, whatever followed it — `GATE_SHARD_GIVEN`'s
+#: argument exactly: `--passes` with nothing after it leaves the value empty, and
+#: a run that read only the value would take the flag as absent and run TWO
+#: passes. That is the mistyped-modifier hazard in its bigger-run direction, and
+#: it is answered here rather than discovered in a bank's wall clock.
+GATE_PASSES_GIVEN=""
+#: THE TRANSCRIPT'S OWN WORDS FOR HOW MANY PASSES ARE ABOUT TO RUN, and they
+#: are variables because a run that prints "both passes" and then prints "pass
+#: 2 NOT run" has told a reader two different things about itself — the shard
+#: log a bank composes is read by somebody who was not watching, and a line
+#: that asserts two passes over one is the same class of defect as a row
+#: vouching for more than ran. ONE DECISION SITE flips both (in the `--passes`
+#: block under RUNNING ONE UNIT); there are two strings only because English
+#: has two verbs here, and the DEFAULT values are byte-identical to what every
+#: line printed before the flag existed, which is what keeps a `--passes 2` or
+#: absent transcript unchanged.
+GATE_PASSES_RUN="both passes run"
+GATE_PASSES_CARRY="both passes carry"
+#: And the suite leg's own DECLARATION, for the same reason: `leg` prints it
+#: verbatim, and "twice" is a claim. Nothing reads this string — `gate_list_legs`,
+#: `gate_announced_full_legs`, `gate_unpaired_legs` and the unit census all read
+#: the leg NAME (`$2` of a column-zero `leg <name> …`), which is why it is free
+#: to say what this run is actually doing.
+GATE_PASSES_LEG_TEXT="pytest (twice, both passes under ONE seed and ONE OF THIS MACHINE'S PYTEST SLOTS, nothing in between — the second run proves the first left nothing behind)"
+#: Set by `--store-durations`. A MEASUREMENT, not a verdict: it rewrites the
+#: durations file the split balances by and vouches for nothing.
+GATE_STORE_DURATIONS=""
+#: Set by `--store-durations` at the FULL mode, where `--leg` is absent. A
+#: SECOND SENSE OF ONE FLAG, and the two are told apart by whether a unit was
+#: named, which is stated rather than left to be discovered:
+#:
+#:   --leg pytest-x2 --store-durations   times the SUITE, rewrites
+#:                                       scripts/pytest_durations.json, and
+#:                                       stops after pass 1 (the split's input).
+#:   --store-durations                   runs the WHOLE gate and rewrites
+#:                                       scripts/gate_member_durations.json —
+#:                                       every leg's and every drive's seconds,
+#:                                       which is what the --loop always-on set
+#:                                       is derived from.
+#:
+#: Both are MEASUREMENTS and neither banks: a tracked file written during a run
+#: moves the tree that run would have vouched for, which is exactly why this is
+#: a separate run rather than a side effect of a bank.
+GATE_STORE_MEMBERS=""
 #: Set by `--loop --mine`. A MODIFIER of `--loop`, never a mode of its own: the
 #: legs, their order and their exit statuses are `--loop`'s, and what it changes
 #: is the SCOPE the pytest leg is pointed at — the touched apps in full, the
@@ -207,14 +349,69 @@ case "$MODE" in
 --census)
     GATE_CENSUS=1
     ;;
+--list-legs)
+    GATE_LIST_LEGS=1
+    ;;
+--leg)
+    # The unit is the NEXT word and it is taken here rather than in the modifier
+    # loop below, because `--leg` without one must refuse as `--leg`, naming the
+    # listing — not as an unexpected extra argument.
+    GATE_LEG_UNIT=${2:-}
+    MODE="--leg"
+    shift || true
+    ;;
 *)
     # Not a usage nit: a mistyped flag falling through to a silently different
     # run is enforcement misfiring, and that is an exit 2.
-    echo "!! unknown argument '$MODE': check.sh takes nothing, --fast, --loop, --loop --mine, --census, --bank, or --pr --base <sha>" >&2
+    echo "!! unknown argument '$MODE': check.sh takes nothing, --fast, --loop, --loop --mine, --census, --list-legs, --leg <unit>, --store-durations, --bank, or --pr --base <sha>" >&2
     exit 2
     ;;
 esac
 shift || true
+# --- the modifiers a UNIT run takes, consumed before --base and --mine -------
+# ONLY UNDER `--leg`, AND THAT GUARD IS THE POINT. A `--shard` typed at any
+# other mode falls through to the extra-arguments refusal below (exit 2) rather
+# than being consumed by a mode that would ignore it — a flag silently accepted
+# by a run that does not honour it is the mistyped-flag hazard wearing a
+# different hat. Under a unit run they may arrive in any order, and `--pr` is
+# one of them: on its own it is the mode, under a unit it is a modifier of one.
+if [ "$MODE" = "--leg" ]; then
+    while [ "$#" -gt 0 ]; do
+        case "${1:-}" in
+        --shard)
+            GATE_SHARD_GIVEN=1
+            GATE_SHARD=${2:-}
+            shift || true
+            shift || true
+            ;;
+        --shard=*)
+            GATE_SHARD_GIVEN=1
+            GATE_SHARD=${1#--shard=}
+            shift || true
+            ;;
+        --passes)
+            GATE_PASSES_GIVEN=1
+            GATE_PASSES=${2:-}
+            shift || true
+            shift || true
+            ;;
+        --passes=*)
+            GATE_PASSES_GIVEN=1
+            GATE_PASSES=${1#--passes=}
+            shift || true
+            ;;
+        --store-durations)
+            GATE_STORE_DURATIONS=1
+            shift || true
+            ;;
+        --pr)
+            GATE_PR=1
+            shift || true
+            ;;
+        *) break ;;
+        esac
+    done
+fi
 if [ -n "$GATE_PR" ]; then
     case "${1:-}" in
     --base)
@@ -234,6 +431,20 @@ fi
 # rather than one nested inside an `if`, where shfmt house style would indent it
 # out of that reader's sight.
 case "${1:-}" in
+--store-durations)
+    # AT THE FULL MODE AND NOWHERE ELSE. Under `--leg` it was already consumed
+    # above with its other sense; at `--fast` or `--loop` it would be a
+    # measurement of a subset written into a file the whole gate is derived
+    # from, which is the mistyped-flag hazard wearing a measuring tape.
+    if [ -n "$MODE" ]; then
+        echo "!! --store-durations without --leg measures the WHOLE gate, so it belongs to" >&2
+        echo "   the full mode: ./scripts/check.sh --store-durations" >&2
+        echo "   Under a unit it is the suite's own timing flag: ./scripts/check.sh --leg pytest-x2 --store-durations" >&2
+        exit 2
+    fi
+    GATE_STORE_MEMBERS=1
+    shift || true
+    ;;
 --mine)
     if [ "$MODE" != "--loop" ]; then
         # --mine is a narrowing of the per-rung gate and of nothing else. On the
@@ -271,10 +482,35 @@ fi
 # nothing another gate could be holding. A mode that took the machine's one
 # exclusive lease to read a table would cost every queued gate the wait, and the
 # reason to reach for it is that it is cheap.
+# THE SEAM, SOURCED HERE TOO, AND THE REASON IS THE MODE BELOW. `--census`
+# exits long before the library block further down, and the census needs
+# `checkout_python` from the seam: a mode that reached for an unbound function
+# would die with bash's own `command not found` and no finding at all. The
+# source is guarded and the later one is unconditional on purpose — re-sourcing
+# is declared harmless in that file's own header, and the block below is where a
+# reader looks for the seam.
+[ -n "${GATE_REFUSE_SOURCED:-}" ] || . scripts/gate_refuse.sh
+
 instrument_census() {
-    local rc
+    local rc py
+    # THE CHECKOUT'S OWN INTERPRETER, NEVER `python3` OFF PATH. The census is a
+    # file this repository ships, written against the 3.12 the venv holds; a
+    # verifier box's system `python3` is 3.9 and is first on PATH there.
+    # MEASURED with a `python3` first on PATH that answers 3.9 and refuses the
+    # file: this mode exited 2 saying `the instrument census and the tree
+    # disagree` — a finding about the census's agreement with the tree, over an
+    # interpreter that never read either. The leg two hundred lines down is
+    # where the same class was paid for real.
+    py=$(checkout_python) || {
+        echo "!! the instrument census COULD NOT BE TAKEN: this checkout has no" >&2
+        echo "   .venv/bin/python, and scripts/goalpost_scan.py is a file this repository" >&2
+        echo "   pins at the version that venv holds. Run ./scripts/setup.sh (or" >&2
+        echo "   \`uv sync\`) first. Nothing was censused, and a census that did not" >&2
+        echo "   answer is never an empty one." >&2
+        return 2
+    }
     set +e
-    python3 scripts/goalpost_scan.py --census
+    "$py" scripts/goalpost_scan.py --census
     rc=$?
     set -e
     [ "$rc" = "0" ] && return 0
@@ -565,6 +801,116 @@ if [ -z "$MODE" ]; then
     fi
 fi
 
+# >>> loop-here >>>
+# --- THE PER-RUNG GATE RUNS ON A BOX, AND SAYS WHY WHEN IT DOES NOT ---------
+#
+# THE MEASUREMENT. This Mac runs the whole loop: every builder's `--loop`, the
+# verifier's consult and the bank, all on the same ten cores. At five lanes it
+# sits at load 40-60, and the arithmetic is not subtle — a member measured at
+# 3 s on a quiet box took 83 s here on a busy one, and a suite that costs four
+# minutes alone costs a quarter of an hour under contention. The boxes exist
+# and were built for exactly this; what was missing was anything that made
+# using them the default rather than the thing a builder remembers.
+#
+# SO THE DEFAULT IS INVERTED, with the same shape the full gate's sanction
+# already uses (THE FULL GATE IS SANCTIONED, above): a `--loop` on a machine
+# that is not a verifier box REFUSES and prints the recipe, unless somebody
+# types a reason that outlives the run. The valve is CHEAP and EXPLICIT on
+# purpose — a box is not always the right answer (no AWS credentials, a network
+# that is down, a rung whose whole point is what this laptop does) and none of
+# those should cost a builder more than one line. What the valve must not be is
+# INVISIBLE: the reason is printed in this run's banner and printed again
+# beside the banked verdict, so the population of loops that ran here is
+# readable afterwards rather than inferred.
+#
+# A BOX IS TOLD BY A MARKER THE IMAGE CARRIES, never by an environment variable
+# and never by a hostname. `deploy/verifier/user-data.yaml.in` installs
+# `/run/verifier` on every box at first boot (and writes `boot-at` and
+# `last-activity` into it, which the idle reaper reads), so a box has it before
+# anything of ours runs there and a laptop never does. `/etc/djb/image-id` is
+# the second marker, named here so an image that stops creating a runtime
+# directory has somewhere to say what it is.
+#
+# WHAT IS UNTOUCHED, stated rather than implied: `--fast` (the pre-commit hook,
+# which must stay a local thing that costs seconds) and `--census`. And the
+# VERIFIER'S CLONE is untouched by construction rather than by exemption — the
+# verifier's one consult runs on a box, which is where the wall came from
+# (HOTFIX-BOXVOUCH), so the marker is already there.
+#
+# THE RESIDUAL IS THE SANCTION VALVE'S, declared and accepted: `mkdir
+# /run/verifier` gets past this, exactly as `CI=1` gets past the pipe guard and
+# the full-gate sanction. This refuses the casual habit, not sabotage.
+#
+# WHERE IT SITS: above the lease, the lock, the slot AND the scope derivation,
+# so a refused run takes nothing and costs a second.
+
+#: The markers an image carries. Two, because an image that stops creating a
+#: runtime directory needs somewhere else to say what it is; `-e` and not `-d`
+#: so either a directory or a file answers. `DJB_GATE_BOX_MARKERS` exists for
+#: exactly one reason — neither marker can be planted on a laptop without root,
+#: so the ONE state this guard has that nobody can otherwise reach is "on a
+#: box", and a guard whose permitting branch has never been driven is a guard
+#: that may be unable to permit. It is read here and nowhere else.
+GATE_BOX_MARKERS="${DJB_GATE_BOX_MARKERS:-/run/verifier /etc/djb/image-id}"
+#: Which marker answered, for the banner.
+GATE_BOX_MARKER=""
+gate_on_verifier_box() {
+    local m
+    GATE_BOX_MARKER=""
+    for m in $GATE_BOX_MARKERS; do
+        if [ -e "$m" ]; then
+            GATE_BOX_MARKER=$m
+            return 0
+        fi
+    done
+    return 1
+}
+
+#: What let this `--loop` run where it is running, in one phrase, for the
+#: banner and for the line beside the banked verdict. Empty on every other
+#: mode — they are never refused, so they are never permitted either.
+LOOP_HERE_BECAUSE=""
+if [ "$MODE" = "--loop" ]; then
+    # The valve's SHAPE is checked first and unconditionally — `<who>: <why>`,
+    # the sanction's own grammar — so a typo is a broken invocation rather than
+    # a silent fall-through to the generic refusal below wearing a different
+    # sentence.
+    if [ -n "${DJB_LOOP_HERE:-}" ] && ! [[ ${DJB_LOOP_HERE} =~ ^[^:]+:\ .+$ ]]; then
+        echo "!! DJB_LOOP_HERE is set but is not a reason." >&2
+        echo "   got:  ${DJB_LOOP_HERE}" >&2
+        echo "   want: DJB_LOOP_HERE=\"<rung-id>: <reason>\"" >&2
+        echo "         e.g. DJB_LOOP_HERE=\"x-1: no AWS credentials in this session\"" >&2
+        echo "   A valve that does not name who is asking and why is not a reason." >&2
+        echo "   Nothing was judged." >&2
+        exit 2
+    fi
+    if gate_on_verifier_box; then
+        LOOP_HERE_BECAUSE="a verifier box (${GATE_BOX_MARKER})"
+    elif [ -n "${CI:-}" ]; then
+        LOOP_HERE_BECAUSE="CI (exempt, as at the pipe guard and the full-gate sanction)"
+    elif [ -n "${DJB_LOOP_HERE:-}" ]; then
+        LOOP_HERE_BECAUSE="DJB_LOOP_HERE=${DJB_LOOP_HERE}"
+    else
+        echo "!! REFUSING a --loop on a machine that is not a verifier box." >&2
+        echo "   The per-rung gate is the loop's highest-volume run and this box carries" >&2
+        echo "   every one of them at once. A member measured at 3 s on a quiet machine" >&2
+        echo "   took 83 s here under five lanes; the boxes were built for this." >&2
+        echo "   THE RECIPE, from this worktree, each command's output to its own file:" >&2
+        echo "       ./scripts/verifier_box.sh up --for <rung>" >&2
+        echo "       ./scripts/verifier_box.sh loop <id> --log loop-<rung>" >&2
+        echo "       ./scripts/verifier_box.sh wait <id> loop-<rung>" >&2
+        echo "       ./scripts/verifier_box.sh down <id>     # always, before you report" >&2
+        echo "   IF IT HAS TO RUN HERE — no credentials, a network that is down, a rung" >&2
+        echo "   about this laptop — say who and why:" >&2
+        echo "       DJB_LOOP_HERE=\"<rung-id>: <reason>\" ./scripts/check.sh --loop" >&2
+        echo "   The reason prints in this run's banner and beside its banked verdict." >&2
+        echo "   --fast (the pre-commit hook) and --census are untouched by this." >&2
+        echo "   Nothing was judged: no lease was taken, no slot, no leg was run." >&2
+        exit 2
+    fi
+fi
+# <<< loop-here <<<
+
 # --- the gate's own instruments must run where CI runs them ------------------
 # GNU mktemp REFUSES a template with fewer than three X's; BSD/macOS mktemp
 # accepts one with none. So `mktemp -t djb-pip-audit` is green on every laptop
@@ -699,6 +1045,15 @@ set -e
 # that agree today and drift tomorrow. The --loop `archaeology` leg below and
 # the --loop `fe` leg's own-tree check both call into it.
 . scripts/archaeology_lib.sh
+# The four --fast census bodies that ask a closed question of a DOCUMENT rather
+# than of the code: `adr-census` and `dangling-docs` (shared with
+# scripts/publish.sh, whose release-time whole-artifact scan is the same two
+# bodies over a different file set), plus `loop-names` and `ci-env`, which have
+# no release-time half. Sourced rather than inlined so the drive can aim each
+# body at a scratch tree — a drive cannot run a nested gate, the per-checkout
+# lock refuses it, so a case that shelled out to the gate would go red for the
+# lock and not for the property.
+. scripts/docs_legs.sh
 # The --loop `fe` leg: the tri-state (absent/untouched/full) over frontend/,
 # proven by scripts/tests/test_fe_leg.sh's fixture worlds rather than by this
 # tree's own current state (this template ships with no frontend/ at all).
@@ -708,9 +1063,1047 @@ set -e
 # that leg. `full-house-rules` was missing for a while: the leg ran on every
 # full gate and the ledger line never said so, so every recorded verdict
 # under-reported what green had meant.
-FULL_LEGS=ruff,mypy,import-linter,djb-checks,house-rules,migrations,goalpost-census,db-pin,deploy-check,supply-chain,temporal-census,partition,pytest-x2,own-tree-census,selftest,full-house-rules
+#
+# IT IS NO LONGER MAINTAINED BY HAND, AND THAT IS THE POINT OF THE CENSUS BELOW.
+# This string names what a full run announces, and it had drifted by six names:
+# `queue-index`, `archaeology`, `adr-census`, `dangling-docs`, `loop-names` and
+# `ci-env` were announced on every full gate and recorded on no verdict row, so
+# every banked verdict under-reported what green had meant — the identical
+# defect `full-house-rules` used to carry, re-grown once per rung that added a
+# leg. `--list-legs` derives the announced sequence from this file's own leg
+# call sites and refuses (exit 2) when the two disagree, which is what stops the
+# next one.
+FULL_LEGS=ruff,mypy,import-linter,djb-checks,house-rules,migrations,goalpost-census,queue-index,db-pin,archaeology,adr-census,dangling-docs,loop-names,ci-env,deploy-check,fe,collectstatic,supply-chain,temporal-census,partition,pytest-x2,own-tree-census,selftest,full-house-rules
 MEASURED_START=""
 T_MODE_START=$(date +%s)
+
+# --- THE UNIT TABLE, AND `--list-legs` ---------------------------------------
+#
+# A UNIT IS WHAT ONE RUNNER CAN BE HANDED. The legs of this gate are not
+# independent of each other in cost or in what they assume: eleven of them need
+# nothing but the checkout, one leaves the machine, one owns a whole pytest
+# suite twice over, and one runs every shell refusal drive in the tree. CI has
+# always split them by TYPING A LIST OF LEG NAMES INTO YAML, which is the
+# drift this file refuses everywhere else: the moment a leg is named in a second
+# place, the second place can go stale silently, and the last time it did the
+# house-rules engine went unrun in CI for a whole cycle.
+#
+# So the table lives HERE, beside the legs, and `--list-legs` is how anything
+# else asks. CI adds a COUNT (how many runners); it never adds a NAME.
+#
+# THE FIELDS.
+#   <unit>        the name a runner is handed.
+#   <needs>       the organs the unit's legs assume, comma-joined, or `none`. A
+#                 DECLARATION, not a guard: the gate is what refuses a unit
+#                 whose organ is missing, and it refuses at the leg. Nothing
+#                 reads this field to decide whether to bring a stack up.
+#   <shards>      `0` — the unit is indivisible — or `N-capable`, meaning the
+#                 unit's body takes a `k/N` and runs the k-th of N parts.
+#   <composed-of> the unit's legs, comma-joined, in the full gate's own order —
+#                 and, for a unit that shards by a registered population, that
+#                 population after them (`selftest` names its leg and then every
+#                 drive the leg walks, so a reader can see what one shard holds).
+#                 IT CARRIES NO PASS COUNT AND THERE IS NO FIFTH FIELD. A run's
+#                 own `composed-of:` banner names `pytest-x2/1` when that run
+#                 was handed `--passes 1` (the seam grammar `<leg>[/<passes>]`,
+#                 absent meaning 2) — because the pass count is a property of
+#                 the RUN, not of the unit, and a listing that carried one
+#                 would be answering a question it was never asked. Four
+#                 fields, and `ci.yml` reads column 3.
+#
+# WHAT THE TABLE IS CHECKED AGAINST, every time it is printed: the leg call
+# sites in this file. A full-gate leg is announced at COLUMN ZERO (`leg <name>`
+# at the start of a line); a leg that belongs to one mode's block is announced
+# INDENTED, inside that block. That is not a convention this comment is asking
+# for — it is the rule `--list-legs` reads the file by, and the listing refuses
+# (exit 2) rather than guess when a leg it cannot place appears.
+#
+# `secrets` and `pytest` ARE NOT IN THIS TABLE: both are announced inside the
+# `--loop` block, which the full path skips entirely (`exit 0` at its end).
+# They are `--loop`'s legs, they are driven by their own drives, and a unit
+# table that listed them would be promising a runner something the full gate
+# never runs. `fe` WAS one of those three and is not any more — it moved onto
+# the full path, because a tri-state leg that prints `skip` is still a leg that
+# ran, and a leg the full gate never announces is one no verdict row names.
+# selftest_registered_drives — the drive names, in the order this leg walks them.
+#
+# TWO DIRECTORIES, AND THE SECOND ONE IS ONE PATH WIDE ON PURPOSE. Every drive
+# under `scripts/tests/` is registered here, and so is exactly one under
+# `deploy/tests/`: `test_stage.sh`, which is the first deploy-layer drive to
+# carry `drive_preamble.sh` and therefore the first one this leg can run
+# without the hazard the blind-spot block below still declares for its
+# siblings. The widening is a NAMED PATH and not a `deploy/tests/` glob,
+# because the reason the other deploy drives are out has not expired: they do
+# not source the preamble, and this leg runs inside the pre-push hook.
+selftest_registered_drives() {
+    awk '
+        /^\.\/scripts\/tests\/test_[a-z_]+\.sh$/ {
+            name = $0
+            sub(/^\.\/scripts\/tests\/test_/, "", name)
+            sub(/\.sh$/, "", name)
+            print name
+        }
+        /^\.\/deploy\/tests\/test_stage\.sh$/ { print "stage" }
+    ' scripts/check.sh
+}
+
+GATE_UNIT_ROWS=""
+gate_unit() {
+    local unit=$1 needs=$2 shards=$3 leg legs=""
+    shift 3
+    for leg in "$@"; do legs="${legs}${legs:+,}${leg}"; done
+    GATE_UNIT_ROWS="${GATE_UNIT_ROWS}${unit}	${needs}	${shards}	${legs}
+"
+}
+
+# `needs db` and not `none`: `db-pin` asks whether this checkout's database
+# EXISTS under `loop` and `full` (it did not when this unit was first drawn, and
+# a unit whose declaration predates its legs is the hand list this file is
+# trying to stop). Everything else in the row needs the checkout and nothing
+# more.
+gate_unit static db 0 \
+    ruff mypy import-linter djb-checks house-rules migrations goalpost-census \
+    queue-index db-pin archaeology adr-census dangling-docs loop-names ci-env \
+    deploy-check fe collectstatic
+# The only leg that leaves this machine.
+gate_unit supply-chain network 0 supply-chain
+# Before-and-after facts about ONE suite on ONE machine: the temporal census is
+# a DIFFERENCE across the two passes and the own-tree census is a claim about
+# what the suite left behind, so neither can be run on a different runner from
+# the suite it is about. `temporal-census` is announced twice and named once —
+# a unit's membership is by leg NAME.
+gate_unit pytest-x2 db,redis,temporal,minio,meilisearch N-capable \
+    temporal-census partition pytest-x2 own-tree-census
+# `0` AND NOT `N-capable`, TODAY, AND THE DIFFERENCE IS THE TRUTH: the drives
+# inside this leg are invoked as a straight-line sequence of named blocks — not
+# a loop over a directory, deliberately (`scripts/tests/test_selftest_leg.sh`
+# asserts it), and each block's `./scripts/tests/test_<name>.sh` line is read at
+# COLUMN ZERO by `scripts/tests/test_drive_preamble.sh`. So a `k/K` filter is a
+# per-block guard, one edit per drive, and the declaration says `0` until that
+# is built rather than promising a runner a split this body cannot do.
+gate_unit selftest db,docker,temporal N-capable selftest $(selftest_registered_drives)
+gate_unit full-house-rules none 0 full-house-rules
+
+# gate_announced_full_legs — the full gate's leg sequence, DERIVED from this
+# file rather than remembered: every column-zero `leg <name>` call site, in
+# order, de-duplicated on first appearance (`temporal-census` is announced
+# before and after the suite and is one leg).
+gate_announced_full_legs() {
+    awk '
+        /^leg [a-z0-9-]+ / {
+            if (!($2 in seen)) { seen[$2] = 1; out = out (out ? "," : "") $2 }
+        }
+        END { print out }
+    ' scripts/check.sh
+}
+
+# gate_unpaired_legs — every `leg <name>` announcement in this file whose body is
+# NOT called through `gate_run_body <name> …`, one per line, in file order.
+#
+# THE HOLE THIS CLOSES, which a field test found by planting it: an INDENTED
+# `leg` whose body sits inline is announced by the gate on every run and is
+# invisible to BOTH censuses — the listing reads column-zero call sites only, and
+# the dry sequence reads the runner's own line, which such a leg never reaches.
+# So the gate announces a leg, the verdict row does not name it, and no runner is
+# ever handed it: the exact defect six legs carried, wearing a different hat.
+# This census reads every indent, and it is the listing's business because the
+# listing is the thing that would otherwise be quietly wrong.
+gate_unpaired_legs() {
+    awk '
+        /^[[:space:]]*leg [a-z0-9-]+ / {
+            if (pending != "") { print pending }
+            pending = $2
+            next
+        }
+        /^[[:space:]]*gate_run_body [a-z0-9-]+ / {
+            if (pending == $2) { pending = "" }
+            next
+        }
+        END { if (pending != "") { print pending } }
+    ' scripts/check.sh
+}
+
+# >>> always-on-leg >>>
+# THE LEG THAT MAKES THE LOOP SEE WHAT THE BANK SEES.
+#
+# THE MEASUREMENT THAT OPENED IT. Seven of nine failed banks in one cycle were
+# red at a member the `--loop` never runs at all — a full-only leg, or a drive
+# inside the selftest leg — so the class was discovered at the most expensive
+# moment this system has: after a merge, with a PM waiting on a thirty-minute
+# gate. Most of those members cost single-digit seconds. The loop was skipping
+# them not because they were expensive but because nothing had ever sorted them
+# by price.
+#
+# THE POPULATION IS DERIVED FROM A COMMITTED MEASUREMENT AND NEVER TYPED, and
+# that is the design rather than a detail. A typed list of cheap members goes
+# stale invisibly: a member that grows to forty seconds goes on being run by
+# every loop, and a member that becomes cheap never joins. So the set is read
+# out of `scripts/gate_member_durations.json` — written by
+# `./scripts/check.sh --store-durations` (a MEASUREMENT run, never a verdict,
+# and a separate run precisely so a tracked file is never written during a bank)
+# and committed as the measurement it is. Crossing the floor is ANNOUNCED at the
+# next full gate and the member LEAVES at the next `--store-durations`; nothing
+# drops out silently.
+#
+# TWO DERIVATION SOURCES, ONE LEG, TWO PRINTED LISTS. The other half is
+# DECLARED: a drive that walks the source tree — `scripts/*.sh`, `apps/**` —
+# makes a claim about the whole tree, and a scope that narrowed the suite to two
+# apps has not narrowed what such a drive is about. Those mark themselves with
+# `# census: cross-app <reason>` and run at every scope whatever their price,
+# because always-on is what being a census means. They are read through
+# `loop_scope__declared_censuses` — the same reader, the same grammar and the
+# same refusal the pytest door's marked modules go through.
+#
+# WHAT IT DOES NOT COVER, said here rather than discovered:
+#
+#   * ORGAN NEEDS ARE PER UNIT, NOT PER MEMBER. The only declaration this leg
+#     can read is `gate_unit`'s, and it excludes exactly one need: `network`
+#     (the supply-chain leg, the one leg that leaves this machine — a network
+#     hiccup must never redden a per-rung run). A joined drive that wants docker
+#     answers 2 here exactly as it answers 2 at the bank on a machine without
+#     it: honest, and costly. A `# needs:` header per drive is the follow-up the
+#     day a box runs `--loop`.
+#   * THE FULL-ONLY LEGS ARE NAMED AND NOT RUN, and the reason is structural:
+#     every one of their bodies is defined BELOW the `--loop` block's own exit
+#     in this file, so at the moment this leg runs those functions do not exist.
+#     They are printed with that reason on every run rather than quietly
+#     dropped. Two of the three cheap ones are also POSITIONAL —
+#     `temporal-census` and `own-tree-census` are before-and-after DIFFERENCES
+#     about a suite that has finished, which is not a property a `--loop` has at
+#     all — so moving a definition would not by itself make them loop members.
+#   * DURATIONS ARE ONE MACHINE'S. The file records `machine:` and this leg
+#     prints it; a file measured on a box and read on the Mac is ANNOUNCED,
+#     never refused, because a member's price moving is a reason to re-measure
+#     and not a reason to stop looking.
+
+#: The floor, in seconds. A member measured at or above it stays full-only.
+#: Overridable ONLY so the leg's own drive can plant either side of it without
+#: writing a twelve-second member; nothing in the gate's own path sets it.
+ALWAYS_ON_FLOOR=${DJB_ALWAYS_ON_FLOOR:-10}
+
+#: Where the committed measurement lives. `DJB_GATE_MEMBER_DURATIONS` exists for
+#: the same reason `DJB_GATE_DURATIONS_PATH` does one file over: so the reader's
+#: own refusals can be driven against a planted file.
+always_on_durations_path() {
+    printf '%s\n' "${DJB_GATE_MEMBER_DURATIONS:-scripts/gate_member_durations.json}"
+}
+
+# always_on__legs [<check.sh>] — `<where> <name>` per leg announcement, in file
+# order, de-duplicated: `loop` for a leg at or above the `--loop` block's
+# closing `fi`, `full` for one below it.
+#
+# THE BOUNDARY IS THE BLOCK'S OWN `fi` AND NOT A COLUMN, deliberately. Reading
+# column-zero call sites only (what `gate_announced_full_legs` does, for its own
+# reason) would miss an INDENTED full leg and hand it to this leg as a loop leg
+# — the hole `gate_unpaired_legs` exists to close, one question over. The
+# `--loop` block's body is indented, so the first column-zero `fi` after its
+# `if` is its own.
+always_on__legs() {
+    local file=${1:-scripts/check.sh}
+    [ -r "$file" ] || return 2
+    awk -v m='if [ "$MODE" = "--loop" ]; then' '
+        index($0, m) == 1 { inloop = 1; next }
+        inloop && $0 == "fi" { inloop = 0; past = 1; next }
+        /^[[:space:]]*leg [a-z0-9-]+ / {
+            if (!($2 in seen)) { seen[$2] = 1; print (past ? "full" : "loop"), $2 }
+        }
+    ' "$file"
+}
+
+# always_on__unit_needs <member> — the `needs` field of the unit that names it,
+# or nothing. `GATE_UNIT_ROWS` is this file's own table, built above; a body
+# driven standalone has none, and an empty table declares no needs, which is the
+# honest answer for a scratch world with no units in it.
+always_on__unit_needs() {
+    awk -F'	' -v want="$1" '
+        NF >= 4 {
+            n = split($4, legs, ",")
+            for (i = 1; i <= n; i++) if (legs[i] == want) { print $2; exit }
+        }
+    ' <<EOF
+${GATE_UNIT_ROWS:-}
+EOF
+}
+
+# always_on__names_has <name> — 0 when stdin carries that exact line.
+always_on__names_has() {
+    awk -v n="$1" '$0 == n { found = 1 } END { exit(found ? 0 : 1) }'
+}
+
+#: Filled by `always_on__read_durations`. `ALWAYS_ON_TABLE` is a scratch file of
+#: `<name> <seconds>` lines — a file rather than a shell string because bash 3.2
+#: has no associative arrays and a member name must never be word-split.
+ALWAYS_ON_TABLE=""
+ALWAYS_ON_MEASURED_AT=""
+ALWAYS_ON_MACHINE=""
+
+# always_on__read_durations <path> — 0 the file was read, 1 there is nothing
+# readable there.
+#
+# A MISSING OR UNPARSABLE FILE IS NOT A REFUSAL, and this is the one place in
+# this gate where that is the right answer: a tree before its first
+# `--store-durations` has no such file, and refusing would mean the measurement
+# could never be taken. The leg PRINTS the absence and runs the declared half
+# alone. What IS a refusal is a file that parses and names a member this gate
+# does not have — see `always_on_leg` below.
+always_on__read_durations() {
+    local path=$1 parsed
+    ALWAYS_ON_MEASURED_AT=""
+    ALWAYS_ON_MACHINE=""
+    [ -r "$path" ] || return 1
+    ALWAYS_ON_TABLE=$(mktemp "${TMPDIR:-/tmp}/djb-always-on-table.XXXXXX") || return 1
+    parsed=$(awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*"?/, "", v)
+            sub(/"?[[:space:]]*,?[[:space:]]*$/, "", v)
+            return v
+        }
+        /"measured_at"[[:space:]]*:/ && !inm { print "at " value($0); next }
+        /"machine"[[:space:]]*:/ && !inm { print "mc " value($0); next }
+        /"members"[[:space:]]*:[[:space:]]*\{/ { inm = 1; next }
+        inm && /^[[:space:]]*\}/ { inm = 0; next }
+        inm && match($0, /"[A-Za-z0-9_-]+"[[:space:]]*:[[:space:]]*[0-9]+/) {
+            seg = substr($0, RSTART, RLENGTH)
+            name = seg; sub(/^"/, "", name); sub(/".*/, "", name)
+            secs = seg; sub(/^[^:]*:[[:space:]]*/, "", secs)
+            print "mb " name " " secs
+        }
+    ' "$path") || return 1
+    # AN EOF READER, NEVER A PIPE INTO AN EARLY-EXIT awk — the class
+    # `scripts/tests/test_pipefail_readers.sh` censuses across this whole
+    # population. The producer here could not fill a pipe buffer, and a census
+    # that admitted "this one is safe" would be a census nobody can read.
+    ALWAYS_ON_MEASURED_AT=$(awk '$1 == "at" { $1 = ""; sub(/^ /, ""); print; exit }' <<EOF
+${parsed}
+EOF
+)
+    ALWAYS_ON_MACHINE=$(awk '$1 == "mc" { $1 = ""; sub(/^ /, ""); print; exit }' <<EOF
+${parsed}
+EOF
+)
+    printf '%s\n' "$parsed" | awk '$1 == "mb" { print $2, $3 }' >"$ALWAYS_ON_TABLE"
+    [ -s "$ALWAYS_ON_TABLE" ] || return 1
+    return 0
+}
+
+# always_on__recorded <name> — the seconds recorded for it, or nothing.
+always_on__recorded() {
+    [ -n "$ALWAYS_ON_TABLE" ] && [ -f "$ALWAYS_ON_TABLE" ] || return 0
+    awk -v n="$1" '$1 == n { print $2; exit }' "$ALWAYS_ON_TABLE"
+}
+
+# always_on__drives — the drive names this leg may run, one per line. The
+# scratch branch is `DJB_SELFTEST_DRIVES_DIR`, read here and in the selftest leg
+# and nowhere else, so the leg's own drive can hand it a planted set.
+always_on__drives() {
+    local d name
+    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
+        for d in "$DJB_SELFTEST_DRIVES_DIR"/test_*.sh; do
+            [ -f "$d" ] || continue
+            name=$(basename "$d" .sh)
+            printf '%s\n' "${name#test_}"
+        done
+        return 0
+    fi
+    selftest_registered_drives
+}
+
+# always_on__drive_file <name>
+always_on__drive_file() {
+    printf '%s/test_%s.sh\n' "${DJB_SELFTEST_DRIVES_DIR:-scripts/tests}" "$1"
+}
+
+# --- THE MEMBER'S VERDICT, CONSULTED BEFORE IT RUNS --------------------------
+#
+# THE SAME KEY, THE SAME LEDGER, THE SAME FUNCTIONS. `drive_key` and
+# `drive_ledger_lookup` (scripts/gate_ledger.sh) are the bank's; a second key
+# grammar over the same drives would be two answers to one question, and the
+# first tree where they disagreed would be a loop reusing a row the bank would
+# not have. So this consult is the selftest leg's consult with two differences,
+# both in the direction of running MORE:
+#
+#   * A MEMBER THIS LEG CANNOT KEY RUNS. It does not become could-not-look. A
+#     drive with no `# drives:` line, a tree that will not list, an unreadable
+#     file: every one of them ends in the member being DRIVEN, with the reason
+#     printed. At the bank a member that could not be keyed has not been cleared
+#     and the leg says 2; here the member is about to be run anyway, so a failed
+#     consult costs a second and nothing else.
+#   * ONLY A GREEN BANKS, exactly as at the bank — a red or a could-not-look has
+#     cleared nothing, and a row for it would be a verdict vouching for bytes
+#     nobody drove.
+#
+# WHAT THE REUSE IS WORTH, measured rather than asserted: a hit is one ledger
+# read, so the leg's whole price on an unchanged tree is about a second against
+# the eighty this set costs when every member runs.
+ALWAYS_ON_LISTING=""
+ALWAYS_ON_TREE=""
+ALWAYS_ON_KEY=""
+ALWAYS_ON_PARTS=""
+
+always_on__listing() {
+    [ -z "$ALWAYS_ON_LISTING" ] || return 0
+    ALWAYS_ON_TREE="${MEASURED_START:-}"
+    if [ -z "$ALWAYS_ON_TREE" ]; then
+        ALWAYS_ON_TREE=$(gate_measured_tree) || ALWAYS_ON_TREE=""
+    fi
+    [ -n "$ALWAYS_ON_TREE" ] || return 1
+    ALWAYS_ON_LISTING=$(mktemp "${TMPDIR:-/tmp}/djb-always-on-listing.XXXXXX") || return 1
+    git ls-tree -r "$ALWAYS_ON_TREE" >"$ALWAYS_ON_LISTING" 2>/dev/null || return 1
+    [ -s "$ALWAYS_ON_LISTING" ] || return 1
+    drive_machine_digest >/dev/null || return 1
+    return 0
+}
+
+# always_on__consult <kind> <name> <file> <suffix> — 0 run it, 1 it was REUSED
+# (and the line saying so has been printed).
+always_on__consult() {
+    local kind=$1 name=$2 file=$3 suffix=$4 keyout row
+    ALWAYS_ON_KEY=""
+    ALWAYS_ON_PARTS=""
+    if [ -n "${DJB_SELFTEST_NO_REUSE:-}" ]; then
+        return 0
+    fi
+    if ! command -v drive_key >/dev/null 2>&1; then
+        echo "  ${kind} ${name}: not consulted — no drive-verdict reader in this shell; running it${suffix}"
+        return 0
+    fi
+    if ! always_on__listing; then
+        echo "  ${kind} ${name}: not consulted — the measured tree could not be read; running it${suffix}"
+        return 0
+    fi
+    keyout=$(drive_key "$file" "$ALWAYS_ON_TREE" "$ALWAYS_ON_LISTING") || true
+    case "$keyout" in
+    "ok ${DRIVE_KEY_SCHEMA}:"*)
+        ALWAYS_ON_KEY=$(printf '%s\n' "$keyout" | awk '{print $2}')
+        ALWAYS_ON_PARTS=$(printf '%s\n' "$keyout" | awk '{print $3}')
+        ;;
+    *)
+        echo "  ${kind} ${name}: not consulted — ${keyout#err }; running it${suffix}"
+        return 0
+        ;;
+    esac
+    row=$(drive_ledger_lookup "$ALWAYS_ON_KEY") || row=""
+    if [ -n "$row" ]; then
+        echo "  ${kind} ${name}: REUSED from ${ALWAYS_ON_KEY} (banked $(printf '%s\n' "$row" | awk '{print $4}'))${suffix}"
+        ALWAYS_ON_GREEN=$((ALWAYS_ON_GREEN + 1))
+        return 1
+    fi
+    return 0
+}
+
+ALWAYS_ON_GREEN=0
+ALWAYS_ON_RED=0
+ALWAYS_ON_CANNOT=0
+ALWAYS_ON_RED_NAMES=""
+ALWAYS_ON_CANNOT_NAMES=""
+ALWAYS_ON_WALL=0
+
+# always_on__run <kind> <name> [<reason suffix>] — consult, run, count, bank.
+always_on__run() {
+    local kind=$1 name=$2 suffix=${3:-} file out rc t0 took
+    file=$(always_on__drive_file "$name")
+    if [ ! -f "$file" ]; then
+        echo "  ${kind} ${name}: could not look — ${file} is not in this tree${suffix}"
+        ALWAYS_ON_CANNOT=$((ALWAYS_ON_CANNOT + 1))
+        ALWAYS_ON_CANNOT_NAMES="${ALWAYS_ON_CANNOT_NAMES} ${name}"
+        return 0
+    fi
+    always_on__consult "$kind" "$name" "$file" "$suffix" || return 0
+    out=$(mktemp "${TMPDIR:-/tmp}/djb-always-on-member.XXXXXX") || {
+        echo "  ${kind} ${name}: could not look — no scratch file for its output${suffix}"
+        ALWAYS_ON_CANNOT=$((ALWAYS_ON_CANNOT + 1))
+        ALWAYS_ON_CANNOT_NAMES="${ALWAYS_ON_CANNOT_NAMES} ${name}"
+        return 0
+    }
+    t0=$(date +%s)
+    rc=0
+    # UNPIPED, TO A FILE, AND READ AFTERWARDS — the rule this whole gate is
+    # written by: a reader in the pipeline would replace the member's exit
+    # status with its own.
+    ("$file") >"$out" 2>&1 || rc=$?
+    took=$(($(date +%s) - t0))
+    ALWAYS_ON_WALL=$((ALWAYS_ON_WALL + took))
+    echo "  ${kind} ${name}: exit ${rc} (${took}s)${suffix}"
+    if [ "$rc" = "0" ]; then
+        ALWAYS_ON_GREEN=$((ALWAYS_ON_GREEN + 1))
+        if [ -n "$ALWAYS_ON_KEY" ] && [ -z "${DJB_GATE_LEGS_DRY:-}" ]; then
+            drive_ledger_record "$ALWAYS_ON_KEY" "$name" "$took" "$ALWAYS_ON_TREE" \
+                "$ALWAYS_ON_PARTS" || true
+        fi
+    else
+        # THE OUTPUT IS REPLAYED, and only on a non-zero: a red member nobody
+        # can read is a red nobody can fix, and a green one's transcript would
+        # bury the banner this leg exists to print.
+        sed 's/^/      | /' "$out"
+        if [ "$rc" = "2" ]; then
+            ALWAYS_ON_CANNOT=$((ALWAYS_ON_CANNOT + 1))
+            ALWAYS_ON_CANNOT_NAMES="${ALWAYS_ON_CANNOT_NAMES} ${name}"
+        else
+            ALWAYS_ON_RED=$((ALWAYS_ON_RED + 1))
+            ALWAYS_ON_RED_NAMES="${ALWAYS_ON_RED_NAMES} ${name}"
+        fi
+    fi
+    rm -f "$out"
+    return 0
+}
+
+# always_on_leg — the leg body. Exit 0 clean · 1 a member was red · 2 a member
+# could not look, or the durations file names a member this gate does not have.
+always_on_leg() {
+    local path declared declared_names drives legs known name secs needs where
+    local measured="" rc=0 t0 census_rc=0
+    t0=$(date +%s)
+    ALWAYS_ON_GREEN=0
+    ALWAYS_ON_RED=0
+    ALWAYS_ON_CANNOT=0
+    ALWAYS_ON_RED_NAMES=""
+    ALWAYS_ON_CANNOT_NAMES=""
+    ALWAYS_ON_WALL=0
+    ALWAYS_ON_LISTING=""
+    ALWAYS_ON_TREE=""
+
+    drives=$(always_on__drives) || {
+        echo "!! the always-on leg could not derive the drive set it may run." >&2
+        return 2
+    }
+
+    # --- half one: the DECLARED cross-app censuses ---------------------------
+    # THROUGH `gate_capture`, NOT A BARE `$( )`, and the difference is the cause
+    # line below. A command substitution is a SUBSHELL: a `GATE_LAST_REFUSAL`
+    # the callee records inside one dies with it, so the banner would print
+    # whatever refusal this process saw LAST — a stale sentence about some other
+    # leg, which is worse than none. `gate_capture` replays the callee's stderr
+    # where it would have printed (so "see above" still has its above) and
+    # carries its first `!!` line out as the cause.
+    gate_capture declared loop_scope__declared_censuses \
+        "${DJB_SELFTEST_DRIVES_DIR:-scripts/tests}" 'test_*.sh' || census_rc=$?
+    if [ "$census_rc" != "0" ]; then
+        gate_cause
+        echo "!! the always-on leg COULD NOT READ the drives that declare themselves" >&2
+        echo "   cross-app — see above. Nothing was judged: a drive this could not read" >&2
+        echo "   is one the leg would skip as if it had declared nothing." >&2
+        echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+        return 2
+    fi
+    declared_names=$(printf '%s\n' "$declared" | awk -F'	' 'NF {
+        n = $1
+        sub(/^.*\/test_/, "", n)
+        sub(/\.sh$/, "", n)
+        print n
+    }')
+    if [ -z "$declared" ]; then
+        echo "  always-on (declared): no drive declares itself cross-app"
+    fi
+
+    # --- half two: the MEASURED members under the floor ----------------------
+    path=$(always_on_durations_path)
+    if always_on__read_durations "$path"; then
+        echo "  always-on (measured): ${path} — measured_at ${ALWAYS_ON_MEASURED_AT:-unstated} on ${ALWAYS_ON_MACHINE:-an unstated machine}, floor ${ALWAYS_ON_FLOOR}s"
+        legs=""
+        [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ] || legs=$(always_on__legs) || legs=""
+        known=$(
+            printf '%s\n' "$legs" | awk 'NF { print $2 }'
+            printf '%s\n' "$drives"
+            # THE ONE MEMBER THAT IS NEITHER A LEG NOR A FILE UNDER
+            # scripts/tests/, stated here rather than derived because it cannot
+            # be: `house-rules-engine` is the canary self-test, run as the
+            # selftest leg's first member and timed like every other one, so it
+            # appears in the measurement — and it has no drive file, so it can
+            # never join the set this leg runs. `selftest_shard_takes` names it
+            # the same way and for the same reason.
+            [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ] || printf 'house-rules-engine\n'
+        )
+        # A NAME THIS GATE DOES NOT HAVE IS EXIT 2 AND NEVER A SHRUG. A typo in
+        # the file would otherwise drop a member out of the always-on set in
+        # silence, which is the one way this whole mechanism can lie.
+        while read -r name secs; do
+            [ -n "$name" ] || continue
+            if ! printf '%s\n' "$known" | always_on__names_has "$name"; then
+                echo "!! ${path} records a member this gate does not have: '${name}'." >&2
+                echo "   That file is a MEASUREMENT of this gate's own legs and drives, so a" >&2
+                echo "   name nothing announces is a typo or a member that was removed — and" >&2
+                echo "   either way some OTHER member is silently missing from the set." >&2
+                echo "   Re-measure with ./scripts/check.sh --store-durations." >&2
+                return 2
+            fi
+        done <"$ALWAYS_ON_TABLE"
+
+        # THE FULL-ONLY LEGS, NAMED AND NOT RUN. The reason is in this fence's
+        # header; it is printed rather than assumed because a member missing
+        # from a set nobody prints is a member nobody misses.
+        if [ -n "$legs" ]; then
+            printf '%s\n' "$legs" | while read -r where name; do
+                [ "$where" = "full" ] || continue
+                secs=$(always_on__recorded "$name")
+                echo "  always-on (measured): leg ${name} stays full-only — its body is defined below the --loop block's own exit, so this leg cannot call it${secs:+ (${secs} s recorded)}"
+            done
+        fi
+
+        # THE DRIVES. Derived, per member, with the reason for every exclusion
+        # printed beside it.
+        for name in $drives; do
+            if printf '%s\n' "$declared_names" | always_on__names_has "$name"; then
+                # Already in the declared half — it runs there, unconditionally,
+                # whatever its price. Naming it twice would run it twice.
+                continue
+            fi
+            secs=$(always_on__recorded "$name")
+            if [ -z "$secs" ]; then
+                echo "  always-on (measured): ${name} unmeasured — joins after the next --store-durations"
+                continue
+            fi
+            needs=$(always_on__unit_needs "$name")
+            case ",${needs}," in
+            *,network,*)
+                echo "  always-on (measured): ${name} out by declaration — its unit needs network, and a network hiccup must not redden a per-rung run"
+                continue
+                ;;
+            esac
+            if [ "$secs" -ge "$ALWAYS_ON_FLOOR" ]; then
+                echo "  always-on (measured): ${name} above the floor (${secs} s)"
+                continue
+            fi
+            measured="${measured} ${name}"
+        done
+        if [ -z "$measured" ]; then
+            echo "  always-on (measured): no member is under the ${ALWAYS_ON_FLOOR}s floor"
+        else
+            echo "  always-on (measured): joins this loop —${measured}"
+        fi
+    else
+        echo "  always-on (measured): no durations file — the first --store-durations writes it"
+        measured=""
+    fi
+
+    # --- run them ------------------------------------------------------------
+    if [ -n "$declared" ]; then
+        while IFS="$(printf '\t')" read -r ALWAYS_ON_PATH ALWAYS_ON_REASON; do
+            [ -n "$ALWAYS_ON_PATH" ] || continue
+            name=$(basename "$ALWAYS_ON_PATH" .sh)
+            always_on__run census "${name#test_}" " — ${ALWAYS_ON_REASON}"
+        done <<EOF
+${declared}
+EOF
+    fi
+    for name in $measured; do
+        always_on__run member "$name"
+    done
+
+    if [ -n "$ALWAYS_ON_LISTING" ]; then
+        rm -f "$ALWAYS_ON_LISTING"
+        ALWAYS_ON_LISTING=""
+    fi
+    [ -z "$ALWAYS_ON_TABLE" ] || rm -f "$ALWAYS_ON_TABLE"
+    ALWAYS_ON_TABLE=""
+    echo "  always-on: ${ALWAYS_ON_GREEN} member(s) green · ${ALWAYS_ON_RED} red · ${ALWAYS_ON_CANNOT} could-not-look (${ALWAYS_ON_WALL}s of member wall, $(($(date +%s) - t0))s of leg)"
+    if [ "$ALWAYS_ON_CANNOT" -gt 0 ]; then
+        echo "!! COULD NOT LOOK:${ALWAYS_ON_CANNOT_NAMES}" >&2
+        [ "$ALWAYS_ON_RED" = "0" ] || echo "!! and RED:${ALWAYS_ON_RED_NAMES}" >&2
+        echo "   2 outranks 1: a member that could not run its cases has not cleared" >&2
+        echo "   them. This is the SAME member the bank runs — meeting it here is the" >&2
+        echo "   whole point of the leg; meeting it at the bank costs a merge." >&2
+        rc=2
+    elif [ "$ALWAYS_ON_RED" -gt 0 ]; then
+        echo "!! RED:${ALWAYS_ON_RED_NAMES}" >&2
+        echo "   A full-only member is red. Before this leg existed that red waited for" >&2
+        echo "   the next bank — seven of nine failed banks in one cycle were exactly" >&2
+        echo "   that. Read the first name first." >&2
+        rc=1
+    fi
+    return "$rc"
+}
+# >>> member-durations >>>
+# EVERY MEMBER'S SECONDS, KEPT — the measurement the `--loop` always-on set is
+# derived from, and the announcement that keeps that set honest between
+# measurements.
+#
+# TWO JOBS, ONE CLOCK. Legs are timed by `leg()` above and drives by
+# `selftest_member_end` inside the selftest fence; both hand their seconds here
+# rather than each growing a writer, so there is one accumulator and one
+# comparison and no second thing to keep in step.
+#
+#   (1) ACCUMULATE. Under `--store-durations` at the full mode the whole set is
+#       written out at the end of the run, in one place, once.
+#   (2) ANNOUNCE A CROSSING. On EVERY full run a member whose live seconds sit
+#       on the other side of the floor from its recorded seconds says so. The
+#       file itself does not move — only a measurement run writes it — so the
+#       sentence is the warning and the next `--store-durations` is the act. A
+#       member that silently grew past the floor and went on being run by every
+#       loop is the one failure mode a derived set has, and this is what makes
+#       it loud.
+#
+# ONLY ON A FULL RUN. A `--loop` runs a fraction of the set and a `--leg` runs
+# one unit of it; seconds from either would be a measurement of a subset
+# written into the file the whole set is derived from.
+GATE_MEMBER_TIMES=""
+GATE_MEMBER_DURATIONS_READ=""
+gate_member_record() {
+    local name=$1 secs=$2 recorded
+    [ -z "$MODE" ] || return 0
+    [ -z "$GATE_LEG_UNIT" ] || return 0
+    if [ -z "$GATE_MEMBER_TIMES" ]; then
+        GATE_MEMBER_TIMES=$(mktemp "${TMPDIR:-/tmp}/djb-gate-member-times.XXXXXX") || {
+            GATE_MEMBER_TIMES=""
+            return 0
+        }
+    fi
+    printf '%s %s\n' "$name" "$secs" >>"$GATE_MEMBER_TIMES"
+    if [ -z "$GATE_MEMBER_DURATIONS_READ" ]; then
+        GATE_MEMBER_DURATIONS_READ=1
+        always_on__read_durations "$(always_on_durations_path)" || true
+    fi
+    recorded=$(always_on__recorded "$name")
+    [ -n "$recorded" ] || return 0
+    if [ "$secs" -ge "$ALWAYS_ON_FLOOR" ] && [ "$recorded" -lt "$ALWAYS_ON_FLOOR" ]; then
+        echo "  member ${name}: ${secs} s live vs ${recorded} s recorded — above the loop floor;"
+        echo "                  leaves the always-on set at the next --store-durations"
+    elif [ "$secs" -lt "$ALWAYS_ON_FLOOR" ] && [ "$recorded" -ge "$ALWAYS_ON_FLOOR" ]; then
+        echo "  member ${name}: ${secs} s live vs ${recorded} s recorded — below the loop floor;"
+        echo "                  joins the always-on set at the next --store-durations"
+    fi
+    return 0
+}
+
+# gate_member_durations_write — the file, rewritten from this run's own clock.
+# Exit 0 written · 1 there was nothing to write or the path is not writable.
+gate_member_durations_write() {
+    local path=$1 tree=$2 tmp
+    [ -n "$GATE_MEMBER_TIMES" ] && [ -s "$GATE_MEMBER_TIMES" ] || return 1
+    tmp=$(mktemp "${TMPDIR:-/tmp}/djb-gate-member-json.XXXXXX") || return 1
+    {
+        printf '{\n'
+        # `tree:` IS PART OF THE VALUE, AND IT IS LOAD-BEARING TWICE. It says
+        # what the forty characters after it are — a git TREE sha, not a
+        # commit — and it is what keeps `detect-secrets`' Hex High Entropy
+        # String plugin from reading a public tree sha as a credential: the
+        # plugin takes the whole quoted value and asks whether it is hex, so a
+        # bare sha here reds the `--loop` secrets leg on every rung that
+        # re-measures, and JSON has no comment to hang a
+        # `pragma: allowlist secret` on. Measured, not guessed: this leg's own
+        # first run reddened `secrets_scan` and `secrets_baseline_guard` on
+        # exactly that line.
+        printf '  "measured_at": "tree:%s",\n' "$tree"
+        printf '  "machine": "%s",\n' "$(uname -sr)"
+        printf '  "members": {\n'
+        # SORTED, AND THE LAST MEMBER CARRIES NO COMMA. A sorted file is a file
+        # two measurements can be diffed against each other; an unsorted one
+        # re-orders itself on every run and every diff is the whole file.
+        LC_ALL=C sort -u "$GATE_MEMBER_TIMES" | awk '
+            { name[NR] = $1; secs[NR] = $2 }
+            END {
+                for (i = 1; i <= NR; i++) {
+                    printf "    \"%s\": %s%s\n", name[i], secs[i], (i < NR ? "," : "")
+                }
+            }
+        '
+        printf '  }\n'
+        printf '}\n'
+    } >"$tmp" || {
+        rm -f "$tmp"
+        return 1
+    }
+    cat "$tmp" >"$path" || {
+        rm -f "$tmp"
+        return 1
+    }
+    rm -f "$tmp"
+    return 0
+}
+# <<< member-durations <<<
+
+# <<< always-on-leg <<<
+
+# gate_list_legs — validate the table against the file, then print it. Exit 0
+# clean, 2 on any disagreement: a listing that quietly omitted a leg would send
+# a runner home believing it had run the gate.
+gate_list_legs() {
+    local announced unit needs shards legs leg seen="" unpaired drives
+    announced=$(gate_announced_full_legs)
+    if [ -z "$announced" ]; then
+        echo "!! --list-legs found NO column-zero leg call sites in scripts/check.sh — the listing has lost its subject." >&2
+        return 2
+    fi
+    if [ "$announced" != "$FULL_LEGS" ]; then
+        echo "!! --list-legs: FULL_LEGS and the legs a full run announces disagree." >&2
+        echo "   announced: ${announced}" >&2
+        echo "   FULL_LEGS: ${FULL_LEGS}" >&2
+        echo "   A leg the ledger does not know about is a leg every banked verdict" >&2
+        echo "   under-reports. Fix FULL_LEGS (or the call site), not this message." >&2
+        return 2
+    fi
+    drives=$(selftest_registered_drives)
+    unpaired=$(gate_unpaired_legs)
+    if [ -n "$unpaired" ]; then
+        echo "!! --list-legs: a leg is announced whose body is not run through gate_run_body:" >&2
+        printf '   %s\n' $unpaired >&2
+        echo "   The gate announces it on every run, no verdict row names it and no" >&2
+        echo "   runner is ever handed it — it is invisible to this listing and to the" >&2
+        echo "   dry sequence alike. Put the body in a gate_leg_<name> function and" >&2
+        echo "   call it \`gate_run_body <name> gate_leg_<name>\`." >&2
+        return 2
+    fi
+    while IFS='	' read -r unit needs shards legs; do
+        [ -n "$unit" ] || continue
+        if [ -z "$needs" ] || [ -z "$shards" ] || [ -z "$legs" ]; then
+            echo "!! --list-legs: unit '${unit}' is missing its needs/shards/legs declaration." >&2
+            echo "   \`needs\` is a declaration and an empty one says nothing; write \`none\`." >&2
+            return 2
+        fi
+        for leg in $(printf '%s' "$legs" | tr ',' ' '); do
+            # A MEMBER IS A LEG OR A DRIVE, and both populations are derived from
+            # this file: the legs from the column-zero `leg` call sites, the
+            # drives from the column-zero `./scripts/tests/test_<name>.sh` lines
+            # the selftest leg walks. A shardable unit names its shard population
+            # so a reader of the listing can see what one shard would hold.
+            case ",${FULL_LEGS},|$(printf '%s' "$drives" | tr '\n' '|')|" in
+            *",${leg},"* | *"|${leg}|"*) ;;
+            *)
+                echo "!! --list-legs: unit '${unit}' names '${leg}', which is neither a leg a full run announces nor a drive this file registers." >&2
+                return 2
+                ;;
+            esac
+            case " $seen " in
+            *" $leg "*)
+                echo "!! --list-legs: leg '${leg}' is in more than one unit — a leg run twice by two runners is not a partition." >&2
+                return 2
+                ;;
+            esac
+            seen="${seen}${seen:+ }${leg}"
+        done
+    done <<EOF
+$(printf '%s' "$GATE_UNIT_ROWS")
+EOF
+    for leg in $(printf '%s' "$FULL_LEGS" | tr ',' ' '); do
+        case " $seen " in
+        *" $leg "*) ;;
+        *)
+            echo "!! --list-legs: leg '${leg}' is in NO unit — no runner would ever be handed it." >&2
+            return 2
+            ;;
+        esac
+    done
+    # THE SAME QUESTION, ONE TIER DOWN: a drive in no unit is a drive no shard
+    # would ever run, which is how a whole refusal set goes quiet while the leg
+    # stays green.
+    for leg in $drives; do
+        case " $seen " in
+        *" $leg "*) ;;
+        *)
+            echo "!! --list-legs: drive '${leg}' is in NO unit — no shard would ever be handed it." >&2
+            return 2
+            ;;
+        esac
+    done
+    printf '%s' "$GATE_UNIT_ROWS"
+    return 0
+}
+
+if [ -n "$GATE_LIST_LEGS" ]; then
+    # ABOVE THE LEASE, THE LOCK AND THE SLOT, and that position is asserted by
+    # `scripts/tests/test_list_legs.sh` rather than described here: a listing
+    # that queued behind somebody else's full gate would be useless to the thing
+    # that wants it (a CI job whose whole purpose is to find out what to run).
+    set +e
+    gate_list_legs
+    GATE_LIST_LEGS_RC=$?
+    set -e
+    exit "$GATE_LIST_LEGS_RC"
+fi
+
+# --- RUNNING ONE UNIT --------------------------------------------------------
+#
+# WHAT `--leg <unit>` IS, AND WHAT IT IS NOT. It is the full gate's legs, in the
+# full gate's order, with every leg outside the named unit neither announced nor
+# run. It is NOT a smaller full gate: it takes no machine lease, no checkout
+# lock and no sanction, and it records nothing in any of the three ledgers,
+# because a partition of a run vouches for no tree (`gate_ledger.sh`, property
+# 2). A runner handed every unit has between them run the whole gate; each one
+# on its own has run a part and says so.
+#
+# NO SANCTION, AND THE ARGUMENT IS rung-execution §3's. The sanction exists
+# because a full gate is the most expensive thing on this machine and every
+# other full gate queues behind it. A unit takes no lease, so nothing queues
+# behind it, and its cost is the cost of the part somebody asked for. That is
+# the same shape `--loop` and `--census` already have, and it is why the mode
+# normalises to `MODE="--leg"` rather than to the full mode: every guard in this
+# file that reads `MODE` for emptiness is asking "is this the run that banks a
+# verdict for a tree", and the honest answer here is no.
+#
+# THE MEMBERSHIP TEST IS THE LISTING'S OWN. The unit and its legs come out of
+# `gate_list_legs` — the same validated table `--list-legs` prints, run here so
+# a unit run refuses for a broken table exactly as the listing does, and so
+# there is no second reading of the unit declarations to keep in step.
+if [ "$MODE" = "--leg" ]; then
+    if [ -z "$GATE_LEG_UNIT" ]; then
+        echo "!! --leg needs a unit: ./scripts/check.sh --leg <unit>" >&2
+        echo "   The units are the gate's own and ./scripts/check.sh --list-legs is what" >&2
+        echo "   names them. Nothing was judged." >&2
+        exit 2
+    fi
+    set +e
+    GATE_LEG_TABLE=$(gate_list_legs 2>&1)
+    GATE_LEG_TABLE_RC=$?
+    set -e
+    if [ "$GATE_LEG_TABLE_RC" != "0" ]; then
+        printf '%s\n' "$GATE_LEG_TABLE" >&2
+        echo "!! --leg ${GATE_LEG_UNIT}: the unit table does not validate, so this gate does" >&2
+        echo "   not know what one unit is. Nothing was judged." >&2
+        exit "$GATE_LEG_TABLE_RC"
+    fi
+    GATE_LEG_UNIT_SHARDS=$(printf '%s\n' "$GATE_LEG_TABLE" | awk -F'\t' -v u="$GATE_LEG_UNIT" '$1 == u { print $3 }')
+    GATE_LEG_UNIT_MEMBERS=$(printf '%s\n' "$GATE_LEG_TABLE" | awk -F'\t' -v u="$GATE_LEG_UNIT" '$1 == u { print $4 }')
+    if [ -z "$GATE_LEG_UNIT_MEMBERS" ]; then
+        echo "!! --leg '${GATE_LEG_UNIT}': no such unit." >&2
+        echo "   The units are the gate's own, and ./scripts/check.sh --list-legs is what" >&2
+        echo "   names them — never a list typed into a runner:" >&2
+        printf '%s\n' "$GATE_LEG_TABLE" | awk -F'\t' 'NF { print "     " $1 }' >&2
+        echo "   Nothing was judged: no lease was taken, no slot, no leg was run." >&2
+        exit 2
+    fi
+    GATE_LEG_UNIT_LEGS=",${GATE_LEG_UNIT_MEMBERS},"
+    if [ -n "$GATE_SHARD_GIVEN" ]; then
+        # A SHARD OF AN INDIVISIBLE UNIT IS A REFUSAL AND NEVER A SMALLER RUN.
+        # The `shards` field is the listing's answer to "does this unit's body
+        # take a k/N", and a runner that split one which does not would be told
+        # it had run a part of something with no parts.
+        if [ "$GATE_LEG_UNIT_SHARDS" != "N-capable" ]; then
+            echo "!! --leg ${GATE_LEG_UNIT} --shard ${GATE_SHARD}: that unit is indivisible (shards: ${GATE_LEG_UNIT_SHARDS})." >&2
+            echo "   ./scripts/check.sh --list-legs carries the shards field of every unit and" >&2
+            echo "   only an N-capable one takes a k/N." >&2
+            echo "   Nothing was judged: no lease was taken, no slot, no leg was run." >&2
+            exit 2
+        fi
+        if ! [[ $GATE_SHARD =~ ^([0-9]+)/([0-9]+)$ ]]; then
+            echo "!! --shard '${GATE_SHARD}' is not a k/N pair of integers." >&2
+            echo "   The form is 1-based, as the listing's grammar is: --shard 1/3 is the" >&2
+            echo "   first of three. A pair this gate cannot parse is never a smaller run." >&2
+            echo "   Nothing was judged." >&2
+            exit 2
+        fi
+        GATE_SHARD_K=${BASH_REMATCH[1]}
+        GATE_SHARD_N=${BASH_REMATCH[2]}
+        if [ "$GATE_SHARD_N" -lt 1 ] || [ "$GATE_SHARD_K" -lt 1 ] || [ "$GATE_SHARD_K" -gt "$GATE_SHARD_N" ]; then
+            echo "!! --shard ${GATE_SHARD} is outside 1..${GATE_SHARD_N} of ${GATE_SHARD_N}." >&2
+            echo "   Every k in 1..N runs a part and the N parts are the whole; a k outside" >&2
+            echo "   that range names a part of the unit that does not exist." >&2
+            echo "   Nothing was judged." >&2
+            exit 2
+        fi
+    fi
+    if [ -n "$GATE_PASSES_GIVEN" ]; then
+        # ONE PASS IS A DROPPED BELT, SO IT IS REFUSED EVERYWHERE THE BELT HAS
+        # NO REPLACEMENT. The four refusals below are ordered from the most
+        # specific reason to the least, so the sentence a runner reads names
+        # what is actually wrong with its argv rather than the first rule the
+        # argv happens to break.
+        #
+        # BEFORE THE `--store-durations` BLOCK, and the order is the criterion:
+        # `--passes 1 --store-durations` is two ways to say pass 2 is not run,
+        # and if the durations block ran first the runner would be told a shard
+        # times a part of the suite — true, and not the thing it got wrong.
+        case "$GATE_PASSES" in
+        1 | 2) ;;
+        *)
+            echo "!! --passes '${GATE_PASSES}': the suite leg runs 1 or 2 whole passes." >&2
+            echo "   2 is the default and the belt: pass 2 proves the suite left nothing" >&2
+            echo "   behind for itself. 1 drops it, and is legal only on a shard whose" >&2
+            echo "   proof runs elsewhere. A count this gate cannot parse is never a run." >&2
+            echo "   Nothing was judged: no lease was taken, no slot, no leg was run." >&2
+            exit 2
+            ;;
+        esac
+        if [ "$GATE_PASSES" = "1" ]; then
+            case "$GATE_LEG_UNIT_LEGS" in
+            *,pytest-x2,*) ;;
+            *)
+                echo "!! --passes 1 on unit '${GATE_LEG_UNIT}': that unit runs no suite." >&2
+                echo "   The pass count is the suite leg's own, and a unit with no suite has" >&2
+                echo "   no passes to drop one of." >&2
+                echo "   Nothing was judged: no lease was taken, no slot, no leg was run." >&2
+                exit 2
+                ;;
+            esac
+            if [ -n "$GATE_STORE_DURATIONS" ]; then
+                echo "!! --passes 1 with --store-durations: two ways to say pass 2 is not run." >&2
+                echo "   A measurement run already stops after pass 1, and it vouches for" >&2
+                echo "   nothing; --passes 1 is a VERDICT over one pass whose belt runs on" >&2
+                echo "   another box. One argv cannot be both." >&2
+                echo "   Nothing was judged." >&2
+                exit 2
+            fi
+            if [ -z "$GATE_SHARD" ]; then
+                echo "!! --passes 1 without --shard: the whole-suite two-pass belt is this unit's own;" >&2
+                echo "   one pass is legal only for a shard whose proof runs elsewhere." >&2
+                echo "   Under ./scripts/pm_push.sh --bank --on-boxes N that elsewhere is the" >&2
+                echo "   acceptance box's whole-suite two passes under one seed, composed into the" >&2
+                echo "   verdict row's leak-proof= field; a whole unit asking for one pass is" >&2
+                echo "   asking to drop the belt and name no replacement." >&2
+                echo "   Nothing was judged: no lease was taken, no slot, no leg was run." >&2
+                exit 2
+            fi
+        fi
+        # `--passes 2` IS THE DEFAULT SPELLED OUT, AND IT PRINTS NOTHING NEW.
+        # Normalised to empty here so every site below has one question to ask
+        # — "was one pass asked for?" — and so a runner that spells the default
+        # gets a transcript byte-identical to one that did not. Two spellings
+        # of one run that differ in their output are two runs to compare.
+        if [ "$GATE_PASSES" = "2" ]; then
+            GATE_PASSES=""
+        fi
+        # THE ONE DECISION SITE for what this run's transcript calls itself.
+        # Everything downstream prints a variable; nothing downstream decides.
+        if [ "$GATE_PASSES" = "1" ]; then
+            GATE_PASSES_RUN="the one pass runs"
+            GATE_PASSES_CARRY="the one pass carries"
+            GATE_PASSES_LEG_TEXT="pytest (ONCE — --passes 1, under ONE seed and ONE OF THIS MACHINE'S PYTEST SLOTS; the second run that would prove this one left nothing behind is the acceptance box's)"
+        fi
+    fi
+    if [ -n "$GATE_STORE_DURATIONS" ]; then
+        # IT IS A MEASUREMENT OF THE WHOLE, so it refuses the two shapes that
+        # would make it a measurement of a part: a shard (a third of the suite
+        # would be written as if it were the file), and a unit that runs no
+        # suite at all (there would be nothing to time).
+        case "$GATE_LEG_UNIT_LEGS" in
+        *,pytest-x2,*) ;;
+        *)
+            echo "!! --store-durations on unit '${GATE_LEG_UNIT}': that unit runs no suite." >&2
+            echo "   The durations file is what the pytest split balances by, and only the" >&2
+            echo "   unit that runs the suite can measure it." >&2
+            exit 2
+            ;;
+        esac
+        if [ -n "$GATE_SHARD" ]; then
+            echo "!! --store-durations with --shard ${GATE_SHARD}: a shard times a PART of the suite." >&2
+            echo "   Writing that file from one shard would describe 1/${GATE_SHARD_N} of the" >&2
+            echo "   collection as if it were all of it, and the next split would balance by it." >&2
+            echo "   Nothing was judged." >&2
+            exit 2
+        fi
+    fi
+    GATE_LEG_UNIT_NEEDS=$(printf '%s\n' "$GATE_LEG_TABLE" | awk -F'\t' -v u="$GATE_LEG_UNIT" '$1 == u { print $2 }')
+    # THE `composed-of:` LINE IS THIS RUN'S, NOT THE LISTING'S, and under
+    # `--passes 1` the two differ by design. A row downstream that read
+    # `pytest-x2` off a one-pass shard could not tell it from a two-pass one,
+    # so the member carries the count it ran in the seam grammar
+    # `<leg>[/<passes>]` — absent means 2, which is why nothing changes for
+    # every run that did not ask. The LISTING keeps four fields and no count
+    # (`--list-legs` is the unit table; the pass count is a property of a RUN),
+    # so this rewrite is display-only: `GATE_LEG_UNIT_MEMBERS` — what the
+    # announcement filter and `GATE_LEG_UNIT_LEGS` read — is untouched.
+    GATE_LEG_MEMBERS_SHOWN=",${GATE_LEG_UNIT_MEMBERS},"
+    if [ "$GATE_PASSES" = "1" ]; then
+        GATE_LEG_MEMBERS_SHOWN=${GATE_LEG_MEMBERS_SHOWN/,pytest-x2,/,pytest-x2\/1,}
+    fi
+    GATE_LEG_MEMBERS_SHOWN=${GATE_LEG_MEMBERS_SHOWN#,}
+    GATE_LEG_MEMBERS_SHOWN=${GATE_LEG_MEMBERS_SHOWN%,}
+    echo "- --leg ${GATE_LEG_UNIT}${GATE_SHARD:+ --shard ${GATE_SHARD}}${GATE_PASSES:+ --passes ${GATE_PASSES}}"
+    echo "  needs:       ${GATE_LEG_UNIT_NEEDS} (a DECLARATION — the gate refuses at the leg, never here)"
+    echo "  shards:      ${GATE_LEG_UNIT_SHARDS}"
+    echo "  composed-of: ${GATE_LEG_MEMBERS_SHOWN}"
+    echo "  This run takes NO machine lease, NO checkout lock and records NO verdict:"
+    echo "  one unit of the gate vouches for no tree."
+fi
 
 # --- the --pr scope: the same derivation, a different fork point --------------
 #
@@ -725,9 +2118,10 @@ T_MODE_START=$(date +%s)
 # DERIVED HERE, ABOVE THE LEASE, and the position is the criterion rather than a
 # tidiness: an impact map this gate cannot compute is exit 2, and a run that was
 # never going to be legal must not first queue for the machine's one exclusive
-# lease and one pytest slot to find out. It is also why the scope PRINTS before
-# any leg has run — a red gate still discloses the scope it graded at, which is
-# the property the `--loop` banner has for the same reason.
+# lease and the slot or slots its mode takes to find out (one for a `--loop` or
+# a sanctioned full gate; every one of them for a bank). It is also why the scope
+# PRINTS before any leg has run — a red gate still discloses the scope it graded
+# at, which is the property the `--loop` banner has for the same reason.
 #
 # THE FORK POINT IS SET AROUND THE CALL AND NOWHERE ELSE. Everything later in
 # this gate that asks the same question again — the supply-chain leg's own
@@ -913,6 +2307,15 @@ gate_lock_release() {
     return 0
 }
 
+# gate_run_start_unless_dry <tree> — see the call site for why this is the one
+# guard the dry run needs.
+gate_run_start_unless_dry() {
+    if [ -n "${DJB_GATE_LEGS_DRY:-}" ]; then
+        return 0
+    fi
+    gate_run_start "$1"
+}
+
 if [ "$MODE" = "" ]; then
     # THE ORDER OF THE THREE GUARDS IS LOAD-BEARING, and it is the same order on
     # every path a full gate can take. The machine-wide EXCLUSIVE LEASE is taken
@@ -945,12 +2348,14 @@ if [ "$MODE" = "" ]; then
     # lines above the block that defines it: a full run that dies between here
     # and there must report its own cause, not `command not found`.
     #
-    # AND IT DROPS THE `--pr` COUNTS DIRECTORY, because this trap is the only
-    # thing every exit path goes through: the directory used to be removed where
-    # the partition's verdict would have been banked, which a red leg, a refused
-    # lease and a SIGTERM all exit above. Empty on every run that is not `--pr`,
-    # and the guard is what keeps `rm -rf ""` from being the thing that runs.
-    trap 'RC=$?; trap "" PIPE; { command -v heartbeat_stop >/dev/null 2>&1 && heartbeat_stop; } || true; gate_lock_release; gate_slot_release; gate_lease_release; [ -z "${GATE_PR_COUNTS_DIR:-}" ] || rm -rf "$GATE_PR_COUNTS_DIR"; gate_run_finish "$RC" || true' EXIT
+    # AND IT DROPS BOTH COUNTS DIRECTORIES, because this trap is the only thing
+    # every exit path goes through: the directory used to be removed where the
+    # partition's verdict would have been banked, which a red leg, a refused
+    # lease and a SIGTERM all exit above. `GATE_PR_COUNTS_DIR` is empty on every
+    # run that is not `--pr`; `GATE_FULL_COUNTS_DIR` is empty until the
+    # `pytest-x2` leg mints one, and only ever one of the two exists. The guards
+    # are what keep `rm -rf ""` from being the thing that runs.
+    trap 'RC=$?; trap "" PIPE; { command -v heartbeat_stop >/dev/null 2>&1 && heartbeat_stop; } || true; gate_lock_release; gate_slot_release; gate_lease_release; [ -z "${GATE_PR_COUNTS_DIR:-}" ] || rm -rf "$GATE_PR_COUNTS_DIR"; [ -z "${GATE_FULL_COUNTS_DIR:-}" ] || rm -rf "$GATE_FULL_COUNTS_DIR"; gate_run_finish "$RC" || true' EXIT
     gate_lock_acquire
     trap 'gate_run_killed' TERM INT HUP
     # Measured BEFORE the first leg reads a byte, so the key names the content
@@ -960,10 +2365,27 @@ if [ "$MODE" = "" ]; then
     # What made this run legal, handed to the ledger BEFORE it announces, so the
     # header line and the verdict row carry the identical phrase.
     GATE_RUN_SANCTION="$GATE_SANCTIONED_BY"
-    gate_run_start "${MEASURED_START:-unknown-tree}"
+    # A DRY RUN ARMS NOTHING, AND THAT IS WHERE THE GUARD BELONGS. `gate_run_start`
+    # is what arms the run record; every other entry point into it — the note, the
+    # verdict, the kill handler and `gate_run_finish` from the EXIT trap — returns
+    # immediately while it is unarmed. So one guard here closes all of them, and
+    # in particular it closes the DURATION CACHE: `gate_run_finish` appends
+    # `<stamp> <seconds> green` to `.git/djb-gate-last-full`, and a one-second dry
+    # run wrote `1 green` there, which the next real gate then announced as "the
+    # last green run here took 0m1s". A run that judged nothing must not leave a
+    # number anybody reads.
+    gate_run_start_unless_dry "${MEASURED_START:-unknown-tree}"
     gate_run_announce
 else
     gate_lock_refuse_if_held
+    # WHAT LET THIS `--loop` RUN WHERE IT IS RUNNING, printed before the first
+    # leg, for the same reason the tier rule is printed on every run: a default
+    # that was overridden in silence is an override nobody audits. The full
+    # gate's own sanction prints in its header one branch up; this is the same
+    # sentence one tier down.
+    if [ -n "$LOOP_HERE_BECAUSE" ]; then
+        echo "- loop here: ${LOOP_HERE_BECAUSE}"
+    fi
 fi
 
 # --- the --loop scope, and the verdict that can stand in for running it -------
@@ -979,8 +2401,22 @@ fi
 # re-learn a deterministic result on a tree nothing has changed.
 LOOP_LEDGER_KEY=""
 LOOP_LEDGER_TREE=""
+# THE OTHER TWO THIRDS OF THE KEY, KEPT FROM THE START so the end can say which
+# of them moved. The key is a digest of tree + environment + scope and cannot be
+# read backwards; a refusal that says only "something moved while the gate ran"
+# hands the reader a whole re-run and no subject. These two hold the START's
+# environment fingerprint and its printable components, exactly as
+# `LOOP_LEDGER_TREE` holds the START's tree.
+LOOP_LEDGER_ENV=""
+LOOP_LEDGER_ENV_PARTS=""
 LOOP_COUNTS_DIR=""
 LOOP_MISS_CENSUS=""
+LOOP_MISS_DOCSLINE=""
+# Set by the consult below when `loop_docs_only_reuse` says the banked pytest
+# verdict may stand in for this run's pass. Declared here beside the rest of the
+# consult's state because `set -u` is on and the pytest leg reads it whether the
+# consult ran or not.
+LOOP_PYTEST_REUSE=""
 
 # loop_miss_narrative <the attributor's answer> — the ledger miss, said in two
 # lines, with the rest on request.
@@ -1015,8 +2451,31 @@ loop_miss_narrative() {
     *$'\n'*) LOOP_MISS_DETAIL=${LOOP_MISS_WHY#*$'\n'} ;;
     esac
     echo "  == the --loop ledger was consulted and MISSED: miss(${LOOP_MISS_TOKEN}) =="
+    # THE DOCS-ONLY LINE PRINTS ON EVERY `miss(tree)`, NOT ONLY UNDER VERBOSE,
+    # AND IT COST A 2302-SECOND RE-MEASURE TO LEARN WHY. A verifier missed on
+    # `tree`, the whole delta was two ledger files, and the banner offered
+    # `DJB_LOOP_VERBOSE=1` instead of the one sentence that would have said so —
+    # so the run re-measured and nobody could tell from the transcript that it
+    # need not have (V-I2, 2026-09-15). The line is now what decides whether the
+    # pytest pass is REUSED below, which makes it the most load-bearing sentence
+    # in this banner and the last one that should be behind a flag.
+    #
+    # IT IS SLICED OUT OF THE DETAIL, NEVER RE-DERIVED. `loop_attribute_head_detail`
+    # is the one thing in this repository that answers "what moved since the
+    # banked head, and was it only docs"; a second derivation here would be a
+    # second answer to keep in step, and the two would disagree on the day one
+    # of them is edited.
+    LOOP_MISS_DOCSLINE=$(printf '%s\n' "$LOOP_MISS_DETAIL" | sed -n '/^since banked head/p')
+    LOOP_MISS_DOCSLINE=${LOOP_MISS_DOCSLINE%%$'\n'*}
     if [ -z "${DJB_LOOP_VERBOSE:-}" ]; then
         echo "  key         ${LOOP_LEDGER_KEY:-(none — the key could not be derived)}   (DJB_LOOP_VERBOSE=1 for the detail, the tree, the env components and the ledger census)"
+        if [ "$LOOP_MISS_TOKEN" = "tree" ]; then
+            # A NAMED ABSENCE RATHER THAN SILENCE, for the reason every absence
+            # in this file is named: a `tree` miss with no line here is
+            # indistinguishable from a banner that was never wired, and this is
+            # the line a reader now acts on.
+            echo "  ${LOOP_MISS_DOCSLINE:-since banked head: not derivable (the attributor produced no such line)}"
+        fi
         return 0
     fi
     if [ -n "$LOOP_MISS_DETAIL" ]; then
@@ -1057,18 +2516,40 @@ loop_miss_narrative() {
 # finding nor a pass, and no verdict is banked because the bank is past the
 # refusal.
 #
+# AND `GATE_SLOT_WORKERS` IS NOW THE POST-KNOB NUMBER. It was not: with the
+# documented `DJB_GATE_SLOT_WORKERS` set, the gate started `-n <derived share>`,
+# pytest clamped ITSELF to the typed value, and this function compared the
+# survivors against the pre-clamp number — so a clean suite with no plant read
+# `2 of 5 collectors reported` and banked nothing. The knob is honoured
+# at the derivation now (`gate_slot_worker_count`, scripts/gate_lease.sh), which
+# is what makes the population here the population that collected.
+#
 # It is a FUNCTION for the same reason `loop_miss_narrative` is: the drive reads
 # this definition out of this file and runs it over the real state it built.
 loop_counts_refuse_if_short() {
-    local reported=${1:-0} expected=${2:-0}
+    local reported=${1:-0} expected=${2:-0} first=${3:-} created=""
     case "$reported" in '' | *[!0-9]*) reported=0 ;; esac
     case "$expected" in '' | *[!0-9]*) expected=0 ;; esac
+    # WHAT PYTEST CREATED OUTRANKS WHAT THE LEG ASKED FOR. Every collector writes
+    # its own `workers=` — `numprocesses` after apps/conftest.py's ceiling has had
+    # its say, the number xdist prints as `created: N/N workers` — so when a
+    # counts file is in hand the population is read from the run instead of from
+    # the `-n` that was typed at it. A bank's `-n 10` clamped to 5 inside pytest
+    # read its own five survivors as five casualties here.
+    if [ -n "$first" ] && [ -f "$first" ]; then
+        created=$(awk -F= '$1 == "workers" { print $2; exit }' "$first" 2>/dev/null || true)
+        case "$created" in '' | *[!0-9]*) : ;; *) [ "$created" -lt 1 ] || expected=$created ;; esac
+    fi
     # An unknown population cannot be short of itself: when the leg did not say
     # how many collectors it started there is nothing to compare, and inventing
     # a number here would be the second derivation this refuses to have.
     [ "$expected" -gt 0 ] || return 0
     [ "$reported" -lt "$expected" ] || return 0
-    echo "!! ${reported} of ${expected} collectors reported — a collector died and the suite that ran is not the suite that was asked for; nothing is judged" >&2
+    # THROUGH THE SEAM, so the banner above this callee can name the cause where
+    # the reader is standing. The text is byte-identical to the `echo` it
+    # replaces — drives assert this sentence — and the only new thing is that it
+    # is REMEMBERED (scripts/gate_refuse.sh).
+    gate_refuse "${reported} of ${expected} collectors reported — a collector died and the suite that ran is not the suite that was asked for; nothing is judged"
     echo "   Every collector performs its own FULL collection and writes its counts, so" >&2
     echo "   a missing file is a collector that never got to the end of collecting." >&2
     echo "   pytest can still exit 0 from that state (it runs what the survivors hold," >&2
@@ -1117,12 +2598,49 @@ loop_mine_banner() {
     echo "  Run the ordinary --loop at your last boundary."
 }
 
+# loop_map_banner — the TEST-IMPACT MAP's line, printed on every --loop.
+#
+# ONE LINE THAT SAYS WHICH MAP, HOW OLD, AND WHAT IT BOUGHT, and a second that
+# says what a selection is made of. A narrowing nobody can see the cause of is
+# an unfalsifiable one — the argument every banner in this file is printed for
+# — and a SELECTION is the narrowing with the fewest readers who already know
+# the rule: the scope a reader can check against their own diff, and a list of
+# nodeids they cannot.
+#
+# THE FALLBACK IS THE SAME LINE, NEVER A MISSING ONE. A run that did not
+# consult the map, or consulted it and stood down, says so with the sentence
+# the derivation recorded — the path and its class for a file the map has
+# never recorded, the valve where the valve was typed, `absent` where there is
+# no map at all. Silence would read exactly like a map that narrowed nothing.
+loop_map_banner() {
+    echo "  scope   map: sha=${LOOP_SCOPE_MAP_SHA:--} generated=tree:${LOOP_SCOPE_MAP_TREE:--} age=${LOOP_SCOPE_MAP_AGE:--} commit(s) since"
+    if [ -n "$LOOP_SCOPE_IMPACT_SELECT" ]; then
+        echo "  scope   impact: ${LOOP_SCOPE_IMPACT_SEEN:-0} changed file(s) the map has SEEN -> ${LOOP_SCOPE_IMPACT_TESTS:-0} test(s) selected; fallback: none"
+        echo "          the always-on cross-app set is added at the pytest door, which"
+        echo "          prints its own count as \`impact-select: <named>, <always-on>\`;"
+        echo "          the closure scope above was NOT what ran."
+    else
+        echo "  scope   impact: no selection; fallback: ${LOOP_SCOPE_IMPACT_FALLBACK:-the map was not consulted}"
+    fi
+}
+
 if [ "$MODE" = "--loop" ]; then
     # THE FLAG IS CHECK.SH'S, THE MEANING IS THE LIBRARY'S. `--mine` is parsed
     # at the top of this file and handed to the derivation as one input; what it
     # subtracts (the closure, and only the closure) is declared beside the
     # derivation in scripts/loop_tier.sh, where the rest of the scope rules live.
     LOOP_MINE="$GATE_MINE"
+    # THE MAP IS THE ORDINARY LOOP'S, AND THE SWITCH IS HERE FOR THE SAME
+    # REASON `--mine`'s is: the flag belongs to this file and the meaning
+    # belongs to the library. The ordinary `--loop` consults the test-impact
+    # map; `--mine` does not (its claim is about an app, and a selection that
+    # reached into a DEPENDANT of that app to run one test would be a third
+    # thing wearing the flag's name), and `--pr` does not (it grades a whole
+    # proposed change and must not be narrowed by one run's measurement of a
+    # different tree). Both still carry `map=` in the canonical scope, so a
+    # row can always be read against the map the tree held.
+    LOOP_IMPACT=""
+    [ -n "$GATE_MINE" ] || LOOP_IMPACT=1
     gate_refuse_reset
     set +e
     loop_tier_own_apps
@@ -1156,6 +2674,7 @@ if [ "$MODE" = "--loop" ]; then
     echo "  scope   closure: ${LOOP_SCOPE_WIDENED:--}"
     echo "  scope   own (organ tests in full): ${LOOP_TIER_OWN_APPS:--}"
     echo "  scope   rule: ${LOOP_TIER_REASON}"
+    loop_map_banner
     if [ -n "$LOOP_SCOPE_NOTES" ]; then
         printf '%s\n' "$LOOP_SCOPE_NOTES" | sed 's/^/  note:       /'
     fi
@@ -1164,6 +2683,13 @@ if [ "$MODE" = "--loop" ]; then
     # deciding whether to trust a run should not have to reach the end of it, and
     # a RED `--mine` discloses its narrowing exactly as a green one does.
     [ -z "$GATE_MINE" ] || loop_mine_banner open "$LOOP_TIER_MODE" "$LOOP_TIER_OWN_APPS"
+    # THE ENVIRONMENT IS BROUGHT TO THE LOCKFILE BEFORE THE KEY IS DERIVED, and
+    # the whole argument is `loop_env_sync`'s own header in scripts/gate_ledger.sh.
+    # In one line: the key censuses the installed distributions, the gate's first
+    # `uv run` used to install them, and a cold box's completely green `--loop`
+    # therefore banked nothing. A DRY RUN INSTALLS NOTHING — it judges nothing
+    # and banks nothing, so it has no key to hold still.
+    [ -n "${DJB_GATE_LEGS_DRY:-}" ] || loop_env_sync
     LOOP_LEDGER_TREE=$(gate_measured_tree || true)
     # IN THIS SHELL, NOT IN A SUBSTITUTION, and that is the whole reason this
     # line exists on its own. `loop_ledger_key` computes the fingerprint too,
@@ -1180,6 +2706,12 @@ if [ "$MODE" = "--loop" ]; then
     if [ -n "$LOOP_LEDGER_TREE" ] && [ -z "${DJB_LOOP_NO_CACHE:-}" ] && [ -z "$GATE_MINE" ]; then
         loop_env_fingerprint >/dev/null 2>&1 || true
         LOOP_LEDGER_KEY=$(loop_ledger_key "$LOOP_LEDGER_TREE" "$LOOP_SCOPE_CANONICAL" || true)
+        # THE START'S OTHER TWO THIRDS, CAPTURED HERE AND NOWHERE ELSE. The
+        # fingerprint is re-derived at the end and `LOOP_ENV_FINGERPRINT` is
+        # overwritten by that call, so the only place the START's value can be
+        # kept is the line after the START derives it.
+        LOOP_LEDGER_ENV="${LOOP_ENV_FINGERPRINT:-}"
+        LOOP_LEDGER_ENV_PARTS="${LOOP_ENV_COMPONENTS:-}"
     fi
     if [ -n "$LOOP_LEDGER_KEY" ] && LOOP_ROW=$(loop_ledger_lookup "$LOOP_LEDGER_KEY"); then
         echo "ok: --loop VERDICT REUSED — nothing was re-measured."
@@ -1218,6 +2750,27 @@ if [ "$MODE" = "--loop" ]; then
             "$LOOP_LEDGER_TREE" "${LOOP_ENV_FINGERPRINT:-unstated}" "$LOOP_SCOPE_CANONICAL")
         LOOP_MISS_CENSUS=$(loop_ledger_census || echo 'unreadable')
         loop_miss_narrative "$LOOP_MISS_WHY"
+        # --- the one miss that need not cost a pytest pass -------------------
+        #
+        # PLAINLY, NOT IN A SUBSTITUTION: it sets LOOP_REUSE_TREE and
+        # LOOP_REUSE_N, and a subshell's copy of a global is not a value this
+        # shell has — the same trap the fingerprint above is spelled out for.
+        #
+        # AND IT SITS HERE, INSIDE THE MISS ARM, WHICH IS WHAT KEEPS THE REUSE
+        # OFF EVERY OTHER BELT. `--mine` reaches the arm above this one and
+        # derives no key at all; `--pr` and the full gate never enter this
+        # `--loop` block; `DJB_LOOP_NO_CACHE=1` reaches the arm below. None of
+        # them can reuse, and none of them needs a guard of its own to say so.
+        if loop_docs_only_reuse "$LOOP_MISS_TOKEN" "$LOOP_MISS_DETAIL"; then
+            LOOP_PYTEST_REUSE=1
+            echo "  docs-only: the pytest pass of this miss is REUSABLE — see the pytest leg."
+        elif [ -n "$LOOP_REUSE_WHY" ]; then
+            # PRINTED ONLY WHEN THE DELTA WAS DOCS-ONLY AND THE REUSE WAS
+            # REFUSED ANYWAY. "This is an ordinary mixed delta" is not news and
+            # would add a line to every miss in the tree; "a cheap green was
+            # available and declined, for this reason" is the whole point.
+            echo "  ${LOOP_REUSE_WHY}"
+        fi
     elif [ -n "${DJB_LOOP_NO_CACHE:-}" ]; then
         echo "  == the --loop ledger was NOT consulted: DJB_LOOP_NO_CACHE is set =="
         echo "  This run measures, and it will not bank."
@@ -1240,13 +2793,27 @@ LEG_T0=$(date +%s)
 # a reader can subtract, and the next run's nominal is an ESTIMATE printed as
 # one — never something this gate decides anything on.
 GATE_PYTEST_TOOK=0
+
 gate_leg_took() {
     case "$1" in
     pytest | pytest-x2) GATE_PYTEST_TOOK=$2 ;;
     esac
+    gate_member_record "$1" "$2"
 }
 
 leg() {
+    # UNDER `--leg <unit>`, A LEG OUTSIDE THE UNIT IS NOT ANNOUNCED AT ALL —
+    # not announced, not timed, not skipped-with-a-line. A runner handed one
+    # unit must be able to read its log as the transcript of that unit; a list
+    # of everything it did not run is noise the other N-1 runners are printing
+    # too. `GATE_LEG_UNIT_LEGS` is empty on every other path, which is what
+    # makes this a no-op everywhere else.
+    if [ -n "$GATE_LEG_UNIT_LEGS" ]; then
+        case "$GATE_LEG_UNIT_LEGS" in
+        *",$1,"*) ;;
+        *) return 0 ;;
+        esac
+    fi
     # Announce a leg and print the previous leg's wall time. Timing is printed
     # per leg so a slow gate names its slow leg instead of being argued about.
     local now
@@ -1265,6 +2832,53 @@ leg_done() {
     echo "  (${LEG_NAME}: $((now - LEG_T0))s)"
     gate_leg_took "$LEG_NAME" "$((now - LEG_T0))"
     LEG_NAME=""
+}
+
+# --- THE LEG RUNNER, AND THE ONE VARIABLE THAT MAKES A LEG A NO-OP ------------
+#
+# EVERY LEG BODY IS A FUNCTION AND THIS CALLS IT. That is the whole of the
+# refactor, and it buys exactly one thing that could not be had otherwise: the
+# ORDERED LIST OF LEGS A MODE ANNOUNCES can be derived by RUNNING the mode,
+# rather than by reading this file and hoping the reading and the flow agree.
+# A static reading of a 4500-line script is a second implementation of its
+# control flow, and the day the two disagree the reading is the one that is
+# green.
+#
+# `DJB_GATE_LEGS_DRY` IS THE DRIVE'S, AND NOTHING ELSE SETS IT. Set, every leg
+# is ANNOUNCED — its name and its banner, through the same `leg` call the real
+# run makes — and its body is not called. Nothing else about the mode changes:
+# the mode branches, the early exits and the ordering all run as they always
+# do, which is what makes the sequence the drive captures the sequence the gate
+# would have run.
+#
+# WHAT A DRY RUN STILL DOES, SAID OUT LOUD rather than left to be discovered:
+# it takes the lease, the checkout lock and (in `--loop`) the scope consult,
+# because those live outside the legs. The drive therefore runs it in a SCRATCH
+# CHECKOUT with its own lease directory — a dry run that queued behind a real
+# full gate would be a drive holding the machine — and the two ledger-record
+# sites below refuse to bank under it, because a run that judged nothing must
+# never leave a verdict saying it did.
+#   gate_run_body <leg-name> <body-function>
+#
+# THE NAME IS AN ARGUMENT AND NOT A LOOKUP, so this is the ONE place in the file
+# that reads `DJB_GATE_LEGS_DRY` — the dry line a drive parses and the body it
+# skips are decided together, and there is no second reader to fall out of step
+# with this one.
+gate_run_body() {
+    # THE SAME ONE VARIABLE THE ANNOUNCEMENT READS. A body run for a leg the
+    # unit does not hold would be the unit running work no runner was handed,
+    # and reading a second variable here is how the two halves come apart.
+    if [ -n "$GATE_LEG_UNIT_LEGS" ]; then
+        case "$GATE_LEG_UNIT_LEGS" in
+        *",$1,"*) ;;
+        *) return 0 ;;
+        esac
+    fi
+    if [ -n "${DJB_GATE_LEGS_DRY:-}" ]; then
+        echo "  leg: $1 (DJB_GATE_LEGS_DRY — announced, body not run)"
+        return 0
+    fi
+    "$2"
 }
 
 # >>> gate-heartbeat >>>
@@ -1451,37 +3065,106 @@ gate_pytest_nominal() {
 # --- the --fast legs ---------------------------------------------------------
 
 leg ruff "ruff (lint + format check)"
+gate_leg_ruff() {
 uv run ruff check .
 uv run ruff format --check --quiet .
+}
+gate_run_body ruff gate_leg_ruff
 
 leg mypy "mypy --strict (apps, config)"
+gate_leg_mypy() {
 uv run mypy
+}
+gate_run_body mypy gate_leg_mypy
 
 leg import-linter "import-linter (layer contracts)"
+gate_leg_import_linter() {
 uv run lint-imports
+}
+gate_run_body import-linter gate_leg_import_linter
 
 leg djb-checks "django system checks, tag djb (settings=test, no database)"
+gate_leg_djb_checks() {
 DJANGO_SETTINGS_MODULE=config.settings.test uv run python manage.py check --tag djb
+}
+gate_run_body djb-checks gate_leg_djb_checks
 
 leg house-rules "house rules (quality/rules.yaml — live scan + diff vs HEAD)"
+# >>> leg-body: house-rules >>>
+# EXTRACTED AND SOURCED BY `scripts/tests/test_rung_tidy.sh` between these
+# sentinels, which is why they are here: a drive cannot run a nested
+# `./scripts/check.sh` (the per-checkout gate lock refuses it), so it drives the
+# LEG BODY with a shimmed engine on PATH. Cited by sentinel and never by line
+# number — this file moves under its own citations routinely.
+gate_leg_house_rules() {
 # The djb leg above already ran; the engine skips its own copy of it.
+#
+# THE OUTPUT IS CAPTURED AND THEN PRINTED, through a REDIRECT and `cat` —
+# never a pipe. The OFFER below is a claim about what the engine SAID and this
+# leg cannot make it without having read it, so the output has to land in a
+# file either way; the question was only whether the file is filled through
+# `| tee` or through `>`.
+#
+# IT WAS `tee`, AND THAT PUT A PIPE ON A GATE LEG. The standing rule is that
+# nothing whose exit status the gate trusts is piped (CLAUDE.md; the gate
+# refuses a piped stdout of its own for the same reason), and `PIPESTATUS[0]`
+# is a second reading of a status the shell had already made ambiguous rather
+# than a reason the pipe was safe. `>` then `cat` gives the same two things —
+# the transcript on the terminal and the bytes in the file — with `$?` meaning
+# the engine and nothing else.
+#
+# WHAT IT COSTS, DECLARED: the leg no longer STREAMS. A reader watching a full
+# gate sees this leg silent for its whole duration and then all of it at once,
+# where `tee` printed as the engine went. That is the trade, and it is the
+# cheap side of it: the leg is seconds, and a status a reader can trust
+# outranks a transcript that arrives sooner.
+GATE_HR_OUT=$(mktemp "${TMPDIR:-/tmp}/djb-house-rules.XXXXXX")
 set +e
-GATE_SKIP_DJANGO_LEG=1 uv run python -m quality.gate --diff HEAD $([ "$MODE" = "--loop" ] && echo --terse) # unquoted on purpose: empty must be NO argument
+GATE_SKIP_DJANGO_LEG=1 uv run python -m quality.gate --diff HEAD $([ "$MODE" = "--loop" ] && echo --terse) >"$GATE_HR_OUT" 2>&1 # unquoted on purpose: empty must be NO argument
 GATE_RC=$?
 set -e
+cat "$GATE_HR_OUT"
+# THE OFFER, AT THE SITE OF THE REFUSAL, AND ONLY WHEN THE SENTENCE IS THERE.
+# A `budget:` line ends in the exact number to write into quality/budgets.yaml,
+# and every builder who met one used to read the advice, find the file, find
+# the key and type the number by hand. The command below does that
+# transformation and nothing else, into the WORKING TREE, so the rung's own
+# diff carries the decision for a reviewer to see.
+#
+# NEVER ON EVERY RED. Most house-rules reds have nothing to do with a budget,
+# and an offer printed under all of them is an offer nobody reads under the one
+# it is for. The condition is the ENGINE'S OWN SENTENCE — `budget:` at the head
+# of a line, under the live scan's `x ` marker or bare — and a GREEN leg prints
+# no `offer:` line at all, which `test_rung_tidy.sh` asserts as its own case.
+if [ "$GATE_RC" != "0" ] && grep -qE '^[[:space:]]*(x )?budget: ' "$GATE_HR_OUT"; then
+    echo ""
+    echo "  offer: ./scripts/rung_tidy.sh --budgets"
+    echo "    It writes the ceiling(s) the line(s) above named into quality/budgets.yaml,"
+    echo "    in the working tree, staging nothing. A RAISE is a decision and stays in"
+    echo "    the caller's own diff where a reviewer reads it; a LOWERING note is not"
+    echo "    applied here — that one is the fold's, at the bank, under its own subject."
+fi
+rm -f "$GATE_HR_OUT"
 if [ "$GATE_RC" = "2" ]; then
     echo "!! ENFORCEMENT ITSELF IS BROKEN — this outranks any pass." >&2
     exit 2
 elif [ "$GATE_RC" != "0" ]; then
     exit "$GATE_RC"
 fi
+}
+# <<< leg-body: house-rules <<<
+gate_run_body house-rules gate_leg_house_rules
 
 leg migrations "makemigrations --check (+ linear migrations: one leaf per app)"
+gate_leg_migrations() {
 # The one-leaf/merge/max_migration checks are house rule 6 and already ran in
 # the leg above; this catches the model change whose migration was never made.
 DJANGO_SETTINGS_MODULE=config.settings.test uv run python manage.py makemigrations --check --dry-run
+}
+gate_run_body migrations gate_leg_migrations
 
 leg goalpost-census "instrument census (every executable git knows about outside apps/ and config/ owes a row in instruments.md)"
+gate_leg_goalpost_census() {
 # THE CENSUS IS A GATE LEG; THE SCAN IS NOT, and that split is ADR gate-3's,
 # not a compromise.
 #
@@ -1519,8 +3202,11 @@ set -e
 if [ "$CENSUS_RC" != "0" ]; then
     exit 2
 fi
+}
+gate_run_body goalpost-census gate_leg_goalpost_census
 
 leg queue-index "the queue's index vs its record — the generated index is what queue_index.py generates, every anchor has one index row and back, both ratchets hold"
+gate_leg_queue_index() {
 # THE DERIVED LEDGER, AND WHY IT IS A LEG RATHER THAN A HABIT. `queue.md` is
 # now GENERATED from `queue-detail.md`: the record carries every row verbatim
 # under a `### N<id>` anchor, and the index is one line per anchor. That split
@@ -1552,8 +3238,21 @@ leg queue-index "the queue's index vs its record — the generated index is what
 # by case by `scripts/tests/test_queue_index.sh` in the selftest leg — including
 # all three states above, each fed its own tree.
 gate_refuse_reset
+# THE CHECKOUT'S OWN INTERPRETER, for the reason `instrument_census` gives
+# above: `scripts/queue_index.py` is this repository's file and it is written at
+# 3.12. On Amazon Linux 2023 the system `python3` is 3.9, and this leg's first
+# off-box run reported `docs/product/queue.md is not what queue_index.py
+# generates` over a `TypeError: zip() takes no keyword arguments` — the wrong
+# finding, about the wrong file, in the one document every other document defers
+# to for order.
+QUEUE_INDEX_PY=$(checkout_python) || {
+    gate_refuse "the queue index could not be checked: this checkout has no .venv/bin/python"
+    echo "   and scripts/queue_index.py is a file this repository pins at the version" >&2
+    echo "   that venv holds. Run ./scripts/setup.sh (or \`uv sync\`) first." >&2
+    exit 2
+}
 set +e
-python3 scripts/queue_index.py --check
+"$QUEUE_INDEX_PY" scripts/queue_index.py --check
 QUEUE_INDEX_RC=$?
 set -e
 if [ "$QUEUE_INDEX_RC" = "2" ]; then
@@ -1568,12 +3267,17 @@ elif [ "$QUEUE_INDEX_RC" != "0" ]; then
     echo "!! docs/product/queue.md is not what scripts/queue_index.py generates from" >&2
     echo "   docs/product/queue-detail.md, or the two disagree about a row, or a" >&2
     echo "   ratchet was passed. The index is DERIVED: edit the record and run" >&2
-    echo "   \`python3 scripts/queue_index.py --index\`. A hand-edited index is two" >&2
-    echo "   truths in the one file every other document defers to for order." >&2
+    echo "   \`${QUEUE_INDEX_PY} scripts/queue_index.py --index\` — this checkout's own" >&2
+    echo "   interpreter, which is what the generated header names too. A hand-edited" >&2
+    echo "   index is two truths in the one file every other document defers to for" >&2
+    echo "   order." >&2
     exit "$QUEUE_INDEX_RC"
 fi
+}
+gate_run_body queue-index gate_leg_queue_index
 
 leg db-pin "DATABASE_NAME: this checkout's .env pin vs the derivation"
+gate_leg_db_pin() {
 # THE SPLIT-BRAIN, WITH AN EXIT STATUS. `scripts/db.sh` derives
 # this checkout's database name from the checkout's own path; `.env` is what a
 # bare `manage.py` reads. When those two disagree, one checkout has TWO
@@ -1606,7 +3310,7 @@ leg db-pin "DATABASE_NAME: this checkout's .env pin vs the derivation"
 # cannot be read) and outranks a pass; 1 is a stale pin.
 gate_refuse_reset
 set +e
-db_pin_leg
+db_pin_leg "$(if [ "$MODE" = --fast ]; then echo fast; elif [ "$MODE" = --loop ]; then echo loop; else echo full; fi)" # the mode the leg binds existence under (`--pr`/`--bank` normalise to "" above, so they get `full`). An `if` and not a `case`: a `case` pattern's `)` closes the `$(` around it. The operands are UNQUOTED on purpose: `[ "$MODE" = "--fast" ]` is the literal two other drives find this file's `--fast` early exit by (test_gate_lease.sh, test_db_pin.sh), and a second copy of it moves their line number to here.
 DB_PIN_RC=$?
 set -e
 if [ "$DB_PIN_RC" = "2" ]; then
@@ -1618,6 +3322,8 @@ if [ "$DB_PIN_RC" = "2" ]; then
 elif [ "$DB_PIN_RC" != "0" ]; then
     exit "$DB_PIN_RC"
 fi
+}
+gate_run_body db-pin gate_leg_db_pin
 
 # --- the archaeology leg, in the tier the HOOK runs -------------------------
 # THE PLATFORM'S CONSTRUCTION HISTORY IS NOT THE PRODUCT'S — the same invariant
@@ -1649,7 +3355,37 @@ fi
 # been the finding it exists to catch. See scripts/archaeology_lib.sh for the
 # six patterns, the classifier, and why they are shared with publish.sh rather
 # than duplicated.
+#
+# AND IT IS NOT THE ONLY SPLIT LEG ANY MORE — THE DECLARATION, in full. Three of
+# `publish.sh`'s release-time legs now have a per-rung half here, each the SAME
+# BODY over a different file set, and the pairing is stated once rather than
+# rediscovered per leg:
+#
+#   leg                per rung (this file)              at publish (publish.sh)
+#   -----------------  --------------------------------  ----------------------
+#   archaeology        the changed SHIP-bucket files     the whole artifact
+#   adr-census         the changed files                 the whole artifact
+#   dangling-docs      the changed files                 the whole artifact
+#
+# In every row the per-rung half is the CHEAP EARLY READER and the publish half
+# is the BELT: a dead citation in a file the active rung did not touch is
+# invisible to the per-rung leg by design, and is caught at release. The bodies
+# are `archaeology_loop` (scripts/archaeology_lib.sh) and `docs_adr_census_loop`
+# / `docs_dangling_docs_loop` (scripts/docs_legs.sh); all three narrow through
+# the ONE changed-file derivation, `secrets_scan_changed_files`, and all three
+# print the basis they derived them from, because a narrowed scan that does not
+# say what it narrowed to is a reader taking "no findings" for "the tree is
+# clean". `byte-identity` is the fourth publish leg and has NO per-rung half:
+# its question is "does the exported artifact match the source", which a tree
+# with no artifact in it cannot be asked.
+#
+# THE TWO LEGS AFTER THEM — `loop-names` and `ci-env` — ARE NOT SPLITS. Neither
+# has a release-time half; both are whole-tree closed questions cheap enough to
+# ask at every commit, and they are here rather than in `--loop` for the
+# archaeology leg's own reason: pre-commit runs `--fast`, and a census that only
+# the per-rung gate reads answers AFTER the commit that carried the defect.
 leg archaeology "archaeology-census over THE ACTIVE RUNG'S CHANGED SHIP-BUCKET FILES ONLY — publish.sh's full-artifact scan stays the belt at release"
+gate_leg_archaeology() {
 gate_refuse_reset
 set +e
 archaeology_loop
@@ -1664,6 +3400,109 @@ if [ "$ARCH_RC" = "2" ]; then
 elif [ "$ARCH_RC" != "0" ]; then
     exit "$ARCH_RC"
 fi
+}
+gate_run_body archaeology gate_leg_archaeology
+
+# --- the two split docs censuses, per rung ----------------------------------
+# Bodies: `docs_adr_census_loop` and `docs_dangling_docs_loop`
+# (scripts/docs_legs.sh). Same narrowing, same basis line and the same exit
+# grammar as the archaeology leg above: 0 clean · 1 a finding · 2 could-not-look.
+leg adr-census "every ADR id cited in THE ACTIVE RUNG'S CHANGED FILES resolves in the tree's two ADR homes — publish.sh's whole-artifact scan stays the belt"
+gate_leg_adr_census() {
+gate_refuse_reset
+set +e
+docs_adr_census_loop
+ADR_CENSUS_RC=$?
+set -e
+if [ "$ADR_CENSUS_RC" = "2" ]; then
+    gate_cause
+    echo "!! the adr-census leg COULD NOT LOOK — see above. The changed-file set, an" >&2
+    echo "   ADR home or the citation scan was unreadable, so nothing was judged: this" >&2
+    echo "   is neither a finding nor a pass." >&2
+    echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+    exit 2
+elif [ "$ADR_CENSUS_RC" != "0" ]; then
+    exit "$ADR_CENSUS_RC"
+fi
+}
+gate_run_body adr-census gate_leg_adr_census
+
+leg dangling-docs "every docs/ pointer spelled in THE ACTIVE RUNG'S CHANGED FILES exists in the tree — publish.sh's whole-artifact scan stays the belt"
+gate_leg_dangling_docs() {
+gate_refuse_reset
+set +e
+docs_dangling_docs_loop
+DANGLING_RC=$?
+set -e
+if [ "$DANGLING_RC" = "2" ]; then
+    gate_cause
+    echo "!! the dangling-docs leg COULD NOT LOOK — see above. The changed-file set or" >&2
+    echo "   the pointer scan was unreadable. Nothing was judged." >&2
+    echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+    exit 2
+elif [ "$DANGLING_RC" != "0" ]; then
+    exit "$DANGLING_RC"
+fi
+}
+gate_run_body dangling-docs gate_leg_dangling_docs
+
+# --- the LOOP_* name census -------------------------------------------------
+# A FORK'S FAILURE MODE, MADE CHEAP. A product that forked the loop scope and
+# kept a refusal block reading a `LOOP_*` name this platform no longer sets does
+# not die at the line that reads it: it dies minutes later, at the pytest
+# banner, under `set -u`, naming a variable nobody has heard of. The first
+# consumer spent four `--loop` runs on it. Body: `docs_loop_names_leg`
+# (scripts/docs_legs.sh), which also states the one exclusion that makes the
+# answer honest — a defaulted read cannot die and is therefore not a violation.
+leg loop-names "every LOOP_* name check.sh reads is assigned by check.sh, loop_tier.sh or gate_ledger.sh — a fork that kept a refusal block reading a name the platform no longer sets dies at the pytest banner under set -u"
+gate_leg_loop_names() {
+gate_refuse_reset
+set +e
+docs_loop_names_leg
+LOOP_NAMES_RC=$?
+set -e
+if [ "$LOOP_NAMES_RC" = "2" ]; then
+    gate_cause
+    echo "!! the loop-names leg COULD NOT LOOK — see above. One of the reader or" >&2
+    echo "   assigner files is not in this tree, or the reader named no LOOP_* at all;" >&2
+    echo "   a grep that found nothing is not a tree with nothing in it." >&2
+    echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+    exit 2
+elif [ "$LOOP_NAMES_RC" != "0" ]; then
+    exit "$LOOP_NAMES_RC"
+fi
+}
+gate_run_body loop-names gate_leg_loop_names
+
+# --- the ci-env census, tri-state -------------------------------------------
+# THE RUNNER'S STACK IS THE ONE THE SETTINGS DESCRIBE. One CI run of this very
+# repository ended with 110 errors, every one of them botocore's no-credentials
+# exception, in the one environment that had a healthy object store on its own
+# port — because the workflow's `env:` block named none of the keys the settings
+# read. 39 of 40 runs red and nothing said why. Body: `docs_ci_env_leg`
+# (scripts/docs_legs.sh); it prints its derived population, the names it left
+# out and why, and its own blind spots on every clean run. TRI-STATE: a product
+# with no workflow file gets a PRINTED skip, never silence.
+leg ci-env "every AWS_* name the settings read from the environment is a key in the workflow's env — the runner's stack is the one the settings describe"
+gate_leg_ci_env() {
+gate_refuse_reset
+set +e
+docs_ci_env_leg
+CI_ENV_RC=$?
+set -e
+if [ "$CI_ENV_RC" = "2" ]; then
+    gate_cause
+    echo "!! the ci-env leg COULD NOT LOOK — see above. The settings file, the" >&2
+    echo "   development stack's own values or the workflow's indentation was" >&2
+    echo "   unreadable, or the derived population came out empty." >&2
+    echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+    echo "   A green over nothing is the one verdict this leg may never print." >&2
+    exit 2
+elif [ "$CI_ENV_RC" != "0" ]; then
+    exit "$CI_ENV_RC"
+fi
+}
+gate_run_body ci-env gate_leg_ci_env
 
 if [ "$MODE" = "--fast" ]; then
     leg_done
@@ -1680,6 +3519,7 @@ fi
 # --- the --loop legs ---------------------------------------------------------
 
 leg deploy-check "check --deploy (production settings, throwaway env)"
+gate_leg_deploy_check() {
 # The point is the SETTINGS, not the secrets: throwaway strong values, DEBUG
 # off, a real-looking host. --fail-level WARNING is what makes this a gate leg
 # — check --deploy reports almost everything as a warning.
@@ -1699,6 +3539,61 @@ DJANGO_SETTINGS_MODULE=config.settings.production \
     CONNECTIONS_ENCRYPTION_KEY="$DJB_GATE_FERNET" \
     DATABASE_PASSWORD="$DJB_GATE_DB_PASSWORD" \
     uv run python manage.py check --deploy --fail-level WARNING
+}
+gate_run_body deploy-check gate_leg_deploy_check
+
+# --- the fe leg: ON THE FULL PATH, and it used to be inside the --loop block
+# below. A tri-state leg that prints `skip` when there is no client is still a
+# leg that RAN, and a leg the full gate never announces is a leg no verdict row
+# names and no runner is ever handed. It sits here, above the --loop block, so
+# BOTH modes reach it through one call site: two call sites would be two legs
+# with one name.
+# --- the fe leg: three states, none of them inferred from a duration ----
+# ABSENT — no frontend/ on this tree. This template's steady state, and a
+# rule about a tree nobody has must not cost a Python-only product a red
+# gate forever: a printed skip, never silence, because a skip that prints
+# nothing is indistinguishable from a pass.
+# UNTOUCHED — frontend/ exists and the active rung changed nothing under
+# it. The fast path: nothing under frontend/ derives differently than it
+# did before the active rung's changes, so nothing frontend-shaped is re-run, mirroring
+# the own-app tiering the pytest leg above already applies one door over.
+# FULL — frontend/ exists and the active rung touched it: the
+# frozen-lockfile check runs, and the declared test script (if any) runs.
+# TOOLCHAIN ABSENT while frontend/ is present AND touched is exit 2, not
+# a skip — the same tree-present/toolchain-absent cell
+# `quality/worlds.py`'s `tree_verdict` names `broken` for a rules.yaml
+# runner rule. One decision table, two homes (this leg is check.sh's own
+# gate leg; that one is a rules.yaml rule's live-scan decision), kept in
+# lockstep by citation since neither imports the other across a
+# territory line — a rung that let the two disagree is the finding this
+# comment exists to make checkable.
+leg fe "the fe leg — three states (absent/untouched/full) over frontend/, deferring to the same tree-present/toolchain-absent could-not-look cell quality/worlds.py's tree_verdict names for a runner rule"
+gate_leg_fe() {
+FE_CHANGED=$(mktemp "${TMPDIR:-/tmp}/djb-fe-changed.XXXXXX")
+gate_refuse_reset
+set +e
+secrets_scan_changed_files "$FE_CHANGED"
+FE_DERIVE_RC=$?
+set -e
+if [ "$FE_DERIVE_RC" != "0" ]; then
+    gate_cause
+    echo "!! the fe leg could not derive the active rung's changed files — see above." >&2
+    echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+    rm -f "$FE_CHANGED"
+    exit 2
+fi
+set +e
+fe_leg_run "$FE_CHANGED"
+FE_RC=$?
+set -e
+rm -f "$FE_CHANGED"
+if [ "$FE_RC" = "2" ]; then
+    exit 2
+elif [ "$FE_RC" != "0" ]; then
+    exit "$FE_RC"
+fi
+}
+gate_run_body fe gate_leg_fe
 
 if [ "$MODE" = "--loop" ]; then
     # --- the secret scan, MOVED HERE from the supply-chain leg ------
@@ -1746,6 +3641,7 @@ if [ "$MODE" = "--loop" ]; then
     # files are, which is why the leg prints its basis and its blind spots every
     # single run instead of only when something is wrong.
     leg secrets "detect-secrets vs .secrets.baseline — THE ACTIVE RUNG'S CHANGED FILES ONLY; the full-tree scan, pip-audit and licences stay push-side"
+    gate_leg_secrets() {
     gate_refuse_reset
     set +e
     secrets_scan_loop
@@ -1761,56 +3657,34 @@ if [ "$MODE" = "--loop" ]; then
     elif [ "$SECRETS_RC" != "0" ]; then
         exit "$SECRETS_RC"
     fi
+    }
+    gate_run_body secrets gate_leg_secrets
+
+    # --- THE ALWAYS-ON LEG: what the bank sees, at every scope ---------------
+    #
+    # HERE, ABOVE THE PYTEST LEG, AND THAT IS DELIBERATE. Every member of this
+    # set is single-digit seconds or a reused row, and the pytest leg below is
+    # the one that queues for a slot: a red found here is found before the
+    # expensive thing starts, and the leg holds nothing while it looks. The
+    # derivation, the two halves and the declared blind spots are the
+    # `always-on-leg` fence above — read that before changing what this claims.
+    leg always-on "the full-only members the loop can afford — drives declaring themselves cross-app (always, whatever the price) plus every member the committed measurement puts under the floor; each consulted against its banked drive verdict first"
+    gate_leg_always_on() {
+    set +e
+    always_on_leg
+    ALWAYS_ON_RC=$?
+    set -e
+    if [ "$ALWAYS_ON_RC" != "0" ]; then
+        exit "$ALWAYS_ON_RC"
+    fi
+    }
+    gate_run_body always-on gate_leg_always_on
 
     # THE ARCHAEOLOGY LEG USED TO SIT HERE. It is now one tier down, among the
     # `--fast` legs this mode runs before it reaches this line, for the reason
     # written beside it there: the hook is what let the id through, and the hook
     # runs `--fast`. This mode still runs the census exactly once, and the leg's
     # text, patterns, classifier and allow-list did not change.
-
-    # --- the fe leg: three states, none of them inferred from a duration ----
-    # ABSENT — no frontend/ on this tree. This template's steady state, and a
-    # rule about a tree nobody has must not cost a Python-only product a red
-    # gate forever: a printed skip, never silence, because a skip that prints
-    # nothing is indistinguishable from a pass.
-    # UNTOUCHED — frontend/ exists and the active rung changed nothing under
-    # it. The fast path: nothing under frontend/ derives differently than it
-    # did before the active rung's changes, so nothing frontend-shaped is re-run, mirroring
-    # the own-app tiering the pytest leg above already applies one door over.
-    # FULL — frontend/ exists and the active rung touched it: the
-    # frozen-lockfile check runs, and the declared test script (if any) runs.
-    # TOOLCHAIN ABSENT while frontend/ is present AND touched is exit 2, not
-    # a skip — the same tree-present/toolchain-absent cell
-    # `quality/worlds.py`'s `tree_verdict` names `broken` for a rules.yaml
-    # runner rule. One decision table, two homes (this leg is check.sh's own
-    # gate leg; that one is a rules.yaml rule's live-scan decision), kept in
-    # lockstep by citation since neither imports the other across a
-    # territory line — a rung that let the two disagree is the finding this
-    # comment exists to make checkable.
-    leg fe "the fe leg — three states (absent/untouched/full) over frontend/, deferring to the same tree-present/toolchain-absent could-not-look cell quality/worlds.py's tree_verdict names for a runner rule"
-    FE_CHANGED=$(mktemp "${TMPDIR:-/tmp}/djb-fe-changed.XXXXXX")
-    gate_refuse_reset
-    set +e
-    secrets_scan_changed_files "$FE_CHANGED"
-    FE_DERIVE_RC=$?
-    set -e
-    if [ "$FE_DERIVE_RC" != "0" ]; then
-        gate_cause
-        echo "!! the fe leg could not derive the active rung's changed files — see above." >&2
-        echo "   cause: ${GATE_LAST_REFUSAL}" >&2
-        rm -f "$FE_CHANGED"
-        exit 2
-    fi
-    set +e
-    fe_leg_run "$FE_CHANGED"
-    FE_RC=$?
-    set -e
-    rm -f "$FE_CHANGED"
-    if [ "$FE_RC" = "2" ]; then
-        exit 2
-    elif [ "$FE_RC" != "0" ]; then
-        exit "$FE_RC"
-    fi
 
     # --- the pytest TIER, derived --------------------------------------
     # `--loop` runs ONE OF TWO THINGS, and it says which every run:
@@ -1840,6 +3714,7 @@ if [ "$MODE" = "--loop" ]; then
     # derived AFTER the leg announces itself, so its cost and any refusal land
     # under the pytest leg's name rather than silently inside the last one's.
     leg pytest "pytest (ONE pass, a FRESH random seed, ONE OF THIS MACHINE'S PYTEST SLOTS — the fast tier plus the active rung's own app, or the WHOLE suite when the active rung changed shared test infrastructure; the full gate at push runs two whole-suite passes under one seed, which is where idempotency is proven)"
+    gate_leg_pytest() {
     # THE SLOT, TAKEN HERE AND NOWHERE ELSE IN THIS MODE. `--loop` takes no
     # lease — a builder must never queue behind somebody else's push — but it
     # does take a slot, because the thing that flattened the box was not one
@@ -1850,107 +3725,203 @@ if [ "$MODE" = "--loop" ]; then
     #
     # Everything before this line — ruff, mypy, the secret scan — took nothing
     # and waited for nothing. The queue starts where the cost is.
-    trap 'heartbeat_stop; gate_slot_release' EXIT
-    gate_refuse_reset
-    set +e
-    gate_slot_acquire loop
-    SLOT_RC=$?
-    set -e
-    if [ "$SLOT_RC" != "0" ]; then
-        gate_cause
-        echo "!! no pytest slot — see above. Nothing was judged about this tree." >&2
-        echo "   cause: ${GATE_LAST_REFUSAL}" >&2
-        exit 2
-    fi
-    # THE SCOPE WAS ALREADY DERIVED, above the first leg, because the loop
-    # ledger's key needs it before there is anything to consult. It is NOT
-    # re-derived here: one derivation, one answer, and no second thing to keep
-    # in step. Its refusal (exit 2) fired up there, under its own banner.
+    # >>> loop-docs-only-reuse >>>
+    # THE ONE LEG THIS GATE CAN DECLINE TO RUN, AND IT DECLINES ONLY ON THE
+    # ANSWER THE CONSULT ALREADY PRINTED. `loop_docs_only_reuse`
+    # (scripts/gate_ledger.sh) said the whole delta since the banked head is
+    # under `docs/`, that no changed docs path is spelled in any module under
+    # `apps/`, and that the working tree is clean — so the banked pytest
+    # verdict is a verdict about a suite this delta cannot have moved.
     #
-    # THE RULE IS PRINTED EVERY RUN, whichever branch it took. A tier chosen in
-    # silence is an unfalsifiable one, and that is as true of the full suite as
-    # it is of the fast tier — a reader who cannot see WHY the leg ran
-    # everything cannot tell a deliberate full run from a broken derivation.
-    echo "  tier basis: ${LOOP_TIER_BASIS}"
-    echo "  tier rule:  ${LOOP_TIER_REASON}"
-    if [ "$LOOP_TIER_MODE" = "full" ]; then
-        echo "  shared test infrastructure the active rung changed: ${LOOP_TIER_SHARED_HITS}"
-        echo "  (the enumeration and why each member is in it: scripts/loop_tier.sh)"
-    fi
-    # A fresh seed on purpose, and the one place in the gate that takes one.
-    # Ordering couplings are found by *varying* the order, and `--loop` is the
-    # tier where a builder is watching, has the tree in their head, and can fix
-    # the test rather than pin the order. pytest prints the seed it chose; a red
-    # run replays with `./scripts/test.sh --randomly-seed=<that seed>`.
+    # EVERY OTHER LEG ALREADY RAN. They are above this line, unguarded: ruff,
+    # mypy, the secret scan, the censuses, db-pin, deploy-check. The saving is
+    # the 200-250 s pass, never the ~30 s of legs, and the legs are what would
+    # catch a docs commit that broke something a census reads.
     #
-    # THE EXIT STATUS IS MAPPED, AND ONLY UPWARDS. 0 and 1 are pytest's and are
-    # passed through byte-for-byte. 3 (internal error), 4 (usage error — which
-    # is what the tier's own floors raise) and 5 (nothing collected — which is
-    # what a tier that deselected the world would look like) are all "the suite
-    # did not run", and this file has one word for that: 2, could-not-look,
-    # which outranks a pass. Before this mapping existed they surfaced as bare
-    # 3/4/5 from `set -e`, which no reader of this gate has a meaning for.
-    #
-    # TWO CALL SITES RATHER THAN ONE ARRAY THAT IS SOMETIMES EMPTY, and that is
-    # not a style choice: this runs under macOS's bash 3.2, where expanding an
-    # EMPTY array as `"${ARR[@]}"` under `set -u` is an unbound-variable death,
-    # not an empty expansion. The `full` branch therefore passes NO tier flag at
-    # all — which is also the honest thing for it to do, because that is the
-    # byte-identical command this leg ran before the tier existed.
-    #
-    # `-n $GATE_SLOT_WORKERS`, NEVER `-n auto`, and the banner says the number
-    # and why on every run. `auto` is one worker per core, which is the right
-    # answer for a machine running one suite and the wrong answer for a machine
-    # running N. The arithmetic the semaphore keeps: N slots x cores/N workers
-    # = this machine's cores, however many gates are live.
-    echo "  workers:    -n ${GATE_SLOT_WORKERS} (this box's cores split ${GATE_SLOT_TOTAL} ways — one share per pytest slot)"
-    echo "              NOT -n auto: auto is every core, and it is every core in each of"
-    echo "              the ${GATE_SLOT_TOTAL} gates that may be running. Override the slot count with"
-    echo "              DJB_GATE_SLOTS."
-    # The nominal this pass will be measured against, and WHERE IT CAME FROM.
-    # Printed at leg start rather than only inside a waiter's estimate, because
-    # the reader who needs it most is the one watching this leg, not the one
-    # queued behind it.
-    gate_pytest_nominal "$GATE_SLOT_NOMINAL_LOOP" GATE_SLOT_NOMINAL_LOOP \
-        "$(loop_ledger_path 2>/dev/null || true)"
-    heartbeat_start "pytest" "$GATE_PYTEST_NOMINAL" "$GATE_PYTEST_NOMINAL_PROV"
-    set +e
-    if [ "$LOOP_TIER_MODE" = "full" ]; then
-        ./scripts/test.sh -n "$GATE_SLOT_WORKERS"
+    # NO SLOT IS TAKEN ON THIS PATH. The queue starts where the cost is, and on
+    # this path there is no cost — a reuse that held one of this box's two
+    # pytest slots would be charging the wave for a pass it did not run. That
+    # is also why the `workers:` line below is inside the `else`: this path
+    # derives no worker count, so it must not print a sentence about one.
+    if [ -n "$LOOP_PYTEST_REUSE" ]; then
+        echo "  pytest: REUSED from the banked verdict on ${LOOP_REUSE_TREE} (docs-only delta: ${LOOP_REUSE_N} path(s), none spelled in a module under apps/)"
+        echo "          Every other leg above this one RAN. What is reused is the pytest"
+        echo "          pass alone, and only because nothing outside docs/ moved since that"
+        echo "          verdict was measured. Force a re-measure with DJB_LOOP_NO_CACHE=1."
+        PYTEST_RC=0
     else
-        # TWO LISTS, TWO CLAIMS. `--djb-own-app` is the rung's TOUCHED apps and
-        # means "run this in full, organ tests included" — the existing rule,
-        # untouched. `--djb-scope` is that set plus the reverse-transitive
-        # closure and means only "do not deselect this". Promoting the closure
-        # to own-app would make an `apps/core` touch run every organ test in the
-        # tree, which is slower than the tier this replaced.
-        TIER_ARGS=(--djb-tier=fast)
-        for TIER_APP in $LOOP_TIER_OWN_APPS; do
-            TIER_ARGS+=("--djb-own-app=$TIER_APP")
-        done
-        # THE THIRD LIST, AND IT IS NEITHER OF THE OTHER TWO. A tests-only app
-        # is not own (its organ tests stay push-side) and not in scope (nothing
-        # widened to it through the declarations): it brings its own test tree,
-        # the modules the rung edited, and the modules that import its test
-        # package — derived inside pytest from the modules' own source.
-        for TIER_APP in $LOOP_SCOPE_TESTS_ONLY; do
-            TIER_ARGS+=("--djb-tests-only=$TIER_APP")
-        done
-        for TIER_TEST in $LOOP_SCOPE_CHANGED_TESTS; do
-            TIER_ARGS+=("--djb-changed-test=$TIER_TEST")
-        done
-        if [ -n "$LOOP_SCOPE_NARROW" ]; then
-            for TIER_APP in $LOOP_SCOPE_APPS; do
-                TIER_ARGS+=("--djb-scope=$TIER_APP")
-            done
-            LOOP_COUNTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/djb-loop-counts.XXXXXX")
-            TIER_ARGS+=(--djb-scope-narrow "--djb-scope-counts=$LOOP_COUNTS_DIR")
+        trap 'heartbeat_stop; gate_slot_release' EXIT
+        gate_refuse_reset
+        set +e
+        gate_slot_acquire loop
+        SLOT_RC=$?
+        set -e
+        if [ "$SLOT_RC" != "0" ]; then
+            gate_cause
+            echo "!! no pytest slot — see above. Nothing was judged about this tree." >&2
+            echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+            exit 2
         fi
-        ./scripts/test.sh -n "$GATE_SLOT_WORKERS" "${TIER_ARGS[@]}"
+        # THE SCOPE WAS ALREADY DERIVED, above the first leg, because the loop
+        # ledger's key needs it before there is anything to consult. It is NOT
+        # re-derived here: one derivation, one answer, and no second thing to keep
+        # in step. Its refusal (exit 2) fired up there, under its own banner.
+        #
+        # THE RULE IS PRINTED EVERY RUN, whichever branch it took. A tier chosen in
+        # silence is an unfalsifiable one, and that is as true of the full suite as
+        # it is of the fast tier — a reader who cannot see WHY the leg ran
+        # everything cannot tell a deliberate full run from a broken derivation.
+        echo "  tier basis: ${LOOP_TIER_BASIS}"
+        echo "  tier rule:  ${LOOP_TIER_REASON}"
+        if [ "$LOOP_TIER_MODE" = "full" ]; then
+            echo "  shared test infrastructure the active rung changed: ${LOOP_TIER_SHARED_HITS}"
+            echo "  (the enumeration and why each member is in it: scripts/loop_tier.sh)"
+        fi
+        # THE DECLARED CROSS-APP CENSUSES, NAMED WITH THEIR REASONS. A scope
+        # narrows the suite and leans on the always-on set for everything that
+        # quantifies over the whole tree; two thirds of that set is DERIVED and
+        # needs no listing, and the last third is a module's own DECLARATION. A
+        # declaration nobody can enumerate is one nobody audits, so the run that
+        # leans on it prints it — the same argument the tier rule above is
+        # printed for. The reason is the module's own sentence, so a reader who
+        # disagrees with one has the module's path in front of them.
+        LOOP_CENSUS_RC=0
+        LOOP_CENSUS_LIST=$(loop_scope__declared_censuses apps) || LOOP_CENSUS_RC=$?
+        if [ "$LOOP_CENSUS_RC" != "0" ]; then
+            echo "!! the --loop scope COULD NOT READ the declared cross-app censuses — see" >&2
+            echo "   above. Nothing was judged about this tree: a marked module this could" >&2
+            echo "   not read is one the scope would deselect as if it had declared nothing." >&2
+            exit 2
+        fi
+        if [ -z "$LOOP_CENSUS_LIST" ]; then
+            echo "  always-on censuses (declared): (none declared)"
+        else
+            # NOT `LOOP_*` NAMES, deliberately: the loop-names leg reads
+            # assignments and does not see a `read -r` target, so a `LOOP_`
+            # prefix here would be a standing violation of a census that is not
+            # this line's to change.
+            while IFS="$(printf '\t')" read -r DECLARED_CENSUS_MODULE DECLARED_CENSUS_REASON; do
+                echo "  always-on censuses (declared): ${DECLARED_CENSUS_MODULE} — ${DECLARED_CENSUS_REASON}"
+            done <<EOF
+${LOOP_CENSUS_LIST}
+EOF
+        fi
+        # A fresh seed on purpose, and the one place in the gate that takes one.
+        # Ordering couplings are found by *varying* the order, and `--loop` is the
+        # tier where a builder is watching, has the tree in their head, and can fix
+        # the test rather than pin the order. pytest prints the seed it chose; a red
+        # run replays with `./scripts/test.sh --randomly-seed=<that seed>`.
+        #
+        # THE EXIT STATUS IS MAPPED, AND ONLY UPWARDS. 0 and 1 are pytest's and are
+        # passed through byte-for-byte. 3 (internal error), 4 (usage error — which
+        # is what the tier's own floors raise) and 5 (nothing collected — which is
+        # what a tier that deselected the world would look like) are all "the suite
+        # did not run", and this file has one word for that: 2, could-not-look,
+        # which outranks a pass. Before this mapping existed they surfaced as bare
+        # 3/4/5 from `set -e`, which no reader of this gate has a meaning for.
+        #
+        # TWO CALL SITES RATHER THAN ONE ARRAY THAT IS SOMETIMES EMPTY, and that is
+        # not a style choice: this runs under macOS's bash 3.2, where expanding an
+        # EMPTY array as `"${ARR[@]}"` under `set -u` is an unbound-variable death,
+        # not an empty expansion. The `full` branch therefore passes NO tier flag at
+        # all — which is also the honest thing for it to do, because that is the
+        # byte-identical command this leg ran before the tier existed.
+        #
+        # `-n $GATE_SLOT_WORKERS`, NEVER `-n auto`, and the banner says the number
+        # and why on every run. `auto` is one worker per core, which is the right
+        # answer for a machine running one suite and the wrong answer for a machine
+        # running N. The arithmetic the semaphore keeps: N slots x cores/N workers
+        # = this machine's cores, however many gates are live.
+        # ONE SENTENCE, FROM WHERE THE NUMBER IS DECIDED — the pytest-x2 leg's line
+        # is the same interpolation for the same reason: a parenthetical written here
+        # is a second opinion about a number this file did not derive, and it was
+        # wrong whenever DJB_GATE_SLOT_WORKERS was typed. The builder watching a
+        # `--loop` is the reader most likely to have typed it.
+        echo "  workers:    -n ${GATE_SLOT_WORKERS} (${GATE_SLOT_WORKERS_PHRASE})"
+        echo "              NOT -n auto: auto is every core, and it is every core in each of"
+        echo "              the ${GATE_SLOT_TOTAL} gates that may be running. Override the slot count with"
+        echo "              DJB_GATE_SLOTS."
+        # The nominal this pass will be measured against, and WHERE IT CAME FROM.
+        # Printed at leg start rather than only inside a waiter's estimate, because
+        # the reader who needs it most is the one watching this leg, not the one
+        # queued behind it.
+        gate_pytest_nominal "$GATE_SLOT_NOMINAL_LOOP" GATE_SLOT_NOMINAL_LOOP \
+            "$(loop_ledger_path 2>/dev/null || true)"
+        heartbeat_start "pytest" "$GATE_PYTEST_NOMINAL" "$GATE_PYTEST_NOMINAL_PROV"
+        set +e
+        if [ "$LOOP_TIER_MODE" = "full" ]; then
+            ./scripts/test.sh -n "$GATE_SLOT_WORKERS"
+        else
+            # TWO LISTS, TWO CLAIMS. `--djb-own-app` is the rung's TOUCHED apps and
+            # means "run this in full, organ tests included" — the existing rule,
+            # untouched. `--djb-scope` is that set plus the reverse-transitive
+            # closure and means only "do not deselect this". Promoting the closure
+            # to own-app would make an `apps/core` touch run every organ test in the
+            # tree, which is slower than the tier this replaced.
+            TIER_ARGS=(--djb-tier=fast)
+            for TIER_APP in $LOOP_TIER_OWN_APPS; do
+                TIER_ARGS+=("--djb-own-app=$TIER_APP")
+            done
+            # THE THIRD LIST, AND IT IS NEITHER OF THE OTHER TWO. A tests-only app
+            # is not own (its organ tests stay push-side) and not in scope (nothing
+            # widened to it through the declarations): it brings its own test tree,
+            # the modules the rung edited, and the modules that import its test
+            # package — derived inside pytest from the modules' own source.
+            for TIER_APP in $LOOP_SCOPE_TESTS_ONLY; do
+                TIER_ARGS+=("--djb-tests-only=$TIER_APP")
+            done
+            for TIER_TEST in $LOOP_SCOPE_CHANGED_TESTS; do
+                TIER_ARGS+=("--djb-changed-test=$TIER_TEST")
+            done
+            # THE FOURTH LIST, AND IT IS THE ONLY ONE THE RUNG DID NOT NAME. A
+            # changed file that DECLARES permission vocabulary seeds the core
+            # census that reads it — one module, through the same flag, because
+            # the reverse `depends_on` closure can never reach `core` (it is
+            # everyone's dependency and nobody's dependant). The patterns and
+            # what is deliberately NOT seeded are scripts/loop_tier.sh's header.
+            for TIER_TEST in $LOOP_SCOPE_SEEDED_TESTS; do
+                TIER_ARGS+=("--djb-changed-test=$TIER_TEST")
+            done
+            # THE FIFTH LIST, AND IT NARROWS NOTHING BY ITSELF. Every file the
+            # active rung changed, so a DECLARED cross-app census that names a
+            # `population=` can sit out a run whose changed files are all
+            # outside it (apps/conftest.py). Behind the same switch as the map
+            # below: `--mine` passes the flags it passed before.
+            if [ -n "${LOOP_IMPACT:-}" ]; then
+                for TIER_FILE in $LOOP_SCOPE_CHANGED_FILES; do
+                    TIER_ARGS+=("--djb-changed=$TIER_FILE")
+                done
+            fi
+            if [ -n "$LOOP_SCOPE_IMPACT_SELECT" ]; then
+                # THE MAP ANSWERED, SO THE SCOPE IS NOT PASSED AT ALL. A
+                # selection and a scope are two answers to one question and the
+                # selection is the narrower; `--djb-scope=` beside it would
+                # widen back exactly what the map was asked to narrow. The
+                # counts file still rides, because the collector reconciliation
+                # below is about whether every collector FINISHED, which is as
+                # true of a selection as it is of a scope.
+                #
+                # THE SAME FLAGS `loop_scope__pytest_args` EMITS, and the two
+                # builders differ in exactly one thing — this one asks for the
+                # fast tier and the `--pr` one deliberately does not.
+                # scripts/tests/test_loop_scope.sh holds them to each other.
+                TIER_ARGS+=("--djb-impact-select=$LOOP_SCOPE_IMPACT_SELECT")
+                LOOP_COUNTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/djb-loop-counts.XXXXXX")
+                TIER_ARGS+=("--djb-scope-counts=$LOOP_COUNTS_DIR")
+            elif [ -n "$LOOP_SCOPE_NARROW" ]; then
+                for TIER_APP in $LOOP_SCOPE_APPS; do
+                    TIER_ARGS+=("--djb-scope=$TIER_APP")
+                done
+                LOOP_COUNTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/djb-loop-counts.XXXXXX")
+                TIER_ARGS+=(--djb-scope-narrow "--djb-scope-counts=$LOOP_COUNTS_DIR")
+            fi
+            ./scripts/test.sh -n "$GATE_SLOT_WORKERS" "${TIER_ARGS[@]}"
+        fi
+        PYTEST_RC=$?
+        set -e
+        heartbeat_stop
     fi
-    PYTEST_RC=$?
-    set -e
-    heartbeat_stop
+    # <<< loop-docs-only-reuse <<<
 
     # --- THE SCOPE BANNER, BEFORE THE VERDICT DISPATCH -------------------
     #
@@ -1967,10 +3938,14 @@ if [ "$MODE" = "--loop" ]; then
     # different suites have not measured one thing, and a verdict banked under a
     # scope one of them disowned is a verdict about nothing.
     LOOP_BANNER_RC=0
+    # EVERY REFUSAL IN THIS BLOCK GOES THROUGH THE SEAM, and the reset is what
+    # keeps the banner at the bottom from printing a cause belonging to some
+    # earlier, already-handled refusal (scripts/gate_refuse.sh).
+    gate_refuse_reset
     if [ -n "$LOOP_COUNTS_DIR" ]; then
         LOOP_COUNT_FILES=$(find "$LOOP_COUNTS_DIR" -type f 2>/dev/null | sort)
         if [ -z "$LOOP_COUNT_FILES" ]; then
-            echo "!! the --loop scope banner has NO counts file to read: not one collector" >&2
+            gate_refuse "the --loop scope banner has NO counts file to read: not one collector"
             echo "   wrote into ${LOOP_COUNTS_DIR}. The scope was asked for and nothing" >&2
             echo "   reported deriving it, so what ran is unknown." >&2
             LOOP_BANNER_RC=2
@@ -1986,7 +3961,7 @@ if [ "$MODE" = "--loop" ]; then
             LOOP_COUNT_FIRST=${LOOP_COUNT_FILES%%$'\n'*}
             for LOOP_COUNT_FILE in $LOOP_COUNT_FILES; do
                 if ! cmp -s "$LOOP_COUNT_FIRST" "$LOOP_COUNT_FILE"; then
-                    echo "!! THE COLLECTORS DISAGREE ABOUT THE SCOPE." >&2
+                    gate_refuse "THE COLLECTORS DISAGREE ABOUT THE SCOPE."
                     echo "   ${LOOP_COUNT_FIRST##*/}:" >&2
                     sed 's/^/     /' "$LOOP_COUNT_FIRST" >&2
                     echo "   ${LOOP_COUNT_FILE##*/}:" >&2
@@ -2010,7 +3985,7 @@ if [ "$MODE" = "--loop" ]; then
                 # for, whatever pytest's own status says.
                 LOOP_COUNT_N=$(printf '%s\n' "$LOOP_COUNT_FILES" | wc -l | tr -d ' ')
                 set +e
-                loop_counts_refuse_if_short "$LOOP_COUNT_N" "${GATE_SLOT_WORKERS:-0}"
+                loop_counts_refuse_if_short "$LOOP_COUNT_N" "${GATE_SLOT_WORKERS:-0}" "$LOOP_COUNT_FIRST"
                 LOOP_COUNTS_RC=$?
                 set -e
                 loop_scope__prerun_absence "$LOOP_COUNT_N" "${GATE_SLOT_WORKERS:-0}"
@@ -2024,6 +3999,11 @@ if [ "$MODE" = "--loop" ]; then
                 echo "  tests-only: ${LOOP_SCOPE_TESTS_ONLY:--} (no closure walked; the edited modules: ${LOOP_SCOPE_CHANGED_TESTS:--})"
                 echo "  widened by the reverse-transitive depends_on closure: ${LOOP_SCOPE_WIDENED:--}"
                 echo "  shapes:     ${LOOP_SCOPE_SHAPES:--}"
+                # THE MAP, BESIDE THE SCOPE IT REPLACED. On a selecting run the
+                # three lines above describe a closure that did NOT run, and a
+                # reader who saw only those would be reading the wrong scope
+                # off a green run.
+                loop_map_banner
                 sed 's/^/  /' "$LOOP_COUNT_FIRST"
                 echo "  (reconciled across $(printf '%s\n' "$LOOP_COUNT_FILES" | wc -l | tr -d ' ') collector file(s) — compared, never summed)"
                 echo "  A REGRESSION IN A DESELECTED APP SURFACES AT THE WAVE BANK, NOT AT"
@@ -2033,7 +4013,22 @@ if [ "$MODE" = "--loop" ]; then
         fi
         rm -rf "$LOOP_COUNTS_DIR"
     fi
+    # THE SELECTION FILE, REAPED WHERE THE COUNTS DIRECTORY IS. It is the only
+    # thing this leg leaves outside the checkout, it is named for nothing a
+    # later run reads, and the run it belonged to is over: the flags pytest
+    # was handed are in the transcript above, which is the record.
+    [ -z "${LOOP_SCOPE_IMPACT_SELECT:-}" ] || rm -f "$LOOP_SCOPE_IMPACT_SELECT"
     if [ "$LOOP_BANNER_RC" != "0" ]; then
+        # THE CAUSE, WHERE THE READER IS STANDING. All three ways this block
+        # refuses — no counts file, disagreeing collectors, a collector short of
+        # the number the leg started — record their first `!!` line through the
+        # seam, so this banner names one of them instead of pointing at an
+        # "above" a report, a paste or a truncated log may not carry.
+        gate_cause
+        echo "!! the --loop scope could not be RECONCILED — see above." >&2
+        echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+        echo "   Nothing was judged about this tree and no verdict is banked: a scope the" >&2
+        echo "   collectors did not agree on is not a scope anything can be graded at." >&2
         exit 2
     fi
 
@@ -2055,6 +4050,8 @@ if [ "$MODE" = "--loop" ]; then
         ;;
     *) exit "$PYTEST_RC" ;;
     esac
+    }
+    gate_run_body pytest gate_leg_pytest
     leg_done
     echo "ok: loop checks passed ($(($(date +%s) - T_MODE_START))s)"
     echo "  NOT run: THE SLOW TIER — every test deriving as organ-reaching outside this"
@@ -2077,7 +4074,12 @@ if [ "$MODE" = "--loop" ]; then
     # that started on one tree and finished on another has measured neither, and
     # the honest answer is to bank nothing and let the next run pay. The full
     # ledger's third property, at this tier, for the same reason.
-    if [ -n "$LOOP_LEDGER_KEY" ]; then
+    if [ -n "${DJB_GATE_LEGS_DRY:-}" ]; then
+        # A DRY RUN JUDGED NOTHING — the same rule as the full tail's, one tier
+        # down: every leg was announced, no body ran, and a banked `--loop` row
+        # is a claim that a pytest pass happened.
+        echo "  no verdict banked — DJB_GATE_LEGS_DRY: every leg was announced and none ran"
+    elif [ -n "$LOOP_LEDGER_KEY" ]; then
         LOOP_LEDGER_KEY_END=""
         LOOP_LEDGER_TREE_END=$(gate_measured_tree || true)
         if [ -n "$LOOP_LEDGER_TREE_END" ]; then
@@ -2096,13 +4098,33 @@ if [ "$MODE" = "--loop" ]; then
             # started with — they are equal here by the guard immediately above,
             # and taking them from the END is what keeps that true if the guard
             # is ever loosened.
+            # A REUSE IS RECORDED AS A REUSE, NEVER AS A MEASUREMENT — the loop
+            # ledger's property 2, at this tier. `reuse=` names the banked tree
+            # whose pytest verdict this row rests on, so a reader following a
+            # chain of reuses reaches a measurement at the end of it, and the
+            # `loop:` cell a verifier types is the sentence printed below
+            # rather than a `hit`/`miss(...)` that would hide which it was.
             if loop_ledger_record "$LOOP_LEDGER_KEY" "$LOOP_SCOPE_CANONICAL" 1 \
-                "$LOOP_LEDGER_TREE_END" "${LOOP_ENV_FINGERPRINT:-unstated}"; then
+                "$LOOP_LEDGER_TREE_END" "${LOOP_ENV_FINGERPRINT:-unstated}" \
+                "${LOOP_REUSE_TREE}"; then
                 echo "  banked: this --loop verdict, keyed on tree + environment + scope."
+                # BESIDE THE VERDICT, not in the key. What machine a loop ran
+                # on does not change what it measured, so putting it in the
+                # key would re-measure every tree twice for nothing; what it
+                # changes is whether anybody can read, afterwards, how many
+                # loops were run on the shared box and why. The ledger ROW
+                # cannot carry it without a field in `gate_ledger.sh`, which is
+                # the follow-up; the transcript carries it today.
+                echo "          here=${LOOP_HERE_BECAUSE}"
                 echo "          ${LOOP_LEDGER_KEY}"
                 echo "          tree=${LOOP_LEDGER_TREE_END}"
                 echo "          env=${LOOP_ENV_FINGERPRINT:-unstated}"
                 echo "          scope=${LOOP_SCOPE_CANONICAL}"
+                if [ -n "$LOOP_PYTEST_REUSE" ]; then
+                    echo "          loop: docs-only reuse of ${LOOP_REUSE_TREE}"
+                    echo "          This row is itself reusable AND says what it rests on: the"
+                    echo "          pytest pass was not run here, it was inherited from that tree."
+                fi
                 echo "          A later --loop on identical bytes at THIS scope reuses it;"
                 echo "          a WIDER scope is a different key and re-measures."
             fi
@@ -2110,6 +4132,12 @@ if [ "$MODE" = "--loop" ]; then
             echo "  no verdict banked — the key did not re-derive to the same value at the"
             echo "  end of the run, so something moved while the gate ran. Nothing was"
             echo "  wrong with this run; it simply vouches for no single tree."
+            # AND IT NAMES WHAT MOVED. Without these lines the refusal is a
+            # whole re-run with no subject; see `loop_key_moved`.
+            loop_key_moved "$LOOP_LEDGER_TREE" "${LOOP_LEDGER_ENV:-unstated}" \
+                "${LOOP_LEDGER_ENV_PARTS:-unstated}" \
+                "${LOOP_LEDGER_TREE_END:-unreadable}" "${LOOP_ENV_FINGERPRINT:-unstated}" \
+                "${LOOP_ENV_COMPONENTS:-unstated}" "$LOOP_SCOPE_CANONICAL"
         fi
     elif [ -n "$GATE_MINE" ]; then
         loop_mine_banner close "$LOOP_TIER_MODE" "$LOOP_TIER_OWN_APPS"
@@ -2119,8 +4147,58 @@ fi
 
 # --- the full legs -----------------------------------------------------------
 
-# ORDERING: supply chain runs FIRST among the full legs — ahead of the two
-# pytest passes — because pip-audit is the only leg in the whole gate that
+# --- collectstatic: A GATE LEG, AND IT USED TO BE A STEP IN YAML -------------
+#
+# WHAT IT PROVES. Production's staticfiles backend is whitenoise's COMPRESSED
+# MANIFEST storage, which post-processes every file and rewrites every reference
+# it finds inside them. A reference to a file that is not there is a 500 on the
+# admin and on `/api/v1/docs`, and it shows up nowhere else — not in `ruff`, not
+# in `check --deploy`, not in the suite — because nothing but building the
+# manifest ever resolves it.
+#
+# WHY IT IS HERE AND NO LONGER IN `ci.yml`. It was a workflow step, which
+# `ci.yml`'s own header named as "the one candidate to fold into check.sh". Once
+# CI runs UNITS rather than a whole gate, a YAML step conditioned on which unit
+# is running would be CI typing a leg name — the exact thing the unit table
+# exists to stop. A leg is a leg wherever it is run from.
+#
+# IT OWNS ITS STATIC_ROOT AND REMOVES IT. `--clear` empties the target first,
+# and the target is a scratch directory this leg makes: pointed at the
+# checkout's own `staticfiles/`, a gate leg would be deleting a developer's
+# build output on every run. The throwaway environment is `deploy-check`'s, for
+# the reason written there — the point is the SETTINGS, not the secrets.
+leg collectstatic "collectstatic under production settings (the compressed manifest storage resolves every reference), into a scratch STATIC_ROOT this leg owns"
+gate_leg_collectstatic() {
+DJB_STATIC_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/djb-collectstatic.XXXXXX")
+DJB_GATE_SECRET="$(uv run python -c 'import secrets; print("gate-only-" + secrets.token_hex(32))')"
+DJB_GATE_FERNET="$(uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+DJB_GATE_DB_PASSWORD="$(uv run python -c 'import secrets; print("gate-only-" + secrets.token_urlsafe(24))')"
+set +e
+DJANGO_SETTINGS_MODULE=config.settings.production \
+    DEBUG=0 \
+    ALLOWED_HOSTS=example.invalid \
+    SECRET_KEY="$DJB_GATE_SECRET" \
+    CONNECTIONS_ENCRYPTION_KEY="$DJB_GATE_FERNET" \
+    DATABASE_PASSWORD="$DJB_GATE_DB_PASSWORD" \
+    STATIC_ROOT="$DJB_STATIC_ROOT" \
+    uv run python manage.py collectstatic --noinput --clear
+DJB_STATIC_RC=$?
+set -e
+rm -rf "$DJB_STATIC_ROOT"
+if [ "$DJB_STATIC_RC" != "0" ]; then
+    echo "!! collectstatic failed (exit ${DJB_STATIC_RC}) under production settings." >&2
+    echo "   The compressed MANIFEST storage resolves every reference inside every" >&2
+    echo "   file it post-processes, so this is usually a url() in a stylesheet" >&2
+    echo "   naming a file that is not in any STATICFILES_DIRS or app static dir." >&2
+    echo "   It is a 500 on the admin in production and it shows up in no other leg." >&2
+    exit 1
+fi
+}
+gate_run_body collectstatic gate_leg_collectstatic
+
+# ORDERING: supply chain runs EARLY among the full legs — ahead of the two
+# pytest passes, and behind only `collectstatic`, which is seconds of local
+# work — because pip-audit is the only leg in the whole gate that
 # leaves this machine. Run last, a PyPI hiccup threw away a green ~2h suite
 # THREE times inside 24 hours (two pushes and a review sweep, 2026-08-19/20);
 # run first, the same hiccup costs seconds. Nothing here depends on a later
@@ -2131,6 +4209,7 @@ fi
 # have nothing between them, and the canary self-test still runs on a tree no
 # leg has disturbed.
 leg supply-chain "supply chain: pip-audit, licenses (no GPL/AGPL/SSPL), detect-secrets over the WHOLE tree vs baseline (the --loop copy sees only the active rung's changed files)"
+gate_leg_supply_chain() {
 
 # pip-audit reaches PyPI, whose default socket timeout here is 15s — and at the
 # exit code a read timeout is indistinguishable from a vulnerability. So: a 60s
@@ -2215,6 +4294,8 @@ LICENSES
 # Measured 19s warm over this worktree's 864 tracked files, paid
 # once per push and no longer once per rung as well.
 git ls-files -z | xargs -0 uv run detect-secrets-hook --baseline .secrets.baseline
+}
+gate_run_body supply-chain gate_leg_supply_chain
 
 # --- the Temporal test-server census, before and after the suite -------------
 #
@@ -2279,8 +4360,11 @@ temporal_census() {
 }
 
 leg temporal-census "temporal test-server census, BEFORE the suite (an orphaned test server outlives its pytest worker forever and holds the port a later pass needs)"
+gate_leg_temporal_census_pre() {
 temporal_census pre-suite
 TEMPORAL_PRE_SEEN=$TEMPORAL_SEEN
+}
+gate_run_body temporal-census gate_leg_temporal_census_pre
 
 # --- the platform partition's decision ---------------------------------
 #
@@ -2308,6 +4392,7 @@ TEMPORAL_PRE_SEEN=$TEMPORAL_SEEN
 # `--loop` IS UNTOUCHED. Its tiering already scopes by rung app, it banks
 # nothing, and a partial run must never vouch for a tree.
 leg partition "the platform partition — self-test its canaries, compute the two-part skip key, consult the ledger, and SAY which of the two happened"
+gate_leg_partition() {
 
 PARTITION_DECISION=$(mktemp "${TMPDIR:-/tmp}/djb-partition-decision.XXXXXX")
 set +e
@@ -2380,8 +4465,39 @@ if [ -n "$GATE_PR" ]; then
     PARTITION_MODE=measure
     PARTITION_TARGETS="$GATE_PR_PYTEST_ARGS"
 fi
+# --- A SHARD FORCES THE MEASURE TOO, AND FOR THE NEIGHBOURING REASON ---------
+#
+# `pytest-split` partitions a COLLECTION. Under a banked partition row the
+# collection is already a narrowed path list, so shard k of N would be splitting
+# a different collection from the one its siblings split on a runner whose
+# ledger said something else — and the union of the N shards would be neither
+# the suite nor a partition of it. The resolution is the one that runs MORE, as
+# it is under `--pr`: the shards split the whole collection.
+#
+# `--pr` KEEPS THE TARGETS IT SET. When both are in play the scope is the
+# proposal's and the split is over that scope — which is exactly what
+# `--leg pytest-x2 --shard k/N --pr --base <sha>` is asking for.
+#
+# `--store-durations` FORCES IT FOR THE SAME REASON, one step earlier: the file
+# it writes is what every later shard balances by, and one written under a
+# banked partition row would carry timings for the product's tests alone while
+# the shards it balances split the whole collection.
+if [ -n "$GATE_SHARD" ] || [ -n "$GATE_STORE_DURATIONS" ]; then
+    if [ "$PARTITION_MODE" = "skip" ]; then
+        echo "  ${GATE_SHARD:+shard ${GATE_SHARD} }IGNORES THE BANKED PARTITION ROW (key $PARTITION_KEY):"
+        echo "  the split is over a collection, and a collection one runner's ledger has"
+        echo "  already narrowed is not the one the other shards are splitting."
+    fi
+    PARTITION_MODE=measure
+    if [ -z "$GATE_PR" ]; then
+        PARTITION_TARGETS=""
+    fi
+fi
+}
+gate_run_body partition gate_leg_partition
 
-leg pytest-x2 "pytest (twice, both passes under ONE seed and ONE OF THIS MACHINE'S PYTEST SLOTS, nothing in between — the second run proves the first left nothing behind)"
+leg pytest-x2 "$GATE_PASSES_LEG_TEXT"
+gate_leg_pytest_x2() {
 
 # THE SLOT, TAKEN HERE AND HELD ACROSS BOTH PASSES. This leg is the heaviest
 # single consumer on the box and it is the last of the three guards a full gate
@@ -2394,9 +4510,22 @@ leg pytest-x2 "pytest (twice, both passes under ONE seed and ONE OF THIS MACHINE
 # releasing between them would let the worker count change underneath the one
 # thing this leg proves, and holding it through the self-test would make every
 # builder on the box queue behind legs that start no suite at all.
+#
+# AND THE BANK TAKES ALL OF THEM. `--bank` is the PM's ritual push: the one run
+# on this machine whose verdict everybody else's tree is measured against, and
+# it used to run its two whole-suite passes on one slot's share while two
+# builders' loops held the rest. `bank` mode takes every slot, waiting out loud
+# for any that are held; a `--loop` that arrives during it waits, and is told by
+# name that it is waiting for the bank. Everything else — a typed-sanction full
+# gate, push-wall — still takes ONE slot, which is what the `full` arm below is.
+# The escape is `DJB_BANK_SHARES_SLOTS=1` and the run that takes it prints it.
 gate_refuse_reset
 set +e
-gate_slot_acquire full
+if [ -n "$GATE_BANK" ]; then
+    gate_slot_acquire bank
+else
+    gate_slot_acquire full
+fi
 SLOT_RC=$?
 set -e
 if [ "$SLOT_RC" != "0" ]; then
@@ -2411,10 +4540,10 @@ fi
 # banked verdict and these are the product tests plus §7's four frozen nets.
 if [ "$PARTITION_MODE" = "skip" ]; then
     echo "  PLATFORM PARTITION SKIPPED — banked under $PARTITION_KEY"
-    echo "  both passes run ONLY: ${PARTITION_TARGETS:-<nothing outside the partition>}"
+    echo "  ${GATE_PASSES_RUN} ONLY: ${PARTITION_TARGETS:-<nothing outside the partition>}"
 else
     echo "  PLATFORM PARTITION RUNNING — no banked verdict for $PARTITION_KEY"
-    echo "  both passes run the WHOLE suite"
+    echo "  ${GATE_PASSES_RUN} the WHOLE suite"
 fi
 
 # ONE SEED, BOTH PASSES (ADR gate-1). This leg's meaning is narrow and it has
@@ -2513,9 +4642,224 @@ pytest_x2_verdict() {
     fi
 }
 
-PYTEST_SEED=$(((RANDOM << 15) | RANDOM))
-echo "  both passes run --randomly-seed=$PYTEST_SEED (replay a red order with it)"
-echo "  workers:    -n ${GATE_SLOT_WORKERS} (this box's cores split ${GATE_SLOT_TOTAL} ways — one share per pytest slot)"
+# --- the collector population, under the gate that banks -----------------------
+#
+# THE DEFECT, NAMED. `loop_counts_refuse_if_short` bound
+# under `--loop` alone: `--djb-scope-counts` was assigned at ONE site, inside the
+# `--loop` block, so the full gate's two passes carried no counts directory,
+# there were no files to reconcile, and the refusal was never reached. A full
+# gate that lost a collector therefore banked a green verdict for a suite that
+# had not run — measured on this tree: a worker that exits during collection with
+# xdist's restart budget exhausted leaves pytest able to exit **0** with
+# `no tests ran`, which is the one status this leg reads as "the tree is clean".
+#
+# SO BOTH PASSES CARRY ONE, AND WHICHEVER PASS ENDED THE LEG IS RECONCILED —
+# pass 2 on the ordinary path, pass 1 when pass 1 was the last thing that ran.
+# A shortfall is exit 2 above the bank, above the partition row and above the
+# `--pr` narrowed-run note: nothing that reads as a verdict is written by a run
+# that cannot say how much of the suite collected.
+#
+# EMPTIED BETWEEN THE PASSES, and that is not tidiness: both passes write into
+# one directory under the same worker ids, so pass 1's files would still be
+# there to be counted if pass 2 lost a collector — a shortfall hidden by the
+# leftovers of the pass before it.
+
+# pytest_x2_counts_refuse — reconcile the collector population, or 0 when
+# nothing was asked for. Reads `GATE_X2_COUNTS_DIR` and `GATE_SLOT_WORKERS`.
+#
+# THE SHORTFALL ONLY. The `--loop` reconciliation also COMPARES the files
+# against each other (two collectors that saw different suites have not measured
+# one thing); under the full gate there is no scope to disagree about — every
+# collector collected the whole tree — so the population is the question here and
+# the comparison is not asked. Declared rather than left to be discovered.
+pytest_x2_counts_refuse() {
+    local files n
+    [ -n "${GATE_X2_COUNTS_DIR:-}" ] || return 0
+    files=$(find "$GATE_X2_COUNTS_DIR" -type f 2>/dev/null | sort)
+    n=$(printf '%s\n' "$files" | grep -c . || true)
+    gate_refuse_reset
+    loop_counts_refuse_if_short "$n" "${GATE_SLOT_WORKERS:-0}" "${files%%$'\n'*}" || {
+        gate_cause
+        echo "!! the two pytest passes could not be RECONCILED — see above." >&2
+        echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+        echo "   No verdict row, no partition row: a run that cannot say how much of the" >&2
+        echo "   suite collected has nothing to bank." >&2
+        return 2
+    }
+    return 0
+}
+
+# pytest_x2_passes <flags and paths both passes are pointed at…> — the two
+# invocations and the reconciliation between them and the bank.
+#
+# Exit: 0 both passes green · 1 a pass is red · 2 the collector population was
+# short (could-not-look, which outranks both).
+#
+# A FUNCTION SO A DRIVE CAN CALL IT. A drive may not run a nested
+# `./scripts/check.sh` — the per-checkout lock refuses it — so the only honest
+# way to measure this leg is to invoke its BODY, which is what
+# `scripts/tests/test_loop_scope.sh` does. Reads `GATE_SLOT_WORKERS`,
+# `PYTEST_SEED` and `GATE_X2_COUNTS_DIR`; the heartbeat calls are the leg's
+# ticker and a drive stubs them, as the EXIT-trap case already stubs its
+# neighbours.
+pytest_x2_passes() {
+    local rc=0 pass2_out=""
+    set +e
+    ./scripts/test.sh -n "$GATE_SLOT_WORKERS" --randomly-seed="$PYTEST_SEED" "$@"
+    rc=$?
+    set -e
+    if [ "$rc" != "0" ]; then
+        heartbeat_stop
+        # THE RECONCILIATION FIRST, because a collector that never reported is
+        # could-not-look and outranks a finding: "pass 1 is red" would name a
+        # cause this leg has not proven when the red IS the missing collector.
+        pytest_x2_counts_refuse || return 2
+        # THE SAME MAPPING THE PER-RUNG LEG ALREADY HAS, and it belongs here for
+        # the same reason: 3 (internal error), 4 (usage error) and 5 (nothing
+        # was collected) are all "the suite did not run", and this file has one
+        # word for that — 2, could-not-look, which outranks a pass. It matters
+        # most to a SHARD: a `k/N` that collects zero tests exits 5, and read as
+        # a red it would say the suite fails, while read as a pass it would say
+        # a part nobody ran was green. It is neither; it is a shard that judged
+        # nothing.
+        case "$rc" in
+        3 | 4 | 5)
+            echo "!! PASS 1 DID NOT RUN THE SUITE (pytest exit ${rc})." >&2
+            echo "   3 internal error · 4 usage error · 5 nothing was collected." >&2
+            if [ -n "${GATE_SHARD:-}" ]; then
+                echo "   THIS RUN IS SHARD ${GATE_SHARD}. A shard that collected nothing has judged" >&2
+                echo "   nothing: it is not a green part and it is not a red suite. Check that N is" >&2
+                echo "   not larger than the collection, and that the scope this shard split is the" >&2
+                echo "   one its siblings split." >&2
+            fi
+            echo "   Nothing was judged about this tree, which is neither a finding nor a pass." >&2
+            return 2
+            ;;
+        esac
+        echo "!! pass 1 is red — the suite fails on its own, before idempotency is in question." >&2
+        return 1
+    fi
+    # AND AFTER A GREEN PASS 1 TOO, which is the case the leg would otherwise
+    # pay ten minutes to find out about: pytest exits 0 from a lost collector
+    # (`no tests ran` is not a failure), so "pass 1: green" would be printed
+    # over a suite that did not run and pass 2 would be spent proving it twice.
+    # The criterion asks for the pass that ENDED the leg; reconciling after both
+    # covers that and closes the window earlier.
+    if ! pytest_x2_counts_refuse; then
+        heartbeat_stop
+        return 2
+    fi
+    echo "  pytest pass 1: green (seed $PYTEST_SEED)"
+    # A MEASUREMENT RUN STOPS HERE. `--store-durations` exists to rewrite the
+    # file the split balances by; the second pass proves idempotency, which is a
+    # VERDICT, and this run banks none. Running it would double the wall of the
+    # one operation nobody is waiting on for an answer.
+    if [ -n "${GATE_STORE_DURATIONS:-}" ]; then
+        heartbeat_stop
+        echo "  pass 2 NOT run — --store-durations is a measurement, not a verdict."
+        echo "  scripts/pytest_durations.json has been rewritten from pass 1's timings."
+        return 0
+    fi
+    # AND A ONE-PASS SHARD STOPS HERE, the precedent above being the shape. The
+    # difference is what is being said: `--store-durations` drops pass 2 because
+    # it BANKS NOTHING, and this drops it because the belt runs somewhere else
+    # and is composed into the row — a verdict over one pass, with its proof
+    # named. Pass 1's own status is what the leg exits, through the mapping
+    # above: a red pass 1 has already returned 1, a collector that never
+    # reported has already returned 2, and the counts reconciliation ran before
+    # this line. Refused for anything but a shard at parse time, so there is no
+    # whole-unit run that can reach it.
+    if [ "${GATE_PASSES:-}" = "1" ]; then
+        heartbeat_stop
+        echo "  pytest pass 2 NOT run — --passes 1: the leak proof is the acceptance box's (ADR gate-1)"
+        return 0
+    fi
+    # Pass 1's counts are pass 1's. See EMPTIED BETWEEN THE PASSES above.
+    if [ -n "${GATE_X2_COUNTS_DIR:-}" ]; then
+        find "$GATE_X2_COUNTS_DIR" -type f -exec rm -f {} + 2>/dev/null || true
+    fi
+    # The ticker's subject changes here and nowhere else. Pass 2's output is
+    # captured whole, so this is the ONLY thing that will be printed between now
+    # and the end of the leg — which is the silence this instrument exists for.
+    heartbeat_label "pass 2"
+    # Pass 2's output is CAPTURED to a file and printed whole afterwards, the
+    # same shape the supply-chain leg uses for pip-audit and for the same
+    # reason: the leg has to READ what it is about to make a claim about, and
+    # reading it through a pipe would replace pytest's exit status with the
+    # reader's — the one thing neither script may do. The cost is that pass 2
+    # prints at the end instead of as it goes; the alternative is a leg that
+    # names a cause it never looked at.
+    echo "  pytest pass 2 running (output is captured and printed whole when it ends)..."
+    pass2_out=$(mktemp "${TMPDIR:-/tmp}/djb-pytest-pass2.XXXXXX")
+    set +e
+    ./scripts/test.sh -n "$GATE_SLOT_WORKERS" --randomly-seed="$PYTEST_SEED" "$@" >"$pass2_out" 2>&1
+    rc=$?
+    set -e
+    heartbeat_stop
+    cat "$pass2_out"
+    if ! pytest_x2_counts_refuse; then
+        rm -f "$pass2_out"
+        return 2
+    fi
+    if [ "$rc" != "0" ]; then
+        pytest_x2_verdict "$pass2_out" "$PYTEST_SEED"
+        rm -f "$pass2_out"
+        return 1
+    fi
+    rm -f "$pass2_out"
+    echo "  pytest pass 2: green (seed $PYTEST_SEED)"
+    return 0
+}
+
+# THE SEED CAN BE TYPED IN, AND THE REASON IS THE SHARD. Minted here, every
+# shard of one CI run would collect in a DIFFERENT random order, and
+# `pytest-split`'s partition is over a collection — so the N shards would be
+# splitting N different orderings and their union would be neither the suite nor
+# a partition of it. One seed handed to every runner is what makes the shards
+# add up. `DJB_GATE_PYTEST_SEED` is that knob; it is printed with its provenance
+# on every run, because a seed whose origin is invisible is one nobody can
+# replay.
+#
+# AN UNPARSABLE VALUE IS EXIT 2 AND NEVER A MINTED ONE. Falling back to a fresh
+# seed would give a runner the one thing it must not have: a green shard that
+# split a collection none of its siblings saw.
+# gate_pytest_seed — set PYTEST_SEED and SAY where it came from.
+#
+# A FUNCTION SO A DRIVE CAN CALL IT, the shape `pytest_x2_passes` below already
+# has and for the same reason: the alternative is a drive that re-implements the
+# choice it is checking. It is called PLAINLY and never in a substitution — it
+# assigns a global and prints a line, and a subshell would keep the assignment.
+gate_pytest_seed() {
+    if [ -n "${DJB_GATE_PYTEST_SEED:-}" ]; then
+        case "$DJB_GATE_PYTEST_SEED" in
+        '' | *[!0-9]*)
+            echo "!! DJB_GATE_PYTEST_SEED is set and is not a non-negative integer." >&2
+            echo "   got: ${DJB_GATE_PYTEST_SEED}" >&2
+            echo "   A seed this gate cannot parse is never replaced by a minted one: every" >&2
+            echo "   shard of one run has to split the SAME collection order, and a silent" >&2
+            echo "   fallback is how two shards come to split two different suites." >&2
+            echo "   Nothing was judged." >&2
+            exit 2
+            ;;
+        esac
+        PYTEST_SEED=$DJB_GATE_PYTEST_SEED
+        echo "  seed: ${PYTEST_SEED} (typed: DJB_GATE_PYTEST_SEED)"
+    else
+        PYTEST_SEED=$(((RANDOM << 15) | RANDOM))
+        echo "  seed: ${PYTEST_SEED} (minted)"
+    fi
+}
+gate_pytest_seed
+echo "  ${GATE_PASSES_RUN} --randomly-seed=$PYTEST_SEED (replay a red order with it)"
+# ONE SENTENCE, AND IT COMES FROM WHERE THE NUMBER DOES. This line used to carry
+# its own parenthetical — "this box's cores split N ways" — which is FALSE when
+# DJB_GATE_SLOT_WORKERS is typed (the number is then the knob's) and false again
+# under a bank (which holds every slot and runs every share). Two sentences about
+# one number, one of them wrong, on the line a reader uses to check the number.
+# `gate_slot_worker_count` and `gate_slot_acquire` set the phrase beside the
+# value they decide, so the three cases — derived share, typed knob, bank — each
+# print the one true sentence here.
+echo "  workers:    -n ${GATE_SLOT_WORKERS} (${GATE_SLOT_WORKERS_PHRASE})"
 echo "              NOT -n auto, and the same number on BOTH passes, which is what pins"
 echo "              the worker assignment and keeps this leg's meaning narrow."
 gate_pytest_nominal "$GATE_SLOT_NOMINAL_FULL" GATE_SLOT_NOMINAL_FULL \
@@ -2525,45 +4869,151 @@ gate_pytest_nominal "$GATE_SLOT_NOMINAL_FULL" GATE_SLOT_NOMINAL_FULL \
 # that changes between them is the word.
 heartbeat_start "pass 1" "$GATE_PYTEST_NOMINAL" "$GATE_PYTEST_NOMINAL_PROV"
 
-set +e
-# UNQUOTED ON PURPOSE: `$PARTITION_TARGETS` is a path LIST that has to word-split
-# into pytest arguments, and it is empty when the whole suite runs.
-# shellcheck disable=SC2086
-./scripts/test.sh -n "$GATE_SLOT_WORKERS" --randomly-seed="$PYTEST_SEED" $PARTITION_TARGETS
-TEST_RC=$?
-set -e
-if [ "$TEST_RC" != "0" ]; then
-    echo "!! pass 1 is red — the suite fails on its own, before idempotency is in question." >&2
-    exit 1
+# --- the counts directory BOTH passes write into ------------------------------
+#
+# ONE DIRECTORY, TWO OWNERS, AND NEVER TWO FLAGS. `--pr` already mints one in
+# its preflight and has already appended `--djb-scope-counts=<it>` to the flags
+# both passes carry, so this leg REUSES it rather than passing the option twice
+# and letting the last one win silently. Every other run — a bare full gate, and
+# a `--pr` whose scope narrowed nothing — gets one here, and it rides the EXIT
+# trap the way the `--pr` one does, for the reason written beside that one: a red
+# leg, a refused lease and a SIGTERM all leave by a path no tidy-up line sits on.
+GATE_X2_COUNTS_DIR=""
+GATE_X2_COUNTS_ARG=""
+if [ -n "$GATE_PR_COUNTS_DIR" ]; then
+    GATE_X2_COUNTS_DIR="$GATE_PR_COUNTS_DIR"
+else
+    GATE_FULL_COUNTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/djb-full-counts.XXXXXX")
+    GATE_X2_COUNTS_DIR="$GATE_FULL_COUNTS_DIR"
+    GATE_X2_COUNTS_ARG="--djb-scope-counts=$GATE_FULL_COUNTS_DIR"
 fi
-echo "  pytest pass 1: green (seed $PYTEST_SEED)"
-# The ticker's subject changes here and nowhere else. Pass 2's output is
-# captured whole, so this is the ONLY thing that will be printed between now and
-# the end of the leg — which is the silence this instrument exists for.
-heartbeat_label "pass 2"
 
-# Pass 2's output is CAPTURED to a file and printed whole afterwards, the same
-# shape the supply-chain leg uses for pip-audit and for the same reason: the leg
-# has to READ what it is about to make a claim about, and reading it through a
-# pipe would replace pytest's exit status with the reader's — the one thing
-# neither script may do. The cost is that pass 2 prints at the end instead of as
-# it goes; the alternative is a leg that names a cause it never looked at.
-echo "  pytest pass 2 running (output is captured and printed whole when it ends)..."
-PASS2_OUT=$(mktemp "${TMPDIR:-/tmp}/djb-pytest-pass2.XXXXXX")
+# UNQUOTED ON PURPOSE: `$PARTITION_TARGETS` is a path LIST that has to word-split
+# into pytest arguments, and it is empty when the whole suite runs. The counts
+# flag joins it in the same string and for the same reason — no flag or path in
+# it can contain a space, which is what makes the string form honest here (the
+# `--pr` preflight's own note, one door over).
+# --- THE SPLIT, WHEN THIS RUNNER IS HOLDING ONE PART OF THE COLLECTION -------
+#
+# `1/1` IS THE WHOLE UNIT AND CARRIES NO FLAGS AT ALL. That is not an
+# optimisation: it is what makes `--shard 1/1` mean the same thing as no shard,
+# on a checkout that has not installed the plugin, which is the declared exit
+# from `pytest-split` (one dependency line and one file).
+#
+# A STALE OR ABSENT DURATIONS FILE ONLY UNBALANCES. The plugin's partition is
+# over the collected node ids; the durations are what it balances the groups BY.
+# A file naming tests that no longer exist, or no file at all, changes how big
+# the groups are and never which tests are in one — every collected test is in
+# exactly one group either way. The leg says which of the two it is on every
+# run, so a reader never has to infer it from a wall time.
+#
+# A FUNCTION, FOR `gate_pytest_seed`'s REASON: the flags a shard carries are
+# what the shard census has to be handed, and a drive that assembled its own
+# would be checking its own arithmetic.
+#
+# THE DURATIONS PATH IS BOUND TO PYTEST'S ROOTDIR, AND A PATH OUTSIDE IT IS
+# REFUSED. Measured, and it is worse than a stale file: handed an ABSOLUTE path
+# outside the checkout, `pytest-split` does not warn and does not fail — the
+# partition COLLAPSES, and a three-way split of 3,822 items came back as 3, 3
+# and 1. A shard that judged three tests and exited 0 is a green nobody can read
+# as anything but a pass, which is the worst shape a selection defect can take.
+# So the path is resolved against the rootdir (this checkout) and anything that
+# escapes it is exit 2 NAMING BOTH — never a smaller run, and never a run whose
+# groups are a rounding error.
+#
+# `DJB_GATE_DURATIONS_PATH` EXISTS SO THE REFUSAL CAN BE DRIVEN, and it is the
+# only way to move the file: a caller that wants another one types it, and types
+# it inside the tree.
+gate_durations_path() {
+    local want root real
+    want=${DJB_GATE_DURATIONS_PATH:-scripts/pytest_durations.json}
+    root=$(pwd -P)
+    case "$want" in
+    /*) real=$want ;;
+    *) real="${root}/${want}" ;;
+    esac
+    # NO `realpath`/`readlink -f`: neither is portable to both mktemps' platforms
+    # (the portability census in this file exists for exactly that class), and
+    # the question here is textual — does the resolved path start at the rootdir.
+    #
+    # A `..` SEGMENT IS REFUSED BEFORE THE PREFIX TEST, because the prefix test
+    # alone cannot see one: `<root>/../zzz.json` starts with `<root>/` and is
+    # outside the tree. Refusing the segment is stricter than normalising it and
+    # needs no normaliser — no legitimate durations path has one.
+    case "/${real}/" in
+    */../*)
+        echo "!! --durations-path '${want}' contains a '..' segment." >&2
+        echo "   rootdir:  ${root}" >&2
+        echo "   resolved: ${real}" >&2
+        echo "   A path that climbs out of the rootdir is refused whether or not it" >&2
+        echo "   lands back inside it: see the collapse below. Nothing was judged." >&2
+        return 2
+        ;;
+    esac
+    case "$real" in
+    "${root}"/*) ;;
+    *)
+        echo "!! --durations-path '${want}' resolves OUTSIDE pytest's rootdir." >&2
+        echo "   rootdir:  ${root}" >&2
+        echo "   resolved: ${real}" >&2
+        echo "   pytest-split reads that file and then SILENTLY COLLAPSES the partition:" >&2
+        echo "   measured, a 3-way split of 3822 items came back as 3, 3 and 1 items, with" >&2
+        echo "   no warning and exit 0. A shard that judged three tests is not a smaller" >&2
+        echo "   run, it is a green that means nothing. Nothing was judged." >&2
+        return 2
+        ;;
+    esac
+    printf '%s\n' "$want"
+    return 0
+}
+
+GATE_SPLIT_ARGS=""
+gate_pytest_split_args() {
+    local durations
+    GATE_SPLIT_ARGS=""
+    if [ -n "$GATE_SHARD" ] || [ -n "$GATE_STORE_DURATIONS" ]; then
+        durations=$(gate_durations_path) || exit 2
+    fi
+    if [ -n "$GATE_SHARD" ]; then
+        if [ "$GATE_SHARD_N" = "1" ]; then
+            echo "  shard 1/1: the WHOLE unit — no split flags, and therefore no plugin needed."
+        else
+            if [ -f "$durations" ]; then
+                echo "  durations: ${durations} — regenerate with"
+                echo "             ./scripts/check.sh --leg pytest-x2 --store-durations"
+            else
+                echo "  durations: none — unbalanced split (the groups are chunked by count;"
+                echo "             every collected test is still in exactly one of them)"
+            fi
+            GATE_SPLIT_ARGS="--splits ${GATE_SHARD_N} --group ${GATE_SHARD_K} --durations-path ${durations}"
+            echo "  shard ${GATE_SHARD_K}/${GATE_SHARD_N}: ${GATE_PASSES_CARRY} ${GATE_SPLIT_ARGS}"
+        fi
+        # BESIDE THE SHARD LINE, because the pass count is a fact about the
+        # same run and a reader of this transcript should not have to reach
+        # the end of the leg to learn how many passes it was going to get.
+        if [ "${GATE_PASSES:-}" = "1" ]; then
+            echo "  passes 1: pass 2 is NOT run here — the leak proof is the acceptance box's (ADR gate-1)"
+        fi
+    elif [ -n "$GATE_STORE_DURATIONS" ]; then
+        GATE_SPLIT_ARGS="--store-durations --durations-path ${durations}"
+        echo "  --store-durations: this run REWRITES ${durations}. It is a"
+        echo "  MEASUREMENT and not a verdict — pass 2 is not run and nothing is banked."
+    fi
+}
+gate_pytest_split_args
+# UNQUOTED FOR THE SAME REASON THE TARGETS ARE, and the same guarantee holds: no
+# flag or path in this string can contain a space.
+X2_PASS_ARGS="${PARTITION_TARGETS}${GATE_SPLIT_ARGS:+ ${GATE_SPLIT_ARGS}}${GATE_X2_COUNTS_ARG:+ ${GATE_X2_COUNTS_ARG}}"
 set +e
 # shellcheck disable=SC2086
-./scripts/test.sh -n "$GATE_SLOT_WORKERS" --randomly-seed="$PYTEST_SEED" $PARTITION_TARGETS >"$PASS2_OUT" 2>&1
+pytest_x2_passes $X2_PASS_ARGS
 TEST_RC=$?
 set -e
-heartbeat_stop
-cat "$PASS2_OUT"
-if [ "$TEST_RC" != "0" ]; then
-    pytest_x2_verdict "$PASS2_OUT" "$PYTEST_SEED"
-    rm -f "$PASS2_OUT"
-    exit 1
-fi
-rm -f "$PASS2_OUT"
-echo "  pytest pass 2: green (seed $PYTEST_SEED)"
+case "$TEST_RC" in
+0) ;;
+2) exit 2 ;;
+*) exit 1 ;;
+esac
 # THE SLOT GOES BACK THE MOMENT THE SUITE IS DONE, not at the end of the gate.
 # Everything after this line — the census, the self-test, the shell drives, the
 # house rules — starts no suite, and a builder waiting for a slot must not be
@@ -2597,6 +5047,11 @@ if [ -n "$GATE_PR" ]; then
     # far, and every run that does not — a red leg, a refused lease, a
     # SIGTERM — left the directory behind. The EXIT trap owns it now, and one
     # owner is the whole point.
+elif [ -n "$GATE_SHARD" ]; then
+    echo "  shard ${GATE_SHARD} banks nothing: a part of the collection has nothing to say"
+    echo "  about the whole — not here, and not in the verdict ledger at the end."
+elif [ -n "$GATE_STORE_DURATIONS" ]; then
+    echo "  --store-durations banks nothing: one pass ran, and it ran to be timed."
 elif [ "$PARTITION_MODE" != "skip" ]; then
     if [ "$PARTITION_BANKABLE" = "True" ]; then
         uv run python -m quality.partition bank --key "$PARTITION_KEY" || {
@@ -2607,9 +5062,12 @@ elif [ "$PARTITION_MODE" != "skip" ]; then
         echo "  partition verdict NOT banked: the environment is bent (reason above)."
     fi
 fi
+}
+gate_run_body pytest-x2 gate_leg_pytest_x2
 
 # --- the second half of the temporal-census leg ------------------------------
 leg temporal-census "temporal test-server census, AFTER the suite — the property is a DIFFERENCE: an orphan that was not on this machine in any state before the suite ran"
+gate_leg_temporal_census_post() {
 temporal_census post-suite
 TEMPORAL_NEW=""
 for pid in $TEMPORAL_ORPHANS; do
@@ -2630,6 +5088,8 @@ if [ -n "$TEMPORAL_NEW" ]; then
     exit 1
 fi
 echo "  no new orphan: this suite left no test server behind"
+}
+gate_run_body temporal-census gate_leg_temporal_census_post
 
 # --- the own-tree machinery census -------------------------
 #
@@ -2679,6 +5139,7 @@ echo "  no new orphan: this suite left no test server behind"
 # Schedule for this queue is correct, and a leg that asserted zero regardless
 # would be refusing a legitimate production configuration.
 leg own-tree-census "checkout-machinery census, AFTER the suite — every instance THIS CHECKOUT created belongs to a declared class (exit 2 names an undeclared shape), and in process lifetime this queue owns no durable Schedule (exit 1: this tree leaked). Machine-wide is NOT in scope — see the leg"
+gate_leg_own_tree_census() {
 
 OWN_CENSUS=$(mktemp "${TMPDIR:-/tmp}/djb-own-census.XXXXXX")
 set +e
@@ -2853,16 +5314,601 @@ else
         echo "  process lifetime: this queue strands no open execution"
     fi
 fi
+}
+gate_run_body own-tree-census gate_leg_own_tree_census
 
 leg selftest "house-rules self-test (every canary planted through the real scope must fire; every negative must stay silent) + every shell refusal drive under scripts/tests/"
-set +e
-uv run python -m quality.gate --selftest
-SELF_RC=$?
-set -e
-if [ "$SELF_RC" != "0" ]; then
-    echo "!! ENFORCEMENT ITSELF IS BROKEN — a dead canary outranks any pass." >&2
-    exit 2
-fi
+gate_leg_selftest() {
+
+# >>> selftest-leg >>>
+# THE LEG IS A FUNCTION, AND IT RUNS EVERY DRIVE BEFORE IT DECIDES.
+#
+# What it replaced, and what that cost. Until now this leg was inline code and
+# every drive block ended in its own `exit`: the FIRST red drive ended the leg
+# and every drive after it never ran. A builder paying a 25-minute full gate
+# learned exactly one red per run, and the selftest-only classes surface one per
+# bank — five banks were spent that way, and a hand-run of all the drives found
+# the whole red list at once, which is the measurement that opened the row.
+#
+# THE COMPOSITION, which is the whole of the change:
+#
+#   * the engine's own `--selftest` runs first and NO LONGER STOPS THE DRIVES.
+#     A dead canary is still 2 and still outranks every pass — it is recorded as
+#     could-not-look and the drives run anyway, because a gate that costs 25
+#     minutes should print its whole red list once.
+#   * every drive runs, in registered order, and NOTHING between them ends the
+#     leg. Each prints `drive <name>: exit <rc> (<n>s)`.
+#   * the exit composes at the END: 2 if the engine's selftest or ANY drive was
+#     2 (a driver that could not look has cleared nothing), else 1 naming every
+#     red drive on one line, else 0.
+#
+# EVERY DRIVE BLOCK IS BYTE-IDENTICAL TO THE ONE IT REPLACED, and that is
+# deliberate rather than tidy. Each block keeps its own `set +e`, its own
+# literal invocation line, its own `_RC=$?`, its own bespoke red sentences and
+# its own `exit 2` / `exit "$_RC"`. What changed is where that `exit` LANDS: the
+# block now runs inside a subshell the leg opens around it, so the block's exit
+# ends the BLOCK and the leg reads it as a status rather than dying of it. The
+# leg reads each drive's exit semantics; it never rewrites them.
+#
+# THE SUBSHELL IS OUTSIDE THE `# >>> drive: <name> >>>` FENCE on purpose.
+# `scripts/tests/test_drive_preamble.sh::case_a_registered_drive_that_cannot_look_is_exit_2_not_a_pass`
+# extracts a registration block by those sentinels and runs it STANDALONE,
+# requiring 2 to stay 2, 1 to stay 1 and 0 to let the leg carry on. A block with
+# the parenthesis inside its own fence would run standalone as a subshell and
+# swallow its own refusal, so that census would be measuring a shape nothing
+# ships. The fence contains the drive; the leg contains the fence.
+#
+# THE DRIVE. `scripts/tests/test_selftest_leg.sh` extracts the text between
+# these sentinels into a scratch directory and sources it there, the way
+# `test_setup_env.sh` drives `setup.sh`'s env-sync step. It hands the function a
+# SCRATCH drive set through `DJB_SELFTEST_DRIVES_DIR` — read only when set, and
+# never on a gate — because driving this leg with the real drive set as the
+# victim would be a gate inside a gate (rung-execution §2: a drive invokes the
+# leg BODY, never the gate around it).
+#
+# THE PRICE, said out loud: a red drive that corrupts shared state can now
+# redden drives after it that were green alone, so the composed list may name
+# secondaries. The summary says so, and the first name is the one to read first.
+# The leg's WALL also grows to the whole set on every red — that is what the
+# whole list costs, and it is the trade that was asked for.
+
+selftest_tally_reset() {
+    SELFTEST_GREEN=0
+    SELFTEST_RED=0
+    SELFTEST_CANNOT=0
+    SELFTEST_RED_NAMES=""
+    SELFTEST_CANNOT_NAMES=""
+    SELFTEST_MEMBER=""
+    SELFTEST_MEMBER_T0=0
+    SELFTEST_BLOCK_RC=0
+    SELFTEST_MEMBER_KEY=""
+    SELFTEST_MEMBER_PARTS=""
+    SELFTEST_DRIVE_TREE=""
+    SELFTEST_DRIVE_LISTING=""
+    SELFTEST_VALVE_SAID=0
+}
+
+# --- A DRIVE'S VERDICT, CONSULTED BEFORE THE DRIVE RUNS -----------------------
+#
+# The key, the row and the floor are `scripts/gate_ledger.sh`'s; this is the
+# wiring. A banked drive is not re-driven, a drive whose key cannot be DECIDED is
+# could-not-look and never a silent pass either way, and only a green banks.
+#
+# THE ENGINE IS INSIDE IT NOW, and it is keyed from OUTSIDE itself exactly as a
+# shell drive is. `house-rules-engine` is not a file under `scripts/tests/`, so
+# it has no drive file to digest and no `# drives:` line to read — it has
+# something better, which is an engine that can print its own read set:
+# `python -m quality.gate --selftest-inputs` lists every path on this tree
+# whose bytes can change the engine's verdict. `selftest_engine_drive_file`
+# below turns that listing into a drive file the ONE key function already
+# understands, so the engine's verdict is banked, consulted and refused by the
+# same `drive_key`, the same row and the same attributor as every other member.
+# The self-test itself stays UNCACHED inside the engine — the per-rule memo
+# bypasses it on purpose — so what is keyed here is the WHOLE member, from
+# outside, exactly the way a shell drive is keyed.
+
+# selftest_drive_file <name> — where the drive the leg is about to run lives.
+# The scratch branch's set is under `DJB_SELFTEST_DRIVES_DIR`, so this is the one
+# derivation both branches share.
+selftest_drive_file() {
+    printf '%s/test_%s.sh\n' "${DJB_SELFTEST_DRIVES_DIR:-scripts/tests}" "$1"
+}
+
+# ONE `git ls-tree` PER LEG, not one per declared path per drive. The tree is
+# `MEASURED_START` where the gate has one — the same bytes the full verdict is
+# keyed on — and is measured here when the body is being driven standalone.
+selftest_drive_listing() {
+    [ -z "$SELFTEST_DRIVE_LISTING" ] || return 0
+    SELFTEST_DRIVE_TREE="${MEASURED_START:-}"
+    if [ -z "$SELFTEST_DRIVE_TREE" ]; then
+        SELFTEST_DRIVE_TREE=$(gate_measured_tree) || SELFTEST_DRIVE_TREE=""
+    fi
+    [ -n "$SELFTEST_DRIVE_TREE" ] || return 1
+    SELFTEST_DRIVE_LISTING=$(mktemp "${TMPDIR:-/tmp}/djb-drive-listing.XXXXXX") || return 1
+    git ls-tree -r "$SELFTEST_DRIVE_TREE" >"$SELFTEST_DRIVE_LISTING" 2>/dev/null || return 1
+    [ -s "$SELFTEST_DRIVE_LISTING" ] || return 1
+    # FILLED HERE, IN THE LEG'S OWN SHELL, so the exported memo is inherited by
+    # every `$(drive_key …)` subshell below. Called inside one it would be four
+    # process starts per drive for an answer that cannot change inside a leg.
+    #
+    # AND IT CAN NOW FAIL FOR A REASON THAT IS NOT THE TREE. The machine half is
+    # `/etc/djb/image-id` on a verifier box, and a machine that HAS that file
+    # and will not show it is undecided — exit 1 here, could-not-look at the
+    # caller. The caller's sentence used to be "the measured tree could not be
+    # read" whatever failed, which on a box is a false statement about the one
+    # machine nobody can open afterwards, so the reason travels with the status.
+    drive_machine_digest >/dev/null || {
+        SELFTEST_DRIVE_CANNOT="this machine could not be digested"
+        return 1
+    }
+    return 0
+}
+
+selftest_member_cannot() {
+    SELFTEST_CANNOT=$((SELFTEST_CANNOT + 1))
+    SELFTEST_CANNOT_NAMES="${SELFTEST_CANNOT_NAMES} $1"
+}
+
+# --- THE ENGINE'S OWN DRIVE FILE, SYNTHESIZED FROM WHAT THE ENGINE READS ------
+#
+# WHERE IT LIVES, and why not beside the drives. It is derived state, rewritten
+# on every consult, and it must never enter the working tree: an untracked file
+# in the checkout moves the very tree the verdict is keyed on (and an untracked
+# executable reds the instrument census by design). So it sits in this
+# CHECKOUT's own git dir — `--absolute-git-dir`, per worktree rather than per
+# family, because two worktrees of one repository share `--git-common-dir` and
+# would then share one scratch file. The drive that drives this leg redirects it
+# with the redirect it already sets: a SUBDIRECTORY of `DJB_SELFTEST_DRIVES_DIR`,
+# which the scratch branch's `test_*.sh` glob does not reach, so the drive never
+# writes into the real `.git`.
+selftest_engine_dir() {
+    local d
+    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
+        printf '%s/engine\n' "$DJB_SELFTEST_DRIVES_DIR"
+        return 0
+    fi
+    d=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
+    [ -n "$d" ] || return 1
+    printf '%s/djb-engine-inputs\n' "$d"
+}
+
+# THE DECLARATION IS THE EXACT COVER OF THE LISTING, never a wider one. The
+# engine reads 1,100-odd paths on this tree, and `# drives:` naming every one of
+# them would be a 44 KB marker, a `parts=` field five times the whole ledger and
+# a key that costs 47 s to compute on a laptop — measured, not feared. So a
+# directory whose ENTIRE content in the measured tree is an input is declared as
+# the directory (`quality/` is population 1 of `--selftest-inputs` by
+# construction, so it always collapses), and every other input is declared by
+# name. The cover is EXACT in both directions: a declared directory expands to
+# nothing but inputs, and every input is under exactly one declaration —
+# `test_selftest_leg.sh::case_the_engines_declaration_covers_exactly_its_inputs`
+# asserts that equality rather than trusting this paragraph.
+#
+# WHY EXACT AND NOT MERELY A SUPERSET. `drive_key`'s header says a superset is
+# the safe direction for a drive, and it is — but not here: keying the engine on
+# `apps/**` re-keys it on every apps rung, which is the cost this whole member
+# exists to remove, and it is the shape the criteria rejected by name.
+selftest_engine_cover() {
+    awk '
+    FNR == NR {
+        tab = index($0, "\t")
+        if (tab == 0) next
+        p = substr($0, tab + 1)
+        tree[p] = 1
+        n = split(p, a, "/"); acc = ""
+        for (i = 1; i < n; i++) { acc = (i == 1 ? a[1] : acc "/" a[i]); tot[acc]++ }
+        next
+    }
+    {
+        # A PATH THE MEASURED TREE DOES NOT HOLD IS NOT DROPPED SILENTLY — it is
+        # not there to be digested. `plant_paths()` names files the canaries
+        # CREATE (`apps/accounts/consumers.py` is one) and the probe app is a
+        # directory the engine makes and removes; both are in the listing and in
+        # no tree. The day one of them becomes a real file it enters the tree,
+        # enters this cover and re-keys, which is the behaviour wanted.
+        if (!($0 in tree)) next
+        if (seen[$0]++) next
+        inp[++m] = $0
+        n = split($0, a, "/"); acc = ""
+        for (i = 1; i < n; i++) { acc = (i == 1 ? a[1] : acc "/" a[i]); got[acc]++ }
+    }
+    END {
+        for (d in tot) if (tot[d] == got[d]) full[d] = 1
+        for (d in full) { q = d; if (sub(/\/[^\/]*$/, "", q) == 0 || !(q in full)) print d "/" }
+        for (i = 1; i <= m; i++) {
+            p = inp[i]; n = split(p, a, "/"); acc = ""; cov = 0
+            for (j = 1; j < n; j++) { acc = (j == 1 ? a[1] : acc "/" a[j]); if (acc in full) { cov = 1; break } }
+            if (!cov) print p
+        }
+    }
+    ' "$1" "$2" | LC_ALL=C sort -u
+}
+
+# selftest_engine_drive_file <listing> — `ok <path>` on stdout, or `err <reason>`;
+# exit 0 or 1. `drive_key`'s own grammar, for `selftest_drive_consult`'s reason:
+# the caller reads it through `$(...)`.
+#
+# EVERY FAILURE HERE IS COULD-NOT-LOOK AND NEVER A SILENT RUN. `--selftest-inputs`
+# is exit 2 on any derivation it could not make (a scope expanding to nothing, a
+# plant placeholder it could not resolve) and prints NO paths rather than fewer:
+# a key over a list that quietly lost a member is a verdict for a tree nobody
+# measured. So this returns the engine's own refusal text and the consult counts
+# the member could-not-look — the engine does not run, and 2 outranks every pass.
+selftest_engine_drive_file() {
+    local listing=$1 dir inputs rc=0 decls file preamble digest
+    dir=$(selftest_engine_dir) || {
+        printf 'err this checkout has no git dir to write the engine drive file into\n'
+        return 1
+    }
+    # NOTHING IS REMOVED HERE, and that is deliberate rather than untidy: every
+    # file this function writes is written with `>`, so a stale one cannot
+    # survive into a key, and an `rm -rf` over a path a caller's environment
+    # helped compute is a blast radius this leg has no reason to own.
+    mkdir -p "$dir" 2>/dev/null || {
+        printf 'err %s could not be created\n' "$dir"
+        return 1
+    }
+    inputs="${dir}/inputs.txt"
+    uv run python -m quality.gate --selftest-inputs >"$inputs" 2>"${dir}/inputs.err" || rc=$?
+    if [ "$rc" != "0" ]; then
+        printf 'err `--selftest-inputs` exited %s — %s\n' "$rc" \
+            "$(awk '/!!/ { sub(/^[[:space:]]*!![[:space:]]*/, ""); print; exit }' \
+                "$inputs" "${dir}/inputs.err" 2>/dev/null)"
+        return 1
+    fi
+    if [ ! -s "$inputs" ]; then
+        printf 'err `--selftest-inputs` exited 0 and printed no path — an engine that reads nothing is not an engine\n'
+        return 1
+    fi
+    decls="${dir}/declared.txt"
+    selftest_engine_cover "$listing" "$inputs" >"$decls" || true
+    if [ ! -s "$decls" ]; then
+        printf 'err none of the %s path(s) --selftest-inputs printed is in the measured tree\n' \
+            "$(awk 'END { print NR + 0 }' "$inputs")"
+        return 1
+    fi
+    # THE RAW LISTING'S OWN DIGEST IS IN THE FILE, and it is not the same thing
+    # as the blobs. The cover holds the paths the tree HAS; the list itself can
+    # move without any of them moving — a plant target added, a scope narrowed
+    # to a file that is not here yet — and a key that could not see that would
+    # be reusing a verdict for a derivation nobody ran. The digest spells no
+    # path, so the floor has nothing new to cover.
+    digest=$(sha256_of "$inputs") || {
+        printf 'err the derived input listing could not be digested\n'
+        return 1
+    }
+    file="${dir}/test_house-rules-engine.sh"
+    preamble="${dir}/drive_preamble.sh"
+    {
+        printf '# drives: %s\n' "$(tr '\n' ' ' <"$decls")"
+        printf '# the house-rules engine, keyed from outside itself. Derived, never edited.\n'
+        printf '# inputs-digest %s\n' "$digest"
+    } >"$file" || {
+        printf 'err %s could not be written\n' "$file"
+        return 1
+    }
+    printf '# the engine drive file has no preamble to source — it is keyed, never run.\n' \
+        >"$preamble" || {
+        printf 'err %s could not be written\n' "$preamble"
+        return 1
+    }
+    printf 'ok %s\n' "$file"
+}
+
+# selftest_drive_consult <name> — 0 RUN THE DRIVE, 1 do not. A 1 has already
+# said why and has already counted the member, in exactly one of two ways:
+# REUSED (green) or could-not-key (could-not-look).
+selftest_drive_consult() {
+    local name=$1 file keyout row oldparts moved synth
+    SELFTEST_MEMBER_KEY=""
+    SELFTEST_MEMBER_PARTS=""
+    SELFTEST_MEMBER_MACHINE=""
+    if [ "$name" = "house-rules-engine" ]; then
+        # THE ENGINE IS KEYED BEFORE THE TREE IS READ FOR ANYTHING ELSE, and it
+        # is the one member whose drive file does not exist until this line
+        # writes it. Everything after the `if` is the same code every drive runs.
+        SELFTEST_DRIVE_CANNOT=""
+        if ! selftest_drive_listing; then
+            echo "  drive ${name}: could not key — ${SELFTEST_DRIVE_CANNOT:-the measured tree could not be read}"
+            selftest_member_cannot "$name"
+            return 1
+        fi
+        synth=$(selftest_engine_drive_file "$SELFTEST_DRIVE_LISTING") || true
+        case "$synth" in
+        "ok "*) file=${synth#ok } ;;
+        *)
+            echo "  drive ${name}: could not key — ${synth#err }"
+            selftest_member_cannot "$name"
+            return 1
+            ;;
+        esac
+    else
+        file=$(selftest_drive_file "$name")
+        [ -f "$file" ] || return 0
+        SELFTEST_DRIVE_CANNOT=""
+        if ! selftest_drive_listing; then
+            echo "  drive ${name}: could not key — ${SELFTEST_DRIVE_CANNOT:-the measured tree could not be read}"
+            selftest_member_cannot "$name"
+            return 1
+        fi
+    fi
+    keyout=$(drive_key "$file" "$SELFTEST_DRIVE_TREE" "$SELFTEST_DRIVE_LISTING") || true
+    case "$keyout" in
+    "ok ${DRIVE_KEY_SCHEMA}:"*)
+        SELFTEST_MEMBER_KEY=$(printf '%s\n' "$keyout" | awk '{print $2}')
+        SELFTEST_MEMBER_PARTS=$(printf '%s\n' "$keyout" | awk '{print $3}')
+        # THE CITATION VALVE, COUNTED AND PRINTED. A `# cites:` line tells the
+        # floor a spelled path is a CITATION rather than a subject, and a
+        # cited path is in no key — so a drive that cited its way out of a file
+        # it really reads would be reused over that file's changed bytes. The
+        # count is printed beside the drive for the reason every valve here is
+        # printed: an allow-list nobody sees is an off switch.
+        SELFTEST_MEMBER_CITES=$(printf '%s\n' "$keyout" | awk '{print $4}')
+        # WHICH MACHINE THIS ROW BELONGS TO, printed rather than inferred. The
+        # machine half of a drive key is the IMAGE on a verifier box and
+        # bash/git/uname anywhere else, so a row can now TRAVEL between two
+        # boxes of one image and can still never cross between a box and this
+        # laptop. `machine=image:<ami>` beside a REUSED is how a reader tells
+        # the two apart without opening the ledger — and on a miss it is how
+        # "the machine moved" is read at all.
+        SELFTEST_MEMBER_MACHINE=$(printf '%s\n' "$keyout" | awk '{sub(/^machine=/, "", $5); print $5}')
+        case "${SELFTEST_MEMBER_CITES:-cites=0}" in
+        cites=0) ;;
+        cites=*)
+            echo "  drive ${name}: ${SELFTEST_MEMBER_CITES#cites=} path(s) CITED, in no key (# cites:) — a citation is not a subject"
+            ;;
+        esac
+        ;;
+    *)
+        echo "  drive ${name}: could not key — ${keyout#err }"
+        selftest_member_cannot "$name"
+        return 1
+        ;;
+    esac
+    if [ -n "${DJB_SELFTEST_NO_REUSE:-}" ]; then
+        if [ "$SELFTEST_VALVE_SAID" = "0" ]; then
+            echo "  == drive verdicts NOT consulted: DJB_SELFTEST_NO_REUSE is set =="
+            echo "     every drive runs and every green still banks — a drive row is keyed"
+            echo "     on its INPUTS, so a forced green is newer evidence for the same key."
+            SELFTEST_VALVE_SAID=1
+        fi
+        return 0
+    fi
+    row=$(drive_ledger_lookup "$SELFTEST_MEMBER_KEY") || row=""
+    if [ -n "$row" ]; then
+        echo "  drive ${name}: REUSED from ${SELFTEST_MEMBER_KEY} (banked $(printf '%s\n' "$row" | awk '{print $4}')) machine=${SELFTEST_MEMBER_MACHINE:-unstated}"
+        SELFTEST_GREEN=$((SELFTEST_GREEN + 1))
+        return 1
+    fi
+    # THE MISS, ATTRIBUTED. A banked row for this drive at ANOTHER key carries
+    # the per-component digests this run just recomputed, so the line can name
+    # the input that moved instead of reporting only that something did.
+    row=$(drive_ledger_last_for "$name") || row=""
+    if [ -n "$row" ]; then
+        oldparts=$(drive_row_parts "$row")
+        if [ -n "$oldparts" ]; then
+            moved=$(drive_moved_component "$oldparts" "$SELFTEST_MEMBER_PARTS")
+            if [ -n "$moved" ]; then
+                echo "  miss: ${moved} moved since $(printf '%s\n' "$row" | awk '{print $2}') machine=${SELFTEST_MEMBER_MACHINE:-unstated}"
+            fi
+        fi
+    fi
+    return 0
+}
+
+# Called immediately before a member runs; `_end` is called with its status and
+# prints the one line per member this leg promises. The pair exists rather than
+# one wrapper function so that every drive's own block stays untouched between
+# them.
+# --- THE SHARD, AND THE ORDER IT WALKS --------------------------------------
+#
+# ONE REGISTERED ORDER, DERIVED FROM THE FILE AND NOT TYPED ANYWHERE. The drives
+# in this leg are a straight-line sequence of named blocks — deliberately, and
+# `scripts/tests/test_selftest_leg.sh` asserts it is not a loop over a directory
+# glob, because the set a census pins must be readable out of this file. The
+# ORDER is therefore already written down: it is the order of the column-zero
+# `./scripts/tests/test_<name>.sh` invocation lines, the same lines
+# `scripts/tests/test_drive_preamble.sh` censuses against the directory.
+# `selftest_registered_drives` reads exactly those, so the walk and the census
+# cannot come apart: there is no second list.
+#
+# THE SPLIT IS BY INDEX, MOD K. Drive i (0-based, in that order) runs when
+# `i % K == k`. `house-rules-engine` is not a drive under `scripts/tests/` and
+# has no index; it runs in shard 0, which is stated rather than discovered — a
+# canary self-test run once per shard would be K times the same twenty seconds.
+#
+# UNSHARDED IS THE DEFAULT AND COSTS NOTHING: with no k/K the gate below returns
+# immediately and this leg runs exactly what it always ran, in exactly the order
+# it ran it.
+SELFTEST_SHARD_K=""
+SELFTEST_SHARD_N=""
+SELFTEST_DRIVE_INDEX=0
+
+# selftest_shard_takes <member> — 0 to run it, 1 to skip. It INCREMENTS the drive
+# index, so it is called exactly once per member and only from member_begin.
+selftest_shard_takes() {
+    [ -n "$SELFTEST_SHARD_N" ] || return 0
+    if [ "$1" = "house-rules-engine" ]; then
+        [ "$SELFTEST_SHARD_K" = "0" ]
+        return $?
+    fi
+    local i=$SELFTEST_DRIVE_INDEX
+    SELFTEST_DRIVE_INDEX=$((SELFTEST_DRIVE_INDEX + 1))
+    [ "$((i % SELFTEST_SHARD_N))" = "$SELFTEST_SHARD_K" ]
+}
+
+selftest_member_begin() {
+    if ! selftest_shard_takes "$1"; then
+        # PRINTED, NEVER SILENT: a shard that said nothing about what it did not
+        # run is a shard nobody can add up.
+        echo "  drive $1: not in shard ${SELFTEST_SHARD_K}/${SELFTEST_SHARD_N}"
+        return 1
+    fi
+    SELFTEST_MEMBER="$1"
+    SELFTEST_MEMBER_T0=$(date +%s)
+    # THE CONSULT SITS AFTER THE SHARD AND BEFORE THE CLOCK IS READ AGAIN, so a
+    # reused member still ADVANCES THE DRIVE INDEX exactly as a driven one does
+    # — the split is by index over the registered order and a reuse must not
+    # renumber it.
+    selftest_drive_consult "$1" || return 1
+    return 0
+}
+
+selftest_member_end() {
+    _SELFTEST_RC="$1"
+    _SELFTEST_OUTRANK="${2:-}"
+    _SELFTEST_TOOK=$(($(date +%s) - SELFTEST_MEMBER_T0))
+    echo "  drive ${SELFTEST_MEMBER}: exit ${_SELFTEST_RC} (${_SELFTEST_TOOK}s)"
+    # THE SECONDS GO WHERE EVERY OTHER MEMBER'S SECONDS GO. A drive is a member
+    # of the gate exactly as a leg is, and the `--loop` always-on set is derived
+    # from one file covering both — see the `member-durations` fence. A REUSED
+    # member never reaches this line, which is right: its wall was somebody
+    # else's measurement and recording it would say this run timed it.
+    gate_member_record "$SELFTEST_MEMBER" "$_SELFTEST_TOOK"
+    # ONLY A GREEN BANKS, and only a member whose key this leg could decide. A
+    # red or a could-not-look has cleared nothing, so a row for it would be a
+    # verdict vouching for bytes nobody drove — the one failure mode of a cache
+    # that looks exactly like speed. `DJB_GATE_LEGS_DRY` banks nothing either:
+    # under it no body ran at all.
+    # `outrank` IS NOT PART OF THIS TEST, and was only ever in it because the one
+    # member that passes it — the engine — had no key to bank against. It says
+    # what a NON-ZERO status means for that member (could-not-look, never a red),
+    # and a zero is a green whoever earned it: a green engine banks exactly as a
+    # green drive does, which is the whole of the engine's banked verdict.
+    if [ "$_SELFTEST_RC" = "0" ] &&
+        [ -n "${SELFTEST_MEMBER_KEY:-}" ] && [ -z "${DJB_GATE_LEGS_DRY:-}" ]; then
+        drive_ledger_record "$SELFTEST_MEMBER_KEY" "$SELFTEST_MEMBER" \
+            "$_SELFTEST_TOOK" "$SELFTEST_DRIVE_TREE" "$SELFTEST_MEMBER_PARTS" || true
+    fi
+    SELFTEST_MEMBER_KEY=""
+    SELFTEST_MEMBER_PARTS=""
+    if [ "$_SELFTEST_RC" = "0" ]; then
+        SELFTEST_GREEN=$((SELFTEST_GREEN + 1))
+    elif [ "$_SELFTEST_RC" = "2" ] || [ -n "$_SELFTEST_OUTRANK" ]; then
+        SELFTEST_CANNOT=$((SELFTEST_CANNOT + 1))
+        SELFTEST_CANNOT_NAMES="${SELFTEST_CANNOT_NAMES} ${SELFTEST_MEMBER}"
+    else
+        SELFTEST_RED=$((SELFTEST_RED + 1))
+        SELFTEST_RED_NAMES="${SELFTEST_RED_NAMES} ${SELFTEST_MEMBER}"
+    fi
+}
+
+# THE SCRATCH BRANCH — the only loop over a directory in this leg, and it is
+# never the real one. `DJB_SELFTEST_DRIVES_DIR` is read here and nowhere else.
+selftest_scratch_drives() {
+    _SELFTEST_D=""
+    _SELFTEST_NAME=""
+    _SELFTEST_RC2=0
+    echo "  DJB_SELFTEST_DRIVES_DIR is set — driving ${DJB_SELFTEST_DRIVES_DIR}"
+    echo "  and NOT scripts/tests/. This is the leg's own drive's scratch set."
+    for _SELFTEST_D in "$DJB_SELFTEST_DRIVES_DIR"/test_*.sh; do
+        [ -f "$_SELFTEST_D" ] || continue
+        _SELFTEST_NAME="$(basename "$_SELFTEST_D" .sh)"
+        _SELFTEST_NAME="${_SELFTEST_NAME#test_}"
+        # THE RETURN IS READ, and until the drive verdicts arrived it was not:
+        # `selftest_member_begin` already answered 1 for a member outside the
+        # shard, and this loop ran it anyway. The real branch below has always
+        # read it (`if selftest_member_begin …; then`), so the two branches
+        # disagreed about the one thing this loop exists to drive.
+        if selftest_member_begin "$_SELFTEST_NAME"; then
+            _SELFTEST_RC2=0
+            ("$_SELFTEST_D") || _SELFTEST_RC2=$?
+            selftest_member_end "$_SELFTEST_RC2"
+        fi
+    done
+}
+
+# THE EXIT, composed once, from the whole population rather than from whichever
+# member happened to be first.
+selftest_compose() {
+    if [ -n "${SELFTEST_DRIVE_LISTING:-}" ]; then
+        rm -f "$SELFTEST_DRIVE_LISTING"
+        SELFTEST_DRIVE_LISTING=""
+    fi
+    echo ""
+    echo "  selftest: ${SELFTEST_GREEN} drive(s) green · ${SELFTEST_RED} red · ${SELFTEST_CANNOT} could-not-look (the house-rules engine's own selftest counted as one)"
+    if [ "$SELFTEST_CANNOT" -gt 0 ]; then
+        echo "!! COULD NOT LOOK:${SELFTEST_CANNOT_NAMES}" >&2
+        if [ "$SELFTEST_RED" -gt 0 ]; then
+            echo "!! and RED:${SELFTEST_RED_NAMES}" >&2
+        fi
+        echo "   2 outranks 1: a driver that could not run its cases has not cleared" >&2
+        echo "   them, whatever the rest of the set did. Read the FIRST name above" >&2
+        echo "   first — every drive ran, so a later name can be a SECONDARY red left" >&2
+        echo "   by state an earlier one moved." >&2
+        return 2
+    fi
+    if [ "$SELFTEST_RED" -gt 0 ]; then
+        echo "!! RED:${SELFTEST_RED_NAMES}" >&2
+        echo "   Every drive ran and every red is named above — that is what this leg" >&2
+        echo "   is for. Read the FIRST one first: a red drive can leave state a later" >&2
+        echo "   drive trips on, so a later name can be a secondary." >&2
+        return 1
+    fi
+    return 0
+}
+
+# selftest_drives_leg [k K] — every drive, or the k-th of every K of them.
+# A malformed pair is exit 2 and never a smaller run: a shard that judged a set
+# nobody asked for is worse than a refusal.
+selftest_drives_leg() {
+    # `--leg selftest --shard k/N` REACHES THIS BODY THROUGH ITS GLOBALS, and it
+    # has to: the ONE call site below is pinned character for character by
+    # `scripts/tests/test_selftest_leg.sh` (the errexit-safe `|| RC=$?` form), so
+    # the shard cannot arrive as an argument there without moving a literal that
+    # drive reads. The pair is 1-BASED at the flag and 0-based here — the
+    # listing's grammar and this function's own, translated in one place.
+    # Extracted standalone by that drive with neither variable set, which is why
+    # both are read defensively.
+    if [ "$#" = "0" ] && [ -n "${GATE_SHARD_K:-}" ] && [ "${GATE_LEG_UNIT:-}" = "selftest" ]; then
+        set -- "$((GATE_SHARD_K - 1))" "${GATE_SHARD_N}"
+    fi
+    selftest_tally_reset
+    SELFTEST_SHARD_K=""
+    SELFTEST_SHARD_N=""
+    SELFTEST_DRIVE_INDEX=0
+    if [ "$#" -gt 0 ] && [ -n "${1:-}" ]; then
+        case "${1:-}:${2:-}" in
+        *[!0-9]*:* | *:*[!0-9]* | *: | :*)
+            echo "!! selftest_drives_leg: '${1:-}' '${2:-}' is not a k/K pair of integers." >&2
+            return 2
+            ;;
+        esac
+        if [ "$2" -lt 1 ] || [ "$1" -ge "$2" ]; then
+            echo "!! selftest_drives_leg: shard ${1}/${2} is outside 0..$(($2 - 1)) of ${2}." >&2
+            return 2
+        fi
+        SELFTEST_SHARD_K=$1
+        SELFTEST_SHARD_N=$2
+        echo "  shard ${SELFTEST_SHARD_K}/${SELFTEST_SHARD_N} of the registered drive order"
+        echo "  (the order is this file's own ./scripts/tests/test_<name>.sh lines;"
+        echo "   house-rules-engine runs in shard 0)"
+    fi
+
+    if selftest_member_begin house-rules-engine; then
+    set +e
+    uv run python -m quality.gate --selftest
+    SELF_RC=$?
+    set -e
+    # The engine is counted the same way every drive is, with ONE difference the
+    # second argument carries: ANY non-zero from it is could-not-look, because a
+    # canary that did not fire is enforcement that stopped looking rather than a
+    # rule that failed. That was this block's rule before the move and it stands.
+    selftest_member_end "$SELF_RC" outrank
+    if [ "$SELF_RC" != "0" ]; then
+        echo "!! ENFORCEMENT ITSELF IS BROKEN — a dead canary outranks any pass." >&2
+        echo "   Recorded as could-not-look. The drives below STILL RUN: the leg's" >&2
+        echo "   exit is composed at the end, and a 25-minute gate should print its" >&2
+        echo "   whole red list once." >&2
+    fi
+    fi
+
+    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
+        selftest_scratch_drives
+        SELFTEST_COMPOSED_RC=0
+        selftest_compose || SELFTEST_COMPOSED_RC=$?
+        return "$SELFTEST_COMPOSED_RC"
+    fi
 
 # THE SHELL REFUSALS BELONG IN THIS LEG AND IN NO OTHER. A canary proves
 # a rule still fires; these prove a SCRIPT still refuses — same property, same
@@ -2881,6 +5927,9 @@ fi
 #
 # Exit semantics are this file's: 2 is could-not-look (no docker, no database)
 # and outranks a pass; 1 is a refusal that did not fire.
+if selftest_member_begin backup_restore; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_backup_restore.sh
 DRIVE_RC=$?
@@ -2893,6 +5942,9 @@ elif [ "$DRIVE_RC" != "0" ]; then
     echo "!! a backup or restore refusal did not fire. A guard nothing drives is a" >&2
     echo "   guard that can be deleted by accident and stay deleted." >&2
     exit "$DRIVE_RC"
+fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
 # THE SECOND DRIVE, and it belongs here for the identical reason. The
@@ -2911,10 +5963,19 @@ fi
 # owns is inside its reach, which is what makes proving a destroy path possible
 # at all on a shared box.
 #
-# It costs about a minute, nearly all of it docker round trips (a schedule
-# created and deleted, a workflow started and terminated, four databases created
-# and dropped). That is the price of the only thing in this repository that
-# drives a destroy path end to end, and it is paid at push rather than per rung.
+# WHAT DOMINATES ITS COST, and no number, because a number here goes stale
+# without this file changing: docker round trips (a schedule created and
+# deleted, a workflow started and terminated, databases created and dropped),
+# and the last case, which runs this whole drive again from two clones at once
+# to prove two checkouts cannot destroy each other's machinery. Those two
+# children are NARROWED to the clone-isolation chain and name the cases they
+# ran — `SWEEP_CHILD_CHAIN` in the drive's own file is where that argument
+# lives, and the drive's header is where the rest of it does. It is the price
+# of the only thing in this repository that drives a destroy path end to end,
+# and it is paid at push rather than per rung.
+if selftest_member_begin sweep; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_sweep.sh
 SWEEP_DRIVE_RC=$?
@@ -2928,6 +5989,9 @@ elif [ "$SWEEP_DRIVE_RC" != "0" ]; then
     echo "   declared population. Both halves are load-bearing: a broom whose refusals" >&2
     echo "   nothing exercises can be widened by accident and stay widened." >&2
     exit "$SWEEP_DRIVE_RC"
+fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
 # THE THIRD DRIVE, same leg and the same reason. `pm_merge.sh`
@@ -2943,6 +6007,9 @@ fi
 # inside itself. It needs no docker and no database — unlike its two siblings
 # above it can never degrade to could-not-look on a bare machine — and costs
 # ~15s, nearly all of it git process starts.
+if selftest_member_begin pm_merge; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_pm_merge.sh
 MERGE_DRIVE_RC=$?
@@ -2957,7 +6024,13 @@ elif [ "$MERGE_DRIVE_RC" != "0" ]; then
     echo "   name and a green gate on an unmerged tree." >&2
     exit "$MERGE_DRIVE_RC"
 fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
+if selftest_member_begin pm_fold; then
+SELFTEST_BLOCK_RC=0
+(
 # >>> drive: pm_fold >>>
 # THE FOLD'S DRIVE, and it is pm_merge's sibling one door over. NO ORDINAL,
 # deliberately: two blocks above call themselves "the third" and "the fourth"
@@ -2996,6 +6069,92 @@ elif [ "$FOLD_DRIVE_RC" != "0" ]; then
     exit "$FOLD_DRIVE_RC"
 fi
 # <<< drive: pm_fold <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin rung_tidy; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: rung_tidy >>>
+# THE TIDY'S DRIVE, and it is the fold's sibling one door over: `pm_fold.sh`
+# commits unattended, and `scripts/rung_tidy.sh` WRITES INTO A BUILDER'S
+# WORKING TREE — a budget ceiling, a regenerated client, a re-scanned secret
+# baseline — on the strength of an offer a red leg printed. The three most
+# dangerous things it could do are all silent: apply a number no refusal named,
+# grow a SECOND `detect-secrets scan --baseline` writer, or go quiet when the
+# engine's sentence moves and report nothing-to-do over a tree that is
+# refusing. Each of the three has a case, and each case asserts both the exit
+# status a caller branches on and the sentence a human acts on.
+#
+# IT BUILDS ITS OWN CHECKOUTS and its own stub toolchain: no docker, no
+# database, no Node, no network, and nothing in this tree is tidied. The
+# house-rules offer is driven by extracting that leg's body from this file
+# between its own sentinels and sourcing it with a shimmed engine, because a
+# drive cannot run a nested `./scripts/check.sh` at all — the per-checkout gate
+# lock refuses one, and the drive would then be red for the lock rather than
+# for the property.
+#
+# THIS BLOCK IS THE REGISTRATION `docs/product/instruments.md` CITES, and it
+# cites the sentinel above rather than a line number, for the reason the fold's
+# block states.
+set +e
+./scripts/tests/test_rung_tidy.sh
+TIDY_DRIVE_RC=$?
+set -e
+if [ "$TIDY_DRIVE_RC" = "2" ]; then
+    echo "!! the rung_tidy drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$TIDY_DRIVE_RC" != "0" ]; then
+    echo "!! scripts/rung_tidy.sh no longer applies what a refusal named, or no longer" >&2
+    echo "   says what it applied. It writes a ceiling, a client or a baseline into a" >&2
+    echo "   working checkout from an offer printed by a red leg; a tidy that writes a" >&2
+    echo "   number no sentence named raises a ceiling with no reviewer in the loop." >&2
+    exit "$TIDY_DRIVE_RC"
+fi
+# <<< drive: rung_tidy <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin pm_push; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: pm_push >>>
+# THE BANK ITSELF, AND THE ONE THAT COMPOSES A CLAIM OUT OF MACHINES NOBODY
+# CAN SEE AFTERWARDS. `scripts/pm_push.sh --bank --on-boxes N` earns the full
+# verdict row by splitting the gate's own units across N verifier boxes and
+# adding the answers up here. Every way that arithmetic can be wrong is silent
+# by construction — a shard that measured a different tree, a shard whose leg
+# set is short, a shard nobody could read, a box reclaimed mid-flight — and
+# each of them would produce a GREEN ROW over bytes no box ran, which is
+# exactly the thing `scripts/githooks/pre-push` honours without measuring.
+#
+# IT BUILDS ITS OWN REPOSITORIES AND ITS OWN WORLD: a throwaway git repository
+# per case under `mktemp -d` with a copy of `pm_push.sh`, a stub `check.sh`, a
+# stub `pm_fold.sh` and a stub `scripts/verifier_box.sh` that records every
+# argv and answers from per-case fixtures. Not one AWS call, not one box, not
+# one real gate — and no docker, no database, no network, so like its two
+# siblings above it can never degrade to could-not-look on a bare machine.
+set +e
+./scripts/tests/test_pm_push.sh
+PM_PUSH_DRIVE_RC=$?
+set -e
+if [ "$PM_PUSH_DRIVE_RC" = "2" ]; then
+    echo "!! the pm_push bank drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$PM_PUSH_DRIVE_RC" != "0" ]; then
+    echo "!! a refusal in the on-box bank did not fire, or its composition stopped" >&2
+    echo "   adding up. That composition is the only thing standing between a verdict" >&2
+    echo "   row the push hook honours in seconds and a green over bytes no box ran." >&2
+    exit "$PM_PUSH_DRIVE_RC"
+fi
+# <<< drive: pm_push <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
 # THE FOURTH DRIVE, same leg, and the closest of the four to a canary.
 # `scripts/secrets_scan.sh` decides WHICH FILES the per-rung secret scan
@@ -3012,6 +6171,9 @@ fi
 # It builds throwaway repositories (branches, merge-bases, deletions, renames,
 # and a real linked worktree) for everything except that plant. No docker, no
 # database; ~10s, nearly all of it git and three `uv run` starts.
+if selftest_member_begin secrets_scan; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_secrets_scan.sh
 SECRETS_DRIVE_RC=$?
@@ -3026,7 +6188,13 @@ elif [ "$SECRETS_DRIVE_RC" != "0" ]; then
     echo "   hold: an empty set from a broken merge-base reads exactly like a clean rung." >&2
     exit "$SECRETS_DRIVE_RC"
 fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
+if selftest_member_begin secrets_baseline_guard; then
+SELFTEST_BLOCK_RC=0
+(
 # >>> drive: secrets_baseline_guard >>>
 # `.secrets.baseline` has one legal writer — pm_fold.sh's full-tree re-scan —
 # and the command it uses, `detect-secrets scan --baseline`, DROPS the result
@@ -3050,7 +6218,13 @@ elif [ "$BASELINE_GUARD_RC" != "0" ]; then
     exit "$BASELINE_GUARD_RC"
 fi
 # <<< drive: secrets_baseline_guard <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
+if selftest_member_begin setup_env; then
+SELFTEST_BLOCK_RC=0
+(
 # >>> drive: setup_env >>>
 # THE ENVIRONMENT STEP'S DRIVE. NO ORDINAL, for the reason the fold's block
 # above states: a count in prose goes stale without the prose changing.
@@ -3096,6 +6270,49 @@ elif [ "$SETUP_ENV_DRIVE_RC" != "0" ]; then
     exit "$SETUP_ENV_DRIVE_RC"
 fi
 # <<< drive: setup_env <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+# THE CROSS-APP CENSUS OVER THE SHELL POPULATION, and it is registered here for
+# the reason every drive is: a drive under `scripts/tests/` that no moment
+# invokes is a promise rather than a leg
+# (`test_drive_preamble.sh::case_every_drive_under_tests_is_invoked_by_the_gate`).
+#
+# IT ALSO RUNS IN EVERY `--loop`, AND THAT IS NOT A DUPLICATE. It carries the
+# cross-app marker, so the `--loop` always-on leg runs it at every scope — the
+# whole point of the marker. This registration is the FULL gate's copy, and a
+# member both legs reach is a member banked once and reused by the other: the
+# two consult one drive ledger with one key function, so the second of them
+# costs a ledger read. A moved leg is not a removed leg, and the push must go
+# on measuring what it measured before.
+#
+# No docker, no database, no `uv`, no Node, no network — one grep over
+# `scripts/*.sh` and a scratch copy of it — which is what lets it be always-on
+# at all.
+if selftest_member_begin scripts_census; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: scripts_census >>>
+set +e
+./scripts/tests/test_scripts_census.sh
+SCRIPTS_CENSUS_DRIVE_RC=$?
+set -e
+if [ "$SCRIPTS_CENSUS_DRIVE_RC" = "2" ]; then
+    echo "!! the scripts-census drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$SCRIPTS_CENSUS_DRIVE_RC" != "0" ]; then
+    echo "!! a script under scripts/ depends on a local \`main\` that nobody has" >&2
+    echo "   decided about — or the census that would have said so has narrowed back." >&2
+    echo "   Both failures are silent in the ordinary course: the caller works on" >&2
+    echo "   every machine that has the ref." >&2
+    exit "$SCRIPTS_CENSUS_DRIVE_RC"
+fi
+# <<< drive: scripts_census <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
 # THE NEXT DRIVE, same leg, same argument, and the per-rung `archaeology`
 # leg's own: `archaeology_loop` (scripts/archaeology_lib.sh) narrows the
@@ -3113,6 +6330,9 @@ fi
 # the bucket filter, not the changed-file derivation's own edge cases. No
 # docker, no database; well under a second, nearly all of it git process
 # starts.
+if selftest_member_begin archaeology_loop; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_archaeology_loop.sh
 ARCH_DRIVE_RC=$?
@@ -3127,6 +6347,9 @@ elif [ "$ARCH_DRIVE_RC" != "0" ]; then
     echo "   own construction history back into a shipped file, silently." >&2
     exit "$ARCH_DRIVE_RC"
 fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
 # THE NEXT DRIVE, same leg: the fe leg's 9-case tri-state harness
 # (scripts/fe_gate.sh). This template ships with no frontend/ at all, so the
@@ -3138,6 +6361,9 @@ fi
 # own refusal, not a shim of it — and its absence here is a could-not-look,
 # not a skip: this drive is proving the LEG, which is a different question
 # from whether THIS checkout happens to have grown a frontend/ yet.
+if selftest_member_begin fe_leg; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_fe_leg.sh
 FE_DRIVE_RC=$?
@@ -3150,6 +6376,9 @@ elif [ "$FE_DRIVE_RC" != "0" ]; then
     echo "!! the fe leg's tri-state no longer holds — one of absent/untouched/full (or" >&2
     echo "   the frozen-lockfile check inside full) stopped answering the way it claims." >&2
     exit "$FE_DRIVE_RC"
+fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
 # THE FIFTH DRIVE, same leg, same argument. `db_pin_leg` in
@@ -3171,6 +6400,9 @@ fi
 # database, no `uv` — so like `test_pm_merge.sh` it can never degrade to
 # could-not-look on a bare machine. ~5s, nearly all of it `git init` and
 # `git commit` process starts, one pair per case.
+if selftest_member_begin db_pin; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_db_pin.sh
 DB_PIN_DRIVE_RC=$?
@@ -3185,6 +6417,9 @@ elif [ "$DB_PIN_DRIVE_RC" != "0" ]; then
     echo "   databases in silence; the second makes the leg noise, which is what the" >&2
     echo "   stderr note it replaced had already become." >&2
     exit "$DB_PIN_DRIVE_RC"
+fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
 # THE SIXTH DRIVE, same leg, same argument, and the newest reason for it:
@@ -3207,6 +6442,9 @@ fi
 # derivation is a fixture-closure walk and a source read — but it does need
 # `uv`, because the derivation lives inside pytest. ~25s, nearly all of it
 # collection and `uv` starts.
+if selftest_member_begin loop_tier; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_loop_tier.sh
 TIER_DRIVE_RC=$?
@@ -3222,6 +6460,9 @@ elif [ "$TIER_DRIVE_RC" != "0" ]; then
     echo "   loop that vouched for less than it said." >&2
     exit "$TIER_DRIVE_RC"
 fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
 # THE TWO DRIVES BESIDE IT, and they are beside it because they drive the two
 # halves the tier grew: WHICH TESTS `--loop` runs (the scope) and WHETHER IT
@@ -3234,7 +6475,18 @@ fi
 # invocation — the leg's own parallel shape, because a serial approximation of a
 # parallel leg is green either way — plus a throwaway clone carrying a planted
 # undeclared cross-app coupling for the miss triple. No database: not one
-# planted test touches one. ~2 minutes.
+# planted test touches one.
+#
+# WHAT DOMINATES ITS COST, and no number, because a number here goes stale
+# without this file changing: whole-suite `--collect-only` runs over the real
+# tree, and the one real xdist invocation. Where two cases ask one question of
+# one unchanged tree the collection is taken once and shared —
+# `collect_scope_memo` in the drive's own file names every such group, and its
+# header is where the argument for sharing by NAME rather than by argument list
+# lives.
+if selftest_member_begin loop_scope; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_loop_scope.sh
 SCOPE_DRIVE_RC=$?
@@ -3249,10 +6501,60 @@ elif [ "$SCOPE_DRIVE_RC" != "0" ]; then
     echo "   and every way that claim goes wrong is silent and looks like speed." >&2
     exit "$SCOPE_DRIVE_RC"
 fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin fast_censuses; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: fast_censuses >>>
+# THE FOUR `--fast` CENSUS BODIES, driven. They are the cheapest legs in the
+# gate and they sit in the tier the pre-commit hook runs, which is exactly the
+# combination that lets one of them go quietly blind: a census nobody drives
+# costs nothing to pass and answers a closed question about a population it may
+# have stopped deriving. Two of the four also share ONE implementation with
+# `scripts/publish.sh`'s release-time scan, so this drive keeps the original
+# bodies verbatim as a reference implementation and diffs the two transcripts
+# over one scratch artifact — the extraction is the operation that silently
+# moves an output, and publish's printed lines are a contract another drive
+# greps.
+#
+# Every case plants its own victim in a scratch directory or in a scratch COPY
+# of a real file, never a real file moved aside and restored, and none of them
+# shells out to this gate: the per-checkout lock would refuse a nested run, so a
+# case that reached for the gate would redden for the lock instead of for the
+# property. Each case calls the leg BODY out of `scripts/docs_legs.sh`.
+#
+# No docker, no database, no network, no `uv` — git and the shell — so it
+# degrades to could-not-look only honestly. Seconds.
+set +e
+./scripts/tests/test_fast_censuses.sh
+FAST_CENSUS_DRIVE_RC=$?
+set -e
+if [ "$FAST_CENSUS_DRIVE_RC" = "2" ]; then
+    echo "!! the fast-censuses drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$FAST_CENSUS_DRIVE_RC" != "0" ]; then
+    echo "!! one of the four --fast census bodies no longer reds on a planted absence," >&2
+    echo "   or the extraction moved publish.sh's printed transcript. Both failures are" >&2
+    echo "   silent at every other leg: a census that stopped seeing its population" >&2
+    echo "   passes, and a release-time count that drifted is read by nobody until the" >&2
+    echo "   release." >&2
+    exit "$FAST_CENSUS_DRIVE_RC"
+fi
+# <<< drive: fast_censuses <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
 # The ledger drive touches no database and no network: it forges rows into a
 # scratch file through DJB_LOOP_LEDGER, so nothing it writes can ever become a
 # banked verdict in this checkout. Seconds.
+if selftest_member_begin loop_ledger; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_loop_ledger.sh
 LOOP_LEDGER_DRIVE_RC=$?
@@ -3265,6 +6567,9 @@ elif [ "$LOOP_LEDGER_DRIVE_RC" != "0" ]; then
     echo "!! the --loop LEDGER stopped failing closed. A verdict cache that hits when" >&2
     echo "   it should have missed costs a rung its whole gate, silently." >&2
     exit "$LOOP_LEDGER_DRIVE_RC"
+fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
 # THE SEVENTH AND EIGHTH DRIVES, and they are here because a deferral outlived
@@ -3288,6 +6593,9 @@ fi
 # dies at database setup for every worker at once, because Django issues
 # `CREATE DATABASE … WITH TEMPLATE …` unconditionally and has no fallback where
 # `db_create` has a loud miss.
+if selftest_member_begin rung_start; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_rung_start.sh
 RUNG_START_DRIVE_RC=$?
@@ -3302,7 +6610,13 @@ elif [ "$RUNG_START_DRIVE_RC" != "0" ]; then
     echo "   unconditional reset and somebody's uncommitted work." >&2
     exit "$RUNG_START_DRIVE_RC"
 fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
+if selftest_member_begin db_template; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_db_template.sh
 DB_TEMPLATE_DRIVE_RC=$?
@@ -3318,6 +6632,9 @@ elif [ "$DB_TEMPLATE_DRIVE_RC" != "0" ]; then
     echo "   fallback, and an absent one kills the suite at setup for every worker." >&2
     exit "$DB_TEMPLATE_DRIVE_RC"
 fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
 # THE NINTH DRIVE. `scripts/serve.sh` stopped being
 # only a process the day it started deriving its port: a fixed port taken by a
@@ -3331,6 +6648,9 @@ fi
 # docker and no database. This drive was built and wired later than
 # `scripts/serve.sh` itself, deliberately held for whoever owned `check.sh`
 # rather than editing a shared file in parallel.
+if selftest_member_begin serve_port; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_serve_port.sh
 SERVE_PORT_DRIVE_RC=$?
@@ -3345,6 +6665,9 @@ elif [ "$SERVE_PORT_DRIVE_RC" != "0" ]; then
     echo "   first puts two checkouts back on one port, and the second sends a verifier" >&2
     echo "   to drive a sibling worktree's deployment believing it is their own." >&2
     exit "$SERVE_PORT_DRIVE_RC"
+fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
 # THE TENTH DRIVE, and the first that drives a DOCUMENT. The
@@ -3364,6 +6687,9 @@ fi
 #
 # It needs a database (a `test_djb_*` scratch one it creates and drops) and `uv`.
 # ~30s, nearly all of it the migration chain into the fresh database.
+if selftest_member_begin runbook_recipes; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_runbook_recipes.sh
 RUNBOOK_DRIVE_RC=$?
@@ -3378,6 +6704,9 @@ elif [ "$RUNBOOK_DRIVE_RC" != "0" ]; then
     echo "   resend a bounce and the only alternative is reading a test suite. The" >&2
     echo "   class has recurred three times; the third careful edit was not the fix." >&2
     exit "$RUNBOOK_DRIVE_RC"
+fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
 # THE ELEVENTH DRIVE, same leg, same argument. The
@@ -3398,6 +6727,9 @@ fi
 # `test_db_pin.sh` and `test_loop_tier.sh` both declare, for the same reason.
 #
 # No docker, no database, no `uv`. ~10s, most of it the two deliberate waits.
+if selftest_member_begin gate_lease; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_gate_lease.sh
 LEASE_DRIVE_RC=$?
@@ -3414,6 +6746,9 @@ elif [ "$LEASE_DRIVE_RC" != "0" ]; then
     echo "   lease that stops CLEARING blocks every full gate on this machine until" >&2
     echo "   somebody is told to delete a file." >&2
     exit "$LEASE_DRIVE_RC"
+fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
 # THE TWELFTH, THIRTEENTH AND FOURTEENTH DRIVES, and all three are here for one
@@ -3434,6 +6769,9 @@ fi
 # file (the mechanism that once cost this repository a push made by hand), and
 # the rule that the database name is ASKED FOR rather than copied. It builds
 # scratch repositories and plants nothing here. No docker, no database; ~14s.
+if selftest_member_begin verify_start; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_verify_start.sh
 VERIFY_START_DRIVE_RC=$?
@@ -3449,6 +6787,9 @@ elif [ "$VERIFY_START_DRIVE_RC" != "0" ]; then
     echo "   key so that an eight-minute green run banks nothing at all." >&2
     exit "$VERIFY_START_DRIVE_RC"
 fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
 # `test_db_zsh.sh` drives `scripts/db.sh` under the shell it is actually sourced
 # by. That library is the one file here that is SOURCED rather than run, so its
@@ -3457,6 +6798,9 @@ fi
 # and `db_create` printed `created database` over a database it had not made.
 # It SKIPS rather than passes when it cannot find the shell, and says so. Needs
 # zsh and the compose Postgres for the live tooth; ~4s.
+if selftest_member_begin db_zsh; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_db_zsh.sh
 DB_ZSH_DRIVE_RC=$?
@@ -3472,6 +6816,9 @@ elif [ "$DB_ZSH_DRIVE_RC" != "0" ]; then
     echo "   about a database that is not there." >&2
     exit "$DB_ZSH_DRIVE_RC"
 fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
 # `test_publish.sh` drives the export instrument — the one that decides what a
 # consuming product receives. Every case is a refusal or a census, and once a
@@ -3479,6 +6826,9 @@ fi
 # census is the only wall left. It builds its own throwaway repository and reads
 # nothing in this checkout, so its verdict does not move when this tree does.
 # No docker, no database; ~12s.
+if selftest_member_begin publish; then
+SELFTEST_BLOCK_RC=0
+(
 set +e
 ./scripts/tests/test_publish.sh
 PUBLISH_DRIVE_RC=$?
@@ -3494,7 +6844,13 @@ elif [ "$PUBLISH_DRIVE_RC" != "0" ]; then
     echo "   only wall there is." >&2
     exit "$PUBLISH_DRIVE_RC"
 fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
+if selftest_member_begin queue_index; then
+SELFTEST_BLOCK_RC=0
+(
 # >>> drive: queue_index >>>
 # THE DERIVED LEDGER'S DRIVE, and the `--fast` leg above is only as honest as
 # it is. `scripts/queue_index.py` performs a ONE-WAY, ONE-SHOT migration on the
@@ -3534,7 +6890,100 @@ elif [ "$QUEUE_INDEX_DRIVE_RC" != "0" ]; then
     exit "$QUEUE_INDEX_DRIVE_RC"
 fi
 # <<< drive: queue_index <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
+if selftest_member_begin test_impact; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: test_impact >>>
+# THE TEST-IMPACT MAP'S WRITER. `scripts/test_impact.py` turns one acceptance
+# run's per-test coverage contexts into `scripts/test_impact.json` — for every
+# collected test, the source files it executed — so that the inner loop can run
+# the tests a change can REACH instead of the whole dependency closure.
+#
+# WHY IT IS DRIVEN AND NOT MERELY RUN. A map is read by a SELECTOR, so every
+# silent hole in it becomes a test nobody runs, and two holes are silent by
+# construction. A test whose only read of the tree is `read_text()` executes no
+# measured line: written as `[]` it reads downstream as "touches nothing" and is
+# never selected again, for any change, ever — so an empty executed set is a
+# DECLARED reason and never an empty list. And a nodeid the collection has and
+# the coverage database does not is not a test that touched nothing but a run
+# that did not measure it, so it is could-not-look with no file written. The
+# census the drive holds it to is closed: every collected nodeid is in `tests`
+# or in `unmapped`, never neither and never both.
+#
+# It builds every coverage database, collected list and output under
+# `mktemp -d` through `coverage`'s own API, runs no pytest, needs no docker, no
+# database and no network, and never touches this checkout's own map.
+# Sub-second.
+set +e
+./scripts/tests/test_test_impact.sh
+TEST_IMPACT_DRIVE_RC=$?
+set -e
+if [ "$TEST_IMPACT_DRIVE_RC" = "2" ]; then
+    echo "!! the test-impact drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$TEST_IMPACT_DRIVE_RC" != "0" ]; then
+    echo "!! the test-impact map's census stopped being closed. A map with a hole in" >&2
+    echo "   it is not a smaller map: it is a set of tests that will never be selected" >&2
+    echo "   again, and nothing downstream can tell that from a test that is genuinely" >&2
+    echo "   unaffected." >&2
+    exit "$TEST_IMPACT_DRIVE_RC"
+fi
+# <<< drive: test_impact <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin loop_metrics; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: loop_metrics >>>
+# THE VELOCITY READER'S DRIVE. `scripts/loop_metrics.py` derives the
+# cost-baseline row — the two velocity clocks, the inner loop by change class,
+# the bank census — from the dispatch ledger's stamps, from git and from the
+# gate's own logs, so that the row a cycle is judged against has inputs a
+# reader can re-read instead of being typed from a screen.
+#
+# THAT MOVES THE FAILURE MODE RATHER THAN CLOSING IT, and the cases here are
+# aimed at where it moved to. A derivation can be wrong in two ways that both
+# look exactly like an answer: it can read a stamp that says something
+# impossible and print a plausible minute count from it, and it can skip the
+# rows that carry no stamps and report a median over the convenient half of
+# the ledger. So the drive feeds it a broken clock, a stage reached with the
+# stage before it missing, a second time zone, and a ledger whose rows predate
+# the grammar entirely — and expects a named refusal for the first three and a
+# COUNT for the last, never a silent omission.
+#
+# It builds every ledger, log and readouts fixture it needs under `mktemp -d`,
+# and the one case that reads this checkout's real ledger COPIES it. No docker,
+# no database, no `uv`, no Node, no network — so like `test_queue_index.sh` it
+# can never degrade to could-not-look on a bare machine. Sub-second.
+set +e
+./scripts/tests/test_loop_metrics.sh
+LOOP_METRICS_DRIVE_RC=$?
+set -e
+if [ "$LOOP_METRICS_DRIVE_RC" = "2" ]; then
+    echo "!! the loop-metrics drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$LOOP_METRICS_DRIVE_RC" != "0" ]; then
+    echo "!! a property of the velocity reader did not hold. Every cycle is measured" >&2
+    echo "   against the row it derives, and a median taken over the stamped half of" >&2
+    echo "   the ledger reads exactly like a median taken over all of it." >&2
+    exit "$LOOP_METRICS_DRIVE_RC"
+fi
+# <<< drive: loop_metrics <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin gate_explain; then
+SELFTEST_BLOCK_RC=0
+(
 # >>> drive: gate_explain >>>
 # THE LEGIBLE RED'S OWN DRIVE, and it shipped hand-run for one wave because
 # this file belonged to a different territory the day it was written. By hand
@@ -3547,6 +6996,15 @@ fi
 # in a trap — which is why it belongs here and not in `--fast`: the full gate
 # already owns both, and a plant that a killed run leaves behind is caught by
 # this file's own stale-plant refusal.
+#
+# WHAT DOMINATES ITS COST, and no number, because a number here goes stale
+# without this file changing: the LIVE SCANS. Each planted red is a whole
+# engine scan of this tree, and they cannot be shared across plants because
+# each plant is a different tree. What is shared is two cases reading one
+# scan, and the readers — `--explain`, the listing under both names, an
+# unknown flag — which return before anything measures and are captured in one
+# process. `red_plant_once` and `readers_once` in the drive's own file are
+# where those two arguments live.
 set +e
 ./scripts/tests/test_gate_explain.sh
 GATE_EXPLAIN_DRIVE_RC=$?
@@ -3562,7 +7020,13 @@ elif [ "$GATE_EXPLAIN_DRIVE_RC" != "0" ]; then
     exit "$GATE_EXPLAIN_DRIVE_RC"
 fi
 # <<< drive: gate_explain <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
+if selftest_member_begin drive_preamble; then
+SELFTEST_BLOCK_RC=0
+(
 # >>> drive: drive_preamble >>>
 # THE TRIPWIRE THAT WATCHES EVERY OTHER DRIVE, driven itself. Every drive in
 # this leg sources `scripts/tests/drive_preamble.sh`, which fingerprints this
@@ -3597,7 +7061,13 @@ elif [ "$PREAMBLE_DRIVE_RC" != "0" ]; then
     exit "$PREAMBLE_DRIVE_RC"
 fi
 # <<< drive: drive_preamble <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
 
+if selftest_member_begin pipefail_readers; then
+SELFTEST_BLOCK_RC=0
+(
 # >>> drive: pipefail_readers >>>
 # THE READER THAT LEAVES EARLY. Under `set -o pipefail` a `producer | head -1`
 # reads the value it wanted correctly and then hands the caller 141 — but only
@@ -3626,6 +7096,286 @@ elif [ "$PIPEFAIL_DRIVE_RC" != "0" ]; then
     exit "$PIPEFAIL_DRIVE_RC"
 fi
 # <<< drive: pipefail_readers <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+if selftest_member_begin list_legs; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: list_legs >>>
+# THE LIST THAT MUST NOT DRIFT. `FULL_LEGS` is the string every banked verdict
+# row carries, and it had grown six names out of date — legs announced on every
+# full gate and named on no row. This drive runs each mode with
+# `DJB_GATE_LEGS_DRY=1` in a CLONE (the per-checkout lock refuses a nested gate,
+# and the subject here is the whole-mode flow rather than any one leg body),
+# compares the announced sequence against a fixture read off the pre-refactor
+# tree, and plants four separate disagreements the listing must refuse.
+#
+# No docker, no database, no network; `git`, `python3` and this file.
+#
+# WHAT DOMINATES ITS COST, and no number, because a number here goes stale
+# without this file changing: the shard census, which collects the real suite
+# once per (N, k, seed) to prove the shards partition it. Those collections are
+# read-only and run CONCURRENTLY, bounded and reaped by pid — `collect_ids_spawn`
+# in the drive's own file carries that argument and the one contention it has.
+set +e
+./scripts/tests/test_list_legs.sh
+LIST_LEGS_DRIVE_RC=$?
+set -e
+if [ "$LIST_LEGS_DRIVE_RC" = "2" ]; then
+    echo "!! the list-legs drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$LIST_LEGS_DRIVE_RC" != "0" ]; then
+    echo "!! the gate's leg sequence, its FULL_LEGS string or its unit table moved" >&2
+    echo "   without the other two — or a refusal the listing owes stopped firing." >&2
+    echo "   A verdict row that under-reports what ran is a green that vouched for" >&2
+    echo "   less than it says." >&2
+    exit "$LIST_LEGS_DRIVE_RC"
+fi
+# <<< drive: list_legs <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin shard_census; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: shard_census >>>
+# THE ONE SHARD-CENSUS QUESTION WHOSE SUBJECT IS THE REAL TREE. The partition
+# census next door moved onto a fifty-item fixture world — the shards
+# partitioning the collection is a property of pytest-split composed with this
+# gate's flags, and a mechanism proven over fifty items is proven — and that is
+# what took `apps/` out of `test_list_legs.sh`'s `# drives:` line.
+#
+# What could not move with it: whether `scripts/pytest_durations.json`, the
+# file the `pytest-x2` unit hands `--durations-path`, still names the suite it
+# balances. A stale one cannot move the partition; it can only leave
+# pytest-split chunking by count, silently, which turns the sharded unit's
+# reason for existing into a coin flip. That is a property of THIS tree's
+# collection, so this drive declares `apps/` and costs one `--collect-only`.
+#
+# No docker, no database, no network; `uv`, the suite's collection and this
+# file.
+set +e
+./scripts/tests/test_shard_census.sh
+SHARD_CENSUS_DRIVE_RC=$?
+set -e
+if [ "$SHARD_CENSUS_DRIVE_RC" = "2" ]; then
+    echo "!! the shard-census drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$SHARD_CENSUS_DRIVE_RC" != "0" ]; then
+    echo "!! the durations file the sharded pytest unit balances by is no longer" >&2
+    echo "   about this suite. The shards still partition it; they are just no" >&2
+    echo "   longer a share of the wall clock." >&2
+    exit "$SHARD_CENSUS_DRIVE_RC"
+fi
+# <<< drive: shard_census <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin verifier_image; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: verifier_image >>>
+# THE MONEY GUARD AND THE CREDENTIAL GUARD FOR THE VERIFIER BOXES. The image's
+# idle reaper is the only thing that takes a throwaway EC2 box down when the
+# session that started it is gone, and it has to pull both ways at once: a
+# reaper that stops reaping is a bill with no ceiling, and a reaper that fires
+# during a gate is a verdict nobody has. Beside it, the owner's IAM bootstrap
+# mints a credential — a bootstrap that opens an ingress rule, mints a key per
+# run, or bakes one deployment's name into an account two products share is an
+# incident rather than a bug.
+#
+# IT IS ALL SHIMS AND CREATES NOTHING. `aws`, `who`, `pgrep`, `date`,
+# `shutdown` and `logger` are planted on PATH per case and record their argv;
+# no AWS resource is created, described or terminated, and no real machine is
+# touched. What that buys is the arguments and the refusals; what it cannot
+# buy is declared in the drive's own header and is the field test's.
+#
+# It is under `scripts/tests/` rather than `deploy/tests/` deliberately: the
+# deploy-layer drives are a declared blind spot this leg prints and does not
+# run, and these guards may not live there.
+#
+# No docker, no database, no `uv`, no network; `python3`, `bash` and the files
+# under deploy/verifier and deploy/iam.
+set +e
+./scripts/tests/test_verifier_image.sh
+VERIFIER_IMAGE_DRIVE_RC=$?
+set -e
+if [ "$VERIFIER_IMAGE_DRIVE_RC" = "2" ]; then
+    echo "!! the verifier-image drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$VERIFIER_IMAGE_DRIVE_RC" != "0" ]; then
+    echo "!! a verifier box's reaper, its launch seam, its least-privilege policy or the" >&2
+    echo "   owner's bootstrap no longer behaves as designed. Every one of those failures" >&2
+    echo "   is silent in production: a box that never reaps bills until somebody" >&2
+    echo "   notices, a box reaped mid-gate loses a verdict, and a credential that can" >&2
+    echo "   reach an untagged instance can reach an environment box." >&2
+    exit "$VERIFIER_IMAGE_DRIVE_RC"
+fi
+# <<< drive: verifier_image <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin verifier_box; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: verifier_box >>>
+# THE WRAPPER THAT SPENDS THE MONEY. `scripts/verifier_box.sh` launches EC2
+# instances, terminates them, and pushes this tree onto a machine a verification
+# then runs on. Every one of its failure modes is silent in the direction that
+# costs: a refusal that launches first and refuses second, a box ceiling that
+# becomes on-demand money instead of a refusal, a `down` that reaches an
+# instance nobody tagged as ours or another deployment's box in the same
+# account, a `loop` that pipes the gate and hands the ledger a lie, a `bake`
+# that leaves its builder running. None of those red anything by themselves.
+#
+# IT CREATES NOTHING. `aws`, `ssh`, `scp`, `git`, `session-manager-plugin` and
+# `sleep` are planted on PATH per case and every invocation is recorded twice —
+# as an operation for counting and as a whole command line for reading. No AWS
+# call leaves this machine and no box exists. What that buys is the arguments
+# and the refusals; the rest is the field test's and is declared in the drive's
+# own header.
+#
+# No docker, no database, no `uv`, no network; `python3`, `ssh-keygen` (the real
+# one — the key's mode is asserted) and the files under deploy/verifier.
+set +e
+./scripts/tests/test_verifier_box.sh
+VERIFIER_BOX_DRIVE_RC=$?
+set -e
+if [ "$VERIFIER_BOX_DRIVE_RC" = "2" ]; then
+    echo "!! the verifier-box drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$VERIFIER_BOX_DRIVE_RC" != "0" ]; then
+    echo "!! the verifier-box wrapper no longer refuses what it is there to refuse, or no" >&2
+    echo "   longer launches what it says it launches. It spends money and terminates" >&2
+    echo "   machines: a wall that stopped firing is a bill nobody is watching, and a" >&2
+    echo "   tag check that stopped firing reaches another deployment's box." >&2
+    exit "$VERIFIER_BOX_DRIVE_RC"
+fi
+# <<< drive: verifier_box <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin selftest_leg; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: selftest_leg >>>
+# THIS LEG'S OWN DRIVE, and it is the last one registered because it is the only
+# one whose subject is the thing running it. It does NOT re-enter the gate and
+# it does NOT run the real drive set: it extracts the text between this leg's
+# `selftest-leg` sentinels into a scratch directory, sources it there, and hands
+# `selftest_drives_leg` a scratch set of tiny planted drives through
+# `DJB_SELFTEST_DRIVES_DIR` — one red, one could-not-look, the rest green — so
+# the composition can be driven in every state a real set can reach without any
+# real drive being the victim (rung-execution §2: a drive builds its own victim,
+# and it invokes the leg BODY rather than the gate around it).
+#
+# WHAT IT IS FOR. The leg's exit is COMPOSED from the whole population rather
+# than taken from whichever member reddened first, and every way that
+# composition can go wrong is silent: a 2 that stopped outranking a 1 is a
+# could-not-look reported as a refusal that fired; a red name dropped from the
+# list is a drive that ran and was not reported; an engine selftest that goes
+# back to stopping the drives puts the leg back to one red per 25-minute gate,
+# which is the cost the composition was built to stop paying.
+#
+# It also carries the censuses the move must not break: every literal drive
+# invocation line and every `# >>> drive: <name> >>>` sentinel is still inside
+# the function, each drive block is byte-identical to the one it replaced with
+# its own `exit` intact inside its own fence, and the deploy-layer blind-spot
+# banner below is unchanged.
+#
+# No docker, no database, no network; it shims `uv` rather than running the
+# engine. Seconds.
+set +e
+./scripts/tests/test_selftest_leg.sh
+SELFTEST_LEG_DRIVE_RC=$?
+set -e
+if [ "$SELFTEST_LEG_DRIVE_RC" = "2" ]; then
+    echo "!! the selftest-leg drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$SELFTEST_LEG_DRIVE_RC" != "0" ]; then
+    echo "!! this leg no longer composes its own exit from the whole drive set — or" >&2
+    echo "   the registrations the move must not break have stopped agreeing with the" >&2
+    echo "   directory. Both failures are silent from inside a green gate: the first" >&2
+    echo "   puts a builder back to one red per 25-minute run, and the second hides a" >&2
+    echo "   drive that is no longer invoked at all." >&2
+    exit "$SELFTEST_LEG_DRIVE_RC"
+fi
+# <<< drive: selftest_leg <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin stage; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: stage >>>
+# THE FIRST DEPLOY-LAYER DRIVE THIS LEG RUNS, and the one entry of the declared
+# `deploy/tests/` gap that is now closed. `deploy/stage.sh` takes a green tree
+# from the registry to a healthy box and KEYS every act on its own input, which
+# is a shape that fails in exactly one silent direction: an act that skips when
+# its input moved. The transcript still prints six acts, the exit status is
+# still 0, and the box serves old code, an unmigrated schema, or an alert route
+# reconciled to some other tree — none of which anything else here can see.
+#
+# WHY THIS ONE AND NOT ITS SIX SIBLINGS. The block below this leg declares the
+# gap and states its reason: not one drive under `deploy/tests/` sources
+# `scripts/tests/drive_preamble.sh`, and this leg runs inside the pre-push
+# hook, where an inherited absolute `GIT_DIR` turns a drive that builds
+# throwaway git repositories into a drive that writes into the real one. This
+# drive builds throwaway git repositories AND sources the preamble, so the
+# stated blocker does not apply to it. The six that still do not source it stay
+# printed and unrun, and the block below names them.
+#
+# It creates nothing: `ssh`, `provision.sh` and `ship.sh` are planted per case,
+# every remote command line is recorded, and no box, registry or container
+# runtime is reached. No docker, no database, no network; git and bash.
+set +e
+./deploy/tests/test_stage.sh
+STAGE_DRIVE_RC=$?
+set -e
+if [ "$STAGE_DRIVE_RC" = "2" ]; then
+    echo "!! the stage drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$STAGE_DRIVE_RC" != "0" ]; then
+    echo "!! the keyed deploy no longer keys what it says it keys, or no longer" >&2
+    echo "   refuses a box that cannot say which tree it holds. Both are silent from" >&2
+    echo "   inside a green run: the deploy prints its acts and exits 0 either way," >&2
+    echo "   and the box is the only place the difference shows." >&2
+    exit "$STAGE_DRIVE_RC"
+fi
+# <<< drive: stage <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+    SELFTEST_COMPOSED_RC=0
+    selftest_compose || SELFTEST_COMPOSED_RC=$?
+    return "$SELFTEST_COMPOSED_RC"
+}
+# <<< selftest-leg <<<
+
+# THE CALL, and the ONE exit this leg has. `|| RC=$?` rather than a bare call:
+# it is the idiom that keeps errexit off the leg's own body, so a drive's red
+# ends that drive's subshell and nothing else.
+SELFTEST_LEG_RC=0
+selftest_drives_leg || SELFTEST_LEG_RC=$?
+set -e
+if [ "$SELFTEST_LEG_RC" != "0" ]; then
+    exit "$SELFTEST_LEG_RC"
+fi
+}
+gate_run_body selftest gate_leg_selftest
 
 # --- WHAT THIS LEG DOES NOT RUN, SAID OUT LOUD --------------------------------
 #
@@ -3680,11 +7430,29 @@ fi
 # than going on reciting a blocker that is gone. It stays a printed notice and
 # not a red — a gate that reddened because somebody else improved a drive is the
 # "reddened by legitimate work" class this file refuses elsewhere.
+#
+# IT IS THE SELFTEST LEG'S NOTICE AND IT PRINTS WHERE THAT LEG RAN. A runner
+# handed some OTHER unit never ran the drives this block declares a gap beside,
+# and a blind-spot notice under a transcript containing no drives at all reads
+# as a claim about the unit in front of it. `GATE_LEG_UNIT_LEGS` is empty on
+# every path but a unit run, so the guard is a no-op everywhere else and the
+# whole-gate transcript is unchanged.
 DEPLOY_DRIVES=()
-for DEPLOY_DRIVE in deploy/tests/test_*.sh; do
-    [ -f "$DEPLOY_DRIVE" ] || continue
-    DEPLOY_DRIVES+=("$DEPLOY_DRIVE")
-done
+case "${GATE_LEG_UNIT_LEGS:-,selftest,}" in
+*,selftest,*)
+    for DEPLOY_DRIVE in deploy/tests/test_*.sh; do
+        [ -f "$DEPLOY_DRIVE" ] || continue
+        # A DRIVE THIS LEG ACTUALLY RUNS IS NOT A GAP, and the exclusion is
+        # DERIVED from this file's own invocation lines rather than typed: the
+        # first deploy-layer drive to be wired left the block below saying it
+        # was not run, on the same page as its own `drive <name>: exit 0` line.
+        # `grep -qxF` — the whole line, at column zero, which is the same shape
+        # `selftest_registered_drives` reads.
+        grep -qxF "./${DEPLOY_DRIVE}" scripts/check.sh && continue
+        DEPLOY_DRIVES+=("$DEPLOY_DRIVE")
+    done
+    ;;
+esac
 if [ "${#DEPLOY_DRIVES[@]}" -gt 0 ]; then
     echo ""
     echo "  NOT RUN BY THIS LEG — a DECLARED blind spot, not a silent one:"
@@ -3710,6 +7478,7 @@ if [ "${#DEPLOY_DRIVES[@]}" -gt 0 ]; then
 fi
 
 leg full-house-rules "house rules, full (live scan + diff vs merge-base when on a branch)"
+gate_leg_full_house_rules() {
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
 DIFF_ARGS=()
 if [ "$BRANCH" != "main" ] && [ "$BRANCH" != "HEAD" ] && git rev-parse --verify -q main >/dev/null; then
@@ -3730,15 +7499,49 @@ if [ "$GATE_RC" = "2" ]; then
 elif [ "$GATE_RC" != "0" ]; then
     exit "$GATE_RC"
 fi
+}
+gate_run_body full-house-rules gate_leg_full_house_rules
 
 leg_done
 echo "ok: all checks passed ($(($(date +%s) - T_MODE_START))s)"
+if [ -n "$GATE_LEG_UNIT" ]; then
+    echo "  ...of ONE UNIT: ${GATE_LEG_UNIT}${GATE_SHARD:+ shard ${GATE_SHARD}}. The other units of this"
+    echo "  gate were neither announced nor run — ./scripts/check.sh --list-legs names them."
+fi
 
 # --- the verdict, recorded ---------------------------------------------------
 # Only the FULL path earns one: a partial run must never vouch for a tree.
 # Reaching this line at all means exit 0.
 MEASURED_END=$(gate_measured_tree || true)
-if [ -n "$GATE_PR" ]; then
+if [ -n "$GATE_STORE_MEMBERS" ]; then
+    # A MEASUREMENT RUN BANKS NOTHING, AND IT WRITES A TRACKED FILE — in that
+    # order, and the two facts are the same fact. The file it rewrites is part
+    # of the tree a verdict would be keyed on, so a run that both wrote it and
+    # banked would vouch for bytes that no longer exist. This is why
+    # `--store-durations` is a separate run rather than a flag on a bank.
+    GATE_MEMBER_PATH=$(always_on_durations_path)
+    if gate_member_durations_write "$GATE_MEMBER_PATH" "${MEASURED_START:-unmeasured}"; then
+        echo "  --store-durations: ${GATE_MEMBER_PATH} REWRITTEN from this run's own clock"
+        echo "                     ($(LC_ALL=C sort -u "$GATE_MEMBER_TIMES" | awk 'END { print NR + 0 }') member(s), measured_at ${MEASURED_START:-unmeasured} on $(uname -sr))"
+        echo "  It is a MEASUREMENT and not a verdict: nothing was banked, and the file"
+        echo "  is committed by whoever ran this, as the measurement it is. The --loop"
+        echo "  always-on set is derived from it at the next loop."
+    else
+        echo "!! --store-durations: nothing was written to ${GATE_MEMBER_PATH}." >&2
+        echo "   No member reported its seconds, or the path is not writable. The" >&2
+        echo "   always-on set goes on deriving from whatever is committed there." >&2
+        exit 2
+    fi
+    [ -z "$GATE_MEMBER_TIMES" ] || rm -f "$GATE_MEMBER_TIMES"
+elif [ -n "$GATE_LEG_UNIT" ]; then
+    # A UNIT IS A PART, AND A PART VOUCHES FOR NOTHING. Not the full verdict row
+    # the pre-push hook reads, not a partition row, not a loop row: every one of
+    # them is a claim that a whole gate has passed these bytes, and this run ran
+    # one unit of it. The runner that was handed every unit has the whole claim
+    # between them, and nothing in this checkout is entitled to assemble it.
+    echo "  no verdict recorded — --leg ${GATE_LEG_UNIT}${GATE_SHARD:+ --shard ${GATE_SHARD}}: one unit of the gate"
+    echo "  is a targeted drive and vouches for no tree. The tree it ran on was ${MEASURED_END:-unreadable}."
+elif [ -n "$GATE_PR" ]; then
     # A NARROWED RUN VOUCHES FOR NO TREE. The ledger's rows are consulted by the
     # pre-push hook, which reads them as "a full gate has passed these bytes";
     # this run passed a SCOPE of them. A row nobody may read is a row nobody
@@ -3746,6 +7549,11 @@ if [ -n "$GATE_PR" ]; then
     echo "  no verdict recorded — narrowed run (--pr banks nothing: no full verdict row,"
     echo "  no partition row). The tree it measured was $MEASURED_END."
     gate_run_note narrowed-run
+elif [ -n "${DJB_GATE_LEGS_DRY:-}" ]; then
+    # A DRY RUN JUDGED NOTHING. Every leg was announced and no body ran, so the
+    # one thing that must not happen is a verdict row saying this tree passed.
+    echo "  no verdict recorded — DJB_GATE_LEGS_DRY: every leg was announced and none ran"
+    gate_run_note legs-dry
 elif [ -z "$MEASURED_START" ] || [ -z "$MEASURED_END" ]; then
     echo "  no verdict recorded — the tree could not be measured"
     gate_run_note unmeasured

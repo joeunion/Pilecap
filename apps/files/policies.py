@@ -7,6 +7,30 @@ takes the acting `Actor` and the object, and it returns a bool.
 **The rule for this app is one sentence: anybody in the tenant may put a
 document in and take one out; only an owner or an admin may archive one.**
 
+**After the sweep this file asks no role, and two of its four predicates are
+gone.** What `admin` and `member` are is `apps/core/roles.py`'s, a tenant's own
+`Role`, `RolePermission` and `Grant` rows compose with it, and the node half of
+every question is `core.authz.where_of`'s — a `file.*` key is a key of the
+registry kind `file` now (`StoredFile.authz_kind`), so it is asked at the row's
+own organization instead of nowhere in particular.
+
+* `can_read` asked "does this actor carry a membership in the tenant" and never
+  looked at the document. `member` holds `*.read` by its declared pattern, so
+  the role layer answers it and no declaration had to move.
+* `can_archive` asked for an owner or an admin. That is the data half's question
+  exactly: `admin` holds `file.archive` by `*`, `member` matches no pattern that
+  gives it, and neither reading is this file's to make.
+
+**DEFERRED, by the PM's ruling of 2026-09-16, and named here so it is not
+mistaken for an oversight: `can_file` and `can_replace` still admit any
+membership.** The sweep's shape puts that half in `DEFAULT_ROLES` — "a `member`
+may file, and may replace" as data rather than as a predicate — and a
+`DEFAULT_ROLES` entry moves what `defaults_for("member")` answers, which is a
+pin of the flat product that no per-app sweep may move alone. So both keep their
+membership half as transitional residue, `member` goes on holding them through
+the vocabulary's own compat column, and `tests/authz_baseline.json` measures
+that rather than claiming it.
+
 Filing and reading are ordinary product work. Gating them behind a role would
 push a product into writing its own upload path — which is the exact bypass the
 storage seam exists to close, and the same argument `apps/comms/policies.py`
@@ -39,29 +63,12 @@ from apps.core.actor import Actor
 from apps.core.authz import Policy, membership_for
 
 
-def _is_privileged(actor: Actor) -> bool:
-    membership = membership_for(actor)
-    return membership is not None and membership.is_privileged
-
-
 def can_file(actor: Actor, obj: Any = None) -> bool:
     """Anybody in the tenant may put a document in, under the hat they are wearing.
 
     Where it lands is not this predicate's question: ADR core-20's placement law
     puts a created row at the ACTING HAT and never at the root, and a version
     lands where its document lives (`FileVersion.derive_org_from`).
-    """
-    return membership_for(actor) is not None
-
-
-def can_read(actor: Actor, obj: Any = None) -> bool:
-    """Anybody in the tenant may read the documents their hat can already see.
-
-    `obj` is the `StoredFile` when there is one, and the predicate deliberately
-    does not inspect it: whether this actor may see THIS row is rule 24's answer
-    and `may_be_named`'s, both of which have already run by the time a service
-    calls `require`. A second, weaker opinion here would be a place for the two
-    to disagree.
     """
     return membership_for(actor) is not None
 
@@ -77,22 +84,35 @@ def can_replace(actor: Actor, obj: Any = None) -> bool:
     return membership_for(actor) is not None
 
 
-def can_archive(actor: Actor, obj: Any = None) -> bool:
-    """Only an owner or an admin takes a document out of the working set.
-
-    See the module docstring: archiving is the nearest thing to a delete here and
-    it is not a delete, which is precisely why it takes a role. A member who
-    filed something in the wrong place asks somebody who administers the branch,
-    and that ask is the audit trail working.
-    """
-    return _is_privileged(actor)
-
-
 POLICIES: dict[str, Policy] = {
+    # Two, not four. `file.read` and `file.archive` are the role layer's
+    # questions and it answers them — see the module docstring. These two are
+    # here only until the deferred `DEFAULT_ROLES` rung moves their membership
+    # half, at which point this mapping is empty and the file is prose, prose
+    # that still earns its place because `ACTION_PROSE` below is what a refused
+    # caller reads.
     "file.create": can_file,
-    "file.read": can_read,
     "file.replace": can_replace,
-    "file.archive": can_archive,
+}
+
+
+# The kinds this app's two models used to yield, renamed onto the one they yield
+# now (ADR core-25). **Derived keys, not declared ones**: nobody ever typed
+# `stored_file.read` — the registry produced it from the class name, and
+# `StoredFile.authz_kind` deletes it. `core.authz.allows` resolves an alias one
+# line BEFORE the policy lookup, so anything still saying an old word gets the
+# new key's answer rather than falling to the role default with nothing saying
+# so. A deployment whose `Grant` or `RolePermission` ROWS carry one runs
+# `manage.py rename_permission`; a row is inert until it does.
+RENAMED_PERMISSIONS: dict[str, str] = {
+    "stored_file.create": "file.create",
+    "stored_file.read": "file.read",
+    "stored_file.update": "file.update",
+    "stored_file.delete": "file.delete",
+    "file_version.create": "file.create",
+    "file_version.read": "file.read",
+    "file_version.update": "file.update",
+    "file_version.delete": "file.delete",
 }
 
 

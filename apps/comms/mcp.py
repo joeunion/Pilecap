@@ -169,7 +169,7 @@ def register(server: MCPServer[Any]) -> None:
             # one, and narrowing a queryset cannot widen its tenant.
             messages: QuerySet[Message] = MessageFilter(
                 status=status, channel=channel, template=template
-            ).filter(list_messages(tenant=acting.tenant, org=acting.org))
+            ).filter(list_messages(tenant=acting.tenant, org=acting.org, actor=acting.actor()))
             messages = ordered_by(messages, ordering, allowed=ORDERING, default="-created_at")
             page = cursor_page(
                 messages,
@@ -195,7 +195,12 @@ def register(server: MCPServer[Any]) -> None:
             # HTTP: a refusal that distinguished the two would tell the caller
             # the row exists, which is the fact the scoping was hiding.
             return MessageOut.from_orm(
-                get_message(tenant=acting.tenant, message_id=message_id, org=acting.org)
+                get_message(
+                    tenant=acting.tenant,
+                    message_id=message_id,
+                    org=acting.org,
+                    actor=acting.actor(),
+                )
             )
 
     @server.tool(
@@ -213,7 +218,9 @@ def register(server: MCPServer[Any]) -> None:
     ) -> MessageOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=acting.org)
+            recipient = get_recipient(
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+            )
             return MessageOut.from_orm(
                 send(
                     recipient=recipient,
@@ -234,7 +241,9 @@ def register(server: MCPServer[Any]) -> None:
     def cancel_message_tool(ctx: Context[Any], message_id: UUID) -> MessageOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            message = get_message(tenant=tenant, message_id=message_id, org=acting.org)
+            message = get_message(
+                tenant=tenant, message_id=message_id, org=acting.org, actor=acting.actor()
+            )
             return MessageOut.from_orm(
                 cancel_message(tenant=tenant, actor=acting.actor(), message=message)
             )
@@ -256,9 +265,11 @@ def register(server: MCPServer[Any]) -> None:
             # uses, so a message this hat cannot see is `not_found` here too —
             # and the engagement list never becomes a way to learn that
             # somebody else's message exists.
-            message = get_message(tenant=acting.tenant, message_id=message_id, org=acting.org)
+            message = get_message(
+                tenant=acting.tenant, message_id=message_id, org=acting.org, actor=acting.actor()
+            )
             rows: QuerySet[MessageEngagement] = list_engagements(
-                tenant=acting.tenant, message=message, org=acting.org
+                tenant=acting.tenant, message=message, org=acting.org, actor=acting.actor()
             )
             rows = ordered_by(rows, ordering, allowed=ENGAGEMENT_ORDERING, default="-occurred_at")
             page = cursor_page(
@@ -298,7 +309,9 @@ def register(server: MCPServer[Any]) -> None:
     ) -> DeviceOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=acting.org)
+            recipient = get_recipient(
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+            )
             return DeviceOut.from_orm(
                 register_device(
                     tenant=tenant,
@@ -317,7 +330,9 @@ def register(server: MCPServer[Any]) -> None:
     def retire_device_tool(ctx: Context[Any], device_id: UUID) -> DeviceOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            device: Device = get_device(tenant=tenant, device_id=device_id, org=acting.org)
+            device: Device = get_device(
+                tenant=tenant, device_id=device_id, org=acting.org, actor=acting.actor()
+            )
             return DeviceOut.from_orm(
                 retire_device(tenant=tenant, actor=acting.actor(), device=device)
             )
@@ -341,7 +356,7 @@ def register(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             templates: QuerySet[MessageTemplate] = TemplateFilter(
                 name=name, channel=channel, category=category
-            ).filter(list_templates(tenant=acting.tenant))
+            ).filter(list_templates(tenant=acting.tenant, actor=acting.actor()))
             templates = ordered_by(templates, ordering, allowed=TEMPLATE_ORDERING, default="name")
             page = cursor_page(
                 templates,
@@ -363,7 +378,9 @@ def register(server: MCPServer[Any]) -> None:
     )
     def get_template_tool(ctx: Context[Any], name: str) -> TemplateOut:
         with tool_call(ctx) as acting:
-            return TemplateOut.from_orm(get_template(tenant=acting.tenant, name=name))
+            return TemplateOut.from_orm(
+                get_template(tenant=acting.tenant, name=name, actor=acting.actor())
+            )
 
     @server.tool(
         name="create_template",
@@ -426,7 +443,7 @@ def register(server: MCPServer[Any]) -> None:
     def retire_template_tool(ctx: Context[Any], name: str) -> TemplateOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            template = get_template(tenant=tenant, name=name)
+            template = get_template(tenant=tenant, name=name, actor=acting.actor())
             return TemplateOut.from_orm(
                 retire_template(tenant=tenant, actor=acting.actor(), template=template)
             )
@@ -449,7 +466,7 @@ def register(server: MCPServer[Any]) -> None:
     ) -> PolicyPage:
         with tool_call(ctx) as acting:
             policies: QuerySet[DeliveryPolicy] = PolicyFilter(name=name).filter(
-                list_policies(tenant=acting.tenant)
+                list_policies(tenant=acting.tenant, actor=acting.actor())
             )
             policies = ordered_by(policies, ordering, allowed=POLICY_ORDERING, default="name")
             page = cursor_page(
@@ -472,7 +489,9 @@ def register(server: MCPServer[Any]) -> None:
     )
     def get_policy_tool(ctx: Context[Any], name: str) -> PolicyOut:
         with tool_call(ctx) as acting:
-            return PolicyOut.from_orm(get_policy(tenant=acting.tenant, name=name))
+            return PolicyOut.from_orm(
+                get_policy(tenant=acting.tenant, name=name, actor=acting.actor())
+            )
 
     @server.tool(
         name="create_policy",
@@ -521,7 +540,7 @@ def register(server: MCPServer[Any]) -> None:
     def retire_policy_tool(ctx: Context[Any], name: str) -> PolicyOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            policy = get_policy(tenant=tenant, name=name)
+            policy = get_policy(tenant=tenant, name=name, actor=acting.actor())
             return PolicyOut.from_orm(
                 retire_policy(tenant=tenant, actor=acting.actor(), policy=policy)
             )
@@ -541,7 +560,12 @@ def register(server: MCPServer[Any]) -> None:
     ) -> RecipientPage:
         with tool_call(ctx) as acting:
             recipients: QuerySet[Recipient] = RecipientFilter(email=email).filter(
-                list_recipients(tenant=acting.tenant, org=acting.org, include_archived=archived)
+                list_recipients(
+                    tenant=acting.tenant,
+                    org=acting.org,
+                    include_archived=archived,
+                    actor=acting.actor(),
+                )
             )
             recipients = ordered_by(
                 recipients, ordering, allowed=RECIPIENT_ORDERING, default="email"
@@ -567,7 +591,12 @@ def register(server: MCPServer[Any]) -> None:
     def get_recipient_tool(ctx: Context[Any], recipient_id: UUID) -> RecipientOut:
         with tool_call(ctx) as acting:
             return RecipientOut.from_orm(
-                get_recipient(tenant=acting.tenant, recipient_id=recipient_id, org=acting.org)
+                get_recipient(
+                    tenant=acting.tenant,
+                    recipient_id=recipient_id,
+                    org=acting.org,
+                    actor=acting.actor(),
+                )
             )
 
     @server.tool(
@@ -608,7 +637,9 @@ def register(server: MCPServer[Any]) -> None:
     ) -> RecipientOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=acting.org)
+            recipient = get_recipient(
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+            )
             return RecipientOut.from_orm(
                 update_recipient(
                     tenant=tenant,
@@ -628,7 +659,9 @@ def register(server: MCPServer[Any]) -> None:
     def archive_recipient_tool(ctx: Context[Any], recipient_id: UUID) -> RecipientOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=acting.org)
+            recipient = get_recipient(
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+            )
             return RecipientOut.from_orm(
                 archive_recipient(tenant=tenant, actor=acting.actor(), recipient=recipient)
             )
@@ -648,10 +681,13 @@ def register(server: MCPServer[Any]) -> None:
     ) -> PreferencePage:
         with tool_call(ctx) as acting:
             recipient = get_recipient(
-                tenant=acting.tenant, recipient_id=recipient_id, org=acting.org
+                tenant=acting.tenant,
+                recipient_id=recipient_id,
+                org=acting.org,
+                actor=acting.actor(),
             )
             preferences: QuerySet[ChannelPreference] = list_preferences(
-                tenant=acting.tenant, recipient=recipient, org=acting.org
+                tenant=acting.tenant, recipient=recipient, org=acting.org, actor=acting.actor()
             )
             page = cursor_page(
                 preferences,
@@ -676,7 +712,9 @@ def register(server: MCPServer[Any]) -> None:
     ) -> PreferenceOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=acting.org)
+            recipient = get_recipient(
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+            )
             return PreferenceOut.from_orm(
                 grant_consent(
                     tenant=tenant, actor=acting.actor(), recipient=recipient, channel=channel
@@ -692,7 +730,9 @@ def register(server: MCPServer[Any]) -> None:
     ) -> PreferenceOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=acting.org)
+            recipient = get_recipient(
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+            )
             return PreferenceOut.from_orm(
                 revoke_consent(
                     tenant=tenant, actor=acting.actor(), recipient=recipient, channel=channel
@@ -713,7 +753,9 @@ def register(server: MCPServer[Any]) -> None:
     ) -> PreferenceOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=acting.org)
+            recipient = get_recipient(
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+            )
             return PreferenceOut.from_orm(
                 set_quiet_hours(
                     tenant=tenant,
@@ -735,7 +777,9 @@ def register(server: MCPServer[Any]) -> None:
     ) -> PreferenceOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=acting.org)
+            recipient = get_recipient(
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+            )
             return PreferenceOut.from_orm(
                 suppress_recipient(
                     tenant=tenant, actor=acting.actor(), recipient=recipient, channel=channel
@@ -751,7 +795,9 @@ def register(server: MCPServer[Any]) -> None:
     ) -> PreferenceOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=acting.org)
+            recipient = get_recipient(
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+            )
             return PreferenceOut.from_orm(
                 unsuppress_recipient(
                     tenant=tenant, actor=acting.actor(), recipient=recipient, channel=channel

@@ -20,6 +20,7 @@ import ast
 import asyncio
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import sys
@@ -559,19 +560,111 @@ DJB_REACH_FLOORS: dict[str, int] = {kind: 1 for kind in DJB_REACH_TOKENS}
 #:   xargs grep -lF 'management.commands.introspect' < /tmp/m | wc -l # introspect_registry_readers
 #:   grep -c 'tests/test_lifecycle\.py$'  /tmp/m                      # lifecycle_registry_walkers
 #:
-#: RUN 2026-09-07 on tree 08c4120e9fb1a982370ee6a337a566ae28c686bf (main
-#: 185df7b), N = 3382 items collected over 234 modules → 3 · 10 · 3 · 4 · 8,
-#: which are the five integers below in order. `lifecycle_registry_walkers`
-#: read 6 against that derived 8 from 016a5c0 until this line was written: two
-#: modules of slack under a comment claiming nothing here was chosen. The
-#: floor is RE-DERIVED, not reworded, so the sentence above stays a fact.
+#: RUN 2026-09-18 on tree 05b95d786bf1d68c6a025421a5a404d38543f09a (main
+#: a3950afd), N = 4011 items collected over 267 modules → 4 · 14 · 3 · 6 · 8.
+#: FOUR OF THE FIVE INTEGERS BELOW ARE THAT RUN; `door_parity_census` and
+#: `introspect_registry_readers` ARE NOT, and the gap is recorded rather than
+#: closed here. `apps_root_modules` was re-derived from 3 to 4 —
+#: `apps/test_census_markers.py` joined the population and a floor of 3 under
+#: four members let a member be moved aside without the refusal ever naming
+#: the population it emptied, which is how `test_loop_scope.sh`'s moved-aside
+#: case found it. The other two read 14 and 6 against the 10 and 4 they still
+#: carry from the 2026-09-07 run on tree 08c4120e (3 · 10 · 3 · 4 · 8): a
+#: floor left under its own derivation cannot tell a deletion from a
+#: derivation going blind, so both are a live gap and both are somebody's
+#: rung, not a line changed in passing by a hotfix whose territory was this
+#: one floor. The floor that moved is RE-DERIVED, not reworded, so the
+#: sentence above stays a fact of it.
 DJB_POPULATION_FLOORS: dict[str, int] = {
-    "apps_root_modules": 3,
+    "apps_root_modules": 4,
     "door_parity_census": 10,
     "absent_world_consumers": 3,
     "introspect_registry_readers": 4,
     "lifecycle_registry_walkers": 8,
 }
+
+# THE THIRD WAY IN, AND IT IS A DECLARATION RATHER THAN A DERIVATION.
+#
+# Everything above derives always-on from what a module READS through a Django
+# registry. A census that walks the SOURCE TREE BY PATH reads no registry at
+# all: `apps/core/tests/test_settings.py` parses `config/settings/base.py`,
+# `apps/files/tests/test_storage_fence.py` rglobs every `*.py` under `apps/`,
+# `apps/workflows/tests/test_services.py` does the same three times. No token
+# above can see any of them, so a scope that does not contain their app
+# deselects them — and a change in the app the census exists to police is
+# exactly the change no scope will ever pair with the census. That is not a
+# narrowing, it is a hole.
+#
+# So the module SAYS SO ITSELF, at column zero inside its first
+# `DJB_CENSUS_MARKER_LINES` lines, in the marker grammar this tree already uses
+# for `# drives:` in `scripts/tests/`:
+#
+#     <marker> <one line saying what population it walks>
+#
+# THE REASON IS MANDATORY AND ITS ABSENCE IS COULD-NOT-LOOK, never a silently
+# unmarked module. The whole value of a declaration over a derivation is that a
+# reader can DISAGREE with it, and a bare marker is a claim nobody can dispute.
+#
+# WHY A DECLARATION AT ALL, when everything else here is derived: the walk is
+# spelled in an open set of ways, so the derivation below can only ever be a
+# hand list of tokens — and a hand list is right on the day it is written. The
+# marker is the half a human writes; `apps/test_census_markers.py` is the half
+# that re-derives it, in BOTH directions, so neither half can go quiet alone.
+DJB_CENSUS_MARKER = "# census: cross-app"
+
+#: How far into a module the marker is looked for. A header, not a haystack: a
+#: declaration buried at line 400 is not a declaration anybody reads.
+DJB_CENSUS_MARKER_LINES = 40
+
+# THE POPULATION: THE HALF OF THE DECLARATION A LOOP CAN ACT ON.
+#
+# A marker alone says "run me at every scope", and that is the right answer for
+# a census and the wrong PRICE for every loop that could not possibly have moved
+# what the census walks: fifteen marked modules ride on every scope today, and a
+# rung that edited one template pays for the module that parses
+# `config/settings/base.py` exactly as a rung that edited the settings does.
+#
+# So the declaration may also say WHICH FILES IT IS ABOUT, in the same line and
+# immediately after the marker:
+#
+#     <marker> population=<glob>[,<glob>] <one line saying what it walks>
+#
+# The globs are checkout-relative, comma-joined, and shaped like `# drives:`
+# (`scripts/gate_ledger.sh`) — `apps/**/*.py`, `config/settings/base.py`,
+# `templates/**/*.html`. A census WITH a population runs whenever any changed
+# file the caller named (`--djb-changed`) is inside any of its globs, and at
+# every scope when the caller named none. A census with NO population runs
+# always, exactly as it did before this grammar existed, and the banner SAYS SO
+# — the silent default is the one a reader cannot audit.
+#
+# TWO REFUSALS, BOTH COULD-NOT-LOOK, for the reason the missing reason already
+# is one: a `population=` with no globs after it, and a population whose globs
+# match NOTHING on this tree (`_census_population_or_refuse`). A glob with a typo
+# in it would otherwise deselect its census from every loop forever, and the
+# only symptom of that is a green one.
+#
+# WHAT IT IS NOT: a claim anybody checked. Whether a declared population is the
+# RIGHT population is a reviewer's finding, exactly as the reason is — which is
+# why both live in the module's first lines, where a reviewer has one place to
+# look. `apps/test_census_markers.py` re-derives that the globs resolve, never
+# that they are the ones the walk needed.
+DJB_CENSUS_POPULATION = "population="
+
+#: The source tokens that mean "this module walks the source tree" — the
+#: population the marker exists for, and the population the REVERSE census in
+#: `apps/test_census_markers.py` re-derives the marked set from.
+#:
+#: A HAND LIST OF AN OPEN SET, legal only because of that reverse half: a
+#: walker spelled with a fifth token escapes both halves identically, which is
+#: this rule's declared blind spot. The day a miss names a fifth token is the
+#: day it joins this tuple — and joining it changes these bytes, which moves the
+#: loop ledger's key, which is the property the sentinels exist for.
+DJB_WALK_TOKENS: tuple[str, ...] = (
+    "source_tree(",
+    ".rglob(",
+    'glob("apps/',
+    "glob('apps/",
+)
 # <<< always-on-derivation <<<
 
 #: Per-module reach verdicts, cached beside the organ verdicts and for the same
@@ -699,6 +792,254 @@ def _module_reach(path: str) -> frozenset[str]:
     return reach
 
 
+#: Per-module census DECLARATIONS, cached beside the reach ones and for the same
+#: reason. `("", ())` is a real answer here (this module declares nothing), which
+#: is why the cache is checked with `is not None` rather than for truthiness.
+_DJB_MODULE_CENSUS: dict[str, tuple[str, tuple[str, ...]]] = {}
+
+
+def _module_census_reason(path: str) -> str:
+    """The reason a module DECLARES for being a cross-app census; `""` unmarked."""
+    return _module_census_declaration(path)[0]
+
+
+def _module_census_population(path: str) -> tuple[str, ...]:
+    """The globs a marked module DECLARES it is about; `()` when it names none.
+
+    `()` is "no population — always", not "an empty population": the second is a
+    refusal and it is made in `_module_census_declaration` below.
+    """
+    return _module_census_declaration(path)[1]
+
+
+def _module_census_declaration(path: str) -> tuple[str, tuple[str, ...]]:
+    """The reason and the population a module DECLARES; `("", ())` unmarked.
+
+    The grammar is the sentinel block's: the marker at column zero, inside the
+    first `DJB_CENSUS_MARKER_LINES` lines, followed by whitespace, an optional
+    `population=<glob>[,<glob>]`, and a reason.
+
+    THREE REFUSALS, AND ALL THREE ARE COULD-NOT-LOOK RATHER THAN AN EMPTY
+    ANSWER — the same rule its two neighbours state, for the same reason. A
+    module pytest has just imported and this cannot read is a refusal; a marker
+    with NO reason is a refusal too, because the alternative is treating an
+    unreadable declaration as an absent one, which is how a census silently
+    stops being always-on at the moment somebody half-wrote its marker; and a
+    `population=` with no globs after it is the same failure one clause along.
+    The fourth refusal — a population that names nothing on the tree — needs a
+    tree and is therefore `_census_population_or_refuse`'s, not this one's.
+    """
+    cached = _DJB_MODULE_CENSUS.get(path)
+    if cached is not None:
+        return cached
+    try:
+        head = pathlib.Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise pytest.UsageError(
+            f"the --loop scope could not read {path} to derive its census declaration "
+            f"({exc}). An underived population is not an empty one: a module this "
+            "could not read would be deselected as if it had declared nothing."
+        ) from exc
+    reason = ""
+    globs: tuple[str, ...] = ()
+    for line in head[:DJB_CENSUS_MARKER_LINES]:
+        if not line.startswith(DJB_CENSUS_MARKER):
+            continue
+        rest = line[len(DJB_CENSUS_MARKER) :]
+        if rest and not rest[0].isspace():
+            # `<marker>lication` is a different word, not this marker.
+            continue
+        reason = rest.strip()
+        if reason.startswith(DJB_CENSUS_POPULATION):
+            # THE POPULATION COMES FIRST AND IT IS ONE WORD. Anything after the
+            # first whitespace is the reason, whole — a population is a machine's
+            # half of the line and a sentence is a reader's, and putting the
+            # machine's half first is what keeps the sentence from having to be
+            # parsed at all.
+            spec, _, reason = reason[len(DJB_CENSUS_POPULATION) :].partition(" ")
+            globs = tuple(part for part in spec.split(",") if part)
+            reason = reason.strip()
+            if not globs:
+                raise pytest.UsageError(
+                    f"{path} declares an EMPTY POPULATION. The grammar is "
+                    f"`{DJB_CENSUS_MARKER} {DJB_CENSUS_POPULATION}<glob>[,<glob>] "
+                    "<reason>` — see the sentinel block in apps/conftest.py. A "
+                    "population nobody can match against is not a narrowing, it is "
+                    "a census that would be deselected by every scope, so this "
+                    "refuses rather than reading it as an absent population."
+                )
+        if not reason:
+            raise pytest.UsageError(
+                f"{path} declares itself a cross-app census and gives NO REASON. "
+                "The grammar is the marker at column zero followed by one line "
+                "saying what population the module walks — see the sentinel block "
+                "in apps/conftest.py. A declaration nobody can disagree with is "
+                "not a declaration, so this refuses rather than reading the line "
+                "as an absent marker."
+            )
+        break
+    _DJB_MODULE_CENSUS[path] = (reason, globs)
+    return reason, globs
+
+
+# --- the population: matching it, resolving it, and saying what it did -------
+
+#: The checkout, for resolving a declared population against a real tree.
+#: `apps/conftest.py` -> the directory above `apps`, the same arithmetic
+#: `apps/test_census_markers.py::REPO_ROOT` does.
+DJB_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _census_glob_regex(glob: str) -> str:
+    """One checkout-relative glob as an anchored regex over a POSIX path.
+
+    `fnmatch` is not this, and the difference is the whole reason for the eight
+    lines: its `*` crosses `/`, so `apps/*/services.py` would match
+    `apps/core/api/services.py` and a population would silently be wider than
+    the one its author wrote. Here `*` is one segment's worth, `**` is any
+    number of whole segments, and a trailing `**` is everything below.
+    """
+    segments = glob.split("/")
+    out = ["^"]
+    for index, segment in enumerate(segments):
+        last = index == len(segments) - 1
+        if segment == "**":
+            out.append(".*" if last else "(?:[^/]+/)*")
+            continue
+        out.append(
+            "".join(
+                "[^/]*" if char == "*" else "[^/]" if char == "?" else re.escape(char)
+                for char in segment
+            )
+        )
+        if not last:
+            out.append("/")
+    out.append("$")
+    return "".join(out)
+
+
+def _census_glob_matches(glob: str, path: str) -> bool:
+    """Whether one checkout-relative path is inside one declared glob."""
+    return re.match(_census_glob_regex(glob), path.lstrip("./")) is not None
+
+
+def _census_verdict(module: str, globs: tuple[str, ...], changed: frozenset[str]) -> str | None:
+    """`None` when this census still runs; the SENTENCE saying why not when it does not.
+
+    Two ways to be kept and they are not the same claim: a census with no
+    population is unconditional (the grammar's default, printed by
+    `_census_banner`), and a caller that named no changed files narrows nothing
+    at all — the `--djb-scope-narrow` rule, which is that nothing narrows unless
+    somebody asked.
+    """
+    if not globs or not changed:
+        return None
+    if any(_census_glob_matches(glob, path) for glob in globs for path in changed):
+        return None
+    return f"{module}: population {','.join(globs)} does not contain the change — deselected"
+
+
+#: Resolved populations, keyed on the module and the root they were resolved
+#: against: the check walks the tree, and a per-item walk over fifteen modules
+#: is the difference between a banner and a cost.
+_DJB_CENSUS_RESOLVED: dict[tuple[str, str], tuple[str, ...]] = {}
+
+
+def _census_population_or_refuse(path: str, root: pathlib.Path) -> tuple[str, ...]:
+    """The module's population, REFUSING one whose globs name nothing on this tree.
+
+    An underived population is not an empty one — the rule the reach and the
+    reason derivations above both make. Read as "no files", a glob with a typo in
+    it deselects its census from every loop forever and the only symptom is a
+    green one.
+    """
+    key = (path, str(root))
+    cached = _DJB_CENSUS_RESOLVED.get(key)
+    if cached is not None:
+        return cached
+    globs = _module_census_population(path)
+    # `next(..., None)` rather than a list: the question is whether the glob
+    # reaches ANYTHING, and `apps/**/*.py` over this tree is four thousand paths.
+    missing = [glob for glob in globs if next(iter(root.glob(glob)), None) is None]
+    if missing:
+        raise pytest.UsageError(
+            f"{path} declares population {','.join(missing)}, which names NOTHING "
+            f"under {root}. An underived population is not an empty one: read as "
+            "an empty set, this census would be deselected by every scope forever "
+            "and the only symptom would be a green loop. Fix the glob, or drop the "
+            "`population=` clause and let the census run always."
+        )
+    _DJB_CENSUS_RESOLVED[key] = globs
+    return globs
+
+
+def _census_banner(declared: dict[str, tuple[str, ...]], changed: frozenset[str]) -> list[str]:
+    """What the run SAYS about the declared censuses it narrowed.
+
+    An always-on set nobody can enumerate is one nobody audits — the argument
+    `scripts/check.sh`'s own declared-census listing is printed for. This is the
+    narrowing half of that: how many declarations there are, how many of them
+    are bounded by a population, how many survived this run's changed files, and
+    the module-by-module sentence for every one that did not.
+    """
+    deselected = sorted(
+        sentence
+        for module, globs in declared.items()
+        if (sentence := _census_verdict(module, globs, changed)) is not None
+    )
+    unbounded = sorted(module for module, globs in declared.items() if not globs)
+    lines = [
+        f"  always-on: {len(declared)} declared, "
+        f"{len(declared) - len(unbounded)} with a population, "
+        f"{len(declared) - len(deselected)} selected"
+    ]
+    if unbounded:
+        lines.append("  (no population — always): " + ", ".join(unbounded))
+    lines += [f"  {sentence}" for sentence in deselected]
+    return lines
+
+
+# --- the impact map's seam: an explicit selection, plus the always-on set -----
+
+
+def _read_impact_select(path: str) -> frozenset[str]:
+    """The nodeids a caller named, one per line. Unreadable is COULD-NOT-LOOK."""
+    try:
+        text = pathlib.Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise pytest.UsageError(
+            f"--djb-impact-select named {path}, which could not be read ({exc}). "
+            "Nothing was selected and nothing was deselected: a selection file "
+            "this cannot read would otherwise narrow the suite to the always-on "
+            "set and report a green tree over it."
+        ) from exc
+    return frozenset(line.strip() for line in text.splitlines() if line.strip())
+
+
+def _impact_selection(
+    nodeids: list[str], named: frozenset[str], always_on: frozenset[str]
+) -> tuple[frozenset[str], str]:
+    """(the nodeids to keep, the banner line). A named nodeid nothing collected refuses.
+
+    THE ORPHAN IS THE POINT. A selection is a claim about a suite, and a claim
+    naming a test this collection does not hold is a STALE MAP — which is how a
+    loop runs three tests and reports on four thousand. The caller that wrote the
+    map owns fixing it; this refuses rather than quietly selecting what is left.
+    """
+    collected = frozenset(nodeids)
+    orphans = sorted(named - collected)
+    if orphans:
+        raise pytest.UsageError(
+            "--djb-impact-select names test(s) this collection does not hold: "
+            + ", ".join(orphans)
+            + ". A selection that cannot find its member is a stale map, and a "
+            "stale map read as a selection runs a subset nobody chose. Regenerate "
+            "the map, or run without the flag."
+        )
+    keep = (named | always_on) & collected
+    return keep, f"impact-select: {len(named)} named, {len(keep - named)} always-on"
+
+
 #: Per-module cross-TEST import verdicts, beside the reach ones. Keyed on the
 #: module path alone: the labels asked about are fixed for the whole run, so a
 #: second question with a different set cannot reach this cache.
@@ -769,15 +1110,45 @@ def _population_members(path: str, nodeid: str) -> frozenset[str]:
     return frozenset(members)
 
 
-def _is_always_on(item: pytest.Item, reach: frozenset[str]) -> bool:
+def _is_always_on(item: pytest.Item, reach: frozenset[str], changed: frozenset[str]) -> bool:
     """Whether this item runs whatever the scope is.
 
-    Two ways in, and the first is structural rather than derived: an item that
-    belongs to NO app can never be inside any scope, so deselecting it would
-    need a positive decision nobody has made. The second is the derivation
-    above.
+    THREE ways in, in the order they cost:
+
+    1. STRUCTURAL. An item that belongs to NO app can never be inside any scope,
+       so deselecting it would need a positive decision nobody has made.
+    2. DERIVED. The registry-reach derivation above — a module that reads a
+       whole Django population.
+    3. DECLARED. The module carries the census marker (`_module_census_reason`),
+       which is how a census that walks the SOURCE TREE by path says so: no
+       registry token can see one, and the reverse half of
+       `apps/test_census_markers.py` is what keeps the declaration honest.
+
+    The order is not decoration: (1) and (2) are free by the time this is
+    called, and (3) reads the module's first lines off disk (cached per module).
+
+    `changed` is the caller's changed-file list (`--djb-changed`), and it can
+    only ever subtract from (3): a DECLARED census that named a `population=`
+    none of those files is inside has said, in its own line, that this change
+    cannot have moved what it walks. An empty `changed` narrows nothing.
     """
-    return _app_label(item.nodeid) is None or bool(reach)
+    if _app_label(item.nodeid) is None or reach:
+        return True
+    path = str(getattr(item, "path", "") or "")
+    if not path or not _module_census_reason(path):
+        return False
+    # (3) IS THE ONLY WAY IN A POPULATION MAY NARROW, and that is a decision
+    # rather than an omission: (1) and (2) are about what a module READS through
+    # a registry, and a registry is not a subtree anybody can name. Narrowing
+    # them by path would be the hole the always-on set exists to close.
+    return (
+        _census_verdict(
+            _module_of(item.nodeid),
+            _census_population_or_refuse(path, DJB_REPO_ROOT),
+            changed,
+        )
+        is None
+    )
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -852,6 +1223,33 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         ),
     )
     group.addoption(
+        "--djb-impact-select",
+        action="store",
+        default="",
+        metavar="PATH",
+        help=(
+            "keep exactly the nodeids PATH names (one per line) plus the always-on "
+            "cross-app set, and deselect everything else. A missing or unreadable "
+            "file is a usage error, and so is a nodeid this collection does not "
+            "hold: a selection that cannot find its member is a stale map. The map "
+            "is written by scripts/test_impact.py and read by scripts/loop_tier.sh; "
+            "no flag names a test INTO the run."
+        ),
+    )
+    group.addoption(
+        "--djb-changed",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "a file the active rung changed, checkout-relative and repeatable. A "
+            "DECLARED cross-app census that names a `population=` runs only when one "
+            "of these is inside it; a census with no population, and every DERIVED "
+            "always-on member, runs whatever this says. Without the flag nothing "
+            "narrows — the --djb-scope-narrow rule, unchanged."
+        ),
+    )
+    group.addoption(
         "--djb-scope-counts",
         action="store",
         default="",
@@ -896,6 +1294,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 # is named as one: `scripts/tests/test_loop_scope.sh`'s
 # `case_the_python_clamp_and_the_shell_share_are_the_same_number` runs both and
 # asserts they agree, so the copy cannot drift in silence.
+#
+# AND EVERY GATE LEG NOW HANDS IT DOWN, which is what closes the one case the
+# derivation above cannot get right. A `--bank` run holds EVERY pytest slot, so
+# its share is the whole box's cores rather than one slot's — a number this file
+# has no way to reach, because "how many slots is this holder holding" is the
+# semaphore's state and not the box's. It derived one slot's share anyway,
+# clamped the bank's `-n 10` to 5, and left the collector census expecting ten
+# collectors from a five-worker run: `5 of 10 collectors reported`, exit 2,
+# nothing banked (bank-2349.log, 2026-09-16). `gate_slot_worker_count`
+# (scripts/gate_lease.sh) exports the resolved share under the first name above
+# and `gate_slot_release` unsets it, so under any gate leg the branch below takes
+# the hand-down and the derivation is what a BARE `uv run pytest` gets — which is
+# the door the ceiling was built for.
 #
 # THE ESCAPE IS TYPED: `DJB_PYTEST_UNCAPPED=1`. A ceiling with no way past it
 # gets worked around by leaving the runner, which is the one place nobody can
@@ -1026,10 +1437,43 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     manifest = str(config.getoption("--djb-tier-manifest"))
     narrow = bool(config.getoption("--djb-scope-narrow"))
     counts_dir = str(config.getoption("--djb-scope-counts"))
+    # THE IMPACT SEAM. `--djb-impact-select` is a selection and narrows on its
+    # own; `--djb-changed` is a MODIFIER and narrows nothing by itself — it can
+    # only subtract from the declared censuses of a run that was already
+    # narrowing, which is why it is absent from the early return below.
+    impact_select = str(config.getoption("--djb-impact-select"))
+    changed = frozenset(str(path).lstrip("./") for path in config.getoption("--djb-changed"))
     _DJB_TIER_REPORT.clear()
-    if tier == "all" and not manifest and not narrow:
-        # The full gate's two passes take this branch and pay nothing: no source
-        # read, no closure walk, no deselection, no behaviour change at all.
+    if tier == "all" and not manifest and not narrow and not impact_select:
+        # THE WHOLE-SUITE BRANCH, AND IT STILL PAYS NOTHING. No source read, no
+        # closure walk, no deselection, no behaviour change — the one thing it
+        # does now is SAY HOW MANY TESTS THIS COLLECTOR HELD, and only when a
+        # caller asked for counts at all.
+        #
+        # WHY IT HAS TO. The counts file is the only evidence that a collector
+        # reached the end of collecting, and the reconciliation in
+        # `scripts/check.sh` is what turns a missing one into a refusal. It was
+        # written under `--loop` alone, so the full gate's two passes wrote none
+        # — and a worker that dies during collection with xdist's restart budget
+        # exhausted leaves pytest able to exit **0** with `no tests ran`, which
+        # the full gate reads as a clean tree and banks. Nothing is
+        # deselected on this branch, so the file says `selected=<everything>`
+        # and `deselected=0`: a population, not a scope.
+        if counts_dir:
+            _write_scope_counts(
+                config,
+                counts_dir,
+                frozenset(),
+                frozenset(),
+                frozenset(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                len(items),
+                0,
+            )
         return
 
     own_apps = frozenset(str(label) for label in config.getoption("--djb-own-app"))
@@ -1072,7 +1516,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     # single item is deselected. Derived whenever narrowing is asked for, so the
     # refusal cannot be dodged by a scope that happens to be empty.
     always_on: set[str] = set()
-    if narrow:
+    declared_censuses: dict[str, tuple[str, ...]] = {}
+    if narrow or impact_select:
         reached_kinds: dict[str, set[str]] = {}
         populations: dict[str, set[str]] = {}
         for item in items:
@@ -1083,7 +1528,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                 reached_kinds.setdefault(kind, set()).add(module)
             for name in _population_members(path, item.nodeid):
                 populations.setdefault(name, set()).add(module)
-            if _is_always_on(item, reach):
+            if path and _app_label(item.nodeid) is not None and _module_census_reason(path):
+                declared_censuses[module] = _census_population_or_refuse(path, DJB_REPO_ROOT)
+            if _is_always_on(item, reach, changed):
                 always_on.add(item.nodeid)
 
         unmet_reach = sorted(
@@ -1123,8 +1570,20 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             lines.append(f"{where}\t{','.join(sorted(organs)) or '-'}\t{item.nodeid}")
         pathlib.Path(manifest).write_text("\n".join(sorted(lines)) + "\n", encoding="utf-8")
 
-    if tier != "fast" and not narrow:
+    if tier != "fast" and not narrow and not impact_select:
         return
+
+    # THE SELECTION, READ BEFORE ANYTHING IS DESELECTED, for the reason the
+    # floors above are asserted there: a selection file this could not read must
+    # never reach the loop below as an empty set.
+    selected: frozenset[str] = frozenset()
+    impact_line = ""
+    if impact_select:
+        selected, impact_line = _impact_selection(
+            [item.nodeid for item in items],
+            _read_impact_select(impact_select),
+            frozenset(always_on),
+        )
 
     keep: list[pytest.Item] = []
     dropped: list[pytest.Item] = []
@@ -1149,6 +1608,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         if imports_tests and not in_tests_tree:
             importer_modules.add(module)
         tests_only_keeps_it = in_tests_tree or is_changed_test or bool(imports_tests)
+        if impact_select and item.nodeid not in selected:
+            # THE MAP ANSWERED. A selection is the whole question — the scope
+            # rules below would only ever widen it back, which is the one thing
+            # a caller that handed over a list did not ask for.
+            dropped.append(item)
+            continue
         if narrow and not in_scope and item.nodeid not in always_on and not tests_only_keeps_it:
             # Outside the scope and not a cross-app tripwire: the active rung's change
             # cannot reach it, by the declarations the closure walked.
@@ -1192,11 +1657,28 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         )
 
     census = ", ".join(f"{kind}={reached[kind]}" for kind in sorted(reached)) or "none"
+    if narrow or impact_select:
+        # THE ALWAYS-ON SET, ENUMERATED. A set nobody can enumerate is one
+        # nobody audits — the argument `scripts/check.sh`'s declared-census
+        # listing is printed for, and this is its narrowing half.
+        _DJB_TIER_REPORT.extend(_census_banner(declared_censuses, changed))
+        _DJB_TIER_REPORT.append(
+            f"  {impact_line}" if impact_line else "  impact: not consulted (seam only)"
+        )
     if narrow:
         _DJB_TIER_REPORT.append(
             f"djb scope: {len(dropped)} test(s) deselected, {len(keep)} running "
             f"({n_in_scope} in scope, {n_always_on} always-on) — derived organ "
             f"reach: {census}."
+        )
+    elif impact_select:
+        # NOT "FAST" AND NOT "SCOPE": a selection is a third basis, and printing
+        # one of the other two here would tell a reader the run narrowed by a
+        # rule it did not use.
+        _DJB_TIER_REPORT.append(
+            f"djb impact: {len(dropped)} test(s) deselected, {len(keep)} running — "
+            f"the selection came from {impact_select}, plus the always-on set. "
+            f"Derived organ reach: {census}."
         )
     else:
         _DJB_TIER_REPORT.append(
@@ -1241,12 +1723,37 @@ def _write_scope_counts(
     refuses on disagreement — a disagreement means two collectors saw different
     suites, and a verdict banked under a scope one of them disowned is a verdict
     about nothing.
+
+    AND EVERY FILE CARRIES THE POPULATION IT BELONGS TO. `workers=` is the
+    worker count pytest actually CREATED for this run — the number xdist prints
+    as `created: N/N workers` — and it is here because the census in
+    `scripts/check.sh` (`loop_counts_refuse_if_short`) has to answer "how many
+    collectors should have reported" and the only honest source for that is the
+    run itself. It used to answer with the `-n` the leg ASKED for, so a leg whose
+    `-n` was lowered inside pytest read its own survivors as casualties:
+    `5 of 10 collectors reported — a collector died`, exit 2, on a suite that had
+    just passed 3653 tests. Identical in every worker, so the file-vs-file
+    comparison above is unchanged by it.
+
+    AND IT IS `workerinput["workercount"]`, NOT `numprocesses`. Measured, not
+    assumed: a WORKER's own config carries no `-n` at all — `numprocesses` there
+    is 0, so a file written from the number the controller was given records
+    `workers=0` and the census silently learns nothing (it did, on the first
+    green run of this drive). `workercount` is what the controller hands each
+    worker when it creates it, so it is the created population by construction.
+    The controller/serial path has no `workerinput` and falls back to its own
+    `numprocesses`, which is that path's true population.
     """
-    worker = getattr(config, "workerinput", {}).get("workerid", "controller")
+    workerinput = getattr(config, "workerinput", {})
+    worker = workerinput.get("workerid", "controller")
+    created = int(workerinput.get("workercount", 0) or 0) or int(
+        getattr(config.option, "numprocesses", 0) or 0
+    )
     target = pathlib.Path(counts_dir)
     try:
         target.mkdir(parents=True, exist_ok=True)
         (target / str(worker)).write_text(
+            f"workers={created}\n"
             f"in_scope={in_scope}\n"
             f"always_on={always_on}\n"
             f"tests_only_tests={tests_only_tests}\n"
@@ -1315,6 +1822,17 @@ def _djb_prerun_banner(config: pytest.Config, counts_dir: str, collectors: int) 
             "scope   THE COLLECTORS DISAGREE — the counts are not printed here; "
             "the after-run reconciliation in scripts/check.sh is the refusal."
         )
+        return
+    if str(config.getoption("--djb-tier")) == "all" and not bool(
+        config.getoption("--djb-scope-narrow")
+    ):
+        # THE WHOLE-SUITE LINE. Under the full gate — and under a `--pr` whose
+        # scope narrowed nothing — there is no scope to describe: every
+        # collector collected the tree. The one thing in question is the one
+        # this says, before the first test runs: how many collectors reported.
+        # The after-run reconciliation in `scripts/check.sh` is the refusal;
+        # this is its pre-run half, and the counts-dir plumbing is shared.
+        reporter.write_line(f"collectors: {collectors} of {collectors} reported (the whole suite)")
         return
     fields = dict(line.split("=", 1) for line in next(iter(texts)).splitlines() if "=" in line)
     lines: list[str] = []

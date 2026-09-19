@@ -66,6 +66,23 @@ TOOL_FOR_ROUTE: dict[str, str] = {
     "settings-update": "update_settings",
     "flags-detail": "get_flags",
     "flags-update": "set_flags",
+    # The permission surface (P5). Two url_names carry an underscore in their
+    # NOUN rather than a dash — `role_permissions-update`,
+    # `membership_permissions-detail` — for the same reason `event_type-list`
+    # does: rule 17 derives the twin's name by splitting at the LAST dash, so a
+    # two-word noun spelled with a dash would look for a tool called
+    # `set_role-permissions`.
+    "role-list": "list_roles",
+    "role-detail": "get_role",
+    "role-create": "create_role",
+    "role-update": "update_role",
+    "role_permissions-update": "set_role_permissions",
+    "role-delete": "delete_role",
+    "grant-list": "list_grants",
+    "grant-update": "set_grant",
+    "grant-delete": "delete_grant",
+    "membership_permissions-detail": "get_membership_permissions",
+    "permission-list": "list_permissions",
 }
 
 EXEMPT_FROM_MCP = {"invitation-accept"}

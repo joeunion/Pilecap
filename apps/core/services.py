@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -26,9 +28,25 @@ from django.contrib.auth.base_user import AbstractBaseUser
 from django.db import models, transaction
 from django.urls import reverse
 
-from apps.core import bridge, mail
+from apps.core import bridge, events, mail
 from apps.core.actor import Actor, system_actor
-from apps.core.authz import effective_role, may_be_named, rank, require
+from apps.core.authz import (
+    OWNER_ROLE,
+    RESERVED_PERMISSIONS,
+    VIRTUAL_KINDS,
+    collection,
+    default_role_key,
+    defaults_for,
+    effective_permissions,
+    effective_role,
+    grantable_permissions,
+    may_be_named,
+    read_kinds_by_node,
+    refusal_sentence,
+    require,
+    role_declarations,
+    vocabulary,
+)
 from apps.core.exceptions import Conflict, Forbidden, Invalid, NotFound, Remedy, as_invalid
 from apps.core.flags import FLAGS_KEY
 from apps.core.ids import uuid7
@@ -38,10 +56,13 @@ from apps.core.models import (
     PATH_MAX_LENGTH,
     PATH_SEPARATOR,
     ROOT_SEGMENT,
+    Grant,
     Invitation,
     Membership,
     Organization,
     PathOverflow,
+    Role,
+    RolePermission,
     Tenant,
     ancestor_paths,
     child_path,
@@ -59,7 +80,26 @@ log = get_logger(__name__)
 # slug are public handles, not facts about a person; an email address is a
 # person, so it is not on the list.
 LOG_KEYS: frozenset[str] = frozenset(
-    {"name", "slug", "role", "is_default", "status", "timezone", "locale", "enabled", "reason"}
+    {
+        "name",
+        "slug",
+        "role",
+        "is_default",
+        "status",
+        "timezone",
+        "locale",
+        "enabled",
+        "reason",
+        # The hand-out family's four. A role key, a permission key and an effect
+        # are vocabulary, not facts about a person — they are exactly what an
+        # incident review reads off the row ("who gave whom what, and when"), and
+        # a `[redacted]` in that column would make the audit trail unreadable for
+        # the one question it exists to answer.
+        "role_key",
+        "permission",
+        "effect",
+        "key",
+    }
 )
 
 # How long an invitation stands. Long enough to survive a holiday, short enough
@@ -95,6 +135,15 @@ TOO_DEEP = "That move would push the subtree past the depth limit."
 # import `workflows`; see `bridge`); `apps/core/tests/test_move_matrix.py` pins
 # the two together so the repeat cannot drift.
 RESERVED_TENANT_SLUGS: frozenset[str] = frozenset({"platform"})
+
+# The ownership verb. It is `core.authz.RESERVED_PERMISSIONS`' one entry today,
+# and it is named here rather than derived by `sorted(...)[0]` because "which
+# key means owning this tenant" is a fact this module depends on and not a
+# position in a dictionary — a second reserved key added tomorrow must not
+# silently change what `_refuse_orphaning_the_tenant` counts. The registry is
+# still the authority on its SENTENCE and on the refusal of every include row
+# and grant that names it; `test_handing_out.py` pins the pair.
+OWNERSHIP_PERMISSION = "tenant.own"
 
 
 @service
@@ -207,13 +256,47 @@ def root_organization(*, tenant: Tenant) -> Organization:
     holds the invariant. A missing root is a broken database, and saying so
     here is better than handing back a `None` that becomes an empty read three
     layers away.
+
+    **MEMOISED ON THE TENANT INSTANCE, and the memo is HERE rather than at the
+    call sites.** This function was on a path nothing bounded: the tenant-wide
+    READS in `events` and `connections` asked it on every call, and `emit()` ->
+    `enqueue_dispatch` -> `get_event` therefore asked it inside the caller's
+    transaction on every emitting write — so the cost was one indexed read per
+    EVENT EMITTED, and nothing bounds how many a service emits. Putting the memo
+    inside the one function every site already calls is what makes "read once"
+    true of the sites that exist today and of the one written tomorrow, with no
+    registry of call sites for anybody to keep up to date (principle 13).
+
+    **The read half of that path is gone since PR5.5** — a read of a tenant-wide
+    kind asks at the acting hat and resolves no node — so what asks here now is
+    every WRITE of such a kind, in six apps, once per request rather than once
+    per call. The memo is what makes that true and is unchanged by the decision:
+    it changes how often a node is resolved, never which node a question is
+    about.
+
+    The contract — source of truth, key, lifetime, invalidation, failure — is
+    declared on the carrier, `Tenant`, beside the slot, exactly as the
+    permission memo's is declared on `core.actor.Actor._permission_rows`.
+
+    **The raise remembers nothing**, deliberately: a broken database must not
+    become an answer the rest of the request agrees with, so the fill is after
+    the `None` check and never before it.
+
+    **This decides nothing about WHICH node a tenant-wide read should ask at.**
+    Root or acting hat is an open question and this is right under either
+    answer: it makes the resolution happen once per request instead of once per
+    call, and has no opinion about what the question is.
     """
+    remembered = tenant._root_organization
+    if remembered is not None:
+        return remembered
     root = Organization.objects.for_tenant(tenant).filter(parent__isnull=True).first()
     if root is None:
         raise Conflict(
             f"Tenant {tenant.slug!r} has no root organization. Every tenant is created with "
             "one; this row predates the hierarchy or was written around the service."
         )
+    tenant.remember_root(root)
     return root
 
 
@@ -331,7 +414,7 @@ def rename_organization(
     else. Moving a node is `move_organization`, which is a different operation
     with different authorization.
     """
-    require(actor, "organization.rename", organization)
+    require(actor, "organization.update", organization)
     organization.name = name.strip()
     with as_invalid():
         organization.full_clean()
@@ -555,6 +638,22 @@ def apply_organization_move(
 # and the app that made the decision is the app that has to be greppable for it.
 KICK_MEMBERSHIP_REVOKED = "core.membership.revoked"
 KICK_ORGANIZATION_MOVED = "core.organization.moved"
+#: **The third withdrawal, and Phase R is what made it one.** While reads were
+#: free to any membership, narrowing somebody's role took nothing away that a
+#: socket was delivering — the subtree and the hat were the whole subscription.
+#: Now a read is a key, so a demotion can silence a kind for somebody whose
+#: socket was resolved at the handshake and has been delivering it for hours
+#: (BVB-3, the New Enemy). The reconnect recomputes.
+KICK_PERMISSIONS_NARROWED = "core.permissions.narrowed"
+#: **The two TENANT-wide withdrawals** (R4 F2). Every reason above is a fact
+#: about one person and reaches one `user_group`; these two are facts about
+#: the workspace and reach `tenant_group`, because a suspension that closed
+#: the sockets of whoever happened to be named would not have suspended
+#: anything. Kept as two strings rather than one with a status on it: a
+#: reason is what an operator greps during an incident, and "suspended" and
+#: "closed" are different incidents.
+KICK_TENANT_SUSPENDED = "core.tenant.suspended"
+KICK_TENANT_CLOSED = "core.tenant.closed"
 
 
 def close_sockets(*, user_id: UUID, reason: str) -> None:
@@ -680,7 +779,135 @@ def close_sockets_on_commit(*, user_id: UUID, reason: str) -> None:
     def kick_on_commit() -> None:
         close_sockets(user_id=user_id, reason=reason)
 
-    transaction.on_commit(kick_on_commit, robust=True)
+    _register_kick(kick_on_commit)
+
+
+def close_tenant_sockets(*, tenant_id: UUID, reason: str) -> None:
+    """Hang up on every socket open on this tenant. **The kick, one level up.**
+
+    `close_sockets` answers a withdrawal aimed at a PERSON. This answers one
+    aimed at the whole workspace, and until R4 there was no way to say it:
+    `suspend_tenant` and `close_tenant` wrote a status and registered
+    nothing, so a darkened tenant was refused at the next HANDSHAKE and
+    nowhere else — every connection already open went on hearing for the
+    hours `apps/realtime/bridge.py` expects one to last, while the REST door
+    answered 403 to the same credential. The handshake refusal is precisely
+    what made the gap invisible: the road a reviewer walks first was closed.
+
+    Everything else is `close_sockets`' argument unchanged one level up:
+    reached by NAME through `core.bridge` because `apps.realtime` sits above
+    this app; `find()` and not `get()` because a deployment without the socket
+    app has no socket to close and the suspension is the important half; not a
+    `@service` because it writes nothing and the status write is the audited
+    decision; idempotent by construction, which is what lets a retry call it.
+
+    Logged AND re-raised, for `close_sockets`' reason and with its cost: the
+    registration is `robust=True`, so a channel layer that raises leaves the
+    write standing and the sockets open, on our own name
+    (`core.tenant_socket.kick_failed`) rather than in Django's.
+    """
+    kick = bridge.find(bridge.KICK_TENANT)
+    if kick is None:
+        log.info("core.tenant_socket.not_closed", tenant_id=str(tenant_id), reason=reason)
+        return
+    try:
+        kick(tenant_id=tenant_id, reason=reason)
+    except Exception:
+        log.exception("core.tenant_socket.kick_failed", tenant_id=str(tenant_id), reason=reason)
+        raise
+
+
+def close_tenant_sockets_on_commit(*, tenant_id: UUID, reason: str) -> None:
+    """Ask for the tenant-wide kick once the status that darkened it has landed.
+
+    On commit for `close_sockets_on_commit`' reason at tenant scale, where it
+    is worse: a kick fired inside the transaction would disconnect EVERY
+    socket in a tenant on the strength of a suspension that then rolled back.
+    A named nested `def` and never a `functools.partial`, for the reason
+    `close_sockets_on_commit` records at length (P3 SEC-R3).
+
+    House rule 36's status-writer class is the static half: every `@service`
+    assigning a non-`ACTIVE` `Tenant.Status` calls this in the same body, so
+    the third such service cannot be written without it.
+    """
+
+    def tenant_kick_on_commit() -> None:
+        close_tenant_sockets(tenant_id=tenant_id, reason=reason)
+
+    _register_kick(tenant_kick_on_commit)
+
+
+def _register_kick(hook: Callable[[], None]) -> None:
+    """**The ONE `transaction.on_commit` registration for a kick, of any kind.**
+
+    Both seams above register through this line rather than each writing their
+    own, and that is principle 13 applied to the claim
+    `close_sockets_on_commit`'s docstring already makes — "the one
+    registration site in the tree for this act". The two decisions in it are
+    read once here instead of once per kind:
+
+    * **on commit**, because a kick fired inside the transaction disconnects
+      somebody on the strength of a write that then rolls back;
+    * **`robust=True`**, because Django runs hooks in order and a non-robust
+      hook that raises takes every hook behind it down with it (W1-9, F3 — the
+      scar is an unreachable Temporal cancelling an invitation email). The
+      channel layer is the least reliable thing in that list, and a withdrawal
+      must not be able to cancel a sibling hook by failing to close a socket.
+
+    The caller passes a NAMED nested `def` and never a `functools.partial`:
+    Django's robust branch formats its error with `func.__qualname__`, which a
+    partial does not have, so the handler whose whole job is to swallow a
+    failing hook raises `AttributeError` itself and every hook queued behind it
+    never runs — `robust` delivering its exact opposite, silently (P3 SEC-R3).
+    """
+    transaction.on_commit(hook, robust=True)
+
+
+# rule-16: `kick` is this tree's own word for hanging up on a socket, not a
+# coinage — `KICK_MEMBERSHIP_REVOKED` and `KICK_ORGANIZATION_MOVED` are the
+# two that existed before it and `close_sockets`'s own docstring calls the
+# act "the kick, from below". This is the third reason, named for the act a
+# reader greps for; it is also the seam PR1.8 declares and P4's two new
+# narrowing services call, so the name is a contract across rungs.
+def kick_if_reads_narrowed(
+    *,
+    tenant: Tenant,
+    user_id: UUID,
+    before: Mapping[UUID, frozenset[str]],
+    after: Mapping[UUID, frozenset[str]],
+) -> bool:
+    """Close this person's sockets when a write made their read set smaller.
+
+    **BVB-3, the New Enemy, and it arrived with Phase R.** A socket resolves
+    what it may hear once, at the handshake; the two withdrawals that existed
+    before — a membership revoked, a subtree re-parented — each had their own
+    kick. A read becoming a permission adds a third: a demotion, a `withhold`,
+    a role's collection edited, and a channel that has been delivering a kind
+    for hours goes on delivering it. Closing the socket forces the reconnect
+    that recomputes.
+
+    **A proper subset at ANY node is the trigger, and a widening is not.**
+    `after[node] < before[node]` — strictly smaller — so a promotion, a new
+    grant, a role gaining a key kicks nobody: nothing a socket is delivering
+    has been taken away, and hanging up on somebody to give them more would be
+    a reconnect storm with no security content. A node that disappears from
+    `after` entirely (the membership was removed) is a narrowing to the empty
+    set, and `revoke_membership`'s own kick already covers that road — this one
+    fires first only when the road is a role change.
+
+    **Idempotent, and on commit** (principle 16): it registers through
+    `close_sockets_on_commit`, so a rolled-back write kicks nobody and a second
+    identical call closes an already-closed socket, which a `group_send` to an
+    empty group makes a no-op.
+
+    Returns whether it kicked, so a caller's test can assert the decision
+    rather than the side effect.
+    """
+    narrowed = any(after.get(node, frozenset()) < held for node, held in before.items() if held)
+    if not narrowed:
+        return False
+    close_sockets_on_commit(user_id=user_id, reason=KICK_PERMISSIONS_NARROWED)
+    return True
 
 
 def _members_losing_sight_of(*, tenant: Tenant, old: str, new: str) -> list[UUID]:
@@ -729,6 +956,120 @@ def _members_losing_sight_of(*, tenant: Tenant, old: str, new: str) -> list[UUID
 
 
 # --- Membership, and the escalation wall -------------------------------------
+#
+# THE ROLE KEY, AND WHERE IT IS VALIDATED (ADR core-25). `Membership.role` and
+# `Invitation.role` carried `choices` until `0018`, and a `choices` list is
+# exactly the wrong instrument for a value with three layers behind it: `owner`
+# is the platform's, a declared role is some app's `roles.py`, and a custom role
+# is a ROW one tenant owns. The first is a constant, the second is per process,
+# the third is per tenant — and a per-process list cannot hold a per-tenant row,
+# so a field validating against one would have refused every custom role the
+# moment the feature shipped.
+#
+# So the validation moved here, into the three services that write the column,
+# which are the only three places that have a tenant to read the third layer
+# with. The belt behind them is the deploy census (`djb.W054` in
+# `apps/core/checks.py`), which asks the same question of the rows that are
+# already there.
+
+
+# rule-16: not a capability and not an act — this is the vocabulary RESOLUTION the
+# three writers below share, and a verb in front of it would make a lookup read as
+# something somebody does. It is public because `MembershipAdmin` builds its role
+# field from the same three layers, and a second derivation of "what may this
+# tenant name" is exactly the drift this function exists to prevent.
+def known_role_keys(*, tenant: Tenant) -> frozenset[str]:
+    """Every role key this tenant may name, all three layers at once.
+
+    `owner` (the platform's one role), every key an app declares in a
+    `roles.py`, and every `core.Role` row this tenant owns. **Not `""`** — the
+    roleless membership is a legal state of the column and is not a key
+    anybody names; the one road to it is `add_membership(role="")`, and the
+    services that take a role from a caller refuse it by not finding it here.
+    """
+    return (
+        frozenset({OWNER_ROLE})
+        | frozenset(role_declarations())
+        | frozenset(
+            str(key) for key in Role.objects.for_tenant(tenant).values_list("key", flat=True)
+        )
+    )
+
+
+def _refuse_unknown_role(*, tenant: Tenant, role: str, allow_roleless: bool = False) -> None:
+    """`Invalid` for a role key this tenant cannot name. The replacement for `choices`.
+
+    ANOTHER TENANT'S CUSTOM ROLE IS UNKNOWN HERE, and that is the half a
+    constraint could not have given: `Role.objects.for_tenant(tenant)` is the
+    scoped read, so a key that exists in a neighbouring tenant reads exactly
+    like a typo, which is what it is from this tenant's side.
+
+    The refusal names the field and lists what this tenant may actually say,
+    because "that is not a role" with no list is a support ticket — and the list
+    is the three layers, which is the shape the caller has to learn anyway.
+    """
+    if allow_roleless and role == "":
+        return
+    known = known_role_keys(tenant=tenant)
+    if role in known:
+        return
+    raise Invalid(
+        {
+            "role": [
+                f"{role!r} is not a role in this tenant. It is one of "
+                f"{', '.join(sorted(known))} — `owner`, a role an app declares in its "
+                "`roles.py`, or one this tenant made for itself."
+            ]
+        }
+    )
+
+
+# rule-16: not a capability and not an act — a key's display name, the replacement for
+# `Membership.Role(value).label`, which was an attribute access and not a verb
+# either. Public for the same reason as `known_role_keys` above: the admin and the
+# invitation mail must call one another's answer, not two.
+def role_label(*, tenant: Tenant, key: str) -> str:
+    """What to call a role key in something a person reads.
+
+    The declaration's `name`, a custom `Role` row's `name`, `"Owner"` for the
+    platform role, and otherwise the key itself — never a `ValueError`. It
+    replaces `Membership.Role(value).label`, which raised for anything outside
+    the three constants and would therefore have crashed the invitation mail for
+    every custom role the moment one existed.
+
+    A key that resolves to nothing comes back as itself rather than as a blank:
+    a message naming `approver` when the role has been deleted is legible, and
+    a message naming nothing at all is a bug report.
+    """
+    if key == OWNER_ROLE:
+        return "Owner"
+    declared = role_declarations().get(key)
+    if declared is not None:
+        return declared.name
+    row = Role.objects.for_tenant(tenant).filter(key=key).first()
+    if row is not None:
+        return str(row.name)
+    return key
+
+
+def _placement(*, tenant: Tenant, organization: Organization | None, actor: Actor) -> Organization:
+    """The node a grant or an offer lands on (ADR core-20, the placement law).
+
+    The node NAMED, or — when none is — the acting hat, and never the root: a
+    grant comes from where you sent it, and landing somebody at the root instead
+    is a grant reaching further than the context it was sent from.
+
+    One function because `add_membership` and `invite_member` had these three
+    lines each, character for character, and the placement law is one rule. A
+    node belonging to another tenant is `invalid` rather than `not_found`
+    because the caller named a row they can see and asked for something
+    incoherent with it; the doors resolve ids through the acting hat's own
+    subtree, so a node outside it never reaches here at all.
+    """
+    where = organization if organization is not None else _landing_node(tenant=tenant, actor=actor)
+    if where.tenant_id != tenant.pk:
+        raise Invalid({"organization": ["That organization belongs to another tenant."]})
+    return where
 
 
 def _refuse_escalation(
@@ -770,6 +1111,129 @@ def _refuse_escalation(
     through: nobody is authenticated, so there is no ceiling to measure and no
     reason to believe the grant is legitimate.
     """
+    wanted = collection(tenant, role)
+
+    def sentence(missing: frozenset[str]) -> str:
+        """Today's rank sentence where the difference is a template's; else the list.
+
+        **Overrule 9 lives in this function.** `test_role_ceiling.py` and
+        `test_admin_wall.py` assert the old words character for character, and
+        those words quote two ROLES — a thing a set comparison does not have.
+        So: when the keys the granter is short of are exactly the difference
+        between the role they asked to grant and the role they themselves hold,
+        the old sentence is still the true and the clearest one, and it is what
+        comes out. Everywhere the rank table had no answer at all — a custom
+        role, a bare permission through `create_grant` — the refusal names the
+        SENTENCES of what is missing, because there is no pair of role words to
+        quote and a key list is not something to show a person.
+        """
+        if _is_a_template_difference(
+            tenant=tenant, actor=actor, organization=organization, role=role, missing=missing
+        ):
+            held = effective_role(actor.user, tenant, organization)
+            return (
+                f"You may not grant {role!r}: your own effective role there is {held!r}, and "
+                "nobody grants above themselves."
+            )
+        return _missing_sentences("You may not grant what you do not hold yourself:", missing)
+
+    _refuse_handing_out(
+        actor=actor,
+        tenant=tenant,
+        organization=organization,
+        permissions=wanted,
+        sentence=sentence,
+    )
+
+
+def _missing_sentences(opening: str, missing: frozenset[str]) -> str:
+    """The refusal a set comparison can make: the missing keys' own SENTENCES.
+
+    Sentences and never keys, sorted. `widget.approve` is a word for this
+    codebase; "You may not approve that widget." is what the person reading the
+    refusal is actually short of, and it is already written down — every key in
+    the vocabulary carries its own, derived or declared. A key the vocabulary
+    does not know cannot reach here (both callers validate first), and
+    `refusal_sentence` falls back to a generic line if one ever does.
+    """
+    return " ".join([opening, *sorted(refusal_sentence(key) for key in missing)])
+
+
+def _is_a_template_difference(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    organization: Organization,
+    role: str,
+    missing: frozenset[str],
+) -> bool:
+    """Whether this shortfall is exactly "one template role minus another".
+
+    The rank table's whole expressible vocabulary was `owner > admin > member`,
+    and every sentence it ever produced described one of those three pairs. So
+    the honest test for "would the old wall have said this" is not "is the
+    missing key `tenant.own`" — that is only the admin-granting-owner pair — but
+    "is the missing set the difference between the two role collections the old
+    sentence would have named". A member granting `admin` is short of a hundred
+    keys, and `test_role_ceiling.py::test_the_granted_role_is_judged_before_the_held_one`
+    asserts it still hears `You may not grant 'admin':`.
+
+    **Both words have to be template words**, and that is the half that keeps
+    the new refusal from being swallowed. `rank()` knew three keys; a tenant's
+    own role was not one of them, so the old wall said *nothing at all* about a
+    custom role — that silence is the hole P4 closes, and quoting the old
+    sentence for a custom role would be putting the old words on a refusal the
+    old wall never made. So a custom key on either side falls through to the
+    key-list sentence, which is the one that actually says what is missing.
+
+    Returns False when the granter holds no role at all — there is no second
+    word for the sentence to quote, and `_refuse_handing_out` has already
+    refused that case with its own sentence before this is ever asked.
+    """
+    held_role = effective_role(actor.user, tenant, organization)
+    if held_role is None:
+        return False
+    template = {OWNER_ROLE} | set(role_declarations())
+    if role not in template or held_role not in template:
+        return False
+    return bool(missing) and missing == collection(tenant, role) - collection(tenant, held_role)
+
+
+def _refuse_handing_out(
+    *,
+    actor: Actor,
+    tenant: Tenant,
+    organization: Organization,
+    permissions: frozenset[str],
+    sentence: Callable[[frozenset[str]], str] | None = None,
+) -> None:
+    """**Nobody hands out what they do not hold.** The hand-out rule, as a set.
+
+    `permissions` is what this act would give somebody — a role's whole
+    collection, the keys a role gained, the one key a grant names. Every one of
+    them must already be in the granter's own effective set **at the node the
+    act lands on**, and the difference is the refusal.
+
+    **Why a set and not a rank.** `_refuse_escalation` used to compare
+    `rank(role) > rank(held)` over a three-word table. A tenant's own role is a
+    fourth word with no rank at all — `rank("approver")` is `0` — so it sorted
+    BELOW `member` and everybody could hand it out, whatever its collection
+    said. The measured hole on this tree: a plain member holding
+    `membership.create` by grant assigned a custom `approver` carrying
+    `organization.create`, a key that member does not hold, and the membership
+    was written. A set comparison has no such blind spot, because it never asks
+    how big a role is — only whether you already hold every piece of it.
+
+    The two altitudes are unchanged from the rank wall and for the reasons ADR
+    core-22's L1 ruling gives: `system` is a named audited altitude and passes;
+    a `human` or `agent` actor carrying no user is refused, because nobody is
+    authenticated and there is no set to measure.
+
+    **When the thing is absent:** an empty effective set at the node is its own
+    refusal with its own sentence — the granter is standing outside the subtree
+    entirely, and telling them which keys they are short of would describe the
+    smaller of two problems.
+    """
     if actor.kind == "system":
         return
     granter = actor.user
@@ -778,42 +1242,54 @@ def _refuse_escalation(
             "This request resolved nobody, so there is no role of your own to grant "
             "beneath. Sign in, or act as the system."
         )
-    held = effective_role(granter, tenant, organization)
-    if held is None:
+    held = effective_permissions(granter, tenant, organization, memo=actor)
+    if not held:
         raise Forbidden(
             "You hold no role over that part of the organization, so you may not grant one there."
         )
-    if rank(role) > rank(held):
-        raise Forbidden(
-            f"You may not grant {role!r}: your own effective role there is {held!r}, and "
-            "nobody grants above themselves."
-        )
+    missing = frozenset(permissions) - held
+    if not missing:
+        return
+    raise Forbidden(
+        sentence(missing)
+        if sentence is not None
+        else _missing_sentences("You may not hand out what you do not hold yourself:", missing)
+    )
 
 
-def _refuse_acting_above_yourself(
+def _refuse_taking_back(
     *,
     actor: Actor,
     tenant: Tenant,
     membership: Membership,
     verb: str,
 ) -> None:
-    """**The other half of the wall: the role being acted _on_.**
+    """**The other half of the wall: what the person being acted _on_ holds.**
 
-    `_refuse_escalation` bounds the role being *granted*. That is the whole
-    ceiling only while the only way to change what somebody may do is to hand
-    them something; it is not. An `admin` who may not *grant* `owner` could
-    take the owner's hat away instead — remove the row, or set its role to
-    `member` — and arrive at the same power by subtraction. So the row's
-    **current** role is measured against the actor's own effective role at the
-    node the membership sits on, and anything above them is refused.
+    `_refuse_handing_out` bounds what an act *gives*. That is the whole ceiling
+    only while the only way to change what somebody may do is to hand them
+    something; it is not. An `admin` who may not *grant* `owner` could take the
+    owner's hat away instead — remove the row, or set its role to `member` — and
+    arrive at the same power by subtraction. So what the target **currently
+    holds** at the node their membership sits on is measured against what the
+    actor holds there, and anything the target has that the actor does not is
+    refused.
 
-    **Two roads reach it and this is the only guard on either.**
-    `revoke_membership` calls it before a delete (SEC-1's MED-1) and `set_role`
-    before a role change, so the predicate, the sentence and the comparison are
-    one thing rather than two that agree today. The demotion road used to
-    answer `200` before this guard existed.
+    **A set difference, for the reason `_refuse_handing_out` gives.** It used to
+    be `rank(membership.role) > rank(held)`, which could only compare three
+    words and sorted every custom role below `member`. The set has no such
+    blind spot, and where the difference is exactly a template pair's the
+    sentence is still the old one — `_is_a_template_difference` is where that
+    decision is made and why.
 
-    **Parameterised by the verb, where `_refuse_removing_the_last_owner`
+    **Four roads reach it and this is the only guard on any of them.**
+    `revoke_membership` calls it before a delete (SEC-1's MED-1), `set_role`
+    before a role change, and `create_grant`/`delete_grant` before a withhold
+    lands or an allow is withdrawn — so the predicate, the sentence and the
+    comparison are one thing rather than four that agree today. The demotion
+    road used to answer `200` before this guard existed.
+
+    **Parameterised by the verb, where `_refuse_orphaning_the_tenant`
     deliberately is not.** That guard's sentence is a fact about the tenant and
     a remedy, true whichever road asked. This one's sentence names the act it
     refused, and telling somebody they may not *remove* a row when they asked
@@ -841,12 +1317,25 @@ def _refuse_acting_above_yourself(
             f"This request resolved nobody, so there is no role of your own to {verb} "
             "beneath. Sign in, or act as the system."
         )
-    held = effective_role(acting_user, tenant, membership.organization)
-    if rank(membership.role) > rank(held):
+    where = membership.organization
+    held_by_them = effective_permissions(membership.user, tenant, where)
+    missing = held_by_them - effective_permissions(acting_user, tenant, where, memo=actor)
+    if not missing:
+        return
+    if _is_a_template_difference(
+        tenant=tenant, actor=actor, organization=where, role=str(membership.role), missing=missing
+    ):
+        held = effective_role(acting_user, tenant, where)
         raise Forbidden(
             f"You may not {verb} a {membership.role!r}: your own effective role there is "
             f"{held!r}, and nobody {verb}s above themselves."
         )
+    raise Forbidden(
+        _missing_sentences(
+            f"You may not {verb} somebody who holds what you do not:",
+            missing,
+        )
+    )
 
 
 @service
@@ -893,27 +1382,48 @@ def add_membership(
     is what turns the escalation wall on (`_refuse_escalation`). Every door
     passes it.
     """
-    # authz: the escalation wall IS the authorization here, and it is a
-    # different shape from `authz.require`. `require` asks "may this actor act
-    # on this object"; a grant also has a *role being granted*, and the refusal
-    # is about the relationship between that role and the granter's own
-    # effective one. There is no object a policy predicate could look at that
-    # would carry it, so `_refuse_escalation` below is the guard — enforced on
-    # every path, tested in both directions.
-    where = organization if organization is not None else _landing_node(tenant=tenant, actor=actor)
-    if where.tenant_id != tenant.pk:
-        raise Invalid({"organization": ["That organization belongs to another tenant."]})
+    where = _placement(tenant=tenant, organization=organization, actor=actor)
     if is_default:
         Membership.objects.filter(user_id=user.pk, is_default=True).update(is_default=False)
     if role is None:
         first = not Membership.objects.filter(tenant=tenant).exists()
-        role = Membership.Role.OWNER if first else Membership.Role.MEMBER
+        # THE FIRST MEMBERSHIP IS STILL THE OWNER, and everybody after it gets
+        # whatever role this deployment declared as the default — `member` on
+        # the template, `""` in a product that deleted it. `Membership.Role`'s
+        # constants are no longer this column's `choices`, so the second half
+        # reads the declaration rather than an enum member: a product that
+        # renamed its entry-level role would otherwise have got `member`, a key
+        # its own `roles.py` no longer holds.
+        role = OWNER_ROLE if first else default_role_key()
     _refuse_escalation(
         actor=actor,
         tenant=tenant,
         organization=where,
         role=role,
     )
+    # THE CAPABILITY, AND IT IS SECOND — behind the escalation wall, not in
+    # front of it. Putting somebody in a tenant is `membership.create` at the
+    # node it lands on, and until the vocabulary had a key for it this service
+    # authorized nothing at all: the wall bounds the role being GRANTED, and
+    # for a member granting `member` that comparison is `1 > 1` — false — so a
+    # plain member could add people, against this route's own published
+    # contract. The wall still speaks first, and deliberately: it is the one
+    # that refuses an actor holding NOTHING here, and the one that refuses a
+    # request nobody is behind, each with its own sentence saying which.
+    # Standing before capability, exactly as `set_role` orders its three.
+    require(actor, "membership.create", where)
+    # THE KEY, AFTER THE WALL. **Standing is judged before the payload is
+    # believed** — the tree's own ruling, pinned in
+    # `test_role_ceiling.py`'s
+    # `test_a_role_this_product_does_not_know_does_not_get_you_past_the_ceiling`:
+    # somebody who holds nothing over this node hears that, and not a spelling
+    # lesson about a value they were never entitled to grant anyway.
+    #
+    # `""` is legal here and only here: a membership that holds nothing beyond
+    # its grants is a state the system reaches (`accept_invitation` of an offer
+    # that named no role, a deployment with no default declared), and it is
+    # never a state a caller asks a door for.
+    _refuse_unknown_role(tenant=tenant, role=role, allow_roleless=True)
     membership = Membership(
         user_id=user.pk,
         tenant=tenant,
@@ -949,7 +1459,7 @@ def set_role(
     by subtraction — no promotion anywhere, the same result. `revoke_membership`
     has refused that shape since SEC-1's MED-1 ("nobody removes above
     themselves"); this refused nothing until this predicate was shared with it. One predicate —
-    `_refuse_acting_above_yourself` — one sentence template, one word of it
+    `_refuse_taking_back` — one sentence template, one word of it
     changed, because a refusal that said *remove* to somebody who asked to
     demote would describe an act they never attempted.
 
@@ -967,71 +1477,198 @@ def set_role(
     anybody who may invite, promote or close anything. `revoke_membership` has
     refused that state since SEC-1's MED-1; this refused nothing until this guard
     was added here too, and got a `200` instead. One predicate, one sentence —
-    `_refuse_removing_the_last_owner` below, called from both roads, because two
+    `_refuse_orphaning_the_tenant` below, called from both roads, because two
     guards written separately drift and a client that branches on the words
     would get a different answer depending on which road it took.
     """
-    # authz: the escalation wall, exactly as in `add_membership` — a promotion
-    # is a grant with an extra step, and the rule is about the role being
-    # granted rather than about an object a policy could inspect.
+    # REACH, AND IT IS FIRST (R1-F4): reach before capability. A membership
+    # the actor could not have named — another tenant's row, or one in a sibling
+    # branch — is `NotFound`, never a wall's sentence: not-there and not-yours are
+    # one answer, and a `Forbidden` quoting "no role over that part" about a row
+    # they cannot see would confirm the row exists. `revoke_membership` has
+    # asked this first since SEC-1's MED-1; this asked it never, so
+    # `Membership.objects.get(pk=<another tenant's row>)` + `set_role` wrote
+    # that tenant's data (the R1 review's shell sequence).
+    if not may_be_named(actor, membership):
+        raise NotFound()
+    # The escalation wall — a promotion is a grant with an extra step, and the
+    # rule is about the role being granted rather than about an object a
+    # predicate could inspect. FIRST OF THE WALLS: it is the one that refuses an
+    # actor holding nothing at this node, with the sentence that says so.
     _refuse_escalation(
         actor=actor,
         tenant=tenant,
         organization=membership.organization,
         role=role,
     )
+    # THE CAPABILITY, second: changing what somebody may do here is
+    # `membership.update` at the node their membership sits on. Behind the
+    # escalation wall for that wall's own reason, and in front of the ceiling so
+    # that somebody who may not touch this row at all hears that rather than a
+    # sentence quoting the role of the person they reached for.
+    require(actor, "membership.update", membership.organization)
     # And the other half of the wall, `revoke_membership`'s own: the role this
-    # membership *holds*. Second, never first — `_refuse_escalation` above is
+    # membership *holds*. Third, never first — `_refuse_escalation` above is
     # what refuses an actor holding nothing here, with the sentence that says
     # so, and this one's sentence quotes the role it found.
-    _refuse_acting_above_yourself(
+    _refuse_taking_back(
         actor=actor,
         tenant=tenant,
         membership=membership,
         verb="demote",
     )
-    # A role this product does not know is refused as `invalid` by `full_clean`
-    # below, and saying `conflict` first would teach a caller that its typo was
-    # a state problem — `MembershipRolePatch.role` is a plain `str`, so the
-    # nonsense value really does reach here. Checked against the declared
-    # values rather than by rank: `rank()` answers 0 for anything it does not
-    # know, which is indistinguishable from a demotion.
-    if role in Membership.Role.values and role != Membership.Role.OWNER:
-        _refuse_removing_the_last_owner(tenant=tenant, membership=membership)
-    membership.role = role
-    with as_invalid():
-        membership.full_clean()
-    membership.save(update_fields=["role", "updated_at"])
+    # THE KEY, AND IT IS THIRD — after both walls and before the floor, which is
+    # exactly where the `role in Membership.Role.values` half of the old guard
+    # sat. **Standing is judged before the payload is believed**
+    # (`test_role_ceiling.py`'s
+    # `test_a_role_this_product_does_not_know_does_not_get_you_past_the_ceiling`):
+    # an admin reaching for an owner's row hears the ceiling whatever value they
+    # put in it, because that answer is about the actor and does not depend on
+    # what they sent. And it is BEFORE the floor for the floor's own stated
+    # reason — answering `conflict` to a typo would teach a caller that their
+    # spelling mistake was a state problem.
+    #
+    # `""` is refused here: the roleless membership is a state the system
+    # reaches through `add_membership`, never one a door sets, and a caller who
+    # meant "take one thing away" wants a withhold, not a blank.
+    _refuse_unknown_role(tenant=tenant, role=role)
+    # THE WRITE, the narrowing kick, the event and the ownerless floor — all
+    # four in `_write_role_and_kick`, because the floor now measures the state
+    # the write LEAVES and therefore has to sit on the write's own side of the
+    # line. The order and the reasons are that function's docstring.
+    return _write_role_and_kick(tenant=tenant, membership=membership, role=role, actor=actor)
+
+
+def _write_role_and_kick(
+    *, tenant: Tenant, membership: Membership, role: str, actor: Actor
+) -> Membership:
+    """Set the role, and hang up on the person if their reads just shrank.
+
+    **Split out of `set_role` so the measurement brackets the write and only
+    the write.** `before` is read AFTER the three walls rather than at the top
+    of the caller: a refused call must not pay for a comparison nobody will
+    make. `after` is read INSIDE the transaction, so the comparison is against
+    the row this call actually wrote, and the kick itself is registered on
+    commit — a rollback hangs up on nobody.
+
+    Three statements each way whatever the shape of the tree
+    (`core.authz.read_kinds_by_node`), and the decision is
+    `kick_if_reads_narrowed`'s, which is where the rule is written down.
+
+    **The event and the ownerless floor are here too, and both belong on this
+    side of the line.** The event is inside the transaction the write happened
+    in (ADR core-26). The floor measures the state the write LEAVES — a caller
+    that ran it before the write would be asking about a row that no longer
+    exists — so it is the last thing this function does and a `Conflict` from it
+    rolls the write back with the service's own transaction.
+
+    **A refused call leaves the caller's instance as it found it.** The
+    transaction puts the ROW back; the `Membership` object the caller handed in
+    is Python and no transaction reaches it, so a refusal raised after
+    `membership.role = role` would hand back an instance claiming a role the
+    database never got. Not theoretical tidiness: the next guard the caller runs
+    — `revoke_membership`'s floor, which reads `membership.role` — would then
+    measure the value of a write that did not happen, and wave through the
+    removal of the tenant's last owner.
+    """
+    previous = str(membership.role)
+    before = read_kinds_by_node(membership.user, tenant)
+    try:
+        membership.role = role
+        with as_invalid():
+            membership.full_clean()
+        membership.save(update_fields=["role", "updated_at"])
+        kick_if_reads_narrowed(
+            tenant=tenant,
+            user_id=membership.user_id,
+            before=before,
+            after=read_kinds_by_node(membership.user, tenant),
+        )
+        _publish(
+            events.MEMBERSHIP_UPDATED,
+            tenant=tenant,
+            payload={
+                "tenant_id": str(tenant.pk),
+                "organization_id": str(membership.organization_id),
+                "membership_id": str(membership.pk),
+                "role": role,
+            },
+            actor=actor,
+        )
+        _refuse_orphaning_the_tenant(tenant=tenant, was_owner=previous == OWNER_ROLE)
+    except Exception:
+        membership.role = previous
+        raise
     return membership
 
 
-def _refuse_removing_the_last_owner(*, tenant: Tenant, membership: Membership) -> None:
-    """A tenant with no owner is a tenant nobody can administer.
+def _refuse_orphaning_the_tenant(*, tenant: Tenant, was_owner: bool) -> None:
+    """A tenant with no owner is a tenant nobody can administer. **After the write.**
 
     The same invariant `apps.accounts.services.tenants_this_user_alone_owns`
     protects on the erasure path, enforced here because removal is the other
     way to reach the state: no one left who can invite a member, change a role,
     or close it — and nobody notices until they need to do one of those things.
 
-    **Two roads reach it and this is the only guard on either.** `set_role`
-    calls it before a demotion and `revoke_membership` before a delete, so the
-    code, the sentence and the count are one thing rather than two that agree
-    today. The sentence reads for both: a demotion *is* the last owner being
-    removed — from ownership rather than from the tenant — and the remedy is
-    the same either way, which is why it is not parameterised by the verb.
-    The demotion road used to answer `200` before this guard covered it.
+    **It reads the STATE THE CALL LEAVES BEHIND, not the row under the caller's
+    hand, and that is the change.** The old guard counted rows whose `role`
+    column read `owner` and ran *before* the write, which answered the question
+    only while the column was the whole story. It is not: ownership is
+    `tenant.own`, a reserved key `owner` alone carries and a `withhold` grant
+    can take away. So this asks the question the tenant actually cares about —
+    *is there still somebody on the root holding `tenant.own`?* — and asks it
+    after the write, inside the service's transaction, so a `Conflict` rolls
+    the write back and nothing partial survives.
 
-    Takes the membership *before* anything mutates it, because it reads
-    `membership.role` to decide whether the row under the caller's hand is an
-    owner at all. A caller that assigned the new role first would be asking
-    this about a row that no longer exists.
+    **One query, not a resolution per person.** `tenant.own` is reserved: no
+    pattern matches it, no `RolePermission` include row may add it and no
+    `allow` grant may name it, so `owner` is the only role that carries it and
+    the holders are exactly the root memberships with `role = "owner"` and no
+    `withhold` of the key. That is the whole algebra, expressed as one
+    `exclude(...)` rather than an `effective_permissions` call per membership.
+
+    **On the root, deliberately.** An owner of one branch owns that branch; a
+    tenant whose only owner sat under a sub-organization would be a tenant
+    nobody could administer at the top, which is the state this refuses. The
+    door that can create such an owner is `add_membership` with a node named,
+    and it is a legitimate thing to do — this floor simply does not count it.
+
+    **`was_owner` is the trigger, and it is read before the write.** The floor
+    refuses a TRANSITION — a tenant that had somebody on top and does not any
+    more — never a state it merely found. A tenant with no root owner is a
+    legitimate state the system reaches (a tenant mid-setup, a tenant whose tree
+    is administered from a branch), and a floor that refused every write in one
+    would refuse a demotion that has nothing to do with ownership and cannot
+    make anything worse. So the caller says whether the row under its hand was
+    an owner, from the value it read before it wrote, and a call that could not
+    have removed ownership never asks the question at all.
+
+    Two roads reach it and this is the only guard on either: `set_role` after a
+    demotion and `revoke_membership` after a delete, so the code, the sentence
+    and the count are one thing rather than two that agree today. The sentence
+    reads for both — a demotion *is* the last owner being removed, from
+    ownership rather than from the tenant — which is why it is not
+    parameterised by the verb.
+
+    **The two services that are NOT callers, said so a reader does not go
+    looking.** `create_grant` cannot reach this state: `tenant.own` is reserved,
+    so a withhold naming it is `Invalid` before any write. `set_role_collection`
+    cannot either: `owner` is refused at its own door, and no other role's
+    collection carries the ownership verb. `delete_role` cannot: a role deletion
+    names no owner, because `owner` is not a row.
     """
-    if membership.role != Membership.Role.OWNER:
+    if not was_owner:
         return
-    others = Membership.objects.filter(tenant=tenant, role=Membership.Role.OWNER).exclude(
-        pk=membership.pk
+    root = root_organization(tenant=tenant)
+    withheld = (
+        Grant.objects.for_tenant(tenant)
+        .filter(permission=OWNERSHIP_PERMISSION, effect=Grant.Effect.WITHHOLD)
+        .values("membership_id")
     )
-    if not others.exists():
+    holders = Membership.objects.filter(tenant=tenant, organization=root, role=OWNER_ROLE).exclude(
+        pk__in=withheld
+    )
+    if not holders.exists():
         raise Conflict(
             "That is the tenant's last owner; promote somebody else before removing them."
         )
@@ -1091,7 +1728,7 @@ def revoke_membership(
     `admin` or a `member`, never an `owner`. Without it the wall is decorative:
     an admin who may not *grant* `owner` could simply remove the owner instead,
     which is the same power arriving by subtraction. It lives in
-    `_refuse_acting_above_yourself` and `set_role` calls it too: the
+    `_refuse_taking_back` and `set_role` calls it too: the
     demotion road is the same subtraction without the row disappearing, and it
     had no ceiling at all until that predicate was shared.
 
@@ -1114,9 +1751,8 @@ def revoke_membership(
     """
     if not may_be_named(actor, membership):
         raise NotFound()
-    require(actor, "membership.revoke", membership.organization)
-    _refuse_acting_above_yourself(actor=actor, tenant=tenant, membership=membership, verb="remove")
-    _refuse_removing_the_last_owner(tenant=tenant, membership=membership)
+    require(actor, "membership.delete", membership.organization)
+    _refuse_taking_back(actor=actor, tenant=tenant, membership=membership, verb="remove")
     user_id = membership.user_id
     # Read BEFORE the delete: `membership.pk` is set to None by Django's own
     # `Model.delete()`, so a result assembled afterwards would name nothing —
@@ -1127,9 +1763,681 @@ def revoke_membership(
         organization_id=membership.organization_id,
         role=membership.role,
     )
+    was_owner = died.role == OWNER_ROLE
     membership.delete()
+    # THE OWNERLESS FLOOR, after the delete for `_refuse_orphaning_the_tenant`'s
+    # own stated reason: it reads the state this call leaves behind, and a
+    # `Conflict` here rolls the delete back with the whole service transaction.
+    _refuse_orphaning_the_tenant(tenant=tenant, was_owner=was_owner)
     close_sockets_on_commit(user_id=user_id, reason=KICK_MEMBERSHIP_REVOKED)
     return died
+
+
+# --- The hand-out family: roles and grants (ADR core-25, ADR core-26) ---------
+
+
+def _event_bus() -> Callable[..., Any] | None:
+    """`events.emit`, resolved at call time through `core.bridge`, or `None`.
+
+    `core` sits BELOW `apps/events` (rule 7), so this is a registry lookup and
+    never an import — `apps/example/services.py::_event_bus` is the same
+    function one layer up, and the two agree deliberately.
+
+    **`find()` first, then `get()` once.** `get()` never returns `None` — with
+    nothing registered it hands back a logging no-op — so a caller that wanted
+    to know whether anybody was listening could not find out from it. Asking
+    `get()` afterwards is a different question, and only production answers it:
+    there an absent registration is `BridgeNotRegistered` and the caller's
+    transaction rolls back, because a deployment quietly dropping every event on
+    the floor is the failure `core.bridge` exists to refuse. Everywhere else it
+    is the no-op, and the `None` is what makes the caller log and carry on.
+    """
+    found = bridge.find(bridge.EMIT)
+    if found is not None:
+        return found
+    # Production refuses here; every other environment falls through to `None`.
+    bridge.get(bridge.EMIT)
+    return None
+
+
+def _publish(name: str, *, tenant: Tenant, payload: dict[str, Any], actor: Actor) -> bool:
+    """Say that something happened, in the transaction it happened in.
+
+    The payload shape per name is `apps/core/events.py`'s docstring — v1, flat,
+    `tenant_id` always and `organization_id` wherever the row belongs to one
+    part of the tenant (rule 38). It is assembled at the call site rather than
+    read off a schema because `core`'s read schemas for these rows are P5's;
+    when they land the assembly moves behind them, exactly as `WidgetOut` is
+    what `apps/example` publishes.
+
+    Returns whether anybody was listening, which is a fact worth having in a
+    test and a log line worth having in a tree where the bus is not mounted.
+    """
+    emit = _event_bus()
+    if emit is None:
+        # `event_name`, not `event`: structlog's own first argument is called
+        # `event`, and a log line that shadows it is a `TypeError` at 2am.
+        log.info("core.event.unpublished", event_name=name, tenant_id=str(tenant.pk))
+        return False
+    emit(name=name, tenant=tenant, payload=payload, actor=actor)
+    return True
+
+
+def _refuse_undeclared_permissions(*, field: str, permissions: Iterable[str]) -> None:
+    """`Invalid` for anything outside the vocabulary, a reserved key, or a virtual kind.
+
+    Three refusals under one name because they are one question from the
+    caller's side — *may this string appear in a collection or on a grant?* —
+    and the answer has to name the offending key whichever it is. `tenant.own`
+    is the reserved half: it is in the vocabulary, `owner` holds it, and nothing
+    else may ever hand it out, which is the whole of the ceiling the rank table
+    used to enforce. A key on a VIRTUAL kind is the third: it is in the
+    vocabulary too, and it is in nobody's collection by construction
+    (`grantable_permissions`), so a row carrying it would be a row that grants
+    nothing while reading as though it grants something.
+    """
+    words = vocabulary()
+    offenders = sorted(
+        key
+        for key in permissions
+        if key not in words or key in RESERVED_PERMISSIONS or words[key].kind in VIRTUAL_KINDS
+    )
+    if offenders:
+        raise Invalid({field: [_undeclared_or_reserved(key) for key in offenders]})
+
+
+def _undeclared_or_reserved(key: str) -> str:
+    """The sentence for one offending key — and the three halves say DIFFERENT things.
+
+    One sentence for both used to read *"not a permission this deployment may
+    hand out"* whatever the reason, and for the reserved half that is not true:
+    `tenant.own` IS a permission this deployment has — it is in the vocabulary,
+    `owner` holds it, and `GET /permissions/` lists it — which made the remedy
+    the sentence offered ("look it up in the list") send the reader to a list
+    the key is already in. A caller who mistyped a key and a caller who tried to
+    hand out ownership need to be told two different things.
+    """
+    if key in RESERVED_PERMISSIONS:
+        return (
+            f"{key}: reserved to the `owner` role — no role and no grant may name it, "
+            "because ownership is the one capability that cannot be handed out sideways"
+        )
+    word = vocabulary().get(key)
+    if word is not None and word.kind in VIRTUAL_KINDS:
+        return (
+            f"{key}: `{word.kind}` is a VIRTUAL kind — it names no table, so there is no "
+            "row for anybody to be given authority over and no role or grant may carry "
+            "this key. Who may perform it is decided by its policy predicate alone"
+        )
+    return f"{key}: not a permission this deployment has — `GET /permissions/` lists them"
+
+
+def _expand_patterns(*, field: str, permissions: Iterable[str]) -> frozenset[str]:
+    """Patterns to KEYS, at write time. `"*.read"` is 36 rows, not one row.
+
+    A role declared in code keeps its patterns (`DeclaredRole.permissions`) and
+    re-matches them against the vocabulary on every read, which is what makes
+    `("*.read",)` still mean "may read everything" in a deployment with three
+    more apps in it. A tenant's own role cannot work that way: its collection is
+    rows, and a row holding `*.read` would either have to be matched at read
+    time — a second matching layer — or silently gain keys as apps are added,
+    which is a widening nobody asked for. So the expansion happens once, here,
+    and the rows are keys.
+
+    A pattern that matches nothing is `Invalid` naming the pattern: it is
+    almost always a typo, and a role silently created with an empty collection
+    is a support ticket a month later.
+
+    **The population matched is `grantable_permissions()`, not the whole
+    vocabulary** — the one exclusion, shared with `collection()` and
+    `defaults_for()`. Reserved keys were already out; virtual kinds are out for
+    the same reason one layer along: a key on a kind with no table is decided by
+    its predicate and belongs in nobody's collection, so `"*"`, `"*.configure"`
+    and `deployment.*` must not expand to one. They did, and the two ways it
+    broke are both writes: an owner calling `create_role(permissions=["*"])`
+    was refused by `_refuse_handing_out` (the expansion held a key
+    `collection(OWNER_ROLE)` does not), and a `system` actor — which passes the
+    wall by design — WROTE the include row, re-inverting the escalation wall for
+    that role permanently. A literal virtual key is not silently dropped here:
+    it falls through as written and `_refuse_undeclared_permissions` says so in
+    a sentence, because a caller who typed one asked a question and deserves the
+    answer.
+    """
+    grantable = grantable_permissions()
+    expanded: set[str] = set()
+    empty: list[str] = []
+    for entry in permissions:
+        if not any(character in entry for character in "*?["):
+            expanded.add(entry)
+            continue
+        matched = {
+            key for key in grantable if key not in RESERVED_PERMISSIONS and fnmatchcase(key, entry)
+        }
+        if not matched:
+            empty.append(entry)
+        expanded |= matched
+    if empty:
+        raise Invalid(
+            {field: [f"{pattern}: matches no permission in this deployment" for pattern in empty]}
+        )
+    return frozenset(expanded)
+
+
+def _refuse_a_key_the_code_layer_owns(*, key: str) -> None:
+    """`owner` and every declared role belong to code, not to a tenant's table.
+
+    A `Role` row wearing one of those keys would be a second opinion about a
+    collection the code already answers, and `collection()` reads the code layer
+    first — so the row would be a delta nobody could see and a name nobody could
+    edit. The collision is refused here rather than by a constraint because the
+    other half of the population is not a table (the `Role` docstring says so).
+    """
+    if key == OWNER_ROLE or key in role_declarations():
+        raise Invalid(
+            {
+                "key": [
+                    f"{key!r} is already a role this deployment declares in code. "
+                    "Change what it holds with a role delta, or choose another key."
+                ]
+            }
+        )
+
+
+def _kick_the_holders_of(*, tenant: Tenant, role_key: str) -> None:
+    """Hang up on everybody wearing this role key, because its reads just shrank.
+
+    **One query and an over-kick, declared.** `set_role_collection` can take a
+    read away from a role thousands of people hold, and computing
+    `read_kinds_by_node` per person to find out whose set actually moved would
+    be three statements each. The role lost the key; everybody holding the role
+    is affected unless a grant of their own puts it back, and reconnecting is
+    cheap where being wrong is not. So the kick is per holder of the key and the
+    over-kick — the person whose own `allow` grant restores it — is accepted and
+    said here rather than discovered.
+
+    Idempotent and on commit, like every other kick (principle 16).
+    """
+    for user_id in (
+        Membership.objects.filter(tenant=tenant, role=role_key)
+        .values_list("user_id", flat=True)
+        .distinct()
+    ):
+        close_sockets_on_commit(user_id=user_id, reason=KICK_PERMISSIONS_NARROWED)
+
+
+def _kick_if_a_read_was_taken(*, tenant: Tenant, membership: Membership, permission: str) -> None:
+    """The one-person half of P4.8: a `.read` key withdrawn closes their sockets.
+
+    A socket resolved what it may hear once, at the handshake (ADR core-27). A
+    withhold landing on a read key, or an `allow` of one being deleted, is the
+    New Enemy window; closing the connection forces the reconnect that
+    recomputes. A write key moves nothing a socket is delivering, so it kicks
+    nobody — the same asymmetry `kick_if_reads_narrowed` states.
+    """
+    word = vocabulary().get(permission)
+    if word is None or not word.is_read:
+        return
+    close_sockets_on_commit(user_id=membership.user_id, reason=KICK_PERMISSIONS_NARROWED)
+
+
+@service
+def create_role(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    key: str,
+    name: str,
+    description: str = "",
+    permissions: Iterable[str] = (),
+) -> Role:
+    """Make a role this tenant owns, holding exactly what somebody put in it.
+
+    The third layer (ADR core-25). `owner` is the platform's one role and
+    `admin`/`member` are declarations in an app's `roles.py`; a tenant that
+    needs "Approver" makes one of these, and its collection is assembled
+    entirely out of `RolePermission` include rows.
+
+    **Authorized at the ROOT, and that is not an oversight.** A role is
+    tenant-wide — `Role` is `TenantScopedModel` and not `OrgScopedModel`,
+    because resolving one through `governing()` would be a tree walk on every
+    `require` — so the node the capability is measured at is the top of the
+    tree. A branch admin may hand out what they hold on their branch (that is
+    `create_grant`); they may not mint a word the whole tenant now speaks.
+
+    **And bounded by the maker's own set, at their hat.** `_refuse_handing_out`
+    measures the collection against what the actor holds *where they are
+    standing*: a role is tenant-wide, but the authority to put `widget.approve`
+    in one comes from holding `widget.approve`, and holding it in one branch is
+    holding it. `"*.read"` and its siblings are expanded to keys first, so what
+    the wall measures is what the rows will say.
+    """
+    require(actor, "role.create", root_organization(tenant=tenant))
+    _refuse_a_key_the_code_layer_owns(key=key)
+    wanted = _expand_patterns(field="permissions", permissions=permissions)
+    _refuse_undeclared_permissions(field="permissions", permissions=wanted)
+    _refuse_handing_out(
+        actor=actor,
+        tenant=tenant,
+        organization=_landing_node(tenant=tenant, actor=actor),
+        permissions=wanted,
+    )
+    role = Role(tenant=tenant, key=key, name=name, description=description)
+    with as_invalid():
+        role.full_clean()
+    role.save()
+    RolePermission.objects.for_tenant(tenant).bulk_create(
+        RolePermission(
+            tenant=tenant,
+            role_key=key,
+            permission=permission,
+            effect=RolePermission.Effect.INCLUDE,
+        )
+        for permission in sorted(wanted)
+    )
+    _publish(
+        events.ROLE_CREATED,
+        tenant=tenant,
+        payload={
+            "tenant_id": str(tenant.pk),
+            "role_key": key,
+            "name": name,
+            "permissions": sorted(wanted),
+        },
+        actor=actor,
+    )
+    log.info("core.role.created", role_key=key, permission_count=len(wanted))
+    return role
+
+
+@service
+def update_role(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    role: Role,
+    name: str | None = None,
+    description: str | None = None,
+) -> Role:
+    """Rename a tenant's own role. **The key never moves** (§D10).
+
+    A membership, a pending invitation and every delta row join on `key`, so
+    renaming the display name is a one-column write and renaming the key would
+    be a migration of three tables nobody asked for. `name` is the renamable
+    half by construction.
+
+    A row whose key belongs to the code layer is refused rather than edited: it
+    should not exist (`create_role` refuses to make one), and editing it would
+    be maintaining a second opinion about a collection the declaration answers.
+    """
+    require(actor, "role.update", root_organization(tenant=tenant))
+    _refuse_a_key_the_code_layer_owns(key=str(role.key))
+    if name is not None:
+        role.name = name
+    if description is not None:
+        role.description = description
+    with as_invalid():
+        role.full_clean()
+    role.save(update_fields=["name", "description", "updated_at"])
+    _publish(
+        events.ROLE_UPDATED,
+        tenant=tenant,
+        payload={"tenant_id": str(tenant.pk), "role_key": str(role.key), "name": str(role.name)},
+        actor=actor,
+    )
+    return role
+
+
+@service
+def set_role_collection(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    role_key: str,
+    permissions: Iterable[str] = (),
+) -> list[RolePermission]:
+    """Say what a role holds in this tenant, as a whole set rather than a diff.
+
+    **Two shapes under one service, because a caller has one question.** A
+    CUSTOM role's collection *is* its include rows, so the wanted set is written
+    as includes and everything else is deleted. A DECLARED role has a code layer
+    underneath it, so what is stored is the DELTA — an include row for each key
+    the tenant added, an exclude row for each one it took away — and a
+    deployment that later widens the declaration widens this tenant too, which
+    is the property a stored snapshot would have thrown away.
+
+    **`owner` is refused.** It IS the vocabulary (present and future, the
+    reserved verb included), so a delta on it is a ceiling disappearing quietly.
+
+    **Both directions are walled.** Keys ADDED must be ones the actor holds
+    (`_refuse_handing_out`); keys REMOVED must be too, because taking a
+    capability away from everybody who holds this role is a take-back at scale —
+    an admin who may not withhold `tenant.own` from one owner must not reach the
+    same place by editing the role out from under them.
+    """
+    require(actor, "role.update", root_organization(tenant=tenant))
+    if role_key == OWNER_ROLE:
+        raise Invalid(
+            {
+                "role_key": [
+                    "`owner` is the whole vocabulary by definition and holds no delta. "
+                    "Withhold a key from one person instead."
+                ]
+            }
+        )
+    wanted = _expand_patterns(field="permissions", permissions=permissions)
+    _refuse_undeclared_permissions(field="permissions", permissions=wanted)
+    declared = role_key in role_declarations()
+    if not declared and not Role.objects.for_tenant(tenant).filter(key=role_key).exists():
+        raise NotFound()
+    base = defaults_for(role_key) if declared else frozenset()
+    held_now = collection(tenant, role_key)
+    added = wanted - held_now
+    removed = held_now - wanted
+    where = _landing_node(tenant=tenant, actor=actor)
+    _refuse_handing_out(actor=actor, tenant=tenant, organization=where, permissions=added)
+    _refuse_handing_out(actor=actor, tenant=tenant, organization=where, permissions=removed)
+
+    RolePermission.objects.for_tenant(tenant).filter(role_key=role_key).delete()
+    rows = [
+        RolePermission(
+            tenant=tenant,
+            role_key=role_key,
+            permission=permission,
+            effect=RolePermission.Effect.INCLUDE,
+        )
+        for permission in sorted(wanted - base)
+    ] + [
+        RolePermission(
+            tenant=tenant,
+            role_key=role_key,
+            permission=permission,
+            effect=RolePermission.Effect.EXCLUDE,
+        )
+        for permission in sorted(base - wanted)
+    ]
+    written = RolePermission.objects.for_tenant(tenant).bulk_create(rows)
+    if any(key in vocabulary() and vocabulary()[key].is_read for key in removed):
+        _kick_the_holders_of(tenant=tenant, role_key=role_key)
+    _publish(
+        events.ROLE_UPDATED,
+        tenant=tenant,
+        payload={
+            "tenant_id": str(tenant.pk),
+            "role_key": role_key,
+            "permissions": sorted(wanted),
+        },
+        actor=actor,
+    )
+    log.info(
+        "core.role.collection_set",
+        role_key=role_key,
+        permission_count=len(wanted),
+    )
+    return written
+
+
+@dataclass(frozen=True)
+class DeletedRole:
+    """What a deleted role WAS, after the row is gone. `RevokedMembership`'s shape."""
+
+    role_id: UUID
+    key: str
+    name: str
+
+    @property
+    def audit_object(self) -> tuple[str, UUID]:
+        """The `(label, pk)` pair the audit seam reads off a row that no longer exists."""
+        return (Role._meta.label, self.role_id)
+
+
+@service
+def delete_role(*, tenant: Tenant, actor: Actor, role: Role) -> DeletedRole:
+    """Remove a tenant's own role, and the delta rows that named it.
+
+    **Refused while anybody still wears the key**, membership or pending
+    invitation. `Membership.role` and `Invitation.role` are strings and not
+    foreign keys — two of the three role layers are code, so half the keys those
+    columns name have no row to point at — which means the database cannot
+    protect this and the service has to. A role deleted out from under a
+    membership would leave that person holding nothing, silently, which is a
+    withdrawal nobody performed.
+
+    The cascade is here rather than in the schema for the same reason: the
+    `RolePermission` join is the key, not a foreign key.
+
+    **Not a caller of the ownerless floor.** A role deletion names no owner —
+    `owner` is not a row and cannot be deleted — so there is no road from here
+    to a tenant with nobody on top.
+    """
+    require(actor, "role.delete", root_organization(tenant=tenant))
+    key = str(role.key)
+    worn_by = Membership.objects.filter(tenant=tenant, role=key).count()
+    # rule-24: a role is TENANT-WIDE (`Role` is `TenantScopedModel`, not
+    # `OrgScopedModel` — resolving one through `governing()` would be a tree walk
+    # on every `require`), so "is anybody still being offered this key" is a
+    # tenant-wide question by construction. Narrowing it with `visible_to` would
+    # let a branch admin delete a role a sibling branch's pending invitation
+    # still names, which is the exact orphaning this refusal exists to prevent —
+    # a COUNT of rows nobody is shown, never a listing.
+    offered_to = (
+        Invitation.objects.for_tenant(tenant)  # rule-24: tenant-wide by construction, see above
+        .filter(role=key, status=Invitation.Status.PENDING)
+        .count()
+    )
+    if worn_by or offered_to:
+        raise Conflict(
+            f"{key!r} is still held by {worn_by} membership(s) and offered by "
+            f"{offered_to} pending invitation(s). Move them to another role first."
+        )
+    died = DeletedRole(role_id=role.pk, key=key, name=str(role.name))
+    RolePermission.objects.for_tenant(tenant).filter(role_key=key).delete()
+    role.delete()
+    _publish(
+        events.ROLE_DELETED,
+        tenant=tenant,
+        payload={"tenant_id": str(tenant.pk), "role_key": key},
+        actor=actor,
+    )
+    return died
+
+
+@service
+def create_grant(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    membership: Membership,
+    permission: str,
+    effect: str = Grant.Effect.ALLOW,
+) -> Grant:
+    """Give one person one capability in one place, or take one away.
+
+    The bottom layer, and the one an administrator reaches for when a role is
+    the wrong size for one person. `allow` adds a key the role does not carry;
+    `withhold` removes one it does, and beats everything — "forbid overrides
+    permit" — because the alternative is a subtraction somebody undoes by being
+    given something.
+
+    **An UPSERT on `(membership, permission)`** (principle 16). Every door is
+    at-least-once; the same hand-out arriving twice is one row with the last
+    effect on it, not a constraint violation the caller has to interpret.
+
+    **Which wall depends on the direction.** An `allow` is a hand-out, bounded
+    by what the granter holds. A `withhold` is a take-back, bounded by what the
+    TARGET holds — the ceiling, with the verb `restrict`.
+
+    **Reach is the door's.** The membership arrives resolved; the door fetches
+    it through `get_membership(org=<hat>)`, so a row outside the acting hat's
+    subtree is `not_found` before this service is reached (§C8). What this
+    service asserts is the tenancy half, which is its own to assert — a
+    membership belonging to another tenant is incoherent with the `tenant`
+    argument and is `invalid`, never a silent write into somebody else's data.
+    """
+    # REACH, FIRST (R1-F4 supersedes P4.4's recorded sentence). This refused a
+    # foreign membership with `Invalid("That membership belongs to another
+    # tenant.")`, which answers a question the caller may not ask: a refusal
+    # that tells another tenant's row apart from a nonexistent id is an
+    # existence oracle (§C8). `may_be_named` folds both into `NotFound`, and it
+    # covers the sibling-branch case the tenancy comparison never saw.
+    if not may_be_named(actor, membership):
+        raise NotFound()
+    require(actor, "grant.create", membership.organization)
+    _refuse_undeclared_permissions(field="permission", permissions=[permission])
+    if effect == Grant.Effect.WITHHOLD:
+        _refuse_taking_back(actor=actor, tenant=tenant, membership=membership, verb="restrict")
+    else:
+        _refuse_handing_out(
+            actor=actor,
+            tenant=tenant,
+            organization=membership.organization,
+            permissions=frozenset({permission}),
+        )
+    grant, _created = Grant.objects.for_tenant(tenant).update_or_create(
+        tenant=tenant,
+        membership=membership,
+        permission=permission,
+        defaults={"effect": effect},
+    )
+    if effect == Grant.Effect.WITHHOLD:
+        _kick_if_a_read_was_taken(tenant=tenant, membership=membership, permission=permission)
+    _publish(
+        events.GRANT_CREATED,
+        tenant=tenant,
+        payload={
+            "tenant_id": str(tenant.pk),
+            "organization_id": str(membership.organization_id),
+            "membership_id": str(membership.pk),
+            "permission": permission,
+            "effect": effect,
+        },
+        actor=actor,
+    )
+    log.info("core.grant.created", permission=permission, effect=effect)
+    return grant
+
+
+@dataclass(frozen=True)
+class RevokedGrant:
+    """What a withdrawn grant WAS, after the row is gone. `RevokedMembership`'s shape.
+
+    `effect` travels because a reader six weeks later cannot tell the two
+    withdrawals apart without it: removing an `allow` narrows what that person
+    may do, removing a `withhold` widens it.
+    """
+
+    grant_id: UUID
+    membership_id: UUID
+    organization_id: UUID
+    permission: str
+    effect: str
+
+    @property
+    def audit_object(self) -> tuple[str, UUID]:
+        """The `(label, pk)` pair the audit seam reads off a row that no longer exists."""
+        return (Grant._meta.label, self.grant_id)
+
+
+@service
+def delete_grant(*, tenant: Tenant, actor: Actor, grant: Grant) -> RevokedGrant:
+    """Withdraw an exception. **Which wall applies depends on which way it pointed.**
+
+    Removing an `allow` takes a capability away from somebody, so it is a
+    take-back and the ceiling measures it. Removing a `withhold` GIVES a
+    capability back, so it is a hand-out and the granter must hold what they are
+    restoring — which is the case the rank table could not have seen at all,
+    because a withhold names a permission and not a role.
+    """
+    membership = grant.membership
+    # REACH, FIRST (R1-F4) — the grant is named through its membership, so the
+    # membership is what has to be reachable.
+    if not may_be_named(actor, membership):
+        raise NotFound()
+    require(actor, "grant.delete", membership.organization)
+    if grant.effect == Grant.Effect.WITHHOLD:
+        _refuse_handing_out(
+            actor=actor,
+            tenant=tenant,
+            organization=membership.organization,
+            permissions=frozenset({str(grant.permission)}),
+        )
+    else:
+        _refuse_taking_back(actor=actor, tenant=tenant, membership=membership, verb="restrict")
+    died = RevokedGrant(
+        grant_id=grant.pk,
+        membership_id=membership.pk,
+        organization_id=membership.organization_id,
+        permission=str(grant.permission),
+        effect=str(grant.effect),
+    )
+    grant.delete()
+    if died.effect == Grant.Effect.ALLOW:
+        # The third narrowing road. PR1.8's rule is about a read set shrinking
+        # and not about which service shrank it, so an `allow` of a read key
+        # being withdrawn kicks exactly as a withhold landing does.
+        _kick_if_a_read_was_taken(tenant=tenant, membership=membership, permission=died.permission)
+    _publish(
+        events.GRANT_DELETED,
+        tenant=tenant,
+        payload={
+            "tenant_id": str(tenant.pk),
+            "organization_id": str(membership.organization_id),
+            "membership_id": str(membership.pk),
+            "permission": died.permission,
+            "effect": died.effect,
+        },
+        actor=actor,
+    )
+    return died
+
+
+# door: reached only from `manage.py rename_permission`, which is the right and
+# only door for it. Renaming a permission across EVERY tenant at once is an
+# operator act at an altitude no tenant persona holds — there is no actor, no
+# tenant and no node for a route to authorize against — and the precedent is
+# `bootstrap_tenant` and `create_first_tenant` beside it. A REST or MCP door here
+# would be a credential-holder inside one tenant rewriting the vocabulary of all
+# of them.
+@service
+# rule-13: it declares no `tenant` ON PURPOSE. `@service` writes its audit row per
+# tenant, and this call is the deployment acting on its own vocabulary across
+# every tenant at once; one row per tenant claiming an actor nobody was would be
+# worse than the command's own printed counts.
+def rename_permission_rows(*, old: str, new: str) -> dict[str, int]:
+    """Move every row naming a renamed permission onto its successor. **Deployment-wide.**
+
+    The rename table (`RENAMED_PERMISSIONS`, per app) keeps an old key ANSWERING
+    after a sweep renames it — `resolve_renamed` maps it at `require` time — so
+    nothing breaks the day the rename lands. What it does not do is move the
+    tenant's own rows: a `Grant` or a `RolePermission` still says the old word,
+    and the vocabulary census will report it as a key naming nothing forever.
+    This is the one writer that moves them.
+
+    **It declares no `tenant`, so it writes no audit row, and that is the
+    honest shape**: it is the deployment's own maintenance act across every
+    tenant at once, and one row per tenant claiming an actor nobody was would be
+    worse than the command's own output. The shell door
+    (`manage.py rename_permission`) prints the counts, and `AuditEntry` is not
+    where a schema migration of the permission vocabulary belongs.
+    """
+    # authz: there is no actor and no tenant — this is the deployment acting on
+    # its own vocabulary across every tenant at once, reachable only from a
+    # management command (an operator altitude no tenant persona holds, the
+    # `bootstrap_tenant` precedent). A `require` here would have to invent both
+    # an actor and a node, and the thing being authorized is the operator's
+    # shell access.
+    moved = {
+        # rule-8: DELIBERATELY UNSCOPED, and that is the whole act. A permission
+        # key is the deployment's vocabulary, not one tenant's data: the sweep
+        # that renamed it renamed it for everybody, so a `for_tenant` here would
+        # move one tenant's rows and leave every other tenant's naming a word
+        # nothing answers. There is no tenant argument to scope BY — the caller
+        # is a management command with no tenant and no actor.
+        "grants": Grant.objects.filter(permission=old).update(permission=new),
+        # rule-8: the same act on the other table, for the same reason.
+        "role_permissions": RolePermission.objects.filter(permission=old).update(permission=new),
+    }
+    log.info("core.permission.renamed", permission=old, key=new, **moved)
+    return moved
 
 
 # --- Tenant configuration ----------------------------------------------------
@@ -1163,7 +2471,7 @@ def update_tenant_settings(
     L1 ruling rather than on an actor that happened to be missing.
     """
     if actor.kind != "system":
-        require(actor, "tenant.configure", root_organization(tenant=tenant))
+        require(actor, "tenant.update", root_organization(tenant=tenant))
     changed: list[str] = []
     if values is not None:
         merged = dict(tenant.settings or {})
@@ -1325,6 +2633,11 @@ def suspend_tenant(*, tenant: Tenant, reason: str = "", actor: Actor) -> Tenant:
     with as_invalid():
         tenant.full_clean()
     tenant.save(update_fields=["status", "suspended_at", "settings", "updated_at"])
+    # **And the sockets already open are hung up on** (R4 F2, house rule 36).
+    # A suspension is refused at the next HANDSHAKE and nowhere else, so
+    # without this every live connection went on hearing for the life of the
+    # connection while the REST door answered 403 to the same credential.
+    close_tenant_sockets_on_commit(tenant_id=tenant.pk, reason=KICK_TENANT_SUSPENDED)
     return tenant
 
 
@@ -1402,6 +2715,11 @@ def close_tenant(*, tenant: Tenant, actor: Actor) -> Tenant:
     with as_invalid():
         tenant.full_clean()
     tenant.save(update_fields=["status", "closed_at", "updated_at"])
+    # The terminal half of the same sentence (R4 F2, house rule 36). Closing
+    # is the one act after which it must never be the case that somebody is
+    # still receiving, and a sibling service calling the seam does not make
+    # this one call it.
+    close_tenant_sockets_on_commit(tenant_id=tenant.pk, reason=KICK_TENANT_CLOSED)
     return tenant
 
 
@@ -1419,8 +2737,15 @@ def pending_invitations_for(*, email: str) -> list[Invitation]:
     Deliberately not `for_tenant`, and this is the one query in the tree that
     legitimately crosses tenants: the person signing up has no tenant yet —
     having one is what the invitation is *for*. It is narrowed by the email
-    address, which is the identity being established, and it is called from
-    exactly one place: the signup adapter.
+    address, which is the identity being established. THREE callers reach it,
+    all of them `accounts.adapter`'s and all of them through
+    `accept_pending_invitations`: `AccountAdapter.save_user` and
+    `SocialAccountAdapter.save_user`, the two signup hooks, where a person
+    arriving for the first time is matched against the offers waiting for them,
+    and `_platform_login`, which runs on every platform sign-in so that an offer
+    made after the account existed is still found. Running it more than once is
+    safe rather than doubled: accepting moves the row out of `PENDING`, so the
+    next pass finds nothing.
     """
     return list(
         Invitation.objects.filter(
@@ -1493,12 +2818,33 @@ PROVISION_INVITED_PERSON_WORKFLOW = "ProvisionInvitedPersonWorkflow"
 # still does.
 
 
+def _invited_role(*, tenant: Tenant, role: str | None) -> str:
+    """The role key an offer names: the caller's, or whatever a new member gets.
+
+    A function and not a default argument, because a default argument is
+    evaluated at import and the role declarations are discovered after the apps
+    load. `None` and `""` are different answers and a reader has to be able to
+    tell them apart: `None` is "whatever this deployment gives a new member",
+    `""` is an offer of a place and no role — which is what a deployment
+    declaring no default role has to make, and is refused otherwise.
+
+    The validation is here, before the wall, and not after it as `set_role`'s
+    is: the ordering `set_role` keeps is pinned by a test about the CEILING on a
+    role somebody already holds, and an invitation has no such row to be above.
+    An unknown key here is a malformed offer, and saying so first is the cheaper
+    answer.
+    """
+    resolved = default_role_key() if role is None else role
+    _refuse_unknown_role(tenant=tenant, role=resolved, allow_roleless=not default_role_key())
+    return resolved
+
+
 @service
 def invite_member(
     *,
     tenant: Tenant,
     email: str,
-    role: str = Membership.Role.MEMBER,
+    role: str | None = None,
     organization: Organization | None = None,
     invited_by: AbstractBaseUser | None = None,
     expires_in_days: int = INVITATION_DAYS,
@@ -1541,9 +2887,8 @@ def invite_member(
     # under. Two questions, and the wall below only ever asked one of them: "may
     # you grant THIS ROLE" is a ceiling, and it lets a member invite a member.
     # `require` asks whether you may invite anybody at all.
-    where = organization if organization is not None else _landing_node(tenant=tenant, actor=actor)
-    if where.tenant_id != tenant.pk:
-        raise Invalid({"organization": ["That organization belongs to another tenant."]})
+    where = _placement(tenant=tenant, organization=organization, actor=actor)
+    role = _invited_role(tenant=tenant, role=role)
     # `system` is the declared altitude, not an actor nobody supplied (L1).
     if actor.kind != "system":
         require(actor, "invitation.create", where)
@@ -1630,7 +2975,12 @@ def _provision_invited_person(
                 context={
                     "tenant_name": tenant.name,
                     "email": invitation.email,
-                    "role": Membership.Role(invitation.role).label,
+                    # `role_label`, never `Membership.Role(value).label`: the
+                    # enum holds three keys and a tenant may have made a fourth,
+                    # so the old form raised `ValueError` inside the activity
+                    # that sends the mail — a custom role's invitation would
+                    # have failed to send with a stack trace and no message.
+                    "role": role_label(tenant=tenant, key=invitation.role),
                     "invited_by": (
                         getattr(invited_by, "email", "") if invited_by is not None else ""
                     ),
@@ -1650,6 +3000,34 @@ def _provision_invited_person(
         # run and not two — and "invite them again", which makes a NEW row,
         # genuinely re-sends.
         id=build_id(tenant=tenant, app="accounts", noun="invite", key=str(invitation.pk)),
+    )
+
+
+def _refuse_a_role_that_stopped_existing(*, tenant: Tenant, invitation: Invitation) -> None:
+    """The role an offer named may be gone by the time somebody clicks the link.
+
+    A role is a KEY now and two of its three layers can be withdrawn — a tenant
+    deletes a custom `Role` row, a product removes a declaration from its
+    `roles.py` and deploys — while this row goes on naming it. Landing the
+    membership anyway would put somebody in a tenant holding a role that
+    resolves to nothing, which reads to them as a broken account and to an
+    administrator as a person who is simply there.
+
+    **`Conflict` and not `Invalid`**: the request is perfectly well-formed and
+    the accepter chose none of this. The state changed underneath an offer they
+    were handed, and the remedy is somebody re-issuing it — which is what the
+    sentence says, because "invalid role" would tell the one person in this
+    exchange who typed nothing that they typed something wrong.
+
+    `""` is not this case: an offer that named no role is an offer of a place
+    and nothing more, and that is a membership `add_membership` writes.
+    """
+    if invitation.role == "" or invitation.role in known_role_keys(tenant=tenant):
+        return
+    raise Conflict(
+        "The role this invitation named no longer exists in this organization, so there "
+        "is nothing for it to make you. Ask whoever invited you to send a new one.",
+        remedies=(Remedy("Ask for a new invitation", "self:invitation"),),
     )
 
 
@@ -1676,9 +3054,9 @@ def accept_invitation(
     person — and for an act a person unambiguously performed that is not an
     absence, it is a FALSE STATEMENT: somebody clicked a link in an email and
     the trail said the product did it to itself. The REST door passes
-    `actor_from_request(request)`; the during-signup path in
-    `accounts.adapter` builds `actor_for(user=<the account just created>,
-    kind="human")`, because at that instant there is a person and no request.
+    `actor_from_request(request)`; the arrival path in `accounts.adapter` builds
+    `actor_for(user=<the person arriving>, kind="human")`, because at that
+    instant there is a person and no request.
 
     # authz: the TOKEN is the authorization, and it is a stronger claim than
     # any predicate could make here — the caller proved reach by holding a
@@ -1688,7 +3066,7 @@ def accept_invitation(
     # invitation is FOR, so it would fail closed on every legitimate
     # acceptance. The actor is kept for the audit row (rule 13's valve shape).
 
-    Called from `accounts.adapter.save_user` at signup — **not from a signal**
+    Called from `accounts.adapter` when a person arrives — **not from a signal**
     (house rule 4). A `post_save` receiver on `User` would be logic hidden where
     nobody looks for it, and it would fire for every user a test or a management
     command ever created.
@@ -1709,6 +3087,7 @@ def accept_invitation(
         raise Conflict("That invitation has already been used or withdrawn.")
     if is_past(invitation.expires_at):
         raise Invalid({"invitation": ["That invitation has expired. Ask for a new one."]})
+    _refuse_a_role_that_stopped_existing(tenant=tenant, invitation=invitation)
     # THE NODE THE OFFER NAMED (ADR core-20). An invitation records the hat it
     # was sent from, and the membership lands exactly there — not at the root,
     # which is what this did while the row carried no organization at all. The

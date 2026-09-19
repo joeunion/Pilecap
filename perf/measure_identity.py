@@ -667,10 +667,20 @@ def test_the_list_page_plan_is_recorded_at_a_hundred_thousand_rows(
     hierarchy's own rung owns `organization_path_prefix`). Both plans go into
     the doc as observations so E1 can see what it is pinning.
     """
+    from apps.core.actor import system_actor
     from apps.example.selectors import list_widgets
 
-    wide = explain(list_widgets(tenant=loaded, org=orgs["root"])[:50])
-    narrow = explain(list_widgets(tenant=loaded, org=orgs["heavy"])[:50])
+    # The system actor, for the reason `measure_hierarchy.py` gives at its own
+    # call site: a seeded perf world has no membership, and what is being read
+    # here is a query PLAN.
+    wide = explain(
+        list_widgets(tenant=loaded, org=orgs["root"], actor=system_actor(loaded, orgs["root"]))[:50]
+    )
+    narrow = explain(
+        list_widgets(tenant=loaded, org=orgs["heavy"], actor=system_actor(loaded, orgs["heavy"]))[
+            :50
+        ]
+    )
     _report(
         "list page EXPLAIN",
         server=postgres_server_version(),

@@ -1,17 +1,52 @@
 {% extends "account/base_entrance.html" %}
 {% comment %}
 The four lines that make `apps/accounts/templates/account/login_doors.html`
-reachable. That file is where the reasoning lives and where a change belongs;
-this one exists only because `INSTALLED_APPS` puts `allauth` before every app
-under `apps/`, so an override there is never found, and `TEMPLATES["DIRS"]`
-already names this directory and is searched first.
+reachable, and — since design P-10 — the switch that picks one of six FRAMES.
+That file is where the door reasoning lives and where a change to the chooser
+belongs; this one exists only because `INSTALLED_APPS` puts `allauth` before
+every app under `apps/`, so an override there is never found, and
+`TEMPLATES["DIRS"]` already names this directory and is searched first.
 
-`{% extends %}` is above the comment and not below it because Django requires
-it to be the first tag in the file — a comment counts.
+`{% templatetag openblock %} extends {% templatetag closeblock %}` is above the
+comment and not below it because Django requires it to be the first tag in the
+file — a comment counts.
+
+THE FRAME SWITCH, and the two things it is careful about.
+
+(1) **With no `frame` in the context this page is what it was, byte for byte.**
+That is not politeness: the door that sets a frame is the sign-in view
+(`SIGN_IN_DOOR`), it defaults to `hosted`, and until a deployment turns it to
+`ours` every person still meets today's page. The `if` is written tight
+against the tags so the else-branch emits the same whitespace it always did,
+and `apps/accounts/tests/test_entrance_frames.py::
+test_the_login_page_is_byte_identical_with_no_frame_set` compares the served
+bytes against fixtures captured from the baseline tree `c00fa2be`, in both
+live door states.
+
+(2) **The vocabulary is the directory, and an unknown name is LOUD.** The
+include is built from the name, so `frame="typo"` raises
+`TemplateDoesNotExist: account/frames/typo.html` — it names the thing it looked
+for. The obvious alternative, an `if/elif` chain ending in `else` on today's
+page, answers a typo with a plausible screen and lets the door above look
+correct while sending a name nobody reads. The six legal names are the six
+files under `templates/account/frames/`, and that set is the census in the test
+module: a seventh file is a failure there rather than a name somebody has to
+remember to add here.
+
+(3) **THE TITLE MOVES WITH THE FRAME, and it is the DOOR that picks it.** A4
+shipped six frames under one `<title>Sign In</title>` — the shell's default —
+so the enrolment screen, the reset screen and the signed-out screen were three
+tabs a person could not tell apart, and three documents a screen reader
+announced identically. The name is not enough to derive it from here: the
+words are copy, and copy is the door's (`apps/accounts/views.py`'s
+`FRAME_TITLES`, censused against this directory). With nothing handed in the
+block is what it always was, which is the half that keeps `hosted` byte-
+identical — the same tightness the `if` above is written with, for the same
+reason.
 {% endcomment %}
 {% load i18n %}
-{% block head_title %}{% trans "Sign In" %}{% endblock head_title %}
-{% block content %}
+{% block head_title %}{% if frame_title %}{{ frame_title }}{% else %}{% trans "Sign In" %}{% endif %}{% endblock head_title %}
+{% block content %}{% if frame %}{% include "account/frames/"|add:frame|add:".html" %}{% else %}
     <h1>{% trans "Sign In" %}</h1>
     {% include "account/login_doors.html" %}
-{% endblock content %}
+{% endif %}{% endblock content %}

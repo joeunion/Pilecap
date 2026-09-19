@@ -31,6 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .secrets.baseline README.md TEMPLATE_VERSION apps/example/models.py docs/product docs/runbooks/deploy.md scripts/archaeology_lib.sh scripts/backup.sh scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/kill_mine.sh scripts/publish.sh scripts/queue_cited.sh scripts/sweep.sh scripts/tests
 # The refusal-and-property drive for `scripts/publish.sh`.
 #
 # Exit: 0 every case held · 1 a refusal did not fire or a property did not hold
@@ -191,6 +192,14 @@ build_fixture() {
     # case_every_fixture_that_copies_a_seam_library_copies_the_seam in
     # scripts/tests/test_gate_lease.sh.
     cp "$ROOT/scripts/gate_refuse.sh" "$d/scripts/gate_refuse.sh"
+    # AND THE SECOND LIBRARY publish.sh SOURCES, for the first one's reason
+    # exactly. The `adr-census` and `dangling-docs` bodies moved into
+    # `scripts/docs_legs.sh` so that `scripts/check.sh` could run them per rung
+    # over the changed files while this file keeps running them over the whole
+    # artifact — one body, two callers. A fixture without it dies at the `.`
+    # line, which is what the copy list above exists to prevent; it is a seam
+    # library too, and its seam is already here.
+    cp "$ROOT/scripts/docs_legs.sh" "$d/scripts/docs_legs.sh"
     echo "# a model" >"$d/apps/example/models.py"
     # R11's one member. The rule is a GLOB over the whole client directory, so
     # one file inside it is the whole arm: without this the rule's row prints 0

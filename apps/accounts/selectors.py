@@ -40,8 +40,11 @@ from apps.accounts.models import (
     domain_of,
     normalise_domain,
 )
+from apps.core.actor import Actor
+from apps.core.authz import require
 from apps.core.exceptions import NotFound
 from apps.core.models import Tenant
+from apps.core.services import root_organization
 
 # The wire vocabulary. Strings rather than an enum because they are part of the
 # API contract and a client branches on them.
@@ -77,6 +80,24 @@ class Realm:
     #: *adapter* consult one router rather than two reads that can disagree
     #: about which connection owns a domain.
     connection: SsoConnection | None = None
+
+
+def get_platform_provider_id() -> str:
+    """The provider id Zitadel is registered under, from settings.
+
+    Read at call time rather than imported as a constant so a test — and a
+    deployment that renames it — changes one setting and every branch that
+    branches on it follows. `config/settings/base.py` says why three things have
+    to agree on this string, and `get_platform_login_url` below is one of them.
+
+    **It lives here rather than in the adapter** (R2F2), because the adapter is
+    no longer the only caller: `services.unlink_zitadel_identity` takes the
+    person's platform `SocialAccount` rows with the column, and it has to mean
+    the same provider the door means. Two definitions of a string three things
+    already have to agree on is the whole risk; reads live in selectors, which
+    is where both callers can reach one.
+    """
+    return str(getattr(settings, "ZITADEL_PROVIDER_ID", "zitadel"))
 
 
 def get_platform_login_url() -> str:
@@ -177,7 +198,7 @@ def sso_enforced_for(email: str) -> SsoConnection | None:
     return connection
 
 
-def get_member(*, tenant: Tenant | None, user_id: UUID) -> User:
+def get_member(*, tenant: Tenant | None, user_id: UUID, actor: Actor) -> User:
     """A person the acting tenant can see, by id, or `NotFound`.
 
     **How every door resolves a `{user_id}` before handing it to a service.**
@@ -193,7 +214,8 @@ def get_member(*, tenant: Tenant | None, user_id: UUID) -> User:
 
     It is a read and it decides nothing about the verb: whether the caller may
     *do* the thing to the person they resolved is `policies.py`'s, asked by the
-    service. This only answers "could you have got hold of that reference".
+    service. This only answers "could you have got hold of that reference" —
+    and, since the read sweep, "and may you read a person at all".
     """
     found = (
         User.objects.filter(pk=user_id, memberships__tenant=tenant).first()
@@ -202,17 +224,55 @@ def get_member(*, tenant: Tenant | None, user_id: UUID) -> User:
     )
     if found is None:
         raise NotFound()
+    # REACH FIRST, then the capability: the membership filter above is what
+    # makes somebody else's person `not_found`, and this line is what makes a
+    # person inside the acting tenant `forbidden` to a hat holding no
+    # `user.read`. A read that never asked was a read every door inherited for
+    # free (rule 54 (d)).
+    #
+    # hat-scoped: the third argument is the ROW. A `User` names no organization
+    # — a person belongs to several tenants and to none — so there is no node in
+    # the row to resolve, and the node this question belongs at IS the acting
+    # hat: the reach is "holds a membership in the tenant I am acting in", which
+    # is the filter above and not a place in the tree.
+    require(actor, "user.read", found)
     return found
 
 
-def list_sso_connections(*, tenant: Tenant | None) -> QuerySet[SsoConnection]:
+def list_sso_connections(*, tenant: Tenant | None, actor: Actor) -> QuerySet[SsoConnection]:
     """A tenant's connections, with their claimed domains already fetched.
 
     `prefetch_related` rather than a second query per row: `SsoConnectionOut`
     reads `email_domains`, which is derived from the `SsoDomain` rows, so a list
     without it is an N+1 that only shows up once a customer has more than one
     connection.
+
+    **The capability is asked at the ROOT, before the queryset** — the same node
+    the four writing keys have used since R1-F1, and for the same reason. A
+    connection is the TENANT's identity: `sso_connection` names no organization,
+    so it is a tenant-wide kind, and rule 55's whole law is that a tenant-wide
+    kind is asked at a node the caller resolved rather than at the acting hat —
+    where a branch administrator holds `*` and would read the tenant's whole
+    federation posture off a hat that owns none of it. An earlier draft of this
+    line asked at the hat on the argument that seeing is weaker than changing;
+    the PM ruled against it, and the ruling is the right one: the list names
+    every provider the tenant federates with and the domains each one claims,
+    which is the configuration itself and not a signpost to it.
+
+    A list has no row to hide, so somebody without the key hears the refusal
+    rather than an empty page that reads as a tenant with no identity provider
+    at all.
     """
+    if tenant is None:
+        # hat-scoped: there is no tenant, so there is no root to name — and no
+        # hat either. `effective_permissions(user, None, ...)` is `frozenset()`,
+        # so this refuses whoever asked, which is the same fail-closed answer
+        # `for_tenant(None)` gives one line down, said a step earlier and out
+        # loud. The branch exists because the node above is resolved from a
+        # tenant, and `None` has no root; it is not a second policy.
+        require(actor, "sso_connection.read")
+    else:
+        require(actor, "sso_connection.read", root_organization(tenant=tenant))
     return SsoConnection.objects.for_tenant(tenant).prefetch_related("domains")
 
 
@@ -235,6 +295,15 @@ def get_connection_for_email(email: str) -> SsoConnection | None:
     and provisioned into another tenant — and one function answering both is the
     only version of that guarantee that cannot rot. It also keeps the pre-auth
     cross-tenant read to the single site rule 8 already exempts by name.
+
+    # read-open: there is nobody to ask. This answers "whose person is this
+    # address" BEFORE anybody has signed in — it is the home-realm question the
+    # login box asks of a stranger — so there is no actor, no tenant and no
+    # membership for `sso_connection.read` to be asked against. A door that
+    # calls this must ask first; the two callers are the adapter's login road
+    # and `realm_for_email`, and neither has a principal yet. The tenancy
+    # exemption rule 8 already grants this site by name is the same fact from
+    # the other side.
     """
     return realm_for_email(email).connection
 

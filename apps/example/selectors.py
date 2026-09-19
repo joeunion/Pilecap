@@ -19,6 +19,21 @@ a sibling branch, or one level *up* the tree as for a row that does not exist �
 a 403 there would tell the caller the row exists, which is the fact the scoping
 was hiding.
 
+**And since Phase R every one of them ASKS** (ADR core-27, §C6). `actor` is a
+required keyword — never optional, because an `actor=None` default is a read
+that fails open the first time a caller forgets — and each selector calls
+`require(actor, "<kind>.read", ...)` exactly once. **Two questions, two owners,
+and they are never merged** (rule 24, BVB-4): `for_tenant`/`visible_to` decide
+WHICH rows, `require` decides WHETHER this kind, here. Nothing below filters
+rows by permission.
+
+Where the question is asked differs between a list and a get, and the order is
+the rule: a `list_` asks at the **acting hat** before it builds the queryset,
+because a list has no row to hide; a `get_` asks **after the scoped fetch**,
+with the row, at the row's own node — so outside the subtree the fetch has
+already said `not_found` and the capability is never consulted. A `system` actor
+passes at `allows` step 1, so the onboarding activities are untouched.
+
 **There is exactly one exception in this module and it is not a widening.**
 `get_governing_widget_policy` reads `for_tenant(...).governing(org)` — the rows
 on the acting node's *ancestor chain*, nearest first — because `WidgetPolicy`
@@ -36,12 +51,28 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from apps.core.actor import Actor
+from apps.core.authz import require
 from apps.core.exceptions import NotFound
 from apps.core.models import ScopedQuerySet, Tenant
 from apps.example.models import Widget, WidgetEntry, WidgetPolicy
 
 
-def list_widgets(*, tenant: Tenant | None, org: Any = None) -> ScopedQuerySet[Widget]:
+def _widgets_in(*, tenant: Tenant | None, org: Any) -> ScopedQuerySet[Widget]:
+    """The scoped read, without the capability. Private, and nothing calls it raw.
+
+    **Why it exists rather than `get_widget` reaching through `list_widgets`.**
+    Before Phase R a `get_` was a `list_` with one more filter, and that was
+    exactly right: one scoping rule, written once. The two now ask the
+    capability at DIFFERENT nodes — a list at the hat, a get at the row — so a
+    `get_` reaching through its `list_` would ask twice and ask the first one in
+    the wrong place, turning a row a branch may read into a refusal about the
+    hat. The SCOPING is still written once; it is this function.
+    """
+    return Widget.objects.for_tenant(tenant).visible_to(org).select_related("owner", "organization")
+
+
+def list_widgets(*, tenant: Tenant | None, org: Any = None, actor: Actor) -> ScopedQuerySet[Widget]:
     """The widgets this hat may see, with the owner the schema reads.
 
     `org` is the acting organization — `request.org` at the REST door,
@@ -58,18 +89,36 @@ def list_widgets(*, tenant: Tenant | None, org: Any = None) -> ScopedQuerySet[Wi
     allow-lists. A selector that took a `**filters` dict would be the same
     unbounded query surface with a tidier name.
     """
-    return Widget.objects.for_tenant(tenant).visible_to(org).select_related("owner", "organization")
+    # THE CAPABILITY, at the hat, BEFORE the queryset: a list has no row to
+    # hide, so somebody without `widget.read` here hears that rather than an
+    # empty page that looks like an empty branch.
+    require(actor, "widget.read")
+    return _widgets_in(tenant=tenant, org=org)
 
 
-def get_widget(*, tenant: Tenant | None, widget_id: UUID, org: Any = None) -> Widget:
-    """One widget this hat may see, or `NotFound`."""
-    widget = list_widgets(tenant=tenant, org=org).filter(pk=widget_id).first()
+def get_widget(*, tenant: Tenant | None, widget_id: UUID, org: Any = None, actor: Actor) -> Widget:
+    """One widget this hat may see, or `NotFound`.
+
+    **Reach before capability** (ADR core-27, §C8). The scoped fetch is what
+    makes a widget in a sibling branch `not_found`; the `require` below is what
+    makes one INSIDE the subtree `forbidden` when the hat holds no
+    `widget.read`. Asking the other way round would answer `forbidden` for a row
+    the caller could never have reached, which tells them it exists.
+
+    The fetch does not go through `list_widgets`: that would ask `widget.read`
+    at the HAT, and this asks it at the ROW's node, which is a different
+    question the moment a tenant withholds the key on one branch.
+    """
+    widget = _widgets_in(tenant=tenant, org=org).filter(pk=widget_id).first()
     if widget is None:
         raise NotFound()
+    require(actor, "widget.read", widget)
     return widget
 
 
-def list_widget_policies(*, tenant: Tenant | None, org: Any = None) -> ScopedQuerySet[WidgetPolicy]:
+def list_widget_policies(
+    *, tenant: Tenant | None, org: Any = None, actor: Actor
+) -> ScopedQuerySet[WidgetPolicy]:
     """The policies this hat may **see**. Downward only, like every other list.
 
     This is one half of the pair that makes `InheritedDownward` mean something,
@@ -86,11 +135,12 @@ def list_widget_policies(*, tenant: Tenant | None, org: Any = None) -> ScopedQue
     the caller has to already be holding the reference — or be asking the one
     question ("what governs me?") whose answer they are already living under.
     """
+    require(actor, "widget_policy.read")
     return WidgetPolicy.objects.for_tenant(tenant).visible_to(org).select_related("organization")
 
 
 def get_governing_widget_policy(
-    *, tenant: Tenant | None, org: Any = None, policy_id: UUID | None = None
+    *, tenant: Tenant | None, org: Any = None, policy_id: UUID | None = None, actor: Actor
 ) -> WidgetPolicy:
     """The policy that governs this org — the nearest one on its ancestor chain.
 
@@ -119,7 +169,17 @@ def get_governing_widget_policy(
     module has. `NotFound` rather than `None` for the same reason `get_widget`
     raises it: a caller that has to remember to check a `None` is a caller that
     will one day not.
+
+    **This is the one `get_` in the app that asks at the HAT rather than at the
+    row**, and the reason is the same one that makes `governing()` legal here.
+    The row this returns lives on an ANCESTOR node, where the caller holds
+    nothing at all — config resolves upward, visibility never does (ADR core-3,
+    §A5c) — so asking `widget_policy.read` at the row would refuse everybody
+    who is governed by a parent's policy, which is precisely the population the
+    function exists to answer. The question asked is therefore the acting hat's:
+    may you read widget policies where you are standing.
     """
+    require(actor, "widget_policy.read")
     policies = WidgetPolicy.objects.for_tenant(tenant).governing(org).select_related("organization")
     if policy_id is not None:
         policies = policies.filter(pk=policy_id)
@@ -130,7 +190,7 @@ def get_governing_widget_policy(
 
 
 def list_widget_entries(
-    *, tenant: Tenant | None, org: Any = None, widget_id: UUID | None = None
+    *, tenant: Tenant | None, org: Any = None, widget_id: UUID | None = None, actor: Actor
 ) -> ScopedQuerySet[WidgetEntry]:
     """The ledger lines this hat may see, newest first, optionally for one widget.
 
@@ -146,6 +206,7 @@ def list_widget_entries(
     row — a ledger line naming its subject's id is a reference, and embedding
     the subject would put a second copy of the widget on every line.
     """
+    require(actor, "widget_entry.read")
     entries = WidgetEntry.objects.for_tenant(tenant).visible_to(org).select_related("organization")
     if widget_id is not None:
         entries = entries.filter(widget_id=widget_id)

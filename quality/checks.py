@@ -1185,6 +1185,23 @@ def _decorator_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
 
 def service_shape(root: Path, rule: dict) -> CheckResult:
     out = CheckResult()
+    # Read ONCE for the whole run, not once per function: the registry and the
+    # key set are facts about the tree, and rebuilding them 500 times is the
+    # difference between a check and a leg.
+    kinds = model_kinds(root)
+    vocabulary = ast_vocabulary(root)
+    # Seeded at zero rather than counted up from nothing, so the rule's own
+    # status line always PRINTS the four clause-(i)–(iv) numbers — the two
+    # populations and the two valve counts. A number that only appears when it
+    # is non-zero is a number nobody sees fall to zero either.
+    for key in (
+        "services_censused",
+        "written_kinds_resolved",
+        "literal_keys_seen",
+        "authz_kind_valves",
+        "authz_key_valves",
+    ):
+        out.targets_matched[key] = 0
     for path in _py_files(root, "apps", named={"services.py"}):
         tree = _parse(path)
         if tree is None:
@@ -1192,6 +1209,9 @@ def service_shape(root: Path, rule: dict) -> CheckResult:
         src = _read(path)
         out.count("service_files")
         rel = str(path.relative_to(root))
+        lines = src.splitlines()
+        app = path.parent.name
+        constants = string_constants(root, path, tree)
         for node in tree.body:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -1208,6 +1228,7 @@ def service_shape(root: Path, rule: dict) -> CheckResult:
                     "skip the transaction, the span, the log lines and the audit row",
                 )
             if decorated:
+                out.count("services_censused")
                 positional = [a.arg for a in node.args.args + node.args.posonlyargs]
                 if positional or node.args.vararg:
                     out.hit(
@@ -1227,6 +1248,1605 @@ def service_shape(root: Path, rule: dict) -> CheckResult:
                         "# authz: <reason> — resolving who is asking without asking whether "
                         "they may",
                     )
+            if decorated:
+                out.findings.extend(
+                    _kind_findings(node, rel, app, lines, constants, kinds, vocabulary, out)
+                )
+    return out
+
+
+# --- rule 13, clauses (i)–(iv): the KIND a service writes vs the KEY it asks --
+#
+# The three clauses above are about the SHAPE of a service;
+# these four are about its SUBJECT, and they exist because a `require` proves
+# only that somebody asked something — never that they asked about the thing
+# they then wrote. `create_widget` guarded by `widget_policy.create` is a
+# perfectly shaped service that authorizes the wrong noun, and every layer in
+# this tree reads as green over it.
+#
+# The four clauses, and the closed question each is:
+#
+# (i)   WHAT A SERVICE WRITES, as a kind. An AST model registry read off the
+#       app `models.py` files — `authz_kind` (a string, or `None` to opt out),
+#       `authz_kind_of` (the owned child, authorized under its aggregate's
+#       kind), else `snake_case(ClassName)`, which is `apps.core.authz`'s own
+#       derivation re-derived here. NEVER an import of Django: this check runs
+#       inside the gate process, and the self-test plants a `models.py` and
+#       re-runs it in the same process, which a cached `django.setup()` could
+#       not see.
+# (ii)  WHAT A SERVICE ASKS FOR, as a key. Every string literal that is the
+#       SECOND positional argument of `require(`/`allows(`/`holds(`, plus a
+#       `Name` bound at module level to a string constant (PM Overrule 4,
+#       2026-09-15 — `apps/workflows/services.py` asks through four of them and
+#       a literals-only reading would have called the whole app unguarded).
+# (iii) A WRITTEN KIND THE SERVICE NEVER ASKED ABOUT is a finding, on the write
+#       line, unless that line carries `# authz-kind: <reason>`. The population
+#       is the services that ASK AT LEAST ONE KEY: a service that asks nothing
+#       at all is the clause above's subject and carries `# authz:` — see the
+#       `does_not_cover` note in rules.yaml, which says so rather than leaving
+#       a reader to infer it from silence.
+# (iv)  A REQUIRED KEY THAT IS IN NO VOCABULARY is a finding, on the ask line;
+#       so is a key that is neither a literal nor a module constant, unless it
+#       carries `# authz-key: <reason>`. The key set is RE-DERIVED here from
+#       `apps/*/models.py` (the four CRUD verbs per kind) and `apps/*/policies.py`
+#       (`ACTION_PROSE`, `RENAMED_PERMISSIONS`) rather than imported — the same
+#       reason as (i) — and rule 54 (a) is where the re-derivation is proved to
+#       agree with `apps.core.authz.vocabulary()` itself.
+#
+# Findings are classed per app — `<app>` for (iii), `<app>.key` for (iv) — so
+# one app's standing backlog cannot pay for another app's growth, and so a NEW
+# undeclared key in an app with a clause-(iii) ratchet is still a violation
+# from the first one. The ratchets are in rules.yaml with the tree they were
+# measured on.
+
+#: `# authz-kind: <reason>` — the valve on clause (iii), on the write line or
+#: in the contiguous comment block above it. `# authz-key: <reason>` is (iv)'s.
+#: Both are counted and printed on the rule's own status line: a valve nobody
+#: counts is an off switch.
+_AUTHZ_KIND_RE = re.compile(r"#\s*authz-kind\b:?\s*(.*)$")
+_AUTHZ_KEY_RE = re.compile(r"#\s*authz-key\b:?\s*(.*)$")
+#: Long enough to force a clause, exactly as `# reach:` and the gate's own
+#: overrides are.
+_MIN_AUTHZ_REASON = 12
+
+#: The bases that make a class in a `models.py` a model. The same four names
+#: `org_scoped_model_names` walks from, widened by the two a concrete model may
+#: sit directly on — a class whose base is itself in the registry is in too, so
+#: a product's own intermediate base needs no entry here.
+_MODEL_BASE_NAMES = frozenset({"Model", "BaseModel", "TenantScopedModel", "OrgScopedModel"})
+#: `apps.core.authz.CRUD_VERBS`, re-derived. The four verbs every kind gets.
+_CRUD_VERBS = ("create", "read", "update", "delete")
+#: `apps.core.models.AUTHZ_KIND_DERIVED` — the sentinel that means "derive it".
+_AUTHZ_KIND_DERIVED = "*derive*"
+#: `apps.core.authz.RESERVED_PERMISSIONS` — core's own, which no model derives.
+_RESERVED_KEYS = frozenset({"tenant.own"})
+#: The three functions that ask. `holds(actor, key, at=...)` takes its key
+#: second exactly as the other two do, which is what makes one reading enough.
+_ASK_FUNCTIONS = frozenset({"require", "allows", "holds"})
+_CAMEL_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+def _snake_kind(name: str) -> str:
+    """`WidgetEntry -> widget_entry`. `apps.core.authz.snake_case`, re-derived."""
+    return _CAMEL_BOUNDARY.sub("_", name).lower()
+
+
+def _comment_reason(lines: list[str], line: int, pattern: re.Pattern[str]) -> str | None:
+    """The reason a marker claims at this line, or None. Rule 26's grammar.
+
+    On the line itself, or in the CONTIGUOUS comment block directly above it —
+    the same shape `# reach:` and `# rule-<id>:` are read with, so there is one
+    thing to learn and a valve cannot drift onto a line nobody thought about.
+    """
+    if not lines or line < 1 or line > len(lines):
+        return None
+    match = pattern.search(lines[line - 1])
+    if match:
+        return match.group(1).strip()
+    index = line - 2
+    while index >= 0 and lines[index].strip().startswith("#"):
+        match = pattern.search(lines[index])
+        if match:
+            return match.group(1).strip()
+        index -= 1
+    return None
+
+
+def _class_base_names(node: ast.ClassDef) -> set[str]:
+    """The last segment of every base's dotted name, subscripts unwrapped."""
+    out: set[str] = set()
+    for base in node.bases:
+        cur: ast.expr = base
+        while isinstance(cur, ast.Subscript):
+            cur = cur.value
+        if isinstance(cur, ast.Attribute):
+            out.add(cur.attr)
+        elif isinstance(cur, ast.Name):
+            out.add(cur.id)
+    return out
+
+
+def _class_level_value(node: ast.ClassDef, name: str) -> ast.expr | None | str:
+    """The expression a class body assigns to `name`; the string `"absent"` when
+    it assigns none. Three-valued on purpose: `authz_kind = None` is a
+    DECLARATION (the opt-out) and must not read as "never mentioned"."""
+    for stmt in node.body:
+        target = value = None
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            target, value = stmt.target.id, stmt.value
+        elif (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+        ):
+            target, value = stmt.targets[0].id, stmt.value
+        if target == name:
+            return value
+    return "absent"
+
+
+def _owned_child_declaration(
+    value: ast.expr | None | str, module_constants: dict[str, str]
+) -> tuple[bool, str | None]:
+    """`authz_kind_of`, read the way `apps.core.authz` reads it, in one place.
+
+    Returns `(declares, field)`:
+
+    * `declares` mirrors the registry's `getattr(model, "authz_kind_of", None)
+      is not None` EXACTLY — the two shapes that are NOT a declaration are the
+      class never mentioning the attribute (`_class_level_value`'s `"absent"`
+      sentinel, and its bare `None` for an annotation carrying no value) and
+      the class binding it to the literal `None`, which is the abstract base's
+      own default restated and leaves `getattr` answering `None`.
+    * `field` is the foreign key's NAME when this walk can resolve one: a
+      string literal, or a module-level constant bound to a string. It is
+      `None` when the declaration is real but unreadable here, which leaves the
+      caller to fall back rather than to guess.
+
+    ONE function because the two readers of this attribute drifted apart twice:
+    a skip that asked for a literal where the registry asked for any value, and
+    a resolver that asked the same narrow question one screen away. Both halves
+    now read this, so a third reader cannot open the gap again.
+    """
+    if value is None or value == "absent":
+        return False, None
+    if isinstance(value, ast.Constant):
+        if value.value is None:
+            return False, None
+        return True, value.value if isinstance(value.value, str) else None
+    if isinstance(value, ast.Name):
+        return True, module_constants.get(value.id)
+    return True, None
+
+
+def _model_facts(root: Path) -> dict[str, dict[str, Any]]:
+    """Every concrete model this tree defines, by class name, read by AST.
+
+    The population is `_model_files` — the app `models.py` files plus the two
+    `core` modules that hold a model beside the machinery that uses it — which
+    is the same population rule 16's naming grammar reads, so the two cannot
+    come to disagree about what a model is.
+    """
+    facts: dict[str, dict[str, Any]] = {}
+    for path in _model_files(root):
+        parts = path.relative_to(root).parts
+        app = parts[1] if len(parts) > 1 else ""
+        tree = _parse(path)
+        if tree is None:
+            continue
+        # `authz_kind_of = PARENT_KIND` is the ordinary way to bind a foreign
+        # key's name once rather than spell it twice, so the module's own string
+        # constants are part of reading this file's declarations.
+        module_constants = _module_string_constants(tree)
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            bases = _class_base_names(node)
+            if not (bases & _MODEL_BASE_NAMES) and not (bases & set(facts)):
+                continue
+            abstract = False
+            for stmt in node.body:
+                if isinstance(stmt, ast.ClassDef) and stmt.name == "Meta":
+                    for inner in stmt.body:
+                        if isinstance(inner, ast.Assign) and any(
+                            getattr(t, "id", "") == "abstract" for t in inner.targets
+                        ):
+                            abstract = bool(getattr(inner.value, "value", False))
+            foreign_keys: dict[str, str | None] = {}
+            for stmt in node.body:
+                if not (
+                    isinstance(stmt, ast.Assign)
+                    and len(stmt.targets) == 1
+                    and isinstance(stmt.targets[0], ast.Name)
+                    and isinstance(stmt.value, ast.Call)
+                ):
+                    continue
+                func = stmt.value.func
+                called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if called not in ("ForeignKey", "OneToOneField"):
+                    continue
+                first = stmt.value.args[0] if stmt.value.args else None
+                target = None
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    target = first.value.split(".")[-1]
+                elif isinstance(first, ast.Name):
+                    target = first.id
+                foreign_keys[stmt.targets[0].id] = target
+            reason = _class_level_value(node, "authz_kind_reason")
+            owned_child = _class_level_value(node, "authz_kind_of")
+            declares_child, child_field = _owned_child_declaration(owned_child, module_constants)
+            facts[node.name] = {
+                "app": app,
+                "file": path.relative_to(root).as_posix(),
+                "lineno": node.lineno,
+                "abstract": abstract,
+                "authz_kind": _class_level_value(node, "authz_kind"),
+                # THE RAW `authz_kind_of` NODE IS NOT PUBLISHED, and that is the
+                # point: it was a third answer to a question two facts below
+                # already answer, nobody read it, and a fact nobody reads is an
+                # attractor for a reader who resolves it differently from the
+                # registry. The registry's own two questions about
+                # `authz_kind_of`, asked once here so no reader of these facts
+                # has to re-derive either and get it subtly different, are these
+                # two. See `_owned_child_declaration`.
+                "declares_owned_child": declares_child,
+                "owned_child_field": child_field,
+                # The sentence an opt-out owes. Read as text when it is a plain
+                # literal and as "something is there" when it is a joined or
+                # parenthesised string, which is how every long one in this tree
+                # is written — the check asks whether a sentence EXISTS, and
+                # judging its quality is review's.
+                "authz_kind_reason": (
+                    reason.value
+                    if isinstance(reason, ast.Constant) and isinstance(reason.value, str)
+                    else ("" if reason == "absent" or reason is None else "declared")
+                ),
+                "foreign_keys": foreign_keys,
+            }
+    return facts
+
+
+def _own_kind(name: str, fact: dict[str, Any]) -> str | None:
+    """A model's own kind: the declaration, the opt-out, or the derived name."""
+    declared = fact["authz_kind"]
+    if declared == "absent":
+        return _snake_kind(name)
+    if isinstance(declared, ast.Constant):
+        return None if declared.value is None else str(declared.value)
+    if isinstance(declared, ast.Name) and declared.id == "AUTHZ_KIND_DERIVED":
+        return _snake_kind(name)
+    # A declaration this walk cannot read is NOT silently treated as an opt-out:
+    # an unreadable `authz_kind` falls back to the derived name, which is what
+    # `apps.core.authz` does with anything that is not the sentinel.
+    return _snake_kind(name)
+
+
+def model_kinds(root: Path) -> dict[str, str | None]:
+    """Class name -> authorization kind (None when the model opted out).
+
+    `authz_kind_of` resolves through the named foreign key to the aggregate's
+    OWN kind, which is what makes an owned child authorized under its parent —
+    `apps.core.authz.kind_of`'s own branch, and it reads the declaration
+    through `_owned_child_declaration` so the two cannot come to disagree about
+    what one is. A declaration this walk cannot resolve to a field name (a call,
+    an import, an f-string) falls back to the model's own kind rather than
+    guessing; the runtime answers `_parent_kind` there and the difference is
+    named in rule 54's `does_not_cover`.
+    """
+    facts = _model_facts(root)
+    kinds: dict[str, str | None] = {}
+    for name, fact in facts.items():
+        if fact["abstract"]:
+            continue
+        parent_field = fact["owned_child_field"]
+        if parent_field:
+            parent = fact["foreign_keys"].get(parent_field)
+            kinds[name] = _own_kind(parent, facts[parent]) if parent in facts else None
+            continue
+        kinds[name] = _own_kind(name, fact)
+    return kinds
+
+
+def _module_string_constants(tree: ast.Module) -> dict[str, str]:
+    """Module-level `NAME = "literal"` bindings. Overrule 4's half of clause (ii)."""
+    out: dict[str, str] = {}
+    for node in tree.body:
+        target = value = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target, value = node.target.id, node.value
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            target, value = node.targets[0].id, node.value
+        if target and isinstance(value, ast.Constant) and isinstance(value.value, str):
+            out[target] = value.value
+    return out
+
+
+def string_constants(root: Path, path: Path, tree: ast.Module) -> dict[str, str]:
+    """Every name this module can resolve to a string literal, one hop deep.
+
+    Its own module-level bindings, plus the ones it IMPORTED from another
+    first-party module — `from apps.workflows.services import READ_ACTION` is
+    the shape on this tree, and reading only the local half would have called
+    `apps/workflows/selectors.py` a pair of reads that never ask, which is the
+    opposite of what it does. One hop and no further: a constant re-exported
+    through a chain is outside, declared in the rules that use this.
+    """
+    out = _module_string_constants(tree)
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        if not node.module.startswith("apps."):
+            continue
+        source = root / Path(*node.module.split(".")).with_suffix(".py")
+        if not source.is_file():
+            continue
+        other = _parse(source)
+        if other is None:
+            continue
+        theirs = _module_string_constants(other)
+        for alias in node.names:
+            value = theirs.get(alias.name)
+            if value is not None:
+                out.setdefault(alias.asname or alias.name, value)
+    return out
+
+
+def declared_key_sites(
+    root: Path,
+) -> tuple[
+    dict[str, tuple[str, int]],
+    dict[str, str],
+    list[tuple[str, int, str]],
+    list[tuple[str, int, str, str]],
+]:
+    """(`ACTION_PROSE` key -> where it is declared, `RENAMED_PERMISSIONS`, …).
+
+    The SITE and not just the key, because rule 54 reports a non-conforming key
+    on the line that declares it: a finding pathed at the rule file instead of
+    at the app's own `policies.py` is one nobody can act on without a grep.
+
+    **The fourth value is every OTHER key-bearing dict a `policies.py` declares**
+    — `POLICIES` and `DEFAULT_ROLES` — as `(rel, line, key, dict name)`. Those
+    two name ACTIONS the way `ACTION_PROSE` does, and nothing read them: a
+    `POLICIES` entry for a key the vocabulary does not hold is a predicate for a
+    capability nobody can be given, and it is invisible — `vocabulary()` reads
+    the registry only for keys it already has, so the key is in no census, no
+    `non_conforming()` list and no test. `DEFAULT_ROLES` is read here for its
+    KEY; clause (b) reads the same dict for the ROLE it offers to, which is a
+    different question about the same line.
+    """
+    prose: dict[str, tuple[str, int]] = {}
+    renames: dict[str, str] = {}
+    unreadable: list[tuple[str, int, str]] = []
+    declarations: list[tuple[str, int, str, str]] = []
+    for app in _app_dirs(root):
+        path = app / "policies.py"
+        tree = _parse(path) if path.exists() else None
+        if tree is None:
+            continue
+        for node in tree.body:
+            target = value = None
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                target, value = node.target.id, node.value
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+            ):
+                target, value = node.targets[0].id, node.value
+            if not isinstance(value, ast.Dict):
+                continue
+            if target == "ACTION_PROSE":
+                for key in value.keys:
+                    if key is None:
+                        continue
+                    site = (path.relative_to(root).as_posix(), key.lineno)
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        prose.setdefault(key.value, site)
+                    else:
+                        # A KEY THIS CENSUS CANNOT READ. `USAGE_READ_REPORT.action`
+                        # is the live instance: the key is computed off a dataclass
+                        # at import, so the registry has it and an AST walk does
+                        # not. Recorded with its own sentinel rather than dropped,
+                        # because a key silently missing from the census is the one
+                        # thing this census exists not to have.
+                        unreadable.append((*site, ast.unparse(key)))
+            elif target == "RENAMED_PERMISSIONS":
+                for key, val in zip(value.keys, value.values, strict=False):
+                    if (
+                        isinstance(key, ast.Constant)
+                        and isinstance(val, ast.Constant)
+                        and isinstance(key.value, str)
+                    ):
+                        renames[key.value] = str(val.value)
+            elif target in _KEY_BEARING_DECLARATIONS:
+                for key in value.keys:
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        declarations.append(
+                            (path.relative_to(root).as_posix(), key.lineno, key.value, target)
+                        )
+    return prose, renames, unreadable, declarations
+
+
+def ast_vocabulary(root: Path) -> set[str]:
+    """Every key this tree can answer, re-derived from models and policies.
+
+    Four CRUD verbs per kind, plus every declared `ACTION_PROSE` key, plus the
+    old half of every rename (which `resolve_renamed` still answers), plus
+    core's reserved key. Rule 54 (a) is where this is proved equal to
+    `apps.core.authz.vocabulary()`; here it is what clause (iv) judges against.
+    """
+    kinds = {k for k in model_kinds(root).values() if k}
+    prose, renames, _unreadable, _declarations = declared_key_sites(root)
+    derived = {f"{kind}.{verb}" for kind in kinds for verb in _CRUD_VERBS}
+    return derived | set(prose) | set(renames) | set(renames.values()) | set(_RESERVED_KEYS)
+
+
+def _asks(fn: ast.AST, constants: dict[str, str]) -> list[tuple[int, str | None, str]]:
+    """(line, key or None, source) for every require/allows/holds in this body."""
+    out: list[tuple[int, str | None, str]] = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = (
+            func.id
+            if isinstance(func, ast.Name)
+            else (func.attr if isinstance(func, ast.Attribute) else "")
+        )
+        if name not in _ASK_FUNCTIONS or len(node.args) < 2:
+            continue
+        arg = node.args[1]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            out.append((node.lineno, arg.value, arg.value))
+        elif isinstance(arg, ast.Name) and arg.id in constants:
+            out.append((node.lineno, constants[arg.id], f"{arg.id} = {constants[arg.id]!r}"))
+        else:
+            out.append((node.lineno, None, ast.unparse(arg)))
+    return out
+
+
+def _bound_models(fn: ast.AST, registry: dict[str, Any]) -> dict[str, str]:
+    """Local name -> the model class it holds, as far as AST can see.
+
+    Three ways, the same three rule 26's `_org_bound_names` reads: a parameter
+    annotated with a model (rule 26's annotation walk, reused rather than
+    re-invented), a name annotated with one, and a name assigned from an
+    expression whose chain root IS one (`row = Gadget(...)`,
+    `row = Gadget.objects.create(...)`).
+    """
+    bound: dict[str, str] = {}
+    for arg in _all_args(fn):  # type: ignore[arg-type]
+        for name in sorted(_annotation_names(arg.annotation)):
+            if name in registry:
+                bound[arg.arg] = name
+    for node in ast.walk(fn):
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            for name in sorted(_annotation_names(node.annotation)):
+                if name in registry:
+                    bound[node.target.id] = name
+        elif isinstance(node, ast.Assign) and node.value is not None:
+            root = _chain_root(node.value)
+            if isinstance(root, ast.Name) and root.id in registry:
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        bound[target.id] = root.id
+                    elif isinstance(target, ast.Tuple):
+                        for element in target.elts:
+                            if isinstance(element, ast.Name):
+                                bound[element.id] = root.id
+    return bound
+
+
+def _written_models(fn: ast.AST, registry: dict[str, Any]) -> list[tuple[int, str, str]]:
+    """(line, model class, what) for every write whose subject AST can name.
+
+    The four shapes clause (i) enumerates: `Model.objects.<write>(...)`, a
+    queryset `.update()`/`.delete()`/`.bulk_update()` whose chain root is a
+    model, and `.save()`/`.delete()` on a name bound above — which covers both
+    `row = Model(...)` and a parameter annotated with one.
+    """
+    bound = _bound_models(fn, registry)
+    out: list[tuple[int, str, str]] = []
+    for node in ast.walk(fn):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        attr = node.func.attr
+        receiver = node.func.value
+        if (
+            attr in _WRITE_MANAGER_CALLS
+            and isinstance(receiver, ast.Attribute)
+            and receiver.attr == "objects"
+        ):
+            root = _chain_root(receiver)
+            if isinstance(root, ast.Name) and root.id in registry:
+                out.append((node.lineno, root.id, f".objects.{attr}()"))
+            continue
+        if attr in ("update", "delete", "bulk_update") and isinstance(receiver, ast.Call):
+            root = _chain_root(receiver)
+            if isinstance(root, ast.Name) and root.id in registry:
+                out.append((node.lineno, root.id, f".{attr}()"))
+            continue
+        if attr in ("save", "delete") and isinstance(receiver, ast.Name):
+            model = bound.get(receiver.id)
+            if model is not None:
+                out.append((node.lineno, model, f"{receiver.id}.{attr}()"))
+    return out
+
+
+def _kind_findings(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    rel: str,
+    app: str,
+    lines: list[str],
+    constants: dict[str, str],
+    kinds: dict[str, str | None],
+    vocabulary: set[str],
+    out: CheckResult,
+) -> list[Finding]:
+    """Clauses (iii) and (iv) for one @service. Counts ride on `out`."""
+    found: list[Finding] = []
+
+    asks = _asks(node, constants)
+    required: set[str] = set()
+    for line, key, source in asks:
+        if key is not None:
+            out.count("literal_keys_seen")
+            if "." in key:
+                required.add(key.rsplit(".", 1)[0])
+            if key not in vocabulary:
+                found.append(
+                    Finding(
+                        rel,
+                        line,
+                        f"{node.name} asks for {key!r}, which no model derives and no "
+                        "`ACTION_PROSE` declares — a key outside the vocabulary can never be "
+                        "held by anybody, so the ask refuses everyone for a reason nobody can "
+                        "read. Declare it, or name the key that exists",
+                        f"{app}.key",
+                    )
+                )
+            continue
+        reason = _comment_reason(lines, line, _AUTHZ_KEY_RE)
+        if reason is not None and len(reason) >= _MIN_AUTHZ_REASON:
+            out.count("authz_key_valves")
+            continue
+        if reason is not None:
+            found.append(
+                Finding(
+                    rel,
+                    line,
+                    f"`# authz-key:` with no reason on {node.name} — an escape hatch nobody "
+                    "has to justify is an off switch; write the sentence a reviewer can "
+                    "disagree with",
+                    f"{app}.key",
+                )
+            )
+            continue
+        found.append(
+            Finding(
+                rel,
+                line,
+                f"{node.name} asks for a key this tree cannot read — `{source}` is neither a "
+                "literal nor a module-level string constant, so no census can say which "
+                "capability it names. Name it, or record `# authz-key: <reason>`",
+                f"{app}.key",
+            )
+        )
+
+    writes = _written_models(node, kinds)
+    for line, model, what in writes:
+        kind = kinds.get(model)
+        if kind is None:
+            continue
+        out.count("written_kinds_resolved")
+        # A service that asks NOTHING is the `# authz:` clause's subject, not
+        # this one's: judging it here would ask a platform service with no
+        # actor to justify every write twice, in two different comments.
+        if not required or kind in required:
+            continue
+        reason = _comment_reason(lines, line, _AUTHZ_KIND_RE)
+        if reason is not None and len(reason) >= _MIN_AUTHZ_REASON:
+            out.count("authz_kind_valves")
+            continue
+        if reason is not None:
+            found.append(
+                Finding(
+                    rel,
+                    line,
+                    f"`# authz-kind:` with no reason in {node.name} — an escape hatch nobody "
+                    "has to justify is an off switch; write the sentence a reviewer can "
+                    "disagree with",
+                    app,
+                )
+            )
+            continue
+        found.append(
+            Finding(
+                rel,
+                line,
+                f"{node.name} writes {model} ({what}), whose authorization kind is {kind!r}, "
+                f"and asks for no {kind}.* key — it asks about "
+                f"{', '.join(sorted(required))}. A service that authorizes one noun and "
+                f"writes another is green everywhere else in this tree. Ask for the kind you "
+                f"write, or record `# authz-kind: <reason>` on the write",
+                app,
+            )
+        )
+    return found
+
+
+# --- rule 54: the vocabulary is one shape -------------------------------------
+#
+# One statement, five clauses, one census — and they are one rule because they
+# are one question asked at five layers: **is the word for a capability decided
+# in exactly one place?** Splitting them into five ids would give five rules
+# that can only be read together, and the ratchet lines are per clause already.
+#
+# (a) THE VOCABULARY IS DERIVED. Every first-party concrete model yields one
+#     kind — `authz_kind`, `authz_kind_of`, or `snake_case(ClassName)` — or
+#     opts out with a sentence; four verbs per kind are the derived keys, and a
+#     key an app DECLARES is classified against them. A declared key that is a
+#     second spelling of a derived one, or names no kind at all, is
+#     non-conforming, and the count is a ratchet: it may shrink and never grow.
+# (b) A DECLARATION NAMES DECLARED THINGS. A `roles.py` may not declare the
+#     platform's own `owner` or a reserved key as a role, and two apps may not
+#     declare one role; a `DEFAULT_ROLES` entry may not offer a capability to a
+#     role nobody declares. `djb.W054` is the half of this that reads a
+#     deployment's ROWS at `--deploy`; this half reads the code, in the tree,
+#     where the gate can see it.
+# (c) NO ROLE BY VALUE. Outside `apps/core/authz.py` and `apps/core/models.py`,
+#     production code does not ask "what role is this" — not by the enum, not
+#     by rank, not by a comparison against a string. A predicate that needs to
+#     know how much authority somebody has asks
+#     `holds(actor, "<kind>.<verb>", at=...)`, because a role is data a tenant
+#     owns and a rank table is a second opinion about it that no tenant can
+#     edit. Ratcheted per app; each sweep drives its own app to zero.
+# (d) A READ ASKS, and (e) IT ASKS ABOUT WHAT IT RETURNS. Every public `get_`/
+#     `list_` selector whose return annotation names a model with a kind calls
+#     `require(actor, "<that kind>.read", …)`, or carries `# read-open:` (a
+#     machine read, pre-auth or system) or `# read-kind:` (it returns one kind
+#     and is authorized under another). RATCHET-ONLY in this cycle by design —
+#     "measured before enforced" — and the per-app numbers below are the
+#     measurement the read sweeps drive to zero.
+#
+# WHAT THIS HALF NEVER DOES IS IMPORT. Every derivation here is AST, for the
+# reason rule 13's kind clauses give: the self-test plants a `models.py`, a
+# `policies.py` and a `roles.py` into the tree and re-runs this check in the
+# same process, and a cached `django.setup()` could not see any of them. The
+# consequence is declared rather than hidden: the two underivable cases —
+# a kind claimed by two models, an opt-out with no sentence — are
+# `ImproperlyConfigured` at runtime and are findings here, so this half exits 1
+# where the registry would refuse to load at all. `djb.E025` is the half that
+# refuses, it runs in the gate's own django leg, and it is what makes the
+# stronger guarantee; this one is what makes the census readable on a tree.
+
+#: `apps.core.authz.READ_ALIAS_VERBS` — the three other spellings of `read`.
+_READ_ALIAS_VERBS = frozenset({"view", "list", "get"})
+#: `apps.core.authz.VIRTUAL_KINDS` — a kind with no row behind it. A list of
+#: one, re-derived here so "the kind is not in the model registry" stays a
+#: finding rather than a shrug the next unbound noun slips through.
+_VIRTUAL_KINDS = frozenset({"deployment"})
+#: The tokens that read a role BY VALUE. The call names, the rank constants,
+#: the enum path, and a comparison of a `.role` attribute against a literal.
+_ROLE_VALUE_CALLS = frozenset({"rank", "effective_role", "actor_role"})
+_ROLE_VALUE_NAMES = frozenset({"ROLE_RANK", "ADMIN_RANK"})
+_ROLE_VALUE_RE = re.compile(r"#\s*role-value\b:?\s*(.*)$")
+#: The key-bearing dicts a `policies.py` declares BESIDE `ACTION_PROSE` and
+#: `RENAMED_PERMISSIONS` — the ones whose keys are ACTIONS. Named rather than
+#: discovered because "a dict in this file whose keys look like keys" would read
+#: a product's own lookup table as a declaration; these two are the declarations
+#: `apps.core.authz._declarations` itself walks for.
+_KEY_BEARING_DECLARATIONS = ("POLICIES", "DEFAULT_ROLES")
+
+_READ_OPEN_RE = re.compile(r"#\s*read-open\b:?\s*(.*)$")
+_READ_KIND_RE = re.compile(r"#\s*read-kind\b:?\s*(.*)$")
+
+
+def _classify_declared_key(action: str, kinds: set[str]) -> str:
+    """Why a DECLARED key does not conform, or `""` when it does.
+
+    `apps.core.authz._classify`, re-derived. The four sentences are its
+    sentences, because a reader meeting one of them in a gate red and one of
+    them in `introspect` must not have to work out that they are the same fact.
+    """
+    parts = action.split(".")
+    if len(parts) != 2:
+        return f"a key is `<kind>.<verb>`; {action!r} has {len(parts)} parts"
+    kind, verb = parts
+    if kind not in kinds and kind not in _VIRTUAL_KINDS:
+        return (
+            f"no kind {kind!r}: no first-party model derives or declares it, and it is not "
+            "one of the virtual kinds"
+        )
+    if verb in _CRUD_VERBS:
+        return f"a second spelling of the derived key {action!r}"
+    if verb in _READ_ALIAS_VERBS:
+        return f"`read` is THE read verb; {verb!r} is another spelling of it"
+    return ""
+
+
+def _dict_entries(tree: ast.Module, name: str) -> ast.Dict | None:
+    """The module-level dict literal assigned to `name`, or None."""
+    for node in tree.body:
+        target = value = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target, value = node.target.id, node.value
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            target, value = node.targets[0].id, node.value
+        if target == name and isinstance(value, ast.Dict):
+            return value
+    return None
+
+
+def _role_declarations(root: Path) -> list[tuple[str, int, str, str]]:
+    """(rel, line, role key, app) for every `ROLES` entry in an `apps/*/roles.py`."""
+    out: list[tuple[str, int, str, str]] = []
+    for app in _app_dirs(root):
+        path = app / "roles.py"
+        tree = _parse(path) if path.exists() else None
+        if tree is None:
+            continue
+        rel = path.relative_to(root).as_posix()
+        entries = _dict_entries(tree, "ROLES")
+        if entries is None:
+            continue
+        for key in entries.keys:
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                out.append((rel, key.lineno, key.value, app.name))
+    return out
+
+
+def _default_role_offers(root: Path) -> list[tuple[str, int, str, str]]:
+    """(rel, line, action, role) for every `DEFAULT_ROLES` entry in a policies.py."""
+    out: list[tuple[str, int, str, str]] = []
+    for app in _app_dirs(root):
+        path = app / "policies.py"
+        tree = _parse(path) if path.exists() else None
+        if tree is None:
+            continue
+        rel = path.relative_to(root).as_posix()
+        entries = _dict_entries(tree, "DEFAULT_ROLES")
+        if entries is None:
+            continue
+        for key, value in zip(entries.keys, entries.values, strict=False):
+            action = key.value if isinstance(key, ast.Constant) else "?"
+            for element in ast.walk(value):
+                if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                    out.append((rel, element.lineno, str(action), element.value))
+    return out
+
+
+def _role_value_sites(tree: ast.Module) -> dict[int, list[str]]:
+    """Line -> what reads a role by value there. Imports and strings excluded.
+
+    An import of `rank` or `ADMIN_RANK` is not a use of it — the file that
+    imports the compat shim and never calls it is not asking what role anybody
+    has — and a sentence in a docstring that spells `rank()` is prose. Both are
+    outside by construction here, which is what the AST buys over the grep the
+    measurement was taken with.
+    """
+    found: dict[int, list[str]] = {}
+
+    def note(line: int, what: str) -> None:
+        found.setdefault(line, [])
+        if what not in found[line]:
+            found[line].append(what)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, ast.Name) and node.id in _ROLE_VALUE_NAMES:
+            note(node.lineno, node.id)
+        elif isinstance(node, ast.Attribute) and node.attr == "is_privileged":
+            note(node.lineno, ".is_privileged")
+        elif isinstance(node, ast.Attribute):
+            chain = _dotted_role_chain(node)
+            if len(chain) >= 3 and chain[0] == "Membership" and chain[1] == "Role":
+                note(node.lineno, ".".join(chain))
+        elif isinstance(node, ast.Compare):
+            for side in [node.left, *node.comparators]:
+                other = [x for x in [node.left, *node.comparators] if x is not side]
+                if not (isinstance(side, ast.Attribute) and side.attr == "role"):
+                    continue
+                for value in other:
+                    # THE EMPTY STRING IS NOT A ROLE. `invitation.role == ""`
+                    # asks whether a role was named at all — an offer of a place
+                    # and nothing more — which is a question about the FIELD
+                    # being set, not about how much authority anybody has. The
+                    # `does_not_cover` paragraph already puts `Invitation.role`'s
+                    # key-shaped uses outside this clause; this is the one of
+                    # them that wears a comparison.
+                    if (
+                        isinstance(value, ast.Constant)
+                        and isinstance(value.value, str)
+                        and value.value
+                    ):
+                        note(node.lineno, f".role == {value.value!r}")
+        elif isinstance(node, ast.Call):
+            func = node.func
+            name = (
+                func.id
+                if isinstance(func, ast.Name)
+                else (func.attr if isinstance(func, ast.Attribute) else "")
+            )
+            if name in _ROLE_VALUE_CALLS:
+                note(node.lineno, f"{name}()")
+            for keyword in node.keywords:
+                if keyword.arg == "role__in":
+                    note(node.lineno, "role__in=")
+                elif keyword.arg == "role" and isinstance(keyword.value, ast.Attribute):
+                    chain = _dotted_role_chain(keyword.value)
+                    if chain and chain[0] == "Membership":
+                        note(keyword.value.lineno, f"role={'.'.join(chain)}")
+    return found
+
+
+def _dotted_role_chain(node: ast.Attribute) -> list[str]:
+    """`Membership.Role.OWNER` -> `["Membership", "Role", "OWNER"]`."""
+    chain: list[str] = []
+    cur: ast.expr = node
+    while isinstance(cur, ast.Attribute):
+        chain.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        chain.append(cur.id)
+    chain.reverse()
+    return chain
+
+
+def _function_valve(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    src: str,
+    lines: list[str],
+    pattern: re.Pattern[str],
+) -> str | None:
+    """A valve marker anywhere a reader would put it on a function.
+
+    Three sites, and they are the three the conventions describe: inside the
+    function's own source (its docstring, or a comment in the body), on the
+    `def` line, and in the contiguous comment block above the first decorator.
+
+    **AND THE MARKER OPENS A COMMENT LINE — prose that SPELLS it is not a
+    valve.** The block-above form has always required `strip().startswith("#")`
+    (`_comment_reason`); the in-source form did not, so a docstring paragraph
+    explaining why this selector needs no valve read as the valve itself. That
+    is a phantom registration, and it is the exact class the conventions warn
+    about: a sentence spelling a censused marker gets counted like real code.
+    The line has to BE the comment, not mention one.
+    """
+    segment = ast.get_source_segment(src, node) or ""
+    for line in segment.splitlines():
+        if not line.strip().startswith("#"):
+            continue
+        match = pattern.search(line)
+        if match:
+            return match.group(1).strip()
+    top = min([d.lineno for d in node.decorator_list] or [node.lineno])
+    return _comment_reason(lines, node.lineno, pattern) or _comment_reason(lines, top, pattern)
+
+
+def authz_vocabulary_shape(root: Path, rule: dict) -> CheckResult:
+    """Rule 54, all five clauses, over one derivation of the vocabulary."""
+    out = CheckResult()
+    facts = _model_facts(root)
+    kinds = model_kinds(root)
+    kindset = {kind for kind in kinds.values() if kind}
+    prose_sites, renames, unreadable, declarations = declared_key_sites(root)
+    for key in (
+        "role_value_valves",
+        "read_open_valves",
+        "read_kind_valves",
+        "nonrequiring_selectors",
+        "wrong_kind_selectors",
+    ):
+        out.targets_matched[key] = 0
+
+    # --- (a) the vocabulary census ------------------------------------------
+    owners: dict[str, str] = {}
+    for name, fact in sorted(facts.items()):
+        if fact["abstract"]:
+            continue
+        out.count("models_censused")
+        kind = kinds.get(name)
+        rel, line = fact["file"], fact["lineno"]
+        if fact["declares_owned_child"]:
+            # **AN OWNED CHILD ADDS NO KIND OF ITS OWN — that is what
+            # `authz_kind_of` MEANS**, and `apps.core.authz.kind_registry_of`
+            # skips these for exactly this reason (its own comment: "Resolved
+            # for its refusals, not for its entry"). `model_kinds` above still
+            # resolves one — through the same seam this line reads, so the two
+            # agree by construction — because a SELECTOR returning a child has
+            # to be able to ask for the parent's read, and clause (e) is built
+            # on that. But entering the child in `owners` would read the child
+            # and its parent as two models claiming one word, and refuse a
+            # declaration the runtime accepts. Paid for by `files.FileVersion`,
+            # the first model in this tree to declare `authz_kind_of`: the
+            # census reported a collision the registry does not have.
+            #
+            # **THE QUESTION IS THE REGISTRY'S AND IT IS ASKED IN ONE PLACE.**
+            # `_owned_child_declaration` is that place, and it mirrors
+            # `getattr(model, "authz_kind_of", None) is not None` exactly. This
+            # line asked the question itself twice before, and got it wrong in
+            # both directions: first too narrow (an `ast.Constant` string only,
+            # so a module constant fell through the skip and was censused as a
+            # model with a kind of its own), then too wide (`not in (None,
+            # "absent")`, which swallowed a CONCRETE model restating the base
+            # class's `authz_kind_of = None` — `ast.Constant(None)`, which
+            # leaves `getattr` answering `None`, so the registry does NOT skip
+            # it and raises `ImproperlyConfigured` on a kind claimed twice
+            # while this half said nothing).
+            #
+            # Both spellings now have a fixture beside them, and the abstract
+            # base's own `authz_kind_of = None` is a negative rather than an
+            # accident of the `abstract` filter one screen up.
+            continue
+        if kind is None:
+            if not str(fact["authz_kind_reason"] or "").strip():
+                out.hit(
+                    rel,
+                    line,
+                    f"{name} sets `authz_kind = None` and declares no `authz_kind_reason` — "
+                    "opting a model out of the vocabulary is a claim (no door reaches a row "
+                    "of it, nobody could be given a capability over it) and a claim with no "
+                    "sentence beside it is one nobody can disagree with",
+                    klass="vocabulary",
+                )
+            continue
+        if kind in owners and owners[kind] != name:
+            out.hit(
+                rel,
+                line,
+                f"{name} and {owners[kind]} both claim the authorization kind {kind!r} — the "
+                "vocabulary cannot be derived at all while two models answer to one word. "
+                "One of them declares its own `authz_kind`",
+                klass="vocabulary",
+            )
+            continue
+        owners.setdefault(kind, name)
+    out.count("kinds", len(kindset))
+    out.count("derived_keys", len(kindset) * len(_CRUD_VERBS))
+
+    for action, (rel, line) in sorted(prose_sites.items()):
+        derived = action.split(".")[0] in kindset and action.split(".")[-1] in _CRUD_VERBS
+        if derived and len(action.split(".")) == 2:
+            # A sentence override of a key the registry already derived. Legal,
+            # and the whole point of `ACTION_PROSE` for a derived key.
+            continue
+        if action in renames:
+            continue
+        out.count("declared_keys")
+        why = _classify_declared_key(action, kindset)
+        if why:
+            out.hit(
+                rel,
+                line,
+                f"the declared key {action!r} does not fit `<kind>.<verb>`: {why}. The key "
+                "vocabulary is one shape or it is a list nobody can census — rename it in "
+                "this app's `RENAMED_PERMISSIONS`, which keeps the old word answering",
+                klass="nonconforming",
+            )
+
+    for rel, line, source in unreadable:
+        out.hit(
+            rel,
+            line,
+            f"the declared key `{source}` is computed rather than written — this census "
+            "reads the tree by AST (the self-test plants a policies.py and re-runs it in "
+            "the same process, which a cached `django.setup()` could not see), so a key "
+            "assembled at import is one it cannot classify and one nobody can grep for. "
+            "Write the string; the constant beside it may keep the name",
+            klass="unreadable_prose",
+        )
+
+    # EVERY KEY-BEARING DECLARATION NAMES A KEY THE VOCABULARY HOLDS. The
+    # vocabulary is derived from the kinds and DECLARED through `ACTION_PROSE`
+    # and the rename table; a `POLICIES` or `DEFAULT_ROLES` entry is a
+    # declaration of neither, so a key that appears only there is a predicate —
+    # or a default — for a capability nobody can be given. It is invisible
+    # everywhere else by construction: `vocabulary()` consults the policy
+    # registry only for keys it has already derived, so the key joins no census,
+    # no `non_conforming()` list and no pinned ratchet, and every layer stays
+    # green. The remedy is the ordinary one — declare the key in `ACTION_PROSE`
+    # with its sentence, or name the one that exists.
+    words = (
+        {f"{kind}.{verb}" for kind in kindset for verb in _CRUD_VERBS}
+        | set(prose_sites)
+        | set(renames)
+        | set(renames.values())
+        | set(_RESERVED_KEYS)
+    )
+    for rel, line, action, declaration in declarations:
+        if action in words:
+            continue
+        out.hit(
+            rel,
+            line,
+            f"a `{declaration}` entry names {action!r}, which the vocabulary does not hold — "
+            "a predicate (or a default) for a capability nobody can be given, and one no "
+            "census can see: the registry is read for keys the vocabulary already has, so "
+            "this key is in no list anywhere. Declare it in `ACTION_PROSE` with its "
+            "sentence, or name the one that exists",
+            klass="declaration",
+        )
+
+    # --- (b) a declaration names declared things ----------------------------
+    declared_roles: dict[str, str] = {}
+    for rel, line, key, app in _role_declarations(root):
+        out.count("role_declarations")
+        if key == "owner":
+            out.hit(
+                rel,
+                line,
+                "a `roles.py` declares the role 'owner', which is the platform's — `owner` "
+                "IS the vocabulary, every key present and future, and a declaration that "
+                "narrowed it would be a ceiling quietly disappearing",
+                klass="declaration",
+            )
+            continue
+        if key in _RESERVED_KEYS:
+            out.hit(
+                rel,
+                line,
+                f"a `roles.py` declares a role keyed {key!r}, which is a reserved PERMISSION "
+                "— a role key and a permission key are different vocabularies and one name "
+                "in both is a name two readers disagree about",
+                klass="declaration",
+            )
+            continue
+        if key in declared_roles and declared_roles[key] != app:
+            out.hit(
+                rel,
+                line,
+                f"{app} and {declared_roles[key]} both declare the role {key!r} — two "
+                "collections under one name, and which one a membership gets would depend "
+                "on import order",
+                klass="declaration",
+            )
+            continue
+        declared_roles.setdefault(key, app)
+    known_roles = set(declared_roles) | {"owner"}
+    for rel, line, action, role in _default_role_offers(root):
+        if role in known_roles:
+            continue
+        out.hit(
+            rel,
+            line,
+            f"a `DEFAULT_ROLES` entry offers {action!r} to the role {role!r}, which no app "
+            "declares in a `roles.py` — the capability is offered to nobody",
+            klass="declaration",
+        )
+
+    # --- (c) no role by value -----------------------------------------------
+    for path in _py_files(root, "apps"):
+        rel = path.relative_to(root).as_posix()
+        if _exempt(rule, rel):
+            continue
+        tree = _parse(path)
+        if tree is None:
+            continue
+        out.count("role_value_files_scanned")
+        app = rel.split("/")[1]
+        lines = _read(path).splitlines()
+        for line, what in sorted(_role_value_sites(tree).items()):
+            reason = _comment_reason(lines, line, _ROLE_VALUE_RE)
+            if reason is not None and len(reason) >= _MIN_AUTHZ_REASON:
+                out.count("role_value_valves")
+                continue
+            if reason is not None:
+                out.hit(
+                    rel,
+                    line,
+                    "`# role-value:` with no reason — an escape hatch nobody has to justify "
+                    "is an off switch; write the sentence a reviewer can disagree with",
+                    klass=f"{app}.role-value",
+                )
+                continue
+            out.hit(
+                rel,
+                line,
+                f"reads a role by value ({', '.join(what)}) — a role is DATA a tenant owns, "
+                "and a rank table is a second opinion about it that no tenant can edit. A "
+                'predicate that needs "how much authority" asks '
+                "`holds(actor, '<kind>.<verb>', at=...)`, which reads the same rows the role "
+                "editor writes",
+                klass=f"{app}.role-value",
+            )
+
+    # --- (d)/(e) a read asks, and asks about what it returns -----------------
+    for path in _py_files(root, "apps", named={"selectors.py"}):
+        rel = path.relative_to(root).as_posix()
+        tree = _parse(path)
+        if tree is None:
+            continue
+        src = _read(path)
+        lines = src.splitlines()
+        app = rel.split("/")[1]
+        constants = string_constants(root, path, tree)
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not (node.name.startswith("get_") or node.name.startswith("list_")):
+                continue
+            # **A VALVE IS COUNTED BY NAME, WHERE THE FINDINGS ARE BOUND BY
+            # ANNOTATION.** The population clauses (d)/(e) can raise a finding
+            # over is the one an annotation resolves to a kind; the population a
+            # valve can be WRITTEN in is every public `get_`/`list_` a
+            # `selectors.py` declares, and those two are not the same set. A
+            # selector annotated with an aggregate — `-> MeasuredOut`,
+            # `-> dict[str, MeasuredOut]` — is outside the findings by
+            # annotation and its author still writes the sentence, because the
+            # sentence is what a reviewer reads. Counted here, before the
+            # annotation filter, so the status line's number equals the number
+            # of valve lines in the tree instead of the subset this rule could
+            # ever have flagged: a valve the census does not count is an off
+            # switch nobody can see, and two of them sat in `apps/usage` unread.
+            open_reason = _function_valve(node, src, lines, _READ_OPEN_RE)
+            kind_reason = _function_valve(node, src, lines, _READ_KIND_RE)
+            if open_reason is not None and len(open_reason) >= _MIN_AUTHZ_REASON:
+                out.count("read_open_valves")
+            if kind_reason is not None and len(kind_reason) >= _MIN_AUTHZ_REASON:
+                out.count("read_kind_valves")
+            returned = sorted(n for n in _annotation_names(node.returns) if kinds.get(n))
+            if not returned:
+                continue
+            out.count("selectors_censused")
+            kind = kinds[returned[0]]
+            asked = {key for _, key, _ in _asks(node, constants) if key}
+            reads = {key for key in asked if key.rsplit(".", 1)[-1] == "read"}
+            if not reads:
+                if open_reason is not None and len(open_reason) >= _MIN_AUTHZ_REASON:
+                    continue
+                out.count("nonrequiring_selectors")
+                out.hit(
+                    rel,
+                    node.lineno,
+                    f"{node.name} returns {returned[0]} — kind {kind!r} — and asks no "
+                    f"{kind}.read: a read that never asks is a read every door inherits for "
+                    "free. Call `require(actor, '<kind>.read', ...)`, or record "
+                    "`# read-open: <reason>` for a machine read",
+                    klass=f"{app}.read",
+                )
+                continue
+            if f"{kind}.read" in reads:
+                continue
+            if kind_reason is not None and len(kind_reason) >= _MIN_AUTHZ_REASON:
+                continue
+            out.count("wrong_kind_selectors")
+            out.hit(
+                rel,
+                node.lineno,
+                f"{node.name} returns {returned[0]} — kind {kind!r} — and asks "
+                f"{', '.join(sorted(reads))}: the capability guarding a read is the kind of "
+                "the row it hands back, or the read is authorized by a word that means "
+                "something else. Ask for `{kind}.read`, or record `# read-kind: <kind>` "
+                "saying which aggregate answers for it",
+                klass=f"{app}.read-kind",
+            )
+    return out
+
+
+# --- rule 55: a tenant-wide kind is asked at a node the caller resolved --------
+#
+# ADR core-4's sibling. `allows` resolves the node it judges at: handed a row it
+# uses the row's `organization`, and handed NOTHING it falls back to the acting
+# hat — which is right for every kind that HAS a node, and wrong for every kind
+# that does not. A `sso_connection` is the tenant's, not a branch's; so is a
+# `role`, a `tenant`, an `api_token`. Asked with no node, or with the row
+# itself, one of those resolves at the caller's hat, where a branch admin holds
+# `*` — and that is how an administrator of one branch came to administer the
+# whole tenant's identity provider while every test in the tree stayed green.
+#
+# THE POPULATION IS DERIVED, from the same two facts rule 13's clause (i) and
+# rule 24 already derive and by the same functions — `model_kinds` for the
+# kind→model map, and `org_scoped_model_names` plus the class body's own
+# `organization = models.ForeignKey(` for "does this row name a node". One
+# derivation, three rules, so a model that gains a node leaves this population
+# on the same run it enters rule 24's.
+#
+# WHAT IS OUT, BY CONSTRUCTION AND DECLARED:
+#
+# * a key whose kind is `organization` — an organization IS its own node, so
+#   `require(actor, "organization.update", org)` is already at the node;
+# * a key whose kind is virtual (`deployment`) or in no registry at all — the
+#   first has no row by declaration, the second is rule 54 (a)'s finding and
+#   its non-conforming ratchet is the belt;
+# * a key that is neither a literal nor a module-level string constant — rule
+#   13's clause (iv) owns it and `# authz-key:` is its valve;
+# * `holds(actor, key, at=...)`, whose node is explicit in the signature.
+
+#: `# hat-scoped: <reason>` — the one valve, on the line or the contiguous
+#: comment block above it. A bare one is its own finding, which is rule 26's
+#: device and the gate's own rule about its overrides: an escape hatch nobody
+#: has to justify is an off switch.
+_HAT_SCOPED_RE = re.compile(r"#\s*hat-scoped\b:?\s*(.*)$")
+
+#: The modules a capability is asked in. Rule 13's set, plus the shell doors —
+#: a management command is a door (rule 42 counts it as one), and an operator
+#: act on a tenant-wide kind is exactly the shape that must name its node.
+_RULE55_FILES = frozenset(_RULE8_FILES | {"policies.py", "adapter.py", "views.py"})
+
+#: The name whose call resolves a tenant's root. Named rather than derived
+#: because it IS the answer this rule is pushing callers towards, and a product
+#: that renames it has renamed the primitive.
+_ROOT_CALL = "root_organization"
+
+
+def _command_files(root: Path) -> list[Path]:
+    """Every `apps/*/management/commands/*.py` — the shell doors."""
+    out: list[Path] = []
+    for app in _app_dirs(root):
+        commands = app / "management" / "commands"
+        if commands.is_dir():
+            out += [p for p in sorted(commands.glob("*.py")) if p.name != "__init__.py"]
+    return out
+
+
+def tenant_wide_kind_names(root: Path) -> set[str]:
+    """Every kind whose model names no organization. The rule's whole subject.
+
+    `organization` is removed last and deliberately: it derives a kind like any
+    other model and it is the one kind that IS a node, so leaving it in would
+    make every `require(actor, "organization.create", parent)` a finding about
+    the node it was already asked at.
+    """
+    facts = _model_facts(root)
+    kinds = model_kinds(root)
+    org_scoped = org_scoped_model_names(root)
+    out: set[str] = set()
+    for name, kind in kinds.items():
+        if kind is None or facts[name]["abstract"]:
+            continue
+        if "organization" in facts[name]["foreign_keys"] or name in org_scoped:
+            continue
+        out.add(kind)
+    out.discard("organization")
+    return out
+
+
+def _organization_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[set[str], set[str]]:
+    """(names holding an Organization, names bound to a resolved root).
+
+    Two sets and not one, because the messages differ and a reader holding the
+    red needs to know which half they have: a parameter typed `Organization` is
+    a node the CALLER resolved, and a local bound to `root_organization(...)` is
+    a node THIS function resolved. Both satisfy the rule; neither is guessed at.
+    """
+    typed = {
+        arg.arg for arg in _all_args(fn) if "Organization" in _annotation_names(arg.annotation)
+    }
+    rooted: set[str] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if "Organization" in _annotation_names(node.annotation):
+                typed.add(node.target.id)
+        if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)):
+            continue
+        func = node.value.func
+        called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if called != _ROOT_CALL:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                rooted.add(target.id)
+    return typed, rooted
+
+
+def _node_verdict(arg: ast.expr | None, typed: set[str], rooted: set[str]) -> tuple[bool, str]:
+    """(is it a node the caller resolved, how it is spelled)."""
+    if arg is None:
+        return False, "with no third argument at all"
+    if isinstance(arg, ast.Constant) and arg.value is None:
+        return False, "with an explicit `None`"
+    if isinstance(arg, ast.Call):
+        func = arg.func
+        called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if called == _ROOT_CALL:
+            return True, f"{_ROOT_CALL}(...)"
+        return False, f"with the result of `{called}(...)`"
+    if isinstance(arg, ast.Name):
+        if arg.id in rooted:
+            return True, f"`{arg.id}`, bound to {_ROOT_CALL}(...)"
+        if arg.id in typed:
+            return True, f"`{arg.id}`, a parameter annotated Organization"
+        return False, f"with `{arg.id}`, which is the ROW rather than a node"
+    if isinstance(arg, ast.Attribute):
+        if arg.attr == "organization":
+            return True, "an expression ending in `.organization`"
+        return False, f"with `.{arg.attr}`, which names no node"
+    return False, f"with `{ast.unparse(arg)[:48]}`, which names no node"
+
+
+def tenant_wide_kinds_ask_at_the_root(root: Path, rule: dict) -> CheckResult:
+    """Rule 55. Findings are classed by APP, so one app's backlog cannot pay for
+    another's growth and each sweep drives its own app to zero."""
+    out = CheckResult()
+    kinds = tenant_wide_kind_names(root)
+    out.targets_matched["tenant_wide_kinds"] = len(kinds)
+    # Seeded at zero and PRINTED whatever it is: a valve nobody counts is an off
+    # switch, and a count that only appears when it is non-zero is one nobody
+    # sees fall to zero either.
+    out.targets_matched["hat_scoped_overrides"] = 0
+    out.targets_matched["sites_seen"] = 0
+    files = [p for p in _py_files(root, "apps") if p.name in _RULE55_FILES]
+    files += _command_files(root)
+    for path in sorted(set(files)):
+        tree = _parse(path)
+        if tree is None:
+            continue
+        out.count("files_scanned")
+        rel = path.relative_to(root).as_posix()
+        app = rel.split("/")[1]
+        lines = _read(path).splitlines()
+        constants = string_constants(root, path, tree)
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            typed, rooted = _organization_names(fn)
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = (
+                    func.id
+                    if isinstance(func, ast.Name)
+                    else (func.attr if isinstance(func, ast.Attribute) else "")
+                )
+                if name not in ("require", "allows") or len(node.args) < 2:
+                    continue
+                keyarg = node.args[1]
+                key = None
+                if isinstance(keyarg, ast.Constant) and isinstance(keyarg.value, str):
+                    key = keyarg.value
+                elif isinstance(keyarg, ast.Name) and keyarg.id in constants:
+                    key = constants[keyarg.id]
+                if key is None or "." not in key:
+                    continue
+                kind = key.rsplit(".", 1)[0]
+                if kind not in kinds:
+                    continue
+                out.count("sites_seen")
+                third = node.args[2] if len(node.args) > 2 else None
+                resolved, how = _node_verdict(third, typed, rooted)
+                if resolved:
+                    continue
+                reason = _comment_reason(lines, node.lineno, _HAT_SCOPED_RE)
+                if reason is not None and len(reason) >= _MIN_AUTHZ_REASON:
+                    out.count("hat_scoped_overrides")
+                    continue
+                if reason is not None:
+                    out.hit(
+                        rel,
+                        node.lineno,
+                        f"`# hat-scoped:` with no reason on {fn.name} — an escape hatch nobody "
+                        "has to justify is an off switch; write the sentence a reviewer can "
+                        "disagree with",
+                        klass=app,
+                    )
+                    continue
+                out.hit(
+                    rel,
+                    node.lineno,
+                    f"{fn.name} asks for {key!r} {how}. The kind {kind!r} names no "
+                    "organization, so there is no node in the question and `allows` falls "
+                    "back to the ACTING HAT — where a branch administrator holds `*`. Pass "
+                    f"the node the caller resolved ({_ROOT_CALL}(tenant=tenant), an "
+                    "Organization parameter, or a row's `.organization`), or record "
+                    "`# hat-scoped: <reason>` saying why the hat is the right node here",
+                    klass=app,
+                )
+    return out
+
+
+# --- rules 56 and 57: one router, one writer of the identity join ------------
+#
+# Two rules, one shape, and the shape is rule 27's: a question that must have
+# ONE answering module, an allow-list of paths each carrying a reason, a valve
+# counted and printed, and a floor on the population so a recogniser that stops
+# seeing its own subject trips rather than reporting a clean nothing.
+#
+# WHY TWO IDS AND NOT ONE. They fence two different tables against two
+# different failures. A second home-realm router is one person sent to one
+# identity provider and provisioned into another tenant; a second writer of the
+# identity join is an account takeover with an extra step. The remedies differ,
+# the allow-lists differ, and a reader holding one red must not have to work out
+# which half of a compound statement they are in.
+
+#: The two manager methods that ARE home-realm discovery, and the keyword that
+#: is the same question written out longhand.
+_ROUTER_METHOD = "for_domain"
+_CLAIM_METHOD = "claim"
+_DOMAIN_MODEL = "SsoDomain"
+#: The column the join is written on, and the four manager methods that can
+#: write it without an assignment ever appearing.
+_JOIN_COLUMN = "zitadel_sub"
+_JOIN_WRITE_CALLS = ("update", "create", "get_or_create", "update_or_create")
+#: allauth's own link. Recognised on the receiver NAME rather than on the
+#: method alone, because `Client.connect(` is Temporal's and `Client.connect(`
+#: is also the health probe's — a rule that fenced every `.connect(` in the
+#: tree would be a rule about a word.
+_SOCIALLOGIN = "sociallogin"
+
+
+def _allowed_paths(rule: dict, key: str) -> set[str]:
+    """The paths a scope allow-list names. Each entry carries its own reason."""
+    return {
+        str(entry["path"])
+        for entry in (rule.get("scope") or {}).get(key) or []
+        if entry.get("path")
+    }
+
+
+def _receiver_names(node: ast.Call) -> tuple[str, str]:
+    """(the attribute called, the chain root's name) for an Attribute call."""
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return "", ""
+    root = _chain_root(func.value)
+    return func.attr, root.id if isinstance(root, ast.Name) else ""
+
+
+def home_realm_router(root: Path, rule: dict) -> CheckResult:
+    """Rule 56. One question, one answering module.
+
+    The recogniser is rule 8's, pointed at a different manager: a call whose
+    receiver chain ends in a `Name` that IS the model — `SsoDomain.objects
+    .for_domain(...)` — plus the longhand form, a `filter(`/`get(` carrying a
+    `domain=` keyword on the same chain. A module that never mentions the model
+    cannot be a second router, so the population is the modules that do.
+    """
+    out = CheckResult()
+    routers = _allowed_paths(rule, "allow_router")
+    claimers = _allowed_paths(rule, "allow_claim")
+    out.targets_matched["router_sites"] = 0
+    out.targets_matched["claim_sites"] = 0
+    out.targets_matched["definition"] = 0
+    for path in _py_files(root, "apps") + _py_files(root, "config"):
+        tree = _parse(path)
+        if tree is None:
+            continue
+        out.count("files_scanned")
+        rel = path.relative_to(root).as_posix()
+        src = _read(path)
+        if _DOMAIN_MODEL not in src:
+            continue
+        # The DEFINITION is not a call site and is counted separately: a
+        # manager method has to live somewhere, and the module it lives in is
+        # the one place a call-shaped rule would otherwise report as a router.
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in (
+                _ROUTER_METHOD,
+                _CLAIM_METHOD,
+            ):
+                out.count("definition")
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            attr, receiver = _receiver_names(node)
+            longhand = attr in ("filter", "get") and any(
+                keyword.arg == "domain" for keyword in node.keywords
+            )
+            if receiver != _DOMAIN_MODEL and not (longhand and receiver == _DOMAIN_MODEL):
+                continue
+            if attr == _ROUTER_METHOD:
+                out.count("router_sites")
+                if rel in routers:
+                    continue
+                out.hit(
+                    rel,
+                    node.lineno,
+                    f"{_DOMAIN_MODEL}.objects.{_ROUTER_METHOD}( outside the two pre-auth "
+                    "selectors — home-realm discovery is one question with one answer, and a "
+                    "second router is one person sent to one identity provider and "
+                    "provisioned into another tenant. Reach it through "
+                    "`apps.accounts.selectors`",
+                )
+            elif attr == _CLAIM_METHOD:
+                out.count("claim_sites")
+                if rel in claimers:
+                    continue
+                out.hit(
+                    rel,
+                    node.lineno,
+                    f"{_DOMAIN_MODEL}.objects.{_CLAIM_METHOD}( outside the claim writers — a "
+                    "claim reserves a name for a tenant, and a second place that reserves "
+                    "one is two tenants owning one address space",
+                )
+            elif longhand:
+                if rel in routers | claimers:
+                    continue
+                out.hit(
+                    rel,
+                    node.lineno,
+                    f"{_DOMAIN_MODEL} filtered by `domain=` outside the router — the same "
+                    "question written longhand is the same question, and a rule that read "
+                    "only the manager method would be a rule about a method name",
+                )
+    return out
+
+
+def identity_join_writers(root: Path, rule: dict) -> CheckResult:
+    """Rule 57. One writer of which subject signs in as which of our people.
+
+    READS ARE OUT BY CONSTRUCTION and a negative pins it: `filter(zitadel_sub=…)`
+    resolves a person by their subject and is exactly what every door should do.
+    What is fenced is the WRITE — an assignment to the column, a manager call
+    carrying it as a keyword, and allauth's own `sociallogin.connect(`.
+    """
+    out = CheckResult()
+    column = _allowed_paths(rule, "allow_column")
+    connect = _allowed_paths(rule, "allow_connect")
+    out.targets_matched["column_writers"] = 0
+    out.targets_matched["connect_sites"] = 0
+    out.targets_matched["column_reads_seen"] = 0
+    for path in _py_files(root, "apps") + _py_files(root, "config"):
+        tree = _parse(path)
+        if tree is None:
+            continue
+        out.count("files_scanned")
+        rel = path.relative_to(root).as_posix()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if not (isinstance(target, ast.Attribute) and target.attr == _JOIN_COLUMN):
+                        continue
+                    out.count("column_writers")
+                    if rel in column:
+                        continue
+                    out.hit(
+                        rel,
+                        node.lineno,
+                        f"assigns `.{_JOIN_COLUMN}` outside the audited writer — which "
+                        "Zitadel subject signs in as which of our people is written by "
+                        "`record_zitadel_identity` and cleared by `unlink_zitadel_identity`, "
+                        "and a second writer is how a join between two identity systems "
+                        "comes to disagree with itself",
+                    )
+                continue
+            if not isinstance(node, ast.Call):
+                continue
+            attr, receiver = _receiver_names(node)
+            if attr in _JOIN_WRITE_CALLS and any(
+                keyword.arg == _JOIN_COLUMN for keyword in node.keywords
+            ):
+                out.count("column_writers")
+                if rel not in column:
+                    out.hit(
+                        rel,
+                        node.lineno,
+                        f"writes `{_JOIN_COLUMN}=` through .{attr}( outside the audited "
+                        "writer — a manager call is a write with no assignment in it, and "
+                        "the column is the identity join",
+                    )
+                continue
+            if attr in ("filter", "exclude", "get") and any(
+                keyword.arg == _JOIN_COLUMN for keyword in node.keywords
+            ):
+                # A READ, and counted rather than ignored: a recogniser that
+                # stopped seeing the column at all would report a clean nothing,
+                # and the floor on this number is what says so.
+                out.count("column_reads_seen")
+                continue
+            if attr == "connect" and receiver == _SOCIALLOGIN:
+                out.count("connect_sites")
+                if rel in connect:
+                    continue
+                out.hit(
+                    rel,
+                    node.lineno,
+                    "calls `sociallogin.connect(` outside the adapter — allauth's own link "
+                    "runs AFTER our writer has said yes, and a call from anywhere else is a "
+                    "second join written in a second order",
+                )
     return out
 
 
@@ -2890,6 +4510,14 @@ _ORGANIZATION = "Organization"
 # `parent` on an organization; everything else about either row is ordinary.
 _ORG_SHAPE_FIELDS = ("path", "parent")
 
+#: The two tables that ARE the permission exceptions. A `Grant` row widens or
+#: narrows one person in one branch and a `RolePermission` row is a tenant's own
+#: collection — both are the same act `Membership.role` is, reached through a
+#: different column, and the escalation wall (`_refuse_escalation`) is the one
+#: thing standing in front of all three. A row written anywhere else is a
+#: capability handed out beside the wall rather than through it.
+_PERMISSION_ROW_MODELS = ("Grant", "RolePermission")
+
 # ADR core-3 (G1). `governing(org)` resolves configuration UPWARDS — the nearest
 # row on the actor's ancestor chain wins — and it is legal on exactly one
 # population: models that declared `InheritedDownward`. The widening and its
@@ -2967,6 +4595,50 @@ def org_scoped_model_names(root: Path) -> set[str]:
     return _transitive(_class_bases_by_name(root), _ORG_BASE)
 
 
+def org_fk_model_names(root: Path) -> set[str]:
+    """Every model that names its organization through a FOREIGN KEY.
+
+    The half `OrgScopedModel` does not cover, and it is not an edge case: it is
+    `Membership` — person x tenant x org x role, the row the whole hierarchy is
+    made of, which carries an `organization` column and inherits `BaseModel`
+    rather than the scoped base. A service handed one and writing on the
+    strength of it is exactly rule 26's subject, and it sat outside the
+    population until a builder's `Membership.objects.get(pk=...)` followed by
+    `set_role(...)` turned out to be gate-legal.
+
+    Derived from the class body the same way rule 55 derives "does this row
+    name a node", so the two cannot come to disagree about what a node-bearing
+    model is.
+    """
+    facts = _model_facts(root)
+    return {
+        name
+        for name, fact in facts.items()
+        if not fact["abstract"] and "organization" in fact["foreign_keys"]
+    }
+
+
+def reach_population_names(root: Path) -> set[str]:
+    """Rule 26's model population: org-scoped, plus the FK-bearing models."""
+    return org_scoped_model_names(root) | org_fk_model_names(root)
+
+
+def _fk_holders_of(root: Path, population: set[str]) -> set[str]:
+    """Every model holding a foreign key to a member of `population`.
+
+    `Grant.membership -> Membership`, so `create_grant(membership=...)` writing
+    a `Grant` is writing a row that names the population member it was handed.
+    Without this the widening would stop one hop short of the service the
+    widening exists for.
+    """
+    facts = _model_facts(root)
+    return {
+        name
+        for name, fact in facts.items()
+        if not fact["abstract"] and set(fact["foreign_keys"].values()) & population
+    }
+
+
 def org_scoped_annotation_names(root: Path) -> set[str]:
     """The names an annotation may use to say "a row one part of a tenant owns".
 
@@ -2982,7 +4654,7 @@ def org_scoped_annotation_names(root: Path) -> set[str]:
     parameters in `apps/*/services.py` are annotated with the base, so counting
     it costs no false positive and the first one to arrive is seen.
     """
-    return org_scoped_model_names(root) | {_ORG_BASE}
+    return reach_population_names(root) | {_ORG_BASE}
 
 
 def _parent_map(tree: ast.Module) -> dict[int, ast.AST]:
@@ -3058,6 +4730,7 @@ def org_scoped_reads(root: Path, rule: dict) -> CheckResult:
     out.targets_matched["inherited_downward_models"] = len(inherited)
     role_writers = _rule24_paths(rule, "membership_role_writers")
     shape_writers = _rule24_paths(rule, "organization_shape_writers")
+    permission_writers = _rule24_paths(rule, "permission_row_writers")
 
     files = _py_files(root, "apps", named=set(_RULE24_FILES)) + _py_files(root, "config")
     for path in files:
@@ -3131,6 +4804,25 @@ def org_scoped_reads(root: Path, rule: dict) -> CheckResult:
                     "outside your subtree)",
                 )
 
+        # (5) who may write a permission exception — the same question as (3),
+        # one column over. `Membership.role` is not the only way to change what
+        # somebody may do since the role tables landed.
+        for model in _PERMISSION_ROW_MODELS:
+            if model not in src:
+                continue
+            for lineno, what in _permission_row_writes(tree, model):
+                if _allowed_here(permission_writers, rel, _function_at(spans, lineno)):
+                    continue
+                out.hit(
+                    rel,
+                    lineno,
+                    f"{what} outside the permission services — a grant or a role's own "
+                    "collection written here skips the escalation wall exactly as a role "
+                    "assignment would: `allow` is bounded by what the granter holds and "
+                    "`withhold` by what the target holds, and neither bound exists on a "
+                    "row written by hand",
+                )
+
         # (4) who may write the tree's shape.
         if _ORGANIZATION in src:
             for lineno, what in _shape_writes(tree):
@@ -3167,6 +4859,32 @@ def _role_writes(tree: ast.Module) -> list[tuple[int, str]]:
             ):
                 if any(keyword.arg == "role" for keyword in node.keywords):
                     hits.append((node.lineno, f".{node.func.attr}(role=...)"))
+    return hits
+
+
+def _permission_row_writes(tree: ast.Module, model: str) -> list[tuple[int, str]]:
+    """Every way this module writes a `Grant` or a `RolePermission` row.
+
+    The constructor and the manager writes, which is the same population rule
+    13's `_write_calls` reads — restated against one named model rather than
+    against the registry, because the question here is not "does this write"
+    but "does this write THESE two tables".
+    """
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == model:
+            hits.append((node.lineno, f"a {model}(...) constructed"))
+            continue
+        if not isinstance(func, ast.Attribute):
+            continue
+        if func.attr not in _WRITE_MANAGER_CALLS | {"update", "delete", "bulk_update"}:
+            continue
+        root_name = _chain_root(func.value)
+        if isinstance(root_name, ast.Name) and root_name.id == model:
+            hits.append((node.lineno, f"a {model} row written (.{func.attr}())"))
     return hits
 
 
@@ -3478,8 +5196,55 @@ def _org_bound_names(fn: ast.FunctionDef | ast.AsyncFunctionDef, org_models: set
     return bound
 
 
+def _named_at_line(fn: ast.AST, param: str) -> int | None:
+    """The line of the first `may_be_named(..., <param>)` in this body, or None."""
+    lines = [
+        node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and (
+            node.func.id
+            if isinstance(node.func, ast.Name)
+            else (node.func.attr if isinstance(node.func, ast.Attribute) else "")
+        )
+        == "may_be_named"
+        and any(isinstance(a, ast.Name) and a.id == param for a in node.args)
+    ]
+    return min(lines) if lines else None
+
+
+def _asked_about_at_line(fn: ast.AST, param: str) -> int | None:
+    """The line of the first `require`/`allows` whose OBJECT is `<param>`, or None.
+
+    The subject: reach before capability. The third positional argument is
+    the row the question is about, so a `require(actor, key, membership)` is a
+    question about THAT row — and asking it before `may_be_named` has cleared
+    the row is answering a capability about a row the actor may never have been
+    able to name. The answer is then `forbidden` where it should have been
+    `not_found`, which tells a caller that a row they cannot reach exists.
+    """
+    lines = [
+        node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and (
+            node.func.id
+            if isinstance(node.func, ast.Name)
+            else (node.func.attr if isinstance(node.func, ast.Attribute) else "")
+        )
+        in ("require", "allows")
+        and len(node.args) > 2
+        and isinstance(node.args[2], ast.Name)
+        and node.args[2].id == param
+    ]
+    return min(lines) if lines else None
+
+
 def _writes_org_scoped(
-    fn: ast.FunctionDef | ast.AsyncFunctionDef, org_models: set[str], bound: set[str]
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+    org_models: set[str],
+    bound: set[str],
+    writable: set[str] | None = None,
 ) -> bool:
     """Whether this function writes a row one part of a tenant owns.
 
@@ -3493,14 +5258,23 @@ def _writes_org_scoped(
        saved here is still recognised as the row this service writes.
     """
     writes = False
+    # THE WRITE POPULATION IS WIDER THAN THE ANNOTATION POPULATION, and the gap
+    # is the service this widening exists for: `create_grant(membership=...)`
+    # writes a `Grant`, which is not org-scoped and not FK-to-organization —
+    # it names its node through the very membership the caller handed in. A
+    # write of a row that holds a foreign key to a population member is a write
+    # on the strength of that member.
+    writable = (writable or set()) | org_models
     for node in ast.walk(fn):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             continue
         attr = node.func.attr
         if attr in _ORG_WRITE_CALLS:
             root = _chain_root(node.func.value)
-            if isinstance(root, ast.Name) and root.id in org_models:
+            if isinstance(root, ast.Name) and root.id in writable:
                 return True
+        if isinstance(node.func, ast.Name) and node.func.id in writable:
+            continue
         if attr in ("save", "delete", "update"):
             receiver = node.func.value
             if isinstance(receiver, ast.Name):
@@ -3556,10 +5330,14 @@ def service_reach(root: Path, rule: dict) -> CheckResult:
     # typed with — the same set plus the abstract base a service may honestly
     # name. Both print on this rule's status line, so the day they stop
     # differing by exactly one, somebody can see it.
-    concrete = org_scoped_model_names(root)
+    concrete = reach_population_names(root)
     org_models = org_scoped_annotation_names(root)
-    out.targets_matched["org_scoped_models"] = len(concrete)
+    writable = concrete | _fk_holders_of(root, concrete)
+    out.targets_matched["org_scoped_models"] = len(org_scoped_model_names(root))
+    out.targets_matched["org_fk_models"] = len(org_fk_model_names(root))
     out.targets_matched["org_scoped_annotations"] = len(org_models)
+    # Seeded and printed, like every other census number on this line.
+    out.targets_matched["reach_order_checked"] = 0
     # Seeded at zero rather than counted up from nothing, so the rule's own
     # status line always PRINTS the standing valve count — "counted and printed"
     # is the whole discipline, and a key that only appears when it is non-zero
@@ -3580,7 +5358,7 @@ def service_reach(root: Path, rule: dict) -> CheckResult:
             if "service" not in _decorator_names(node):
                 continue
             bound = _org_bound_names(node, org_models)
-            if not _writes_org_scoped(node, org_models, bound):
+            if not _writes_org_scoped(node, org_models, bound, writable):
                 continue
             out.count("writing_services")
             checked = _named_through_may_be_named(node)
@@ -3593,6 +5371,28 @@ def service_reach(root: Path, rule: dict) -> CheckResult:
                 out.count("fk_target_kwargs")
                 if arg.arg in checked:
                     out.count("reachability_checks")
+                    # REACH BEFORE CAPABILITY. The check is here rather
+                    # than anywhere else because this is the one branch that
+                    # knows the parameter WAS cleared — the order only becomes
+                    # a question once both halves are present.
+                    named_at = _named_at_line(node, arg.arg)
+                    asked_at = _asked_about_at_line(node, arg.arg)
+                    if named_at is not None and asked_at is not None:
+                        out.count("reach_order_checked")
+                        if asked_at < named_at:
+                            out.hit(
+                                rel,
+                                asked_at,
+                                f"{node.name} asks a capability about `{arg.arg}` at line "
+                                f"{asked_at}, BEFORE core.authz.may_be_named clears it at "
+                                f"line {named_at} — reach before capability. A "
+                                "capability answered about a row the actor could never have "
+                                "named answers `forbidden` where the honest answer is "
+                                "`not_found`, and the difference tells a caller that a row "
+                                "they cannot reach exists. Move the may_be_named above the "
+                                "require",
+                                klass=app,
+                            )
                     continue
                 reason = _reach_reason(lines, arg.lineno)
                 if reason is None:
@@ -3638,7 +5438,15 @@ def service_reach(root: Path, rule: dict) -> CheckResult:
 # log line, an exception message or a subprocess environment.
 # 2. **the client**: `apps.accounts.zitadel` is imported only from the places
 # where a management call is legitimate — the activity, where a failure is a
-# Temporal retry, and the two `zitadel_*` commands, which are the shell door.
+# Temporal retry, and the `zitadel_*` commands that are the shell door. WHICH
+# ones is `quality/rules.yaml`'s allow-list, and `python -m quality.gate
+# --explain 27` prints it; no count is written here, because a count in a
+# comment goes stale the run after a shell door is added. A module OFF that
+# list may still import the client by carrying this rule's comment valve with
+# its reason on the line — the reconcile command is the one that does, taking
+# `configured()` and `ZitadelError` and writing nothing — so the reported
+# `client_importers` is the allow-list PLUS every honoured valve, never the
+# allow-list alone.
 # A service importing it would put external I/O inside a transaction (C2); a
 # route or a tool importing it would put an unbounded network call on
 # somebody's request.
@@ -4212,6 +6020,99 @@ def socket_group_discipline(root: Path, rule: dict) -> CheckResult:
             is_decision = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             if is_decision and node.name == "group_for":
                 out.count("decision_points")
+    writers = _status_writer_census(root)
+    out.findings.extend(writers.findings)
+    for key, value in writers.targets_matched.items():
+        out.count(key, value)
+    return out
+
+
+#: The seam a service that darkens a tenant has to reach, and the enum path a
+#: status write takes. Both derived from the tree's own vocabulary rather than
+#: guessed: `Tenant.Status` is `apps/core/models.py`'s `TextChoices` class and
+#: `close_tenant_sockets_on_commit` is `apps/core/services.py`'s one registration.
+_TENANT_STATUS_SEAM = "close_tenant_sockets_on_commit"
+_TENANT_STATUS_ENUM = ("Tenant", "Status")
+_TENANT_STATUS_LIVE = "ACTIVE"
+
+
+def _tenant_status_written(node: ast.Assign) -> str | None:
+    """The `Tenant.Status.<NAME>` this assignment puts on a `.status`, or None.
+
+    Exact-shape, like the rest of this rule: `<anything>.status =
+    Tenant.Status.<NAME>`. A status built from a variable, an f-string or a
+    `.update(status=...)` is not seen here and is named in `does_not_cover` —
+    the population this exists for is the two operator services, and a guess
+    about which write darkens a tenant is worse than a declared blind spot.
+    """
+    if not any(isinstance(t, ast.Attribute) and t.attr == "status" for t in node.targets):
+        return None
+    value = node.value
+    if not isinstance(value, ast.Attribute) or not isinstance(value.value, ast.Attribute):
+        return None
+    enum, holder = value.value, value.value.value
+    if not isinstance(holder, ast.Name):
+        return None
+    if (holder.id, enum.attr) != _TENANT_STATUS_ENUM:
+        return None
+    return value.attr
+
+
+def _status_writer_census(root: Path) -> CheckResult:
+    """Rule 36, class `status_writer`: a tenant that goes dark hangs up.
+
+    R4's F2. `suspend_tenant` and `close_tenant` wrote a status and registered
+    NOTHING, while the only kick primitive was per person — so a suspended
+    tenant's live sockets went on hearing for the life of the connection, and
+    the REST door answered 403 to the same credential. A new handshake was
+    already refused, which is exactly what made the gap invisible.
+
+    The population is every `@service` that assigns a non-`ACTIVE`
+    `Tenant.Status` — derived, so the third such service is in it on the run it
+    lands — and the answer is a call to `close_tenant_sockets_on_commit` in the
+    same body. Deliberately NOT `resume_tenant`: a widening kicks nobody, which
+    is the asymmetry `kick_if_reads_narrowed` already states one level down.
+    """
+    out = CheckResult()
+    for path in _py_files(root, "apps", named={"services.py"}):
+        tree = _parse(path)
+        if tree is None:
+            continue
+        rel = str(path.relative_to(root))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if "service" not in _decorator_names(node):
+                continue
+            written = [
+                (sub, name)
+                for sub in ast.walk(node)
+                if isinstance(sub, ast.Assign)
+                for name in [_tenant_status_written(sub)]
+                if name is not None and name != _TENANT_STATUS_LIVE
+            ]
+            if not written:
+                continue
+            out.count("status_writers", len(written))
+            reaches = any(
+                isinstance(sub, ast.Call) and _callee_name(sub.func) == _TENANT_STATUS_SEAM
+                for sub in ast.walk(node)
+            )
+            if reaches:
+                continue
+            for assignment, name in written:
+                out.hit(
+                    rel,
+                    assignment.lineno,
+                    f"`{node.name}` puts a tenant into `{name}` and never calls "
+                    f"`{_TENANT_STATUS_SEAM}`. A tenant going dark is refused at the next "
+                    "HANDSHAKE and nowhere else, so every socket already open goes on "
+                    "hearing — for the hours the bridge's docstring expects a connection to "
+                    "last — while the REST door answers 403 to the same credential. That "
+                    "disagreement between two doors is the finding. Register the kick on "
+                    "commit in this body, or say why on the line",
+                    klass="status_writer",
+                )
     return out
 
 
@@ -7964,7 +9865,612 @@ def audit_row_shape(root: Path, rule: dict) -> CheckResult:
     return out
 
 
+# --- rule 58: socket join discipline (R4 F1; ADR realtime-2) -------------------
+#
+# THE FINDING. `apps/realtime/consumers.py` says "nobody names their own group"
+# and it was a convention for ONE consumer. A planted `apps/example/consumers.py`
+# doing `group_add(f"tenant.{query['tenant']}")` and `accept()`, mounted bare in
+# `websocket_urlpatterns`, is discovered by `config/asgi.py` like any other, is
+# accepted with NO credential, and hears that tenant's events. Rule 36 reads
+# `group_send` sites — the PUSH side — and nothing read the JOIN side at all;
+# rule 46 asks only for a `DOOR_PAIR` marker, and its own `does_not_cover` says
+# so in capitals ("THE MARKER PROVES EXISTENCE, NEVER STRENGTH"), so the whole
+# gate answer to a second consumer was one line in a test file.
+#
+# TWO CLASSES, because the plant is two independent defects and closing either
+# one alone still leaves a door. A consumer that derives its groups correctly and
+# is mounted with no authentication is an anonymous subscriber to real branches;
+# a consumer behind `token_auth` that names its own group reads somebody else's
+# tenant with a valid credential of its own.
+
+#: The three group names the bridge derives, and the only names a `group_add`
+#: may take. A constant rather than an import: these checks run without Django
+#: and never import `apps.*`. MOVE-TRIGGER: the day `apps/realtime/bridge.py`
+#: grows a fourth builder, or the three move out of it.
+_GROUP_BUILDERS = ("tenant_group", "org_group", "user_group")
+
+#: The base every socket consumer extends, the wrapper every mounted pattern
+#: passes through, and the module-level list `config/asgi.py` discovers.
+_CONSUMER_BASE = "TenantEventsConsumer"
+_SOCKET_AUTH_WRAPPER = "token_auth"
+_PATTERN_LIST = "websocket_urlpatterns"
+_PATTERN_CALLS = {"path", "re_path"}
+
+
+def _is_derived_group(node: ast.expr | None, derived: set[str]) -> bool:
+    """Whether this expression provably holds one of the bridge's derived names.
+
+    Fail-closed by construction: a direct call to a builder, a Name the scope
+    bound to one, or a collection/comprehension every element of which is one.
+    Anything else — an f-string, a `.format`, a parameter, a name from another
+    module — is a finding, which is the same reading rule 55 takes of a node.
+    """
+    if isinstance(node, ast.Call):
+        return _callee_name(node.func) in _GROUP_BUILDERS
+    if isinstance(node, ast.Name):
+        return node.id in derived
+    if isinstance(node, ast.Starred):
+        return _is_derived_group(node.value, derived)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return bool(node.elts) and all(_is_derived_group(e, derived) for e in node.elts)
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+        return _is_derived_group(node.elt, derived)
+    return False
+
+
+def _nodes_in_scope(body: list[ast.stmt]) -> list[ast.AST]:
+    """Every node in these statements, NOT descending into a nested scope.
+
+    Per-scope rather than per-module, so a name bound to a derived group in one
+    function cannot excuse a same-named f-string in another — which is exactly
+    the laundering shape the rule exists to refuse.
+    """
+    out: list[ast.AST] = []
+    stack: list[ast.AST] = list(body)
+    while stack:
+        node = stack.pop()
+        out.append(node)
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            stack.append(child)
+    return out
+
+
+def _derived_in(body: list[ast.stmt], seed: set[str]) -> set[str]:
+    """Every name THIS scope binds to a derived group name, seeded from above.
+
+    Three passes rather than one because the real consumer launders through two
+    hops the right way round — a list of builder calls, then a `for` over that
+    list — and the order `ast` hands the statements back in is not the order
+    they execute in. A fixpoint is cheap over a function body and does not care.
+    """
+    derived = set(seed)
+    for _ in range(3):
+        before = set(derived)
+        for node in _nodes_in_scope(body):
+            if isinstance(node, ast.Assign) and _is_derived_group(node.value, derived):
+                derived.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            elif (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and _is_derived_group(node.value, derived)
+            ):
+                derived.add(node.target.id)
+            elif (
+                isinstance(node, (ast.For, ast.AsyncFor))
+                and isinstance(node.target, ast.Name)
+                and _is_derived_group(node.iter, derived)
+            ):
+                derived.add(node.target.id)
+        if derived == before:
+            break
+    return derived
+
+
+def _scope_bodies(tree: ast.Module) -> list[tuple[list[ast.stmt], set[str]]]:
+    """(body, seed) for the module scope and for every function in it."""
+    top = [
+        stmt
+        for stmt in tree.body
+        if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    ]
+    module_names = _derived_in(top, set())
+    scopes: list[tuple[list[ast.stmt], set[str]]] = [(top, set())]
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scopes.append((node.body, module_names))
+    return scopes
+
+
+def _module_bindings(tree: ast.Module) -> dict[str, ast.expr]:
+    """Module-level `name = <expr>`, so a pattern's application can be resolved."""
+    bindings: dict[str, ast.expr] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and node.value is not None:
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bindings[target.id] = node.value
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            bindings[node.target.id] = node.value
+    return bindings
+
+
+def _resolve_binding(node: ast.expr | None, bindings: dict[str, ast.expr]) -> ast.expr | None:
+    """Follow module-level names to the expression they hold. Bounded at 5 hops."""
+    seen: set[str] = set()
+    for _ in range(5):
+        if not isinstance(node, ast.Name) or node.id in seen or node.id not in bindings:
+            return node
+        seen.add(node.id)
+        node = bindings[node.id]
+    return node
+
+
+def _consumer_classes(tree: ast.Module) -> dict[str, list[str]]:
+    """{class name: base names} for every class this module declares."""
+    return {
+        node.name: [_callee_name(base) or "" for base in node.bases]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+    }
+
+
+def _extends_the_base(name: str, classes: dict[str, list[str]]) -> bool:
+    """Whether this class IS the base, or reaches it through this module's bases."""
+    seen: set[str] = set()
+    pending = [name]
+    while pending:
+        current = pending.pop()
+        if current == _CONSUMER_BASE:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        pending.extend(classes.get(current, []))
+    return False
+
+
+def _as_asgi_class(node: ast.expr | None) -> str | None:
+    """The class name behind an `X.as_asgi()` somewhere in this expression."""
+    if node is None:
+        return None
+    for sub in ast.walk(node):
+        if (
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "as_asgi"
+            and isinstance(sub.func.value, ast.Name)
+        ):
+            return sub.func.value.id
+    return None
+
+
+def _pattern_entries(tree: ast.Module) -> list[ast.Call]:
+    """Every `path(...)` / `re_path(...)` in a module-level `websocket_urlpatterns`."""
+    entries: list[ast.Call] = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names, value = [node.target.id], node.value
+        else:
+            continue
+        if _PATTERN_LIST not in names or not isinstance(value, (ast.List, ast.Tuple)):
+            continue
+        entries.extend(
+            element
+            for element in value.elts
+            if isinstance(element, ast.Call) and _callee_name(element.func) in _PATTERN_CALLS
+        )
+    return entries
+
+
+def socket_join_discipline(root: Path, rule: dict) -> CheckResult:
+    """Rule 58. Nobody names their own group, and nobody mounts an open socket.
+
+    Two classes over `apps/`, both exact-shape for the reason rule 36 gives about
+    its own subject: the population is small, derived from the tree, and a
+    heuristic here would be a guess about who may read a tenant.
+
+    * **`join`** — every `group_add` takes its group from one of the bridge's
+      three derived builders, directly or through a name this scope bound to one.
+    * **`mount`** — every entry in a discovered `websocket_urlpatterns` wraps its
+      application in `token_auth(...)` and names a consumer that extends
+      `TenantEventsConsumer`.
+    """
+    out = CheckResult()
+    for path in _py_files(root, "apps"):
+        tree = _parse(path)
+        if tree is None:
+            continue
+        rel = str(path.relative_to(root))
+
+        for body, seed in _scope_bodies(tree):
+            derived = _derived_in(body, seed)
+            for node in _nodes_in_scope(body):
+                if not isinstance(node, ast.Call) or _callee_name(node.func) != "group_add":
+                    continue
+                out.count("group_add_sites")
+                group = node.args[0] if node.args else None
+                if _is_derived_group(group, derived):
+                    continue
+                out.hit(
+                    rel,
+                    node.lineno,
+                    "this `group_add` names its own group rather than taking one of the "
+                    "bridge's three derived names (`tenant_group`, `org_group`, "
+                    "`user_group`). A group name built here is a subscription to whatever "
+                    "the expression evaluates to — a tenant the caller chose, spelled from "
+                    "a query string — and the fan-out cannot tell it from a real one. "
+                    "Derive the name, or say why on the line",
+                    klass="join",
+                )
+
+        bindings = _module_bindings(tree)
+        classes = _consumer_classes(tree)
+        for entry in _pattern_entries(tree):
+            out.count("consumer_patterns")
+            application = entry.args[1] if len(entry.args) > 1 else None
+            resolved = _resolve_binding(application, bindings)
+            wrapped = (
+                isinstance(resolved, ast.Call)
+                and _callee_name(resolved.func) == _SOCKET_AUTH_WRAPPER
+            )
+            if not wrapped:
+                out.hit(
+                    rel,
+                    entry.lineno,
+                    f"this socket pattern is not wrapped in `{_SOCKET_AUTH_WRAPPER}(...)`, so "
+                    "the only credential it can have is whatever the session stack happened "
+                    "to resolve — which for a machine client is `AnonymousUser`. "
+                    "`config/asgi.py` discovers this pattern like any other and mounts it: "
+                    "an unwrapped consumer that accepts is an anonymous door onto a tenant. "
+                    f"Wrap it — `path(ROUTE, {_SOCKET_AUTH_WRAPPER}(Consumer.as_asgi()))`",
+                    klass="mount",
+                )
+            named = _as_asgi_class(resolved)
+            if named is None or not _extends_the_base(named, classes):
+                out.hit(
+                    rel,
+                    entry.lineno,
+                    f"this socket pattern does not name a consumer extending "
+                    f"`{_CONSUMER_BASE}` ({named or 'no `as_asgi()` call'}). That base is "
+                    "where the three refusals live — no principal, no tenant, no "
+                    "self-named group — and a consumer written beside it inherits none of "
+                    "them however carefully it is reviewed. Subclass it, or say why on the "
+                    "line",
+                    klass="mount",
+                )
+    return out
+
+
+# --- rule 59: an org-scoped event carries its branch (R4 F4/F5) ---------------
+#
+# THE FINDING. `events.services._subject_organization` reads only the payload's
+# TOP-LEVEL `organization_id`; absent means NULL, and `bridge.group_for` reads
+# NULL as tenant-wide. Rule 38 certifies that an org-scoped model's `Out`
+# DECLARES the key; nothing certified that an emit site PASSES one. The live
+# instance R4 found is `usage.threshold.crossed`: `ThresholdCrossingOut` has no
+# top-level `organization_id` and its nested `crossed_by` is an org-scoped
+# `UsageEntryOut`, so a rival administrator at branch B received a ledger row
+# that `GET /usage/` under hat B never lists. Generalised: ANY hand dict that
+# omits the key.
+#
+# AND THE OTHER DIRECTION (F5). A noun an app maps to `None` in `EVENT_KINDS`
+# while the app declares a model of that name is an event about a real row
+# declared to be about nothing — `consumers._may_read` answers True for a
+# `None` kind regardless of the branch, so such a frame bypasses the read set
+# entirely. The `ImproperlyConfigured` text itself offers the `None` road and
+# the noun census accepts any `None`, which is what makes this worth a rule.
+
+_EMIT_CALL = "emit"
+_ORG_KEY_NAME = "organization_id"
+_EVENT_KINDS_NAME = "EVENT_KINDS"
+_NOUN_SEGMENT = 1
+_OUT_SUFFIX = "Out"
+
+
+def _event_kinds_declared(root: Path) -> dict[str, dict[str, str | None]]:
+    """{app label: {noun: kind or None}} — every app's `EVENT_KINDS`, by AST.
+
+    The same declaration `core.authz.event_kinds_of` reads at runtime, read here
+    without importing anything, so the rule sees what the door sees.
+    """
+    declared: dict[str, dict[str, str | None]] = {}
+    for app in _app_dirs(root):
+        tree = _parse(app / "events.py")
+        if tree is None:
+            continue
+        for node in tree.body:
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names, value = [node.target.id], node.value
+            elif isinstance(node, ast.Assign):
+                names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                value = node.value
+            else:
+                continue
+            if _EVENT_KINDS_NAME not in names or not isinstance(value, ast.Dict):
+                continue
+            mapping: dict[str, str | None] = {}
+            for key, item in zip(value.keys, value.values, strict=False):
+                if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                    continue
+                if isinstance(item, ast.Constant) and (
+                    item.value is None or isinstance(item.value, str)
+                ):
+                    mapping[str(key.value)] = item.value
+            declared[app.name] = mapping
+    return declared
+
+
+def _org_scoped_kind_names(root: Path) -> set[str]:
+    """Every authorization kind whose model is an `OrgScopedModel`.
+
+    DERIVED from the two walks rules 24, 38 and 55 already share — the
+    transitive `OrgScopedModel` closure and `model_kinds` — so a model that
+    gains a branch joins this population on the run it joins theirs.
+    """
+    kinds = model_kinds(root)
+    return {
+        kind
+        for name in org_scoped_model_names(root)
+        for kind in [kinds.get(name)]
+        if isinstance(kind, str)
+    }
+
+
+def _certified_out_schemas(root: Path) -> set[str]:
+    """Every `Out` schema that DECLARES `organization_id` — rule 38's own half.
+
+    Rule 38 keeps the key on an org-scoped model's `Out`; this reads which
+    schemas actually carry it, so "a rule-38-certified `Out`" is a fact about
+    the tree rather than a claim about the rule.
+    """
+    certified: set[str] = set()
+    for path in _schema_modules(root):
+        for name, fields in _out_fields_with_inheritance(path).items():
+            if _ORG_KEY_NAME in fields:
+                certified.add(name)
+    return certified
+
+
+def _names_a_certified_out(node: ast.AST, certified: set[str]) -> bool:
+    """Whether this expression mentions an `Out` schema carrying the key."""
+    return any(isinstance(sub, ast.Name) and sub.id in certified for sub in ast.walk(node)) or any(
+        isinstance(sub, ast.Attribute) and sub.attr in certified for sub in ast.walk(node)
+    )
+
+
+def _dict_names_the_key(node: ast.AST) -> bool:
+    """Whether this expression builds a display with an `organization_id` key."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Dict) and any(
+            isinstance(key, ast.Constant) and key.value == _ORG_KEY_NAME for key in sub.keys
+        ):
+            return True
+        if isinstance(sub, ast.keyword) and sub.arg == _ORG_KEY_NAME:
+            return True
+    return False
+
+
+def _payload_carries_the_branch(
+    node: ast.expr,
+    *,
+    certified: set[str],
+    locals_bound: dict[str, ast.expr],
+    helpers: dict[str, ast.AST],
+    depth: int = 0,
+) -> bool:
+    """Whether this payload expression provably carries the narrowing key.
+
+    Four forms, and they are the four the tree actually writes:
+
+    * a dict display naming `organization_id`;
+    * anything mentioning an `Out` schema that declares it (rule 38's certificate);
+    * a name the enclosing scope bound to either of those;
+    * a call to a helper in the same module whose `return`s are one of the above
+      — `comms`' `_payload(message)` is that shape, and a rule that could not
+      follow one hop would call thirteen honest emit sites violations.
+
+    Bounded at two hops, deliberately: a payload assembled across modules is a
+    declared blind spot rather than a walk that guesses.
+    """
+    if depth > 2:
+        return False
+    if _dict_names_the_key(node) or _names_a_certified_out(node, certified):
+        return True
+    if isinstance(node, ast.Name) and node.id in locals_bound:
+        return _payload_carries_the_branch(
+            locals_bound[node.id],
+            certified=certified,
+            locals_bound={k: v for k, v in locals_bound.items() if k != node.id},
+            helpers=helpers,
+            depth=depth + 1,
+        )
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        # `crossing.model_dump(mode="json")` — the body is whatever `crossing`
+        # holds, and the receiver is where the certificate lives. Without this
+        # the walk stops at the method name and calls the tree's most ordinary
+        # emit shape a violation.
+        if _payload_carries_the_branch(
+            node.func.value,
+            certified=certified,
+            locals_bound=locals_bound,
+            helpers=helpers,
+            depth=depth + 1,
+        ):
+            return True
+    if isinstance(node, ast.Call):
+        callee = _callee_name(node.func)
+        helper = helpers.get(callee or "")
+        if helper is not None:
+            return any(
+                isinstance(sub, ast.Return)
+                and sub.value is not None
+                and _payload_carries_the_branch(
+                    sub.value,
+                    certified=certified,
+                    locals_bound=_bound_in(helper),
+                    helpers={k: v for k, v in helpers.items() if k != callee},
+                    depth=depth + 1,
+                )
+                for sub in ast.walk(helper)
+            )
+    return False
+
+
+def _bound_in(scope: ast.AST) -> dict[str, ast.expr]:
+    """`name -> expression` for every simple assignment inside this scope."""
+    bound: dict[str, ast.expr] = {}
+    for sub in ast.walk(scope):
+        if isinstance(sub, ast.Assign) and sub.value is not None:
+            for target in sub.targets:
+                if isinstance(target, ast.Name):
+                    bound[target.id] = sub.value
+        elif (
+            isinstance(sub, ast.AnnAssign)
+            and isinstance(sub.target, ast.Name)
+            and sub.value is not None
+        ):
+            bound[sub.target.id] = sub.value
+    return bound
+
+
+def _module_helpers(tree: ast.Module) -> dict[str, ast.AST]:
+    """Every function this module defines, by name — the one hop the walk follows."""
+    return {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def org_scoped_events_carry_their_branch(root: Path, rule: dict) -> CheckResult:
+    """Rule 59. An org-scoped event carries its branch; an org-less kind names none.
+
+    Two classes:
+
+    * **`emit`** — every `emit(name=..., payload=...)` whose noun resolves to an
+      org-scoped kind passes a payload that provably carries `organization_id`.
+    * **`none_mapping`** — a noun an app maps to `None` in `EVENT_KINDS` while
+      that app declares a model of that name.
+    """
+    out = CheckResult()
+    org_kinds = _org_scoped_kind_names(root)
+    certified = _certified_out_schemas(root)
+    declared = _event_kinds_declared(root)
+    kinds = model_kinds(root)
+    out.count("org_scoped_kinds", len(org_kinds))
+    # SEEDED AT ZERO SO IT PRINTS WHATEVER IT IS. The population this rule
+    # cannot judge is the one the `does_not_cover` used to give a TYPED number
+    # for, and a typed count rots: it said four while the tree carried eight.
+    # A class nobody counts is an off switch, so the blind half is printed on
+    # the status line beside the seeing half and the sentence names the class.
+    out.count("unresolvable_emit_sites", 0)
+
+    models_by_app: dict[str, set[str]] = {}
+    for path in _model_files(root):
+        parts = path.relative_to(root).parts
+        if len(parts) < 2:
+            continue
+        tree = _parse(path)
+        if tree is None:
+            continue
+        models_by_app.setdefault(parts[1], set()).update(
+            kind
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+            for kind in [kinds.get(node.name)]
+            if isinstance(kind, str)
+        )
+
+    for app_label, mapping in declared.items():
+        for noun, kind in mapping.items():
+            if kind is not None:
+                continue
+            out.count("none_mappings")
+            if noun not in models_by_app.get(app_label, set()):
+                continue
+            out.hit(
+                f"apps/{app_label}/events.py",
+                1,
+                f"`{noun}` is mapped to None in {_EVENT_KINDS_NAME} while `apps/{app_label}` "
+                f"declares a model whose authorization kind IS {noun!r}. A None kind means "
+                "'no row is behind this', and the socket door answers True for one whatever "
+                "branch the frame names (`consumers._may_read`) — so a real row's event "
+                "declared org-less bypasses the read set for every connection in the tenant. "
+                f"Map it to the kind whose `{noun}.read` governs it",
+                klass="none_mapping",
+            )
+
+    for path in _py_files(root, "apps"):
+        tree = _parse(path)
+        if tree is None:
+            continue
+        rel = str(path.relative_to(root))
+        constants = string_constants(root, path, tree)
+        helpers = _module_helpers(tree)
+        bound = _bound_in(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _callee_name(node.func) != _EMIT_CALL:
+                continue
+            keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+            name_node, payload = keywords.get("name"), keywords.get("payload")
+            if name_node is None or payload is None:
+                continue
+            if isinstance(name_node, ast.Constant) and isinstance(name_node.value, str):
+                event_name: str | None = name_node.value
+            elif isinstance(name_node, ast.Name):
+                event_name = constants.get(name_node.id)
+            else:
+                event_name = None
+            if event_name is None:
+                # The noun is what decides whether the question applies, and a
+                # guessed noun is a guessed answer — so this site is out of the
+                # population entirely and COUNTED on the way out. Each one is
+                # somebody else's control flow (a parameter, a conditional, a
+                # table lookup); the runtime belt in `emit()` is what covers
+                # them, which is why the rule and the belt ship together.
+                out.count("unresolvable_emit_sites")
+                continue
+            out.count("emit_sites")
+            segments = event_name.split(".")
+            if len(segments) <= _NOUN_SEGMENT:
+                continue
+            app_label, noun = segments[0], segments[_NOUN_SEGMENT]
+            kind = noun if noun in org_kinds or noun in kinds.values() else None
+            if kind is None:
+                kind = declared.get(app_label, {}).get(noun)
+            if kind not in org_kinds:
+                continue
+            if _payload_carries_the_branch(
+                payload, certified=certified, locals_bound=bound, helpers=helpers
+            ):
+                continue
+            out.hit(
+                rel,
+                node.lineno,
+                f"`{event_name}` is about {kind!r}, which is an org-scoped row, and this "
+                f"payload does not carry `{_ORG_KEY_NAME}` at its top level. "
+                "`events.services._subject_organization` reads only the top level and an "
+                "absent key is NULL, which `bridge.group_for` reads as TENANT-WIDE — so "
+                "every branch's socket hears this branch's row, while the REST list under "
+                "the same hat never shows it. Pass the row's own rule-38-certified `Out` "
+                f"dump, or a display carrying `{_ORG_KEY_NAME}`",
+                klass="emit",
+            )
+    return out
+
+
 REGISTRY = {
+    "socket_join_discipline": socket_join_discipline,
+    "org_scoped_events_carry_their_branch": org_scoped_events_carry_their_branch,
     "auth_user_import": auth_user_import,
     "signal_logic": signal_logic,
     "query_budget_tests": query_budget_tests,
@@ -7976,6 +10482,10 @@ REGISTRY = {
     "door_writes": door_writes,
     "selector_service_split": selector_service_split,
     "service_shape": service_shape,
+    "authz_vocabulary_shape": authz_vocabulary_shape,
+    "tenant_wide_kinds_ask_at_the_root": tenant_wide_kinds_ask_at_the_root,
+    "home_realm_router": home_realm_router,
+    "identity_join_writers": identity_join_writers,
     "http_below_doors": http_below_doors,
     "event_grammar": event_grammar,
     "naming_grammar": naming_grammar,

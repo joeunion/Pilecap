@@ -296,7 +296,9 @@ gate_slot_holder_phrase() {
     utc=$(awk '{print $4}' <<<"$line")
     epoch=$(awk '{print $6}' <<<"$line")
     case "$mode" in
-    full) nominal=$GATE_SLOT_NOMINAL_FULL ;;
+    # A BANK IS A FULL GATE that took every slot, so a waiter behind one is
+    # behind a full gate's nominal — the same reason `full` is here.
+    full | bank) nominal=$GATE_SLOT_NOMINAL_FULL ;;
     *) nominal=$GATE_SLOT_NOMINAL_LOOP ;;
     esac
     printf 'pid %s %s (%s)%s' "$pid" "$mode" "$slot" \
@@ -532,6 +534,26 @@ gate_lease_acquire() {
 #:                            default: a mistyped ceiling that quietly became
 #:                            the default is the unbounded run this exists to
 #:                            stop.
+#:   DJB_GATE_SLOT_WORKERS    the `-n` a slot holder runs, when a caller wants
+#:                            fewer workers than its share. AT OR BELOW the
+#:                            share only: above it is EXIT 2 naming both
+#:                            numbers, and an unreadable value is exit 2 as
+#:                            DJB_GATE_SLOTS is. Honoured here because
+#:                            scripts/test.sh and apps/conftest.py's ceiling
+#:                            already read it — see `gate_slot_worker_count`.
+#:                            IT IS ALSO WRITTEN HERE: the resolved share is
+#:                            EXPORTED under this name (a bank's is the whole
+#:                            box's cores) so those two readers take the number
+#:                            the gate started the leg with instead of deriving a
+#:                            second one, and `gate_slot_release` unsets it again
+#:                            — the share belongs to the slot.
+#:   DJB_BANK_SHARES_SLOTS    set to anything: a `--bank` run takes ONE slot and
+#:                            one share instead of the whole box. The escape from
+#:                            `bank` mode below, for a builder who cannot wait out
+#:                            a bank's pytest wall — and the run that takes it
+#:                            PRINTS it (principle 20: an exception is recorded,
+#:                            never implied). Unset is the default, and the
+#:                            default is the whole box.
 #:   DJB_GATE_LEASE_DIR       the slots live in `<that dir>/djb-gate-slots`, so
 #:                            a drive pointing the lease at a scratch directory
 #:                            moves the slots with it and there is one opinion
@@ -551,8 +573,15 @@ GATE_SLOT_DEFAULT_MAX_WAIT=3600
 GATE_SLOT_NOMINAL_LOOP=240
 GATE_SLOT_NOMINAL_FULL=900
 
-#: The slot directory this process holds, or empty.
+#: The slot directory this process holds, or empty. A BANK holds more than one
+#: (see `bank` mode below); this stays the FIRST one it took, so every existing
+#: reader of it — the "slot-k of N" line, a caller's own record — keeps meaning
+#: what it meant.
 GATE_SLOT=""
+#: Every slot directory this process holds, one per line, in the order taken.
+#: One slot for every mode but `bank`, where it is the whole box. `GATE_SLOT` is
+#: always its first line; `gate_slot_release` walks this.
+GATE_SLOTS_HELD=""
 #: Seconds this process spent waiting for a slot. 0 is the normal case.
 GATE_SLOT_WAITED=0
 #: Resolved by `gate_slot_acquire`: how many slots this box has, and the `-n`
@@ -560,6 +589,17 @@ GATE_SLOT_WAITED=0
 #: a worker count nobody notices going wrong.
 GATE_SLOT_TOTAL=""
 GATE_SLOT_WORKERS=""
+#: Where `GATE_SLOT_WORKERS` came from, in one phrase — `derived` for the
+#: ordinary share, or the typed sentence `gate_slot_worker_count` prints. A
+#: transcript that shows the number without its provenance cannot tell a share
+#: from a knob, which is the whole of the false red below.
+GATE_SLOT_WORKERS_PROV=""
+#: THE ONE SENTENCE A PYTEST LEG PRINTS BESIDE THE NUMBER, set here because this
+#: is where the number is decided. The leg used to carry its own parenthetical
+#: ("this box's cores split N ways"), which is FALSE with the knob set and false
+#: again under a bank — two sentences about one number, one of them wrong, on the
+#: line a reader uses to check the number.
+GATE_SLOT_WORKERS_PHRASE=""
 #: Set to 1 by a caller that holds (or must hold) the exclusive lease first.
 #: See THE LOCK ORDER above.
 GATE_SLOT_LEASE_FIRST=""
@@ -621,6 +661,118 @@ gate_slot_workers() {
     n=$((cores / total))
     [ "$n" -ge 1 ] || n=1
     printf '%s\n' "$n"
+}
+
+# gate_slot_worker_count <total> — the `-n` this holder will run, WITH its
+# provenance. Sets `GATE_SLOT_WORKERS` and `GATE_SLOT_WORKERS_PROV`; prints the
+# typed line when the number did not come from the share; exit 2 when a typed
+# `DJB_GATE_SLOT_WORKERS` cannot be honoured. Never takes a slot and starts
+# nothing, which is what lets a drive ask it the question the gate asks.
+#
+# THE DEFECT IT CLOSES. `DJB_GATE_SLOT_WORKERS` is a DOCUMENTED knob:
+# `scripts/test.sh` reads it as the share, and `apps/conftest.py`'s ceiling
+# reads it FIRST of all. The gate did not, so with it set there were two
+# numbers — the gate started `-n <derived share>`, pytest clamped itself down to
+# the typed value, and the collector-shortfall refusal compared the survivors
+# against the PRE-CLAMP number. A clean suite with no plant at all then printed
+# `2 of 5 collectors reported — a collector died`, exit 2, nothing banked
+# (measured on a field test's control run with the knob set and no plant at
+# all). The knob is honoured HERE,
+# at the one place the number is derived, so `-n`, the clamp's ceiling and the
+# refusal's expected population are ONE number by construction rather than three
+# that happen to agree (principle 9: the worker count has one owner).
+#
+# AND IT ONLY EVER NARROWS. A typed value ABOVE this slot's share is refused,
+# not clamped: N slots x cores/N workers = this machine's cores is the whole
+# arithmetic the semaphore keeps, and a knob that WIDENS one slot spends the
+# share of every gate that is still believing in its own. Exit 2 naming both
+# numbers, because a silent lowering would teach the knob's reader that the
+# value they typed is the value that ran.
+#
+# THE OPTIONAL SECOND ARGUMENT is this holder's share when it is not one slot's:
+# a BANK holds every slot, so its share is the whole box's cores, and the ceiling
+# the typed knob is measured against has to move with it or a bank could never
+# be told to run fewer workers than the box. One argument, one meaning: "the most
+# this holder may run". Everything below is unchanged by it.
+#
+# AND THE NUMBER IS HANDED DOWN, which is the half that was missing and the half
+# that cost the first live merge-train bank. The gate derived the bank's whole-box
+# share here, started `-n 10` — and `apps/conftest.py`'s worker ceiling, finding
+# NOTHING in its environment, derived a number of its OWN (this box's cores ÷ its
+# slots = one slot's 5), clamped the leg down to it, and let 5 workers run a suite
+# the collector census was expecting 10 collectors from: `5 of 10 collectors
+# reported — a collector died`, exit 2, nothing banked, nothing pushed, on a suite
+# that had just passed 3653 tests (bank-2349.log, 2026-09-16). Two mechanisms held
+# different numbers for one run.
+#
+# `export`, not a `local`: `apps/conftest.py`'s ceiling reads
+# `DJB_GATE_SLOT_WORKERS` FIRST OF ALL and its own comment already calls that "the
+# caller handing down the share it already took, and this must never second-guess
+# it" — the channel existed, the gate simply never wrote to it. `scripts/test.sh`
+# reads the same name first and passes it through. So the share is derived ONCE,
+# here, and the three readers — this leg's `-n`, the python ceiling, and the
+# census's expected population — are one number by construction rather than three
+# derivations that happen to agree on every box but a bank's (principle 9: the
+# worker count has one owner).
+#
+# IT IS THE SLOT'S, AND `gate_slot_release` GIVES IT BACK. A bank's share is the
+# whole box only while the bank holds the whole box; leaving it exported past the
+# release would hand a number that is true of nothing to everything that runs
+# after the suite — the self-test leg's drives measure the DERIVED ceiling, and
+# they run after `gate_slot_release`.
+gate_slot_worker_count() {
+    local total=$1 share want
+    share=${2:-}
+    [ -n "$share" ] || share=$(gate_slot_workers "$total")
+    want=${DJB_GATE_SLOT_WORKERS:-}
+    if [ -z "$want" ]; then
+        GATE_SLOT_WORKERS=$share
+        GATE_SLOT_WORKERS_PROV="derived"
+        GATE_SLOT_WORKERS_PHRASE="this box's cores split ${total} ways — one share per pytest slot"
+        export DJB_GATE_SLOT_WORKERS="$GATE_SLOT_WORKERS"
+        return 0
+    fi
+    case "$want" in
+    *[!0-9]*)
+        gate_refuse "DJB_GATE_SLOT_WORKERS='$want' is not a positive whole number."
+        echo "   The gate runs -n <this value> and apps/conftest.py's worker ceiling reads" >&2
+        echo "   the same variable, so a value neither of them can read is two different" >&2
+        echo "   worker counts — which is the false red this knob was measured causing." >&2
+        echo "   Unset it and take this slot's derived share of ${share}." >&2
+        return 2
+        ;;
+    esac
+    if [ "$want" -lt 1 ]; then
+        gate_refuse "DJB_GATE_SLOT_WORKERS='$want' — a pytest leg with no workers runs no suite at all."
+        echo "   Set it to at least 1, or unset it and take this slot's derived share of ${share}." >&2
+        return 2
+    fi
+    if [ "$want" -gt "$share" ]; then
+        gate_refuse "DJB_GATE_SLOT_WORKERS=${want} is ABOVE this slot's share of ${share}."
+        echo "   This slot is one of ${total} on a box with $(gate_slot_cores) cores, and the arithmetic" >&2
+        echo "   the semaphore keeps is N slots x cores/N workers = this machine's cores." >&2
+        echo "   A knob that WIDENS a slot spends the share of every other gate that is" >&2
+        echo "   still running its own, which is the oversubscription the semaphore exists" >&2
+        echo "   to stop. Lower it to ${share} or below, or raise DJB_GATE_SLOTS if this box" >&2
+        echo "   should hand out fewer, larger slots." >&2
+        echo "   Nothing was judged: no slot was taken and no suite started." >&2
+        return 2
+    fi
+    GATE_SLOT_WORKERS=$want
+    GATE_SLOT_WORKERS_PROV="typed: DJB_GATE_SLOT_WORKERS, at or below this slot's share of ${share}"
+    GATE_SLOT_WORKERS_PHRASE="$GATE_SLOT_WORKERS_PROV"
+    # HANDED DOWN ON THIS PATH TOO, and it is not a no-op: a typed value reaches
+    # this function through a command PREFIX (`DJB_GATE_SLOT_WORKERS=2
+    # gate_slot_worker_count 2`), which bash pops on return. Exporting it is what
+    # makes the honoured number survive into the suite the caller is about to
+    # start, on the typed path exactly as on the derived one.
+    export DJB_GATE_SLOT_WORKERS="$GATE_SLOT_WORKERS"
+    # PRINTED AT THE SOURCE, in the `workers:` grammar the two pytest legs print
+    # their own line in. The number below IS the number those lines show; this
+    # line is the only place the transcript says where it came from, and a
+    # derived run prints nothing extra because its own line already says.
+    echo "  workers:    -n ${want} (${GATE_SLOT_WORKERS_PROV})"
+    return 0
 }
 
 # gate_slots_dir — where the slots live. Derived from `gate_lease_path` so the
@@ -689,6 +841,48 @@ gate_slot_holders() {
     done
 }
 
+# gate_slot_holders_render <holders> — the holder list as a WAITER should read
+# it: a bank's slots collapse into ONE line naming the bank, and every other
+# record comes through verbatim.
+#
+# WHY A BANK IS COLLAPSED AND NOTHING ELSE IS. The generic table answers "who
+# holds a slot", which is the right question when N different runs hold N slots
+# and the wrong one when ONE run holds them all: a builder reading two anonymous
+# rows with the same pid learns that the box is full and nothing about what to do
+# about it. `bank holds 2/2 slots — loops wait` says which run, that it is the
+# push, and — with the estimate below it — roughly how long. The escape
+# (`--loop --mine`, a targeted pytest) is then theirs to take rather than a kill.
+#
+# THE MULTI-BANK CASE IS DECLARED, NOT HANDLED: two banks cannot hold slots at
+# once (a bank is a full gate and the exclusive lease admits one), so a second
+# bank pid would be folded into the first line's count. If that ever happens the
+# machine has a broken lease, which is a louder problem than a mis-rendered line.
+gate_slot_holders_render() {
+    local holders=$1 line mode total rest="" bankpid="" bankutc="" bankcount=0
+    total=$(gate_slots_total 2>/dev/null) || total="?"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        mode=$(awk '{print $3}' <<<"$line")
+        if [ "$mode" = "bank" ]; then
+            bankcount=$((bankcount + 1))
+            if [ -z "$bankpid" ]; then
+                bankpid=$(awk '{print $2}' <<<"$line")
+                bankutc=$(awk '{print $4}' <<<"$line")
+            fi
+            continue
+        fi
+        rest="${rest}${line}
+"
+    done <<EOF
+${holders}
+EOF
+    if [ "$bankcount" -gt 0 ]; then
+        printf 'bank holds %s/%s slots — loops wait (pid %s, started %s)\n' \
+            "$bankcount" "$total" "$bankpid" "$bankutc"
+    fi
+    printf '%s' "${rest%$'\n'}"
+}
+
 # gate_slot_try <mode> — take a slot without waiting.
 # Exit: 0 taken (GATE_SLOT set) · 1 the box is full · 2 could not look.
 #
@@ -709,22 +903,51 @@ gate_slot_try() {
         slot="$dir/slot-$i"
         if mkdir "$slot" 2>/dev/null; then
             gate_slot_line "$mode" >"$slot/holder" 2>/dev/null || true
-            GATE_SLOT=$slot
+            [ -n "$GATE_SLOT" ] || GATE_SLOT=$slot
+            GATE_SLOTS_HELD="${GATE_SLOTS_HELD}${slot}
+"
             return 0
         fi
     done
     return 1
 }
 
-# gate_slot_release — give it back, if and only if this process holds it.
+# gate_slot_release — give back EVERY slot this process holds, and only the ones
+# it holds. One for every mode but `bank`, which holds the box.
+#
+# THE PID TEST IS PER SLOT, not once for the set: a leg whose EXIT trap fires
+# after somebody else has taken a slot must not delete theirs, and that is as
+# true of the second slot as of the first. A release that let go of one slot of a
+# bank's N would leave the box permanently smaller after every push, with no tell
+# but builders waiting longer for a slot nobody holds.
 gate_slot_release() {
-    [ -n "$GATE_SLOT" ] || return 0
-    local pid
-    pid=$(awk 'NR==1{print $1}' "$GATE_SLOT/holder" 2>/dev/null || true)
-    if [ "$pid" = "$$" ]; then
-        rm -rf "$GATE_SLOT"
-    fi
+    local slot pid seen=""
+    # `GATE_SLOT` is walked too, and not only for belt: a caller may have set it
+    # by hand (the drive does, to prove a non-holder cannot release), and the pid
+    # test below is what answers that case.
+    while IFS= read -r slot; do
+        [ -n "$slot" ] || continue
+        case "${seen}" in
+        *"[${slot}]"*) continue ;;
+        esac
+        seen="${seen}[${slot}]"
+        pid=$(awk 'NR==1{print $1}' "$slot/holder" 2>/dev/null || true)
+        if [ "$pid" = "$$" ]; then
+            rm -rf "$slot"
+        fi
+    done <<EOF
+${GATE_SLOTS_HELD}${GATE_SLOT}
+EOF
+    GATE_SLOTS_HELD=""
     GATE_SLOT=""
+    # THE SHARE BELONGS TO THE SLOT, so it goes back with it. `gate_slot_worker_count`
+    # exports the number this holder started its leg with (see the hand-down note
+    # there); a bank's is the WHOLE BOX, and a whole-box share left in the
+    # environment after the box has been given back is a ceiling that is true of
+    # nothing. Everything the full gate runs after the suite would inherit it —
+    # the self-test leg's drives among them, which measure the DERIVED ceiling and
+    # would each be measuring the released bank's instead.
+    unset DJB_GATE_SLOT_WORKERS
     return 0
 }
 
@@ -754,17 +977,59 @@ gate_slot_estimate() {
 }
 
 # gate_slot_acquire <mode> — take a slot, WAITING (out loud) up to the ceiling.
-# <mode> is `loop` or `full`; it is recorded and it is what the estimate above
-# reads.
+# <mode> is `loop`, `full` or `bank`; it is recorded and it is what the estimate
+# above reads.
 #
 # Exit: 0 held · 2 the ceiling was reached, the slot directory cannot be used,
 # DJB_GATE_SLOTS is unreadable, or the lock order was broken. 2 and not 1
 # throughout: a suite that never ran has judged nothing, and could-not-look
 # outranks a pass everywhere in this gate.
+#
+# ---------------------------------------------------------------------------
+# `bank` — THE ONE CALLER THAT TAKES THE WHOLE BOX, and why it is not greed.
+#
+# A `--bank` run is the PM's push: the one run on this machine whose wall clock
+# every other agent is waiting on, and the only one whose verdict is banked for
+# everybody. It used to take ONE slot like any other full gate and then run its
+# two whole-suite passes on a third of the machine beside two `--loop` runs
+# (`waited=12 took=613` on a real verdict row; a consumer's pass 1 took forty
+# minutes at load 50). That is principle 7 upside down — the critical path
+# queueing behind the inner loop.
+#
+# So `bank` takes EVERY slot: the free ones immediately, the held ones as they
+# free, and it returns 0 only holding all of them. `GATE_SLOT_WORKERS` is then
+# the whole box's cores rather than one slot's share, because the arithmetic the
+# semaphore keeps is unchanged — one holder of N slots runs N shares.
+#
+# WHY IT CANNOT DEADLOCK, and this is THE LOCK ORDER's argument at the bank's
+# width: one full gate at a time holds the machine-wide exclusive lease, and a
+# bank is a full gate, so there is never a second bank to wait for. A `--loop`
+# holds a slot and NEVER wants the lease. Therefore every slot a bank waits for
+# is held by a loop that is running to completion and will give it back, and
+# nothing on this box waits on the bank except loops. The cycle needs somebody
+# holding a slot while waiting for the lease, and the refusal above is what makes
+# that impossible rather than merely unlikely.
+#
+# WHAT IT COSTS, said out loud rather than discovered: while a bank holds the
+# box, every `--loop` that arrives waits for roughly the bank's pytest wall, and
+# `DJB_GATE_SLOT_MAX_WAIT` will REFUSE (exit 2, could-not-look) a loop that
+# queued longer than the ceiling. `DJB_BANK_SHARES_SLOTS=1` is the escape and it
+# is PRINTED by the run that takes it (principle 20: an exception is recorded,
+# never implied) — a bank that shares takes one slot and one share, exactly as a
+# sanctioned full gate does.
+#
+# THE REJECTED SHAPES, so nobody re-proposes them. *Wait for the box to be EMPTY
+# of loops first*: unbounded — builders keep starting loops, so the bank can
+# starve. Taking slots as they free is bounded by the slots held when the bank
+# started. *One slot, `-n cores`*: the loops beside it still start their own
+# shares, which is exactly the oversubscription the semaphore exists to cap.
 gate_slot_acquire() {
     local mode=${1:-loop} rc max poll announce next holders est total
-    local hfirst hrest hline
+    local hfirst hrest hline shown
+    local want share held=0 need=1
     GATE_SLOT_WAITED=0
+    GATE_SLOT=""
+    GATE_SLOTS_HELD=""
 
     # THE LOCK ORDER, mechanically. A full run that reached here without its
     # exclusive lease could sit on a slot while waiting for the lease that a
@@ -780,7 +1045,29 @@ gate_slot_acquire() {
 
     gate_capture total gate_slots_total || return 2
     GATE_SLOT_TOTAL=$total
-    GATE_SLOT_WORKERS=$(gate_slot_workers "$total")
+
+    # THE BANK'S WIDTH, decided before anything is taken. `want=all` is the whole
+    # box; the typed escape narrows it back to one slot and SAYS SO, in its own
+    # transcript, at the moment it is taken.
+    want=one
+    share=""
+    if [ "$mode" = "bank" ]; then
+        if [ -n "${DJB_BANK_SHARES_SLOTS:-}" ]; then
+            echo "  bank shares the box: DJB_BANK_SHARES_SLOTS=1 — this bank takes ONE slot and"
+            echo "              one share, exactly as a sanctioned full gate does. The loops beside"
+            echo "              it keep theirs, and this run measures a box it is sharing."
+        else
+            want=all
+            need=$total
+            gate_capture share gate_slot_cores || return 2
+        fi
+    fi
+
+    # NOT under `$(...)`: the refusal's cause has to reach this shell's global so
+    # the caller's banner can print it (scripts/gate_refuse.sh, the subshell
+    # rule), and a typed knob is refused HERE — above the slot, above the wait,
+    # above any suite — so an unhonourable number never queues for the box.
+    gate_slot_worker_count "$total" "$share" || return 2
 
     max=${DJB_GATE_SLOT_MAX_WAIT:-$GATE_SLOT_DEFAULT_MAX_WAIT}
     poll=${DJB_GATE_LEASE_POLL:-$GATE_LEASE_DEFAULT_POLL}
@@ -788,19 +1075,36 @@ gate_slot_acquire() {
 
     next=$announce
     while :; do
+        # TAKE WHAT IS FREE, up to what this mode needs. For every mode but a
+        # whole-box bank `need` is 1 and this inner loop runs exactly once, which
+        # is the behaviour every non-bank caller had before the bank existed.
         rc=0
-        gate_slot_try "$mode" || rc=$?
-        case "$rc" in
-        0)
-            if [ "$GATE_SLOT_WAITED" -gt 0 ]; then
+        while [ "$held" -lt "$need" ]; do
+            rc=0
+            gate_slot_try "$mode" || rc=$?
+            [ "$rc" = "0" ] || break
+            held=$((held + 1))
+        done
+        [ "$rc" != "2" ] || return 2
+        if [ "$held" -ge "$need" ]; then
+            if [ "$want" = "all" ]; then
+                # The one sentence the leg prints beside `-n`: this holder is not
+                # one slot's share of the box, it IS the box.
+                GATE_SLOT_WORKERS_PHRASE="bank: every slot — ${held}/${total}; loops wait"
+                if [ "$GATE_SLOT_WAITED" -gt 0 ]; then
+                    echo "- BANK COMPLETE after ${GATE_SLOT_WAITED}s of waiting: it holds ALL ${held} of ${total} pytest slots (pid $$)"
+                else
+                    echo "- pytest slots held: this BANK holds ALL ${held} of ${total} on this MACHINE (pid $$)"
+                fi
+                echo "   Every --loop that arrives now waits for this run, and is told so by name."
+                echo "   The escape, for a builder who cannot wait: DJB_BANK_SHARES_SLOTS=1."
+            elif [ "$GATE_SLOT_WAITED" -gt 0 ]; then
                 echo "- pytest SLOT ACQUIRED after ${GATE_SLOT_WAITED}s of waiting (${GATE_SLOT##*/} of ${total}, pid $$)"
             else
                 echo "- pytest slot held: ${GATE_SLOT##*/} of ${total} on this MACHINE (pid $$)"
             fi
             return 0
-            ;;
-        2) return 2 ;;
-        esac
+        fi
 
         # Full. `gate_slot_holders` reclaims dead and orphaned slots as a side
         # effect, so an empty answer means one just freed and the loop retries.
@@ -808,13 +1112,43 @@ gate_slot_acquire() {
         if [ -z "$holders" ]; then
             continue
         fi
+        # A BANK IS NOT ITS OWN HOLDER. It is standing in the list it is reading —
+        # its own taken slots are held, by it — and a wait that reported them
+        # would tell the reader the bank is waiting for itself. What it is
+        # actually waiting for is everybody ELSE's slots, so those are what it
+        # counts, estimates from and prints.
+        if [ "$want" = "all" ]; then
+            holders=$(awk -v me="$$" '$2 != me' <<<"$holders")
+            if [ -z "$holders" ]; then
+                continue
+            fi
+        fi
+        # WHAT A WAITER IS SHOWN: a bank's slots as one line naming the bank,
+        # every other record verbatim. The raw list is what the estimate reads.
+        shown=$(gate_slot_holders_render "$holders") || shown=$holders
 
         if [ "$GATE_SLOT_WAITED" -eq 0 ]; then
-            echo "- WAITING for a pytest SLOT (all ${total} are held). This is not a hang."
-            echo "   This is the COUNTING semaphore, not the exclusive full-gate lease:"
-            echo "   somebody else's suite is running, not necessarily somebody else's push."
-            echo "$holders" | sed 's/^/   holder: /'
-            echo "   (slot  pid mode started-utc host started-epoch checkout)"
+            if [ "$want" = "all" ]; then
+                # THE BANK'S OWN HEADLINE. "All N are held" is not what is
+                # happening — this run holds some of them — and a bank reading
+                # the loop's sentence would be reading somebody else's situation.
+                echo "- WAITING for the REST of the box: this BANK holds ${held} of ${total} pytest slots"
+                echo "   and is waiting for the rest, taking each as it frees. This is not a hang."
+                echo "   A bank runs the whole box on purpose: it is the push everybody's verdict"
+                echo "   comes from, and it used to measure a third of the machine while two"
+                echo "   builders' loops measured the other two thirds."
+            else
+                echo "- WAITING for a pytest SLOT (all ${total} are held). This is not a hang."
+                echo "   This is the COUNTING semaphore, not the exclusive full-gate lease:"
+                echo "   somebody else's suite is running, not necessarily somebody else's push."
+            fi
+            echo "$shown" | sed 's/^/   holder: /'
+            case "$shown" in
+            slot-* | *"
+"slot-*)
+                echo "   (slot  pid mode started-utc host started-epoch checkout)"
+                ;;
+            esac
             echo "   Every pytest leg on this box takes one of ${total} slots and runs"
             echo "   -n $(gate_slot_workers "$total") instead of -n auto, so the workers all the live gates have"
             echo "   started total this machine's cores. Without that ceiling a wave of"
@@ -833,9 +1167,9 @@ gate_slot_acquire() {
             # one-slot-behind case) and the rest follow it, each phrased the
             # same way. No `sed`, no pipeline: a holder list is small and
             # parameter expansion cannot hand this loop somebody's exit status.
-            hfirst=${holders%%$'\n'*}
-            hrest=${holders#*$'\n'}
-            [ "$hrest" != "$holders" ] || hrest=""
+            hfirst=${shown%%$'\n'*}
+            hrest=${shown#*$'\n'}
+            [ "$hrest" != "$shown" ] || hrest=""
             echo "  ... still waiting for a pytest slot: ${GATE_SLOT_WAITED}s of ${max}s — holder $(gate_slot_holder_phrase "$hfirst")"
             if [ -n "$hrest" ]; then
                 while IFS= read -r hline; do
@@ -847,8 +1181,18 @@ gate_slot_acquire() {
         fi
 
         if [ "$GATE_SLOT_WAITED" -ge "$max" ]; then
-            gate_refuse "REFUSING: waited ${GATE_SLOT_WAITED}s for one of ${total} pytest slots and the box is still full."
-            echo "$holders" | sed 's/^/   holder: /' >&2
+            if [ "$want" = "all" ]; then
+                gate_refuse "REFUSING: this BANK waited ${GATE_SLOT_WAITED}s for the rest of the box and still holds only ${held} of ${total} pytest slots."
+                # GIVING BACK WHAT IT TOOK, here rather than only in the caller's
+                # EXIT trap: a bank that is not going to run must not sit on a
+                # partial box while its caller unwinds, and the belt (the trap)
+                # stays where it is.
+                gate_slot_release
+                echo "   the ${held} slot(s) this run had taken were released." >&2
+            else
+                gate_refuse "REFUSING: waited ${GATE_SLOT_WAITED}s for one of ${total} pytest slots and the box is still full."
+            fi
+            echo "$shown" | sed 's/^/   holder: /' >&2
             echo "   slots:  $(gate_slots_dir 2>/dev/null || echo '<unknown>')" >&2
             echo "   Nothing was judged. This is could-not-look, not a red tree." >&2
             echo "   If those holders are gone, the pid check should have reclaimed their" >&2

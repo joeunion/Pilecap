@@ -57,7 +57,17 @@ def mark_widget_onboarded(payload: WidgetOnboarding) -> str:
     close_old_connections()
     try:
         tenant, _user_id, org = workflow_context()
-        widget = get_widget(tenant=tenant, widget_id=UUID(payload.widget_id), org=org)
+        # The system actor reads too, since Phase R: `get_widget` asks
+        # `widget.read` at the row's node, and nobody clicked this — a workflow
+        # step has no person whose collection could answer. `allows` passes a
+        # `system` actor at step 1, and the scoped manager still fences the read
+        # to this tenant and this branch.
+        widget = get_widget(
+            tenant=tenant,
+            widget_id=UUID(payload.widget_id),
+            org=org,
+            actor=system_actor(tenant, org),
+        )
         # The system actor: nobody clicked this. Attributing it to whoever
         # created the widget last week would make the audit trail read plausibly
         # and be false. The hat still rides on it, so the audit row says which
@@ -87,7 +97,17 @@ def announce_widget_onboarded(payload: WidgetAnnouncement) -> str:
     close_old_connections()
     try:
         tenant, _user_id, org = workflow_context()
-        widget = get_widget(tenant=tenant, widget_id=UUID(payload.widget_id), org=org)
+        # The system actor reads too, since Phase R: `get_widget` asks
+        # `widget.read` at the row's node, and nobody clicked this — a workflow
+        # step has no person whose collection could answer. `allows` passes a
+        # `system` actor at step 1, and the scoped manager still fences the read
+        # to this tenant and this branch.
+        widget = get_widget(
+            tenant=tenant,
+            widget_id=UUID(payload.widget_id),
+            org=org,
+            actor=system_actor(tenant, org),
+        )
         announced = services.announce_widget_onboarded(
             tenant=widget.tenant,
             actor=system_actor(widget.tenant, org),

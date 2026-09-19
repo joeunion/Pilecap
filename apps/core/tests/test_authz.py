@@ -2,8 +2,21 @@
 
 The two layers are tested separately because they fail differently: a role
 mistake lets the wrong *person* through, a missing policy lets the wrong
-*action* through. The last test is the one that matters most: an action nobody
+*action* through. The one that matters most is still the last: an action nobody
 has written a rule for is refused to a member rather than allowed.
+
+**Keyed off `invoice.*` where the question is about a REAL capability.** Those
+keys named nothing — no model, no declaration — and since the vocabulary became
+one derived shape a key nobody declared is refused to everybody, an owner
+included. So the role questions here ask `organization.delete`, a derived key
+with no predicate, and the two places where an undeclared key is the POINT
+(`refusal_sentence`'s humanised fallback) keep it on purpose.
+
+The `declared_roles` seam's four cases are retired with the seam itself
+(deprecated v2.1 → removed v3.0): a predicate publishing the roles it admits
+was the shape of "roles are data" while a role was one of three words, and a
+test that the tree still USES a deprecated seam is no longer a claim worth
+holding. What a role holds is `apps/core/tests/test_resolution.py`'s subject.
 """
 
 from __future__ import annotations
@@ -17,7 +30,6 @@ from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.authz import (
     action_prose,
     allows,
-    declared_roles,
     is_read,
     membership_for,
     policies,
@@ -26,7 +38,7 @@ from apps.core.authz import (
 )
 from apps.core.exceptions import Forbidden
 from apps.core.models import Membership, Tenant
-from apps.core.services import add_membership, set_role
+from apps.core.services import add_membership, root_organization, set_role
 
 pytestmark = pytest.mark.django_db
 
@@ -86,43 +98,55 @@ def test_the_shared_fixtures_do_not_depend_on_the_order_they_are_asked_for(
 
 
 def test_an_owner_may_do_anything_in_their_tenant(owner_actor: Actor) -> None:
-    assert allows(owner_actor, "invoice.void")
+    assert allows(owner_actor, "organization.delete")
 
 
 def test_an_admin_may_too(admin_actor: Actor) -> None:
-    assert allows(admin_actor, "invoice.void")
+    assert allows(admin_actor, "organization.delete")
 
 
 def test_a_member_may_read_and_may_not_write(member_actor: Actor) -> None:
-    assert allows(member_actor, "invoice.view")
-    assert allows(member_actor, "invoice.list")
-    assert not allows(member_actor, "invoice.void")
+    assert allows(member_actor, "organization.read")
+    assert allows(member_actor, "membership.read")
+    assert not allows(member_actor, "organization.delete")
 
 
 def test_somebody_outside_the_tenant_may_do_nothing_in_it(stranger: User, tenant: Tenant) -> None:
     """No membership, no answer — the same rule tenancy fails closed on."""
     outsider = actor_for(user=stranger, tenant=tenant)
     assert membership_for(outsider) is None
-    assert not allows(outsider, "invoice.view")
+    assert not allows(outsider, "organization.read")
 
 
 def test_the_system_acts_for_the_product_itself(tenant: Tenant) -> None:
     """A workflow has no membership to consult; the scoped manager still holds."""
-    assert allows(system_actor(tenant), "invoice.void")
+    assert allows(system_actor(tenant), "organization.delete")
 
 
 def test_changing_a_role_changes_the_answer(
     tenant: Tenant, member: User, member_actor: Actor
 ) -> None:
     membership = Membership.objects.get(user=member, tenant=tenant)
-    assert not allows(member_actor, "invoice.void")
+    assert not allows(member_actor, "organization.delete")
     set_role(
         tenant=tenant,
         membership=membership,
         role=Membership.Role.ADMIN,
-        actor=system_actor(tenant=tenant),
+        # The product acting for itself still names WHERE it acts (R1-F4.2):
+        # `set_role` asks `may_be_named` first now, and that function has no
+        # system exemption by design — a run that acts tenant-wide says so at
+        # the call site. One argument, same assertion.
+        actor=system_actor(tenant=tenant, org=root_organization(tenant=tenant)),
     )
-    assert allows(member_actor, "invoice.void")
+    # SOMEBODY ELSE changed this person's role while their actor was alive, and
+    # `member_actor` is one instance standing in for two requests. PR0 memoises
+    # the three tables on the actor instance for its lifetime, so the second
+    # question here IS the next request and says so. The property under test —
+    # the answer follows the role, rather than a rank read once — is untouched;
+    # the declared stale window is driven in
+    # `test_resolution.py::test_a_self_withhold_is_seen_after_forget`.
+    member_actor.forget_permissions()
+    assert allows(member_actor, "organization.delete")
 
 
 def test_read_verbs_are_the_named_ones_only() -> None:
@@ -145,13 +169,13 @@ def test_a_policy_beats_the_role_default(
     tenant: Tenant, member_actor: Actor, owner_actor: Actor
 ) -> None:
     """`widget.create` is a write, and the policy lets a plain member do it."""
-    assert not allows(member_actor, "invoice.create")  # no policy: refused
+    assert not allows(member_actor, "organization.create")  # no policy, not held: refused
     assert allows(member_actor, "widget.create")  # policy: allowed
 
 
 def test_require_raises_rather_than_returning_false(member_actor: Actor) -> None:
     with pytest.raises(Forbidden) as raised:
-        require(member_actor, "invoice.void")
+        require(member_actor, "organization.delete")
     assert raised.value.code == "forbidden"
 
 
@@ -196,7 +220,7 @@ def test_a_three_part_action_drops_the_app_segment() -> None:
 
 
 def test_require_is_silent_when_it_allows(owner_actor: Actor) -> None:
-    require(owner_actor, "invoice.void")  # no exception is the assertion
+    require(owner_actor, "organization.delete")  # no exception is the assertion
 
 
 def test_a_capability_question_with_no_row_needs_a_privileged_role(
@@ -217,74 +241,8 @@ def test_a_policy_that_says_no_is_final_even_for_an_owner(
     """
     from apps.core import authz
 
-    monkeypatch.setitem(policies(), "period.reopen", lambda actor, obj: False)
+    monkeypatch.setitem(policies(), "organization.delete", lambda actor, obj: False)
     try:
-        assert not allows(owner_actor, "period.reopen")
+        assert not allows(owner_actor, "organization.delete")
     finally:
         authz.reset_policies()
-
-
-# --- the declaration seam an instrument reads ----------------------------------
-
-
-def test_an_opaque_predicate_declares_no_roles() -> None:
-    """Arbitrary code has no role set to publish, and `None` says so.
-
-    The alternative — inventing one from the verb, which is what `introspect`'s
-    old `member_default` column effectively did — publishes a permission that is
-    not the one being enforced.
-    """
-    assert declared_roles(lambda actor, obj: True) is None
-
-
-def test_a_policy_carrying_a_role_set_publishes_it() -> None:
-    """The house form: an app's declaration object, its `can` in `POLICIES`.
-
-    Read through the BOUND METHOD, because that is what the registry holds —
-    reading the plain function would find nothing and the seam would report
-    every declaration in the tree as opaque.
-    """
-
-    class Declaration:
-        roles = frozenset({"owner", "admin"})
-
-        def can(self, actor: Any, obj: Any = None) -> bool:
-            return True
-
-    assert declared_roles(Declaration().can) == frozenset({"owner", "admin"})
-
-
-def test_an_attribute_named_roles_that_is_not_a_role_set_is_not_a_declaration() -> None:
-    """Strict on purpose.
-
-    A `roles` that is a queryset, a list of rows or a comma-joined string is a
-    coincidence of naming and not a declaration; reading one as if it were is
-    how an instrument comes to publish a permission nobody declared.
-    """
-
-    class JoinedString:
-        roles = "owner,admin"
-
-        def can(self, actor: Any, obj: Any = None) -> bool:
-            return True
-
-    class ListOfRows:
-        roles = [object()]
-
-        def can(self, actor: Any, obj: Any = None) -> bool:
-            return True
-
-    assert declared_roles(JoinedString().can) is None
-    assert declared_roles(ListOfRows().can) is None
-
-
-def test_the_live_registry_has_at_least_one_declaring_policy() -> None:
-    """Otherwise every assertion above proves a seam nothing in the tree uses.
-
-    Derived from the registry rather than naming `usage.read_report`, so the day
-    a second app declares one this keeps meaning what it says.
-    """
-    declaring = {
-        action for action, policy in policies().items() if declared_roles(policy) is not None
-    }
-    assert declaring, "no policy in this tree declares its roles; the seam is unexercised"

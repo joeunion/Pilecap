@@ -106,6 +106,70 @@ dl { margin: 0 0 var(--s3); }
 dt { font-size: .8125rem; color: var(--faint); margin: 0 0 .125rem; }
 dd { margin: 0 0 var(--s2); }
 .messages li { color: var(--muted); border-left: 2px solid var(--line); padding-left: var(--s2); }
+
+/* THE FORM PRIMITIVES (design P-9). Six, and they are here — in the one block,
+   under the same no-external-fetch rule as everything above — because the
+   entrance shell styled `button`, `a`, `p` and `dl` and NOTHING a person can
+   type into. Every allauth page that carries a field (password reset, email
+   change, the MFA screens) therefore drew the browser's own control inside an
+   otherwise finished product: Times New Roman in a box with a 2px inset
+   border, the same absence the shell was written to end. A stylesheet the
+   entrance had to fetch would be a stylesheet the entrance can fail to fetch,
+   on the one screen a person meets before they trust anything here.
+
+   Consumed by `templates/account/frames/*.html` — the six frames of design
+   P-10 — and by every allauth form page that arrives through this shell.
+   `apps/accounts/tests/test_entrance_frames.py` asserts each primitive twice:
+   declared here, and drawn by some frame. A token with no consumer is
+   decoration nobody sees; a class with no declaration is the user-agent
+   default wearing our markup. */
+/* THE ATTRIBUTE SELECTORS BELOW ARE UNQUOTED ON PURPOSE, and the quoted
+   spelling must not appear anywhere in this file — not in a selector and not
+   in a sentence like this one. A quoted attribute selector picks exactly the
+   same elements, but it also writes the literal markup of a password field
+   into a document that EVERY refusal page in this chain serves, and
+   `test_password_door_retired.py` asserts on that document's text that no
+   password field was rendered. Four of its assertions went green-blind the
+   moment this block learned to style a field. A stylesheet must never become
+   the thing a census is looking for. */
+label { display: block; font-size: .8125rem; color: var(--faint); margin: 0 0 .125rem; }
+input[type=text], input[type=email], input[type=password], input[type=tel] {
+  display: block; width: 100%; font: inherit; color: var(--ink); background: var(--raised);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: var(--s2) var(--s3); margin: 0 0 var(--s3); }
+input::placeholder { color: var(--faint); }
+input:focus-visible, button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The password field and its Show. The reveal is markup and styling here and
+   nothing else: the toggle is `static/accounts/signin.js` — a static file,
+   never an inline script, because the production CSP is `script-src 'self'`
+   and the entrance fetches nothing it cannot serve itself. */
+.field { position: relative; }
+.field input { padding-right: 5rem; }
+.field .reveal {
+  position: absolute; top: 1px; right: 1px; width: auto; display: inline-block;
+  background: none; border: 0; border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--muted); font-weight: 400; font-size: .8125rem; padding: var(--s2) var(--s3); }
+.field .reveal:hover { filter: none; color: var(--ink); }
+input.code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .5em; text-indent: .5em; text-align: center; font-variant-numeric: tabular-nums; }
+.alert {
+  font-size: .8125rem; color: var(--ink); background: var(--raised);
+  border: 1px solid var(--line); border-left: 2px solid var(--accent);
+  border-radius: var(--radius); padding: var(--s2) var(--s3); margin: 0 0 var(--s3); }
+.alert::before { content: "\25B2\00a0"; color: var(--accent); }
+.alert .remedy { display: block; color: var(--faint); margin-top: var(--s1); }
+.quiet {
+  display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); justify-content: space-between;
+  font-size: .8125rem; margin: 0 0 var(--s3); }
+.quiet a { color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: var(--s2); margin: 0 0 var(--s3); }
+.chips button, .chips a {
+  display: inline-block; width: auto; font-size: .8125rem; font-weight: 400;
+  padding: var(--s1) var(--s2); border-radius: 999px;
+  background: var(--raised); color: var(--ink); border: 1px solid var(--line); }
+.chips button:hover, .chips a:hover { filter: none; border-color: var(--accent); }
 </style>
 {% block extra_head %}{% endblock extra_head %}
 </head>

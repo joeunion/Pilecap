@@ -201,9 +201,19 @@ class Command(BaseCommand):
 
         The steps are sentences rather than a bulleted vocabulary because the
         person reading them is doing this for the first time and possibly only
-        once. Step one's landing page is Zitadel's, not ours; where it lands
-        after the password is set is a measured fact about somebody else's front
-        end and is not promised here.
+        once.
+
+        **How many steps there are is the DOOR's answer** (A7, design C-11).
+        Under `hosted` the landing page is Zitadel's, where it goes after the
+        password is set is a measured fact about somebody else's front end
+        (WATCH F6: it goes to `/ui/console/`), and a separate sign-in at our
+        address is a real act the person has to perform — three steps. Under
+        `ours` the invite road sets the password and signs them in on the same
+        page-load, so a printed "now go and sign in" would be an instruction
+        to do something already done, on a screen they are already past —
+        two steps. A command that printed the same three either way would be
+        wrong on one of the two doors, and it is the day-zero walk it would be
+        wrong on.
         """
         base = str(getattr(settings, "PUBLIC_BASE_URL", "")).rstrip("/")
         login = f"{base}{reverse('account_login')}"
@@ -215,16 +225,21 @@ class Command(BaseCommand):
         self.stdout.write(f"    {url}")
         self.stdout.write("")
         self.stdout.write("Then, in order:")
+        self.stdout.write(f"  1. Open the link and set a password. {self._whose_page()}")
+        step = 2
+        if not self._lands_here():
+            self.stdout.write(
+                f"  2. Sign in at {login} as {email}. That first sign-in is what creates their "
+                "record in this product."
+            )
+            step = 3
+        else:
+            self.stdout.write(
+                f"     Setting it signs them in here and lands them on {base}, and that first "
+                "sign-in is what creates their record in this product."
+            )
         self.stdout.write(
-            "  1. Open the link and set a password. The page is the identity platform's, "
-            "not this product's."
-        )
-        self.stdout.write(
-            f"  2. Sign in at {login} as {email}. That first sign-in is what creates their "
-            "record in this product."
-        )
-        self.stdout.write(
-            f"  3. Run: uv run python manage.py bootstrap_tenant --email {email}\n"
+            f"  {step}. Run: uv run python manage.py bootstrap_tenant --email {email}\n"
             "     That makes the first tenant, its root organisation and their owner "
             "membership, and it is the audited write this installation starts from."
         )
@@ -235,3 +250,31 @@ class Command(BaseCommand):
                 "command mints a new code and voids the one above."
             )
         )
+
+    @staticmethod
+    def _whose_page() -> str:
+        """Whose front end step one lands on. **The door decides** (A5.5).
+
+        ADR ident-9 said "prints the hosted set-password link" when there was
+        one front end; design Decision 3 amends that to "the deployment's
+        sign-in door's link", and this sentence is where the amendment is
+        visible to the person doing the walk. Saying "the identity platform's,
+        not this product's" under `ours` would send the first human of the
+        deployment looking for a screen that is not there — and the whole
+        reason this command exists is that the twenty-one-minute version of
+        day zero was somebody reading a console they had not been told about.
+        """
+        if Command._lands_here():
+            return "The page is this product's own, at the address above."
+        return "The page is the identity platform's, not this product's."
+
+    @staticmethod
+    def _lands_here() -> bool:
+        """Whether this deployment's invite link opens a page of OURS.
+
+        One comparison, read by both sentences above, because the two are one
+        fact: a link to our page under a sentence about somebody else's, or a
+        count of steps that assumes a sign-in the road already did, are the
+        same defect seen from two places.
+        """
+        return str(getattr(settings, "SIGN_IN_DOOR", "hosted")) == "ours"

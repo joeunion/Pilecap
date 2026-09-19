@@ -920,6 +920,33 @@ Seen on a real box. `ls -ln deploy/.env` should show group
 
 ## Part 4 · Deploy
 
+> **A RE-DEPLOY OF A BOX THAT ALREADY EXISTS IS ONE COMMAND, AND IT IS NOT THE
+> STEPS BELOW.** `deploy/stage.sh` owns Parts 4 and 5 together for that case —
+> ship, the env file from the vault, the registry login, `provision.sh up` and
+> `release.sh`, in that order, **each act keyed on its own input** and each
+> printing its seconds:
+>
+> ```bash
+> ./deploy/stage.sh <user>@<host> --env <environment> [--key <identity>]
+> ./deploy/stage.sh <user>@<host> --env <environment> --dry-run   # say what would run
+> ```
+>
+> It reads the box's own `TREE` marker and this checkout's tree, and runs the
+> ship when the tag moved, the secrets fetch when the ship ran, the login and
+> the `up` when the tag or the image digest moved, `release.sh` when a
+> migration leaf, `deploy/observability/` or an image digest moved, and the
+> readiness probe always. A tree whose whole delta is inert deploys nothing and
+> says so. Exit 0/1/2 mean what they mean everywhere here, and a piped stdout
+> is refused. It derives `DJB_IMAGE_REGISTRY` from `provision.sh image-repo`
+> and carries it to the box, which is the slot neither the vault nor
+> `deploy/.env` holds.
+>
+> **The steps below are still the authority on WHAT each act is and why**, and
+> they are what a FIRST deploy walks: a box with no `TREE` marker is a refusal
+> in `stage.sh`, by design, because "unchanged" and "never deployed" are not
+> the same sentence. Rollback is unchanged too — `deploy/ship.sh --ref <sha>`
+> and then a release (Part 10).
+
 **32. Set the ACME account email.** `CADDY_TLS` is `internal` on a laptop and
 an email address in a real environment; the address is the Let's Encrypt
 account expiry notices go to.
@@ -1060,6 +1087,12 @@ echo | openssl s_client -connect "$DJB_ENV.example.invalid:443" \
 ## Part 5 · Release
 
 **Every deploy runs part 5, and part 5 is one command.**
+
+> **`deploy/stage.sh` runs this part for you on a re-deploy**, and it passes
+> `--without-alerts` exactly when `deploy/observability/` did not move — which
+> is the one act of the seven a caller can key from outside this script. When
+> it skips this part entirely (nothing any act is keyed on moved), it still
+> probes `/readyz`. See the note at the head of Part 4.
 
 **37. Release.**
 
@@ -1865,6 +1898,54 @@ like success from every angle a caller has. It is almost always the
 actually sent.
 
 ---
+
+## The verifier boxes — the one hand a human performs
+
+**This is not part of provisioning an environment, and it is here because it is
+the only step in this repository that a person must do and an agent cannot.**
+Verifier boxes are throwaway EC2 machines a verification runs on; everything
+about them — bringing one up, taking one down, baking the image, the census — is
+scripted, except the IAM identity that does the bringing up. Minting a
+credential needs the account's own credential, so it is yours.
+
+**Three coordinates, from your shell, with no defaults anywhere in the tree.**
+An account number and a region are per-deployment facts; a default one shipped
+in system machinery is a fact every clone of this template inherits without
+being asked. The script refuses — exit 2, nothing created — if any of the three
+is unset, and refuses again if the credential resolves to a different account.
+
+```bash
+# Read what it would do. No AWS call is made, nothing is created, exit 2.
+DJB_DEPLOY_NAMESPACE=<ns> DJB_VERIFIER_ACCOUNT=<12-digit account> DJB_VERIFIER_REGION=<region> \
+  ./deploy/iam/verifier_bootstrap.sh
+
+# Do it. Prints the whole plan again, then creates the six things it listed.
+DJB_DEPLOY_NAMESPACE=<ns> DJB_VERIFIER_ACCOUNT=<12-digit account> DJB_VERIFIER_REGION=<region> \
+  ./deploy/iam/verifier_bootstrap.sh --confirm
+```
+
+It creates, and nothing else: policy and user `<ns>-verifier-ops`, role and
+instance profile `<ns>-verifier-box` (whose only attached policy is
+`AmazonSSMManagedInstanceCore` — never an environment box's role, which reads a
+secrets prefix and writes a backup bucket), the egress-only security group
+`<ns>-verifier`, and **one** access key. Every one of those names derives from
+the namespace and carries `djb:namespace`, so a second product in the same
+account creates its own and touches none of yours.
+
+**The access key is printed once, on the last line, and stored nowhere.** Copy
+it straight into a profile:
+
+```bash
+aws configure --profile <ns>-verifier     # region as above, output json
+```
+
+A second run finds all six, reports them as `exists`, creates nothing and mints
+no second key. If the secret half was lost, re-run with
+`--confirm --rotate-key`. There is deliberately no `--delete`: the six names
+above are the whole list to remove by hand.
+
+After that, nothing about these boxes needs you again — the teardown is a timer
+inside the image, which is the point.
 
 ## Part 8 · Teardown
 

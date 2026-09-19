@@ -40,6 +40,7 @@ from apps.core.services import create_organization, root_organization
 from apps.core.time import now
 from apps.events import activities, services
 from apps.events.models import Delivery, Event, Outbox, WebhookEndpoint
+from apps.events.tests.bodies import in_the_root
 from apps.events.types import (
     DeliverWebhook,
     PurgeExpired,
@@ -452,7 +453,7 @@ def test_a_rolled_back_emit_leaves_the_relay_nothing_to_find(tenant: Tenant) -> 
             services.emit(
                 name=WIDGET_CREATED,
                 tenant=tenant,
-                payload={"v": 1},
+                payload=in_the_root(tenant, {"v": 1}),
                 actor=system_actor(tenant=tenant),
             )
             raise RuntimeError("the caller failed after saying that something happened")

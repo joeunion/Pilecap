@@ -60,7 +60,7 @@ def register(server: MCPServer[Any]) -> None:
             tenant = acting_tenant(acting)
             return UserOut.from_orm(
                 deactivate_user(
-                    user=get_member(tenant=tenant, user_id=user_id),
+                    user=get_member(tenant=tenant, user_id=user_id, actor=acting.actor()),
                     actor=acting.actor(),
                     tenant=tenant,
                 )
@@ -75,7 +75,7 @@ def register(server: MCPServer[Any]) -> None:
             tenant = acting_tenant(acting)
             return UserOut.from_orm(
                 erase_user(
-                    user=get_member(tenant=tenant, user_id=user_id),
+                    user=get_member(tenant=tenant, user_id=user_id, actor=acting.actor()),
                     actor=acting.actor(),
                     tenant=tenant,
                 )

@@ -35,7 +35,10 @@ guesses; `apps/core/views.py::welcome` says where each one was already decided.
         <dt>Tenant &mdash; whose data you are in, from <code>{{ tenant_header }}</code> or your default membership</dt>
         <dd>
             {% if tenant %}{{ tenant.name }} <code>{{ tenant.slug }}</code>
-            {% else %}<em>None resolved.</em> Every tenant-scoped read is empty until one is.{% endif %}
+            {% else %}<em>None resolved.</em> Every tenant-scoped read is empty until one is.{% if fresh_deployment %}
+                On a fresh deployment this is expected: run
+                <code>uv run python manage.py bootstrap_tenant --email {{ actor_email }}</code>
+                and reload.{% endif %}{% endif %}
         </dd>
 
         <dt>Acting organization &mdash; which hat, from <code>{{ org_header }}</code>, revalidated this request</dt>

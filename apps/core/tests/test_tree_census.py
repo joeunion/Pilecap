@@ -1,3 +1,4 @@
+# census: cross-app population=apps/**/*.py to prove the tolerant read it gives
 """The scan-vs-plant race, driven deterministically, and the census that keeps it closed.
 
 **The defect.** `test_observability.py`'s house-rule-19 census walks every source

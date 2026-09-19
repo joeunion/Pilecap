@@ -167,6 +167,13 @@ ROOT=$(pwd -P)
 # that file's header.
 . "$ROOT/scripts/archaeology_lib.sh"
 
+# The `adr-census` and `dangling-docs` bodies — shared with `scripts/check.sh`'s
+# per-rung copies of the same two legs, for the reason above one line up: one
+# body, two callers, the whole artifact at release and the active rung's changed
+# files at every commit. It also carries the two census bodies that have no
+# release-time half (`loop-names`, `ci-env`), which this file never calls.
+. "$ROOT/scripts/docs_legs.sh"
+
 # --- arguments: strict, because a mistyped flag must never mean a quiet run ---
 MODE=full
 TARGET=""
@@ -554,8 +561,22 @@ if [ -z "$TARGET" ]; then
     # Derived from the checkout, exactly as `scripts/db.sh` derives a database
     # name: two checkouts of one branch never collide, and two agents never
     # publish into each other's artifact.
-    hash8=$(printf '%s' "$ROOT" | shasum -a 256 2>/dev/null | cut -c1-8) ||
-        hash8=$(printf '%s' "$ROOT" | sha256sum | cut -c1-8)
+    # THE FALLBACK THAT WAS HERE NEVER RAN, and that is why this is one call.
+    # `shasum … | cut` exits with CUT's status, so on a machine with no
+    # `shasum` the substitution succeeded with an EMPTY value and the `||` was
+    # unreachable: the target would have been named
+    # `djb-publish-<branch>-` with no hash in it at all, which is two
+    # checkouts of one branch publishing into one directory. `sha256_of`
+    # (scripts/gate_refuse.sh, reached through archaeology_lib.sh above)
+    # resolves the tool and validates the answer, so a failure is a failure.
+    hash8=$(printf '%s' "$ROOT" | sha256_of | cut -c1-8)
+    if [ -z "$hash8" ]; then
+        echo "!! could not derive a SHA-256 of this checkout's path: neither 'shasum' nor" >&2
+        echo "   'sha256sum' is on PATH. The export target's name carries that digest so" >&2
+        echo "   that two checkouts of one branch never publish into one directory, so" >&2
+        echo "   nothing was exported. Name the target yourself with --to <dir>." >&2
+        exit 2
+    fi
     branch=$(git rev-parse --abbrev-ref HEAD | tr -c 'a-zA-Z0-9' '-')
     TARGET="${TMPDIR:-/tmp}/djb-publish-${branch}-${hash8}"
 fi
@@ -728,66 +749,70 @@ if [ "$bi_n" -eq 0 ]; then
 fi
 [ "$bi_bad" -eq 0 ] && say "   ok — $bi_n gate-read files byte-identical to the source"
 
-# --- leg adr-census (invariant 2) ------------------------------------
+# --- legs adr-census and dangling-docs (invariant 2, and its sibling) -------
+# THE BODIES ARE NOT HERE ANY MORE, AND THAT IS THE POINT. They are
+# `docs_adr_census` and `docs_dangling_docs` in `scripts/docs_legs.sh`, sourced
+# at the top of this file and by `scripts/check.sh`, because a question worth
+# asking of the whole artifact at release is worth asking of the active rung's
+# changed files at every commit — five scrub violations reached main and sat
+# there because the only reader of these two questions ran at publication time.
+# `scripts/archaeology_lib.sh` made exactly this move a cycle earlier for
+# exactly this reason; this is the same shape, not a second one.
+#
+# WHAT THIS CALLER OWNS, still: the scope noun, the file set (the whole
+# artifact, derived from git rather than from a directory walk so it is the
+# same set step 3 just proved equal to the ship-list), the `violation` wrapper
+# and the printed counts. The library prints findings and nothing else.
+ART_FILES=$(mktemp "${TMPDIR:-/tmp}/djb-publish-artfiles.XXXXXX")
+git -C "$TARGET" ls-files -z >"$ART_FILES"
+
 say ""
 say "-- adr-census: every ADR id cited in the artifact resolves in the artifact"
-HOMES=$(mktemp "${TMPDIR:-/tmp}/djb-publish-homes.XXXXXX")
-for h in docs/product/architecture.md docs/product/adrs-ingredients.md; do
-    [ -f "$TARGET/$h" ] || {
-        echo "!! $h is not in the artifact — the ADR home does not ship, so no citation" >&2
-        echo "   in it can resolve. That is the ruling broken, not a violation." >&2
-        rm -f "$HOMES"
-        exit 2
-    }
-    grep -hoE 'ADR [a-z0-9]+-[a-z0-9]+' "$TARGET/$h" || true
-done | LC_ALL=C sort -u >"$HOMES"
-if [ ! -s "$HOMES" ]; then
-    echo "!! the ADR homes named no ids at all — the grammar this leg reads is" >&2
-    echo "   \`ADR <app>-<n>\`, and a home with none of them is this leg looking at the" >&2
-    echo "   wrong thing." >&2
-    rm -f "$HOMES"
+ADR_OUT=$(mktemp "${TMPDIR:-/tmp}/djb-publish-adrout.XXXXXX")
+set +e
+docs_adr_census "$TARGET" "$ART_FILES" >"$ADR_OUT"
+adr_rc=$?
+set -e
+if [ "$adr_rc" = "2" ]; then
+    rm -f "$ART_FILES" "$ADR_OUT"
     exit 2
 fi
-CITED=$(mktemp "${TMPDIR:-/tmp}/djb-publish-cited.XXXXXX")
-(cd "$TARGET" && grep -rIoE 'ADR [a-z0-9]+-[a-z0-9]+' --exclude-dir=.git . || true) |
-    sed 's|^\./||' | LC_ALL=C sort -u >"$CITED"
 adr_bad=0
 while IFS= read -r line; do
     [ -n "$line" ] || continue
-    id=${line#*:}
-    file=${line%%:*}
-    if ! grep -qxF "$id" "$HOMES"; then
-        violation "adr-census: $id resolves nowhere in the artifact — cited in $file"
-        adr_bad=$((adr_bad + 1))
-    fi
-done <"$CITED"
-say "   $(LC_ALL=C sort -u -t: -k2 "$CITED" | wc -l | tr -d ' ') citation sites read · $(wc -l <"$HOMES" | tr -d ' ') ids resolvable in the two homes"
+    violation "$line"
+    adr_bad=$((adr_bad + 1))
+done <"$ADR_OUT"
+say "   $DOCS_ADR_SITES citation sites read · $DOCS_ADR_IDS ids resolvable in the two homes"
 [ "$adr_bad" -eq 0 ] && say "   ok — no decision is lost at publish"
-rm -f "$HOMES" "$CITED"
+rm -f "$ADR_OUT"
 
-# --- leg dangling-docs (invariant 2's sibling) ------------------------------
 # THE SAME QUESTION FOR ORDINARY POINTERS. Trimming is exactly the operation
-# that turns a live citation into a dead one, and a first builder reading
-# `docs/product/cycles/…` in a docstring finds nothing there and cannot tell
-# whether the claim was ever true. Closed question, discoverable population:
-# every `docs/**.md` path spelled anywhere in the artifact must exist in it.
+# that turns a live citation into a dead one, and a first builder reading a
+# cycle plan's path in a docstring finds nothing there and cannot tell whether
+# the claim was ever true. Closed question, discoverable population: every
+# markdown path under the docs tree spelled anywhere in the artifact must exist
+# in it.
 say ""
 say "-- dangling-docs: every docs/ pointer spelled in the artifact resolves in it"
-DOCREFS=$(mktemp "${TMPDIR:-/tmp}/djb-publish-docrefs.XXXXXX")
-(cd "$TARGET" && grep -rIoE 'docs/[A-Za-z0-9._/-]+\.md' --exclude-dir=.git . || true) |
-    sed 's|^\./||' | LC_ALL=C sort -u >"$DOCREFS"
+DANG_OUT=$(mktemp "${TMPDIR:-/tmp}/djb-publish-dangout.XXXXXX")
+set +e
+docs_dangling_docs "$TARGET" "$ART_FILES" >"$DANG_OUT"
+dang_rc=$?
+set -e
+if [ "$dang_rc" = "2" ]; then
+    rm -f "$ART_FILES" "$DANG_OUT"
+    exit 2
+fi
 dang_bad=0
 while IFS= read -r line; do
     [ -n "$line" ] || continue
-    ref=${line#*:}
-    file=${line%%:*}
-    [ -f "$TARGET/$ref" ] && continue
-    violation "dangling-docs: $ref does not exist in the artifact — spelled in $file"
+    violation "$line"
     dang_bad=$((dang_bad + 1))
-done <"$DOCREFS"
-say "   $(wc -l <"$DOCREFS" | tr -d ' ') pointer sites read"
+done <"$DANG_OUT"
+say "   $DOCS_DANGLING_SITES pointer sites read"
 [ "$dang_bad" -eq 0 ] && say "   ok — every docs/ pointer in the artifact resolves inside it"
-rm -f "$DOCREFS"
+rm -f "$ART_FILES" "$DANG_OUT"
 
 # --- leg archaeology-census (invariant 3) -----------------------------------
 # THE PLATFORM'S CONSTRUCTION HISTORY IS NOT THE PRODUCT'S. A template is read

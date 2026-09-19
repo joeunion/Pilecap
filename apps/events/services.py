@@ -50,11 +50,12 @@ from django.db.models import Q
 from opentelemetry import trace
 
 from apps.core import bridge, context
-from apps.core.actor import Actor
-from apps.core.authz import require
+from apps.core.actor import Actor, system_actor
+from apps.core.authz import is_org_scoped_kind, kind_of_event, require
 from apps.core.exceptions import Invalid, as_invalid
 from apps.core.models import Organization, Tenant
 from apps.core.service import service
+from apps.core.services import root_organization
 from apps.core.time import now
 from apps.core.types import Swept
 from apps.events import selectors
@@ -241,7 +242,57 @@ ORG_KEY = "organization_id"
 # `RuntimeError` because house rule 14 keeps untranslated exceptions below the
 # doors. House rule 38 is the static half: it keeps `organization_id` on every
 # `Out` schema of an `OrgScopedModel`, so the key is there to be read.
-def _subject_organization(*, tenant: Tenant, payload: dict[str, Any]) -> Organization | None:
+def _refuse_a_branch_that_disagrees_with_the_name(*, name: str, payload: dict[str, Any]) -> None:
+    """The payload and the event NAME must agree about whether a branch owns this.
+
+    R4's F4 and F5, as the runtime belt house rule 59 ships with. The static
+    rule reads emit SITES; this reads the payload that actually arrived, which
+    is what catches a body assembled where the scan cannot follow.
+
+    Separate from `_subject_organization` because it answers a different
+    question: that one RESOLVES a branch from a key, and this one decides
+    whether the key belongs on this event at all. `kind_of_event` raises for a
+    noun nobody decided about and that raise is left to escape — `check_name`
+    has already agreed the name is declared, and the noun census walks the
+    whole declared population on every gate run, so an undecided noun here is a
+    configuration failure the tree already refuses; swallowing it would mean
+    emitting under the one condition in which the narrowing cannot be decided.
+    """
+    kind = kind_of_event(name)
+    named = ORG_KEY in payload
+    if is_org_scoped_kind(kind) and not named:
+        raise Invalid(
+            {
+                ORG_KEY: [
+                    f"{name!r} is about {kind!r}, which is a row one BRANCH of this "
+                    f"tenant owns, and this payload does not carry {ORG_KEY!r} at its "
+                    "top level. An absent key is stamped NULL, and the fan-out reads "
+                    "NULL as 'no branch owns this' — so the subject's own row would "
+                    "be pushed to every socket in the tenant while the REST list under "
+                    "a sibling hat never shows it. Pass the row's own `Out` dump, "
+                    "which carries the key by house rule 38."
+                ]
+            }
+        )
+    if kind is None and named:
+        raise Invalid(
+            {
+                ORG_KEY: [
+                    "an org-less event cannot name a branch. "
+                    f"{name!r} is about nothing a membership could hold a read on — "
+                    "its noun is mapped to None in the declaring app's events.py — and "
+                    "the socket door delivers a None-kind frame to every connection in "
+                    "the tenant WITHOUT consulting the read set, so a branch on this "
+                    "body would be the widest delivery this product has, aimed at rows "
+                    "nobody may read. Omit the key."
+                ]
+            }
+        )
+
+
+def _subject_organization(
+    *, tenant: Tenant, name: str, payload: dict[str, Any]
+) -> Organization | None:
     """Which part of the tenant the row this event is about belongs to.
 
     Not a service: one scoped read, called from `emit` and from nowhere else.
@@ -264,6 +315,7 @@ def _subject_organization(*, tenant: Tenant, payload: dict[str, Any]) -> Organiz
     `record_event`, which takes `organization` and derives nothing, because an
     `organization_id` in somebody else's webhook body names their idea of a row.
     """
+    _refuse_a_branch_that_disagrees_with_the_name(name=name, payload=payload)
     if ORG_KEY not in payload:
         return None
     raw = payload[ORG_KEY]
@@ -402,7 +454,7 @@ def emit(
         name=name,
         payload=_as_the_door_renders(payload if "v" in payload else {"v": v, **payload}),
         v=v,
-        organization=_subject_organization(tenant=tenant, payload=payload),
+        organization=_subject_organization(tenant=tenant, name=name, payload=payload),
         actor=actor,
         correlation_id=str(chain["correlation_id"] or ""),
         causation_id=str(causation_id or chain["causation_id"] or ""),
@@ -449,7 +501,7 @@ def enqueue_dispatch(*, tenant: Tenant, event_id: UUID, resume: bool = False) ->
     # above), from the relay's activity and from the shell command, whose actor
     # is the system.
     """
-    event = selectors.get_event(tenant=tenant, event_id=event_id)
+    event = selectors.get_event(tenant=tenant, event_id=event_id, actor=system_actor(tenant))
     outbox = Outbox.objects.select_for_update().get(event=event)
     if not resume:
         outbox.attempts += 1
@@ -475,7 +527,7 @@ def close_outbox(*, tenant: Tenant, event_id: UUID, status: str, error: str = ""
 
     # authz: called only by the dispatch workflow's activity, as the system.
     """
-    event = selectors.get_event(tenant=tenant, event_id=event_id)
+    event = selectors.get_event(tenant=tenant, event_id=event_id, actor=system_actor(tenant))
     outbox = Outbox.objects.get(event=event)
     outbox.status = status
     outbox.last_error = error[:ERROR_LIMIT]
@@ -559,7 +611,7 @@ def register_endpoint(
     for the callers who genuinely have one already — the admin form, an import
     from a system that issued the key — and those are the only two.
     """
-    require(actor, "endpoint.create", tenant)
+    require(actor, "endpoint.create", root_organization(tenant=tenant))
     endpoint = WebhookEndpoint(
         tenant=tenant,
         url=url.strip(),
@@ -597,7 +649,7 @@ def update_endpoint(
     that ever writes it. A settable column would be a way to do either by
     accident, and neither belongs in a PATCH body.
     """
-    require(actor, "endpoint.update", endpoint)
+    require(actor, "endpoint.update", root_organization(tenant=tenant))
     if url is not None:
         endpoint.url = url.strip()
     if event_names is not None:
@@ -627,7 +679,7 @@ def issue_endpoint_secret(
     The plaintext is on the row this returns and nowhere else. There is no
     service, selector, schema or door that reads it back afterwards.
     """
-    require(actor, "endpoint.issue_secret", endpoint)
+    require(actor, "endpoint.issue_secret", root_organization(tenant=tenant))
     endpoint.secret = _new_endpoint_secret()
     endpoint.save(update_fields=["secret", "updated_at"])
     return endpoint
@@ -638,7 +690,7 @@ def deactivate_endpoint(
     *, tenant: Tenant, actor: Actor, endpoint: WebhookEndpoint
 ) -> WebhookEndpoint:
     """Stop delivering to an endpoint, without losing the record of what was."""
-    require(actor, "endpoint.deactivate", endpoint)
+    require(actor, "endpoint.deactivate", root_organization(tenant=tenant))
     endpoint.is_active = False
     endpoint.save(update_fields=["is_active", "updated_at"])
     return endpoint
@@ -655,7 +707,7 @@ def resume_endpoint(*, tenant: Tenant, actor: Actor, endpoint: WebhookEndpoint) 
     /dead-letters/{id}/replay/` is where a specific missed delivery is sent
     again, and it is a deliberate act with a row to point at.
     """
-    require(actor, "endpoint.resume", endpoint)
+    require(actor, "endpoint.resume", root_organization(tenant=tenant))
     endpoint.is_active = True
     endpoint.save(update_fields=["is_active", "updated_at"])
     return endpoint
@@ -684,8 +736,10 @@ def record_delivery_attempt(
 
     # authz: called only by the dispatch workflow's activities, as the system.
     """
-    endpoint = selectors.get_endpoint(tenant=tenant, endpoint_id=endpoint_id)
-    event = selectors.get_event(tenant=tenant, event_id=event_id)
+    endpoint = selectors.get_endpoint(
+        tenant=tenant, endpoint_id=endpoint_id, actor=system_actor(tenant)
+    )
+    event = selectors.get_event(tenant=tenant, event_id=event_id, actor=system_actor(tenant))
     delivery = _delivery_for(endpoint=endpoint, event=event)
     delivery.attempts += 1
     delivery.status = status
@@ -732,8 +786,10 @@ def dead_letter_delivery(
 
     # authz: called only by the dispatch workflow, as the system.
     """
-    endpoint = selectors.get_endpoint(tenant=tenant, endpoint_id=endpoint_id)
-    event = selectors.get_event(tenant=tenant, event_id=event_id)
+    endpoint = selectors.get_endpoint(
+        tenant=tenant, endpoint_id=endpoint_id, actor=system_actor(tenant)
+    )
+    event = selectors.get_event(tenant=tenant, event_id=event_id, actor=system_actor(tenant))
     delivery = _delivery_for(endpoint=endpoint, event=event)
     delivery.status = Delivery.Status.DEAD
     delivery.dead_lettered_at = now()
@@ -786,7 +842,7 @@ def enqueue_replay(*, tenant: Tenant, actor: Actor, delivery: Delivery) -> Deliv
     "this one gave up and was then sent again" is two columns rather than a log
     search.
     """
-    require(actor, "delivery.replay", delivery)
+    require(actor, "delivery.replay", root_organization(tenant=tenant))
     if delivery.dead_lettered_at is None:
         raise Invalid(
             {

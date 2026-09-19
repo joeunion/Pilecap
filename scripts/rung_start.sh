@@ -358,11 +358,91 @@ zitadel_carry() {
     return 0
 }
 
+# --- STEP 6'S ACT, defined above the seam for the carry's reason --------------
+#
+# `frontend_install <root>` — `pnpm install --frozen-lockfile` in `<root>/frontend`,
+# or a PRINTED skip saying which of the two reasons it had. It NEVER fails the
+# run: it returns 0 on every path and leaves its verdict in `FRONTEND_NOTE`,
+# which the footer reads. That is step 4's rule, applied one step over and for
+# the same argument — steps 3, 4 and 5 all need Postgres, so an unreachable one
+# is a refusal; almost no rung needs `frontend/node_modules`, so a failure there
+# is a NAMED ABSENCE and not a worktree nobody can build in.
+#
+# WHY IT IS A FUNCTION ABOVE THE SEAM rather than inline in step 6: the same
+# reason `zitadel_carry` is (THE SOURCED SEAM, and blind spot 6 in
+# `scripts/tests/test_rung_start.sh`). Nothing in a scratch repository gets past
+# step 2, so the only way this act is DRIVEN at all is by sourcing this file and
+# calling the function against a fixture directory with a shimmed `FE_PNPM`.
+# Inline, it would be text nothing exercises.
+#
+# `FE_PNPM` AND NOT A NEW VARIABLE. `scripts/fe_gate.sh` already owns the name
+# for the leg this step exists to make fast, and two names for one toolchain is
+# the cost consistency is supposed to avoid. The command is that leg's own form
+# verbatim (`fe_gate.sh`'s `fe_leg_frozen_lockfile`), which is what makes the
+# leg's later FULL run a no-op install rather than a second one.
+FRONTEND_NOTE=""
+
+frontend_install() {
+    local root="$1" dir pnpm rc=0
+    dir="$root/frontend"
+    pnpm="${FE_PNPM:-pnpm}"
+
+    if [ ! -d "$dir" ]; then
+        printf '   frontend     skipped — no frontend/ on this tree\n'
+        return 0
+    fi
+    if ! command -v "$pnpm" >/dev/null 2>&1; then
+        # THE SENTENCE IS THE CRITERION'S, MINUS ONE WORD. Where it says "the
+        # work", the criterion named the unit of work directly — and that word,
+        # preceded by "this", is one of the archaeology census's six patterns
+        # (`scripts/archaeology_lib.sh`, `narrative`, assembled at runtime so
+        # the file does not spell it either). A censused phrase counts wherever
+        # it appears, prose included, and that census has no valve. Reworded
+        # rather than exempted, which is the standing instruction for exactly
+        # this collision.
+        printf '   frontend     skipped — pnpm not on PATH; the fe leg will be could-not-look\n'
+        printf '                if the work touches frontend/\n'
+        return 0
+    fi
+
+    # WHAT THIS BUYS, AND WHAT IT DOES NOT, printed every run rather than
+    # inferred. The fe leg's FULL state runs `pnpm install --frozen-lockfile`
+    # itself, so this step turns that into a no-op instead of a cold install;
+    # `pnpm pin:client` needs the directory too. `scripts/gen_client.sh` runs
+    # `npx openapi-typescript@<pinned>` and reads NOTHING out of
+    # `frontend/node_modules`, so the byte-pin and the fold are unaffected
+    # either way — which is the half a reader would otherwise assume wrongly.
+    printf '   frontend/node_modules: for the fe leg'"'"'s FULL state and pnpm pin:client; gen_client.sh uses npx and is unaffected\n'
+    set +e
+    (cd "$dir" && "$pnpm" install --frozen-lockfile)
+    rc=$?
+    set -e
+    if [ $rc -eq 0 ]; then
+        printf '   frontend     pnpm install --frozen-lockfile (%s)\n' "$dir"
+        return 0
+    fi
+
+    # LOUD, AND NOT FATAL. The footer is what stops this being a scroll-past:
+    # a run that ends `READY` either way is the silence this step's own
+    # not-fatal rule would otherwise create.
+    FRONTEND_NOTE="frontend/node_modules was not installed (pnpm exited ${rc})"
+    printf '\n   !! no frontend/node_modules: pnpm install --frozen-lockfile exited %s.\n' "$rc" >&2
+    printf '      The fe leg'"'"'s FULL state will pay the cold install, and `pnpm\n' >&2
+    printf '      pin:client` will not run until it is fixed. A lockfile that no\n' >&2
+    printf '      longer satisfies package.json is the usual cause, and that is a\n' >&2
+    printf '      finding for the fe leg to report rather than for this script to.\n' >&2
+    printf '      THIS IS NOT FATAL: a rung that touches nothing under frontend/\n' >&2
+    printf '      needs nothing here, and the footer says so rather than this\n' >&2
+    printf '      script deciding for you.\n\n' >&2
+    return 0
+}
+
 # --- the sourced seam ---------------------------------------------------------
-# See THE SOURCED SEAM in the header. SOURCED: the function above is defined and
-# nothing below this line runs, which is how the drive exercises the carry
-# without a venv, a Postgres or a MinIO behind it. EXECUTED: the two are equal,
-# this is a no-op, and there is no command-line way to ask for it.
+# See THE SOURCED SEAM in the header. SOURCED: the functions above are defined
+# and nothing below this line runs, which is how the drive exercises the carry
+# and the frontend install without a venv, a Postgres or a MinIO behind it.
+# EXECUTED: the two are equal, this is a no-op, and there is no command-line way
+# to ask for it.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then
     return 0
 fi
@@ -459,7 +539,7 @@ cd "$ROOT"
 
 INTROSPECT_DIR="$ROOT/.rung"
 INTROSPECT_OUT="$INTROSPECT_DIR/introspect.json"
-STEP_TOTAL=5
+STEP_TOTAL=6
 
 # Step 4's verdict, carried to the footer. Empty means the bucket is there.
 STORAGE_ABSENT=""
@@ -1071,13 +1151,44 @@ say "             read it instead of guessing the schema (CLAUDE.md, standing ru
 step_end
 
 # =============================================================================
+# STEP 6 · FRONTEND
+# =============================================================================
+#
+# THE SAME SHAPE AS STEP 4 AND THE SAME ARGUMENT. A product that has grown a
+# `frontend/` pays a COLD `pnpm install` the first time the fe leg reaches its
+# FULL state — inside a per-rung gate, on the builder's clock, at the moment
+# they least want to wait — and pays it again in the next worktree. It is the
+# same class the venv and the database steps exist for: a hand step done from
+# memory, or a cost paid at the worst moment.
+#
+# IT RUNS UNDER `--resume` TOO, and needs no branch to do so: pnpm's own
+# contract is that `install --frozen-lockfile` over a satisfied lockfile changes
+# nothing, so a second run is a no-op. The drive asserts that rather than
+# trusting it — twice-run, `node_modules/.modules.yaml` byte-identical.
+#
+# ITS ACT IS `frontend_install`, defined above the sourced seam so the drive can
+# reach it; everything below is the announcement.
+step_begin "frontend — this checkout's node_modules, so the fe leg's FULL state is not a cold install"
+frontend_install "$ROOT"
+step_end
+
+# =============================================================================
 TOTAL=$(($(now_ms) - RUN_START))
-if [ -n "$STORAGE_ABSENT" ]; then
+if [ -n "$STORAGE_ABSENT" ] || [ -n "$FRONTEND_NOTE" ]; then
     # The footer reads differently, because a footer that reads the same either
-    # way is the silence step 4 exists to end (header, 3b).
-    printf '\n== READY · object storage ABSENT · total %s · %s\n' \
-        "$(fmt_ms $TOTAL)" "$(git log -1 --format='%h  %s' HEAD)"
-    printf '   %s — step 4 said what to do about it. Every other step is verified.\n' "$STORAGE_ABSENT"
+    # way is the silence step 4 exists to end (header, 3b). BOTH not-fatal steps
+    # report here now, and they are NAMED SEPARATELY on the headline: a footer
+    # that said "ABSENT" without saying what is absent would put the reader back
+    # where the silence had them.
+    ABSENT_HEADLINE=""
+    [ -z "$STORAGE_ABSENT" ] || ABSENT_HEADLINE="${ABSENT_HEADLINE} · object storage ABSENT"
+    [ -z "$FRONTEND_NOTE" ] || ABSENT_HEADLINE="${ABSENT_HEADLINE} · frontend/node_modules ABSENT"
+    printf '\n== READY%s · total %s · %s\n' \
+        "$ABSENT_HEADLINE" "$(fmt_ms $TOTAL)" "$(git log -1 --format='%h  %s' HEAD)"
+    [ -z "$STORAGE_ABSENT" ] ||
+        printf '   %s — step 4 said what to do about it. Every other step is verified.\n' "$STORAGE_ABSENT"
+    [ -z "$FRONTEND_NOTE" ] ||
+        printf '   %s — step 6 said what to do about it. Every other step is verified.\n' "$FRONTEND_NOTE"
 else
     printf '\n== READY · total %s · %s\n' "$(fmt_ms $TOTAL)" "$(git log -1 --format='%h  %s' HEAD)"
 fi

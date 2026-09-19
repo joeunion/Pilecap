@@ -1,3 +1,4 @@
+# census: cross-app population=apps/**/*.py for on_commit and workflow-start call sites
 """The service door onto durable work: deterministic ids, start, and signal.
 
 The property under test is the ordering guarantee a service depends on: calling
@@ -22,6 +23,7 @@ from temporalio.service import RPCError
 from temporalio.testing import WorkflowEnvironment
 
 from apps.accounts.models import User
+from apps.core import bridge
 from apps.core.actor import Actor, actor_for
 from apps.core.asyncdb import run_async, run_db
 from apps.core.audit import AuditEntry
@@ -29,11 +31,15 @@ from apps.core.exceptions import Conflict, Forbidden, NotFound, refusal_for
 from apps.core.models import Organization, Tenant
 from apps.core.tests import tree_census
 from apps.workflows import client as client_module
+from apps.workflows import services as workflow_services
 from apps.workflows.client import attach_interceptors, build_worker
 from apps.workflows.models import WorkflowRun
 from apps.workflows.services import (
     PLATFORM_SEGMENT,
+    REASK_AUDIT_ACTION,
+    REASKABLE_STATUSES,
     finish_run,
+    hash_run_input,
     record_run,
     signal_workflow,
     start_workflow,
@@ -412,10 +418,42 @@ CONTRACT_CLAUSES = (
     "running, and the same type",
     "running, and a different type",
     "already finished",
+    # The answer the start site has to ask for, pinned as three clauses — one
+    # per paragraph, because a section is only held where a clause lands.
+    #
+    # **Not its heading.** The first pin written here was `"The fifth answer"`,
+    # the bold label, and a label is the wrong thing to hold: rewording it reds
+    # this test for a change that means nothing, while the paragraph underneath
+    # it can be rewritten to say the opposite and stay green. Both halves were
+    # planted and confirmed. It is gone, and nothing is lost by its going — the
+    # condition clause below lives in that same bolded sentence, so the
+    # paragraph is still undeletable, and what holds it now is what the
+    # sentence CLAIMS rather than what it is called.
+    #
+    # Each clause is chosen so that prose and code cannot drift apart
+    # independently:
+    #
+    # * the CONDITION — which rows this answer is for. It cannot be reworded
+    #   without the behaviour changing, because the words are the population:
+    #   not running (not finished at all) and not completed (finished, and
+    #   delivered).
+    "the row finished without delivering",
+    # * the EFFECT — welded to the code by an IDENTIFIER, not by a phrasing.
+    #   `REASKABLE_STATUSES` is a module-level name this module imports and
+    #   `test_the_reaskable_statuses_are_derived_from_the_enum` asserts on, so
+    #   renaming it fails at collection and dropping it from the prose fails
+    #   here. A sentence naming no identifier could be reworded freely, and a
+    #   pin on freely rewordable prose holds nothing.
+    "The population that re-opens is `REASKABLE_STATUSES`",
+    # * the DEFAULT — the sentence that justifies the flag's whole shape, and
+    #   the one a reader checks before threading it through a start site. It is
+    #   the signature's own fact, asserted one function down by
+    #   `test_without_the_flag_a_failed_run_is_the_conflict_it_always_was`.
+    "the default is `False`",
 )
 
 
-def test_the_docstring_states_all_three_answers() -> None:
+def test_the_docstring_states_all_five_answers() -> None:
     doc = " ".join((record_run.__doc__ or "").split())
     for clause in CONTRACT_CLAUSES:
         assert clause in doc, f"record_run's docstring does not state {clause!r}"
@@ -678,14 +716,18 @@ def test_the_declared_seams_are_the_only_on_commit_registrations_in_the_tree() -
     hooks" is only true if these are all of them. A future registration
     anywhere under `apps/` fails this test and has to answer the question.
 
-    `close_sockets_on_commit` is the third registration: revocation and
-    erasure close the person's open sockets (ADR realtime-2 d), and the
-    channel layer behind that call is the least reliable thing in the list
+    The third registration is the KICK, and it is now two seams at one site:
+    `close_sockets_on_commit` closes the person's open sockets on a revocation
+    or an erasure (ADR realtime-2 d), and `close_tenant_sockets_on_commit`
+    closes every socket in a darkened tenant on a suspension or a closure. The
+    channel layer behind both calls is the least reliable thing in the list
     now that Temporal has been contained — so it is `robust=True` for
-    exactly the reason the two starters are, and the seam records what that
-    costs in its own docstring. It is one entry and not two because every
-    caller goes through one registration site, which is also what keeps this
-    survey readable.
+    exactly the reason the two starters are, and each seam records what that
+    costs in its own docstring, on its own log name
+    (`core.socket.kick_failed`, `core.tenant_socket.kick_failed`). It is one
+    entry and not three because every caller goes through one registration
+    site — `_register_kick` — which is also what keeps this survey readable,
+    and a survey naming one of the two kicks would read as covering both.
 
     That entry lives in `core`, not `accounts`, and did not add a fourth
     line: *authorization* withdrawal — a membership removed, a subtree
@@ -1020,3 +1062,470 @@ def test_the_on_commit_census_tolerates_a_file_that_vanishes_at_open() -> None:
         for path in sorted((REPO_ROOT / "apps").rglob("*.py")):
             source_lines(path)
         assert not planted.exists(), "the census never opened the plant — this drove nothing"
+
+
+# --- The fifth answer: a re-ask after a run that finished without delivering ---
+#
+# ADR workflows-4's 2x2 answers a caller who asked twice. It has no answer for
+# the caller who asked twice ON PURPOSE because the first attempt BROKE: the
+# same work under a finished id is `Conflict`, and `finished` there means
+# `completed`, `failed` and `cancelled` alike. So a reconciler whose run failed
+# could re-derive exactly the same intent, ask for it again, and be told that
+# running the same work again is a new job — with no new key to give it, because
+# the key is derived from the row it is reconciling. That is the lockout the
+# first product on this template measured against a real identity platform.
+#
+# The fifth answer is opt-in at the START SITE and nowhere else: a start that
+# does not ask is byte-identical to the start it was before this section
+# existed, which is what `test_the_four_answers_stand_without_the_flag` holds.
+
+
+def a_finished_start(
+    tenant: Tenant,
+    *,
+    key: str,
+    status: str,
+    arg: Any = "hello",
+    error: str = "",
+) -> WorkflowRun:
+    """A run this tenant owns, started through the door and then closed.
+
+    Started rather than planted, so the row carries the digest the STARTER
+    computes — a planted row with an empty digest passes every comparison and
+    would make a re-ask test vacuous by taking the supersede branch instead.
+    """
+    run = start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg=arg,
+        tenant=tenant,
+        id=workflow_id(tenant=tenant, app="workflows", noun="echo", key=key),
+    )
+    finish_run(tenant=tenant, workflow_id=run.workflow_id, status=status, error=error)
+    return WorkflowRun.objects.for_tenant(tenant).get(pk=run.pk)
+
+
+def test_the_reaskable_statuses_are_derived_from_the_enum() -> None:
+    """The population is derived, and this is the pin that keeps it honest.
+
+    `REASKABLE_STATUSES` is `Status` minus the two that are not a failure to
+    deliver — `RUNNING` (not finished at all) and `COMPLETED` (delivered). A
+    status added to the model therefore joins the re-askable population by
+    default, which is the safe direction: the alternative is a new terminal
+    state that silently keeps the lockout.
+    """
+    live = {WorkflowRun.Status.RUNNING, WorkflowRun.Status.COMPLETED}
+    assert set(REASKABLE_STATUSES) == {WorkflowRun.Status.FAILED, WorkflowRun.Status.CANCELLED}
+    assert set(REASKABLE_STATUSES) | live == set(WorkflowRun.Status.values)
+    assert not set(REASKABLE_STATUSES) & live
+
+
+def test_the_four_answers_stand_without_the_flag(
+    tenant: Tenant, recorded_workflow_starts: None
+) -> None:
+    """D1.1 — every answer ADR workflows-4 already gave, with the flag absent.
+
+    Five states in one test because the claim is about the *set*: the default
+    is that nothing moved. Never-started, running, delivered, and the two
+    finished quadrants.
+    """
+    # 1. Never started: a row is written.
+    first = start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg="hello",
+        tenant=tenant,
+        id=workflow_id(tenant=tenant, app="workflows", noun="echo", key="four-answers"),
+    )
+    assert first.status == WorkflowRun.Status.RUNNING
+
+    # 2. Running, same type and digest: the same row, no refusal.
+    again = start_workflow_on_commit(
+        workflow="EchoWorkflow", arg="hello", tenant=tenant, id=first.workflow_id
+    )
+    assert again.pk == first.pk
+
+    # 3. Running, different work: Conflict.
+    with pytest.raises(Conflict):
+        start_workflow_on_commit(
+            workflow="EchoWorkflow", arg="goodbye", tenant=tenant, id=first.workflow_id
+        )
+
+    # 4. Finished (delivered), same digest: Conflict.
+    finish_run(tenant=tenant, workflow_id=first.workflow_id, status=WorkflowRun.Status.COMPLETED)
+    with pytest.raises(Conflict):
+        start_workflow_on_commit(
+            workflow="EchoWorkflow", arg="hello", tenant=tenant, id=first.workflow_id
+        )
+
+    # 5. Finished, different digest: supersede — the row re-opens, unasked.
+    superseded = start_workflow_on_commit(
+        workflow="EchoWorkflow", arg="goodbye", tenant=tenant, id=first.workflow_id
+    )
+    assert superseded.pk == first.pk
+    assert superseded.status == WorkflowRun.Status.RUNNING
+    assert WorkflowRun.objects.filter(workflow_id=first.workflow_id).count() == 1
+
+
+def test_a_failed_run_is_reopened_when_the_caller_asks(
+    tenant: Tenant, owner: User, recorded_workflow_starts: None
+) -> None:
+    """D1.2 — failed-then-reasked. The row it already had, re-opened."""
+    closed = a_finished_start(
+        tenant, key="reask-failed", status=WorkflowRun.Status.FAILED, error="upstream said no"
+    )
+    assert closed.status == WorkflowRun.Status.FAILED
+
+    again = start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg="hello",
+        tenant=tenant,
+        user=owner,
+        id=closed.workflow_id,
+        reask_after_failure=True,
+    )
+
+    assert again.pk == closed.pk
+    assert again.status == WorkflowRun.Status.RUNNING
+    assert again.error == ""
+    assert again.finished_at is None
+    assert again.run_id == ""
+    assert again.started_at > closed.started_at
+    # Re-opened, never duplicated: the id stays deterministic.
+    assert WorkflowRun.objects.filter(workflow_id=closed.workflow_id).count() == 1
+
+
+def test_a_cancelled_run_is_reopened_when_the_caller_asks(
+    tenant: Tenant, owner: User, recorded_workflow_starts: None
+) -> None:
+    """A deliberate stop also finished without delivering (ADR workflows-7)."""
+    closed = a_finished_start(
+        tenant, key="reask-cancelled", status=WorkflowRun.Status.CANCELLED, error="stopped"
+    )
+
+    again = start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg="hello",
+        tenant=tenant,
+        user=owner,
+        id=closed.workflow_id,
+        reask_after_failure=True,
+    )
+
+    assert again.pk == closed.pk
+    assert again.status == WorkflowRun.Status.RUNNING
+
+
+def test_a_completed_run_is_still_a_conflict_even_when_the_caller_asks(
+    tenant: Tenant, owner: User, recorded_workflow_starts: None
+) -> None:
+    """Delivered. The flag says "after failure", and this did not fail.
+
+    The wall that makes the flag safe to thread through every start site: a
+    caller who sets it on work that DID deliver gets the answer they always
+    got, so the flag can never turn a completed job into a silent second run.
+
+    **And the refusal is legible.** `@service` files an `outcome=error` row
+    from the ARGUMENTS alone — there is no return value to read — so the one
+    thing that row has to carry is what was asked for. Until
+    `reask_after_failure` was on this app's allow-list it came out
+    `[redacted]`, and the audit trail could not tell a caller who hit this wall
+    on purpose from one who never asked at all: the two are the same refusal
+    with different intent behind them, and the second is a bug in the caller
+    while the first is the wall doing its job.
+    """
+    closed = a_finished_start(tenant, key="delivered", status=WorkflowRun.Status.COMPLETED)
+    AuditEntry.objects.all().delete()
+
+    with pytest.raises(Conflict) as refused:
+        start_workflow_on_commit(
+            workflow="EchoWorkflow",
+            arg="hello",
+            tenant=tenant,
+            user=owner,
+            id=closed.workflow_id,
+            reask_after_failure=True,
+        )
+
+    assert refused.value.code == "conflict"
+    assert refusal_for(refused.value.code) is not None
+    unchanged = WorkflowRun.objects.for_tenant(tenant).get(pk=closed.pk)
+    assert unchanged.status == WorkflowRun.Status.COMPLETED
+    assert unchanged.started_at == closed.started_at
+
+    entry = AuditEntry.objects.for_tenant(tenant).get(action="workflows.record_run")
+    assert entry.outcome == "error"
+    assert entry.error_code == "conflict"
+    assert entry.input["reask_after_failure"] is True
+    assert "reask_after_failure" in workflow_services.LOG_KEYS
+
+
+def test_without_the_flag_a_failed_run_is_the_conflict_it_always_was(
+    tenant: Tenant, owner: User, recorded_workflow_starts: None
+) -> None:
+    """failed-and-not-reasked — the DEFAULT, and the reason every caller is safe."""
+    closed = a_finished_start(
+        tenant, key="not-reasked", status=WorkflowRun.Status.FAILED, error="upstream said no"
+    )
+
+    with pytest.raises(Conflict) as refused:
+        start_workflow_on_commit(
+            workflow="EchoWorkflow", arg="hello", tenant=tenant, user=owner, id=closed.workflow_id
+        )
+
+    assert refused.value.code == "conflict"
+    unchanged = WorkflowRun.objects.for_tenant(tenant).get(pk=closed.pk)
+    assert unchanged.status == WorkflowRun.Status.FAILED
+    assert unchanged.error == "upstream said no"
+    assert unchanged.started_at == closed.started_at
+    # And the default is the declaration, not a habit of the call sites.
+    assert (
+        inspect.signature(start_workflow_on_commit).parameters["reask_after_failure"].default
+        is False
+    )
+
+
+def test_a_row_reasked_twice_reopens_twice_and_leaves_two_receipts(
+    tenant: Tenant, owner: User, recorded_workflow_starts: None
+) -> None:
+    """Re-asked twice — the state the ledger has to be able to tell apart.
+
+    Two failures, two re-asks: one row, two receipts, and the receipts differ
+    in what they say was replaced. A ledger that could not do this would make
+    "we tried this three times" unreadable after the fact.
+    """
+    closed = a_finished_start(
+        tenant, key="twice", status=WorkflowRun.Status.FAILED, error="first failure"
+    )
+    AuditEntry.objects.all().delete()
+
+    start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg="hello",
+        tenant=tenant,
+        user=owner,
+        id=closed.workflow_id,
+        reask_after_failure=True,
+    )
+    finish_run(
+        tenant=tenant,
+        workflow_id=closed.workflow_id,
+        status=WorkflowRun.Status.CANCELLED,
+        error="second failure",
+    )
+    start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg="hello",
+        tenant=tenant,
+        user=owner,
+        id=closed.workflow_id,
+        reask_after_failure=True,
+    )
+
+    receipts = list(
+        AuditEntry.objects.for_tenant(tenant)
+        .filter(action=REASK_AUDIT_ACTION)
+        .order_by("created_at")
+    )
+    assert [entry.input["closed_as"] for entry in receipts] == [
+        WorkflowRun.Status.FAILED,
+        WorkflowRun.Status.CANCELLED,
+    ]
+    assert [entry.input["previous_error"] for entry in receipts] == [
+        "first failure",
+        "second failure",
+    ]
+    assert WorkflowRun.objects.filter(workflow_id=closed.workflow_id).count() == 1
+
+
+def test_the_receipt_names_what_the_re_ask_replaced(
+    tenant: Tenant, owner: User, recorded_workflow_starts: None
+) -> None:
+    """D1.3 — the re-opened row is a rewrite, so the ledger keeps the old fact.
+
+    `_reopen` clears `status`, `error`, `finished_at` and `run_id` in place:
+    the row is visibility, not a ledger, and after a re-ask it no longer says
+    anywhere that the previous attempt failed or why. The receipt is where that
+    goes, and `AuditEntry` is `append_only = True` — so what the row forgets,
+    the audit trail cannot.
+
+    Both halves here: the receipt and the re-open are ONE transaction (a caller
+    that rolls back leaves neither), and the receipt names the replaced facts.
+    """
+    closed = a_finished_start(
+        tenant, key="receipt", status=WorkflowRun.Status.FAILED, error="upstream said no"
+    )
+    AuditEntry.objects.all().delete()
+
+    # Same transaction: a rollback leaves the row closed and files no receipt.
+    with pytest.raises(RuntimeError):
+        with transaction.atomic():
+            start_workflow_on_commit(
+                workflow="EchoWorkflow",
+                arg="hello",
+                tenant=tenant,
+                user=owner,
+                id=closed.workflow_id,
+                reask_after_failure=True,
+            )
+            raise RuntimeError("the caller changed its mind")
+    still_closed = WorkflowRun.objects.for_tenant(tenant).get(pk=closed.pk)
+    assert still_closed.status == WorkflowRun.Status.FAILED
+    assert not AuditEntry.objects.filter(action=REASK_AUDIT_ACTION).exists()
+
+    again = start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg="hello",
+        tenant=tenant,
+        user=owner,
+        id=closed.workflow_id,
+        reask_after_failure=True,
+    )
+
+    receipt = AuditEntry.objects.for_tenant(tenant).get(action=REASK_AUDIT_ACTION)
+    assert receipt.outcome == "ok"
+    assert receipt.object_type == WorkflowRun._meta.label
+    assert receipt.object_id == again.pk
+    assert receipt.input["workflow_id"] == closed.workflow_id
+    assert receipt.input["workflow_type"] == "EchoWorkflow"
+    assert receipt.input["closed_as"] == WorkflowRun.Status.FAILED
+    assert receipt.input["previous_error"] == "upstream said no"
+    assert receipt.input["user_id"] == str(owner.pk)
+    # The two new keys are readable because this app DECLARED them; the
+    # allow-list is what stands between a receipt and `[redacted]`.
+    assert {"closed_as", "previous_error"} <= workflow_services.LOG_KEYS
+
+
+def test_the_bridge_slot_carries_the_re_ask_flag() -> None:
+    """D1.4 — the flag has to survive the one hop no app can type-check.
+
+    Every start site below `apps.workflows` — `core.invite_member`,
+    `core.mail`, `accounts`' identity runs, the event spine — reaches the
+    starter through `bridge.get(START_WORKFLOW_ON_COMMIT)`, which hands back
+    `Callable[..., Any]`. A keyword the protocol does not declare is a keyword
+    `apps/core` cannot pass without `test_bridge_shape.py` calling it drift.
+    """
+    declared = inspect.signature(
+        bridge.SHAPES[bridge.START_WORKFLOW_ON_COMMIT].__call__
+    ).parameters["reask_after_failure"]
+    live = inspect.signature(bridge.registered()[bridge.START_WORKFLOW_ON_COMMIT]).parameters[
+        "reask_after_failure"
+    ]
+    for parameter in (declared, live):
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is False
+
+
+def test_a_late_close_of_the_replaced_run_wins_and_the_receipt_is_what_survives(
+    tenant: Tenant, owner: User, recorded_workflow_starts: None
+) -> None:
+    """Principle 16, driven: at-least-once means the old run can still arrive.
+
+    A re-ask re-opens the row; the execution the FIRST attempt left behind can
+    still deliver its close afterwards — a worker that came back, a retried
+    activity, a `mark_run_finished` that was in flight. `finish_run` reads the
+    row by id and has no opinion about which execution is closing it, so the
+    late close WINS: the row goes terminal again under the new attempt.
+
+    That is today's answer and this test is its pin. What makes it survivable
+    rather than silent is the receipt: the re-ask is in the append-only audit
+    trail whatever the row ends up saying, so "we asked again and something
+    closed it" is answerable. The fix — `finish_run` refusing a close from an
+    execution the row no longer names — needs Temporal's run id at the finish
+    seam, and the finish seam lives in `activities.py`.
+    """
+    closed = a_finished_start(
+        tenant, key="racing", status=WorkflowRun.Status.FAILED, error="first attempt"
+    )
+    AuditEntry.objects.all().delete()
+
+    again = start_workflow_on_commit(
+        workflow="EchoWorkflow",
+        arg="hello",
+        tenant=tenant,
+        user=owner,
+        id=closed.workflow_id,
+        reask_after_failure=True,
+    )
+    assert again.status == WorkflowRun.Status.RUNNING
+
+    # The old run's close, arriving late.
+    finish_run(
+        tenant=tenant,
+        workflow_id=closed.workflow_id,
+        status=WorkflowRun.Status.FAILED,
+        error="first attempt, arriving late",
+    )
+
+    row = WorkflowRun.objects.for_tenant(tenant).get(pk=closed.pk)
+    assert row.status == WorkflowRun.Status.FAILED
+    # ...and the re-ask is not erased with it.
+    receipt = AuditEntry.objects.for_tenant(tenant).get(action=REASK_AUDIT_ACTION)
+    assert receipt.input["closed_as"] == WorkflowRun.Status.FAILED
+    assert receipt.input["previous_error"] == "first attempt"
+
+
+@pytest.mark.asyncio
+async def test_a_reopened_row_gets_its_execution_on_dispatch(
+    tenant: Tenant, owner: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D1.5 — attempted, not skipped. Against a real server.
+
+    The row going back to RUNNING is only half of a re-ask: if the on-commit
+    dispatch did not then reach Temporal, the caller would hold a row that
+    says `running` with no execution behind it — the exact state
+    `_start_recorded`'s heal exists to end. The digest is the starter's own on
+    both asks, so this is the SAME work under a failed id and takes the new
+    branch rather than the supersede.
+    """
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        target = env.client.service_client.config.target_host
+        namespace = env.client.namespace
+
+        async def connect() -> Client:
+            return attach_interceptors(await Client.connect(target, namespace=namespace))
+
+        monkeypatch.setattr(client_module, "get_client", connect)
+
+        wanted = workflow_id(tenant=tenant, app="workflows", noun="echo", key="reasked-dispatch")
+
+        # Planted through the starter's own digest, then closed as failed: the
+        # row a reconciler would meet after its run broke.
+        planted = await run_db(
+            record_run,
+            tenant=tenant,
+            workflow_id=wanted,
+            workflow_type="EchoWorkflow",
+            input_digest=hash_run_input("hello"),
+        )
+        await run_db(
+            finish_run,
+            tenant=tenant,
+            workflow_id=wanted,
+            status=WorkflowRun.Status.FAILED,
+            error="the first attempt broke",
+        )
+        with pytest.raises(RPCError):
+            await env.client.get_workflow_handle(wanted).describe()
+
+        def ask() -> WorkflowRun:
+            try:
+                with transaction.atomic():
+                    return start_workflow_on_commit(
+                        workflow="EchoWorkflow",
+                        arg="hello",
+                        tenant=tenant,
+                        user=owner,
+                        id=wanted,
+                        task_queue=TASK_QUEUE,
+                        reask_after_failure=True,
+                    )
+            finally:
+                connections.close_all()
+
+        again = await sync_to_async(ask, thread_sensitive=False)()
+
+        assert again.pk == planted.pk
+        description = await env.client.get_workflow_handle(wanted).describe()
+        assert description.status is WorkflowExecutionStatus.RUNNING
+        row = await run_db(WorkflowRun.objects.for_tenant(tenant).get, workflow_id=wanted)
+        assert row.status == WorkflowRun.Status.RUNNING
+        assert row.run_id == description.run_id

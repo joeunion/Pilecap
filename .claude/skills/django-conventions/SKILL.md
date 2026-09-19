@@ -368,6 +368,33 @@ is how a tool reads it. Tools are **thin over services**, take user and tenant
 and share the API's schemas. A tool that does something a REST route cannot,
 or returns a different shape for the same thing, is a door-parity finding.
 
+**Sockets — an app does not write a consumer, it extends the one there is.**
+House rule 58. A `consumers.py` dropped into any app is discovered by
+`config/asgi.py` and mounted like every other; a consumer written *beside*
+`TenantEventsConsumer` rather than under it inherits none of its three refusals
+(no principal, no tenant, no self-named group), and a pattern mounted without
+`token_auth(...)` is an anonymous door onto a tenant. **Every group name comes
+from the bridge's three builders** — `tenant_group`, `org_group`, `user_group` —
+never from anything the client sent.
+
+```python
+# wrong — discovered, mounted, accepted with no credential, subscribed to a tenant the caller named
+class OrderSocket(AsyncJsonWebsocketConsumer):
+    async def connect(self):
+        query = parse_qs(self.scope["query_string"].decode())
+        await self.channel_layer.group_add(f"tenant.{query['tenant'][0]}", self.channel_name)
+        await self.accept()
+
+websocket_urlpatterns = [path("ws/orders/", OrderSocket.as_asgi())]
+
+# right — the base's refusals inherited, the credential wrapper on, every group derived
+class OrderSocket(TenantEventsConsumer):                       # apps.realtime.consumers
+    async def connect(self):
+        await super().connect()                                # the three refusals, then the groups
+
+websocket_urlpatterns = [path("ws/orders/", token_auth(OrderSocket.as_asgi()))]
+```
+
 The MCP tool snippet, and the other three doors — sockets, inbound webhooks
 and connections: `references/other-doors.md`.
 
@@ -460,6 +487,7 @@ If you find yourself typing one, stop.
 | editing `config/api.py` / `asgi.py` / `temporal.py` / `mcp.py` / `settings` / `pyproject.toml` to register an app | an `apps.py` with `depends_on`; drop `api.py` / `consumers.py` / `workflows.py` / `mcp.py` in the app — discovery |
 | `from apps.<x>.activities import …` inside `workflows.py` (even under `imports_passed_through`) | `workflow.execute_activity("<name>", …)` — by name |
 | an `async def` activity reached for by default · `sync_to_async(...)` in an activity, tool or consumer | a plain `def` activity with `close_old_connections()` at both ends (§7 — every activity in this tree is one); `async def` + `apps.core.asyncdb.run_db(fn, …)` is the exception, for work that is genuinely async I/O |
+| a `consumers.py` whose consumer extends `AsyncJsonWebsocketConsumer` directly · a `websocket_urlpatterns` entry with no `token_auth(...)` · a group name built at the join | subclass `apps.realtime.consumers.TenantEventsConsumer`, wrap the pattern in `token_auth(...)`, take every group from `tenant_group` / `org_group` / `user_group` (house rule 58) |
 | `makemigrations --merge` | stop; it is an ordering failure |
 | `CheckConstraint(check=…)` · `index_together` · `unique_together` | `CheckConstraint(condition=…)` · `Meta.indexes` · `Meta.constraints` |
 | `from django.conf.urls import url` · `ugettext*` · `force_text` · `django.utils.timezone.utc` | `django.urls.path` · `gettext*` · `force_str` · `datetime.timezone.utc` |

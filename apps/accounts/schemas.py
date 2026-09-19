@@ -229,6 +229,16 @@ class SsoConnectionOut(Schema):
     client_id: str
     has_client_secret: bool
     email_domains: list[str]
+    #: Which of `email_domains` an operator has confirmed this tenant owns, and
+    #: therefore which of them route a sign-in (a domain claim routes nothing until it is verified).
+    # Empty until then;
+    #: claiming reserves the name, verifying is what makes it answer.
+    #:
+    #: The example is DECLARED rather than synthesised because a synthesised one
+    #: for a `list[str]` says `["verified_domains"]`, and the one thing a reader
+    #: of this field has to understand is that it is a SUBSET of the list above —
+    #: which only a value shaped like a domain can show.
+    verified_domains: list[str] = Field(..., json_schema_extra=example(["acme.com"]))
     default_role: str
     enforced: bool
     created_at: datetime

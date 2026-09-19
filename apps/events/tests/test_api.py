@@ -55,8 +55,33 @@ JSON = "application/json"
 # ADR core-18 took one statement OFF this pin: the default list issues no
 # COUNT any more — `has_more` comes from fetching one row more than asked
 # for. `?include_count=true` puts it back, and costs exactly one more.
-ENDPOINT_LIST_QUERY_BUDGET = 7
-DELIVERY_LIST_QUERY_BUDGET = 7
+#
+# **+3 since Phase R** (ADR core-27, rule 5): the selector asks its kind's
+# `read` at the acting hat, and resolution reads three tables — this person's
+# memberships in the tenant, the grants on them, and the role deltas for the
+# roles on the chain. It is paid ONCE per actor instance whatever the number
+# of `require`s (the PR0 memo), so a route that asked twice would still be +3
+# and not +6. `CATALOGUE_QUERY_BUDGET` does NOT move: `GET /event-types/`
+# reads the declared vocabulary of event names and no kind at all.
+#
+# **House rule 55 put a root read on this path; the register took it off again,
+# and these two numbers did not move.** The kind is TENANT-WIDE and names no
+# organization, so the selector used to resolve the tenant's ROOT to ask at.
+# Since PR5.5 sight is the ACTING HAT's — the read asks with no node and
+# `where_of` answers where the caller is standing — and the write half is
+# untouched: a tenant-wide kind is still WRITTEN at the root, which is why a
+# branch's people can see the tenant's endpoints and not change them.
+#
+# **11 -> 10 -> 10, and the middle number is the one worth reading.** The memo on
+# the tenant instance (`core.models.Tenant`) had already taken the root read off
+# a request whose hat IS the root, which is what these two make (they send no
+# `X-Org` and land on the owner's default membership at the root). So dropping
+# the root read entirely changed nothing HERE — it changed the number a request
+# under a BRANCH hat pays, which used to be one more, once per request, and is
+# now the same as this one. The hat these budgets run under is the root, and
+# that sentence is the pin's own, not an inference (build-contract.md).
+ENDPOINT_LIST_QUERY_BUDGET = 10
+DELIVERY_LIST_QUERY_BUDGET = 10
 CATALOGUE_QUERY_BUDGET = 6
 
 

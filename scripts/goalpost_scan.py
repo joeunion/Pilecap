@@ -591,7 +591,76 @@ CENSUS_PINS = ("scripts/gate_ledger.sh",)
 # names the command `manage.py integrations`, so it cannot be spelled
 # `integrations_audit` to fit the pattern, and an instrument that ships
 # uncensused is precisely the class this census refuses.
-CENSUS_COMMANDS = re.compile(r"^(introspect|integrations|.*_audit|.*_sweep)$")
+#
+# `.*_reconcile` joins the two suffixes for the same reason one rung later. A
+# reconciler is the repair half of a tripwire and it prints the same kind of
+# verdict an operator acts on — agrees / DRIFT / would ask / asked / left, exit
+# 0, 1 or 2 — and before this alternative existed a row for one was REFUSED as a
+# ghost: the name matched nothing, so the population did not carry the file, so
+# the row named a file the census believed was not an instrument. Note what the
+# refusal cost, because it is the shape worth remembering: with no row possible,
+# a `--census` run over a tree carrying a reconciler read CLEAN — not because
+# the command was censused but because it was invisible, which is the weaker of
+# the two reasons this reader can be green.
+#
+# WHY THE POPULATION IS STILL NAMES, AND WHAT PAYS FOR THAT. The honest
+# derivation is what a command IS — a `BaseCommand` that prints a report and
+# then chooses its own exit status, the tell every one of these carries — and it
+# was measured on this tree rather than argued. It sees three of the four the
+# names carry (not `introspect`, which reports no verdict at all and is pinned
+# by name for exactly that reason) and one more the names do not, which would
+# owe a row no author was commissioned for. So the names stay the population,
+# the grammar is READ ANYWAY, and every command the grammar finds outside the
+# population is PRINTED on every run below: a name is a weaker test than the
+# grammar, and the census now says so out loud instead of leaving it in a
+# comment nobody runs.
+#
+# `*_measure` joined the alternation on 2026-09-19, and the sentence above is
+# exactly why it had to: a measurement command such as `zitadel_measure` ships
+# carrying the verdict grammar, so this reader's own grammar half PRINTED it as
+# a candidate — and a row written for it while the name was outside the
+# population was refused as a ghost, which is the state described two
+# paragraphs up. Widening the names is the cheaper half of that pair: it costs
+# one token, it takes nothing away, and the judgement about whether a `_measure`
+# command owes a row is now made once here rather than by whoever next reads the
+# candidate line and decides not to.
+CENSUS_COMMANDS = re.compile(
+    r"^(introspect|integrations|.*_audit|.*_sweep|.*_reconcile|.*_measure)$"
+)
+
+#: The verdict/exit grammar: a command reaching past `CommandError` to choose
+#: its own status after printing what it saw. `CommandError` is Django's error
+#: path and every command has one for a mistyped argument; `raise SystemExit` is
+#: a command saying the exit code IS the finding, which is what the instruments
+#: table's first two columns ask about.
+CENSUS_VERDICT_GRAMMAR = re.compile(r"^\s*raise SystemExit\(", re.MULTILINE)
+
+
+def verdict_grammar_outside(derived: set[str]) -> list[str]:
+    """Commands whose module carries the verdict grammar and whose NAME is missed.
+
+    Not a violation and deliberately not: whether such a command owes a row is a
+    judgement with an author, and a census that manufactured the obligation
+    would also manufacture rows nobody wrote. Printed rather than counted, for
+    the reason every skip in this gate is printed — a blind spot that prints
+    nothing is indistinguishable from a clean bill.
+    """
+    found: list[str] = []
+    for p in sorted(ROOT.glob("apps/*/management/commands/*.py")):
+        rel = str(p.relative_to(ROOT))
+        if p.stem == "__init__" or rel in derived:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise CannotLook(
+                f"census: {rel} is in the command glob and could not be read ({exc}) — the "
+                f"grammar half of this reader cannot say whether it is an instrument"
+            ) from exc
+        if CENSUS_VERDICT_GRAMMAR.search(text):
+            found.append(rel)
+    return found
+
 
 # WHERE THE CENSUS DOES NOT LOOK, and why each one. The population used
 # to be two DIRECTORY LISTINGS — `scripts/` and `scripts/githooks/` — which is
@@ -748,6 +817,25 @@ def census(text: str) -> tuple[int, list[str]]:
         "and nothing else (scripts/goalpost_scan.py:84-89)"
     )
 
+    # THE SECOND DERIVED BLIND SPOT, AND THE SAME RULE AS THE ONE ABOVE. The
+    # command half of the population is matched on the NAME, so a command that
+    # prints a verdict under a name nobody put in the pattern owes no row and
+    # says nothing about it. This is the part the reader cannot be expected to
+    # work out: the grammar is read on every run, and the commands it finds
+    # outside the population are named here one per line, so a name the pattern
+    # should have carried is a line in a log rather than an archaeology.
+    out.append(
+        f"  blind spot: the command half of the population is matched on the NAME "
+        f"(`{CENSUS_COMMANDS.pattern}`), never on the verdict grammar — the commands "
+        f"whose module carries the grammar and whose name the pattern misses are named "
+        f"below, and whether each owes a row is a judgement with an author"
+    )
+    by_grammar = verdict_grammar_outside(set(derived))
+    for p in by_grammar:
+        out.append(f"    verdict grammar, name outside the population: {p}")
+    if not by_grammar:
+        out.append("    none on this tree")
+
     if uncensused or ghost or thin:
         out.append("")
         out.append(
@@ -787,17 +875,93 @@ def _fixture(correctness: str, performance: str = "", velocity: str = "") -> str
     )
 
 
+#: Where the planted command canaries live while they live, and it is the REAL
+#: tree on purpose: `population()` derives the command half of the population
+#: from this checkout's own `apps/*/management/commands/` glob and from nothing
+#: a fixture can inject, so a canary proven against a copy would prove the copy.
+#: `apps/core` because the glob is `apps/*` and core is the app every checkout
+#: has; the file is planted, judged and deleted inside one case, under
+#: try/finally, and the planter REFUSES a path that already exists rather than
+#: clobber a file it could not restore honestly (`quality/gate.py`'s Plant, same
+#: argument).
+CANARY_COMMAND_DIR = "apps/core/management/commands"
+
+
+def _canary_command_body(what: str) -> str:
+    """A planted `BaseCommand` that reports a verdict and chooses its own exit.
+
+    `raise SystemExit` rather than a `CommandError` deliberately: the exit
+    status IS the verdict an operator acts on, which is what the census means by
+    an instrument, and it is the same tell `CENSUS_VERDICT_GRAMMAR` reads.
+    """
+    return (
+        f'"""A planted canary — `--selftest` writes it, judges it and deletes it.\n\n'
+        f"{what}\n"
+        f'"""\n\n'
+        "from __future__ import annotations\n\n"
+        "from typing import Any\n\n"
+        "from django.core.management.base import BaseCommand\n\n\n"
+        "class Command(BaseCommand):\n"
+        '    help = "A planted canary. It reports a verdict and reaches nothing."\n\n'
+        "    def handle(self, *args: Any, **options: Any) -> None:\n"
+        '        self.stdout.write("agrees      the canary looked at nothing at all")\n'
+        '        self.stdout.write("DRIFT       and it would have said so here")\n'
+        "        raise SystemExit(1)\n"
+    )
+
+
+def _canary_row(path: str) -> str:
+    """The instruments row a planted command owes — five cells, three citations."""
+    return (
+        f"| `{path}` | yes — a canary that cannot look raises, and the raise is the exit status "
+        f"(`{path}:1`) | loud — a disagreement is a `DRIFT` line and exit 1 (`{path}:1`) "
+        f"| yes — it sees nothing at all, which is the whole of what it claims (`{path}:1`) "
+        f"| none — planted and deleted inside one self-test case |"
+    )
+
+
+def _instruments_text_with(row: str) -> str:
+    """The real census document with one more row inside its `Instrument` table.
+
+    The row is INSERTED after the header separator rather than appended to the
+    text, because `read_table` stops at the first line that is not a table row:
+    a row appended past the prose that follows the table would be read by
+    nothing and the case would pass by looking at nothing.
+    """
+    lines = _read(CENSUS).splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip().lstrip("> ").strip()
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if not stripped.startswith("|") or not _cells(line):
+            continue
+        if _cells(line)[0].lower() != "instrument":
+            continue
+        if nxt.strip().lstrip("> ").strip().startswith("|") and _is_separator(_cells(nxt)):
+            return "\n".join(lines[: i + 2] + [row] + lines[i + 2 :]) + "\n"
+    raise CannotLook(
+        f"selftest: {CENSUS.name} has no `Instrument` table to plant a row in — the planted "
+        f"population cases have nothing to plant into"
+    )
+
+
+def _plant_command(stem: str, body: str) -> pathlib.Path:
+    target = ROOT / CANARY_COMMAND_DIR / f"{stem}.py"
+    if target.exists():
+        raise CannotLook(
+            f"selftest: {target.relative_to(ROOT)} already exists — the planted population "
+            f"canary writes exactly there and restores by DELETING, which would take "
+            f"somebody's file with it"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body)
+    return target
+
+
 def selftest() -> int:
     ok = True
 
-    def case(
-        name: str, want: int, north: str, register: str, absent: str = "", present: str = ""
-    ) -> None:
+    def judge(name: str, want: int, code: int, lines: list[str], absent: str, present: str) -> None:
         nonlocal ok
-        try:
-            code, lines = scan(north, register)
-        except CannotLook as e:
-            code, lines = 2, [f"CANNOT LOOK — {e}"]
         text = "\n".join(lines)
         bad = []
         if code != want:
@@ -815,6 +979,15 @@ def selftest() -> int:
         if bad:
             for ln in lines:
                 print(f"          | {ln}")
+
+    def case(
+        name: str, want: int, north: str, register: str, absent: str = "", present: str = ""
+    ) -> None:
+        try:
+            code, lines = scan(north, register)
+        except CannotLook as e:
+            code, lines = 2, [f"CANNOT LOOK — {e}"]
+        judge(name, want, code, lines, absent, present)
 
     # (a) a GREEN whose `paths:` glob was touched after the proof date -> STALE, exit 1
     case(
@@ -998,6 +1171,71 @@ def selftest() -> int:
         print(f"FAIL  the census does not agree with the tree: exit {ccode}")
     else:
         print("ok    the census agrees with the tree")
+
+    # THE POPULATION, DRIVEN RATHER THAN ASSERTED. Everything above this line
+    # asks the census about the tree as it is, which is one tree with one
+    # answer: a population that had stopped seeing a whole class of command
+    # would read exactly like a population that sees everything, because the
+    # rows and the derivation would agree about a command NEITHER of them
+    # carries. That is the weaker of the two reasons a census can be green, and
+    # these three cases are the difference — each plants a real command file in
+    # the real glob and reads what the derivation then does with it.
+    print("")
+    print("--- the population, with a command planted in the real glob ---")
+
+    def census_case(
+        name: str,
+        want: int,
+        stem: str,
+        what: str,
+        with_row: bool = False,
+        absent: str = "",
+        present: str = "",
+    ) -> None:
+        planted: pathlib.Path | None = None
+        try:
+            planted = _plant_command(stem, _canary_command_body(what))
+            rel = str(planted.relative_to(ROOT))
+            document = _instruments_text_with(_canary_row(rel)) if with_row else _read(CENSUS)
+            code, lines = census(document)
+        except CannotLook as e:
+            code, lines = 2, [f"CANNOT LOOK — {e}"]
+        finally:
+            if planted is not None:
+                planted.unlink(missing_ok=True)
+        judge(name, want, code, lines, absent, present)
+
+    if ccode != 0:
+        print(
+            "SKIP  the planted-population cases need a tree whose own census is green: a plant "
+            "on top of a disagreement cannot be judged, and the line above says which "
+            "disagreement to fix first"
+        )
+    else:
+        reconciler = f"{CANARY_COMMAND_DIR}/zzz_reconcile.py"
+        by_grammar = f"{CANARY_COMMAND_DIR}/zzz_verdict.py"
+        census_case(
+            "a planted reconciler with NO row -> exit 2, uncensused",
+            2,
+            "zzz_reconcile",
+            "It is named for the repair half of a tripwire, so the population must see it.",
+            present=f"uncensused: {reconciler}",
+        )
+        census_case(
+            "a planted reconciler WITH its row -> exit 0, and the row is not a ghost",
+            0,
+            "zzz_reconcile",
+            "Its row is planted with it, and a row for a real instrument is never a ghost.",
+            with_row=True,
+            absent="censused but not an instrument",
+        )
+        census_case(
+            "a planted verdict command the NAMES miss -> exit 0, and the run says so",
+            0,
+            "zzz_verdict",
+            "Nothing in `CENSUS_COMMANDS` matches this name; only the grammar can see it.",
+            present=f"verdict grammar, name outside the population: {by_grammar}",
+        )
 
     print("")
     print(

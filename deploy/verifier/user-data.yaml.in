@@ -1,0 +1,100 @@
+#cloud-config
+# THE LAUNCH SEAM. This file is the only thing the launch wrapper renders, and
+# it is a FILE rather than a heredoc inside that wrapper on purpose: the reaper
+# reads three paths out of it and the wrapper writes five values into it, so the
+# two halves are landed in the tree before either can be edited alone. A slot
+# renamed on one side and not the other would otherwise be a box that boots with
+# no expiry — which the reaper turns into a halt at its first tick, so the
+# failure is loud and cheap rather than a bill, but loud and cheap is still a
+# wasted launch.
+#
+# EXACTLY FIVE SLOTS, AND THE DRIVE COUNTS THEM:
+#
+#   VERIFIER_PUBKEY         the per-box public half, generated on the operator's
+#                           machine at launch. The private half never leaves it
+#                           and is deleted when the box is taken down.
+#   VERIFIER_OWNER          which session asked for this box, for the census
+#   VERIFIER_EXPIRES        the hard lifetime, ISO-8601 UTC, the reaper's ceiling
+#   VERIFIER_IDLE_MINUTES   the idle threshold in whole minutes
+#   VERIFIER_IMAGE_ID       the AMI this box was launched from — NOT for the
+#                           reaper, and not decoration. It is the machine half
+#                           of every drive verdict this box banks
+#                           (`scripts/gate_ledger.sh`, `drive_machine_digest`):
+#                           two boxes of one image share a key and reuse each
+#                           other's rows, and a box and a laptop never do. It is
+#                           written HERE because a box cannot be asked which
+#                           image it was cut from — IMDS would answer, but IMDS
+#                           cannot be planted by a drive, and a key input no
+#                           drive can move is a key input nobody can prove.
+#
+# The render is `sed`, not envsubst: envsubst is not present by default on
+# either the operator's machine or a minimal Amazon Linux, and a template whose
+# renderer has to be installed first is a step that fails as written.
+#
+# THE KEY ARRIVES HERE AND NOT THROUGH A KEY PAIR. There is no EC2 key pair, no
+# port 22 rule and no ingress rule of any kind: the box's security group is
+# egress-only and every connection is SSH tunnelled through Session Manager. An
+# authorized-key line in user-data is 44 bytes and needs no extra API on the
+# operator's policy, which is why it is this rather than ec2-instance-connect.
+#
+# EVERY VALUE IS QUOTED. An ISO-8601 instant unquoted in YAML is a TIMESTAMP,
+# not a string — it would be re-serialised into some other spelling and the
+# reaper would read a lifetime it cannot parse, which is a halt at the first
+# tick. Quoting is what makes the written file byte-identical to the tag.
+
+users:
+  - name: verifier
+    gecos: verifier box operator
+    shell: /bin/bash
+    # In the docker group so the compose stack is reachable without sudo, and
+    # with NO sudo rule: nothing a verification does needs root, and the one
+    # privileged act on this machine — the halt — belongs to the reaper's
+    # systemd unit rather than to anybody's session.
+    groups: [docker]
+    lock_passwd: true
+    ssh_authorized_keys:
+      - "${VERIFIER_PUBKEY}"
+
+write_files:
+  # Mode 0644 root:root, all three. They are read by the reaper (root) and by a
+  # human over a session; none of them is a secret and none is writable by the
+  # verifier account — a box that could extend its own lifetime is a box with no
+  # lifetime.
+  - path: /etc/verifier/owner
+    owner: "root:root"
+    permissions: "0644"
+    content: "${VERIFIER_OWNER}"
+  - path: /etc/verifier/expires
+    owner: "root:root"
+    permissions: "0644"
+    content: "${VERIFIER_EXPIRES}"
+  - path: /etc/verifier/idle-minutes
+    owner: "root:root"
+    permissions: "0644"
+    content: "${VERIFIER_IDLE_MINUTES}"
+  # The image id, under /etc/djb rather than /etc/verifier: the other three are
+  # the reaper's and this one is the GATE's — read by `drive_machine_digest` on
+  # every drive key this box computes. Same mode and owner for the same reason:
+  # a box that could rewrite its own image id could forge a reuse.
+  - path: /etc/djb/image-id
+    owner: "root:root"
+    permissions: "0644"
+    content: "${VERIFIER_IMAGE_ID}"
+
+runcmd:
+  # The activity marker and the boot marker. `last-activity` is TOUCHED rather
+  # than written — the wrapper touches it on every remote call and a touch
+  # writes no content, so its mtime is the signal. `boot-at` is what lets the
+  # reaper hold for its grace window instead of trusting a clock chrony has not
+  # synced yet.
+  - [install, -d, -m, "0755", -o, root, -g, root, /run/verifier]
+  - [sh, -c, "date +%s > /run/verifier/boot-at"]
+  - [touch, /run/verifier/last-activity]
+  # Owned by the verifier account rather than world-writable: the wrapper's
+  # `touch` needs write permission on this one file and on nothing else.
+  - [chown, "verifier:verifier", /run/verifier/last-activity]
+  # Chrony before the reaper: the grace window is a mitigation, not a fix, and
+  # the fix is the clock being right by the time the window closes.
+  - [systemctl, enable, --now, chronyd]
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, verifier-reaper.timer]

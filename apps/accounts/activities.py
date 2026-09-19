@@ -7,8 +7,14 @@ the one thing that makes this app's activity different from the worked example's
 it also talks to somebody else's API, and that is the whole reason the work is a
 workflow rather than a line in the service.
 
-**This module and the two `zitadel_*` commands are the only importers of
-`apps.accounts.zitadel`**, and house rule 27 is what keeps that true. It is not
+**This module is one of the allow-listed importers of `apps.accounts.zitadel`**,
+and house rule 27 is what keeps that population closed. WHICH modules are on the
+allow-list is the rule's own answer — `python -m quality.gate --explain 27`
+prints it — and listing them here would be a second copy that goes stale the run
+after a shell door is added. A module OFF the list may still import the client
+by carrying rule 27's comment valve with its reason on the line; `manage.py
+zitadel_reconcile` is the one that does, for `configured()` and `ZitadelError`,
+and it makes no management call at all. It is not
 a style preference: a management call carries a credential and can hang, and the
 places that may do it are the places where hanging is a retry rather than a
 request nobody gets an answer to.
@@ -217,7 +223,29 @@ def _apply_workforce_provider(payload: IdentityConfigSync) -> IdentityConfigAppl
     The credentials are read here, in the activity, for the reason every other
     secret in this module is: a client secret in a workflow argument is a client
     secret in Temporal's history.
+
+    **And the environment wins in BOTH directions** (the reconciler's ownership
+    table). An empty `GOOGLE_WORKSPACE_DOMAINS` is the door switched OFF, and a
+    live Google provider over an off door is worse than a missing one: it looks
+    open, Zitadel signs people in through it, and this product refuses every
+    address it asserts. So the same intent — the environment — materialises as a
+    DEACTIVATION when the door is off. Deactivated and not deleted, for the
+    reason `_apply_sso_connection` gives about a disabled connection: the object
+    and its links stay, so a deployment that turns the door back on tomorrow
+    does not find everybody unlinked. A door that is off on both sides is a
+    no-op with an empty resource id, which is the honest answer to "there was
+    nothing to take down".
+
+    The switch is read HERE rather than carried in the payload because the
+    environment is this kind's intent, and a run that carried a copy of it would
+    be materialising what the environment said when the ask was made rather than
+    what it says now.
     """
+    if not [
+        one for one in (getattr(settings, "GOOGLE_WORKSPACE_DOMAINS", []) or []) if str(one).strip()
+    ]:
+        return _take_the_workforce_door_down(payload)
+
     client_id = str(getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "") or "").strip()
     client_secret = str(getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", "") or "").strip()
     resource = zitadel.ensure_google_identity_provider(
@@ -235,6 +263,31 @@ def _apply_workforce_provider(payload: IdentityConfigSync) -> IdentityConfigAppl
         key=payload.key,
         resource_id=resource.id,
         created=resource.created,
+    )
+
+
+def _take_the_workforce_door_down(payload: IdentityConfigSync) -> IdentityConfigApplied:
+    """The other direction of the same intent: the door is off, so shut Zitadel's.
+
+    Its own function rather than a branch inside `_apply_workforce_provider`
+    because the two do different things to somebody else's API and a reader
+    deciding whether a run was safe should not have to follow a negation through
+    an `ensure_*` call. The idempotence is `deactivate_identity_provider`'s —
+    it swallows Zitadel's own already-in-that-state refusal — plus the search by
+    name, which is the only handle either side has on this provider.
+    """
+    name = str(getattr(settings, "GOOGLE_WORKFORCE_IDP_NAME", WORKFORCE_IDP_NAME))
+    provider = zitadel.find_identity_provider(name=name)
+    if provider is None:
+        log.info("accounts.workforce.already_absent", name=name)
+        return IdentityConfigApplied(kind=payload.kind, key=payload.key, resource_id="")
+    resource = zitadel.deactivate_identity_provider(idp_id=str(provider.get("id", "")))
+    log.info("accounts.workforce.deactivated", resource_id=resource.id, name=name)
+    return IdentityConfigApplied(
+        kind=payload.kind,
+        key=payload.key,
+        resource_id=resource.id,
+        created=False,
     )
 
 

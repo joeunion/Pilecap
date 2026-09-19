@@ -120,6 +120,21 @@ REALTIME_PUSH = "realtime.push"
 #: Optional, like the push: looked up with `find()`, because a deployment
 #: without the socket app has no socket to close. Shape: `KicksUser`, below.
 KICK = "realtime.kick"
+#: `apps.realtime.bridge.kick_tenant_from_spine` — close every socket open on
+#: one TENANT, because the tenant itself was suspended or closed (ADR
+#: realtime-2 d, second primitive). A separate name and not a parameter on
+#: `KICK`: the two are reached through different groups (`user_group` against
+#: `tenant_group`) and they answer different questions — "this credential is
+#: gone" against "this workspace is". Folding them into one signature would
+#: make every caller pass a discriminator and would put the group choice in
+#: the caller rather than in the app that owns the groups.
+#: R4 F2 is why it exists: `suspend_tenant` and `close_tenant` wrote a status
+#: and registered nothing, so a darkened tenant was refused at the next
+#: HANDSHAKE and nowhere else while every live socket went on hearing — and
+#: the REST door answered 403 to the same credential for the whole life of
+#: the connection. Optional, looked up with `find()`, like the other two.
+#: Shape: `KicksTenant`, below.
+KICK_TENANT = "realtime.kick_tenant"
 
 
 # --- The shapes --------------------------------------------------------------
@@ -137,6 +152,14 @@ class StartsWorkflowOnCommit(Protocol):
     defers the Temporal client call to `transaction.on_commit`. `id` has no
     default on purpose (house rule 18): a random default would throw away the
     determinism that makes a retried service idempotent.
+
+    `reask_after_failure` DOES default, to `False`, and the default is the
+    contract: it re-opens a run that finished without delivering instead of
+    refusing the honest retry, and a caller that says nothing gets the answer
+    it always got. It is declared here because the callers that most want it —
+    `accounts`' identity runs among them — sit below `apps.workflows` and reach
+    the starter through this name, so a keyword absent from this protocol is a
+    keyword they cannot pass.
     """
 
     def __call__(
@@ -149,6 +172,7 @@ class StartsWorkflowOnCommit(Protocol):
         org: Any = None,
         id: str,
         task_queue: str | None = None,
+        reask_after_failure: bool = False,
     ) -> Any: ...
 
 
@@ -249,6 +273,21 @@ class KicksUser(Protocol):
     def __call__(self, *, user_id: Any, reason: str | None = None) -> None: ...
 
 
+class KicksTenant(Protocol):
+    """`apps.realtime.bridge.kick_tenant_from_spine`.
+
+    Synchronous for the same reason `KicksUser` is, and shaped like it on
+    purpose: the two primitives differ only in WHICH group the instruction
+    goes to, and a caller that had to learn a second calling convention for
+    the same act would eventually get one of them wrong.
+
+    `tenant_id` and not a tenant row, because `core` may not name the model —
+    the same argument, one level up. Optional; looked up with `find()`.
+    """
+
+    def __call__(self, *, tenant_id: Any, reason: str | None = None) -> None: ...
+
+
 #: Every name, and the shape whatever fills it must have. Read by
 #: `apps/core/tests/test_bridge_shape.py`, which is where the pinning happens:
 #: a registrant that gains, loses or renames a keyword fails there instead of
@@ -261,6 +300,7 @@ SHAPES: dict[str, type] = {
     EMIT: EmitsEvent,
     REALTIME_PUSH: PushesToSockets,
     KICK: KicksUser,
+    KICK_TENANT: KicksTenant,
 }
 
 

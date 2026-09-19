@@ -40,12 +40,12 @@ from apps.accounts.adapter import (
     GOOGLE_PROVIDER,
     AccountAdapter,
     SocialAccountAdapter,
-    platform_provider_id,
 )
 from apps.accounts.models import SsoConnection, SsoDomain, SsoIdentity, User
 from apps.accounts.selectors import (
     get_connection_for_email,
     get_platform_login_url,
+    get_platform_provider_id,
     is_workforce_email,
     sso_enforced_for,
 )
@@ -115,7 +115,7 @@ def adapter(request: Any) -> SocialAccountAdapter:
 def platform_assertion(*, email: str, subject: str = "zitadel|1", verified: bool = True) -> Any:
     """One assertion from Zitadel, which is now how everybody arrives."""
     return assertion(
-        provider=platform_provider_id(), subject=subject, email=email, verified=verified
+        provider=get_platform_provider_id(), subject=subject, email=email, verified=verified
     )
 
 
@@ -868,6 +868,24 @@ ACCOUNTS_SCOPE_ENTRIES = {
     # authenticate — the fourth member of the `zitadel_*` shell-door family, and
     # the reason is beside the entry in `quality/rules.yaml`.
     ("27", "allow_import", "apps/accounts/management/commands/zitadel_first_admin.py"),
+    # R2-E1's allow-lists, 2026-09-16: the modules that may route the home realm
+    # and write the identity join — the owner-ratified R2 fix set.
+    ("56", "allow_router", "apps/accounts/selectors.py"),
+    ("56", "allow_router", "apps/accounts/models.py"),
+    ("56", "allow_claim", "apps/accounts/services.py"),
+    ("56", "allow_claim", "apps/accounts/management/commands/verify_sso_domain.py"),
+    ("57", "allow_column", "apps/accounts/services.py"),
+    ("57", "allow_connect", "apps/accounts/adapter.py"),
+    # Added with the sign-in door (design C-13), deliberately and as the
+    # conversation this census exists to force. `/accounts/login/` is the one
+    # URL a person reaches BEFORE they hold a credential, so there is none it
+    # could demand; it is also not a new opening, because allauth's own login
+    # view answered that path unauthenticated at every deployment before this
+    # mount and under the default door still does — the shadow changed which
+    # callable answers, not who may knock. The reason is beside the entry in
+    # `quality/rules.yaml`, and rule 3's set equality is what would notice the
+    # view being deleted and this record outliving it.
+    ("3", "allow_unauthenticated_views", "sign-in"),
 }
 
 

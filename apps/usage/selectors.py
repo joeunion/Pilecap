@@ -31,7 +31,6 @@ from apps.core.log import get_logger
 from apps.core.models import Organization, ScopedQuerySet, Tenant
 from apps.core.schemas import MeasuredBasisOut, MeasuredOut
 from apps.usage.models import UsageEntry
-from apps.usage.policies import USAGE_READ_REPORT
 from apps.usage.types import THRESHOLDS_SETTING, Period, Threshold
 
 log = get_logger("apps.usage.selectors")
@@ -51,6 +50,15 @@ ZERO = Decimal("0")
 
 def list_thresholds(*, tenant: Tenant) -> list[Threshold]:
     """The lines this tenant configured, dropping — loudly — any that do not parse.
+
+    **No key, and no valve either** (rule 54 (d)/(e)). This returns
+    `list[Threshold]`, and a `Threshold` is a frozen dataclass in `types.py`
+    rather than a model — so this read is outside the rule's population by
+    ANNOTATION, the way `apps/realtime`'s `list_subtree_org_ids` is, and a
+    `# read-open:` line here would be a valve the census cannot count sitting on
+    a selector it never looks at. What it reads is `Tenant.settings`, which the
+    caller already holds; there is no row of anybody's and therefore no kind to
+    ask about.
 
     **No query.** The lines live in `Tenant.settings`, which the caller already
     holds, and that is what makes the ratified fast path possible: a deployment
@@ -165,10 +173,12 @@ def get_meter_measure(
     `Organization` rather than an `Actor` because its caller is a service
     measuring the **tenant-wide** total against a tenant-wide line: it passes the
     tenant's root, which is what ADR usage-1 means by "the tenant total is the
-    root's `visible_to(root)` for free". No `require` here for the same reason —
-    the caller is the platform recording its own witnessed side-effect, not a
-    person asking to see somebody's consumption. The door's read is `get_usage`,
-    and that one authorizes.
+    root's `visible_to(root)` for free".
+
+    # read-open: the platform measuring its own witnessed side-effect for the
+    # crossing check — there is no person behind this call and no actor to ask
+    # about, only the tenant's root. The door's read is `get_usage`, and that
+    # one authorizes.
 
     It returns the whole `MeasuredOut` rather than a bare `Decimal` because the
     crossing event publishes the basis, and computing the total twice — once to
@@ -204,12 +214,19 @@ def get_usage(
     question", and a key missing from a mapping cannot say which.
 
     One query, whatever the number of meters or days.
+
+    # read-kind: usage_entry — this returns an aggregate (`MeasuredOut` per
+    # meter) and not rows, so rule 54 (e) cannot resolve the kind from the
+    # annotation; the kind it is authorized under is the kind of the rows it
+    # totals, which `_ledger` reads and `UsageEntry` names.
     """
-    # The DECLARATION rather than a literal: the action name is spelled
-    # once, in `policies.py`, beside the roles a product narrows. A string
-    # re-typed here is an authorization that stops running the day the
-    # declaration is renamed, and nothing would say so.
-    require(actor, USAGE_READ_REPORT.action)
+    # A LITERAL, and the reason is the census (rule 13 clause (iv), rule 54).
+    # This used to be `USAGE_READ_REPORT.action` — a key assembled at import
+    # from a dataclass — and an AST walk cannot classify a key it has to
+    # execute to read: the vocabulary census carried it as `unreadable_prose`
+    # for a whole phase. The word is written now; `policies.py` holds the
+    # sentence and the alias, which is where a rename costs one line.
+    require(actor, "usage_entry.read")
     wanted = None if meters is None else sorted(set(meters))
     rows = _ledger(tenant=tenant, viewer=actor, period=period)
     if wanted is not None:

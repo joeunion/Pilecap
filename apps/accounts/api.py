@@ -301,7 +301,7 @@ def deactivate_user_route(request: TenantRequest, user_id: UUID) -> User:
     """
     actor, tenant = _acting(request)
     return deactivate_user(
-        user=get_member(tenant=tenant, user_id=user_id), actor=actor, tenant=tenant
+        user=get_member(tenant=tenant, user_id=user_id, actor=actor), actor=actor, tenant=tenant
     )
 
 
@@ -354,7 +354,9 @@ def erase_user_route(request: TenantRequest, user_id: UUID) -> User:
     is the trigger to re-run them.
     """
     actor, tenant = _acting(request)
-    return erase_user(user=get_member(tenant=tenant, user_id=user_id), actor=actor, tenant=tenant)
+    return erase_user(
+        user=get_member(tenant=tenant, user_id=user_id, actor=actor), actor=actor, tenant=tenant
+    )
 
 
 # --- Tokens -------------------------------------------------------------------
@@ -662,8 +664,37 @@ def discover_realm(request: HttpRequest, payload: RealmIn) -> RealmOut:
 
 
 def _sso_connections(request: TenantRequest) -> QuerySet[SsoConnection]:
-    """The acting tenant's connections. The only read path through this door."""
-    return list_sso_connections(tenant=request.tenant)
+    """The acting tenant's connections, for the LIST. Asks `sso_connection.read`.
+
+    The read sweep put the capability inside the selector, at the tenant's
+    ROOT, so the list refuses a hat that may not see the tenant's federation
+    posture instead of handing it back an empty page.
+    """
+    actor, tenant = _acting(request)
+    return list_sso_connections(tenant=tenant, actor=actor)
+
+
+def _sso_connection_reach(request: TenantRequest) -> QuerySet[SsoConnection]:
+    """The REACH for a detail route: tenancy only, no capability asked here.
+
+    **Why this is not `_sso_connections`.** A `PATCH` and a `DELETE` each carry
+    their own key — `sso_connection.update`, `sso_connection.disable` — asked
+    by the service at the tenant's root. Resolving the row through the LIST
+    selector would ask `sso_connection.read` first, so a branch administrator
+    attempting a rename would be refused with *"You may not read this SSO
+    connection"* when what they attempted was a write: the right status for the
+    wrong reason, and the sentence is the half a person acts on. The ceiling
+    itself does not move — `test_sso_role_ceiling.py` drives all five acts —
+    because the service's wall is the one that was always deciding.
+
+    **Nothing asks `sso_connection.read` on this path, and that is the point.**
+    This helper is reach and nothing else; the capability for the act is the
+    service's, one call later. There is no detail `GET` on this door — if one
+    is ever added, it is that route's job to ask the read after this fetch,
+    which is R1.1's order (reach, then capability) and what
+    `selectors.get_member` does.
+    """
+    return SsoConnection.objects.for_tenant(request.tenant).prefetch_related("domains")
 
 
 @auth_router.get(
@@ -733,6 +764,12 @@ def create_sso_connection_route(
     **An email domain belongs to exactly one provider across the whole
     product.** Claiming one somebody else already has is refused.
 
+    **Claiming a domain reserves it; it does not route anybody yet.** Nobody
+    signs in through this provider until an operator of this deployment confirms
+    that your organisation owns the domain — ask them to, and they will tell you
+    when it is done. Public mail providers such as `gmail.com` are refused here
+    outright: an identity provider claims the domains its organisation owns.
+
     **`default_role` may not be higher than your own role in the tenant.** A
     provider is a grant that happens later, so an administrator cannot configure
     one that turns arrivals into owners.
@@ -741,12 +778,16 @@ def create_sso_connection_route(
     reports `has_client_secret: true` instead.
 
     Returns `201` with the provider. `protocol` is `oidc`; nothing else is
-    accepted.
+    accepted. `verified_domains` is empty until an operator verifies, and it is
+    the list that says which of your `email_domains` route a sign-in today.
 
     Refusals you can get here:
 
     * `403 forbidden` — you are not an owner or administrator of this tenant, or
       the request resolved no tenant. Send `X-Tenant` naming one you belong to.
+      **Measured at the tenant's root**: an administrator of one branch
+      administers that branch, and may not configure the tenant's identity
+      provider.
     * `400 invalid` — a field is missing or malformed, or `protocol` was
       anything but `oidc`. `errors` names the fields.
     * `409 conflict` — one of the `email_domains` is already claimed.
@@ -793,9 +834,12 @@ def update_sso_connection_route(
     back to re-send it.
 
     Sending `email_domains` **replaces** the list rather than adding to it, and
-    the same one-domain-one-provider rule applies.
+    the same one-domain-one-provider rule applies. A domain you keep keeps its
+    verification; one you remove and send again later starts unverified, and an
+    operator has to confirm it before it routes anybody again.
 
     Returns the provider as it now is. No secret is ever in the response.
+    `verified_domains` says which of the claims route today.
 
     Refusals you can get here:
 
@@ -803,6 +847,9 @@ def update_sso_connection_route(
       acting in.
     * `403 forbidden` — you are not an owner or administrator of this tenant, or
       the request resolved no tenant.
+      **Measured at the tenant's root**: an administrator of one branch
+      administers that branch, and may not configure the tenant's identity
+      provider.
     * `400 invalid` — a field you sent is malformed, or `default_role` is above
       your own role. `errors` names the fields.
     * `409 conflict` — one of the `email_domains` is already claimed elsewhere.
@@ -812,7 +859,7 @@ def update_sso_connection_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    connection = get_object_or_404(_sso_connections(request), pk=connection_id)
+    connection = get_object_or_404(_sso_connection_reach(request), pk=connection_id)
     return update_sso_connection(
         tenant=tenant,
         actor=actor,
@@ -856,10 +903,13 @@ def disable_sso_connection_route(request: TenantRequest, connection_id: UUID) ->
       acting in.
     * `403 forbidden` — you are not an owner or administrator of this tenant, or
       the request resolved no tenant.
+      **Measured at the tenant's root**: an administrator of one branch
+      administers that branch, and may not configure the tenant's identity
+      provider.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    connection = get_object_or_404(_sso_connections(request), pk=connection_id)
+    connection = get_object_or_404(_sso_connection_reach(request), pk=connection_id)
     disable_sso_connection(tenant=tenant, actor=actor, connection=connection)
     return Status(204, None)
 

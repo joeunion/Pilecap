@@ -31,6 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .github/workflows/ci.yml frontend/scripts scripts/check.sh scripts/db.sh scripts/db_sweep.sh scripts/gate_ledger.sh scripts/kill_mine.sh scripts/lifecycle.sh scripts/lifecycle_temporal.py scripts/queue_cited.sh scripts/setup.sh scripts/sweep.sh scripts/temporal_sweep.sh scripts/tests/test_backup_restore.sh scripts/tests/test_loop_ledger.sh scripts/tests/test_loop_scope.sh scripts/tests/test_pm_merge.sh scripts/tests/test_secrets_baseline_guard.sh
 # The drive for `scripts/sweep.sh` and `scripts/lifecycle.sh` — the registry, the
 # four verdicts, the two new Temporal classes, and the unrecognized-shape refusal.
 #
@@ -147,7 +148,11 @@ cannot_look() {
 case "${1:-}" in
 "") ;;
 --list)
-    grep -n '^case_' "$0" | sed 's/() {.*//; s/^/  /'
+    # THE DEFINITION, NOT THE CALL. `^case_` matches the definition line AND the
+    # column-zero invocation at the foot of this file, so every case was named
+    # twice and a reader diffing two `--list` outputs was diffing a doubled list.
+    # `test_list_legs.sh:149` is the form that was already right.
+    grep -n '^case_[A-Za-z0-9_]*() {' "$0" | sed 's/() {.*//; s/^/  /'
     exit 0
     ;;
 *)
@@ -471,10 +476,24 @@ drive() {
     fi
 }
 
+# THE FLOOR UNDER BOTH HALVES. `says_not` over a capture that is
+# empty, missing or pathless is TRUE — it prints `ok` and counts a pass — and
+# `says` over one is a red blaming the subject for a capture that was never
+# taken. Neither is an answer about the run. `drive_capture_refusal`
+# (`drive_preamble.sh` §7) is the shared shape; the refusal below is this
+# drive's own voice.
+capture_floor() {
+    local why
+    why="$(drive_capture_refusal "${CURRENT:-a case}" "${DRIVE_OUT:-}" "${DRIVE_EXIT:-<none>}")" &&
+        cannot_look "$why"
+    return 0
+}
+
 # The second half. A refusal with the right code and the wrong sentence is a
 # refusal nobody can act on, so both are asserted about the same run.
 says() {
     local needle="$1"
+    capture_floor
     if grep -qF -- "$needle" "$DRIVE_OUT"; then
         echo "  ok       ${CURRENT} — says \"${needle}\""
         PASSED=$((PASSED + 1))
@@ -487,6 +506,7 @@ says() {
 
 says_not() {
     local needle="$1"
+    capture_floor
     if grep -qF -- "$needle" "$DRIVE_OUT"; then
         echo "  FAILED   ${CURRENT} — says \"${needle}\" and must not"
         sed 's/^/             | /' "$DRIVE_OUT" | tail -20
@@ -494,6 +514,60 @@ says_not() {
     else
         echo "  ok       ${CURRENT} — does not say \"${needle}\""
         PASSED=$((PASSED + 1))
+    fi
+}
+
+# The floor above is only worth its name if it can be shown to
+# fire, and the showing has to be a RUN of the shipped reader rather than a
+# reading of it. Both readers are driven, in a subshell of this drive's own
+# making, over a capture emptied exactly the way a refactor empties one — the
+# variable cleared. A subshell does not run this shell's EXIT trap, so the
+# plant costs nothing beyond its own two processes.
+case_an_empty_capture_is_could_not_look() {
+    local out="${WORK}/empty-capture.log" rc reader
+    for reader in says says_not; do
+        CURRENT="an emptied capture is could-not-look: ${reader}"
+        rc=0
+        (
+            CURRENT="a planted case"
+            DRIVE_OUT=""
+            DRIVE_EXIT=0
+            "$reader" "NOTHING THIS RUN COULD EVER HAVE PRINTED"
+        ) >"$out" 2>&1 || rc=$?
+        if [ "$rc" != "2" ]; then
+            echo "  FAILED   ${CURRENT} — an emptied capture exited ${rc}, not 2; a reader that answers a question it could not look at is the whole of B.5"
+            sed 's/^/             | /' "$out" | sed -n '1,10p'
+            FAILED=$((FAILED + 1))
+            continue
+        fi
+        if ! grep -qF 'capture with no path at all' "$out"; then
+            echo "  FAILED   ${CURRENT} — exit 2, but the refusal never says the capture is what could not be read"
+            sed 's/^/             | /' "$out" | sed -n '1,10p'
+            FAILED=$((FAILED + 1))
+            continue
+        fi
+        echo "  ok       ${CURRENT} — exit 2, naming the capture and the exit code of the run that did not fill it"
+        PASSED=$((PASSED + 1))
+    done
+
+    # THE NEGATIVE, so the floor is not simply refusing everything: a capture
+    # that IS there and does NOT carry the needle is a red or a pass about the
+    # SUBJECT, never a could-not-look.
+    CURRENT="a capture with bytes in it is judged, not refused"
+    printf 'the subject said something\n' >"${WORK}/non-empty-capture.log"
+    rc=0
+    (
+        CURRENT="a planted case"
+        DRIVE_OUT="${WORK}/non-empty-capture.log"
+        DRIVE_EXIT=0
+        says_not "NOTHING THIS RUN COULD EVER HAVE PRINTED"
+    ) >"$out" 2>&1 || rc=$?
+    if [ "$rc" = "0" ] && grep -qF 'does not say' "$out"; then
+        echo "  ok       ${CURRENT} — the floor is a floor, not an off switch"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — a readable capture exited ${rc}: $(sed -n 1p "$out")"
+        FAILED=$((FAILED + 1))
     fi
 }
 
@@ -1032,7 +1106,14 @@ case_a_rooted_clones_linked_worktree_database_reads_live() {
     local roots="${WORK}/roots" clone="${WORK}/roots/clone-a" wtb="${WORK}/elsewhere/wt-b"
     local base
     mkdir -p "$roots" "${WORK}/elsewhere"
-    if ! git clone --quiet "$(pwd)" "$clone" >"${WORK}/clone.log" 2>&1; then
+    # SHARED, NOT A COPY. Measured on this box from a linked
+    # worktree: a plain clone of this repository is 6.5 s and `--local` is 5.0 s
+    # — `--local` cannot hardlink across the worktree's gitdir here, so it copies
+    # the object store either way — while `--shared --no-hardlinks` is 0.8 s.
+    # The clone is read-only and lives for one case, so borrowing the parent's
+    # objects is exactly what `test_loop_scope.sh:905` already does for the same
+    # reason.
+    if ! git clone --quiet --shared --no-hardlinks "$(pwd)" "$clone" >"${WORK}/clone.log" 2>&1; then
         echo "  FAILED   rooted clone: could not clone this repository into the scratch root"
         sed 's/^/             | /' "${WORK}/clone.log"
         FAILED=$((FAILED + 1))
@@ -1109,7 +1190,14 @@ case_two_roots_are_both_scanned_and_printed() {
     local roots_a="${WORK}/roots-a" roots_b="${WORK}/roots-b"
     local clone="${WORK}/roots-b/clone-b" base
     mkdir -p "$roots_a" "$roots_b"
-    if ! git clone --quiet "$(pwd)" "$clone" >"${WORK}/clone-b.log" 2>&1; then
+    # SHARED, NOT A COPY. Measured on this box from a linked
+    # worktree: a plain clone of this repository is 6.5 s and `--local` is 5.0 s
+    # — `--local` cannot hardlink across the worktree's gitdir here, so it copies
+    # the object store either way — while `--shared --no-hardlinks` is 0.8 s.
+    # The clone is read-only and lives for one case, so borrowing the parent's
+    # objects is exactly what `test_loop_scope.sh:905` already does for the same
+    # reason.
+    if ! git clone --quiet --shared --no-hardlinks "$(pwd)" "$clone" >"${WORK}/clone-b.log" 2>&1; then
         echo "  FAILED   two roots: could not clone this repository into the second root"
         sed 's/^/             | /' "${WORK}/clone-b.log"
         FAILED=$((FAILED + 1))
@@ -1736,18 +1824,40 @@ case_the_redis_answer_is_recorded() {
 # creates or deletes are its own scratch ones.
 
 TEMPORAL_PY="scripts/lifecycle_temporal.py"
+# THE CHECKOUT'S OWN INTERPRETER, for every PYTHON FILE THIS REPOSITORY SHIPS
+# that this drive runs. `python3` off PATH is some other environment's: on a
+# verifier box it is the system 3.9, where `zip(…, strict=True)` — which these
+# files use — is `TypeError: zip() takes no keyword arguments`, and the drive
+# would report that as a finding about the file it was driving. Inline
+# `python3 -c` and heredoc programs below stay as they are: they are stdlib on
+# any Python 3, and their own `command -v python3` guard covers their absence.
+DRIVE_PY="$PWD/.venv/bin/python"
+[ -x "$DRIVE_PY" ] ||
+    cannot_look "this checkout has no .venv/bin/python, and the python files this drive
+   runs are written at the version that venv holds. Run ./scripts/setup.sh first"
+
 
 # A stamp `<n>` seconds in the past, written the way Temporal writes one —
 # trailing `Z`, NINE fractional digits — which is exactly the shape
 # `datetime.fromisoformat` will not read as it finds it. A negative `<n>` is a
 # stamp in the future. This is a fixture GENERATOR, not a second parser: it
 # formats, it never reads.
+#
+# `timezone.utc`, NEVER `datetime.UTC`, and the box is the argument. The comment
+# above says the inline programs are "stdlib on any Python 3" and this one was
+# not: `datetime.UTC` is the 3.11 alias, and the `python3` first on PATH on a
+# verifier box is Amazon Linux 2023's system 3.9, where the import is an
+# `ImportError` on stderr and an empty stamp on stdout. Both clock assertions
+# then read `unknown` and named the PARSER — a drive reporting its own fixture
+# generator as a finding about the file it was driving. `timezone.utc` has been
+# there since 3.2, which is what "any Python 3" has to mean for a program that
+# deliberately does not use the checkout's interpreter.
 stamp_ago() {
     python3 -c '
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-when = datetime.now(UTC) - timedelta(seconds=int(sys.argv[1]))
+when = datetime.now(timezone.utc) - timedelta(seconds=int(sys.argv[1]))
 print(when.strftime("%Y-%m-%dT%H:%M:%S.123456789Z"))
 ' "$1"
 }
@@ -1762,7 +1872,7 @@ case_the_parser_reads_both_of_temporals_time_formats() {
                               "startWorkflowStatus": "WORKFLOW_EXECUTION_STATUS_RUNNING"}],
            "futureActionTimes": ["$(stamp_ago -5430)"]}}]
 JSON
-    row="$(python3 "$TEMPORAL_PY" schedules <"$fixture")"
+    row="$("$DRIVE_PY" "$TEMPORAL_PY" schedules <"$fixture")"
     last="$(printf '%s' "$row" | cut -f2)"
     nxt="$(printf '%s' "$row" | cut -f3)"
     status="$(printf '%s' "$row" | cut -f5)"
@@ -1784,7 +1894,7 @@ case_a_stamp_the_parser_cannot_read_is_unknown_and_never_zero() {
   "type": {"name": "ProbeWorkflow"},
   "startTime": "the day before yesterday"}]
 JSON
-    row="$(python3 "$TEMPORAL_PY" executions <"$fixture")"
+    row="$("$DRIVE_PY" "$TEMPORAL_PY" executions <"$fixture")"
     age="$(printf '%s' "$row" | cut -f3)"
     holds "clock: an unreadable stamp is the -1 sentinel" "-1" "$age"
     # THE WHOLE POINT OF THE SENTINEL. `0s` would read as "it started this
@@ -1804,7 +1914,7 @@ case_a_backlog_is_evidence_of_harm_and_never_of_liveness() {
            {"taskQueueType": "activity", "approximateBacklogCount": 1,
             "approximateBacklogAge": "12m"}]}
 JSON
-    stats="$(python3 "$TEMPORAL_PY" queue <"$fixture")"
+    stats="$("$DRIVE_PY" "$TEMPORAL_PY" queue <"$fixture")"
     pollers="${stats%%|*}"
     backlog="${stats#*|}"
     age="${backlog#*|}"
@@ -1823,11 +1933,11 @@ case_the_parser_refuses_what_it_cannot_read() {
     # A server that said nothing is not a server that said "there is nothing",
     # and the difference has to reach the caller as a status.
     drive "parser: empty stdin is exit 2, not an empty population" 2 -- \
-        bash -c "printf '' | python3 ${TEMPORAL_PY} schedules"
+        bash -c "printf '' | ${DRIVE_PY} ${TEMPORAL_PY} schedules"
     drive "parser: a document that is not JSON is exit 2" 2 -- \
-        bash -c "printf 'Error: connection refused' | python3 ${TEMPORAL_PY} executions"
+        bash -c "printf 'Error: connection refused' | ${DRIVE_PY} ${TEMPORAL_PY} executions"
     drive "parser: an unknown mode is exit 2, never a silent different read" 2 -- \
-        bash -c "printf '[]' | python3 ${TEMPORAL_PY} pollers"
+        bash -c "printf '[]' | ${DRIVE_PY} ${TEMPORAL_PY} pollers"
     says "takes exactly one of"
 }
 
@@ -1970,15 +2080,27 @@ case_a_presence_probe_survives_a_long_scan() {
 #
 #       quiet_tail_files | quiet_tail_sites
 #
-# WHAT THE FIVE ROWS ARE, and the two that are debt rather than decisions. Rows
+# WHAT THE FOUR ROWS ARE, and the one that is debt rather than a decision. Rows
 # 1-3 are not the shape at all — a case label and a report sentence that QUOTE
 # the shape, and the deliberate reproduction of the defect inside the drive
-# whose job is to prove it. Rows 4-5 ARE real members, unconverted, and they are
-# here because they sit outside TIDY-1a's territory (the brief named
-# `test_sweep.sh`, `pm_fold.sh`, `test_pm_fold.sh` and `instruments.md`), not
-# because anybody decided they should stay. A builder does not edit outside its
-# territory to make its own guard green; it says so where the next reader will
-# find it, and the reason field is that saying-so.
+# whose job is to prove it. Row 4 IS a real member, unconverted, and it is here
+# because it sits outside TIDY-1a's territory (the brief named `test_sweep.sh`,
+# `pm_fold.sh`, `test_pm_fold.sh` and `instruments.md`), not because anybody
+# decided it should stay. A builder does not edit outside its territory to make
+# its own guard green; it says so where the next reader will find it, and the
+# reason field is that saying-so.
+#
+# A FIFTH ROW STOOD HERE UNTIL IT COVERED NOTHING. It quoted a
+# `sed … | grep -q` in `test_loop_scope.sh` whose needle was an `apps/` path;
+# the site itself was converted to an `awk` that reads to EOF in some later
+# rung, and this row went on being an allow-list for a pipeline that no longer
+# exists. It is deleted for the reason the two GQ-1 rows above it were deleted
+# — a census row covering zero live sites is an allow-list that has stopped
+# meaning anything — and deleting it also takes the only `apps/` path this
+# drive spells out of the file, so its `# drives:` declaration no longer has to
+# claim the core app for a quotation. The census key is site text, so the
+# deletion is provable: run `quiet_tail_files | quiet_tail_sites` and no hit
+# names that file.
 #
 # The two rows that stood here until 2026-09-07 — `check.sh|^#!.*sh$` and
 # `gate_ledger.sh|PARTITION_KEY_RE` — are GONE, and not because the sites were
@@ -2075,7 +2197,6 @@ quiet_tail_census() {
 scripts/tests/test_loop_ledger.sh|CURRENT="no '| grep @Q@' at a pipeline tail in the selection machinery"|NOT THE SHAPE: a case label that quotes the shape it is about. The scanner reads text and cannot tell a pipeline from a sentence describing one; the equality key means this row admits this one label and no other line of that file.
 scripts/tests/test_loop_ledger.sh|} | grep @Q@ MATCH|NOT DEBT, THE PROOF: the deliberate reproduction of this very defect, inside the drive whose job is to show it returns the wrong answer under pipefail. Converting it would delete the evidence the conversion rests on.
 scripts/tests/test_loop_ledger.sh|ok "reproduced: '| grep @Q@' under pipefail returned ${red} on a MATCH"|NOT THE SHAPE: the sentence that reports the reproduction above. Prose, in a string, quoting the marker.
-scripts/tests/test_loop_scope.sh|if sed 's/#.*$//' "$ROOT/scripts/loop_tier.sh" | grep @Q@ 'apps/core'; then|A REAL MEMBER, UNCONVERTED, out of TIDY-1a territory (the brief names test_sweep.sh, pm_fold.sh, test_pm_fold.sh, instruments.md) and flagged to the PM as a follow-up. Producer is one comment-stripped copy of loop_tier.sh, 33 KiB today: under the 64 KiB buffer this morning, which the 1/500 measurement above says is not a guarantee, and which nobody re-measures when loop_tier.sh grows.
 scripts/tests/test_secrets_baseline_guard.sh|if grep -n 'detect-secrets scan --baseline' "$f" | grep @Q@vE '^[0-9]+:[[:space:]]*(#|echo |printf )'; then|A REAL MEMBER, UNCONVERTED, out of TIDY-1a territory and flagged to the PM as a follow-up. Producer is one file's matching lines, short today; the guard it sits in is the one that catches a baseline being silently truncated, so a false ABSENT here is expensive.
 CENSUS
 }
@@ -2315,18 +2436,41 @@ case_the_frame_has_exactly_one_temporal_parser() {
     holds "one parser: no inline python program remains in the registry" "0" "$inline"
 }
 
-case_the_census_says_what_a_schedule_is_doing() {
+# ONE RUN OF `--class schedule --only <scratch>`, TWO CASES. The
+# two cases below asked byte-identical questions of the broom and read
+# different answers out of the transcript — one that the census is dated, one
+# that a HALF-SCANNED run prints no roll-up. Two runs is two answers, and the
+# second one is the one nobody read; the memo is the idiom this file already
+# uses for `$DRIVE_OUT` (the `drive`/`says` pair above).
+SCHEDULE_CENSUS_READY=""
+SCHEDULE_CENSUS_OUT=""
+SCHEDULE_CENSUS_RC=0
+schedule_census_once() {
+    if [ -n "$SCHEDULE_CENSUS_READY" ]; then
+        DRIVE_OUT="$SCHEDULE_CENSUS_OUT"
+        DRIVE_EXIT="$SCHEDULE_CENSUS_RC"
+        return 0
+    fi
     plant_databases
     plant_temporal
     drive "census: the scratch schedule is dated, not just named" 0 -- \
         ./scripts/sweep.sh --class schedule --only "$SCRATCH_BASE"
+    SCHEDULE_CENSUS_OUT="$DRIVE_OUT"
+    SCHEDULE_CENSUS_RC="$DRIVE_EXIT"
+    SCHEDULE_CENSUS_READY=1
+}
+
+case_the_census_says_what_a_schedule_is_doing() {
+    schedule_census_once
     says "starts Lc2ScratchNeverRuns"
     says "NOTHING POLLING"
 }
 
 case_the_graveyard_rollup_counts_what_nothing_polls() {
-    plant_databases
-    plant_temporal
+    # NO SECOND PLANT. `schedule_census_once` above planted both, and nothing
+    # between here and there sweeps: the only `--force-foreign` runs in this
+    # file are hundreds of lines earlier and this pair is the last plant of the
+    # run. A re-plant is two `lc_temporal` calls for a world already standing.
     drive "rollup: the scratch queue is reported stranded" 0 -- \
         ./scripts/sweep.sh --class task-queue --only "$SCRATCH_BASE"
     says "stranded: queues NOTHING IS POLLING that no visible checkout owns"
@@ -2342,8 +2486,13 @@ case_the_rollup_is_silent_about_what_it_did_not_look_at() {
     # The roll-up needs BOTH Temporal scans. A `--class schedule` run took only
     # one, so it must not print a population figure at all: a roll-up assembled
     # from half the population is a number nobody can act on.
-    drive "rollup: a half-scanned run prints no roll-up" 0 -- \
-        ./scripts/sweep.sh --class schedule --only "$SCRATCH_BASE"
+    #
+    # THE SAME RUN THE CENSUS CASE READ, and that is the point rather than an
+    # economy: the transcript this case says is missing a roll-up is the very
+    # transcript the case above says carries the dated schedule, so the two
+    # readings cannot drift apart onto two different runs of one command.
+    schedule_census_once
+    CURRENT="rollup: a half-scanned run prints no roll-up"
     says_not "stranded: queues NOTHING IS POLLING"
 }
 
@@ -2393,6 +2542,22 @@ case_two_checkouts_run_the_sweep_drive_concurrently_and_both_stay_green() {
         return
     fi
     CURRENT="two concurrent checkouts: both stay green"
+    # WHAT THIS CASE COULD NOT SAY, AND WHY IT CAN NOW. On CI run 35241431444
+    # it printed one line — `clone b exited 0 — wanted '0', got '1'` — and
+    # nothing else. The nested run's own transcript went to `$log_b` under
+    # `$WORK`, `$WORK` is destroyed with the runner, and the whole of what
+    # anybody could learn afterwards was that SOMETHING in a nested copy of this
+    # drive reddened on Linux. It did not reproduce on a laptop under the
+    # runner's own environment (209 passed · 0 failed · 1 skipped), so the cause
+    # is still OPEN and is recorded as open rather than guessed at.
+    #
+    # Two things changed below so the next run answers instead of asking: a
+    # non-zero clone prints the nested run's own reds (or its tail, if it died
+    # before printing any), and a clone that exited 2 is reported as
+    # could-not-look rather than as a red — 2 outranks 1 here exactly as it does
+    # everywhere else, and a busy runner that could not create a database is not
+    # a concurrency defect.
+    #
     # TWO CLONES, so the two derivations differ the only way they can: by path.
     # `--local` hardlinks the object store, so this costs seconds rather than a
     # copy of the repository.
@@ -2411,13 +2576,27 @@ case_two_checkouts_run_the_sweep_drive_concurrently_and_both_stay_green() {
     # overlaid so each clone runs the tree under test at its own path.
     cp -R "${SCRATCH_TOPLEVEL}/scripts/." "${a}/scripts/"
     cp -R "${SCRATCH_TOPLEVEL}/scripts/." "${b}/scripts/"
+    # AND THE INTERPRETER, BY SYMLINK, for the same reason the scripts are
+    # overlaid: a clone carries tracked files and `.venv` is ignored, so each
+    # clone would start with no interpreter of its own. `sweep.sh` and this
+    # drive both now require the CHECKOUT'S python — a repository python file
+    # run on whatever `python3` is first on PATH is what took the first off-box
+    # gate run down — and a clone with none is a could-not-look, correctly, at
+    # which point this case measures a refusal instead of a concurrency. The
+    # symlink is what makes each clone a checkout rather than a source tree.
+    ln -s "${SCRATCH_TOPLEVEL}/.venv" "${a}/.venv" 2>/dev/null || true
+    ln -s "${SCRATCH_TOPLEVEL}/.venv" "${b}/.venv" 2>/dev/null || true
     local log_a="${WORK}/concurrent-a.log" log_b="${WORK}/concurrent-b.log"
     local pid_a pid_b rc_a=0 rc_b=0
     # BACKGROUNDED AND WAITED ON IN THE FOREGROUND, never detached: a run this
     # case does not wait for is a run this case did not measure.
-    (cd "$a" && DJB_SWEEP_DRIVE_NESTED=1 ./scripts/tests/test_sweep.sh) >"$log_a" 2>&1 &
+    # NARROWED, AND THE CHILD SAYS WHICH CASES IT RAN. The four
+    # things read out of each transcript below are claims about the DERIVATION,
+    # and `DJB_SWEEP_DRIVE_CHILD=1` runs exactly the plant/destroy chain over
+    # it — the argument, and what it gives up, is at `SWEEP_CHILD_CHAIN`.
+    (cd "$a" && DJB_SWEEP_DRIVE_NESTED=1 DJB_SWEEP_DRIVE_CHILD=1 ./scripts/tests/test_sweep.sh) >"$log_a" 2>&1 &
     pid_a=$!
-    (cd "$b" && DJB_SWEEP_DRIVE_NESTED=1 ./scripts/tests/test_sweep.sh) >"$log_b" 2>&1 &
+    (cd "$b" && DJB_SWEEP_DRIVE_NESTED=1 DJB_SWEEP_DRIVE_CHILD=1 ./scripts/tests/test_sweep.sh) >"$log_b" 2>&1 &
     pid_b=$!
     wait "$pid_a" || rc_a=$?
     wait "$pid_b" || rc_b=$?
@@ -2451,7 +2630,49 @@ case_two_checkouts_run_the_sweep_drive_concurrently_and_both_stay_green() {
         fi
         DRIVE_OUT="$log"
         CURRENT="two concurrent checkouts: clone ${which}"
-        holds "two concurrent checkouts: clone ${which} exited 0" "0" "$rc"
+        # THE STATUS AND THE TRANSCRIPT, because one without the other is a red
+        # nobody can act on. `holds` prints a status and no words — which is the
+        # right shape for every other caller and the wrong one here, where the
+        # thing that failed is a WHOLE NESTED RUN of this same drive whose own
+        # transcript went to a file under `$WORK`. On CI run 35241431444 that
+        # produced exactly one line — `clone b exited 0 — wanted '0', got '1'` —
+        # and `$WORK` was destroyed with the runner, so the only witness to why
+        # a nested drive reddened was gone before anybody read the log.
+        #
+        # So the excerpt is the deliverable, not the path: the nested run's own
+        # red lines if it printed any, and its tail if it died before it could.
+        if [ "$rc" = "0" ]; then
+            echo "  ok       two concurrent checkouts: clone ${which} exited 0 — 0"
+            PASSED=$((PASSED + 1))
+        else
+            local excerpt=""
+            excerpt="$(grep -aE '^  (FAILED|SKIPPED)|^!!|^ +!!' "$log" 2>/dev/null || true)"
+            if [ "$rc" = "2" ]; then
+                # 2 OUTRANKS 1, AND IT OUTRANKS IT HERE TOO. The nested run is
+                # this same drive, so its statuses are this drive's: 1 is a
+                # property that did not hold, 2 is a run that COULD NOT LOOK —
+                # a database it could not create, a stack that did not answer,
+                # a scratch path it refused. Reporting a could-not-look as a
+                # red would send the next reader hunting for a concurrency bug
+                # that is a busy machine, and reporting it as a pass is the
+                # thing this repository refuses everywhere.
+                echo "             | clone ${which} exited 2 — it could not look, which is not a red:"
+                printf '%s\n' "${excerpt:-$(tail -n 30 "$log" 2>/dev/null || true)}" |
+                    sed 's/^/             | /' | sed -n '1,40p'
+                cannot_look "the nested run in clone ${which} exited 2 (could not look) — its own words are above. Nothing about concurrent checkouts was asserted, and a drive that could not run its cases has not cleared them."
+            fi
+            echo "  FAILED   two concurrent checkouts: clone ${which} exited 0 — wanted '0', got '${rc}'"
+            if [ -z "$excerpt" ]; then
+                excerpt="$(tail -n 30 "$log" 2>/dev/null || true)"
+                echo "             | (it printed no red of its own — the last 30 lines of its transcript:)"
+            else
+                echo "             | (the nested run's own reds, from ${log##*/}:)"
+            fi
+            # Read whole, then slice: a pipeline tail that stops early takes its
+            # producer's exit status with it (the pipefail census).
+            printf '%s\n' "$excerpt" | sed 's/^/             | /' | sed -n '1,40p'
+            FAILED=$((FAILED + 1))
+        fi
         says_not "MUTATED THE REAL REPOSITORY"
         # The shape the shared constant produced: one run's sweep naming — and
         # destroying — the other's plant.
@@ -2472,66 +2693,107 @@ echo "  this checkout   ${OUR_BASE} (the derivation; ownership is never the pin)
     echo "  DATABASE_NAME    ${DATABASE_NAME} — exported, so it wins for CONNECTING (db.sh rule 1)"
 echo "  scratch identity ${SCRATCH_BASE} (created and torn down by this driver)"
 
-case_registry_is_the_declared_population
-case_registry_declares_all_seven_columns
-case_registry_claims_every_planted_shape
-case_verdict_grammar_answers_all_four
-case_one_enumerator_two_consumers
-case_sweep_refuses_an_unknown_flag
-case_sweep_refuses_force_foreign_without_sweep
-case_sweep_refuses_an_empty_only
-case_sweep_refuses_a_root_that_is_not_there
-case_sweep_refuses_an_unknown_class
-# BEFORE the first plant, because it plants the scratch database itself and
-# drops it again: a child of this file must meet residue and nothing else.
-case_a_leftover_plant_from_a_killed_run_is_a_refusal_naming_the_broom
-# BEFORE the first plant: the sibling this file proves every dead-queue property
-# on is REQUIRED pollerless and empty, not assumed to be (that third pattern).
-case_the_dead_queue_sibling_is_required_empty_before_anything_is_planted
+# --- THE CHILD'S NARROWED SET ------------------------------------------------
+#
+# WHAT A CHILD IS FOR, and it is not "this drive again". The concurrency case
+# below spawns two whole nested runs of this file from two clones, at once, and
+# reads four things out of each: that it printed a scratch identity, that the
+# two identities DIFFER, that neither transcript ever names the other's, and
+# that neither exited non-zero. Every one of those is a claim about the
+# DERIVATION and about a plant/destroy chain over it — and the chain is five
+# cases long, not fifty. The other forty-four were re-proving, twice over and
+# concurrently, properties the parent had already proved serially, which is what
+# made this one case most of the drive's wall clock (395 s of it measured by the
+# lead; 493 s on this box under load).
+#
+# SO THE CHILD RUNS THE CHAIN AND SAYS SO. `DJB_SWEEP_DRIVE_CHILD=1` selects
+# the five cases that would REDDEN if two checkouts shared one derivation —
+# plant, survive a non-force sweep, destroy with `--force-foreign`, and find it
+# gone — and the child's banner names them, so a reader of a nested transcript
+# can see what was and was not asked. It is set only by the concurrency case;
+# `DJB_SWEEP_DRIVE_NESTED=1` alone (the leftover-plant child, which refuses at
+# startup before any case) still means "every case".
+#
+# WHAT THIS GIVES UP, declared: a defect that appears only when two checkouts
+# run some OTHER case at the same time is now invisible here. The trade is
+# argued rather than assumed — the isolation the case exists to prove is the
+# derivation's, the chain above is where the derivation is used destructively,
+# and a case that neither plants nor destroys cannot collide with a peer's plant.
+SWEEP_CHILD_CHAIN="case_the_dead_queue_sibling_is_required_empty_before_anything_is_planted
 case_new_classes_are_censused_as_foreign
 case_sweep_alone_leaves_foreign_alone
-# The two refusals, run while the decoy is still planted: they have to be
-# asked with something in scope to lose, or "nothing was destroyed" is a sentence
-# about an empty world.
-case_force_foreign_without_roots_is_refused_and_drops_nothing
-case_only_does_not_license_force_foreign_without_roots
-case_db_sweep_force_foreign_without_roots_is_refused
 case_force_foreign_prints_then_acts
-case_the_scratch_machinery_is_actually_gone
-case_a_refused_shape_survives_force_foreign
-case_a_rooted_clones_linked_worktree_database_reads_live
-case_two_roots_are_both_scanned_and_printed
-case_an_unrecognized_shape_is_exit_2
-case_a_declared_shape_is_not_unrecognized
-case_a_dot_env_pin_does_not_decide_who_owns_what
-case_an_exported_pin_does_not_move_this_checkouts_identity
-case_owning_is_not_a_licence_to_destroy
-case_this_checkouts_running_work_survives_force_foreign
-case_assert_none_is_silent_on_an_empty_scope
-case_assert_none_fails_on_a_populated_scope
-case_assert_none_refuses_to_be_a_broom
-case_the_gate_census_asserts_open_executions_too
-case_the_gate_census_remedy_actually_clears_a_strand
-# AFTER the remedy case, on purpose: this one plants a run on this checkout's own
-# queue, and the remedy case's re-green assertion is over exactly that scope.
-case_assert_none_exempts_this_checkouts_own_working_set_in_use
-case_assert_none_keeps_its_teeth_on_an_owned_instance_nothing_is_using
-case_assert_none_still_fails_on_a_stray_run_this_checkout_owns
-case_the_redis_answer_is_recorded
-case_the_parser_reads_both_of_temporals_time_formats
-case_a_stamp_the_parser_cannot_read_is_unknown_and_never_zero
-case_a_backlog_is_evidence_of_harm_and_never_of_liveness
-case_the_parser_refuses_what_it_cannot_read
-case_a_presence_probe_survives_a_long_scan
-case_the_frame_has_exactly_one_temporal_parser
-case_the_census_says_what_a_schedule_is_doing
-case_the_graveyard_rollup_counts_what_nothing_polls
-case_the_rollup_is_silent_about_what_it_did_not_look_at
-case_the_ownership_of_the_machine_state_layer_is_argued
-# LAST, and the most expensive: it runs this whole file twice more, from two
-# clones, at once. Everything above has torn its own plants down by now, so the
-# two children meet a machine in the state a hand-run would leave it in.
-case_two_checkouts_run_the_sweep_drive_concurrently_and_both_stay_green
+case_the_scratch_machinery_is_actually_gone"
+
+if [ -n "${DJB_SWEEP_DRIVE_CHILD:-}" ]; then
+    echo "  narrowed       DJB_SWEEP_DRIVE_CHILD=1 — this child runs the clone-isolation chain only:"
+    printf '%s\n' "$SWEEP_CHILD_CHAIN" | sed 's/^/                   /'
+    for case_fn in $SWEEP_CHILD_CHAIN; do
+        "$case_fn"
+    done
+else
+    case_an_empty_capture_is_could_not_look
+    case_registry_is_the_declared_population
+    case_registry_declares_all_seven_columns
+    case_registry_claims_every_planted_shape
+    case_verdict_grammar_answers_all_four
+    case_one_enumerator_two_consumers
+    case_sweep_refuses_an_unknown_flag
+    case_sweep_refuses_force_foreign_without_sweep
+    case_sweep_refuses_an_empty_only
+    case_sweep_refuses_a_root_that_is_not_there
+    case_sweep_refuses_an_unknown_class
+    # BEFORE the first plant, because it plants the scratch database itself and
+    # drops it again: a child of this file must meet residue and nothing else.
+    case_a_leftover_plant_from_a_killed_run_is_a_refusal_naming_the_broom
+    # BEFORE the first plant: the sibling this file proves every dead-queue property
+    # on is REQUIRED pollerless and empty, not assumed to be (that third pattern).
+    case_the_dead_queue_sibling_is_required_empty_before_anything_is_planted
+    case_new_classes_are_censused_as_foreign
+    case_sweep_alone_leaves_foreign_alone
+    # The two refusals, run while the decoy is still planted: they have to be
+    # asked with something in scope to lose, or "nothing was destroyed" is a sentence
+    # about an empty world.
+    case_force_foreign_without_roots_is_refused_and_drops_nothing
+    case_only_does_not_license_force_foreign_without_roots
+    case_db_sweep_force_foreign_without_roots_is_refused
+    case_force_foreign_prints_then_acts
+    case_the_scratch_machinery_is_actually_gone
+    case_a_refused_shape_survives_force_foreign
+    case_a_rooted_clones_linked_worktree_database_reads_live
+    case_two_roots_are_both_scanned_and_printed
+    case_an_unrecognized_shape_is_exit_2
+    case_a_declared_shape_is_not_unrecognized
+    case_a_dot_env_pin_does_not_decide_who_owns_what
+    case_an_exported_pin_does_not_move_this_checkouts_identity
+    case_owning_is_not_a_licence_to_destroy
+    case_this_checkouts_running_work_survives_force_foreign
+    case_assert_none_is_silent_on_an_empty_scope
+    case_assert_none_fails_on_a_populated_scope
+    case_assert_none_refuses_to_be_a_broom
+    case_the_gate_census_asserts_open_executions_too
+    case_the_gate_census_remedy_actually_clears_a_strand
+    # AFTER the remedy case, on purpose: this one plants a run on this checkout's own
+    # queue, and the remedy case's re-green assertion is over exactly that scope.
+    case_assert_none_exempts_this_checkouts_own_working_set_in_use
+    case_assert_none_keeps_its_teeth_on_an_owned_instance_nothing_is_using
+    case_assert_none_still_fails_on_a_stray_run_this_checkout_owns
+    case_the_redis_answer_is_recorded
+    case_the_parser_reads_both_of_temporals_time_formats
+    case_a_stamp_the_parser_cannot_read_is_unknown_and_never_zero
+    case_a_backlog_is_evidence_of_harm_and_never_of_liveness
+    case_the_parser_refuses_what_it_cannot_read
+    case_a_presence_probe_survives_a_long_scan
+    case_the_frame_has_exactly_one_temporal_parser
+    case_the_census_says_what_a_schedule_is_doing
+    case_the_graveyard_rollup_counts_what_nothing_polls
+    case_the_rollup_is_silent_about_what_it_did_not_look_at
+    case_the_ownership_of_the_machine_state_layer_is_argued
+    # LAST, and the most expensive: it runs this whole file twice more, from two
+    # clones, at once. Everything above has torn its own plants down by now, so the
+    # two children meet a machine in the state a hand-run would leave it in.
+    case_two_checkouts_run_the_sweep_drive_concurrently_and_both_stay_green
+fi
 
 echo "test_sweep: ${PASSED} passed · ${FAILED} failed · ${SKIPPED} skipped"
 if [ "$SKIPPED" -gt 0 ]; then

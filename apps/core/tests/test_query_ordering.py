@@ -1,3 +1,4 @@
+# census: cross-app population=apps/*/*.py,apps/*/api/*.py for ordered_by call sites in the doors
 """`ordered_by` keeps the promise the selector made underneath it.
 
 This guards a real bug (ADR core-9). The bug it closes is

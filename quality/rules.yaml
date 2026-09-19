@@ -202,6 +202,10 @@ rules:
   - id: "2"
     name: models-inherit-basemodel
     enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for"
     statement: >
       Every concrete model in a local app inherits core.models.BaseModel
       (UUIDv7 pk, created_at, updated_at). Read off the live model registry.
@@ -231,6 +235,10 @@ rules:
   - id: "3"
     name: routes-declare-auth-and-paginate
     enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for"
     statement: >
       Every API route carries an explicit auth= — on its router or the route —
       and never auth=None outside the allow-list below; every list route is
@@ -344,6 +352,24 @@ rules:
             client can break, and everything in it is already public — the
             issuer is in every redirect and the resource URL is the endpoint
             being called.
+        - url_name: "sign-in"
+          view: "apps.accounts.views.sign_in"
+          reason: >
+            THE sign-in page. It is the one URL in this deployment that is
+            reached BEFORE anybody holds a credential, so there is none it
+            could demand — demanding one is the door locked from the inside.
+            It shadows `/accounts/login/` one line ahead of `allauth.urls`
+            (design C-13) and under `SIGN_IN_DOOR=hosted`, the default, it
+            calls allauth's own `LoginView` and is byte-identical to the page
+            that was already open at this URL and already unauthenticated.
+            Under `ours` it draws the entrance frames and POSTs a password to
+            the sign-in CHECK (`apps/accounts/signin.py`), which holds the
+            four fail-closed rules, our own per-address and per-client
+            throttle in front of the identity platform's lockout, and one
+            sentence for a wrong password, an unknown address and a locked
+            account alike. It writes no row of ours: the only writer on the
+            road is allauth's `complete_social_login`, through the adapter
+            whose three refusals decide whether a check becomes a session.
         - url_name: "api-not-found"
           view: "config.api.api_not_found"
           reason: >
@@ -378,6 +404,81 @@ rules:
             retires the reader-less-declaration finding: it is the bootstrap
             page the CSRF comment in
             config/settings/base.py used to name in the abstract.
+        - url_name: "admin-login"
+          view: "apps.accounts.admin.admin_login"
+          demands: >
+            a session, and then staff. It shadows `/admin/login/` one line ahead
+            of `admin.site.urls` (ADR ident-4): Django's own page there was
+            an Email and a Password field POSTing against `User.password`, which
+            is the second credential store the ADR closed. Anonymous is a 302 to
+            the one sign-in door and nothing is rendered — `welcome`'s shape,
+            which is why it is in this key and not the one above; signed in and
+            staff is a 302 into the admin; signed in and not staff is a 403 page
+            in the entrance shell saying why, with no form, no field and no
+            retry. A POST is 405 and reaches no authentication backend at all.
+            It reads nothing but the session it was handed and writes nothing.
+            It carries `ensure_csrf_cookie` because the page it replaced issued
+            that cookie by rendering a form, and four over-the-wire modules take
+            their server-issued token from a GET of this URL; a CSRF token
+            authenticates nobody and is useless without the session it is bound
+            to.
+        # THE SAME SHADOW, THE TWO URLS BEHIND IT. These two entries are
+        # also the canary that reds when the mount is severed: this clause's
+        # last branch fires `djb.E031` for a name recorded here that no
+        # first-party plain view is mounted under, so deleting either
+        # `config/urls.py` line turns the reason below into a stale judgement
+        # and says so by name.
+        - url_name: "admin-password-change"
+          view: "apps.accounts.admin.admin_password_change"
+          demands: >
+            a session, and nothing more — and unlike its sibling above, being
+            staff buys nothing here, because the page is gone for everybody.
+            It shadows `/admin/password_change/`, which answered 200 with three
+            `type="password"` inputs and whose POST changed `User.password` on
+            the row: the second credential store ADR ident-4 closed, still
+            writable one URL behind the login page I8 shut. Anonymous is a 302
+            to the one sign-in door and nothing is rendered (`welcome`'s shape,
+            which is why it is in this key); any session is a 403 page in the
+            entrance shell saying why, with no form, no field and no retry. A
+            POST is 405 and reaches no form at all. It reads nothing but the
+            session it was handed and writes nothing.
+        - url_name: "admin-password-change-done"
+          view: "apps.accounts.admin.admin_password_change"
+          demands: >
+            a session, and the same nothing more: it is the SAME callable as
+            the entry above, mounted at `/admin/password_change/done/`. The
+            page it replaces said "Password change successful" — true of
+            nothing, in a deployment whose credentials live at the identity
+            platform — and it is reachable by typing a URL that was in
+            somebody's history long after the form in front of it is gone. Two
+            mounts and one view rather than two views: one refusal page is the
+            whole behaviour, and a second callable would be a second place for
+            it to drift.
+        # THE THIRD PASSWORD SURFACE, and it is in this key BECAUSE the rung
+        # refused it. `DjangoUserAdmin.user_change_password` mounts inside
+        # `get_urls()`, so it is not shadowable from `config/urls.py`; the
+        # fix overrides the method, and overriding it moved its `__module__`
+        # from `django.contrib.auth.admin` to `apps.accounts.admin` — which is
+        # what put it in this census for the first time. That is the canary
+        # working in both directions: delete the override and the name falls
+        # out of the live population, leaving this entry stale, which is
+        # `djb.E031` by name.
+        - url_name: "admin:auth_user_password_change"
+          view: "apps.accounts.admin.UserAdmin.user_change_password"
+          demands: >
+            a session, staff, and `auth.change_user` — `AdminSite.admin_view`
+            wraps it, so an anonymous browser never reaches the callable at
+            all and a staff member without the permission is Django's own 403.
+            It is in this key rather than the open one for that reason and not
+            for its body, which refuses everybody: on the baseline of the rung
+            that closed it a SUPERUSER GET answered 200 with two
+            `type="password"` inputs and the POST wrote ANOTHER PERSON'S
+            `User.password` with no current password asked for — the widest of
+            the three doors onto the store ADR ident-4 closed, and reachable
+            for exactly the population `createsuperuser` creates. It now
+            renders the same 403 refusal page the two shadowed `AdminSite`
+            URLs do. It reads nothing but the session it was handed and writes
+            nothing.
     # Re-pinned at the measurement in the commit that fixed
     # `count_routes`' package blindness — it read 69 where the live registry has
     # 86, because it walked `api.py` by basename and `apps/core/api/routes.py`
@@ -525,6 +626,9 @@ rules:
   - id: "5"
     name: list-query-budgets
     enabled: true
+    memo:
+      "no": "this rule reads perf/measure_hierarchy.py and reloads the perf.seed module, both outside
+        every scope kind's roots, so the walk this key is built from cannot see either of them move"
     # WIDENED by cycle P3 E1 (ADR gate-2): the scope grows from "list
     # endpoints" to the DECLARED hot-path registry — rule 35's `registry:`
     # list below, the plan's ratified location for the dotted selector paths.
@@ -941,6 +1045,10 @@ rules:
   - id: "11"
     name: canonical-file-shape
     enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for"
     statement: >
       Every app keeps the canonical shape — models · services · selectors ·
       schemas · api · mcp · workflows/activities · consumers · events · search ·
@@ -987,7 +1095,47 @@ rules:
         # property (queue V1) — where `oauth` is a protocol role, validating
         # somebody else's token against an external authorization server, with
         # a JWKS cache and a discovery document of its own.
-        accounts: [adapter, auth, lifecycle, oauth, zitadel]
+        # `signin` (design I-A C-8, rung A3) is the SIGN-IN CEREMONY: the
+        # Session API conversation one person has while standing at a form,
+        # and the closed `Step`/`SignInOutcome` vocabulary a page switches on.
+        # It is a module rather than a section of `services.py` for the reason
+        # rule 27 gives about `zitadel.py` and rule 8 gives about a
+        # transaction: a service owns a WRITE inside a transaction, and this
+        # holds a multi-call external conversation open across four round
+        # trips and writes no row at all. It is not `policies` (which decides
+        # what an actor may do, having one) and not `auth` (which is the ninja
+        # authenticators and their order). The door that mounts it is rung A5,
+        # behind `SIGN_IN_DOOR`, and it is the seam's ONE importer, which
+        # `apps/accounts/tests/test_signin.py::
+        # test_one_door_reaches_the_seam_and_it_is_the_one_a5_mounted` is the
+        # set-equality census for.
+        # `views` (design C-13, rung A5) is THE BROWSER DOOR, and it is the
+        # fifth door beside `api`, `mcp`, `consumers` and the webhook pair —
+        # the only one a PERSON walks through. It is a module for the reason
+        # `api.py` is one: a door is a shape the canon already has a name for,
+        # and `apps/core/views.py` (the door index and the landing page) is
+        # the same name in the foundation. It decides nothing — the CHECK is
+        # `signin`, the COMPLETION is allauth's adapter, and this file chooses
+        # a frame, a sentence and a status code. There is exactly one callable
+        # in it, mounted by one `config/urls.py` line ahead of `allauth.urls`.
+        # `qr` (design J2-c, rung A6) is AN ENCODER, and that is the whole
+        # of what it is: a payload in, a matrix of light and dark squares
+        # out, no I/O, no settings, no state, no model and no decision. It
+        # is a module rather than a section of `views.py` for the reason the
+        # canon puts a transport in its own file — `zitadel`, `client` — and
+        # for one more: it is the only arithmetic in this app, ~250 lines of
+        # Galois-field and bit-placement tables out of a published
+        # specification, and a door that carried it would be a door nobody
+        # can read. It exists at all because design J2-c asks for the
+        # symbol to be drawn BY US: a hosted image service would be handed
+        # every person's enrolment secret in a query string, and an
+        # `<img src=…>` is a fetch on a page whose no-fetch property is what
+        # keeps the entrance from failing to load its own styling.
+        # **This entry is A6's one edit outside its territory** and is
+        # reported as such: the rung's brief commissions the module by name
+        # and this is the line that makes it legal, so the alternative was a
+        # tree whose `manage.py check` refuses every command.
+        accounts: [adapter, auth, lifecycle, oauth, qr, signin, views, zitadel]
         comms: [lifecycle, providers]    # the channel registry + the built-in email transport
         connections: [client, lifecycle, providers] # the httpx factory; provider registry
         events: [lifecycle, receivers]   # the inbound verify-store-hand-off helper
@@ -1117,19 +1265,31 @@ rules:
   - id: "13"
     name: services-decorated-and-authorized
     enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for. Its AST
+        half alone would key soundly, but the rule's verdict is the two halves together and no reader
+        should have to know which of them a hit replayed"
     statement: >
       Every public write in services.py is @service (keyword-only, atomic,
       traced, audited); a @service that takes an actor calls
       authz.require(actor, action, obj) or carries # authz: <reason>; a scoped
       model's writes have a policies.py entry (system check); a NEW service in
-      a change takes tenant= or says why not (diff layer).
+      a change takes tenant= or says why not (diff layer). And a @service that
+      ASKS for a key asks about what it WRITES: every kind it writes — resolved
+      through the model registry's authz_kind / authz_kind_of / snake_case —
+      is a kind it required, or the write carries # authz-kind: <reason>; and
+      every key it requires is one the vocabulary holds, written as a literal
+      or a module-level string constant, or the ask carries # authz-key:
+      <reason>.
     check: service_shape
     django_check_ids: [djb.E013]
     diff: [service_without_tenant]
     doc: { file: docs/product/architecture.md, contains: "Every function in `services.py` is decorated `@service`" }
     valve:
-      marker: "# authz: <reason>"
-      where: "anywhere inside the flagged function, from its `def` line through its last line (the check reads the whole FunctionDef source segment) — NOT above the decorator and NOT between the decorator and `def`, because neither is in that segment. The generic `# rule-13: <reason>` override also suppresses, on the flagged line or the comment block between the decorator and `def`. The django half honours neither"
+      marker: "# authz: <reason> · # authz-kind: <reason> · # authz-key: <reason>"
+      where: "`# authz:` anywhere inside the flagged function, from its `def` line through its last line (the check reads the whole FunctionDef source segment) — NOT above the decorator and NOT between the decorator and `def`, because neither is in that segment. `# authz-kind:` on the WRITE line clause (iii) flags, or in the contiguous comment block directly above it — per write, because a service that writes two kinds under one key owes a sentence about the second one and not about the first. `# authz-key:` on the ASK line, same block grammar — and it excuses exactly ONE of clause (iv)'s two findings: the key this census cannot READ (an expression that is neither a literal nor a module-level string constant). A key that reads perfectly well and is in no vocabulary has no valve and wants none: the remedy is to declare the key or to name the one that exists, and a sentence explaining why a capability nobody can hold is fine would be one nobody could act on. All three are counted and printed on the rule's status line. The generic `# rule-13: <reason>` override also suppresses, on the flagged line or the comment block between the decorator and `def`. The django half honours none of them"
     scope:
       exemptions:
         - path: apps/accounts/services.py
@@ -1190,16 +1350,73 @@ rules:
             `usage.read` by U3, P7 wave 1, per the lead's wording; this line is
             prose about another app's lexicon and nothing derives it, which is
             why it went stale in the first place).
-    floors: { service_files: 5, functions_scanned: 40 }
+    # P20 P6: the four clause-(i)–(iv) numbers, each a POPULATION rather than a
+    # reach kind, measured on `rung/p20-p4` at 9a4473f5 — services_censused 121,
+    # written_kinds_resolved 97, literal_keys_seen 89. The three floors below are
+    # the ones the permissions lane's criteria set, a little under the measurement
+    # so the clauses are bound without being brittle about one service. The two
+    # valve counts are seeded at zero and PRINTED whatever they are: a valve
+    # nobody counts is an off switch, and a count that only appears when it is
+    # non-zero is one nobody sees fall to zero either.
+    floors:
+      service_files: 5
+      functions_scanned: 40
+      services_censused: 40
+      written_kinds_resolved: 1
+      literal_keys_seen: 50
+    # THE CLAUSE-(iii) BACKLOG IS EMPTY. It was 17 mismatches in five apps when
+    # it was measured on 9a4473f5 (P5's tree, the tree the criteria were written
+    # against), and every one of them was a key the Phase-W sweep for that app
+    # renames. The last five were `accounts` — `accounts.user.*` writing
+    # `user`/`api_token`, and `identity_platform.configure` writing
+    # `identity_branding` — and P8 paid them: three went with the rename onto a
+    # kind the registry derives, and the two left carry `# authz-kind:`
+    # sentences (the erasure's token sweep, and the branding row that IS the
+    # deployment's sign-in screen).
+    # EVERY CLASS HERE IS NOW AT ZERO, so the first clause-(iii) finding ANY app
+    # grows is a violation from the first one — which is what `core` has always
+    # said by having no entry at all. The `<app>.key` classes — clause (iv) —
+    # have no entry either, for the same reason: every ask on this tree names a
+    # key the vocabulary holds.
+    ratchets:
+      accounts: 0
+      connections: 0
+      events: 0
+      files: 0
+      # workflows: 1 -> 0. The backlog was paid in the tree and the number was
+      # left behind — headroom, and headroom is not free: a planted canary's
+      # finding is absorbed by it, the canary reads as fired-nowhere, and
+      # `--selftest` reports it DEAD (exit 2). Lowered to the count the gate
+      # printed as its own invitation on main 94bf7c5b.
+      workflows: 0
     does_not_cover: >
       a require() guarding the WRONG action, or an over-permissive policy —
       right shape, wrong content, review's irreducible share; public reads in
       services.py that never write (legal); a write reached through a private
       helper (the public caller is judged, the helper is not); platform
       services that take no actor at all — enqueue_dispatch's shape — where the
-      policies-entry system check and review carry the risk.
+      policies-entry system check and review carry the risk. AND, for the four
+      kind clauses added by P20 P6: a service that asks for NOTHING is outside
+      clause (iii) by construction — it is the `# authz:` clause's subject one
+      paragraph up, and asking it to justify every write a second time in a
+      second comment would put two sentences where the tree has one. That is
+      not a small hole: `apps/core/services.py::rename_permission_rows` writes
+      `Grant` and `RolePermission` across every tenant with no key and no
+      actor at all — a deployment-wide maintenance act reachable only from a
+      management command — and clause (iii) is silent about it, by this
+      decision, with the `# authz:` sentence already on it carrying the whole
+      justification. Also outside: a model defined anywhere but an app's
+      `models.py` (or core's `audit.py`/`idempotency.py`); a write through a
+      helper in another module; a model bound under an alias (`G = Gadget`);
+      a `getattr`-driven write; a key assembled by an f-string or a `.format()`
+      (clause (iv) sees it as a non-literal and asks for `# authz-key:`, which
+      is a sentence, never a derivation); whether the reason in an
+      `# authz-kind:` or `# authz-key:` comment is a GOOD one — the gate counts
+      them and prints the totals, and judging them is review's; and whether the
+      key a service asks for is the RIGHT key of the right kind, which is the
+      first sentence of this paragraph and stays exactly where it was.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 6, negatives: 3 }
+    selftest_floor: { canaries: 8, negatives: 6 }
     canaries:
       - { fixture: undecorated_write.py, plant_at: apps/example/services.py, mode: append }
       - { fixture: positional_service.py, plant_at: apps/example/services.py, mode: append }
@@ -1215,12 +1432,66 @@ rules:
           - { fixture: other_policy.py, plant_at: apps/zzz_canary/policies.py, mode: create }
       - { fixture: diff_service_no_tenant.py, plant_at: apps/example/services.py, mode: append,
           via: diff, expect: { contains: canary_no_tenant } }
+      # CLAUSE (iii) — the ask and the write name different nouns. Planted into
+      # the probe app rather than the worked example because the form needs a
+      # MODEL of its own: the kind has to be one nothing else in the tree
+      # derives, or the negatives below could be satisfied by a real app's
+      # coincidence. `apps.py` rides along because the clause-(i) registry reads
+      # `apps/*/models.py` through the same app derivation INSTALLED_APPS uses,
+      # and a pure-AST run scaffolds no probe app of its own.
+      - fixture: kind_mismatch_service.py
+        plant_at: apps/zzz_canary/services.py
+        mode: create
+        expect: { contains: "asks for no gadget.* key" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+          - { fixture: gadget_policies.py, plant_at: apps/zzz_canary/policies.py, mode: create }
+      # CLAUSE (iv) — a key nothing declares. `gadget.polish` is not one of the
+      # four verbs the kind derives and no ACTION_PROSE names it, so nobody can
+      # ever hold it; `require` itself cannot say so, which is the silence this
+      # form exists to end.
+      - fixture: undeclared_key_service.py
+        plant_at: apps/zzz_canary/services.py
+        mode: create
+        expect: { contains: "which no model derives" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
     negatives:
       - { fixture: private_helper_write.py, plant_at: apps/example/services.py, mode: append }
       - { fixture: authz_reason_docstring.py, plant_at: apps/example/services.py, mode: append }
       - { fixture: scoped_with_policy.py, plant_at: apps/zzz_canary/models.py, mode: append,
           via: django, expect: { id: djb.E013 },
           extra_files: [ { fixture: good_policy.py, plant_at: apps/zzz_canary/policies.py, mode: create } ] }
+      # The ask and the write agree — and, in the same file, a DECLARED verb
+      # outside the four that clause (iv) must not call undeclared.
+      - fixture: matching_kind_service.py
+        plant_at: apps/zzz_canary/services.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+          - { fixture: gadget_policies.py, plant_at: apps/zzz_canary/policies.py, mode: create }
+      # One capability, two kinds, `# authz-kind:` on the write the ask does not
+      # cover — the valve doing its job, which is a sentence and not a switch.
+      - fixture: second_kind_under_authz_kind.py
+        plant_at: apps/zzz_canary/services.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+          - { fixture: gadget_policies.py, plant_at: apps/zzz_canary/policies.py, mode: create }
+      # Overrule 4's own regression: the key asked for through a module-level
+      # string constant. A literals-only reading of clause (ii) would call this
+      # unguarded, and `apps/workflows/services.py` with it.
+      - fixture: module_constant_key_service.py
+        plant_at: apps/zzz_canary/services.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+          - { fixture: gadget_policies.py, plant_at: apps/zzz_canary/policies.py, mode: create }
 
   - id: "14"
     name: no-http-below-doors
@@ -1251,6 +1522,12 @@ rules:
   - id: "15"
     name: field-policies
     enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for. Its AST
+        half alone would key soundly, but the rule's verdict is the two halves together and no reader
+        should have to know which of them a hit replayed"
     statement: >
       No FloatField on money/quantity/rate names (Decimal 19,4 + currency);
       DateTimeFields end _at, DateFields end _on; on_delete is explicit and
@@ -1641,6 +1918,10 @@ rules:
   - id: "17"
     name: door-parity
     enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for"
     # THE BREAKING-CHANGE ESCAPE IS DECLARED, NOT SNIFFED (closed).
     # It used to be a token scan — `version\s*=\s*["']2|/v2/|api/v2|_v2\b|
     # V2Router` over any changed path ENDING `api.py`, which includes
@@ -2049,6 +2330,10 @@ rules:
   - id: "21"
     name: admin-through-services
     enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for"
     statement: >
       Every ModelAdmin on a scoped model inherits core.admin.ServiceModelAdmin
       — writes through services, rows filtered to the acting tenant, door=admin
@@ -2135,6 +2420,10 @@ rules:
   - id: "23"
     name: supply-chain
     enabled: true
+    memo:
+      "no": "this rule reads pyproject.toml, scripts/check.sh and .secrets.baseline — no scope kind's
+        roots reach any of the three and the engine's hard-coded reads name none of them, so the key
+        would be blind to all three"
     statement: >
       pip-audit clean, no AGPL/GPL dependency (pip-licenses), no secret in the
       tree (detect-secrets against the committed baseline) — all three are full
@@ -2201,6 +2490,34 @@ rules:
             above their own effective role. Every other module reaches a role
             change through them, which is what makes the wall unavoidable
             rather than customary.
+      # THE SAME ACT, ONE COLUMN OVER. `Membership.role` stopped being the only
+      # way to change what somebody may do the day the role tables landed: a
+      # `Grant` row widens or narrows one person in one branch and a
+      # `RolePermission` row is a tenant's own collection, and both are bounded
+      # by the same wall the role assignment is (`allow` by what the granter
+      # holds, `withhold` by what the target holds). Listed BY FUNCTION rather
+      # than by file, because `apps/core/services.py` is also where every other
+      # core service lives and "this file may write permission rows" would
+      # allow-list the wrong thing.
+      permission_row_writers:
+        - path: apps/core/services.py
+          functions:
+            - create_role
+            - set_role_collection
+            - delete_role
+            - create_grant
+            - delete_grant
+            - rename_permission_rows
+          reason: >
+            the six that ARE the hand-out rule. `create_role` and
+            `set_role_collection` write a tenant's own collection under the
+            granter's own ceiling; `delete_role` takes one away; `create_grant`
+            and `delete_grant` are the per-person exception and its removal,
+            each bounded by what the granter and the target hold; and
+            `rename_permission_rows` is the deployment's own maintenance act
+            across every tenant at once, reachable only from a management
+            command — it moves rows onto a renamed key and hands nobody
+            anything new.
       organization_shape_writers:
         - path: apps/core/services.py
           functions: [_create_root_organization, create_organization, apply_organization_move]
@@ -2230,9 +2547,15 @@ rules:
       visible_to(root) where a branch was meant is right shape, wrong content,
       and stays with review; role writes reached through a private helper in
       another module; and path writes made by a data migration, since migrations
-      are not scanned, by design.
+      are not scanned, by design. The permission-row half reads the MODEL NAME
+      on the chain root, so a `Grant` row written through a queryset handed in
+      from elsewhere, through a related manager (`membership.grants.create(...)`)
+      or under an alias is outside it — the same textual limit the visible_to
+      half declares above, and the same reason the allow-list is by FUNCTION:
+      what makes a hand-out legal is which function is doing it, and nothing an
+      AST walk sees can tell whether the wall was paid.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 5, negatives: 4 }
+    selftest_floor: { canaries: 6, negatives: 5 }
     canaries:
       - { fixture: bare_for_tenant_selector.py, plant_at: apps/example/selectors.py, mode: append,
           expect: { contains: "without .visible_to" } }
@@ -2252,6 +2575,13 @@ rules:
       # never declared itself inherited-downwards.
       - { fixture: governing_unmarked.py, plant_at: apps/example/selectors.py, mode: append,
           expect: { contains: "InheritedDownward" } }
+      # THE THIRD FORBIDDEN WRITE, one column over from the role: a `Grant` row
+      # handed out by a DOOR. Planted into the scaffold rather than a product
+      # app because the two writers this rule allow-lists are core's own and a
+      # product app has no permission row to write; the door is the shape that
+      # matters, because every door in the tree could grow this line.
+      - { fixture: grant_write_in_a_door.py, plant_at: apps/zzz_canary/api.py, mode: create,
+          expect: { contains: "outside the permission services" } }
     negatives:
       - { fixture: visible_to_chain.py, plant_at: apps/example/selectors.py, mode: append }
       - { fixture: tenant_only_read.py, plant_at: apps/example/selectors.py, mode: append }
@@ -2263,6 +2593,12 @@ rules:
       - { fixture: governing_marked.py, plant_at: apps/example/selectors.py, mode: append,
           extra_files: [{ fixture: governing_marked_model.py, plant_at: apps/example/models.py,
                           mode: append }] }
+      # The pair to the grant canary: the same write with the generic override
+      # and a sentence on it. The allow-list itself is BY FUNCTION and lives in
+      # this file, so what this proves is the other road — the one a genuine
+      # exception outside core takes, counted in the standing override census.
+      - { fixture: permission_row_with_reason.py, plant_at: apps/zzz_canary/services.py,
+          mode: create }
 
   - id: "25"
     name: only-comms-sends
@@ -2430,6 +2766,12 @@ rules:
   - id: "26"
     name: services-name-only-reachable-rows
     enabled: true
+    memo:
+      "no": "CONSERVATIVE, declining pending evidence: the audit that shipped this memo found this
+        census reads only paths the walk already names, so a key would probably be sound. It declines
+        anyway because a census whose population is derived from several globs is the shape an unnamed
+        read hides in, and the memo is a projection of the scan rather than a second opinion about it.
+        Lift it with a diff a reviewer reads"
     # ADR core-4 (G3), P0 W1-R2. The hole this closes has no other guard: a
     # service takes `recipient=`, `policy=`, `parent=`; the caller hands over an
     # id; the id resolves to a row in a branch the caller holds no membership
@@ -2450,10 +2792,16 @@ rules:
     # numbers after it lands. The floors are read the same way: measured
     # pre-R3, and R3 can only move them up.
     statement: >
-      A @service that writes an org-scoped row and takes a parameter annotated
-      with an org-scoped model passes that parameter through
-      core.authz.may_be_named(actor, ...) — refusing when it is False — or
-      carries `# reach: <reason>` on the parameter or on the function. The
+      A @service that writes a row of the reach population — an org-scoped row,
+      or a row that names its organization through a foreign key (Membership) —
+      and takes a parameter annotated with a population model passes that
+      parameter through core.authz.may_be_named(actor, ...) — refusing when it
+      is False — or carries `# reach: <reason>` on the parameter or on the
+      function. A write of a row holding a foreign key TO a population member
+      (Grant.membership) is a write on the strength of that member and counts.
+      And reach is asked BEFORE capability: a require/allows whose
+      object is the parameter, above the may_be_named that clears it, is a
+      finding of this rule. The
       annotation IS the declaration: which keyword arguments are foreign-key
       targets is an open set (ADR core-4 rejects generic enforcement inside
       @service for exactly that reason), and an annotation naming a model in
@@ -2476,6 +2824,20 @@ rules:
     # write no org-scoped row from a @service at all, so the first one any of
     # them grows is a violation from the first one.
     ratchets:
+      # exports 3 -> 0 and files 3 -> 0. They were the ORDER clause's, found by
+      # it at birth and named: `mark_export_running`, `finish_export`,
+      # `record_export_failure`, `archive_file`, `store_bytes`, `store_stream`
+      # all wrote `require(actor, key, row)` and THEN
+      # `if not may_be_named(actor, row): raise NotFound()` — both halves
+      # present, the sequence inverted, so a row outside the actor's subtree
+      # was answered `forbidden` (an existence oracle) where `not_found` is the
+      # honest answer. Those apps' own rungs swapped the two lines in each; the
+      # gate has printed "NO violations left" against both numbers since, and
+      # a number above its real count is headroom that absorbs a planted
+      # canary and reports it DEAD. Zero here means the first rule-26 finding
+      # either app grows is a violation from the first one.
+      exports: 0
+      files: 0
       # comms: 12 -> 0 (coupled to the adoption commit). All twelve rows
       # took the real check rather than a `# reach:` sentence: every one of them
       # already receives its row from a `.visible_to(hat)` read, so the check is
@@ -2492,11 +2854,21 @@ rules:
     # differing by one, the abstract seed has stopped being counted and the
     # blindness this closed has come back. Floored one above its sibling for
     # that reason and no other.
+    # MEASURED AFTER THE WIDENING, on main 11b1a765: files_scanned 11,
+    # writing_services 45, fk_target_kwargs 32, org_scoped_models 13,
+    # org_fk_models 2 (`Membership`, `Event`), org_scoped_annotations 16,
+    # reachability_checks 25, reach_order_checked 16, reach_overrides 4.
+    #
+    # `org_fk_models` is floored at 1 and not at 2 for the reason every floor
+    # here is a little under its measurement — but it may never be zero: a
+    # population that lost its FK-bearing half is the population `Membership`
+    # was invisible in, which is the state this widening exists to end.
     floors:
       files_scanned: 6
       writing_services: 10
       fk_target_kwargs: 10
       org_scoped_models: 2
+      org_fk_models: 1
       org_scoped_annotations: 3
     does_not_cover: >
       a target laundered through a local variable — `row = resolve(id)` then a
@@ -2519,15 +2891,41 @@ rules:
       outside: an annotation naming a base a PRODUCT introduced between
       `OrgScopedModel` and its models is in (the walk is transitive), but an
       annotation naming a protocol, a `TypeVar` or `Any` is not, and no
-      annotation-reading rule can make it be.
+      annotation-reading rule can make it be. AND THE WIDENING'S OWN EDGE: a
+      reach through a foreign key of a row that is NOT in the population —
+      `delete_grant(grant: Grant)` reaching its node through `grant.membership`
+      — is outside, because `Grant` is not a population model and an attribute
+      argument clears nothing about the parameter it came from (canary 4's own
+      lesson). `test_handing_out.py`'s NotFound case is that one's belt, and it
+      is named here rather than discovered. The ORDER clause reads statement
+      POSITIONS inside one function body: an order established across a helper
+      call, or a `may_be_named` whose result is never raised on, are both
+      outside it — the first has no single body to read and the second is
+      already declared above.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 5, negatives: 4 }
+    selftest_floor: { canaries: 8, negatives: 7 }
     canaries:
       # (1) the ordinary shape: a new service takes an org-scoped row and never
       # asks whether the actor could have reached it. Planted into an app that
       # already sits at a ratchet, so this also demonstrates growth past one.
       - { fixture: unreached_kwarg.py, plant_at: apps/example/services.py, mode: append,
           expect: { contains: "may_be_named" } }
+      # (6) THE WIDENING'S OWN FORM: `set_role`'s exact shape. A `Membership`
+      # carries an `organization` column and inherits `BaseModel` rather than
+      # the scoped base, so it sat outside this population and a service handed
+      # one from anywhere could write a role on the strength of it, gate green.
+      - { fixture: set_role_shaped_without_reach.py, plant_at: apps/example/services.py,
+          mode: append, expect: { contains: "may_be_named" } }
+      # (7) The write one hop away: a `Grant` names its node through the very
+      # membership the caller passed, so reading only the direct population
+      # would stop one hop short of `create_grant` — the service the widening
+      # exists for.
+      - { fixture: grant_writer_without_reach.py, plant_at: apps/example/services.py,
+          mode: append, expect: { contains: "may_be_named" } }
+      # (8) The order clause: both halves present, the sequence inverted. The hardest shape
+      # to see, because everything the rule used to ask for is there.
+      - { fixture: reach_after_require.py, plant_at: apps/example/services.py, mode: append,
+          expect: { contains: "BEFORE core.authz.may_be_named" } }
       # (2) the same in a second app, on a different model, so the rule is not
       # one app's habit.
       # MOVE-TRIGGER 2026-08-24: the second app, so the rule is not one app's
@@ -2566,6 +2964,15 @@ rules:
       # A read of an org-scoped row with no write anywhere — `approve_widget`'s
       # real shape, found on the tree at measurement time.
       - { fixture: reads_without_writing.py, plant_at: apps/example/services.py, mode: append }
+      # The widening's right form: reach, then capability, then the write.
+      - { fixture: set_role_shaped_with_reach.py, plant_at: apps/example/services.py,
+          mode: append }
+      # The same population row, written nowhere — out of scope and must stay.
+      - { fixture: membership_read_only.py, plant_at: apps/example/services.py, mode: append }
+      # The order canary's pair. Kept because the order clause reads STATEMENT
+      # POSITIONS, and a check that read them wrongly would fire here as
+      # readily as on the canary — which is the one way anybody finds out.
+      - { fixture: reach_before_require.py, plant_at: apps/example/services.py, mode: append }
 
   - id: "27"
     name: one-door-to-the-identity-platform
@@ -2651,8 +3058,13 @@ rules:
       **Zitadel's own console**, which is the declared blind spot this rule is
       one half of: an admin signed in there can create, change and delete any
       identity configuration, and nothing in this tree can see it —
-      `manage.py zitadel_audit` is the runtime tripwire, and the auto-repairing
-      reconciler is deliberately not built (ADR ident-2 names its trigger). Also
+      `manage.py zitadel_audit` is the runtime tripwire, and
+      `manage.py zitadel_reconcile` asks the services to close what that audit
+      reports — by hand, as a deploy step, with `--dry-run` and the 0/1/2 exit
+      codes shaped for one. What is deliberately not built is a SCHEDULED run
+      of the reconciler, and that command's own docstring names the trigger for
+      building one (ADR ident-2): a drift found in production that nobody in
+      this deployment caused. Also
       uncovered: a hand-rolled httpx call to the management API that imports
       neither this module nor the setting (nothing in the tree does, and review
       is what stands there); the PAT reached under a DIFFERENT env-var name or
@@ -3035,6 +3447,10 @@ rules:
   - id: "31"
     name: every-model-declares-how-its-data-dies
     enabled: true
+    memo:
+      "no": "this rule's check runs a probe subprocess that boots Django (settings=test) and reads the
+        registries it assembles; the answer depends on the installed packages as much as on the tree,
+        and a blob sha cannot name a third-party model"
     # ADR core-13, (LF-1's primitive) and (LF-Q, this rule). THE
     # FINDING behind the whole block, in one sentence: a schema shaped for a
     # sweeper, with no sweeper, looks exactly like a schema that is finished.
@@ -3260,6 +3676,10 @@ rules:
   - id: "32"
     name: resource-first-paths
     enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for"
     # P5 URL-1, ADR api-2, and the owner's ruling behind it (design-agreements,
     # 2026-08-24): "the first path segment names a resource, never an app". An
     # app label in a path is internal taxonomy on the wire — the URL twin of the
@@ -3630,6 +4050,10 @@ rules:
   - id: "35"
     name: hot-path-plan-shapes
     enabled: true
+    memo:
+      "no": "this rule EXPLAINs every probed registry entry against a live Postgres through a probe
+        subprocess, so its answer belongs to the planner and to the rows the probe seeded — neither of
+        them a byte on this tree"
     # ADR gate-2 (b), built from M1–M4's measurements as corrected by F1a/F1d
     # and fixed by F1b/F1c/F1f. The registry below is the plan's ratified
     # location for the dotted hot-path list; the counts live in
@@ -4170,21 +4594,32 @@ rules:
     # to be an exact-shape rule rather than a heuristic — one of the few rules
     # whose whole subject is two call sites and one function.
     statement: >
-      An org-scoped payload is never pushed to a bare tenant group: every
-      group_send under apps/ either takes its group from group_for's decision
-      (the one place the choice is made), or targets user_group (the kick — an
-      instruction to hang up, never a payload). A group_send whose group is a
+      An org-scoped PAYLOAD is never pushed to a bare tenant group, and a tenant
+      that goes dark hangs up. Every group_send under apps/ either takes its
+      group from group_for's decision (the one place the choice is made), or
+      carries a KICK_TYPE message — an instruction to hang up, never a payload —
+      to user_group (one person's sockets) or to tenant_group (every socket in a
+      tenant that has been suspended or closed). A group_send whose group is a
       direct tenant_group(...) call and whose message carries an organization
       (an "organization_id" key, or a serialised envelope) is the org-blind
       push the socket probe found, priced by M4 at 495 wrong-branch frames per 500
-      sockets.
+      sockets. And every @service that assigns a non-ACTIVE Tenant.Status calls
+      close_tenant_sockets_on_commit in the same body: a darkened tenant is
+      refused at the next HANDSHAKE and nowhere else, so the sockets already open
+      go on hearing while the REST door answers 403 to the same credential.
     check: socket_group_discipline
     doc: { file: docs/product/architecture.md, contains: "never pushed to a bare tenant group" }
     valve:
       marker: "<comment> rule-36: <reason>"
       where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
-    floors: { group_send_sites: 2, decision_points: 1 }
+    # `status_writers` is DERIVED — every `@service` assigning `Tenant.Status.X`
+    # for an X that is not ACTIVE — and measured 2 on this tree (`suspend_tenant`,
+    # `close_tenant`). Floored at 2 for §I's reason: a recogniser that stops
+    # seeing the two services this class exists for must trip a floor rather than
+    # report a clean nothing, and a product that removes one of them is making a
+    # diff a reviewer reads.
+    floors: { group_send_sites: 2, decision_points: 1, status_writers: 2 }
     does_not_cover: >
       dynamic group-name construction that launders the tenant group through a
       variable or an f-string (the rule-26-style laundering escape, declared —
@@ -4193,9 +4628,27 @@ rules:
       .model_dump, no .organization_id read); pushes issued from outside apps/
       (none exist; the bridge is the one sender); and whether group_for's own
       decision is RIGHT — that is RT2's tests' and the census's
-      (perf/measure_realtime.py §4), not a static scan's.
+      (perf/measure_realtime.py §4), not a static scan's. THE STATUS-WRITER
+      CLASS adds four of its own. A STATUS WRITTEN ANY OTHER WAY is unseen:
+      `Tenant.objects.filter(...).update(status=...)`, a status built from a
+      variable or an f-string, a `setattr`, and a data MIGRATION — a queryset
+      update is the shape that darkens many tenants at once and it is exactly
+      the one this cannot see, so a bulk suspension is a road the tests own
+      (`test_authorization_kick.py`) and not a shape. A KICK REGISTERED IN A
+      CALLEE rather than in the service's own body reads as absent here, which
+      is the fail-closed direction and the reason the seam is a one-line call.
+      WHETHER THE KICK ARRIVES is `close_sockets`' declared blind spot inherited
+      whole: the registration is `robust=True`, so a channel layer that raises
+      leaves the write standing and the socket open, logged on
+      `core.socket.kick_failed` (one person's sockets) or
+      `core.tenant_socket.kick_failed` (a darkened tenant's) and not closed —
+      two names because the status-writer class this was widened for hangs up
+      on a whole tenant through a second seam, and a blind spot that names one
+      of them reads as covering both. AND WHICH REASON A WRITER PASSES
+      is not read — `KICK_TENANT_SUSPENDED` against `KICK_TENANT_CLOSED` is the
+      reason census's (`test_the_kick_reasons_are_constants_and_distinct`).
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 2, negatives: 2 }
+    selftest_floor: { canaries: 3, negatives: 4 }
     canaries:
       # M4's proposed canary shape, verbatim: a bare-tenant-group push whose
       # message names organization_id.
@@ -4211,6 +4664,13 @@ rules:
       # it.
       - { fixture: model_dump_to_tenant_group.py, plant_at: apps/realtime/bridge.py, mode: append,
           expect: { contains: "bare tenant group" } }
+      # R4's F2, as the THIRD operator service: a tenant put beyond use with
+      # nothing registered to hang up on the sockets already open.
+      # MOVE-TRIGGER 2026-09-16: `apps/core/services.py` is the plant because
+      # the two services this class exists for are there and nowhere else; it
+      # moves the day a second app learns to darken a tenant.
+      - { fixture: a_darkened_tenant_that_hangs_up_on_nobody.py, plant_at: apps/core/services.py,
+          mode: append, expect: { contains: "close_tenant_sockets_on_commit" } }
     negatives:
       # The real push shape: the group is group_for's answer. Must stay
       # silent (M4 §8's first proposed negative).
@@ -4222,10 +4682,29 @@ rules:
       # MOVE-TRIGGER 2026-08-24: seam-bound; it moves with the canaries
       # above.
       - { fixture: kick_to_user_group.py, plant_at: apps/realtime/bridge.py, mode: append }
+      # The TENANT kick, which is what the statement was widened for in R4-F3:
+      # a `KICK_TYPE` frame on the bare tenant group is the one message that
+      # legitimately reaches every socket in a tenant, and a rule that refused
+      # it would refuse the fix for its own sibling finding.
+      # MOVE-TRIGGER 2026-08-24: seam-bound; it moves with the canaries above.
+      - { fixture: kick_to_tenant_group.py, plant_at: apps/realtime/bridge.py, mode: append }
+      # The status-writer class's demanded shape, and its widening beside it: a
+      # tenant darkened WITH the kick registered, and a tenant reinstated with
+      # none — because a widening kicks nobody, one level up from
+      # `kick_if_reads_narrowed`'s own asymmetry.
+      # MOVE-TRIGGER 2026-09-16: `apps/core/services.py`, like the canary above.
+      - { fixture: a_darkened_tenant_that_hangs_up.py, plant_at: apps/core/services.py,
+          mode: append }
 
   - id: "37"
     name: no-tenant-blind-recency-index
     enabled: true
+    memo:
+      "no": "CONSERVATIVE, declining pending evidence: the audit that shipped this memo found this
+        census reads only paths the walk already names, so a key would probably be sound. It declines
+        anyway because a census whose population is derived from several globs is the shape an unnamed
+        read hides in, and the memo is a projection of the scan rather than a second opinion about it.
+        Lift it with a diff a reviewer reads"
     # ADR core-11 (; the T0-pain review's worst COMPOUNDING item, because
     # every model any product ever adds inherited the disease from the abstract
     # base). BaseModel shipped created_at db_index=True behind
@@ -4712,6 +5191,12 @@ rules:
   - id: "41"
     name: the-openapi-document-is-the-contract
     enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for. Its AST
+        half alone would key soundly, but the rule's verdict is the two halves together and no reader
+        should have to know which of them a hit replayed"
     # P5 WA-1, ADR api-1. The owner read staging's Swagger and ruled the API
     # documentation standard a T0 prerequisite (queue.md): fifty-one
     # routes whose summary was a prettified function name, eleven with no
@@ -5045,17 +5530,42 @@ rules:
       beside a word for a privileged role, both derived (`core.authz.require`'s
       raise site; the choices `Membership.is_privileged` names), so a promise
       made in other words — "only the person who created this may", "the
-      tenant's billing contact" — is invisible here. That residual is not one
+      tenant's billing contact" — is invisible here. AND SINCE ADR core-25 THAT
+      WORD LIST IS CLOSED WHILE THE ROLES ARE OPEN. `Membership.Role` is
+      deprecated v2.1 → removed v3.0 and is no longer the `role` column's
+      `choices` (`apps/core/models.py:522-535`, `:554-567`): a role key is one
+      of three layers now — the platform's `owner`, a key any app declares in
+      its `roles.py` (`apps/core/roles.py`; `core.authz.role_declarations`,
+      `apps/core/authz.py:952`), or the `key` of a `core.Role` row one tenant
+      owns — and only the first is knowable at import. `_privileged_role_words`
+      therefore still derives exactly `{"owner", "admin"}`, and a contract half
+      promising a DECLARED role — "only an auditor", "a billing manager" —
+      carries no tell this clause can see, however many such roles a deployment
+      writes into `roles.py`. What "privileged" MEANS moved with it:
+      `core.authz.allows` no longer consults `is_privileged`, authority is
+      `core.authz.holds(actor, "<kind>.<verb>", at=...)`
+      (`apps/core/models.py:595-608`, `apps/core/authz.py:1327`), and that
+      property now survives partly BECAUSE this rule reads it — so its removal
+      at v3.0 empties the derivation rather than moving it. The
+      `privileged_role_words: 2` floor is the whole of the guard there, and it
+      is arithmetic: it notices the set emptying, never the set failing to grow
+      with the roles the deployment actually promises in prose. That residual is not one
       to live with, which is why the DRIVE is its belt:
       `test_a_plain_member_meets_what_every_published_read_promises` in
       `apps/core/tests/test_contract_docs.py` drives every GET the document
       publishes as a member holding a real membership and compares the wire to
       the prose, in words nothing has to recognise. THE `# authz:` VALVE IS
-      TAKEN AT ITS WORD — three routes are backed only by it (`add_membership`
-      and `set_role`, where the escalation wall IS the authorization and is a
-      different shape from `require`; `set_flag`, delegated to
-      `update_tenant_settings`, which asks) and a valve whose reason was "no
-      check needed here" would satisfy this clause exactly as those three do.
+      TAKEN AT ITS WORD — and the population it stands alone behind is ONE
+      route now, not three. `add_membership` and `set_role` ask the seam
+      themselves since ADR core-25 — `require(actor, "membership.create",
+      where)` at `apps/core/services.py:1412` and `require(actor,
+      "membership.update", membership.organization)` at `:1507` — with the
+      escalation wall standing BEHIND that ask rather than in place of it. What
+      is left on the valve alone is `set_flag`, which delegates to
+      `update_tenant_settings` and says so on the line
+      (`apps/core/services.py:2493-2498`). The gap is unchanged and one member
+      wide: a valve whose reason was "no
+      check needed here" would satisfy this clause exactly as that one does.
       Rule 13 already accepts that sentence; second-guessing it here would be
       two rules disagreeing about one grammar. THE OPPOSITE ERROR IS NOT
       CHECKED AT ALL — a route that DOES ask a role and never says so publishes
@@ -5258,6 +5768,12 @@ rules:
   - id: "42"
     name: every-service-is-reachable-through-a-door
     enabled: true
+    memo:
+      "no": "CONSERVATIVE, declining pending evidence: the audit that shipped this memo found this
+        census reads only paths the walk already names, so a key would probably be sound. It declines
+        anyway because a census whose population is derived from several globs is the shape an unnamed
+        read hides in, and the memo is a projection of the scan rather than a second opinion about it.
+        Lift it with a diff a reviewer reads"
     # P5 WA-1, commit 2. The owner's ruling, verbatim: "mechanisms without doors
     # is a miss in the development standard" (queue.md, 2026-08-23). The template
     # had grown a whole foundation — organizations, memberships, invitations,
@@ -5519,6 +6035,12 @@ rules:
   - id: "43"
     name: one-outbound-signer-and-the-scheme-census
     enabled: true
+    memo:
+      "no": "CONSERVATIVE, declining pending evidence: the audit that shipped this memo found this
+        census reads only paths the walk already names, so a key would probably be sound. It declines
+        anyway because a census whose population is derived from several globs is the shape an unnamed
+        read hides in, and the memo is a projection of the scan rather than a second opinion about it.
+        Lift it with a diff a reviewer reads"
     # P5 QB-R2, closing rule 40's own recorded trigger — "OUTBOUND header
     # dictionaries ... a later rung may unify them (trigger: the second outbound
     # signer)". added a second SCHEME through the one signer, which is the
@@ -5711,6 +6233,10 @@ rules:
   - id: "44"
     name: the-library-internals-we-hold
     enabled: true
+    memo:
+      "no": "this rule resolves an installed package directory through importlib.util.find_spec and
+        reads what it finds there, so its subject is site-packages rather than this checkout — the key
+        cannot see a dependency upgrade"
     # (N183a), on the engineering lead's own trigger: "a third wrap earns
     # the census". This books it AT TWO and lets the census be ready before the
     # third, because the expensive half is not the counting — it is deciding
@@ -6022,6 +6548,10 @@ rules:
   - id: "45"
     name: every-mcp-dispatch-surface-is-ceilinged
     enabled: true
+    memo:
+      "no": "this rule resolves an installed package directory through importlib.util.find_spec and
+        reads what it finds there, so its subject is site-packages rather than this checkout — the key
+        cannot see a dependency upgrade"
     # THE FINDING: `resources/read` and
     # `prompts/get` have their own dispatch paths, their own managers and their
     # own argument validation, and the token ceiling (`install_ceiling_gate`)
@@ -6188,6 +6718,12 @@ rules:
   - id: "46"
     name: every-door-pair-owes-a-parity-test
     enabled: true
+    memo:
+      "no": "CONSERVATIVE, declining pending evidence: the audit that shipped this memo found this
+        census reads only paths the walk already names, so a key would probably be sound. It declines
+        anyway because a census whose population is derived from several globs is the shape an unnamed
+        read hides in, and the memo is a projection of the scan rather than a second opinion about it.
+        Lift it with a diff a reviewer reads"
     #, from its routed recommendation. THE FINDING: the
     # per-door-pair parity family had exactly ONE member
     # (`apps/realtime/tests/test_credential_parity.py`), nothing made a new door
@@ -6271,7 +6807,13 @@ rules:
       # of what the transport does, checked against itself. The new module
       # replaces the opinion with the wire.
       comms: 0
-      core: 1
+      # core: 1 -> 0. `apps/core/tests/test_door_answer_parity.py` and
+      # `test_permissions_doors.py` both carry the `DOOR_PAIR = ("rest", "mcp")`
+      # marker, so the pair is answered and the gate has been printing "NO
+      # violations left against a recorded 1". The number was left behind by
+      # the rung that paid it; a ratchet above its real count is headroom that
+      # absorbs a planted canary and reports it DEAD.
+      core: 0
       events: 0
       # `apps/workflows/tests/test_doors_over_the_wire.py` claims
       # the (rest, mcp) pair and drives one run through BOTH doors over the
@@ -6373,6 +6915,10 @@ rules:
   - id: "47"
     name: declared-refusals-reach-the-document
     enabled: true
+    memo:
+      "no": "this rule's check runs a probe subprocess that boots Django (settings=test) and reads the
+        registries it assembles; the answer depends on the installed packages as much as on the tree,
+        and a blob sha cannot name a third-party model"
     #, from its find. THE DEFECT, and it is one instance of a class:
     # `config/api.py::_document_operation` turns a route's refusal codes into
     # responses through `CODE_STATUS.get(code)` guarded by `if status is not
@@ -6760,6 +7306,10 @@ rules:
   - id: "49"
     name: audit-rows-conform-to-the-declared-shape
     enabled: true
+    memo:
+      "no": "this rule's check runs a probe subprocess that boots Django (settings=test) and reads the
+        registries it assembles; the answer depends on the installed packages as much as on the tree,
+        and a blob sha cannot name a third-party model"
     # ADR core-22 — the audit row contract, and the RULE HALF of the
     # bidirectional citation: that ADR's absence 1 and absence 6 both end
     # "AUDIT-3's rule reads the checked list, never this prose", and the checked
@@ -6994,6 +7544,10 @@ rules:
   - id: "50"
     name: no-credential-written-down-in-the-browser-tree
     enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
     # THE SEAM'S READER, AND WHY THE SEAM SHIPS WITH ONE. A mechanism whose
     # first consumer arrives in a later change is a schema built for a poller
     # nobody wrote: the keys look consumed because they are declared, and the
@@ -7097,6 +7651,10 @@ rules:
   - id: "51"
     name: js-ingredient-boundary
     enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
     # W2 R-d, through R-a's kind/runner/needs_tree seam. THE CHAIN is the
     # scaffold's own shipped taxonomy (its report, banked, W2 SCAFFOLD):
     # frontend/src/{api,tokens,copy,primitives,components,screens,app} +
@@ -7304,6 +7862,10 @@ rules:
   - id: "52"
     name: js-no-barrel
     enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
     # W2 R-d, through R-a's kind/runner/needs_tree seam. fe-conventions §2:
     # an `index.ts` that re-exports a directory is the `INSTALLED_APPS` of
     # JavaScript — one shared file every parallel rung adding a component
@@ -7360,6 +7922,10 @@ rules:
   - id: "53"
     name: js-token-has-a-consumer
     enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
     # W2 R-d, through R-a's kind/runner/needs_tree seam. fe-conventions §5: "A
     # token has a consumer" (rule 30's class, declared-unread) — and the
     # REVERSE, worse because it fails OPEN: a `var(--x)` nobody declared
@@ -7438,6 +8004,1002 @@ rules:
       # lesson pointed at this rule's own vocabulary.
       - { fixture: documented_tokens.css, plant_at: frontend/src/tokens/doc-example.css,
           mode: create }
+
+
+  - id: "54"
+    name: the-vocabulary-is-one-shape
+    enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for. Its AST
+        half alone would key soundly, but the rule's verdict is the two halves together and no reader
+        should have to know which of them a hit replayed"
+    # PRIOR ART, RECORDED AND NOT TAKEN. Permify is the closest off-the-shelf
+    # thing to clauses (a) and (b) — a schema language for relations and
+    # permissions with its own consistency checks — and it is AGPL-3.0, which
+    # rule 23's licence leg refuses for a template a product embeds. It is one
+    # sentence here rather than a dependency test because nothing is added:
+    # there is no package to scan, and a negative worth writing down is worth
+    # writing down where the decision is, not where a scanner would be.
+    statement: >
+      The vocabulary is one shape. (a) Every first-party concrete model yields
+      one authorization kind — authz_kind, authz_kind_of, or
+      snake_case(ClassName) — or opts out with a sentence; four verbs per kind
+      are the derived keys, and a DECLARED key that is a second spelling of a
+      derived one, or names no kind at all, is non-conforming. (b) A
+      declaration names declared things: no roles.py declares `owner` or a
+      reserved permission, no two apps declare one role, and no DEFAULT_ROLES
+      entry offers a capability to a role nobody declares. (c) No role by
+      value: outside apps/core/authz.py and apps/core/models.py, production
+      code never asks what ROLE somebody has — a predicate that needs "how much
+      authority" asks holds(actor, "<kind>.<verb>", at=...). (d) Every public
+      get_/list_ selector over a kind asks for that kind's read, and (e) asks
+      for THAT kind's read rather than another's.
+    check: authz_vocabulary_shape
+    django_check_ids: [djb.W054]
+    doc: { file: docs/product/architecture.md, contains: "The vocabulary is one shape" }
+    valve:
+      marker: "# role-value: <reason> · # read-open: <reason> · # read-kind: <kind>"
+      where: "`# role-value:` on the flagged line, or in the contiguous comment block directly above it (clause (c)). `# read-open:` and `# read-kind:` anywhere in the selector's own source — its docstring is the site the conventions teach — or in the comment block above its `def` or its first decorator (clauses (d)/(e)), and in every one of those sites the marker OPENS A COMMENT LINE: a sentence that spells the marker while explaining that this read needs none is prose, and prose is not a valve. Every one carries a reason of at least twelve characters and every one is counted and printed on this rule's status line — counted for every public `get_`/`list_` a `selectors.py` declares, which is a wider population than the annotation-bound one a finding can be raised over. Clauses (a) and (b) have NO valve and want none: a key is renamed through the owning app's `RENAMED_PERMISSIONS`, which keeps the old word answering, and a role is declared or it is not — neither is a judgement a comment could record"
+    scope:
+      exemptions:
+        - path: apps/core/authz.py
+          reason: >
+            the module that OWNS the role vocabulary — `ROLE_RANK`, `rank`,
+            `effective_role`, `actor_role` and the compat shims are defined
+            here, and a rule about reading a role by value cannot forbid the
+            one place the value is defined.
+        - path: apps/core/models.py
+          reason: >
+            `Membership.Role` is declared here. The enum has to exist for the
+            column's `choices` and for the shims above; what clause (c) is
+            about is everybody ELSE reading it.
+        - path: apps/conftest.py
+          reason: >
+            the shared fixtures build memberships at named roles on purpose —
+            a test that could not say "an admin" could not drive the matrix
+            the sweeps are graded against. Tests are outside the scan by
+            construction (`SKIP_PARTS`); this file is not under `tests/` and
+            needs the entry by name.
+    # Each floor a little under its measurement on `rung/p20-p4`, so the census
+    # is bound without being brittle about one model: models_censused 37,
+    # kinds 36, derived_keys 144, declared_keys 41, role_declarations 2,
+    # role_value_files_scanned 241, selectors_censused 51.
+    #
+    # `derived_keys` is `4 × kinds` BY CONSTRUCTION and is floored separately
+    # anyway: the two numbers are printed side by side on the status line, so
+    # the day a kind stops yielding four verbs the arithmetic is visible rather
+    # than inferred.
+    floors:
+      models_censused: 30
+      kinds: 30
+      derived_keys: 120
+      declared_keys: 20
+      role_declarations: 1
+      role_value_files_scanned: 100
+      selectors_censused: 30
+    # THE BACKLOGS, all measured on `rung/p20-p4` at 35d651ed, and every one of
+    # them owned by a rung that is already planned.
+    #
+    # `nonconforming` (clause a) — SEVENTEEN, and the arithmetic matters: the
+    #   live registry's `non_conforming()` says EIGHTEEN, and the eighteenth is
+    #   `usage.read_report`, whose `ACTION_PROSE` key is computed
+    #   (`USAGE_READ_REPORT.action`) and is therefore a key an AST walk cannot
+    #   classify. It is counted in `unreadable_prose` instead of being dropped —
+    #   9 + 1 = the registry's 10, and the day the two stop adding up somebody
+    #   can see it.
+    #
+    #   **ZERO, and it came down one sweep at a time.** Each Phase-W sweep
+    #   retired some: `usage` and `workflows` took four between them, `files`
+    #   took four more, and the `accounts` sweep (P8) struck the last three —
+    #   `accounts.user.deactivate`, `accounts.user.erase` and
+    #   `identity_platform.configure`, the third onto the VIRTUAL kind
+    #   `deployment`. The class is hard now: the next non-conforming key any app
+    #   declares is a violation from the first one, and `test_vocabulary.py`'s
+    #   `test_every_declared_key_conforms` is the same sentence said in a test.
+    #   A ratchet left ABOVE its real count is headroom, and headroom is where a
+    #   canary lands: this rule plants two forms that each add one
+    #   non-conforming key, and both of them went dead — `--selftest` exit 2, on
+    #   main, for two sweeps — while the gate itself read green, because 14 was
+    #   still under 17. Keeping every class at its real count is what keeps them
+    #   alive. A sweep that forgets this leaves the rule measuring nothing and
+    #   says so nowhere until the next bank.
+    # `<app>.role-value` (clause c) — the predicates and services that still
+    #   read a role by value; each Phase-W sweep drove its own app to 0, and
+    #   `accounts` was the last of them (P8: the ownership floor asks
+    #   `tenant.own` at the root, `seed` names `OWNER_ROLE` and
+    #   `default_role_key()`, and `SsoConnection.default_role` lost its
+    #   `choices`). `core.role-value` is the one class still ratcheted, at 4 —
+    #   the three `effective_role()` reads in `core/services.py` and the one in
+    #   `core/views.py`, which are core's own sweep to pay.
+    # `<app>.read` (clause d) and `<app>.read-kind` (clause e) — HARD since
+    #   Phase R (PR5, 2026-09-17): every class below is at 0 because its read
+    #   sweep drove it there, and the first (d) or (e) finding an app grows is a
+    #   violation from the first one. `accounts.read` was the one class still
+    #   ratcheted — at 3 on the flip's tree (`get_member`,
+    #   `list_sso_connections`, `get_connection_for_email`) — and PR4.j, batched
+    #   with P8 behind lane I, paid it: the first two ask, the third carries
+    #   `# read-open:` because it answers before any principal exists. The class
+    #   is 0 and hard like the rest. Every `<app>.read` entry below stays
+    #   an explicit `0` with the sweep that paid it in view, the way rule 13's
+    #   and rule 26's flipped classes kept theirs; an `<app>.read-kind` class
+    #   with no entry at all is ratcheted at zero by the engine's own reading
+    #   (`quality/gate.py`: "A class with no entry is ratcheted at zero, which
+    #   is what 'clean' means"), which is the same hardness said with silence.
+    #
+    # AND THE ARITHMETIC, SAID OUT LOUD, because a reader who does it and gets a
+    # different answer needs to know which number moved. `nonrequiring_selectors`
+    # and `wrong_kind_selectors` are incremented at the SAME line the `<app>.read`
+    # and `<app>.read-kind` findings are raised at — but they are counted BEFORE
+    # the override layer, so a site carrying a generic `# rule-54: <reason>` is
+    # suppressed as a finding and still counted here. On this tree both sides read
+    # 42 and 2. Where they differ, the difference IS the standing override census,
+    # which the gate prints in full and separately; it is never a site the rule
+    # stopped seeing.
+    # EVERY CLASS HERE SITS AT ITS REAL COUNT. A number above it is headroom,
+    # and headroom is where a planted canary's finding disappears: the class
+    # stays under its recorded ceiling, the canary reads as fired-nowhere, and
+    # `--selftest` reports it DEAD (exit 2). The three lowered on main 94bf7c5b
+    # — `unreadable_prose` 1, `usage.role-value` 1, `workflows.read-kind` 2 —
+    # were each paid in the tree by a P20 sweep and left behind by it; the gate
+    # printed "NO violations left against a recorded N" for each, which is the
+    # invitation this commit accepts.
+    ratchets:
+      nonconforming: 0
+      unreadable_prose: 0
+      accounts.role-value: 0
+      comms.role-value: 0
+      connections.role-value: 0
+      core.role-value: 4
+      events.role-value: 0
+      example.role-value: 0
+      exports.role-value: 0
+      files.role-value: 0
+      usage.role-value: 0
+      accounts.read: 0
+      comms.read: 0
+      connections.read: 0
+      events.read: 0
+      example.read: 0
+      exports.read: 0
+      files.read: 0
+      workflows.read-kind: 0
+    does_not_cover: >
+      WHETHER A CONFORMING KEY IS A GOOD KEY. A declared verb that MEANS
+      create, update or delete — `invoice.make`, `export.request` — fits
+      `<kind>.<verb>` and passes; the CRUD-synonym judgement is review's and is
+      declared here rather than pretended away. A COUNT IS NOT A LIST: two
+      non-conforming keys swapped for two others leaves the ratchet at
+      eighteen, and the pinned list in `apps/core/tests/test_vocabulary.py` is
+      the belt for that. Clause (c) misses A ROLE COMPARED THROUGH A VARIABLE
+      (`wanted = "owner"` then `membership.role == wanted`), a comparison in a
+      TEMPLATE, and every KEY-SHAPED use of the word role — `Invitation.role`,
+      `SsoConnection.default_role`, `add_membership(role=<a key>)` — which are
+      data moving, not authority being judged; whether a `# role-value:` reason
+      is a GOOD one is review's, and the count is printed so the population is
+      readable. Clauses (d)/(e) read the selector's NAME and its RETURN
+      ANNOTATION: a public read called `search()` or `resolve()` is outside the
+      population by name, a selector annotated with a dataclass or a
+      `list[UUID]` is outside it by annotation, and both are the trade an
+      annotation-reading rule makes — `apps/search`'s own read is the worked
+      example of the first and its read sweep's criterion is the belt. AND
+      THIS HALF NEVER IMPORTS: every derivation is AST, because the self-test
+      plants a models.py and a policies.py and re-runs this check in the same
+      process. So the two underivable cases — a kind claimed by two models, an
+      opt-out with no sentence — are findings here (exit 1) where the registry
+      itself raises `ImproperlyConfigured` and `djb.E025` refuses to load at
+      all (exit 2, in the gate's own django leg, which is where the stronger
+      guarantee lives). A product whose `authz_kind` is computed rather than
+      literal reads as derived-from-the-class-name here and as whatever it
+      computes at runtime; a literal is the shape this reads, and the census
+      printing every kind is how a difference becomes visible. AN
+      `authz_kind_of` THE WALK CANNOT RESOLVE TO A FIELD NAME — a call, an
+      import, an f-string — falls back to the model's OWN kind here, where the
+      runtime answers `_parent_kind`; the census prints every kind and the
+      difference is how it becomes visible. A READ KEY BUILT BY F-STRING over
+      the registry — `apps/search/selectors.py::list_readable_kinds`,
+      `allows(actor, f"{kind}.read")` — is outside (d)/(e) by name, by
+      annotation (`frozenset[str]`) and by key shape, and no census by name or
+      population sees it; its belt is `apps/search/tests/test_reads_ask.py`
+      (11 cases), and a `# authz-key:` sentence there would be counted by
+      nothing (rule 13 reads `services.py`). (d) proves a selector ASKS; it
+      cannot see that a WRITE door reaches that selector on its way, so a read
+      withhold refuses the write with the read's own sentence — `comms.send()`
+      and `message_template.read` — and the CHANGELOG says so. AND A VALVE ON A
+      SELECTOR OUTSIDE THE POPULATION BY ANNOTATION (`usage.get_meter_measure`,
+      `usage.get_usage`) is COUNTED and printed and can never be a finding —
+      the trade an annotation-reading rule makes, with the count as its witness.
+      AND THE RUNTIME REFUSAL FOR A KEY-BEARING DECLARATION IS NAMED, NOT BUILT:
+      a `POLICIES` or `DEFAULT_ROLES` entry for a key the vocabulary lacks is a
+      finding here (exit 1) and in `apps/core/tests/test_vocabulary.py`, where
+      the stronger guarantee would be a `djb.E025` refusing the deployment to
+      start at all — the same place the two underivable cases above already
+      live. It is declared as the gap rather than shipped because the census
+      reads the tree by AST and the check would read the live registry, which
+      are two derivations of one question; trigger: the first product
+      `check --deploy` that passes a dead predicate.
+    # The recorded self-test population (see the header). Rising floor.
+    selftest_floor: { canaries: 10, negatives: 11 }
+    canaries:
+      # (a) A DECLARED VERB THAT IS ANOTHER SPELLING OF READ. Planted into the
+      # probe app, which is where every form of this rule lives: the kind has
+      # to be one nothing else in the tree derives, or a negative could go
+      # silent on a real app's coincidence rather than on the rule's restraint.
+      - fixture: declared_verb_is_a_read_alias.py
+        plant_at: apps/zzz_canary/policies.py
+        mode: create
+        expect: { contains: "another spelling of it" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (a) A DECLARED KEY OVER A KIND NOTHING DERIVES — a capability over
+      # nothing, which `require` cannot report because it resolves the key,
+      # finds no policy and falls through to the role. No models planted here
+      # on purpose: `gizmo` must not be a kind for this form to be the form.
+      - fixture: declared_key_on_no_kind.py
+        plant_at: apps/zzz_canary/policies.py
+        mode: create
+        expect: { contains: "no kind 'gizmo'" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (a) THE UNDERIVABLE CASE, which is `ImproperlyConfigured` at runtime and
+      # a finding here. Not in the criteria set this rule was written against —
+      # added because a clause with no planted form is a clause nobody can
+      # watch fail, whatever else the rule proves.
+      - fixture: kind_claimed_twice.py
+        plant_at: apps/zzz_canary/models.py
+        mode: create
+        expect: { contains: "both claim the authorization kind" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (a) THE SAME UNDERIVABLE CASE THROUGH `authz_kind_of = None`, which is
+      # the base class's own default restated on a concrete model and therefore
+      # no declaration at all: `getattr` answers None, the registry does not
+      # skip it, and the deployment refuses to start. It is a form of its own
+      # because this half reads a SPELLING where the registry reads a VALUE,
+      # and `ast.Constant(None)` is neither Python `None` nor the
+      # never-mentioned sentinel — the one spelling a skip written either too
+      # narrowly or too widely gets wrong.
+      - fixture: concrete_twin_restates_the_base_default.py
+        plant_at: apps/zzz_canary/models.py
+        mode: create
+        expect: { contains: "both claim the authorization kind" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (a) A `POLICIES` ENTRY FOR A KEY THE VOCABULARY DOES NOT HOLD — a
+      # predicate for a capability nobody can be given, and the defect's own
+      # shape is that it is INVISIBLE: `vocabulary()` reads the registry only
+      # for keys it already derived, so such a key joins no census, no
+      # `non_conforming()` list and no pinned ratchet, and every layer stays
+      # green over it. `apps/core/tests/test_vocabulary.py` is the runtime half
+      # of the same census; this is the half that reads the code.
+      - fixture: policies_key_the_vocabulary_lacks.py
+        plant_at: apps/zzz_canary/policies.py
+        mode: create
+        expect: { contains: "gadget.polish" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (b) A PRODUCT DECLARATION NAMED `owner` — a ceiling quietly
+      # disappearing, because `owner`'s collection IS the vocabulary and a
+      # declaration would narrow it to whatever patterns it happened to list.
+      - fixture: role_named_owner.py
+        plant_at: apps/zzz_canary/roles.py
+        mode: create
+        expect: { contains: "which is the platform's" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (b) A CAPABILITY OFFERED TO A ROLE NOBODY DECLARES. The app believes it
+      # shipped a default it did not ship, and every layer is green.
+      - fixture: default_role_undeclared.py
+        plant_at: apps/zzz_canary/policies.py
+        mode: create
+        expect: { contains: "the capability is offered to nobody" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (c) THE ROLE, BY VALUE, in a service — the shape the whole of Phase W
+      # is removing, and the one a tenant cannot configure around.
+      - fixture: role_by_value.py
+        plant_at: apps/zzz_canary/services.py
+        mode: create
+        expect: { contains: "reads a role by value" }
+      # (d) A PUBLIC READ THAT NEVER ASKS — a read every door inherits for
+      # free, including the ones nobody has written yet.
+      - fixture: list_gadgets_without_require.py
+        plant_at: apps/zzz_canary/selectors.py
+        mode: create
+        expect: { contains: "asks no gadget.read" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (d) THE SAME READ, WITH THE MARKER ONLY NAMED. A valve is a comment; a
+      # docstring paragraph that SPELLS one is prose, and prose that silenced
+      # this clause would be an off switch somebody writes by accident while
+      # explaining they had not written one. Live shape: `list_thresholds` in
+      # `apps/usage/selectors.py` carries exactly this sentence about a read
+      # outside the population, and it was counted as a valve the day the
+      # census started reading every public `get_`/`list_` by name.
+      - fixture: prose_mentions_the_valve_marker.py
+        plant_at: apps/zzz_canary/selectors.py
+        mode: create
+        expect: { contains: "asks no gadget.read" }
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+    negatives:
+      # (a) A declared verb OUTSIDE the four, on a kind that exists — the
+      # ordinary case, and the one that must never be a finding.
+      - fixture: conforming_declared_verb.py
+        plant_at: apps/zzz_canary/policies.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (a) PROSE OVERRIDING A DERIVED KEY'S SENTENCE — not a declaration at
+      # all. Reading it as one would report every well-written app as
+      # non-conforming.
+      - fixture: derived_key_sentence_override.py
+        plant_at: apps/zzz_canary/policies.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (a) THE SAME PREDICATE WITH ITS KEY DECLARED. The control for the
+      # canary above: the two differ by the `ACTION_PROSE` line and by nothing
+      # else, so a rule that flagged this one would be refusing the ordinary way
+      # an app adds a capability of its own.
+      - fixture: policies_key_declared.py
+        plant_at: apps/zzz_canary/policies.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (b) The same DEFAULT_ROLES shape naming a role core DOES declare.
+      - fixture: default_role_declared.py
+        plant_at: apps/zzz_canary/policies.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (c) The question asked of the DATA instead. This one is load-bearing in
+      # a way the others are not: it is the form clause (c)'s own red tells
+      # people to write, so a rule that flagged it would be telling people to
+      # write something it also refuses.
+      - fixture: holds_instead_of_rank.py
+        plant_at: apps/zzz_canary/policies.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (d) The read that asks, for the kind it returns.
+      - fixture: selector_with_require.py
+        plant_at: apps/zzz_canary/selectors.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (d) The machine read, with its sentence — the valve doing its job.
+      - fixture: selector_read_open.py
+        plant_at: apps/zzz_canary/selectors.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: gadget_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (d) THE VALVE ON A READ THE ANNOTATION PUTS OUTSIDE THE POPULATION —
+      # silent, and COUNTED. The finding population is annotation-bound; the
+      # valve population is every public `get_`/`list_` by name, and the two
+      # `apps/usage` reads that live in the difference were valved and uncounted
+      # until PR5. This is the control for the silence; the count itself is the
+      # status line's `read_open_valves`, which the run prints every time.
+      - fixture: valve_on_a_non_model_return.py
+        plant_at: apps/zzz_canary/selectors.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (a) AN OWNED CHILD WHOSE `authz_kind_of` IS A MODULE CONSTANT. The
+      # registry skips a child on ANY value of the attribute; this half asked
+      # for an `ast.Constant` string, so the constant form — the ordinary way
+      # to bind a foreign-key name once — was censused as a model with a kind
+      # of its own and collided with its own parent. A finding no deployment
+      # has. The literal spelling was silent under the narrow condition too,
+      # which is why only the constant could show the gap.
+      - fixture: owned_child_via_constant.py
+        plant_at: apps/zzz_canary/models.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (a) THE ABSTRACT BASE'S OWN `authz_kind_of = None` — the shape
+      # `apps/core/models.py` ships. Silent because the census filters
+      # `abstract` before it reads a declaration, and that filter is
+      # load-bearing with nothing else watching it: the canary above requires
+      # the concrete form to FIRE, and this requires the abstract form not to.
+      - fixture: abstract_base_declares_the_default.py
+        plant_at: apps/zzz_canary/models.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (e) THE OWNED CHILD'S READ, ASKING FOR THE AGGREGATE'S KIND — the right
+      # form, and the one that makes the resolution observable instead of
+      # internal. The child's own derived name differs from its parent's kind
+      # on purpose, so a reader that resolves the module constant the way the
+      # runtime does and a reader that reads only a literal give different
+      # answers; the second reports this correct selector as asking for the
+      # wrong kind, which is a valve invited onto code that needs none.
+      - fixture: selector_reads_owned_child_via_constant.py
+        plant_at: apps/zzz_canary/selectors.py
+        mode: create
+        extra_files:
+          - { fixture: probe_apps.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+          - { fixture: owned_child_constant_models.py, plant_at: apps/zzz_canary/models.py, mode: create }
+
+
+  - id: "55"
+    name: tenant-wide-kinds-ask-at-the-root
+    enabled: true
+    statement: >
+      A permission whose KIND names no node is asked at a node the caller
+      resolved, never at the acting hat by default. For require(actor,
+      "<kind>.<verb>", ...) / allows(...) with a literal key — or a
+      module-level string constant, rule 13 clause (ii)'s shape — whose kind's
+      model carries no organization foreign key and is not Organization itself,
+      the third argument is a node the caller resolved: a root_organization(...)
+      call, a Name bound to one in the enclosing function, a Name bound to a
+      parameter annotated Organization, or an expression ending in
+      .organization — or the line carries # hat-scoped: <reason>. A tenant-wide
+      kind asked with no node, or with the row itself, resolves at the caller's
+      HAT, where a branch administrator holds `*`.
+    check: tenant_wide_kinds_ask_at_the_root
+    doc: { file: docs/product/architecture.md, contains: "asked at a node the caller resolved" }
+    valve:
+      marker: "# hat-scoped: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it — the same grammar `# reach:` and `# authz-kind:` are read with. A bare one is its own finding (rule 26's device), and every honoured one is counted and printed as `hat_scoped_overrides` on this rule's status line, so the population of sites that decided the hat IS the right node is readable rather than inferred"
+    # DERIVED, never typed: the kind -> model map is `model_kinds` (rule 13
+    # clause (i)'s own derivation) and "does this row name a node" is
+    # `org_scoped_model_names` plus the class body's own `organization =
+    # models.ForeignKey(` — rule 24's derivation. One derivation, three rules,
+    # so a model that gains a node leaves this population on the same run it
+    # enters rule 24's. There is nothing for a person to keep in step.
+    scope: {}
+    # THE FIRST SWEEP'S MEASUREMENT, 2026-09-14 — HISTORY, and deliberately not
+    # a census: tenant_wide_kinds 20, sites_seen 32, files_scanned 95,
+    # hat_scoped_overrides 1 (`sso_identity.provision`, then at
+    # `apps/accounts/services.py:1868`, whose reason named the system-only
+    # caller). All four move without this file changing, so TODAY's are the
+    # ENGINE's to print and never this comment's: the rule's own status line
+    # carries every one of them on every run, and `python -m quality.gate
+    # --explain 55` prints the rule. The numbers above are kept only because the
+    # floors below were argued against them.
+    # `tenant_wide_kinds` is floored at 6 because the surface review named six by
+    # hand — `sso_connection`, `tenant`, `role`, `user`, `api_token`,
+    # `identity_branding` — and the derivation finds fourteen more; a
+    # derivation that fell below the hand list has stopped deriving.
+    # `sites_seen` is floored at 8 for the reason §I gives: a recogniser that
+    # stops seeing its own subject must trip a floor rather than report a clean
+    # nothing, and eight is the five SSO sites plus `update_tenant_settings`
+    # plus two of the role sites.
+    floors:
+      files_scanned: 60
+      tenant_wide_kinds: 6
+      sites_seen: 8
+    # THE BACKLOG AT BIRTH, per app, measured on main 11b1a765 — nineteen sites
+    # that resolve at the hat today. `accounts` was ONE and not five because
+    # R1-F1 had already moved the five SSO sites onto
+    # `root_organization(tenant=...)`; what was left there was `user.unlink`,
+    # whose predicate `themselves_or_administers_the_whole_tenant` measures the
+    # root INSIDE itself — the rule cannot see into a predicate
+    # (`does_not_cover`), so the honest repair was a `# hat-scoped:` sentence at
+    # that call site, and it was the sweep's to write because this lane's
+    # territory is `quality/`. **The `accounts` sweep (P8) wrote it, and two
+    # more beside it**: the rename gave `user.erase` and `user.deactivate` a
+    # kind the registry derives, so the same predicate's other two call sites
+    # entered this population on the same run and leave it under the same
+    # sentence. The class is 0.
+    # `comms` was the founding eight — the templates, the policies and the
+    # suppression surge — and W55-comms took it to 0 by passing
+    # `root_organization(tenant=...)` at every one of them.
+    # `connections` (the five connection sites) went to 0 the same way, with
+    # the inbound receiver under a `# hat-scoped:` sentence because only the
+    # system reaches it. What is left is `core` (the three role reads and the
+    # grants list — a `list_` asks at the acting hat BY DESIGN since Phase R,
+    # which is the one place this rule and §C6 pull against each other and the
+    # reason those four are a ratchet rather than a red); `events` (the
+    # delivery replay) already reads 0.
+    ratchets:
+      accounts: 0  # P8: the three `user.*` sites, one predicate, one sentence
+      comms: 0  # W55-comms: the eight tenant-wide writes ask at the root
+      connections: 0  # W55-connections: the writes pass the root; the receiver's valve says system-only
+      core: 4
+      events: 0
+    does_not_cover: >
+      A NODE LAUNDERED THROUGH A LOCAL. The rule reads two bindings —
+      `root_organization(...)` and a parameter annotated `Organization` — and a
+      Name bound to anything else is a finding. That is the fail-closed reading
+      and it is deliberate: the alternative is a walk that guesses, and a guess
+      here is a branch administrator with the tenant's identity provider.
+      WHETHER THE REASON IN A `# hat-scoped:` IS A GOOD ONE is review's; the
+      gate counts them and prints every one. A KEY BUILT BY F-STRING OR READ
+      FROM A VARIABLE is rule 13 clause (iv)'s, with `# authz-key:` as its
+      valve. THE CODE HALF: a predicate that itself measures the root —
+      `administers_the_whole_tenant`, `themselves_or_administers_the_whole_tenant`
+      — makes its call site honest in a way this rule cannot see, which is
+      exactly why the valve exists and why `user.unlink` sits in the ratchet
+      rather than being quietly excused. `holds(actor, key, at=...)` is OUT by
+      signature — its node is explicit — and a `holds` with `at=None` on a
+      tenant-wide kind is the one shape a follow-up may add. DOORS THAT BUILD
+      THEIR OWN ACTOR and never call `require` are rule 13's `# authz:` census.
+      AND THE TENSION, NAMED: since Phase R a `list_` asks at the ACTING HAT by
+      design (`apps/core/selectors.py`'s own docstring says so — a list has no
+      row to hide), so a list over a tenant-wide kind is a finding of this rule
+      and a correct line of that one. The four `core` sites are in the ratchet
+      for that reason and not because they are wrong today; the question of
+      which node a tenant-wide LIST belongs at is the read sweeps', and this
+      rule's number is what will make somebody answer it.
+    # The recorded self-test population (see the header). Rising floor.
+    selftest_floor: { canaries: 4, negatives: 6 }
+    canaries:
+      # (1) THE DEFECT ITSELF, in the app it happened in. The tenant's identity
+      # provider authorized at the ROW, which reads as the most careful line on
+      # the page and resolves at the caller's hat.
+      # MOVE-TRIGGER 2026-09-16: `apps/accounts` is the plant because the
+      # subject IS its SSO surface — the five sites this rule exists for are
+      # there and nowhere else. Move it the day another app grows a
+      # tenant-wide kind with a row-shaped `require` of its own.
+      - { fixture: sso_update_at_the_row.py, plant_at: apps/accounts/services.py, mode: append,
+          expect: { contains: "sso_connection.update" } }
+      # (2) THE LOW EDGE: the same defect with no third argument at all, in a
+      # second app, so the rule is not one module's habit.
+      - { fixture: tenant_update_with_no_node.py, plant_at: apps/example/services.py,
+          mode: append, expect: { contains: "tenant.update" } }
+      # (3) `allows` rather than `require` — a door that BRANCHES on the answer
+      # has the identical hole, and reading only the raising name would have
+      # left every such door outside the rule.
+      - { fixture: role_at_the_hat.py, plant_at: apps/example/services.py, mode: append,
+          expect: { contains: "role.update" } }
+      # (4) The valve with nothing in it.
+      - { fixture: bare_hat_scoped.py, plant_at: apps/example/services.py, mode: append,
+          expect: { contains: "no reason" } }
+    negatives:
+      # The node resolved in the call itself — the form the rule is pushing to.
+      - { fixture: update_tenant_settings.py, plant_at: apps/example/services.py, mode: append }
+      # The node resolved one line earlier and bound. Most real sites need the
+      # root twice, so reading only the inline call would refuse the shape the
+      # rule is asking for.
+      - { fixture: root_binding.py, plant_at: apps/example/services.py, mode: append }
+      # A kind whose node lives one hop away, named by `.organization` — P4's
+      # own shape at `create_grant`.
+      - { fixture: grant_at_the_memberships_node.py, plant_at: apps/example/services.py,
+          mode: append }
+      # An organization IS a node: asked with the row, the question is already
+      # at the node. Out of the population by construction.
+      - { fixture: organization_is_its_own_node.py, plant_at: apps/example/services.py,
+          mode: append }
+      # A model that names its organization by COLUMN is out of the population,
+      # and this is the form that starts firing the day somebody drops it.
+      - { fixture: membership_kind_is_out.py, plant_at: apps/example/services.py, mode: append }
+      # The valve with its sentence — the form the one live site already wears.
+      - { fixture: hat_scoped_with_reason.py, plant_at: apps/example/services.py, mode: append }
+
+
+  - id: "56"
+    name: one-router-for-home-realm
+    enabled: true
+    statement: >
+      Home-realm discovery is one question with one answer.
+      SsoDomain.objects.for_domain( is called from apps/accounts/selectors.py
+      (realm_for_email, sso_enforced_for) and nowhere else;
+      SsoDomain.objects.claim( from apps/accounts/services.py (_apply_domains)
+      and the shell door that resolves an operator's --domain, and nowhere
+      else; and no module outside those filters SsoDomain by domain= at all. A
+      second caller is a second router that can disagree with the first about
+      whose person an address is — which is one person sent to one identity
+      provider and provisioned into another tenant.
+    check: home_realm_router
+    doc:
+      file: docs/product/architecture.md
+      contains: "a domain claim routes nothing until verified"
+    valve:
+      marker: "# rule-56: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it — the engine's generic override, counted in the standing override census and printed there. There is no rule-specific marker on purpose: a SECOND router is not a thing a local comment should be able to normalise, and the legitimate way to add one is a path in this rule's own allow-list, with its reason, in a diff somebody reads"
+    scope:
+      allow_router:
+        - path: apps/accounts/selectors.py
+          reason: >
+            the two pre-auth readers rule 8 exempts by name — `realm_for_email`
+            and `sso_enforced_for`. `get_connection_for_email` reaches the
+            router THROUGH `realm_for_email` and is not a second read, by the
+            selector's own sentence.
+        - path: apps/accounts/models.py
+          reason: >
+            the definition. A manager method has to live somewhere, and the
+            module it lives in is the one place a call-shaped rule would
+            otherwise report as a router.
+      allow_claim:
+        - path: apps/accounts/services.py
+          reason: >
+            `_apply_domains` asks "who already claims this" so the refusal can
+            say it in words before the unique constraint says it in a stack
+            trace.
+        - path: apps/accounts/management/commands/verify_sso_domain.py
+          reason: >
+            the shell door resolving the operator's `--domain` to the claim it
+            is about to verify — the one act that turns a reservation into a
+            route.
+    # Measured on main 11b1a765: files_scanned 258, router_sites 2,
+    # claim_sites 2, definition 2. `definition` is floored because a manager
+    # method that stopped existing would take the whole population with it and
+    # this rule would report a clean nothing about a router nobody has.
+    floors:
+      files_scanned: 100
+      router_sites: 2
+      claim_sites: 2
+      definition: 1
+    does_not_cover: >
+      A RAW SQL or `.raw()` read of `accounts_ssodomain`. A READ THROUGH A
+      RELATED MANAGER (`connection.domains.filter(domain=…)`) — named rather
+      than discovered: the recogniser reads a chain whose root is the MODEL,
+      and a related manager's root is a row, so that shape is outside and a
+      product that grows one needs this rule widened. WHETHER THE ONE ROUTER
+      HONOURS `verified_at` is `test_domain_claims.py`'s and never this
+      check's: what this sees is that ONE module asks, never what it asks.
+      Tests and migrations are outside by `SKIP_PARTS`. The reachability ORDER
+      inside `_platform_login` — which branch is tried first — is a sequence,
+      not a call site, and is the adapter's own tests'.
+    # The recorded self-test population (see the header). Rising floor.
+    selftest_floor: { canaries: 3, negatives: 3 }
+    canaries:
+      # (1) The second router, in the module that would grow one: the adapter
+      # knows the address and the model is one import away.
+      # MOVE-TRIGGER 2026-09-16: `apps/accounts` is the plant because the
+      # subject IS its SSO surface. Move it the day another app reaches the
+      # home-realm router at all.
+      - { fixture: for_domain_in_adapter.py, plant_at: apps/accounts/adapter.py, mode: append,
+          expect: { contains: "for_domain" } }
+      # (2) A door reserving a domain with its own hands.
+      # MOVE-TRIGGER 2026-09-16: `apps/accounts` is the plant because the
+      # SUBJECT only exists there — the gate's scaffold is a Django app with
+      # no identity provider, no `SsoDomain` and no `zitadel_sub`, so a form
+      # planted in it would be proving the recogniser against a model nobody
+      # has. Move it the day a second app reaches either surface.
+      - { fixture: claim_in_door.py, plant_at: apps/accounts/api.py, mode: append,
+          expect: { contains: "claim" } }
+      # (3) THE SAME QUESTION LONGHAND, in a third app — a rule that read only
+      # the manager method would be a rule about a method name.
+      - { fixture: domain_filter_in_service.py, plant_at: apps/example/services.py,
+          mode: append, expect: { contains: "domain=" } }
+    negatives:
+      # MOVE-TRIGGER 2026-09-16: `apps/accounts` is the plant because the
+      # SUBJECT only exists there — the gate's scaffold is a Django app with
+      # no identity provider, no `SsoDomain` and no `zitadel_sub`, so a form
+      # planted in it would be proving the recogniser against a model nobody
+      # has. Move it the day a second app reaches either surface.
+      - { fixture: router_in_selector.py, plant_at: apps/accounts/selectors.py, mode: append }
+      # MOVE-TRIGGER 2026-09-16: `apps/accounts` is the plant because the
+      # SUBJECT only exists there — the gate's scaffold is a Django app with
+      # no identity provider, no `SsoDomain` and no `zitadel_sub`, so a form
+      # planted in it would be proving the recogniser against a model nobody
+      # has. Move it the day a second app reaches either surface.
+      - { fixture: claim_in_services.py, plant_at: apps/accounts/services.py, mode: append }
+      # PROSE, in both directions: the fixture's docstring spells both call
+      # forms. A text scan would read the sentence that TEACHES the rule as the
+      # defect — rule 53's own lesson, and why this population is an AST walk.
+      # MOVE-TRIGGER 2026-09-16: `apps/accounts` is the plant because the
+      # SUBJECT only exists there — the gate's scaffold is a Django app with
+      # no identity provider, no `SsoDomain` and no `zitadel_sub`, so a form
+      # planted in it would be proving the recogniser against a model nobody
+      # has. Move it the day a second app reaches either surface.
+      - { fixture: for_domain_in_prose.py, plant_at: apps/accounts/adapter.py, mode: append }
+
+  - id: "57"
+    name: one-writer-of-the-identity-join
+    enabled: true
+    statement: >
+      Which Zitadel subject signs in as which of our people is written by
+      apps.accounts.services.record_zitadel_identity and cleared by
+      unlink_zitadel_identity, and nowhere else: no module outside
+      apps/accounts/services.py assigns .zitadel_sub or passes zitadel_sub= to
+      update(/create(/get_or_create(/update_or_create(, and no module outside
+      apps/accounts/adapter.py calls sociallogin.connect(. Reads are out of the
+      population by construction. A second writer is how a join between two
+      identity systems comes to disagree with itself — and the disagreement is
+      an account takeover with an extra step.
+    check: identity_join_writers
+    doc:
+      file: docs/product/architecture.md
+      contains: "keyed on the subject, not the address"
+    valve:
+      marker: "# rule-57: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it — the engine's generic override, counted and printed in the standing override census. No rule-specific marker, for rule 56's reason: a second writer of the identity join is not a thing a local comment should normalise, and the legitimate way to add one is a path in this rule's allow-list with its reason"
+    scope:
+      allow_column:
+        - path: apps/accounts/services.py
+          reason: >
+            the writer and the unlinker, both `@service`, both audited, both
+            refusing before they write — `record_zitadel_identity` refuses a
+            differing standing subject and `unlink_zitadel_identity` is the
+            audited road back.
+      allow_connect:
+        - path: apps/accounts/adapter.py
+          reason: >
+            allauth's own link, called AFTER the writer has said yes. The ORDER
+            is `test_rp_login.py`'s and not this check's; what is fenced here
+            is the module.
+    # Measured on main 11b1a765: files_scanned 258, column_writers 2 (the two
+    # services), connect_sites 3 (`adapter.py:590, :728, :788`),
+    # column_reads_seen 4. The read count is floored for rule 27's own reason:
+    # a recogniser that stopped seeing the column at all would report a clean
+    # nothing, and this is the number that says it is still looking.
+    floors:
+      files_scanned: 100
+      column_writers: 2
+      connect_sites: 3
+      column_reads_seen: 3
+    does_not_cover: >
+      F3'S CLASS — A WRITE THAT HAPPENS BEFORE A REFUSAL — IS NOT AN AST SHAPE.
+      It is a derived-population census, and its instrument is
+      `apps/accounts/tests/test_refusals_write_nothing.py`; it is declared here
+      so the surveyor's map shows where that belt is rather than leaving a
+      reader to assume this rule covers it. Also outside: `setattr(user,
+      "zitadel_sub", …)` and any constructed attribute name; a `User(...)`
+      CONSTRUCTED with `zitadel_sub=` (the constructor is not one of the four
+      manager writers and is named here rather than silently added); raw SQL;
+      `SocialAccount.uid`, which is allauth's own column written by allauth and
+      fenced by `test_rp_login.py`'s never-rehomed case rather than by this
+      rule; whether the writer's REFUSAL is correct, which is the writer's own
+      tests'; and Zitadel's own org-domain routing, which is not in this tree.
+    # The recorded self-test population (see the header). Rising floor.
+    selftest_floor: { canaries: 3, negatives: 3 }
+    canaries:
+      # (1) The join written where the subject arrives — one line, and an
+      # account takeover with an extra step.
+      # MOVE-TRIGGER 2026-09-16: moves with rule 56's, for the same reason.
+      - { fixture: sub_assignment_in_adapter.py, plant_at: apps/accounts/adapter.py,
+          mode: append, expect: { contains: "zitadel_sub" } }
+      # (2) A MANAGER write, which is a write with no assignment in it — the
+      # form a rule reading only assignments would miss entirely.
+      - { fixture: update_sub_in_door.py, plant_at: apps/example/api.py, mode: append,
+          expect: { contains: "zitadel_sub" } }
+      # (3) allauth's link called from outside the adapter, where the ORDER the
+      # adapter guarantees does not hold.
+      # MOVE-TRIGGER 2026-09-16: `apps/accounts` is the plant because the
+      # SUBJECT only exists there — the gate's scaffold is a Django app with
+      # no identity provider, no `SsoDomain` and no `zitadel_sub`, so a form
+      # planted in it would be proving the recogniser against a model nobody
+      # has. Move it the day a second app reaches either surface.
+      - { fixture: connect_in_service.py, plant_at: apps/accounts/services.py, mode: append,
+          expect: { contains: "sociallogin.connect" } }
+    negatives:
+      # MOVE-TRIGGER 2026-09-16: `apps/accounts` is the plant because the
+      # SUBJECT only exists there — the gate's scaffold is a Django app with
+      # no identity provider, no `SsoDomain` and no `zitadel_sub`, so a form
+      # planted in it would be proving the recogniser against a model nobody
+      # has. Move it the day a second app reaches either surface.
+      - { fixture: writer_in_services.py, plant_at: apps/accounts/services.py, mode: append }
+      # A READ, in a third module — out of the population by construction, and
+      # the form that would break the column's every legitimate use.
+      # MOVE-TRIGGER 2026-09-16: `apps/accounts` is the plant because the
+      # SUBJECT only exists there — the gate's scaffold is a Django app with
+      # no identity provider, no `SsoDomain` and no `zitadel_sub`, so a form
+      # planted in it would be proving the recogniser against a model nobody
+      # has. Move it the day a second app reaches either surface.
+      - { fixture: sub_read_in_oauth.py, plant_at: apps/accounts/oauth.py, mode: append }
+      # MOVE-TRIGGER 2026-09-16: `apps/accounts` is the plant because the
+      # SUBJECT only exists there — the gate's scaffold is a Django app with
+      # no identity provider, no `SsoDomain` and no `zitadel_sub`, so a form
+      # planted in it would be proving the recogniser against a model nobody
+      # has. Move it the day a second app reaches either surface.
+      - { fixture: connect_in_adapter.py, plant_at: apps/accounts/adapter.py, mode: append }
+
+  - id: "58"
+    name: socket-join-discipline
+    enabled: true
+    # R4's F1, the one HIGH of that review. `apps/realtime/consumers.py` says
+    # "nobody names their own group" and it was a CONVENTION FOR ONE CONSUMER.
+    # A planted `apps/example/consumers.py` doing
+    # `group_add(f"tenant.{query['tenant']}")` + `accept()`, mounted bare in
+    # `websocket_urlpatterns`, is discovered by `config/asgi.py:39-49` exactly as
+    # the real one is, accepted with NO credential, and hears that tenant's
+    # events. The gate let it through: rule 36 reads `group_send` sites — the
+    # PUSH side — and nothing read the JOIN side at all, while rule 46 asks only
+    # for a `DOOR_PAIR` marker and says so in its own capitals ("THE MARKER
+    # PROVES EXISTENCE, NEVER STRENGTH"). So a second consumer's whole gate
+    # answer was one line in a test file.
+    #
+    # TWO CLASSES, because the plant is two independent defects and closing
+    # either alone still leaves a door open. `join` without `mount` is an
+    # anonymous subscriber to real branches; `mount` without `join` is somebody
+    # else's tenant read with a valid credential.
+    statement: >
+      Nobody names their own group, and nobody mounts an open socket. Every
+      group_add under apps/ takes its group from one of the bridge's three
+      derived builders — tenant_group, org_group, user_group — directly, or
+      through a name the same scope bound to one (a list of them, a comprehension
+      over them, the loop variable that walks it). And every entry in a
+      module-level websocket_urlpatterns wraps its application in token_auth(...)
+      and names a consumer that extends TenantEventsConsumer, which is where the
+      three refusals live — no principal, no tenant, no self-named group. A group
+      name built at the join is a subscription to whatever the expression
+      evaluates to, and config/asgi.py mounts a bare pattern exactly as it mounts
+      the real one.
+    check: socket_join_discipline
+    doc: { file: docs/product/architecture.md, contains: "nobody names their own group" }
+    valve:
+      marker: "<comment> rule-58: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    # DERIVED, never typed: the population is every `group_add` call and every
+    # `websocket_urlpatterns` entry the AST finds under `apps/`. Measured on this
+    # tree: group_add_sites 2, consumer_patterns 1 — the one consumer's user-group
+    # join and its loop over the tenant and org groups, and its one mounted
+    # pattern. The floors are 1 and 1 rather than 2 and 1 for §I's reason: a
+    # recogniser that stops seeing its own subject must trip a floor rather than
+    # report a clean nothing, and the second `group_add` is R4-F4's ordering fix,
+    # which a later refactor is free to fold back into one loop.
+    floors: { group_add_sites: 1, consumer_patterns: 1 }
+    does_not_cover: >
+      A LAUNDERED NAME. The rule reads three bindings — a builder call, a name
+      this scope bound to one, and a collection or comprehension of them — and
+      anything else is a finding. That is the fail-closed reading and it is
+      deliberate; what it cannot see is a derived name that leaves the scope: a
+      helper in another module returning `tenant_group(x)`, a name bound in an
+      enclosing function and read in a nested one, a group name arriving as a
+      parameter. Each of those is a finding here, so the blind spot is FRICTION
+      rather than a hole — the valve is where such a site says why. A LATE JOIN.
+      The rule sees that a join is derived, never WHEN it happens: a consumer
+      that joins its user group after its reads satisfies this rule completely
+      and is R4-F4's defect, which is a population-derived TEST
+      (`test_the_user_group_is_joined_before_any_read`) and not a shape. AN
+      OVERRIDING SUBCLASS. A class that extends `TenantEventsConsumer` and
+      overrides `connect` to skip every refusal answers the mount class and is
+      exactly as open as the plant; subclassing is a claim about inheritance, not
+      about behaviour, and whether the override is honest is review's. CONSUMERS
+      MOUNTED ELSEWHERE. The population is `websocket_urlpatterns` at module
+      level, which is what `config/asgi.py` discovers; a consumer reached by any
+      other road is not mounted by this template and is not seen here. AND THE
+      WRAPPER IS READ BY NAME: a `token_auth` that stopped authenticating would
+      satisfy this rule, which is `apps/realtime/tests/test_consumers.py`'s
+      subject and not a static scan's.
+    # The recorded self-test population (see the header). Rising floor.
+    selftest_floor: { canaries: 3, negatives: 2 }
+    canaries:
+      # (1) R4'S PLANT, WHOLE — the fifteenth app's consumer, in the fifteenth
+      # app. One file, two findings, one per class, which is what makes the two
+      # classes' independence demonstrable rather than asserted.
+      # MOVE-TRIGGER 2026-09-16: `apps/example` is the plant because the fact
+      # being demonstrated is a SECOND app growing a socket door, and the app
+      # that already has one cannot demonstrate it. Move it the day `example`
+      # grows a real `consumers.py`, to whichever app is then door-less.
+      - { fixture: the_fifteenth_apps_open_consumer.py, plant_at: apps/example/consumers.py,
+          mode: create, expect: { contains: "names its own group" } }
+      # (2) THE JOIN HALF ALONE, in the app the seam lives in — a correctly
+      # mounted consumer whose handler subscribes to a name it built itself.
+      # MOVE-TRIGGER 2026-09-16: seam-bound. It moves the day the consumer
+      # leaves `apps/realtime/consumers.py`.
+      - { fixture: a_group_name_built_at_the_join.py, plant_at: apps/realtime/consumers.py,
+          mode: append, expect: { contains: "names its own group" } }
+      # (3) THE MOUNT HALF ALONE — authenticated, and written BESIDE the base
+      # rather than under it. This is the shape a careful stranger produces, and
+      # it is the one a credential check alone would wave through.
+      # MOVE-TRIGGER 2026-09-16: seam-bound, like (2).
+      - { fixture: a_mounted_consumer_beside_the_base.py, plant_at: apps/realtime/consumers.py,
+          mode: append, expect: { contains: "TenantEventsConsumer" } }
+    negatives:
+      # THE DEMANDED SHAPE, whole: the base subclassed, the pattern wrapped,
+      # every group from a builder, through the two-hop laundering the real
+      # consumer does (a list, then a loop over it). A rule that could not be
+      # satisfied by the form it demands is a rule nobody can land.
+      - { fixture: the_demanded_shape.py, plant_at: apps/example/consumers.py, mode: create }
+      # The valve with its sentence, on the flagged line's own comment block.
+      # MOVE-TRIGGER 2026-09-16: seam-bound like this rule's other appended
+      # forms — `apps/realtime/consumers.py` is the one consumer this template
+      # has, and a valve proved anywhere else would be proved against a door
+      # nothing mounts. It moves the day the consumer leaves that module.
+      - { fixture: a_valved_join.py, plant_at: apps/realtime/consumers.py, mode: append }
+
+  - id: "59"
+    name: org-scoped-events-carry-their-branch
+    enabled: true
+    # R4's F4 and F5, one statement because they are the two ends of one seam.
+    # `events.services._subject_organization` reads only the payload's TOP-LEVEL
+    # `organization_id`; absent means NULL, and `bridge.group_for` reads NULL as
+    # TENANT-WIDE. Rule 38 certifies that an org-scoped model's `Out` DECLARES
+    # the key; nothing certified that an emit site PASSES one, and rule 36's own
+    # `does_not_cover` names that gap in as many words.
+    #
+    # THE LIVE INSTANCE: `usage.threshold.crossed` (`apps/usage/services.py:153`)
+    # sends a `ThresholdCrossingOut` whose top level had no key and whose nested
+    # `crossed_by` is an org-scoped `UsageEntryOut` — so a rival administrator at
+    # branch B received a ledger row that `GET /usage/` under hat B never lists.
+    #
+    # THE OTHER END (F5): a noun mapped to `None` while the app declares a model
+    # of that name. `consumers._may_read` answers True for a `None` kind
+    # whatever branch the frame carries, so a real row's event declared org-less
+    # bypasses the read set for every connection in the tenant — and the
+    # `ImproperlyConfigured` text `kind_of_event` raises OFFERS that road while
+    # the noun census accepts any `None`.
+    statement: >
+      An org-scoped event carries its branch, and an org-less kind names none.
+      Every emit(name=<const>, payload=<expr>) site under apps/ whose noun
+      resolves to an OrgScopedModel kind passes a payload that provably carries
+      organization_id — a dict display naming the key, an expression mentioning
+      a rule-38-certified Out schema, a name the scope bound to either, or a
+      module-local helper whose returns are one of those. And a noun an app maps
+      to None in EVENT_KINDS while that app declares a model whose authorization
+      kind IS that noun is a violation: a None kind is delivered to every
+      connection in the tenant regardless of the branch on the frame.
+    check: org_scoped_events_carry_their_branch
+    doc: { file: docs/product/architecture.md, contains: "an org-scoped event carries its branch" }
+    valve:
+      marker: "<comment> rule-59: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    # DERIVED, never typed. `org_scoped_kinds` is the transitive OrgScopedModel
+    # closure crossed with `model_kinds` — the same two walks rules 24, 38 and 55
+    # already share, so a model that gains a branch joins this population on the
+    # run it joins theirs. Measured: org_scoped_kinds 12, emit_sites 16,
+    # none_mappings 1. The floors sit below the measurements for §I's reason — a
+    # recogniser that stops seeing its own subject must trip a floor rather than
+    # report a clean nothing — and `none_mappings` is floored at 1 because the
+    # one declared None (`search.engine`) is the form the F5 class is about: if
+    # nothing in the tree maps a noun to None, this rule's second class is
+    # watching nothing.
+    floors: { org_scoped_kinds: 6, emit_sites: 10, none_mappings: 1 }
+    does_not_cover: >
+      A NAME THIS WALK CANNOT RESOLVE. `emit(name=name, ...)` — a parameter, an
+      f-string, a lookup in a table (`STATUS_EVENTS[slug]`) — is out of the
+      population entirely, because the noun is what decides whether the question
+      applies and a guessed noun is a guessed answer, and it is COUNTED:
+      `unresolvable_emit_sites` on the status line, eight when this was written
+      (`connections.services._emit`, `core.services`' and `example.services`'
+      `name=name`, `exports`' one, and `comms`' two conditionals and two table
+      lookups) — derived every run and never typed here, because a count is not
+      a list and a typed count rots: this sentence said four while the tree
+      carried eight. Each of them is somebody else's control flow; the runtime
+      belt in `emit()` is what covers them, which is why the rule and the belt
+      ship together. A PAYLOAD ASSEMBLED ACROSS MODULES: the walk follows a name
+      the enclosing scope bound and ONE hop into a module-local helper's
+      returns, and stops. A body built in a second module, or behind a
+      conditional the walk cannot evaluate, reads as absent — the fail-closed
+      direction, and the valve is where such a site says why. THE VALUE, NEVER
+      THE KEY: a payload carrying `organization_id` set to the wrong branch, or
+      to the actor's hat rather than the row's, satisfies this completely and is
+      ADR realtime-2a's argument plus `_subject_organization`'s own refusal, not
+      a shape. A NESTED KEY IS NOT A TOP-LEVEL ONE and the rule deliberately
+      cannot tell a certified `Out` used as a FIELD from one used as the body —
+      `ThresholdCrossingOut` mentioning `UsageEntryOut` would satisfy the walk,
+      which is why `usage.threshold.crossed` is fixed by giving the OUTER schema
+      the key (F2.4) rather than by a deeper scan. AND THE SECOND CLASS READS
+      DECLARATIONS: a noun with no model of that name is silent here whether or
+      not a row is really behind it, which is `kind_of_event`'s refusal and the
+      noun census's job.
+    # The recorded self-test population (see the header). Rising floor.
+    selftest_floor: { canaries: 3, negatives: 2 }
+    canaries:
+      # (1) THE LIVE INSTANCE'S CLASS, in the app it was found in — an org-scoped
+      # noun announced with a hand-built body that omits the key.
+      # MOVE-TRIGGER 2026-09-16: `apps/usage` is the plant because the finding
+      # was there; move it the day `usage` stops emitting an org-scoped event.
+      - { fixture: a_hand_dict_with_no_branch.py, plant_at: apps/usage/services.py,
+          mode: append, expect: { contains: "organization_id" } }
+      # (2) THE LAUNDERING, one hop away. The walk follows a module-local
+      # helper's returns because thirteen honest emit sites build their body in
+      # one; this is the form that proves it does not fail OPEN when it gets
+      # there.
+      - { fixture: a_body_laundered_through_a_helper.py, plant_at: apps/example/services.py,
+          mode: append, expect: { contains: "organization_id" } }
+      # (3) F5's class: a real row declared org-less.
+      - { fixture: a_real_row_declared_org_less.py, plant_at: apps/example/events.py,
+          mode: append, expect: { contains: "mapped to None" } }
+    negatives:
+      # The demanded shape: the row's own rule-38-certified `Out`.
+      - { fixture: the_demanded_shape.py, plant_at: apps/example/services.py, mode: append }
+      # The helper hop, honest — the `comms._payload(message)` shape, which is
+      # what thirteen emit sites on this tree really write.
+      # MOVE-TRIGGER 2026-09-16: `apps/usage/services.py` for the canary's own
+      # reason — it is the app the finding was in, and the negative has to sit
+      # beside the canary it is the control for. It moves the day `usage`
+      # stops emitting an org-scoped event.
+      - { fixture: a_certified_body_through_a_helper.py, plant_at: apps/usage/services.py,
+          mode: append }
 
 # THE PEER-FORK MIGRATION PATH (rules 51-53, the redemption item for the
 # living-workaround finding of the FEEDBACK-2 survey). That finding recorded

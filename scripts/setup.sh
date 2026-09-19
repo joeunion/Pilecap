@@ -40,7 +40,85 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
-step() { printf '\n== %s\n' "$1"; }
+# >>> step-wall >>>
+# THE FIRST THING A STRANGER RUNS PRINTS A NUMBER. Every step says
+# how long it took and the run says its total, because "the first ten minutes"
+# was an estimate nobody could check: every duration in the ledgers for this
+# script was hand-copied from somebody's terminal, and a hand-copied number is
+# a number nobody can re-measure.
+#
+# THE CLOCK IS `scripts/rung_start.sh`'s, COPIED — not a third one. That file
+# owns the portability ladder below (bash 5's EPOCHREALTIME · GNU date's
+# `%s%3N` · perl · python3 · whole seconds, declared when it is the one used)
+# and the argument for each rung of it is in its own header, above its
+# `now_ms`. Principle 13: one derivation of one number. If this ladder is ever
+# wrong, it is wrong in `rung_start.sh` first and this block is re-copied —
+# never patched here alone. The line GRAMMAR is the gate's `leg` grammar
+# (`scripts/check.sh`'s `leg`/`leg_done`: `  (<name>: <n>s)`), because these
+# steps carry names rather than ordinals; the number's resolution is
+# `rung_start.sh`'s `fmt_ms`, so a fast step reads `0.31s` instead of `0s`.
+#
+# THE CLOSE IS DEFERRED — `step` closes the step before it, and `setup_total`
+# closes the last one — so a step that exits mid-way through under `set -e`
+# prints no elapsed at all rather than a time for work that did not finish.
+CLOCK=""
+_probe=$(date +%s%3N 2>/dev/null || echo x)
+if [ -n "${EPOCHREALTIME:-}" ]; then
+    CLOCK=bash5
+elif case "$_probe" in '' | *[!0-9]*) false ;; *) true ;; esac; then
+    CLOCK=gnudate
+elif command -v perl >/dev/null 2>&1; then
+    CLOCK=perl
+elif command -v python3 >/dev/null 2>&1; then
+    CLOCK=python3
+else
+    CLOCK=seconds
+fi
+
+now_ms() {
+    case "$CLOCK" in
+    bash5)
+        local us=${EPOCHREALTIME/./}
+        printf '%s' "${us%???}"
+        ;;
+    gnudate) date +%s%3N ;;
+    perl) perl -MTime::HiRes=time -e 'printf "%.0f", time()*1000' ;;
+    python3) python3 -c 'import time; print(int(time.time()*1000))' ;;
+    *) printf '%s000' "$(date +%s)" ;;
+    esac
+}
+
+fmt_ms() {
+    awk -v ms="$1" 'BEGIN { printf "%.2fs", ms / 1000 }'
+}
+
+STEP_NAME=""
+STEP_START=0
+RUN_START=$(now_ms)
+
+step_end() {
+    [ -n "$STEP_NAME" ] || return 0
+    printf '  (%s: %s)\n' "$STEP_NAME" "$(fmt_ms $(($(now_ms) - STEP_START)))"
+    STEP_NAME=""
+}
+
+step() {
+    step_end
+    printf '\n== %s\n' "$1"
+    STEP_NAME="$1"
+    STEP_START=$(now_ms)
+}
+
+# The last line of a run, and it is the last line on purpose: the number a
+# reader came for is the one under the guidance block, where the eye stops.
+setup_total() {
+    step_end
+    printf '\nsetup: total %s\n' "$(fmt_ms $(($(now_ms) - RUN_START)))"
+    if [ "$CLOCK" = "seconds" ]; then
+        printf '  (clock resolution: whole seconds — no sub-second clock on this host)\n'
+    fi
+}
+# <<< step-wall <<<
 
 # --- Guarded temp files, fixed as a class ----------
 # EVERY temp file this script makes holds a live credential: `env_set` stages
@@ -457,6 +535,83 @@ image_registry_host() {
 }
 # <<< services <<<
 
+# >>> local-main >>>
+# ensure_local_main — the first step, and the reason it is first.
+#
+# A clone of a PUBLISHED TAG is the shape every consumer's first clone takes:
+#
+#   git clone --branch <a published tag> <the repository>
+#
+# and git leaves that checkout on a DETACHED HEAD with no local `refs/heads/main`
+# at all. Measured on a real tag clone, 2026-09-13: the fifteenth builder's
+# first `./scripts/check.sh --loop` refused in 0.8 s —
+#
+#   this checkout has NO local refs/heads/main, so the --loop scope has no
+#   fork point to derive the active rung from.
+#
+# — a refusal that is EXEMPLARY and stays exactly as it is (`scripts/loop_tier.sh`;
+# its own argument: a thin basis is not a small answer, it is the wrong one).
+# What was wrong was not the refusal but the trap in front of it, and a trap is
+# closed one step earlier: the first thing a stranger runs now gives the
+# checkout the ref every scope tool in this tree reads by name.
+#
+# IT IS THE FIRST STEP BECAUSE THE STEP AFTER IT PERSISTS A DERIVED NAME. The
+# environment step writes `DATABASE_NAME` into `.env` and that name carries the
+# BRANCH (`scripts/db.sh`); on a detached HEAD there is no branch to carry, so a
+# `.env` written before this step would pin a detached-shaped name for the life
+# of the checkout. The ref has to exist before the first file that remembers it.
+#
+# IT CREATES NOTHING WHERE `main` ALREADY EXISTS, and that is the common case on
+# a working box: every linked worktree of this repository shares the common git
+# dir, so `rev-parse refs/heads/main` answers there and this step is a silent
+# no-op — no `branch`, no `switch`, nothing printed. A `verify_start.sh` clone
+# is the same: that script creates `main` at the verified sha itself, on
+# purpose, and this step finds it already there.
+#
+# `main` AT HEAD, NEVER AT `origin/main`'s TIP. A stranger who cloned v2.0.0
+# asked for v2.0.0; `scripts/rung_start.sh` resets a worktree to `main`, so a
+# `main` planted at the remote tip would quietly move them off the tag they
+# chose. The sentence below prints the one-line move for anyone who wants the
+# tip instead.
+#
+# A GIT THAT FAILS HERE IS EXIT 2 NAMING THE COMMAND, never a silent continue:
+# everything downstream — the database name, the loop scope, the secret scan's
+# basis — reads the ref this step was supposed to make, and each of them would
+# fail later saying something else.
+ensure_local_main() {
+    local head_sha short
+    if git rev-parse -q --verify refs/heads/main >/dev/null 2>&1; then
+        return 0
+    fi
+    if ! head_sha=$(git rev-parse -q --verify HEAD 2>/dev/null) || [ -z "$head_sha" ]; then
+        # An unborn HEAD: `git init` with nothing committed. There is no commit
+        # to place a branch on, and nothing else this early needs one.
+        echo "no commit to place main on — skipping"
+        return 0
+    fi
+    git branch main HEAD || {
+        echo "setup.sh: \`git branch main HEAD\` failed — this checkout has no local" >&2
+        echo "  refs/heads/main and one could not be created. Everything below derives" >&2
+        echo "  from that ref; a setup that continued here would fail later saying" >&2
+        echo "  something else." >&2
+        exit 2
+    }
+    if ! git symbolic-ref -q HEAD >/dev/null 2>&1; then
+        git switch main || {
+            echo "setup.sh: \`git switch main\` failed — the ref was created but this" >&2
+            echo "  checkout is still on a detached HEAD, so the database name has no" >&2
+            echo "  branch to derive from (scripts/db.sh)." >&2
+            exit 2
+        }
+    fi
+    short=$(git rev-parse --short main)
+    echo "main created at ${short} (this checkout had no local main — a tag clone; the --loop scope and the database name derive from it; to move to the tip: git fetch origin main && git reset --hard FETCH_HEAD)"
+}
+# <<< local-main <<<
+
+step "local main"
+ensure_local_main
+
 step "environment file"
 # THE STEP REGENERATES rather than leaves alone, because the per-rung ledger's
 # env-file component (`loop_env_fingerprint` in `scripts/gate_ledger.sh`) hashes
@@ -726,7 +881,18 @@ SETUP_INCOMPLETE=""
 # replace that one and un-guard the PAT.
 seed_log=""   # likewise
 make_tmp seed_log
-if DATABASE_NAME="${DATABASE_NAME}" uv run python manage.py zitadel_seed | tee "$seed_log"; then
+# REDIRECT AND `cat`, NEVER `| tee`. This line's exit status decides whether
+# the setup claims completion, and a pipe puts a second process's status
+# between the seed and that decision: under `pipefail` a `tee` that cannot
+# write (a full disk, a scratch path that went away) reds a seed that
+# succeeded, and under any frame that turned `pipefail` off it is the seed's
+# own failure that disappears. `>` then `cat` gives the same transcript and
+# the same file with `$?` meaning the seed. `test_pipefail_readers.sh` counts
+# `| tee` as a census reader for exactly this.
+seed_rc=0
+DATABASE_NAME="${DATABASE_NAME}" uv run python manage.py zitadel_seed >"$seed_log" 2>&1 || seed_rc=$?
+cat "$seed_log"
+if [ "$seed_rc" = "0" ]; then
     # The OAuth door, armed from what the seed just resolved.
     #
     # `ZITADEL_MCP_AUDIENCE` empty does not mean "accept any audience", it means
@@ -839,6 +1005,9 @@ if [ -d scripts/githooks ]; then
 else
     echo "scripts/githooks does not exist yet; skipping hook wiring"
 fi
+# The last step's wall, closed HERE rather than by `setup_total` below, so it
+# prints beside its own banner instead of underneath the guidance block.
+step_end
 
 # The verdict. Two banners and two exit codes, because "what this machine now
 # has" is the one thing this script is asked, and there is no honest way to
@@ -868,8 +1037,20 @@ fi)
 
 Next:
   source scripts/db.sh                     # export DATABASE_NAME in your shell
-  uv run python manage.py seed             # a tenant, an owner, a member, an API token — start here
-  uv run python manage.py createsuperuser  # a way in to /admin/
+  uv run python manage.py zitadel_first_admin --email you@yourcompany.com
+                                           # the deployment's first human, and BEFORE seed:
+                                           # it refuses once a tenant exists. It prints the
+                                           # link where that person sets their own password
+                                           # at the identity platform. createsuperuser still
+                                           # exists and is still the wrong road: no door here
+                                           # authenticates by password, so the one it sets
+                                           # opens nothing (ADR ident-4).
+  uv run python manage.py grant_staff --email you@yourcompany.com
+                                           # once they have signed in once: the one audited
+                                           # road to is_staff, which is what opens /admin/.
+  uv run python manage.py seed             # a tenant, an owner, a member, an API token —
+                                           # a drivable clone, if you are not standing a
+                                           # real deployment up
   uv run python manage.py issue_token --email you@example.com --name laptop --scope '*'
                                            # --scope is required; '*' means no limit.
                                            # Narrow it with --scope widgets:read (repeat per scope).
@@ -883,6 +1064,8 @@ Next:
   with the password in .env. Identity CONFIGURATION goes through our services,
   never through that console.
 NEXT
+
+setup_total
 
 # Exit 1, not 2: this script looked, and what it found is wrong (the header at
 # the seed step). Last statement in the file, so a failure anywhere above still

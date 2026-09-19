@@ -78,6 +78,27 @@ SECRETS_SCAN_BASIS=""
 #: call and restores it, so a per-rung scan after one is unaffected.
 SECRETS_SCAN_BASE_REF=${SECRETS_SCAN_BASE_REF:-}
 
+#: THE FORK POINT A MACHINE COULD NOT DERIVE, HANDED TO IT. A commit-ish,
+#: honoured ONLY when this checkout's own history reaches no fork point of its
+#: own and only when it names something other than HEAD — so it can widen a
+#: basis that would otherwise be empty and can never narrow a real one. The
+#: population is one: a verifier box, whose depth-1 mirror collapses HEAD and
+#: `refs/heads/main` onto a single commit. `scripts/verifier_box.sh` pushes the
+#: base as `refs/djb/base` in the same pack and names it here on the remote
+#: gate's command line. The argument in full is at the site that reads it.
+#:
+#: NOT THE SAME KNOB AS `SECRETS_SCAN_BASE_REF`, which REPLACES the fork point
+#: unconditionally because its caller is asking a different question. This one
+#: is a fallback for a machine that cannot answer the ORDINARY question, and a
+#: run where the ordinary answer exists ignores it entirely.
+DJB_LOOP_SCOPE_BASE=${DJB_LOOP_SCOPE_BASE:-}
+
+#: Set by secrets_scan_changed_files to the carried base it actually honoured,
+#: empty when it derived its own. The basis sentence says which, and a reader
+#: counting "runs whose scope was handed to them" has this rather than a string
+#: comparison against a sentence somebody may reword.
+SECRETS_SCAN_BASE_CARRIED=""
+
 # secrets_scan_changed_files <outfile>
 #
 # Writes the NUL-separated paths the `--loop` scan should read into <outfile>
@@ -88,7 +109,7 @@ SECRETS_SCAN_BASE_REF=${SECRETS_SCAN_BASE_REF:-}
 # answer, which is could-not-look and outranks a pass everywhere in the gate.
 secrets_scan_changed_files() {
     local out=$1
-    local base base_ref base_ref_name head branch raw committed_n
+    local base base_ref base_ref_name head branch raw committed_n carried
     SECRETS_SCAN_BASIS=""
     : >"$out" || return 2
 
@@ -145,6 +166,40 @@ secrets_scan_changed_files() {
     fi
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
 
+    # THE CARRIED FORK POINT, AND WHY IT IS HONOURED HERE AND NOWHERE ELSE.
+    #
+    # A DEPTH-1 MIRROR COLLAPSES THE TWO REFS ONTO ONE COMMIT. That is what a
+    # verifier box holds: the wrapper pushes `HEAD:refs/heads/main` into a
+    # shallow checkout, so over there `HEAD`, `refs/heads/main` and the
+    # merge-base of the two are all the SAME commit. Every branch below then
+    # reads exactly as it does on `main` itself — `ONLY this checkout's
+    # uncommitted changes were scanned` — and there are none, so the box
+    # derives an EMPTY change set for a rung that touched six files on the
+    # laptop. The verdict stays honest (the key records its own scope), but
+    # "the box ran the same --loop" is not true, and a rung that touched shared
+    # test infrastructure would not be classified as such over there.
+    #
+    # SO THE BASE TRAVELS WITH THE TREE. `scripts/verifier_box.sh` pushes the
+    # rung's merge-base as a second ref (`refs/djb/base`) in the same pack and
+    # names it in `DJB_LOOP_SCOPE_BASE` on the remote gate's command line; this
+    # reads it, and the whole `--loop` — the scope, the secret scan, the three
+    # changed-file censuses, the fe leg — inherits the same answer, because
+    # they all read THIS function and there is no second derivation anywhere.
+    #
+    # IT CAN ONLY EVER WIDEN A THIN BASIS, NEVER NARROW A REAL ONE. It is read
+    # only when this checkout's own history reaches no fork point — no local
+    # `main`, or a merge-base that IS this HEAD — and only when what it names
+    # resolves to a commit that is not HEAD. On a laptop, where the derivation
+    # answers for itself, an exported knob changes nothing at all.
+    SECRETS_SCAN_BASE_CARRIED=""
+    if [ -n "${DJB_LOOP_SCOPE_BASE:-}" ] && { [ -z "$base" ] || [ "$base" = "$head" ]; }; then
+        carried=$(git rev-parse -q --verify "${DJB_LOOP_SCOPE_BASE}^{commit}" 2>/dev/null || true)
+        if [ -n "$carried" ] && [ "$carried" != "$head" ]; then
+            base="$carried"
+            SECRETS_SCAN_BASE_CARRIED="$carried"
+        fi
+    fi
+
     if [ -z "$base" ]; then
         SECRETS_SCAN_BASIS="no local ${base_ref} to fork from — ONLY this checkout's uncommitted changes were scanned, and nothing committed was"
     elif [ "$base" = "$head" ]; then
@@ -168,7 +223,11 @@ secrets_scan_changed_files() {
             return 2
         }
         committed_n=$(secrets_scan__count "$raw")
-        SECRETS_SCAN_BASIS="$committed_n file(s) committed on '$branch' since the merge-base with ${base_ref_name} ($(git rev-parse --short "$base" 2>/dev/null || echo "$base")), plus this checkout's uncommitted changes"
+        if [ -n "$SECRETS_SCAN_BASE_CARRIED" ]; then
+            SECRETS_SCAN_BASIS="$committed_n file(s) committed since the CARRIED fork point ($(git rev-parse --short "$base" 2>/dev/null || echo "$base")) — this checkout's own history reaches none (a depth-1 mirror collapses HEAD and ${base_ref_name} onto one commit), so the base came over in DJB_LOOP_SCOPE_BASE, plus this checkout's uncommitted changes"
+        else
+            SECRETS_SCAN_BASIS="$committed_n file(s) committed on '$branch' since the merge-base with ${base_ref_name} ($(git rev-parse --short "$base" 2>/dev/null || echo "$base")), plus this checkout's uncommitted changes"
+        fi
     fi
 
     # The uncommitted half, in every case above: HEAD against the index AND the

@@ -53,7 +53,14 @@ JSON = "application/json"
 # ADR core-18 took one statement OFF this pin: the default list issues no
 # COUNT any more — `has_more` comes from fetching one row more than asked
 # for. `?include_count=true` puts it back, and costs exactly one more.
-LIST_QUERY_BUDGET = 7
+# PR4.b (ADR core-27) adds exactly THREE: a read is a permission now, so the
+# selector behind this door calls `require(actor, "<kind>.read", ...)` once,
+# and the first `require` of a request reads the actor's three permission
+# tables — the memberships on the chain, their grants, and the delta rows for
+# the role keys those name. Three and not six because PR0's memo rides on the
+# actor: a second `require` in the same request costs nothing, which is what a
+# route that fetches through a `get_` and then calls a service is standing on.
+LIST_QUERY_BUDGET = 10
 
 
 def _body(response: Any) -> dict[str, Any]:

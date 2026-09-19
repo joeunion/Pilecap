@@ -35,7 +35,7 @@ the platform population with `tenant` NULL, readable through
 `AuditEntry.objects.for_platform()` and through no customer's ledger. The gap
 this paragraph used to name is closed.
 
-**Who may.** `identity_platform.configure` — a superuser, not a tenant's owner
+**Who may.** `deployment.configure` — a superuser, not a tenant's owner
 (`apps/accounts/policies.py` says why). `--as` names them, so the audit row
 carries a person rather than "the shell".
 """

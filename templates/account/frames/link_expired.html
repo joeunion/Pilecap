@@ -1,0 +1,31 @@
+{% comment %}
+FRAME `link_expired` — design J7's `request_gone`. The SEVENTH frame, and the
+only one in the vocabulary with no form on it.
+
+THAT IS THE WHOLE POINT OF IT EXISTING. The person is in the middle of
+somebody else's journey: an app sent them here with an OIDC auth request, and
+that request has expired, been answered already, or never existed. There is
+nothing on this page for them to finish, so there is nothing on this page to
+fill in — and the design's "must not" column for this state says so in as many
+words: *render the form as if a plain sign-in would land somewhere useful*. A
+sign-in typed here would land them at this product's own landing page, which
+is not where they were going and not somewhere the app they were using can
+see.
+
+THE WORDS ARE SPLIT THE WAY EVERY OTHER FRAME SPLITS THEM — the fact as the
+`h1`, the move as the lede — and the whole sentence is written down once in
+`apps/accounts/views.py`'s `SENTENCES`, which
+`test_every_frame_sentence_matches_the_design` reads this file against. It
+names the APP rather than this product because "try again" here would be the
+wrong instruction.
+
+There is no link back to the sign-in page either. Somebody who wants to sign
+in to the product can, at the address they already know; a link from here
+would be the same invitation to type into a journey that cannot complete,
+one hop further away.
+{% endcomment %}
+<h1>This sign-in link has expired.</h1>
+{% if note %}
+    <p class="alert" role="alert">{{ note }}</p>
+{% endif %}
+<p class="lede">Go back to the app that sent you here and try again.</p>

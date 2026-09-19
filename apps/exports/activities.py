@@ -85,7 +85,19 @@ log = get_logger(__name__)
 #: The version of the manifest document. A number rather than nothing, because
 #: the manifest is a published shape a customer's own tooling will read, and the
 #: first time its keys move somebody has to be able to tell which one they have.
-MANIFEST_VERSION = 1
+#:
+#: **2 since Phase R.** The document gained `omitted_models` — the tables the
+#: requester may not read — and a reader that switches on this number can now
+#: tell an archive that was complete-for-that-reader from one written before the
+#: question was asked. Additive: every key of version 1 is still there and means
+#: what it meant, which is the only kind of change this number is allowed to be
+#: without a successor document.
+MANIFEST_VERSION = 2
+
+#: The reason string an omitted table carries. One word, in the manifest's own
+#: vocabulary, so a customer's tooling can branch on it without parsing prose —
+#: and the prose is in the API contract, where a sentence belongs.
+UNREADABLE = "unreadable"
 
 #: What the manifest is called inside the zip, and where the JSONL files live.
 #: Constants rather than literals at three call sites, because a reader opening
@@ -184,9 +196,16 @@ def _write_the_archive(
     **`actor` is the PERSON who asked**, not the system actor the rest of this
     activity runs as — see `_person_for` for the split and why it is not a
     fiction.
+
+    **WHAT may be in the archive is a third question**, asked of a third actor —
+    `_reader_for(export)`, built off the row rather than off the headers, and
+    never `kind="system"`. See that function; the difference decides whether the
+    read half of this walk can say no at all.
     """
     carried, skipped = plan(tenant_wide=export.scope == Export.Scope.TENANT)
     models_manifest: list[dict[str, Any]] = []
+    omitted: dict[str, str] = {}
+    reader = _reader_for(export)
     total = 0
 
     with SpooledTemporaryFile(max_size=SPOOL_BYTES) as spool:
@@ -199,7 +218,16 @@ def _write_the_archive(
                     for field in disposition.model._meta.concrete_fields
                     if field.name not in left_out
                 ]
-                rows = list_exportable_rows(tenant=export.tenant, org=hat, disposition=disposition)
+                rows = list_exportable_rows(
+                    tenant=export.tenant, org=hat, disposition=disposition, actor=reader
+                )
+                if rows is None:
+                    # REFUSED, not empty. The selector says which by returning
+                    # `None`, and the difference reaches the customer: an empty
+                    # `.jsonl` would say "you have none of these", which is a
+                    # different and false sentence.
+                    omitted[label] = UNREADABLE
+                    continue
                 written = 0
                 with archive.open(f"{MODELS_DIRECTORY}/{label}.jsonl", "w") as handle:
                     for row in rows.iterator(chunk_size=CHUNK):
@@ -226,6 +254,7 @@ def _write_the_archive(
                 hat=hat,
                 models=models_manifest,
                 skipped=skipped,
+                omitted=omitted,
                 rows=total,
             )
             archive.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, cls=DjangoJSONEncoder))
@@ -256,6 +285,7 @@ def _manifest(
     hat: Organization,
     models: list[dict[str, Any]],
     skipped: dict[str, str],
+    omitted: dict[str, str],
     rows: int,
 ) -> dict[str, Any]:
     """What the archive says about itself. **The same object goes in both places.**
@@ -287,6 +317,13 @@ def _manifest(
         ],
         "skipped_models": [
             {"label": label, "reason": reason} for label, reason in sorted(skipped.items())
+        ],
+        # The third and newest reason a table is missing, and the only one that
+        # is about the READER rather than about the shape of the export: they
+        # may not read that kind. Named beside the other two so a customer sees
+        # one list of "what is not here and why" rather than two.
+        "omitted_models": [
+            {"label": label, "reason": reason} for label, reason in sorted(omitted.items())
         ],
     }
 
@@ -328,7 +365,16 @@ def build_export_archive(payload: BuildExport) -> ExportBuilt:
     close_old_connections()
     try:
         tenant, _user_id, org = workflow_context()
-        export = get_export(tenant=tenant, export_id=UUID(payload.export_id), org=org)
+        # `system_actor` and not the requester: reading the export row to build it
+        # is the product acting for itself, and the tenancy is still enforced by the
+        # scoped manager on the way through. WHAT the archive may contain is a
+        # different question, asked of the PERSON — see `_reader_for`.
+        export = get_export(
+            tenant=tenant,
+            export_id=UUID(payload.export_id),
+            org=org,
+            actor=system_actor(tenant, org),
+        )
         # The system actor: nobody clicked this. The hat still rides on it, so
         # the audit rows say which part of the network the work was done for.
         actor = _actor_for(export)
@@ -378,7 +424,14 @@ def record_export_failure(payload: ExportFailed) -> str:
     close_old_connections()
     try:
         tenant, _user_id, org = workflow_context()
-        export = get_export(tenant=tenant, export_id=UUID(payload.export_id), org=org)
+        # The system reads its own row to record the failure on it; nobody clicked
+        # this, and the tenancy is the scoped manager's as it is everywhere else.
+        export = get_export(
+            tenant=tenant,
+            export_id=UUID(payload.export_id),
+            org=org,
+            actor=system_actor(tenant, org),
+        )
         failed = services.record_export_failure(
             tenant=export.tenant,
             actor=_actor_for(export),
@@ -456,9 +509,9 @@ def _person_for(export: Export) -> Actor:
     the audit row the file's service writes reads *the system filed this, on
     behalf of X*, which is what happened. Spelling it `human` would claim a click
     that never occurred and would be the fiction `_actor_for` exists to refuse;
-    it would also route `file.create` through `files.policies.can_file` a second
-    time, re-asking a question `export.request` already answered at the door with
-    the wider ceiling (`administers_the_whole_tenant` for a tenant-wide walk).
+    it would also re-ask `file.create` of the person a second time, a question
+    `export.create` already answered at the door with the wider ceiling
+    (`administers_the_whole_tenant` for a tenant-wide walk).
     Nothing is widened by the system kind here: what this run may READ was fixed
     by `_hat_for` before a byte was written.
 
@@ -483,6 +536,48 @@ def _person_for(export: Export) -> Actor:
         tenant=export.tenant,
         kind="system",
         org=export.organization,
+    )
+
+
+def _reader_for(export: Export) -> Actor:
+    """The requester, **as somebody who can be told no**. For the archive's reads.
+
+    Three actors touch one export build and each answers a different question:
+
+    * `_actor_for` — *who performed this act*: the system, wearing the run's hat.
+      The audit rows are its.
+    * `_person_for` — *whose document is this*: the person, restored off the
+      workflow headers, `kind="system"` because nobody clicked. The
+      `FileVersion.uploaded_by` is its.
+    * this one — *what may be IN the archive*: the person again, and this time
+      not `kind="system"`, because `core.authz.allows` answers a system actor
+      True at step 1, before it reads a key, a membership or a policy. Asking
+      the archive's read question with `_person_for`'s actor would be asking
+      nobody, and every kind would come back readable however the requester's
+      permissions were set. A check that cannot say no is not a check.
+
+    **Off the ROW rather than off the headers**, which is the one place this
+    disagrees with `_person_for` and it is deliberate: what an archive contains
+    must be the same on every attempt at it (principle 16 — a Temporal activity
+    is retried, and a retry that arrived with a differently-shaped principal
+    must not produce a differently-shaped archive). `Export.requested_by` is the
+    stable answer to *whose archive is this*; the headers are the transport.
+
+    **`kind="agent"` and not `"human"`**, for `_actor_for`'s own reason: nobody
+    clicked this. What the kind buys is only that it is not `"system"`.
+
+    **A requester who has since been erased holds nothing, and the manifest says
+    so.** `requested_by` is `SET_NULL` on erasure by design, so a rebuild after
+    one resolves an actor with no user — which holds no key, omits every kind,
+    and writes every table into `omitted_models`. That is loud and it fails
+    closed, which is the right pair of properties for the case; an archive
+    rebuilt for somebody who no longer exists is not one to widen for.
+    """
+    return actor_for(
+        user=export.requested_by,
+        tenant=export.tenant,
+        kind="agent",
+        org=_hat_for(export),
     )
 
 

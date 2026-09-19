@@ -32,42 +32,71 @@ from django.test import Client, override_settings
 from django.urls import resolve, reverse
 
 from apps.accounts.models import User
-from apps.core.actor import actor_for
+from apps.core.actor import actor_for, system_actor
 from apps.core.models import Membership, Organization, Tenant
-from apps.core.services import create_organization
+from apps.core.services import create_organization, create_tenant
 from apps.core.tests import shadowed_welcome_urls
+from apps.core.tests.template_shape import template_shape
+from apps.core.tests.test_settings import _settings_module
 
 pytestmark = pytest.mark.django_db
 
 WELCOME = "/welcome/"
 SHADOWING_URLCONF = "apps.core.tests.shadowed_welcome_urls"
 
+#: A front end that is not this deployment, for the declared branch of the
+#: landing derivation. `.example` is reserved by RFC 2606, so nothing resolves.
+A_FRONT_END = "https://app.example"
+
 
 # --- it is where sign-in lands ------------------------------------------------
 
 
 def test_login_redirect_is_the_landing_and_it_resolves() -> None:
-    """The setting and the mount are pinned to each other, in both directions.
+    """The name and the mount are pinned to each other, in both directions.
 
-    A `LOGIN_REDIRECT_URL` that resolves to nothing is a 404 after a successful
-    sign-in — the one moment a person is least able to tell whether the failure
-    is theirs.
+    A landing that resolves to nothing is a 404 after a successful sign-in — the
+    one moment a person is least able to tell whether the failure is theirs.
+
+    **It used to open by comparing live `LOGIN_REDIRECT_URL` against the mounted
+    path, and that line was a report about the machine it ran on.** The setting
+    is DERIVED from `PRODUCT_BASE_URL`, which `.env.example` invites every
+    product to set, so the same green assertion was red in the first consumer's
+    primary checkout the day they set it. What survives here is the half that is
+    genuinely this tree's: the route exists, under the name the derivation uses.
+    The derivation itself is proved under a pinned environment, below.
+
+    (The paragraph above deliberately avoids spelling the assertion it replaced:
+    the census that found it greps for that shape, and a docstring counted as a
+    site is a census reporting a defect nobody can fix.)
     """
-    assert settings.LOGIN_REDIRECT_URL == WELCOME
     assert reverse("welcome") == WELCOME
     assert resolve(WELCOME).view_name == "welcome"
 
 
-def test_a_clone_with_no_front_end_pays_nothing() -> None:
-    """`PRODUCT_BASE_URL` defaults to `PUBLIC_BASE_URL`, so the landing is local.
+def test_the_landing_is_local_when_no_front_end_is_declared() -> None:
+    """`PRODUCT_BASE_URL` defaults to `PUBLIC_BASE_URL`, so a clone pays nothing.
 
-    The other half of the derivation — a product that HAS a front end and says
-    where — is proved by importing the settings module under that environment,
-    in `apps/core/tests/test_settings.py`, where every other settings derivation
-    is proved the same way.
+    Imported under an environment that CLEARS the variable rather than asserted
+    off live settings: `_settings_module` is the form every settings derivation
+    in this tree is proved in, and clearing is the half that makes the answer
+    the derivation's instead of the deployment's.
     """
-    assert settings.PRODUCT_BASE_URL == settings.PUBLIC_BASE_URL
-    assert settings.LOGIN_REDIRECT_URL == WELCOME
+    with _settings_module("config.settings.base", PRODUCT_BASE_URL=None) as base:
+        assert base.PRODUCT_BASE_URL == base.PUBLIC_BASE_URL
+        assert base.LOGIN_REDIRECT_URL == WELCOME
+
+
+def test_the_landing_is_the_front_ends_origin_when_one_is_declared() -> None:
+    """The other branch: a product with a front end says where, and sign-in lands there.
+
+    The two together are what `LOGIN_REDIRECT_URL` actually promises. Neither
+    can be seen from live settings, and asserting on live settings is how the
+    promise came to be tested as "today's environment is today's environment".
+    """
+    with _settings_module("config.settings.base", PRODUCT_BASE_URL=A_FRONT_END) as base:
+        assert base.PRODUCT_BASE_URL == A_FRONT_END
+        assert base.LOGIN_REDIRECT_URL == A_FRONT_END
 
 
 # --- it demands a credential --------------------------------------------------
@@ -150,6 +179,46 @@ def test_an_unresolved_hat_says_so_rather_than_showing_nothing(client: Client, n
     assert "None resolved" in body
 
 
+def test_a_fresh_deployment_names_the_next_act(client: Client, nomad: User) -> None:
+    """An unresolved tenant on an EMPTY installation names the command that fixes it.
+
+    The sentence above it — "Every tenant-scoped read is empty until one is" —
+    is true on both kinds of deployment and actionable on neither. On a fresh
+    clone the reader is the person who just ran the installer, the reason there
+    is no tenant is that nobody has made one yet, and the next act is a single
+    command; leaving them to find it is the landing page describing a dead end
+    it could have opened.
+
+    **The `iff` is the whole test, and both halves are here on purpose.** The
+    predicate is `Tenant.objects.exists()` — the same one `create_first_tenant`
+    refuses on (`apps/core/services.py`), which is what makes the page's advice
+    and the command's own refusal impossible to disagree. Told only to the
+    first half, this is a helpful landing page; told to the second, it is a
+    page telling a member of a live installation to go and run a shell command
+    that would refuse them — so the negative is not a nicety, it is the
+    criterion.
+
+    The address is the signed-in person's own, read off the session exactly as
+    the line above it is: a command they can paste, not a placeholder they have
+    to translate.
+    """
+    # Fresh: no tenant row anywhere, which is the state a clone starts in.
+    assert not Tenant.objects.exists()
+    client.force_login(nomad)
+    fresh = client.get(WELCOME).content.decode()
+    assert "None resolved" in fresh
+    assert "On a fresh deployment this is expected" in fresh
+    assert f"uv run python manage.py bootstrap_tenant --email {nomad.email}" in fresh
+
+    # Live: a tenant exists and this person simply has no membership on it.
+    # `create_tenant` without an owner is the conftest's own idiom, and it
+    # leaves `nomad` exactly as unresolved as the line above.
+    create_tenant(name="Acme", slug="acme", actor=system_actor())
+    live = client.get(WELCOME).content.decode()
+    assert "None resolved" in live
+    assert "bootstrap_tenant" not in live
+
+
 def test_it_writes_nothing(client: Client, owner: User, tenant: Tenant) -> None:
     """A landing page is a read. The membership count is the cheap witness."""
     before = Membership.objects.filter(tenant=tenant).count()
@@ -162,10 +231,17 @@ def test_it_writes_nothing(client: Client, owner: User, tenant: Tenant) -> None:
 
 
 def test_it_extends_the_entrance_shell(client: Client, owner: User) -> None:
-    """The last frame of the sign-in chain looks like the frames before it."""
+    """The last frame of the sign-in chain looks like the frames before it.
+
+    The marker is READ from the declaration (`DJB_IDENTITY_SHAPE`, key
+    `entrance_marker`) rather than pinned, because "the landing renders in the
+    product's ONE shell" is every product's property while the marker string is
+    this template's own shape. `test_entrance_chain.token_marker` is the same
+    read on the other side of the chain.
+    """
     client.force_login(owner)
     body = client.get(WELCOME).content.decode()
-    assert "--entrance-tokens" in body
+    assert settings.IDENTITY_SHAPE["entrance_marker"] in body
     assert "<link" not in body
 
 
@@ -179,6 +255,7 @@ def test_it_hands_the_browser_a_csrf_cookie(client: Client, owner: User) -> None
     assert settings.CSRF_COOKIE_NAME in response.cookies
 
 
+@template_shape("landing")
 def test_the_named_mechanism_has_a_reader() -> None:
     """A mechanism a comment names and no code uses is a defect nothing sees.
 

@@ -8,9 +8,17 @@ WHAT WAS WRONG, TWICE.
 correct — this deployment signs people in through Zitadel and there is no
 password of ours to type. But allauth's own `account/login.html` renders the
 provider list only `{% templatetag openblock %} if socialaccount_providers
-{% templatetag closeblock %}`, and a fresh clone has none until
-`./scripts/setup.sh` has run and put a client id in `.env`. So the page came
-back 200 with a heading and nothing under it. Measured on the tree that landed
+{% templatetag closeblock %}`, and a fresh clone has none until this
+deployment has a client id and secret in `.env`. Getting them there is three
+steps and only the first is a command: `./scripts/setup.sh` runs the seed,
+which MAKES the browser client at the identity platform; then a person copies
+the `clientId` and `clientSecret` the seed printed into `.env` as
+`ZITADEL_CLIENT_ID` and `ZITADEL_CLIENT_SECRET`; then the process restarts.
+The script writes neither value and cannot — the identity platform shows a
+client secret once, to whoever is watching the terminal — so the sentence at
+the bottom of this file names all three steps. It used to name the command
+alone, which left a stranger running the thing that had just succeeded. So the
+page came back 200 with a heading and nothing under it. Measured on the tree that landed
 against: 895 bytes whose entire visible text was "Sign In Menu: Sign In Sign
 In". A person following an invitation arrived there and had no next move, and
 nothing on the page said why. The fix is the `{% templatetag openblock %} else
@@ -99,9 +107,13 @@ reading is here, in the app that owns the doors.
         nothing here to sign in with.
     </p>
     <p>
-        Whoever runs it fixes that by running <code>./scripts/setup.sh</code>,
-        which registers this application with the identity platform and writes
-        the client id into <code>.env</code>. Until then no invitation can be
-        completed and no account can be reached.
+        Whoever runs it fixes that in three steps. Run
+        <code>./scripts/setup.sh</code>, which registers this application with
+        the identity platform. Copy the <code>clientId</code> and
+        <code>clientSecret</code> it printed into <code>.env</code> as
+        <code>ZITADEL_CLIENT_ID</code> and <code>ZITADEL_CLIENT_SECRET</code> —
+        the secret is shown once, so it has to be taken from that output.
+        Then restart. Until all three are done no invitation can be completed
+        and no account can be reached.
     </p>
 {% endif %}

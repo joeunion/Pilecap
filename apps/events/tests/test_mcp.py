@@ -83,7 +83,29 @@ TOOL_FOR_ROUTE: dict[str, str] = {
 # ADR core-18 took one statement OFF this pin: the default list issues no
 # COUNT any more — `has_more` comes from fetching one row more than asked
 # for. `?include_count=true` puts it back, and costs exactly one more.
-LIST_QUERY_BUDGET = 1
+#
+# **+3 since Phase R** (ADR core-27, rule 5): the selector asks its kind's
+# `read` at the acting hat, and resolution reads three tables. The machine
+# door pays exactly what the human door pays, which is the point: a tool that
+# asked a cheaper question would be a tool answering a different one (rule 46).
+#
+# **5 -> 4 since PR5.5, and the statement that left is named**: the root read.
+# The selector used to resolve the tenant's ROOT to ask at — one indexed read —
+# because a tenant-wide kind names no organization and the hat was thought to be
+# the wrong node for it. Sight is the hat's now: the selector asks
+# `endpoint.read` with no node, `where_of` answers at the acting hat, and
+# nothing is resolved. The cost of the register decision, measured.
+#
+# **WHICH HAT THIS PIN RUNS UNDER, because the number used to depend on it.**
+# These two pins call the tool body directly rather than over a transport, and
+# the principal's hat is the tenant's ROOT. That mattered under the root form —
+# a request whose hat IS the root filled the memo at the door and paid nothing,
+# while a BRANCH hat paid one root read once per request, so the same door gave
+# two numbers under two hats. It does not matter any more: no read here resolves
+# the root at all, so a branch hat and a root hat both pay four. The
+# `forget_root()` calls below therefore no longer change this number; they stay
+# because they are what makes that claim testable rather than assumed.
+LIST_QUERY_BUDGET = 4
 
 
 # --- A tool call, without a transport ------------------------------------------
@@ -415,10 +437,17 @@ def test_a_tokenless_tenant_is_refused_rather_than_guessed_at(nomad: User) -> No
 
 
 def test_a_nomad_reads_an_empty_list_rather_than_everything(nomad: User) -> None:
-    """Fails closed: no tenant means no rows, not all rows."""
-    page = tool("list_endpoints")(context_for(nomad, None))
-    assert page.items == []
-    assert len(page.items) == 0
+    """Fails closed — and since Phase R it says so instead of answering blank.
+
+    **The refusal got stronger; the property did not move.** A principal with no
+    tenant used to get an empty page; it now gets `forbidden`, because
+    `list_endpoints` asks `endpoint.read` and somebody with no membership
+    anywhere holds nothing (ADR core-27). Reading no rows is still what happens,
+    and the assertion is what stops the day it becomes a page of somebody's.
+    """
+    with pytest.raises(ToolError) as refused:
+        tool("list_endpoints")(context_for(nomad, None))
+    assert "forbidden" in str(refused.value)
 
 
 # --- Query pin (house rule 5, the machine door's own) --------------------------
@@ -432,6 +461,12 @@ def test_the_tool_list_query_budget(
             tenant=tenant, actor=owner_actor, url=f"https://sub-{index}.example/hook"
         )
     acting = context_for(owner, tenant)
+    # Cold, like a request that has resolved nothing yet — see the budget's own
+    # note: nothing in the READ path resolves the root any more,
+    # and this is what keeps that honest: `register_endpoint` above DID ask for
+    # one (a write is still asked at the root), so a pin that inherited its
+    # resolution could not tell a returning root read from none.
+    tenant.forget_root()
     with django_assert_num_queries(LIST_QUERY_BUDGET):
         tool("list_endpoints")(acting)
 
@@ -442,6 +477,11 @@ def test_the_delivery_tool_reads_the_event_name_without_an_n_plus_one(
     for _ in range(12):
         _dead_letter(tenant, owner_actor)
     acting = context_for(owner, tenant)
+    # Cold, like a request that has resolved nothing yet — see the budget's own
+    # note: the dead letters above DID ask for one (a write is
+    # still asked at the root), so emptying the memo is what keeps this pin able
+    # to notice a root read coming back to the READ path.
+    tenant.forget_root()
     with django_assert_num_queries(LIST_QUERY_BUDGET):
         page = tool("list_deliveries")(acting)
     assert len(page.items) == 12

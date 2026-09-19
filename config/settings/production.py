@@ -21,7 +21,9 @@ from .base import (
     DEBUG,
     MACHINERY_DEPLOYMENT,
     MIDDLEWARE,
+    PUBLIC_BASE_URL,
     SECRET_KEY,
+    SIGN_IN_DOOR,
     SOCIALACCOUNT_PROVIDERS,
     STORAGES,
     _parts_database_password,
@@ -149,6 +151,54 @@ def _authorize_origins(providers: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(origins))
 
 
+def _declared_redirect_origins() -> list[str]:
+    """Where a sign-in that COMPLETES on our own page is allowed to end up.
+
+    **The other half of the same defect, and it only exists under `ours`**
+    (design C-10's CSP half; the consumer's LOGIN-CSP-1). `_authorize_origins`
+    above admits the hop OUT — our page 302s the browser to the identity
+    platform's authorize endpoint. This admits the hop BACK: with the login
+    page on our host, the person's password POSTs here, our server finalizes
+    the OIDC auth request, and the answer is a 302 towards the client's
+    registered redirect URI. That redirect is part of the same submission's
+    chain, so `form-action` governs it — and the failure is invisible from
+    this side: the server log shows the 302 leaving and every headless drive
+    passes, while the browser silently declines to follow it.
+
+    **Empty under `hosted`, and that is the derivation, not caution.** Under
+    the hosted door no form of ours is ever submitted into that chain — the
+    password is typed on the identity platform's own page — so the origins are
+    not needed, and a directive listing them anyway would be wider than the
+    doors this deployment opened. That is the same rule the authorize origins
+    above are derived by.
+
+    **The URIs are the SEED's, imported rather than restated.** They are what
+    `zitadel_seed` registers with Zitadel; a copy here would be a hand list
+    that agrees with the registration on the day it is written and silently
+    stops agreeing the first time either moves — and the symptom would be a
+    browser refusing a redirect nobody can see refused. The module is
+    importable from a settings module because it touches no model and no app
+    registry: it reads `django.conf.settings` lazily and calls Zitadel only
+    from inside `handle`. `config/urls.py` and `config/api.py` already import
+    from `apps.`; this is that direction, one file earlier.
+    """
+    if SIGN_IN_DOOR != "ours":
+        return []
+
+    # Imported here rather than at module scope so the arrow is visible at the
+    # one place that needs it, and so nothing else in this file can start
+    # depending on a command module.
+    from apps.accounts.management.commands import zitadel_seed
+
+    base = str(PUBLIC_BASE_URL or "")
+    declared = [
+        f"{base}{zitadel_seed.BROWSER_CALLBACK_PATH}",
+        f"{base}{zitadel_seed.BROWSER_LOGOUT_PATH}",
+        *zitadel_seed.MCP_CALLBACK_URIS,
+    ]
+    return list(dict.fromkeys(origin for origin in map(_origin, declared) if origin))
+
+
 CONTENT_SECURITY_POLICY = {
     "DIRECTIVES": {
         "default-src": ["'none'"],
@@ -157,7 +207,11 @@ CONTENT_SECURITY_POLICY = {
         "img-src": ["'self'", "data:"],
         "font-src": ["'self'"],
         "connect-src": ["'self'"],
-        "form-action": ["'self'", *_authorize_origins(SOCIALACCOUNT_PROVIDERS)],
+        "form-action": [
+            "'self'",
+            *_authorize_origins(SOCIALACCOUNT_PROVIDERS),
+            *_declared_redirect_origins(),
+        ],
         "frame-ancestors": ["'none'"],
         "base-uri": ["'self'"],
         "object-src": ["'none'"],

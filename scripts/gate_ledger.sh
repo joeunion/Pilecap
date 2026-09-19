@@ -121,7 +121,33 @@ gate_local_path() {
     printf '%s\n' "$common/$1"
 }
 
-gate_ledger_path() { gate_local_path djb-gate-verdicts; }
+# THE ONE OVERRIDE, AND IT EXISTS FOR THE DRIVES. This file is SHARED across
+# every worktree of one checkout family (`--git-common-dir`, above), which is
+# exactly what a drive proving the ledger's own behaviour must not write into: a
+# planted row in the real file is a destructive demonstration aimed at found
+# state, and rung-execution §2 says a drive builds its own victim. So a drive
+# points `DJB_GATE_LEDGER` at a file under its own `mktemp -d` and everything
+# that reads or writes a verdict follows it there.
+#
+# IT IS REFUSED RATHER THAN HONOURED WHEN IT IS RELATIVE, for
+# `drive_require_scratch`'s reason one axis over: a relative ledger path
+# resolves against whatever directory a caller left behind, and a verdict
+# written to a path nobody can name is a verdict nobody can audit.
+gate_ledger_path() {
+    if [ -n "${DJB_GATE_LEDGER:-}" ]; then
+        case "${DJB_GATE_LEDGER}" in
+        /*)
+            printf '%s\n' "$DJB_GATE_LEDGER"
+            return 0
+            ;;
+        *)
+            echo "note: DJB_GATE_LEDGER='${DJB_GATE_LEDGER}' is relative — refusing it." >&2
+            return 1
+            ;;
+        esac
+    fi
+    gate_local_path djb-gate-verdicts
+}
 gate_runs_path() { gate_local_path djb-gate-runs; }
 gate_last_full_path() { gate_local_path djb-gate-last-full; }
 
@@ -435,38 +461,838 @@ gate_ledger_cost_fields() {
         "${GATE_PYTEST_TOOK:-0}"
 }
 
+# ---- the LEAK PROOF the row stood on -----------------------------------
+#
+# WHY A ROW NOW NAMES A BOX. `scripts/check.sh`'s `pytest-x2` unit runs the
+# suite TWICE under one seed, and the second pass is the LEAK proof: a test
+# that passes alone and fails behind its own leftovers reds there and nowhere
+# else. Under `pm_push.sh --bank --on-boxes N` that belt costs a whole pass of
+# box-time on every shard — and it is a WITHIN-SHARD proof, which
+# `docs/product/build-contract.md` § SHARDED declares as a narrowing — while a
+# whole-suite two-pass run under one seed already executes on the acceptance
+# box and was composed nowhere. The bank was paying for the stronger proof and
+# banking the weaker one. So since ADR gate-1's 2026-09-18 amendment the shards
+# run ONE pass, the acceptance box's two passes ARE the proof, and the row
+# carries which box proved it and with what status.
+#
+# IT IS APPENDED AND IT IS LAST, which is the precedent `sanction=` set and
+# `waited=`/`took=` set after it: every line written before this field existed
+# parses exactly as it did, is still a legal hit, and `GATE_LEDGER_SCHEMA` does
+# not move, because nothing that could already read a row stopped being able to.
+# THE READER'S RULE ONE SECTION UP THEREFORE COUNTS THREE: a reader taking
+# `sanction=` by name must stop at the THREE trailing `name=value` fields, not
+# the two that sentence named when it was written.
+#
+# A MALFORMED VALUE IS A REFUSAL AND NOT A ROW, and this field is the only one
+# here that works that way. Everything else degrades to an honest "this run did
+# not wait" or "nothing said"; this one cannot, because it is the one field a
+# READER acts on — `gate_ledger_lookup` honours a one-pass leg only when this
+# field is present and green, so a value it could not parse would read as "no
+# proof" and the writer would have silently banked a weaker claim than the run
+# meant. A row nothing can parse is worse than a row that says nothing.
+#
+#: Set by `scripts/pm_push.sh` beside `GATE_RUN_SANCTION` when a bank ran its
+#: pytest shards at one pass: `acceptance:<box-id> rc=<n>` — the box that ran
+#: the whole-suite two-pass proof, and the status it exited. EMPTY means no
+#: field at all, which is what every row written before this existed says, and
+#: what every two-pass run goes on saying.
+GATE_RUN_LEAK_PROOF=""
+
+# gate_ledger_proof_field → the field on stdout (leading space), or nothing.
+# Exit 1 when the global is set and will not parse — a note on stderr, no
+# field on stdout, and `gate_ledger_record` turns that into no row.
+gate_ledger_proof_field() {
+    # THE WRITER'S GRAMMAR IS THE READER'S, NOT A SUPERSET OF IT. `rc=` takes a
+    # decimal with no leading zero, because the reader honours exactly `rc=0`:
+    # a writer that accepted `rc=00` would bank a row whose green the reader
+    # then read as red, and the two would disagree about a row neither had any
+    # way to flag. One grammar, refused at the only end that can still fix it.
+    local proof re='^acceptance:[A-Za-z0-9-]+ (rc=0|rc=[1-9][0-9]*)$'
+    # Newlines would make one row into two — stripped here exactly as the
+    # sanction's are, and in the same place, for the same reason.
+    proof=$(printf '%s' "${GATE_RUN_LEAK_PROOF:-}" | tr '\n' ' ')
+    # Stripping leaves whitespace at the ends of a value that carried a
+    # trailing newline. The grammar is judged on the TRIMMED value and the
+    # trimmed value is what gets written, so the two can never disagree.
+    proof=${proof#"${proof%%[![:space:]]*}"}
+    proof=${proof%"${proof##*[![:space:]]}"}
+    [ -n "$proof" ] || return 0
+    if [[ ! $proof =~ $re ]]; then
+        echo "note: GATE_RUN_LEAK_PROOF is set and will not parse, so NO ROW was written." >&2
+        echo "  The grammar is 'acceptance:<box-id> rc=<n>' — the box that ran the" >&2
+        echo "  whole-suite two-pass leak proof, and the status it exited. A row" >&2
+        echo "  carrying a leak-proof field nothing can read would be honoured as a row" >&2
+        echo "  carrying none, which is a weaker claim than the run meant to bank." >&2
+        echo "  Got: leak-proof=${proof}" >&2
+        return 1
+    fi
+    printf ' leak-proof=%s' "$proof"
+}
+
 # gate_ledger_record <tree> <legs-csv> — one line, appended, schema first.
 gate_ledger_record() {
-    local tree=$1 legs=$2 path sanction
+    local tree=$1 legs=$2 path sanction proof
     path=$(gate_ledger_path) || return 1
     # Newlines would make one row into two, and a row nothing can parse is worse
     # than a row that says nothing. check.sh's shape check already refuses them
     # at the door; this is the ledger refusing to be the place it matters.
     sanction=$(printf '%s' "${GATE_RUN_SANCTION:-}" | tr '\n' ' ')
+    # THE PROOF IS RESOLVED BEFORE A BYTE IS WRITTEN, and its refusal is the
+    # whole row's. Dropping just the field would bank a row that reads as
+    # "two passes, nothing to prove" — see the field's own argument above.
+    proof=$(gate_ledger_proof_field) || return 1
     if [ -n "$sanction" ]; then
-        printf '%s %s full %s %s caller=%s sanction=%s%s\n' \
+        printf '%s %s full %s %s caller=%s sanction=%s%s%s\n' \
             "$GATE_LEDGER_SCHEMA" "$tree" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$legs" \
-            "$(gate_caller)" "$sanction" "$(gate_ledger_cost_fields)" >>"$path"
+            "$(gate_caller)" "$sanction" "$(gate_ledger_cost_fields)" "$proof" >>"$path"
     else
-        printf '%s %s full %s %s caller=%s%s\n' \
+        printf '%s %s full %s %s caller=%s%s%s\n' \
             "$GATE_LEDGER_SCHEMA" "$tree" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$legs" \
-            "$(gate_caller)" "$(gate_ledger_cost_fields)" >>"$path"
+            "$(gate_caller)" "$(gate_ledger_cost_fields)" "$proof" >>"$path"
     fi
+}
+
+# gate_full_legs — the leg set a FULL run announces, as the gate's own
+# declaration spells it, on stdout. EMPTY when this directory has no gate to
+# read one from — which is a checkout with no `scripts/check.sh`, not a broken
+# read: a place with no gate makes no claim about a leg set.
+#
+# READ FROM `check.sh`'s OWN ASSIGNMENT, never listed here. The declaration is
+# one line and it is the same one the runner splits; a copy here would be right
+# on the day it was typed, which is the failure this whole file keeps closing.
+gate_full_legs() {
+    local declared
+    [ -r scripts/check.sh ] || return 0
+    # READ WHOLE, THEN SLICE. `sed` reads its input to the end, so it never
+    # closes the pipe under its producer; the first match is taken from the
+    # captured text rather than by an early-exiting reader.
+    declared=$(sed -n 's/^FULL_LEGS=//p' scripts/check.sh) || return 0
+    printf '%s' "${declared%%$'\n'*}"
 }
 
 # gate_ledger_lookup <tree> → most recent matching line on stdout, exit 0;
 # exit 1 when the tree has no verdict.
+#
+# THE LEGS FIELD IS COMPARED, AND UNTIL R3's F3x IT WAS NOT. A row said
+# which legs ran and nothing ever read it, so a row naming a SHORTER set than a
+# full run announces was honoured exactly as a complete one. That was not
+# unsound on this tree — `scripts/check.sh` is inside the measured tree, so a
+# leg-set change moves the key, and `--leg <unit>` banks nothing at all by
+# design — which is why the finding was graded legibility. But a field nobody
+# reads is a field that means whatever the next writer decides, and the belt is
+# two lines: the row's set must COVER the set this gate declares.
+#
+# THE BUILDER'S CHOICE, STATED, because the criterion offered two. The other was
+# to drop field 5 and bump `GATE_LEDGER_SCHEMA`, and it was rejected on cost: a
+# schema bump invalidates every banked full verdict in every checkout on the
+# machine — an eight-minute re-measure each — to buy a legibility fix, and it
+# throws away the one thing a row says about WHAT it measured. Comparing keeps
+# the audit value, needs no bump, and turns the unread field into a checked one.
+#
+# A SUPERSET HITS. More legs than this gate asks for is a stronger claim, not a
+# weaker one, and refusing it would make every leg added to the gate invalidate
+# rows that genuinely covered it.
+#
+# AND WHERE THERE IS NO `scripts/check.sh` THERE IS NO COMPARISON — declared
+# here rather than discovered. The leg set is a property of the gate in this
+# checkout; a directory with no gate declares none, so there is nothing to
+# compare against and the lookup is what it always was. The tree hash is still
+# the key, and it is still the thing doing the work.
+#
+# AND THE MEMBER GRAMMAR IS NOW `<leg>[/<passes>]`, which is the one
+# change to the rule above. A sharded bank runs `pytest-x2` at ONE pass and
+# names the member `pytest-x2/1`; the whole-suite two-pass leak proof it stood
+# on ran on the acceptance box and rides in the row's `leak-proof=` field. So a
+# required leg is covered when a member IS the leg name (as it always was), or
+# when it is `pytest-x2/1` AND the row carries a GREEN proof, or when it is
+# `<leg>/<n>` for a DECIMAL n of two or more — a pass count at or above the
+# default is the claim the bare name always made. `pytest-x2/1` with no field,
+# with a red `rc=`, or with a field that will not parse is NOT covered, and the
+# note says which of those it was rather than repeating the generic missing-leg
+# line: a reader who cannot tell "the row is short" from "the row ran half of
+# what it says" re-measures for a reason they cannot act on.
+#
+# THE SUFFIX IS A DECIMAL AND THE PATTERN SAYS SO. A `<leg>/*` glob honours
+# `<leg>/0`, `<leg>/`, `<leg>/x` and `<leg>/1/1` — three of which claim LESS
+# than one pass and the fourth of which is not a pass count at all — while the
+# sentence above promises "at or above the default". A cover rule whose glob is
+# wider than its prose is a green with no argument behind it, so the two
+# alternatives below spell the decimal: `[2-9]…` and `[1-9][0-9]…`. Anything
+# else falls through to the generic missing-leg refusal, which is the honest
+# answer to a member this reader cannot interpret.
+#
+# AND ONE PASS IS SANCTIONED FOR ONE UNIT, BY NAME. ADR gate-1's 2026-09-18
+# amendment bends the two-pass rule for the SHARDED PYTEST UNIT and for nothing
+# else: the acceptance box's proof is a whole-suite two-pass pytest run, so it
+# vouches for `pytest-x2` and has nothing to say about `selftest`, `fe` or any
+# other leg. A generic `<leg>/1 + green proof` rule would let one leg's proof
+# buy another leg's second pass, which is the exact shape of claim this ledger
+# exists to refuse. So the unit is named here, and a second two-pass unit means
+# editing this name rather than inheriting the exemption by accident.
+#
+# A PROOF NOBODY NEEDED IS PRINTED, never silently honoured and never silently
+# refused. A row whose members are all full-pass carries no one-pass claim for
+# the field to support, so the field is ignored — and ignoring a field without
+# saying so is how the next reader learns it is load-bearing when it is not.
 gate_ledger_lookup() {
-    local tree=$1 path line
+    local tree=$1 path line required leg rowlegs
+    local proof member covered onepass unsanctioned proofgreen proofused
+    local proofre='^acceptance:[A-Za-z0-9-]+ rc=0$'
+    # The one unit ADR gate-1's amendment lets run a single pass, named rather
+    # than pattern-matched: the proof is a pytest run and vouches for pytest.
+    local onepass_unit=pytest-x2
     path=$(gate_ledger_path) || return 1
     [ -f "$path" ] || return 1
     line=$(grep -F " $tree full " "$path" | grep "^$GATE_LEDGER_SCHEMA " | tail -1)
     [ -n "$line" ] || return 1
+    required=$(gate_full_legs)
+    if [ -n "$required" ]; then
+        # Field 5 of the row, positionally — `<schema> <tree> full <date> <legs>`.
+        rowlegs=$(printf '%s\n' "$line" | awk '{print $5}')
+        # The proof is the row's LAST field, and it is taken from the right
+        # (`##`, longest prefix) so that a `sanction=` phrase which happens to
+        # contain the word cannot be mistaken for the field itself.
+        case "$line" in
+        *" leak-proof="*) proof=${line##*" leak-proof="} ;;
+        *) proof="" ;;
+        esac
+        proofgreen=0
+        if [[ $proof =~ $proofre ]]; then
+            proofgreen=1
+        fi
+        proofused=0
+        for leg in $(printf '%s' "$required" | tr ',' ' '); do
+            covered=0
+            onepass=0
+            unsanctioned=0
+            for member in $(printf '%s' "$rowlegs" | tr ',' ' '); do
+                case "$member" in
+                "$leg")
+                    covered=1
+                    break
+                    ;;
+                "${leg}/1")
+                    if [ "$leg" = "$onepass_unit" ]; then
+                        onepass=1
+                        if [ "$proofgreen" -eq 1 ]; then
+                            covered=1
+                            proofused=1
+                        fi
+                    else
+                        unsanctioned=1
+                    fi
+                    break
+                    ;;
+                "${leg}/"[2-9]* | "${leg}/"[1-9][0-9]*)
+                    covered=1
+                    break
+                    ;;
+                esac
+            done
+            if [ "$covered" -eq 1 ]; then
+                continue
+            fi
+            echo "note: a banked row for this tree names legs that do not cover this gate's" >&2
+            if [ "$onepass" -eq 1 ]; then
+                echo "  declared set — missing '${leg}' — the row ran ONE pass and carries no green leak proof (leak-proof=${proof:-none})." >&2
+                echo "  The second pass is the leak proof; on a sharded bank it runs on the" >&2
+                echo "  acceptance box and the row names it. Not honoured — measuring." >&2
+            elif [ "$unsanctioned" -eq 1 ]; then
+                echo "  declared set — missing '${leg}' — the row ran ONE pass of a leg that is not '${onepass_unit}', and one pass is sanctioned for that unit alone (leak-proof=${proof:-none})." >&2
+                echo "  The acceptance box's proof is a whole-suite two-pass pytest run; it" >&2
+                echo "  vouches for pytest and for nothing else. Not honoured — measuring." >&2
+            else
+                echo "  declared set (missing '${leg}'), so it is not honoured — measuring." >&2
+            fi
+            return 1
+        done
+        if [ -n "$proof" ] && [ "$proofused" -eq 0 ]; then
+            echo "note: leak-proof ignored: the row ran two passes over every leg this gate" >&2
+            echo "  declares, so nothing in it rested on the proof (leak-proof=${proof})." >&2
+        fi
+    fi
     printf '%s\n' "$line"
 }
 
 # gate_has_green <tree> → exit 0 iff a full green run measured this tree.
 gate_has_green() { gate_ledger_lookup "$1" >/dev/null; }
+
+# ---- a DRIVE's verdict, keyed on what the drive DRIVES ------------------
+#
+# THE MEASUREMENT THAT OPENED THIS. A full bank spent 1887 s in the selftest
+# leg, of which the thirty shell drives were 1663 s — re-driven in full on every
+# run, whatever had moved. Four of them were 1116 s of that. A rung that touches
+# only `apps/` moves nothing any of the other twenty-six reads, and drove them
+# all anyway.
+#
+# THE SHAPE, AND WHY IT IS NOT THE FULL ROW'S. A full verdict is keyed on the
+# MEASURED TREE, which is the right key for a claim about a whole tree and the
+# wrong one here: an `apps/`-only rung moves the measured tree, so every drive
+# would re-key and nothing would ever be reused. A drive's verdict is a claim
+# about ITS OWN INPUTS, so its key is those inputs and nothing else.
+#
+# A DRIVE DECLARES WHAT IT DRIVES, AND THE DECLARATION IS CROSS-CHECKED BY
+# DERIVATION. One line — `# drives: <path> [<path>…]`, checkout-relative paths
+# or globs, in the file's first forty lines — is THE KEY. Derivation alone was
+# rejected because a drive reaches its subjects by `source`, by `cp -R` into a
+# clone, by `awk`-extracting one function and by `uv run python -m quality.gate`,
+# and no grammar over "paths spelled in the file" sees a sourced library's own
+# `source`. A bare marker was rejected too: a declaration nobody reads is
+# `FULL_LEGS` before it was compared. So the marker is the key and the
+# DERIVATION IS THE FLOOR — every checkout path the body spells must be covered
+# by a declared one, or the leg refuses that drive at exit 2, naming it.
+#
+# WHAT "EVERY CHECKOUT PATH" MEANS, and it used to mean less than it said. The
+# grammar read three typed prefixes — `scripts/<x>.(sh|py)`, `quality/…` and
+# `apps/…` — so a drive could read `docs/product/build-contract.md`,
+# `compose.yaml`, `deploy/…`, `frontend/…`, `pyproject.toml` or
+# `.secrets.baseline` undeclared, and its verdict was then REUSED over changed
+# bytes: three such sites were standing when this was widened
+# (`test_list_legs.sh` comparing the listing against build-contract.md,
+# `test_db_zsh.sh` and `test_db_pin.sh` reading compose.yaml). The prefix list
+# is now DERIVED from the measured tree itself — every top-level entry in the
+# listing, directories as `<dir>/…` and files as their own whole name — so a
+# new top level joins the floor the day it is committed and nothing here has to
+# be remembered.
+#
+# THREE THINGS THE FLOOR DOES NOT COUNT, each narrower than "literally spelled"
+# and each argued rather than assumed:
+#
+#   A PATH THAT IS NOT IN THE MEASURED TREE. A subject has to exist to be
+#   reached. Most drives spell paths that are PLANT NAMES inside a throwaway
+#   clone (`apps/widgets/models.py`, `scripts/plant.sh`) and a floor that
+#   demanded those be declared would demand a declaration that expands to
+#   nothing, which is itself a refusal — a deadlock, not a belt.
+#
+#   AN OCCURRENCE PRECEDED BY `/`. `"$d/apps/example/models.py"` is a path
+#   inside somebody else's root; `scripts/loop_tier.sh` at the start of a word is
+#   this checkout's. The two are told apart by the character in front, which is
+#   the only signal on the line.
+#
+#   AN OCCURRENCE PRECEDED BY A WORD CHARACTER, for the same reason a census
+#   anchors on a boundary rather than a substring.
+#
+# ALWAYS IN THE KEY, whatever the marker says: the drive file itself and the
+# `drive_preamble.sh` BESIDE IT. Both are digested from their BYTES rather than
+# through the tree, because a drive set under `mktemp -d` — which is how this
+# leg's own drive drives it — has no blob in any tree at all.
+#
+# WHAT A REUSE RESTS ON, said out loud: an equality asked of git over the
+# measured tree, plus the two files' bytes, plus THIS MACHINE'S OWN CLAIM —
+# which is the image id on a verifier box and bash/git/uname anywhere else
+# (`drive_machine_digest`, below, argues both halves). A machine change is NOT
+# in the key beyond that claim (docker, a Postgres image, a CLI upgrade — and on
+# a box, anything `setup.sh` changed after the bake), and the answer to one is
+# `DJB_SELFTEST_NO_REUSE=1` once — which runs everything and still banks,
+# because a forced green is strictly newer evidence for the same key.
+DRIVE_KEY_SCHEMA=drive-v1
+DRIVE_MARKER_LINES=40
+
+# drive_check_sh_sources <path to check.sh> — the libraries `scripts/check.sh`
+# SOURCES, one per line, checkout-relative. Empty (exit 1) when the file cannot
+# be read or sources nothing, which is the caller's refusal to make.
+#
+# WHY A DECLARATION OF `scripts/check.sh` HAS TO EXPAND. `check.sh` is nine
+# `. scripts/<lib>.sh` lines deep, and a drive that declares it and runs it is
+# driving all ten files. Keyed on `check.sh` alone, a byte moved in
+# `gate_refuse.sh` — the refusal grammar every leg prints through — left every
+# such drive's key IDENTICAL, so the leg reused a verdict for bytes the run had
+# never seen. That is the one failure a reuse may not have, and it was
+# invisible because the declaration looked complete.
+#
+# DERIVED FROM THE FILE, never listed: every `. scripts/<x>.sh` the gate
+# spells, at any indent, including the ones inside a subshell (`lifecycle.sh`)
+# and the guarded one at the top (`gate_refuse.sh`). A superset is the safe
+# direction — an extra file in the key costs a re-key, a missing one costs a
+# reuse that lied.
+drive_check_sh_sources() {
+    local file=$1
+    [ -r "$file" ] || return 1
+    sed -n 's|^[[:space:]]*\.[[:space:]]\{1,\}\(scripts/[A-Za-z0-9_./-]*\.sh\).*|\1|p' "$file" |
+        LC_ALL=C sort -u
+}
+
+# ---- the machine half, and why a BOX declares an IMAGE ----------------------
+#
+# A MEMO THAT OUTLIVES ITS MACHINE IS THE WHOLE PROBLEM. `uname -sr` is Darwin
+# on this laptop and Linux on every verifier box, so a drive row banked here can
+# never hit there — which is correct, and which also means a fresh box arrives
+# with an empty ledger and re-drives all thirty. Measured on the first on-box
+# bank: thirty drives, none reused.
+#
+# THE FIX IS NOT TO WIDEN THE KEY — IT IS TO NAME THE CLAIM A BOX CAN MAKE. Two
+# boxes cut from ONE IMAGE have the same bash, the same git, the same kernel and
+# the same everything else the bake installed; the image id is a single token
+# that says so, and it is a STRONGER claim than three version strings, not a
+# weaker one. So on a box the machine half is `image <ami>` and the three lines
+# are not read at all; everywhere else it is the three lines, exactly as before.
+#
+# THE BOX CANNOT BE ASKED THE NAME OF THE IMAGE IT WAS CUT FROM. IMDS would
+# answer, but IMDS cannot be planted by a drive and a key input no drive can
+# move is a key input nobody can prove. So the launch seam WRITES it:
+# `deploy/verifier/user-data.yaml.in` lands `/etc/djb/image-id` at boot from the
+# `$image` `scripts/verifier_box.sh`'s `cmd_up` already holds, and this reads
+# that file. One line, root-owned, 0644 — the same shape as the three files
+# `/etc/verifier/` already carries for the reaper.
+#
+# ABSENT IS THE ORDINARY CASE AND IS NEVER AN ERROR: no file means this is not a
+# box, and the host digest is the answer. UNREADABLE IS EXIT 1, and it composes
+# to the leg's could-not-look — a machine that has the file and will not show it
+# is a machine whose identity is undecided, and an undecided key that silently
+# fell back to the host digest would be a Mac row and a box row colliding under
+# one label, which is the one failure this whole mechanism exists to prevent.
+#
+# THE OVERRIDE IS THE DRIVES', AND IT IS REFUSED WHEN RELATIVE, for
+# `gate_ledger_path`'s reason one axis over: a machine file resolved against
+# whatever directory a caller left behind is a key input nobody can name.
+DRIVE_MACHINE_FILE_DEFAULT=/etc/djb/image-id
+drive_machine_file() {
+    if [ -n "${DJB_DRIVE_MACHINE_FILE:-}" ]; then
+        case "${DJB_DRIVE_MACHINE_FILE}" in
+        /*)
+            printf '%s\n' "$DJB_DRIVE_MACHINE_FILE"
+            return 0
+            ;;
+        *)
+            echo "note: DJB_DRIVE_MACHINE_FILE='${DJB_DRIVE_MACHINE_FILE}' is relative — refusing it." >&2
+            return 1
+            ;;
+        esac
+    fi
+    printf '%s\n' "$DRIVE_MACHINE_FILE_DEFAULT"
+}
+
+# drive_machine_label — `image:<ami>` on a box, `host:<12 hex>` anywhere else;
+# exit 1 when the machine could not be digested at all. It is what the leg
+# PRINTS beside a REUSED or a miss, so a reader can tell a row that travelled
+# from a row that was earned here without opening the ledger.
+#
+# MEMOISED THROUGH THE ENVIRONMENT, for `drive_machine_digest`'s reason and in
+# the same breath: both are filled by one pass so a leg pays one read.
+DRIVE_MACHINE_LABEL=${DRIVE_MACHINE_LABEL:-}
+drive_machine_label() {
+    drive_machine__fill || return 1
+    printf '%s\n' "$DRIVE_MACHINE_LABEL"
+}
+
+# drive_machine_digest — the machine half of every drive key. MEMOISED THROUGH
+# THE ENVIRONMENT rather than a shell global, because every caller reaches
+# `drive_key` through `$(...)`: a global set inside that subshell is gone with
+# it, and this was four process starts per drive for an answer that cannot
+# change inside one leg. It is exported so the memo survives the subshell that
+# fills it.
+DRIVE_MACHINE_DIGEST=${DRIVE_MACHINE_DIGEST:-}
+drive_machine_digest() {
+    drive_machine__fill || return 1
+    printf '%s\n' "$DRIVE_MACHINE_DIGEST"
+}
+
+# ONE FILLER FOR BOTH, so a label and a digest can never disagree about which
+# machine this is. Either both are set or neither is, and the caller's exit 1 is
+# the only other outcome.
+drive_machine__fill() {
+    [ -z "${DRIVE_MACHINE_DIGEST:-}" ] || [ -z "${DRIVE_MACHINE_LABEL:-}" ] || return 0
+    local file ami
+    file=$(drive_machine_file) || return 1
+    if [ -e "$file" ]; then
+        # THE READ IS THE TEST. `[ -r ]` answers about permission bits and says
+        # nothing about a directory, a dangling symlink or a file on a mount
+        # that has gone away — all of which are "the file is there and I cannot
+        # digest it", which is the refusal this branch owes.
+        ami=$({ tr -d ' \t\r' <"$file" | sed -n '1p'; } 2>/dev/null) || return 1
+        [ -n "$ami" ] || return 1
+        DRIVE_MACHINE_DIGEST=$(printf 'image %s\n' "$ami" | sha256_of) || return 1
+        DRIVE_MACHINE_LABEL="image:${ami}"
+    else
+        DRIVE_MACHINE_DIGEST=$({
+            bash --version 2>/dev/null | sed -n '1p'
+            git --version 2>/dev/null
+            uname -sr 2>/dev/null
+        } | sha256_of) || return 1
+        DRIVE_MACHINE_LABEL="host:$(printf '%s' "$DRIVE_MACHINE_DIGEST" | cut -c1-12)"
+    fi
+    export DRIVE_MACHINE_DIGEST DRIVE_MACHINE_LABEL
+}
+
+# drive_marker_line <file> — the declaration line, verbatim; exit 1 if the file
+# carries none in its first `DRIVE_MARKER_LINES` lines.
+drive_marker_line() {
+    local out
+    [ -r "$1" ] || return 1
+    out=$(awk -v n="$DRIVE_MARKER_LINES" '
+        NR > n { exit }
+        /^#[[:space:]]*drives:/ { print; exit }
+    ' "$1")
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out"
+}
+
+# drive_cites_line <file> — the CITATION line, verbatim; exit 1 when the file
+# carries none in its first `DRIVE_MARKER_LINES` lines.
+#
+# A CITATION IS NOT A SUBJECT, and the floor cannot tell them apart. The floor
+# reads paths the body SPELLS, and a drive that explains itself spells paths it
+# never touches: `test_rung_start.sh` names `scripts/tests/test_fe_leg.sh` as
+# "the shim pattern it uses for the same reason", and `test_verify_start.sh`
+# names `scripts/check.sh` in three paragraphs about what a clone of a verifier
+# cannot run. Declared, those become key inputs: every rung that moves a byte in
+# the gate re-drives a drive that never opens it, which is the reuse this whole
+# mechanism exists to earn.
+#
+# SO A CITATION IS DECLARED TOO, on its own line, and SUBTRACTED from what the
+# floor demands — never from what the key holds, because a cited path is not in
+# the key at all. It is a valve, and it obeys this repository's valve rules:
+# it is typed, it is counted, and the leg PRINTS the count beside the drive, so
+# a drive quietly citing its way out of its own subjects is visible rather than
+# silent. `# cites: <path> [<path>…]`, the same grammar as `# drives:`.
+#
+# WHAT IT CANNOT DO: a cited path is never added to the key, so citing a path
+# the body really does READ is a silent reuse of exactly the kind the floor
+# refuses. That is the declared cost of the valve, and it is why the count is
+# printed rather than merely allowed.
+drive_cites_line() {
+    local out
+    [ -r "$1" ] || return 1
+    out=$(awk -v n="$DRIVE_MARKER_LINES" '
+        NR > n { exit }
+        /^#[[:space:]]*cites:/ { print; exit }
+    ' "$1")
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out"
+}
+
+# drive__expand <listing> <pattern> — every blob the declared path covers, as
+# `<sha> <path>`, sorted. The listing is one `git ls-tree -r <tree>` capture,
+# taken once per leg: a git call per declared path per drive is thirty times the
+# work for the same answer. Empty output means the path is in no tree, which is
+# the caller's refusal to make.
+drive__expand() {
+    awk -v pat="$2" '
+    function to_ere(p,   out, i, ch) {
+        sub(/\/$/, "", p)
+        out = ""
+        for (i = 1; i <= length(p); i++) {
+            ch = substr(p, i, 1)
+            if (ch == "*") {
+                if (substr(p, i + 1, 1) == "*") { out = out ".*"; i++ }
+                else { out = out "[^/]*" }
+            } else if (index(".[]^$+?(){}|\\", ch) > 0) {
+                out = out "\\" ch
+            } else { out = out ch }
+        }
+        return out
+    }
+    BEGIN { re = to_ere(pat) }
+    {
+        tab = index($0, "\t")
+        if (tab == 0) next
+        path = substr($0, tab + 1)
+        if (path ~ ("^" re "$") || path ~ ("^" re "/")) printf "%s %s\n", $3, path
+    }
+    ' "$1" | LC_ALL=C sort
+}
+
+# drive__uncovered <listing> <declared paths> <drive file> — the FIRST checkout
+# path the body spells that no declared path covers, or nothing at all. The
+# three exclusions are argued in this section's header.
+drive__uncovered() {
+    awk -v decls="$2" '
+    function to_ere(p,   out, i, ch) {
+        sub(/\/$/, "", p)
+        out = ""
+        for (i = 1; i <= length(p); i++) {
+            ch = substr(p, i, 1)
+            if (ch == "*") {
+                if (substr(p, i + 1, 1) == "*") { out = out ".*"; i++ }
+                else { out = out "[^/]*" }
+            } else if (index(".[]^$+?(){}|\\", ch) > 0) {
+                out = out "\\" ch
+            } else { out = out ch }
+        }
+        return out
+    }
+    BEGIN {
+        n = split(decls, dd, " ")
+        for (i = 1; i <= n; i++) re[i] = to_ere(dd[i])
+    }
+    NR == FNR {
+        tab = index($0, "\t")
+        if (tab == 0) next
+        p = substr($0, tab + 1)
+        m = split(p, seg, "/")
+        acc = ""
+        for (k = 1; k <= m; k++) { acc = (k == 1 ? seg[1] : acc "/" seg[k]); intree[acc] = 1 }
+        # THE PREFIX LIST IS THE TOP LEVEL OF THE TREE ITSELF, derived here rather than
+        # typed: a top-level DIRECTORY contributes `<dir>/...` and a top-level
+        # FILE contributes its own whole name. A typed list was the old
+        # grammar defect — it read `scripts/*.(sh|py)`, `quality/` and
+        # `apps/` and nothing else, so `docs/product/build-contract.md`,
+        # `compose.yaml` and `.secrets.baseline` were reachable by a body and
+        # invisible to the floor.
+        if (m > 1) {
+            if (!(seg[1] in topdir)) { topdir[seg[1]] = 1; dlist[++dn] = to_ere(seg[1]) }
+        } else {
+            if (!(p in topfile)) { topfile[p] = 1; flist[++fn] = to_ere(p) }
+        }
+        next
+    }
+    FNR == 1 {
+        # A DIRECTORY HIT MUST BE A PATH, not the bare word. `docs` and
+        # `config` are ordinary English in a comment; `docs/product/queue.md`
+        # is a file somebody reads. A top-level FILE has no `/` to require, so
+        # it is matched whole and the `intree` test below is what keeps it
+        # honest.
+        da = ""
+        for (i = 1; i <= dn; i++) da = da (da ? "|" : "") dlist[i]
+        fa = ""
+        for (i = 1; i <= fn; i++) fa = fa (fa ? "|" : "") flist[i]
+        if (da == "" && fa == "") { exit }
+        if (da == "") pat = "(" fa ")"
+        else if (fa == "") pat = "((" da ")(/[A-Za-z0-9_.-]+)+)"
+        else pat = "((" da ")(/[A-Za-z0-9_.-]+)+|(" fa "))"
+    }
+    {
+        line = $0
+        while (match(line, pat)) {
+            hit = substr(line, RSTART, RLENGTH)
+            before = (RSTART > 1) ? substr(line, RSTART - 1, 1) : ""
+            line = substr(line, RSTART + RLENGTH)
+            if (before ~ /[A-Za-z0-9_\/.-]/) continue
+            if (!(hit in intree)) continue
+            covered = 0
+            for (i = 1; i <= n; i++) {
+                if (hit ~ ("^" re[i] "$") || hit ~ ("^" re[i] "/")) { covered = 1; break }
+            }
+            if (!covered) { print hit; exit }
+        }
+    }
+    ' "$1" "$3"
+}
+
+# drive_key <drive file> <tree> <listing> — `ok <key> <parts>` on stdout, or
+# `err <reason>`; exit 0 or 1.
+#
+# IT PRINTS THE ANSWER RATHER THAN SETTING A GLOBAL because every caller reads
+# it through `$(...)`, where a global the callee set is gone with the subshell.
+# `<parts>` is `<label>:<12 hex>` per key component, comma-joined — the row
+# carries it so that a MISS can name WHICH input moved rather than only that one
+# did. Nothing ranks or trusts it; it is an attributor's evidence, not a key.
+drive_key() {
+    local file=$1 tree=$2 listing=$3
+    local marker decls d preamble parts="" text digest uncovered one label sorted sourced basename cites cites_line cited_count machine_label
+    [ -r "$file" ] || {
+        printf 'err the drive file %s is not readable\n' "$file"
+        return 1
+    }
+    [ -r "$listing" ] || {
+        printf 'err the measured tree listing for %s could not be read\n' "$tree"
+        return 1
+    }
+    marker=$(drive_marker_line "$file") || {
+        printf 'err no `# drives:` line in its first %s lines — a drive declares what it drives\n' \
+            "$DRIVE_MARKER_LINES"
+        return 1
+    }
+    decls=${marker#*drives:}
+    if [ -z "$(printf '%s' "$decls" | tr -d ' 	')" ]; then
+        printf 'err its `# drives:` line names no path\n'
+        return 1
+    fi
+    case "$file" in
+    */*) preamble="${file%/*}/drive_preamble.sh" ;;
+    *) preamble="drive_preamble.sh" ;;
+    esac
+    [ -r "$preamble" ] || {
+        printf 'err there is no drive_preamble.sh beside %s — it is always in the key\n' "$file"
+        return 1
+    }
+    # A DECLARATION OF `scripts/check.sh` CARRIES ITS LIBRARIES WITH IT. The
+    # expansion is made here, once, before the floor and before the key, so the
+    # two read the same set: a drive that declares the gate is driving the gate
+    # AND the nine files it sources, and neither the coverage question nor the
+    # digest may be asked about a smaller set than the run touched. The reader
+    # is `drive_check_sh_sources`, and its argument is above it.
+    case " $decls " in
+    *" scripts/check.sh "* | *" scripts/ "* | *" scripts "*)
+        sourced=$(drive_check_sh_sources "scripts/check.sh") || sourced=""
+        [ -z "$sourced" ] || decls="${decls} $(printf '%s' "$sourced" | tr '\n' ' ')"
+        ;;
+    esac
+    # THE FLOOR IS ASKED ABOUT THE DECLARED PATHS *AND* THE TWO THAT ARE ALWAYS
+    # IN THE KEY. Every drive's first executable line sources the preamble beside
+    # it and most name themselves in their own `--list` grammar; requiring those
+    # two to be re-declared would be thirty copies of a line the key already
+    # carries, and a declaration that adds nothing is the one a reader stops
+    # reading.
+    # THE CITATIONS ARE SUBTRACTED FROM THE FLOOR AND FROM NOTHING ELSE. They
+    # join the set the floor is asked about, so a spelled citation is covered;
+    # they do NOT join `$sorted` below, so no cited path reaches the key.
+    cites=""
+    cites_line=$(drive_cites_line "$file") && cites=${cites_line#*cites:}
+    cited_count=$(printf '%s' "$cites" | tr ' 	' '\n\n' | grep -c . || true)
+    uncovered=$(drive__uncovered "$listing" "$decls $cites $file $preamble" "$file")
+    if [ -n "$uncovered" ]; then
+        printf 'err its body spells %s and its `# drives:` line does not cover it (a path it only CITES goes on a `# cites:` line)\n' "$uncovered"
+        return 1
+    fi
+    # THE TWO ALWAYS-IN-THE-KEY COMPONENTS ARE LABELLED `self` AND `preamble` IN
+    # THE KEY TEXT, and by their PATH in `parts`. The difference is load-bearing:
+    # a key that carried the drive's own absolute path would make the same bytes
+    # under two directories two different keys — which is exactly what a scratch
+    # drive set under `mktemp -d` is — while a miss line that said `self moved`
+    # would name nothing a reader can open.
+    # THE DRIVE'S NAME IS IN THE KEY, and it is not the same thing as its path.
+    # Everything else the key holds is CONTENT — the marker, the two files'
+    # bytes, the declared blobs, the machine — so two drives whose content
+    # happens to be identical key identically and the second REUSES the first's
+    # verdict under its own name. That is not hypothetical: a harness of stub
+    # drives (`test_list_legs.sh`'s shard census, every stub `exit 0`) had every
+    # member after the first come back REUSED, and the leg reported a run for a
+    # drive it never invoked. The NAME is stable across directories — a scratch
+    # set under `mktemp -d` carries the same names — which is exactly why the
+    # PATH is still absent from the key text and the header above still holds.
+    local basename=${file##*/}
+    basename=${basename#test_}
+    basename=${basename%.sh}
+    # THE CITATION LINE IS IN THE KEY TEXT, and the cited PATHS are not. Moving
+    # a path from `# drives:` to `# cites:` must re-key — it is a claim that the
+    # drive stopped reading that file — while a byte moving inside a cited file
+    # must not, which is the whole point of citing it.
+    text="${DRIVE_KEY_SCHEMA}
+name ${basename}
+marker ${marker}
+cites ${cites_line:-<none>}"
+    for label in self:"$file" preamble:"$preamble"; do
+        one=$(sha256_of "${label#*:}") || {
+            printf 'err %s could not be digested\n' "${label#*:}"
+            return 1
+        }
+        text="${text}
+${label%%:*} ${one}"
+        parts="${parts}${parts:+,}${label#*:}:$(printf '%s' "$one" | cut -c1-12)"
+    done
+    # shellcheck disable=SC2086
+    sorted=$(printf '%s\n' $decls | LC_ALL=C sort -u)
+    for d in $sorted; do
+        one=$(drive__expand "$listing" "$d")
+        if [ -z "$one" ]; then
+            printf 'err the declared path %s expands to nothing in the measured tree — never a silently narrower key\n' "$d"
+            return 1
+        fi
+        digest=$(printf '%s\n' "$one" | sha256_of) || {
+            printf 'err %s could not be digested\n' "$d"
+            return 1
+        }
+        text="${text}
+${d} ${digest}"
+        parts="${parts},${d}:$(printf '%s' "$digest" | cut -c1-12)"
+    done
+    one=$(drive_machine_digest) || {
+        printf 'err this machine could not be digested\n'
+        return 1
+    }
+    # THE `parts` LABEL STAYS `machine:` AND CARRIES THE DIGEST'S FIRST 12 HEX,
+    # on a box exactly as on a laptop. `drive_moved_component` is an attributor
+    # over these pairs and knows `machine` by name; a label that changed shape
+    # on a box would make "the machine moved" unreadable on exactly the machines
+    # this change exists for. WHICH machine it is goes in the FIFTH field below,
+    # where nothing keys on it.
+    text="${text}
+machine ${one}"
+    parts="${parts},machine:$(printf '%s' "$one" | cut -c1-12)"
+    machine_label=$(drive_machine_label) || machine_label=unstated
+    digest=$(printf '%s\n' "$text" | sha256_of) || {
+        printf 'err the key could not be digested\n'
+        return 1
+    }
+    # THE CITED COUNT IS A FOURTH FIELD, NOT A PART. `parts` is the attributor's
+    # per-input digest list and a component named `cites` in it would turn a
+    # valve into a "moved input" in the miss line. The leg reads this field and
+    # prints it beside the drive, which is what makes the valve counted.
+    # AND THE MACHINE LABEL IS A FIFTH, for the same reason one axis over: it is
+    # not a key input — the DIGEST above already is — it is the one word that
+    # tells a reader whether the row they are about to reuse was earned on this
+    # laptop or on a box of some image, and the leg prints it beside every
+    # REUSED and every miss.
+    printf 'ok %s:%s %s cites=%s machine=%s\n' \
+        "$DRIVE_KEY_SCHEMA" "$digest" "$parts" "${cited_count:-0}" "${machine_label:-unstated}"
+}
+
+# drive_ledger_record <key> <name> <took> <tree> <parts> — one appended line.
+#
+# SAME FILE, NEW KIND IN FIELD 3. `gate_ledger_lookup` matches ` <tree> full `
+# and `gate_run_lookup` reads field 4 of a `full` row, so neither can reach one
+# of these however a key is chosen — including a key that IS a tree sha, which
+# `test_loop_ledger.sh` plants on purpose. The partition's separate file is
+# deliberately NOT the precedent here: one ledger, one `gate_local_path`, one
+# shared-across-worktrees rule.
+drive_ledger_record() {
+    local key=$1 name=$2 took=$3 tree=$4 parts=$5 path
+    path=$(gate_ledger_path) || return 1
+    printf '%s %s drive %s %s exit=0 took=%s tree=%s parts=%s\n' \
+        "$GATE_LEDGER_SCHEMA" "$key" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$name" "$took" "$tree" "$parts" >>"$path"
+}
+
+# drive_ledger_lookup <key> → the most recent drive row at this key, exit 0; 1
+# when nothing has been banked for it.
+drive_ledger_lookup() {
+    local key=$1 path line
+    path=$(gate_ledger_path) || return 1
+    [ -f "$path" ] || return 1
+    line=$(grep -F " ${key} drive " "$path" | grep "^$GATE_LEDGER_SCHEMA " | tail -1)
+    [ -n "$line" ] || return 1
+    printf '%s\n' "$line"
+}
+
+# drive_ledger_last_for <name> → the most recent drive row for this drive at ANY
+# key. It is what a MISS is attributed against, and it is why the row carries
+# its parts: without a previous row there is nothing to diff, and the leg says
+# so rather than inventing a reason.
+drive_ledger_last_for() {
+    local name=$1 path line
+    path=$(gate_ledger_path) || return 1
+    [ -f "$path" ] || return 1
+    line=$(awk -v n="$name" '$1 == "v1" && $3 == "drive" && $5 == n { last = $0 } END { if (last != "") print last }' "$path")
+    [ -n "$line" ] || return 1
+    printf '%s\n' "$line"
+}
+
+# drive_row_parts <row> — the `parts=` field's value, or nothing.
+# AN EOF READER, NEVER A PIPE INTO AN EARLY-EXIT awk. The producer here is one
+# `printf` and could never fill a pipe buffer, and the shape is still the one
+# `scripts/tests/test_pipefail_readers.sh` counts across this whole population —
+# a census that admitted "this one is safe" would be a census nobody can read.
+drive_row_parts() {
+    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^parts=/) { sub(/^parts=/, "", $i); v = $i } } END { if (v != "") print v }' <<EOF
+$1
+EOF
+}
+
+# drive_moved_component <old parts> <new parts> — the first key component whose
+# digest differs, by NAME, so the miss line can say which input moved. Every
+# component's name is a path (the drive file, the preamble beside it, each
+# declared path) except `machine`, which is bash/git/uname.
+drive_moved_component() {
+    awk -v oldp="$1" -v newp="$2" '
+    BEGIN {
+        no = split(oldp, o, ",")
+        for (i = 1; i <= no; i++) {
+            k = o[i]; sub(/:[^:]*$/, "", k)
+            v = o[i]; sub(/^.*:/, "", v)
+            od[k] = v
+        }
+        nn = split(newp, nw, ",")
+        for (i = 1; i <= nn; i++) {
+            k = nw[i]; sub(/:[^:]*$/, "", k)
+            v = nw[i]; sub(/^.*:/, "", v)
+            seen[k] = 1
+            if (!(k in od)) { print k; exit }
+            if (od[k] != v) { print k; exit }
+        }
+        for (k in od) if (!(k in seen)) { print k; exit }
+    }'
+}
 
 # ---- the partition's verdicts -----------------------------------------
 #
@@ -653,7 +1479,7 @@ LOOP_ENV_COMPONENTS=""
 #: here uses: `loop_env_fingerprint` composes them in it, `loop_ledger_record`
 #: appends them in it, and `loop_ledger_attribute` names them in it when more
 #: than one moved. Typed once so a sixth component is added in one place.
-LOOP_ENV_COMPONENT_FIELDS='env-file excluded dists head merge-base'
+LOOP_ENV_COMPONENT_FIELDS='env-file excluded dists env-reads head merge-base'
 
 #: The two of those five that are REVISION coordinates rather than inputs the
 #: suite stands on. They are why the attributor had to grow: they ride inside
@@ -721,10 +1547,123 @@ loop_env_derived_keys() {
     done | sort -u
 }
 
+#: WHO OWNS "what the suite reads from the environment". Not this file, and
+#: deliberately: `quality/partition.py::suite_environment_names()` derives the
+#: names from `config/settings/**` by AST and subtracts `config/settings/test.py`'s
+#: pins and the lockfile's tolerated harness knobs, and the FULL gate's
+#: `bent_environment()` already stands on exactly that census. A second list of
+#: names here would be right on the day it was typed and silent the day a
+#: setting was added — which is one level out from the defect that bought this
+#: (R3's F2): the full gate had a check for this class and the loop had none.
+LOOP_ENV_READS_OWNER='quality/partition.py'
+
+#: `DJB_LOOP_ENV_READS` — a file of names, one per line, exactly as the owner
+#: would print them. THE DRIVES' SEAM, the same pattern and the same disposition
+#: as `DJB_LOOP_LEDGER` above: a scratch checkout carries no `quality/` tree, so
+#: without it no case could drive the value folding at all. It is a cache seam
+#: and not a boundary — this whole ledger is a cache and never a security
+#: boundary, which `scripts/tests/test_loop_ledger.sh` states in its own header.
+
+# loop_env_reads — a digest of the EFFECTIVE value of every name the suite reads
+# from the environment, on stdout, or the literal `no-census`.
+# Exit 0 derived · 1 could not look.
+#
+# EFFECTIVE MEANS `read_env(overwrite=False)`'s OWN PRECEDENCE: the process
+# environment first, the `.env` file only where the process has nothing. That is
+# `config/settings/base.py`'s call and it SETDEFAULTS, so an exported name wins
+# over the file and an exported EMPTY name wins too — which is why an unset name
+# is spelled `<unset>` here rather than as an empty value. The blindness this
+# closes is exactly that: the fingerprint hashed the `.env` FILE, so the
+# disabled-apps knob exported in the process environment left the key
+# byte-identical and a narrower green was reusable as a full one.
+#
+# AND NO NAME THE CENSUS RETURNS IS SPELLED IN THIS FILE, comments included —
+# the drive asserts it, deriving the population from the owner. A prose mention
+# is a second list with extra steps: it reads as authoritative, nothing keeps it
+# in step, and the census is the only thing here entitled to name a variable.
+#
+# THE THREE ANSWERS, and each is a different thing:
+#
+#   * a digest — the census was read and folded.
+#   * `no-census` — this checkout has no `quality/partition.py`. It is NOT this
+#     tree (every drive's scratch checkout is such a place), and a named absence
+#     that every such checkout shares is deterministic, which a refusal is not.
+#     On the real tree the owner is tracked and in the partition's own closure,
+#     so it cannot go missing quietly.
+#   * exit 1 — the owner is HERE and could not be read. A read that did not
+#     answer is never an empty answer: no key is derived and nothing is reused,
+#     the same disposition the distribution census takes below.
+loop_env_reads() {
+    local names python env_file digest
+    if [ -n "${DJB_LOOP_ENV_READS:-}" ]; then
+        [ -f "$DJB_LOOP_ENV_READS" ] || return 1
+        names=$(cat "$DJB_LOOP_ENV_READS") || return 1
+    elif [ -f "$LOOP_ENV_READS_OWNER" ]; then
+        # THE CHECKOUT'S OWN INTERPRETER, named rather than searched. `uv run`
+        # would resolve and possibly install on a path that must stay cheap and
+        # must never write; `python3` off PATH is some other environment's, and
+        # the owner needs this one's PyYAML. The venv is already a hard
+        # requirement two blocks down, where zero distributions is could-not-look.
+        python=.venv/bin/python
+        [ -x "$python" ] || return 1
+        names=$("$python" -m quality.partition env-reads 2>/dev/null) || return 1
+    else
+        printf 'no-census\n'
+        return 0
+    fi
+    # An empty census is a read that did not answer. The owner refuses to print
+    # one; a seam file that is empty is the same claim and gets the same answer.
+    [ -n "$names" ] || return 1
+
+    env_file=.env
+    [ -f "$env_file" ] || env_file=/dev/null
+    digest=$(DJB_LOOP_READ_NAMES="$names" awk '
+        BEGIN { n = split(ENVIRON["DJB_LOOP_READ_NAMES"], want, "\n") }
+        {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            if (line ~ /^#/) next
+            if (line !~ /=/) next
+            name = line
+            sub(/=.*$/, "", name)
+            gsub(/[ \t]/, "", name)
+            value = line
+            sub(/^[^=]*=/, "", value)
+            sub(/^[ \t]+/, "", value)
+            sub(/[ \t]+$/, "", value)
+            # One layer of matching quotes, which is `partition.py::_dotenv`s
+            # own narrowing of `django-environ`s read. \047 is a single quote:
+            # this program is inside single quotes and cannot contain one.
+            q = substr(value, 1, 1)
+            if ((q == "\"" || q == "\047") && length(value) > 1 &&
+                substr(value, length(value), 1) == q) {
+                value = substr(value, 2, length(value) - 2)
+            }
+            file[name] = value
+            seen[name] = 1
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                name = want[i]
+                if (name == "") continue
+                # `in ENVIRON` and not a truth test: an exported EMPTY value is
+                # SET, it wins over the file exactly as a non-empty one does,
+                # and reading it as absent would hide the one case where a name
+                # being present at all is the whole difference.
+                if (name in ENVIRON) print name "=" ENVIRON[name]
+                else if (name in seen) print name "=" file[name]
+                else print name "=<unset>"
+            }
+        }
+    ' "$env_file" | sha256_of) || return 1
+    [ -n "$digest" ] || return 1
+    printf '%s\n' "$digest"
+}
+
 # loop_env_fingerprint — one digest of everything the suite stands on that the
 # tree hash does not carry, on stdout. Exit 0 derived · 1 could not look.
 #
-# FOUR INPUTS:
+# FIVE INPUTS:
 #
 #   * `.env`, MINUS the deriver-declared keys. Those keys are derived FROM the
 #     checkout — `DATABASE_NAME` is a hash of this checkout's own path — so
@@ -740,14 +1679,19 @@ loop_env_derived_keys() {
 #   * The installed-distribution census. A dependency change moves the suite
 #     without moving a tracked file (`.venv` is ignored). Zero distributions is
 #     could-not-look, not an empty venv.
+#   * THE EFFECTIVE ENVIRONMENT READ-SET — `loop_env_reads` above, added by R3's
+#     F2x. The `.env` digest is the FILE, and the file is not what the suite
+#     stands on: `read_env(overwrite=False)` lets an exported name win over it,
+#     so a key that hashed only the file was blind to every variable a terminal
+#     exported. This is the component that is neither the file nor the tree.
 #   * HEAD, and the MERGE-BASE with `refs/heads/main` — see the header.
 loop_env_fingerprint() {
-    local env_file=.env keys excluded dists head base venv site env_digest
+    local env_file=.env keys excluded dists head base venv site env_digest reads
     keys=$(loop_env_derived_keys)
     if [ -f "$env_file" ]; then
         if [ -z "$keys" ]; then
             excluded="UNDECLARED(whole-file)"
-            env_digest=$(shasum -a 256 <"$env_file" | awk '{print $1}')
+            env_digest=$(sha256_of "$env_file") || return 1
         else
             excluded=$(printf '%s' "$keys" | tr '\n' ',')
             # THROUGH THE ENVIRONMENT, NOT `-v`. awk processes escape sequences
@@ -769,7 +1713,7 @@ loop_env_fingerprint() {
                     if (name in drop) next
                     print line
                 }
-            ' "$env_file" | shasum -a 256 | awk '{print $1}')
+            ' "$env_file" | sha256_of) || return 1
         fi
     else
         excluded="no-env-file"
@@ -787,7 +1731,14 @@ loop_env_fingerprint() {
         echo "   empty environment — no key is derived and nothing is reused." >&2
         return 1
     fi
-    dists=$(printf '%s' "$site" | shasum -a 256 | awk '{print $1}')
+    dists=$(printf '%s' "$site" | sha256_of) || return 1
+
+    reads=$(loop_env_reads) || {
+        echo "!! the --loop ledger could not read this checkout's environment read-set" >&2
+        echo "   through ${LOOP_ENV_READS_OWNER}. A census that did not answer is not an" >&2
+        echo "   empty environment — no key is derived and nothing is reused." >&2
+        return 1
+    }
 
     head=$(git rev-parse -q --verify HEAD 2>/dev/null || printf 'unborn')
     base="no-local-main"
@@ -796,19 +1747,138 @@ loop_env_fingerprint() {
     fi
 
     # THE COMPONENTS, KEPT FOR PRINTING — and the hashed line below is NOT
-    # rebuilt from them. The composition that feeds `shasum` is byte-identical
-    # to what it has always been, because changing it would silently invalidate
-    # every banked row in every checkout; the printable line is a second,
-    # separately spelled string whose field names are the ones the miss banner
-    # and the criteria use (`env-file=` for the .env digest, which the hashed
-    # line calls `env=` and which is NOT the whole fingerprint).
-    LOOP_ENV_COMPONENTS=$(printf 'env-file=%s excluded=%s dists=%s head=%s merge-base=%s' \
-        "$env_digest" "$excluded" "$dists" "$head" "$base")
-    LOOP_ENV_FINGERPRINT=$(printf 'env=%s excluded=%s dists=%s head=%s merge-base=%s\n' \
-        "$env_digest" "$excluded" "$dists" "$head" "$base" |
-        shasum -a 256 | awk '{print $1}')
+    # rebuilt from them. The composition that feeds `sha256_of` is spelled
+    # separately from the printable one, whose field names are the ones the miss
+    # banner and the criteria use (`env-file=` for the .env digest, which the
+    # hashed line calls `env=` and which is NOT the whole fingerprint).
+    #
+    # THE HASHED LINE GREW A FIELD AT R3's F2x, AND THAT COST EVERY BANKED ROW
+    # IN EVERY CHECKOUT ONE RE-MEASURE — deliberately, once, and said out loud
+    # here because the note that used to stand in this place said the
+    # composition was byte-identical FOR THAT REASON. It is the right direction:
+    # a fingerprint that will not move is a fingerprint nobody can fix, and the
+    # rows it invalidated are precisely the rows that could not say what
+    # environment they were earned under. `reads=` goes where its input belongs,
+    # beside the other things the suite stands on and before the two revision
+    # coordinates, which `LOOP_ENV_REV_FIELDS` keeps at the end.
+    LOOP_ENV_COMPONENTS=$(printf 'env-file=%s excluded=%s dists=%s env-reads=%s head=%s merge-base=%s' \
+        "$env_digest" "$excluded" "$dists" "$reads" "$head" "$base")
+    LOOP_ENV_FINGERPRINT=$(printf 'env=%s excluded=%s dists=%s reads=%s head=%s merge-base=%s\n' \
+        "$env_digest" "$excluded" "$dists" "$reads" "$head" "$base" |
+        sha256_of)
     [ -n "$LOOP_ENV_FINGERPRINT" ] || return 1
     printf '%s\n' "$LOOP_ENV_FINGERPRINT"
+}
+
+# loop_env_sync — bring `.venv` to the lockfile BEFORE the key is derived, and
+# say on stdout what that cost. Exit 0 always.
+#
+# THE DEFECT IT CLOSES, measured on three verifier boxes on 2026-09-18. The
+# fingerprint above censuses the installed distributions, because a dependency
+# change moves the suite without moving a tracked file. The gate's own first
+# `uv run` SYNCS: on a box whose image was baked before a package joined
+# `uv.lock`, the first leg installed it, the distribution census moved between
+# the start key and the end key, and a completely green `--loop` refused to bank
+# — three times, on three trees, each time reading as "something moved while the
+# gate ran" with a clean `git status` beside it. The install was not a race; it
+# was the gate's own first leg doing the thing the key was watching for.
+#
+# SO THE SYNC MOVES AHEAD OF THE KEY. After this call the environment the legs
+# run in is the environment the key names, which is the property the `dists=`
+# component exists to assert. It is the FIRST `uv run`'s work done under a name,
+# at a moment where it is free to move the census, rather than the same work
+# done anonymously one leg later where it is not.
+#
+# `--frozen`, AND THE REASON IS `scripts/verify_start.sh`'s VERBATIM: a bare
+# `uv sync` may RE-LOCK and rewrite `uv.lock`, a TRACKED file — which would move
+# the OTHER half of the key at the very moment this function exists to hold both
+# halves still. `--frozen` installs the lockfile as it stands and touches
+# nothing tracked.
+#
+# IT NEVER REFUSES, and that is a disposition rather than an oversight. This is
+# preparation for a CACHE key, not an instrument: a checkout with no `uv`, no
+# lockfile or a lockfile that will not install is a checkout whose legs are
+# about to say so in their own words, with their own exit status. Refusing here
+# would replace a leg's real red with a ledger's exit 2 and tell the reader
+# about the cache instead of about their tree. What it does instead is PRINT —
+# every line below names what happened, so a run that banks nothing can still be
+# read backwards.
+#
+#: `DJB_LOOP_NO_SYNC` — skip it. The seam the drives use (a scratch checkout has
+#: no lockfile to install), and the escape for a builder who is deliberately
+#: standing on an environment the lockfile does not describe. It is printed, and
+#: the line says what the skip costs.
+loop_env_sync() {
+    local out t0 took rc=0 summary reverted=0
+    if [ -n "${DJB_LOOP_NO_SYNC:-}" ]; then
+        echo "  environment: NOT synced — DJB_LOOP_NO_SYNC is set. Whatever the first \`uv run\`"
+        echo "               installs will move this key's env half, and a green run then banks"
+        echo "               nothing."
+        return 0
+    fi
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "  environment: NOT synced — no \`uv\` on PATH, so nothing here can install the"
+        echo "               lockfile. The legs below will say so in their own words."
+        return 0
+    fi
+    out=$(mktemp "${TMPDIR:-/tmp}/djb-loop-sync.XXXXXX") || {
+        echo "  environment: NOT synced — no scratch file under ${TMPDIR:-/tmp} to read uv's"
+        echo "               answer out of."
+        return 0
+    }
+    t0=$(date +%s)
+    uv sync --frozen >"$out" 2>&1 || rc=$?
+    took=$(($(date +%s) - t0))
+    if [ "$rc" != 0 ]; then
+        echo "  environment: \`uv sync --frozen\` exited ${rc} after ${took}s — the environment is"
+        echo "               whatever it already was, and this run's env key may move under it."
+        sed 's/^/               /' "$out"
+        rm -f "$out"
+        return 0
+    fi
+    # UV'S OWN SUMMARY, READ OUT OF THE FILE — never a second census of our own,
+    # so there is one answer to "what changed here" and it belongs to the tool
+    # that did it. `Installed`/`Uninstalled`/`Prepared` are the lines that would
+    # have moved the distribution census a leg later, and the no-op line is
+    # uv's too (`Checked <n> packages in <t>` on the version this box runs,
+    # `Audited …` on older ones). THE LAST LINE IS THE FALLBACK rather than a
+    # sentence of ours: uv has renamed that summary before and will again, and
+    # "uv printed no summary line" would then read as a defect in this function
+    # when the truth is that uv said something we did not have a word for.
+    # ONE LINE, JOINED IN awk rather than by a pipeline: this whole banner is
+    # one line per fact and a multi-line value spliced into it would break the
+    # shape every other line in the block keeps.
+    summary=$(awk '
+        /^(Installed|Uninstalled|Prepared|Audited|Checked|Resolved) / {
+            s = (s == "" ? $0 : s "; " $0)
+        }
+        NF { last = $0 }
+        END { print (s == "" ? last : s) }
+    ' "$out")
+    # AND IF IT TOOK SOMETHING OUT, THE LINE SAYS SO AND NAMES THE VALVE.
+    # `uv sync` makes the venv MATCH the lockfile, so a builder standing on a
+    # hand-patched environment — a debugger, a pinned fork, a wheel built by
+    # hand — has it reverted here, silently, by a step whose whole purpose is
+    # to be invisible. The one case where this function takes something away
+    # from a person is the one case it owes them a sentence, and the sentence
+    # has to name the way out or it is only an apology.
+    #
+    # ON A FILE AND NOT AT A PIPELINE TAIL: `grep -q` here reads `$out`
+    # directly, so there is no producer for it to close a pipe under — the
+    # GQ-1 hazard is the `producer | grep -q` form, which this is not.
+    if grep -q '^Uninstalled ' "$out" 2>/dev/null; then
+        reverted=1
+    fi
+    rm -f "$out"
+    echo "  environment: uv sync --frozen, ${took}s — ${summary:-uv printed nothing at all}"
+    if [ "$reverted" = 1 ]; then
+        echo "               UNINSTALLED: this venv held a distribution the lockfile does not"
+        echo "               name, and the sync took it out. DJB_LOOP_NO_SYNC=1 keeps a"
+        echo "               hand-patched environment — at the price this function exists to"
+        echo "               remove, which is the key's env half moving under the run."
+    fi
+    echo "               (ahead of the key, so the distribution census the key carries is the"
+    echo "               one the legs run in — loop_env_sync, scripts/gate_ledger.sh)"
 }
 
 #: `loop-v1:<64 hex>` and nothing else.
@@ -826,9 +1896,68 @@ loop_ledger_key() {
     # RECORD path below refuses it, so no row carrying it can ever exist.
     fingerprint=$(loop_env_fingerprint) || return 1
     digest=$(printf 'tree=%s\nenv=%s\nscope=%s\n' "$tree" "$fingerprint" "$scope" |
-        shasum -a 256 | awk '{print $1}')
+        sha256_of)
     [ -n "$digest" ] || return 1
     printf '%s:%s\n' "$LOOP_LEDGER_SCHEMA" "$digest"
+}
+
+# loop_key_moved <tree0> <env0> <parts0> <tree1> <env1> <parts1> <scope>
+#
+# WHICH THIRD OF THE KEY MOVED WHILE THE GATE RAN, one line per moved half and
+# one per moved fingerprint component, on stdout. Exit 0 always: this is a
+# printer for a refusal that has already been decided, never a second verdict.
+#
+# WHY IT EXISTS. The end-of-run re-derivation refused with one sentence —
+# "something moved while the gate ran" — and a builder reading it has a whole
+# `--loop` to re-spend and no subject to fix. The key is a digest of three
+# inputs and cannot be read backwards, so the only place the answer can be
+# assembled is here, where both ends' inputs are still in hand. This is the
+# `loop_miss_narrative` discipline (name the component that moved) applied to
+# the OTHER end of the same run.
+#
+# THE SCOPE IS PASSED AND NOT COMPARED, and that is a statement rather than an
+# omission: both derivations read the same `LOOP_SCOPE_CANONICAL`, derived once
+# before the first leg, so the scope CANNOT differ between them. Printing it
+# keeps the third input visible to a reader who is checking that claim.
+loop_key_moved() {
+    local tree0=$1 env0=$2 parts0=$3 tree1=$4 env1=$5 parts1=$6 scope=$7
+    if [ "$tree0" != "$tree1" ]; then
+        echo "  moved: THE TREE — a file the gate can read was written, removed or"
+        echo "         changed while the gate ran (\`git add -A\`, so .gitignore applies)."
+        echo "         start tree ${tree0}"
+        echo "         end   tree ${tree1}"
+    fi
+    if [ "$env0" != "$env1" ]; then
+        echo "  moved: THE ENVIRONMENT — start ${env0}"
+        echo "                           end   ${env1}"
+        # FIELD BY FIELD, positionally. Both strings are composed by one
+        # `printf` in `loop_env_fingerprint`, so field k is the same field on
+        # both sides and no value it holds contains a space.
+        DJB_KEY_PARTS0="$parts0" DJB_KEY_PARTS1="$parts1" awk '
+            BEGIN {
+                a = split(ENVIRON["DJB_KEY_PARTS0"], A, " ")
+                b = split(ENVIRON["DJB_KEY_PARTS1"], B, " ")
+                n = (a > b) ? a : b
+                for (i = 1; i <= n; i++) {
+                    if (A[i] == B[i]) continue
+                    name = A[i]; sub(/=.*$/, "", name)
+                    if (name == "") { name = B[i]; sub(/=.*$/, "", name) }
+                    printf("         %s: %s -> %s\n", name,
+                           (A[i] == "" ? "<absent>" : A[i]),
+                           (B[i] == "" ? "<absent>" : B[i]))
+                }
+            }
+        '
+    fi
+    if [ "$tree0" = "$tree1" ] && [ "$env0" = "$env1" ]; then
+        # NEITHER HALF MOVED AND THE KEYS STILL DIFFER. That is the key
+        # derivation disagreeing with itself, which is a defect in this file
+        # rather than a tree that changed — and it must not read as one.
+        echo "  moved: NEITHER the tree nor the environment — the two keys differ over"
+        echo "         identical inputs, which is a defect in the key derivation itself."
+    fi
+    echo "  scope (identical by construction — derived once, before the first leg):"
+    echo "         ${scope}"
 }
 
 # loop_ledger_record <key> <scope> [<passes>] — one line, appended, schema first.
@@ -846,8 +1975,17 @@ loop_ledger_key() {
 # full gate's `pytest-x2` runs two under one seed, which is the partition bank's
 # two-green-passes doctrine and is untouched by any of this. The two tiers make
 # different claims and now say which.
+#
+# AND `passes=1` ON A REUSE ROW IS THE SAME LITERAL AS ON A MEASURED ONE, which
+# is a thing to read carefully rather than a defect to fix. A row banked by the
+# docs-only pytest reuse carries `passes=1` because the pass it rests on was one
+# pass — but THIS run ran none, and the field cannot say that. The distinction
+# lives in `reuse=`, and it is a property of the TRAIL and not of this field: a
+# reuse row may rest on another reuse row, so "what actually measured these
+# bytes" is found by walking `reuse=` to the first row that has none. A reader
+# counting `passes=` across rows is counting claims, never pytest invocations.
 loop_ledger_record() {
-    local key=$1 scope=$2 passes=${3:-1} tree=${4:-} env=${5:-} path
+    local key=$1 scope=$2 passes=${3:-1} tree=${4:-} env=${5:-} reuse=${6:-} path
     printf '%s' "$key" | grep -E "$LOOP_KEY_RE" >/dev/null || {
         echo "loop_ledger_record: '$key' is not a loop key — nothing recorded" >&2
         return 2
@@ -897,12 +2035,27 @@ loop_ledger_record() {
     # cannot answer "is the gate slow or is the box busy", which is the question
     # every builder waiting on one actually has. `gate_ledger_cost_fields` is
     # shared with the full row so the two can never disagree about the arithmetic.
+    #
+    # AND `reuse=` GOES AFTER THOSE, by the same precedent one more time, and it
+    # is the field that makes property 2 true of this tier: A REUSE IS RECORDED
+    # AS A REUSE, NEVER AS A MEASUREMENT. A docs-only reuse banks a row keyed on
+    # THIS tree — so it is itself reusable, which is the point — and the field
+    # names the banked tree whose pytest verdict it rests on, so a reader
+    # following a chain of reuses reaches the measurement at the end of it.
+    # Nothing limits that chain's length; the row says what it stands on and the
+    # readouts reader can walk it.
+    #
+    # THE THIRD FIELD STAYS THE LITERAL `loop`, and that is not decoration:
+    # `scripts/verify_start.sh`'s LOOP SEED matches `^loop-v1 loop-v1:<64> loop `
+    # before it copies a row into a verifier's clone, so a reuse row spelled
+    # into that position would be a row no verifier could ever inherit.
     local components="${LOOP_ENV_COMPONENTS:-}"
-    printf '%s %s loop %s caller=%s scope=%s passes=%s tree=%s env=%s%s%s\n' \
+    printf '%s %s loop %s caller=%s scope=%s passes=%s tree=%s env=%s%s%s%s\n' \
         "$LOOP_LEDGER_SCHEMA" "$key" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(gate_caller)" \
         "$(printf '%s' "$scope" | tr '\n ' '__')" "$passes" \
         "${tree:-unstated}" "${env:-unstated}" \
-        "${components:+ $components}" "$(gate_ledger_cost_fields)" >>"$path"
+        "${components:+ $components}" "$(gate_ledger_cost_fields)" \
+        "${reuse:+ reuse=$reuse}" >>"$path"
 }
 
 # loop_component_value <fields line> <name> — the value of ` <name>=<v>` on
@@ -956,6 +2109,17 @@ loop_components_malformed() {
                 return 0
             }
             ;;
+        env-reads)
+            # `no-census` is the DECLARED absence of `quality/partition.py`,
+            # which `loop_env_reads` writes on purpose for a checkout that is
+            # not this tree. Not a malformation, on `env-file`'s own precedent.
+            if [ "$v" != "no-census" ]; then
+                printf '%s' "$v" | grep -E '^[0-9a-f]{64}$' >/dev/null || {
+                    printf '%s (not a digest)' "$f"
+                    return 0
+                }
+            fi
+            ;;
         esac
     done
     return 0
@@ -993,7 +2157,9 @@ loop_ledger_census() {
 # this line says how many paths moved with them and whether all of them live
 # under `docs/`. That answer is the counter a deferred piece of work is waiting
 # on: a verifier's clone missing on a banked branch because main gained a
-# ledger commit is a re-measure bought by a file no test reads, and until this
+# ledger commit is a re-measure bought by a file no module under `apps/` names,
+# and until this
+#
 # line existed nobody could count those without reading two banners by hand.
 #
 # `docs/` IS THE PREFIX TWO SHIPPED FILES ALREADY TREAT AS THE LEDGERS' HOME,
@@ -1281,6 +2447,17 @@ EOF
             printf 'tree\n'
             loop_attribute_banked_line "$tree_row"
             loop_attribute_head_detail "$(loop_component_value "$tree_row" head)"
+            # THE UNTRUNCATED COORDINATES, FOR A READER THAT IS A PROGRAM.
+            # `banked row:` above is shortened for eyes (12 and 8 characters);
+            # `loop_docs_only_reuse` below needs the WHOLE banked head to ask
+            # git what moved since it, and the whole banked tree to name what a
+            # reuse rests on. Emitting them here rather than re-finding the row
+            # is what keeps ONE answer to "which row did the attributor pick":
+            # a second search could pick a different one, and a reuse resting
+            # on a row nobody attributed is a reuse nobody can audit.
+            printf 'reuse-basis: head=%s tree=%s\n' \
+                "$(loop_component_value "$tree_row" head)" \
+                "$(loop_component_value "$tree_row" tree)"
             return 0
         fi
     fi
@@ -1353,6 +2530,183 @@ loop_attribute_row_detail() {
     *" env-file="*) printf 'banked row carries components; this token came from the three-line match\n' ;;
     *) printf 'banked row carries no components (recorded before they were)\n' ;;
     esac
+}
+
+# ---- the docs-only reuse ----------------------------------------------------
+#
+# WHAT IT IS. A `--loop` that misses on `tree` ALONE, whose whole delta since
+# the banked head is under `docs/`, is a run whose pytest pass would re-derive a
+# result nothing in the delta can have changed. This says when the banked
+# pytest verdict may stand in for that pass. Every other leg still runs: the
+# `--fast` legs are ~30 s on this box and choosing which of them read docs is a
+# hand list of an open set, where the saving is the 200-250 s pass.
+#
+# THE CACHE'S FOUR DECLARATIONS (principle 10), stated where the code is:
+#   SOURCE OF TRUTH — the banked row the ATTRIBUTOR picked, and no other. The
+#     row arrives through the attributor's `reuse-basis:` line rather than
+#     through a second search of the ledger, so the reuse can never rest on a
+#     row the banner did not name.
+#   KEY SEMANTICS — unchanged. The reuse does not widen the key; it narrows the
+#     WORK a miss on that key costs. The row it banks afterwards is keyed on
+#     this tree exactly as a measured row is, and says what it rests on.
+#   INVALIDATION — any non-`docs/` path in the delta, any uncommitted byte in
+#     the working tree, any changed docs path spelled in a module under
+#     `apps/`, an unreadable or absent basis: every one of them measures.
+#   FAILURE BEHAVIOUR — fail closed and SILENT-ON-DOUBT. Exit 1 means measure;
+#     there is no exit 2 on this path, for the reason the consult path has
+#     none: a broken cache must cost a re-run, never a gate.
+#
+# IT IS CALLED PLAINLY, NEVER IN `$(...)`. It sets three globals, and a
+# substitution's copy of a global dies with the subshell — the failure that once
+# banked `env=unstated` and went green (the consult's own note, above).
+#
+# TWO THINGS IT DELIBERATELY DOES NOT DO, declared rather than discovered:
+#   * It does not read a docs path by GLOB or by DIRECTORY. The population is
+#     derived per changed path with `grep -rlF`, which is the criterion's own
+#     spelling; a module that reads a docs DIRECTORY names no path and is
+#     missed. Widening the grep to the path's directory prefixes was measured
+#     and rejected: `docs/product/` is spelled in a dozen modules' prose, so
+#     every delta would refuse and the mechanism would never fire once.
+#   * It does not distinguish a module that READS a docs file from one that
+#     merely NAMES it in a docstring. It refuses on either, which is the safe
+#     direction and is why a delta touching `docs/product/architecture.md`
+#     never reuses on this tree.
+
+#: What a docs-only reuse rests on. Set by `loop_docs_only_reuse` on the way to
+#: exit 0 and read by the REUSED line, the `loop:` cell and the row that is
+#: banked afterwards. Empty until it has run, and empty is honest rather than
+#: stale — the same contract `LOOP_ENV_COMPONENTS` keeps above.
+LOOP_REUSE_TREE=""
+LOOP_REUSE_N=""
+
+#: The sentence a REFUSED reuse prints, or empty when the delta was simply not
+#: docs-only. The distinction is the point: "this is an ordinary mixed delta" is
+#: not news and must not add a line to every miss banner in the tree, while
+#: "this WAS docs-only and the reuse was refused anyway" is the one thing a
+#: reader needs to see, because it is the case where a green would have been
+#: cheap and was declined on purpose.
+LOOP_REUSE_WHY=""
+
+#: The prefix, cited rather than re-listed — `loop_attribute_head_detail`'s own
+#: `docs/` and for its reasons. One constant so the counter and the reuse can
+#: never disagree about what "docs" means.
+LOOP_DOCS_PREFIX='docs/'
+
+# loop_docs_only_reuse <the attributor's token> <the attributor's detail>
+#   0  the banked pytest verdict may stand in; LOOP_REUSE_TREE and
+#      LOOP_REUSE_N say what it rests on and how big the delta was.
+#   1  measure. LOOP_REUSE_WHY carries a sentence when the refusal is worth
+#      printing, and is EMPTY when this was never a docs-only delta at all.
+loop_docs_only_reuse() {
+    local token=$1 detail=$2 basis head files p n hit banked_tree committed
+    LOOP_REUSE_TREE=""
+    LOOP_REUSE_N=""
+    LOOP_REUSE_WHY=""
+    # `tree` ALONE. An `env:` token means an input the suite stands on moved,
+    # and a `scope` token means the selection itself did; neither is a delta a
+    # path prefix can vouch for.
+    [ "$token" = "tree" ] || return 1
+    basis=$(printf '%s\n' "$detail" | sed -n 's/^reuse-basis: //p') || return 1
+    basis=${basis##*$'\n'}
+    [ -n "$basis" ] || return 1
+    head=$(loop_component_value "$basis" head)
+    [ -n "$head" ] || return 1
+    # ANCESTRY, ASKED OF GIT AND NEVER ASSUMED. A banked head that is not an
+    # ancestor of HEAD is a row from another line of development, and
+    # `git diff A B` between two such points is not "what happened since".
+    git merge-base --is-ancestor "$head" HEAD >/dev/null 2>&1 || return 1
+    files=$(git diff --name-only "$head" HEAD 2>/dev/null) || return 1
+    # NO COMMIT SINCE THE BANKED HEAD means the tree moved in the WORKING tree,
+    # which is a builder editing its own checkout — deliberately not the shape
+    # this reuse covers, and the same rule `loop_attribute_head_detail` states.
+    [ -n "$files" ] || return 1
+    n=0
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        case "$p" in
+        "$LOOP_DOCS_PREFIX"*) ;;
+        *) return 1 ;;
+        esac
+        n=$((n + 1))
+    done <<EOF
+$files
+EOF
+    [ "$n" -gt 0 ] || return 1
+    # A DIRTY WORKING TREE IS NEVER DOCS-ONLY. The delta above is the COMMITTED
+    # one; an uncommitted edit is a byte nobody can name, it moves the measured
+    # tree (`gate_measured_tree` reads through `git add -A`), and it is exactly
+    # how a builder's half-finished `apps/` change would ride in under a docs
+    # commit's cover. `*.log` files are ignored and so are invisible here,
+    # which is why the gate's own transcript does not refuse its own reuse.
+    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+        LOOP_REUSE_WHY="docs-only delta, but the WORKING TREE is not clean: an uncommitted edit is not a delta anyone can name — measuring"
+        return 1
+    fi
+    # AND NEITHER WAS THE BANKED RUN'S, WHICH IS THE OTHER HALF OF THE SAME
+    # SENTENCE AND WAS MISSING FOR A WHOLE CYCLE (R3's F1). The clause above
+    # holds THIS run's working tree to the committed delta it is claiming; every
+    # word of that argument applies to the run the verdict is being INHERITED
+    # from, and nothing above asked. A `--loop` verdict is keyed on the MEASURED
+    # WORKING TREE — `gate_measured_tree` reads through `git add -A` — and a
+    # builder's working tree is dirty most of the time it is being gated, so a
+    # perfectly ordinary bank can carry `head=C` beside a tree that is NOT C's.
+    # Inherit it under a docs commit and the green is about bytes nobody
+    # committed: commit a red test, leave the uncommitted edit that greens it,
+    # bank, restore the red bytes, commit a docs row — and the reuse hands out a
+    # green over a red committed suite, then banks a reusable reuse row saying so.
+    #
+    # THE QUESTION IS ASKED OF GIT AND THE ANSWER IS AN EQUALITY, not a
+    # heuristic: the basis row's `tree=` either IS `git rev-parse <head>^{tree}`
+    # or the row is not a verdict about any committed tree and cannot vouch for
+    # one. A row too old to carry a `tree=` component, or a head this checkout
+    # cannot resolve, is the same answer for the same reason — a basis that
+    # cannot be checked is a basis that has not been.
+    #
+    # AND THE LOCAL IS NOT CALLED `head_tree`, WHICH COST A GATE LEG TO LEARN.
+    # `scripts/tests/test_pipefail_readers.sh`'s census matches `\| *head` over
+    # the shipped lines, so `|| head_tree=""` reads as a pipe into `head` and
+    # the line reds as an early-exit reader that is not there. Renaming is the
+    # fix; a valve would be spending a declared escape on a coincidence.
+    banked_tree=$(loop_component_value "$basis" tree)
+    committed=$(git rev-parse -q --verify "${head}^{tree}" 2>/dev/null) || committed=""
+    if [ -z "$banked_tree" ] || [ -z "$committed" ] || [ "$banked_tree" != "$committed" ]; then
+        LOOP_REUSE_WHY="the banked verdict was measured on a tree that is not its head's committed tree — measuring"
+        return 1
+    fi
+    # THE POPULATION IS DERIVED, PER CHANGED PATH, AT RUN TIME. A hand list of
+    # "the docs a test reads" is right on the day it is written; this asks the
+    # tree. `-F` because a path is a literal, and `-l` because the first module
+    # naming it is the whole answer.
+    #
+    # AND THE SENTENCE SAYS WHAT THIS DOES, NOT WHAT IT WISHES IT DID. The
+    # question asked is "is this path SPELLED in any module under `apps/`",
+    # which is fail-closed and wider than "a collected test reads it": the first
+    # hit wins and it need not be a test (`apps/core/integrations.py` is a real
+    # one), and a mention in a docstring refuses just as a real read does. The
+    # refusal used to claim the narrower thing, which is a message naming a
+    # cause it has not proven.
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        # READ WHOLE, THEN SLICE — never `| head -1`. The reader would close the
+        # pipe under `grep -rl`, and a producer with more than the pipe buffer
+        # still to write takes SIGPIPE and dies 141, which `pipefail` hands to
+        # the caller as a failure of a search that actually MATCHED.
+        hit=$(grep -rlF "$p" apps/ --include='*.py' 2>/dev/null) || hit=""
+        hit=${hit%%$'\n'*}
+        if [ -n "$hit" ]; then
+            LOOP_REUSE_WHY="docs-only delta touches a path spelled in a module under apps/: ${p} (named in ${hit}) — measuring"
+            return 1
+        fi
+    done <<EOF
+$files
+EOF
+    # ONE READ OF THE ROW, not two. The basis check above already resolved this
+    # and refused an empty one; re-reading it here would be a second opinion
+    # about the same field, and the day the two disagree is the day the reuse
+    # rests on a tree the refusal never looked at.
+    LOOP_REUSE_TREE="$banked_tree"
+    LOOP_REUSE_N="$n"
+    return 0
 }
 
 # loop_ledger_lookup <key> → the most recent matching line on stdout, exit 0;

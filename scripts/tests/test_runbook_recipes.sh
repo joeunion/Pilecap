@@ -31,6 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .env.example apps/ config/ docs/runbooks/capacity.md docs/runbooks/deploy.md manage.py scripts/db.sh scripts/db_sweep.sh scripts/kill_mine.sh scripts/lifecycle.sh scripts/queue_cited.sh scripts/setup.sh scripts/sweep.sh scripts/tests/render_recipe.py scripts/tests/runbook_receiver.py
 # THE EXECUTABLE-DOCS DRIVE — `docs/runbooks/deploy.md`'s webhook recipes, run
 # as printed against a live receiver, and
 # `docs/runbooks/capacity.md`'s connection-census and envelope-line recipes, run
@@ -224,6 +225,17 @@ esac
 
 DOC="docs/runbooks/deploy.md"
 CAPDOC="docs/runbooks/capacity.md"
+# THE CHECKOUT'S OWN INTERPRETER, for every PYTHON FILE THIS REPOSITORY SHIPS
+# that this drive runs. `python3` off PATH is some other environment's: on a
+# verifier box it is the system 3.9, where `zip(…, strict=True)` — which these
+# files use — is `TypeError: zip() takes no keyword arguments`, and the drive
+# would report that as a finding about the file it was driving. Inline
+# `python3 -c` and heredoc programs below stay as they are: they are stdlib on
+# any Python 3, and their own `command -v python3` guard covers their absence.
+DRIVE_PY="$PWD/.venv/bin/python"
+[ -x "$DRIVE_PY" ] ||
+    cannot_look "this checkout has no .venv/bin/python, and the python files this drive
+   runs are written at the version that venv holds. Run ./scripts/setup.sh first"
 RENDER="scripts/tests/render_recipe.py"
 HARNESS="scripts/tests/runbook_receiver.py"
 
@@ -403,7 +415,7 @@ render() {
 # no-copy discipline applied to the lifting machinery itself.
 render_from() {
     local doc="$1" marker="$2" out="$3" table="$4"
-    python3 "$RENDER" "$doc" "$marker" "$out" "$table"
+    "$DRIVE_PY" "$RENDER" "$doc" "$marker" "$out" "$table"
 }
 
 # The substitution table, built once per call so every case declares the same
@@ -588,7 +600,7 @@ case_the_envelope_line_checker_accepts_the_chapters_own_example() {
     N=$((N + 1))
     OUT="${WORK}/envelope-ok${N}.log"
 
-    if python3 "${WORK}/envelope-line-check.txt" --knee \
+    if "$DRIVE_PY" "${WORK}/envelope-line-check.txt" --knee \
         <"${WORK}/envelope-line-example.txt" >"$OUT" 2>&1; then
         ok "the worked example is a valid envelope line, and claims its knee legally"
     else
@@ -610,7 +622,7 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 print(" | ".join(fields[:-1]))
 PY
 
-    if python3 "${WORK}/envelope-line-check.txt" --knee \
+    if "$DRIVE_PY" "${WORK}/envelope-line-check.txt" --knee \
         <"${WORK}/envelope-short.txt" >"$OUT" 2>&1; then
         bad "a line one part short PASSED — the checker cannot fail, so it proves nothing"
     else
@@ -667,6 +679,53 @@ case_the_census_recipes_are_legal_and_attribute_in_one_read() {
         ok "the steady read carries state and last-query beside the principal"
     else
         bad "the steady read did not carry the attribution columns beside the principal"
+    fi
+}
+
+case_the_drive_supplies_the_cipher_key_its_world_needs() {
+    # THE GUARD ON THE WORLD BLOCK'S MINT, and it is here because the eight
+    # cases below it report the SYMPTOM. When the key was inherited and the
+    # environment had none, recipe 1 said "did not answer a connection id" and
+    # the seven after it said "the receiver did not answer 202" — nine red
+    # assertions, none of which names a cipher key, over a runbook that had not
+    # moved. This case fails FIRST and says the word.
+    #
+    # It asserts the key is this drive's OWN: minted above, not the operator's
+    # `.env` value, and accepted by the cipher the field actually constructs.
+    CURRENT="the drive supplies the cipher key its world needs"
+    local env_key=""
+    OUT=""
+
+    if [ -z "${CONNECTIONS_ENCRYPTION_KEY:-}" ]; then
+        bad "no CONNECTIONS_ENCRYPTION_KEY in this drive's environment — every case below stores a credential this product encrypts before writing"
+        return 0
+    fi
+
+    # A laptop's `.env` carries the published development key. If this drive's
+    # key were that one, the drive would be measuring the operator's environment
+    # and would go red on any machine without one — which is exactly what a
+    # GitHub runner is.
+    if [ -r "${ROOT}/.env" ]; then
+        # `tr` last, and it reads the whole stream: a pipeline tail that stops
+        # early takes its producer's exit status with it (the pipefail census).
+        env_key="$(sed -n 's/^[[:space:]]*CONNECTIONS_ENCRYPTION_KEY=//p' "${ROOT}/.env" | tr -d "\"' \r")"
+        env_key="${env_key%%$'\n'*}"
+    fi
+    if [ -n "$env_key" ] && [ "$env_key" = "$CONNECTIONS_ENCRYPTION_KEY" ]; then
+        bad "this drive is using the checkout's own .env key — a world it inherits is a world a runner does not have"
+        return 0
+    fi
+    ok "the key is this drive's own, not ${ROOT}/.env's$([ -n "$env_key" ] && echo " (which is set and differs)" || echo " (which names none)")"
+
+    CURRENT="and the cipher the field builds accepts it"
+    OUT="${WORK}/fernet-accepts.log"
+    if (cd "$ROOT" && uv run python -c 'import os
+from cryptography.fernet import Fernet
+Fernet(os.environ["CONNECTIONS_ENCRYPTION_KEY"])
+print("fernet ok")') >"$OUT" 2>&1 && grep -q 'fernet ok' "$OUT"; then
+        ok "Fernet() accepts it — the cipher apps/core/fields.py builds is the one this key was minted for"
+    else
+        bad "Fernet() would not take this drive's key — see ${OUT}"
     fi
 }
 
@@ -749,7 +808,7 @@ drive_house_recipe() {
 
 case_the_v2_recipe_lands_an_engagement() {
     CURRENT="the X-Signature-V2 recipe lands an engagement row"
-    drive_house_recipe house-v2 python3 opened "$HANDLE_V2" "v2 · opened"
+    drive_house_recipe house-v2 "$DRIVE_PY" opened "$HANDLE_V2" "v2 · opened"
     OUT="${WORK}/facts-v2-opened.log"
     facts >"$OUT" 2>&1 || true
     if grep -q "^engagement ${HANDLE_V2} opened " "$OUT"; then
@@ -761,7 +820,7 @@ case_the_v2_recipe_lands_an_engagement() {
 
 case_the_v2_recipe_as_printed_bounces_the_message() {
     CURRENT="the X-Signature-V2 recipe as printed bounces the message"
-    drive_house_recipe house-v2 python3 bounced "$HANDLE_V2" "v2 · as printed"
+    drive_house_recipe house-v2 "$DRIVE_PY" bounced "$HANDLE_V2" "v2 · as printed"
     OUT="${WORK}/facts-v2-bounced.log"
     facts >"$OUT" 2>&1 || true
     if grep -q "^message ${HANDLE_V2} bounced$" "$OUT"; then
@@ -1056,6 +1115,31 @@ case_the_census_recipes_are_legal_and_attribute_in_one_read
 SCRATCH_DB="test_djb_rbk_$(db_path_hash "$ROOT" 12)"
 db_valid_name "$SCRATCH_DB" || cannot_look "the derived scratch database name is not a name: ${SCRATCH_DB}"
 
+# THE CIPHER KEY THIS DRIVE'S WORLD NEEDS, MINTED HERE RATHER THAN INHERITED.
+# Recipe 1 stores a webhook secret, the secret lands in an `EncryptedCharField`,
+# and `apps/core/fields.py::fernet` refuses with `ImproperlyConfigured` when
+# `CONNECTIONS_ENCRYPTION_KEY` is empty — deliberately, there is no plaintext
+# fallback. A laptop never noticed because `scripts/setup.sh` copies
+# `.env.example`, which ships a development key; a GitHub runner has no `.env`
+# at all, and the whole tail of this drive went red there on identical bytes
+# (run 35241431444: `34 passed, 9 failed`, recipe 1 first and the other eight
+# its 404 shadow — an empty CONNECTION_ID posts to a path the receiver does not
+# route).
+#
+# So the key joins `SCRATCH_DB` and `WHSEC` as something the drive BUILDS rather
+# than finds, which is `drive_preamble.sh` section 4's doctrine applied to a
+# setting instead of a flag: a case whose verdict depends on who started the
+# drive is not a case. Exported, so it also wins over a `.env` key on a laptop —
+# what runs here is then one world everywhere rather than two.
+#
+# Minted, not published: it encrypts one row in a database this drive creates
+# and drops inside a minute, and a value nobody can copy into a real deployment
+# cannot become one.
+CONNECTIONS_ENCRYPTION_KEY="$( (cd "$ROOT" && uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())') 2>"${WORK}/fernet.log" )"
+export CONNECTIONS_ENCRYPTION_KEY
+[ -n "$CONNECTIONS_ENCRYPTION_KEY" ] ||
+    cannot_look "could not mint a Fernet key for this drive's scratch world — see ${WORK}/fernet.log. Every case below stores a credential, and this product encrypts one before it writes it."
+
 # BEFORE the database exists, deliberately: this reads settings, not rows, and
 # asking now means the exit cleanup knows where this run's work lands even if
 # every line below it fails. See `runbook_receiver.py::_world` for why the two
@@ -1100,6 +1184,7 @@ WHSEC="whsec_cnVuYm9va2RyaXZlc2NyYXRjaHNlY3JldA"  # pragma: allowlist secret —
 SECRET="$WHSEC"
 CONNECTION_ID=""
 
+case_the_drive_supplies_the_cipher_key_its_world_needs
 case_the_connection_recipe_creates_the_connection
 case_the_v2_recipe_lands_an_engagement
 case_the_v2_recipe_as_printed_bounces_the_message

@@ -12,8 +12,9 @@
  */
 
 import type { Organization, OrganizationPage } from "@/api/client";
-import type { Refusal, SurfaceState, WireRemedy } from "@/screens/state";
-import { unhandledRefusal, unhandledState } from "@/screens/state";
+import type { Refusal, SurfaceState } from "@/screens/state";
+import { unhandledState } from "@/screens/state";
+import { RefusalPanel } from "@/screens/refusal-panel";
 import { WELCOME_COPY as C } from "@/copy/welcome";
 
 export type WelcomeScreenProps = {
@@ -69,7 +70,7 @@ function renderState(state: SurfaceState<OrganizationPage>) {
         case "empty":
             return <NextActPrompt label={state.nextAct.label} detail={state.nextAct.detail} />;
         case "error":
-            return <RefusalPanel refusal={state.refusal} />;
+            return <ScreenRefusal refusal={state.refusal} />;
         case "ready":
             return <OrganizationList items={state.data.items} />;
     }
@@ -123,56 +124,22 @@ function NextActPrompt({ label, detail }: { readonly label: string; readonly det
  * `error` carries the server's own `Refusal`, never a string — a component
  * holding a string can only make a sentence up, and it will.
  *
- * The two members of the union are rendered differently ON PURPOSE: the
- * registry member shows the server's `code`, `detail` and `remedies` verbatim;
- * the transport member shows this client's own two words and NO code, because
- * no response existed and inventing a registry code for it would fail open.
+ * THE PANEL ITSELF IS `@/screens/refusal-panel`, the ONE refusal renderer
+ * (design J4). This screen owns only the WORDS: which label goes over which
+ * member of the union. The shape — registry shows the server's detail, code
+ * and remedies verbatim; transport shows this client's own two words and no
+ * code the server did not say — belongs to the panel, and a second copy of it
+ * here would be a second account of one event.
  */
-function RefusalPanel({ refusal }: { readonly refusal: Refusal }) {
-    switch (refusal.kind) {
-        case "registry":
-            return (
-                <div role="alert" style={panelStyle}>
-                    <p style={{ margin: `0 0 var(--space-1)`, color: "var(--ink)", fontWeight: 600 }}>{C.errorLabel}</p>
-                    <p style={{ margin: `0 0 var(--space-2)`, color: "var(--ink)" }}>{refusal.refusal.detail}</p>
-                    <p style={{ margin: `0 0 var(--space-2)`, fontFamily: "var(--font-mono)", fontSize: "0.85rem", color: "var(--muted)" }}>
-                        {refusal.refusal.code}
-                    </p>
-                    <Remedies remedies={refusal.refusal.remedies} />
-                </div>
-            );
-        case "transport":
-            return (
-                <div role="alert" style={panelStyle}>
-                    <p style={{ margin: `0 0 var(--space-1)`, color: "var(--ink)", fontWeight: 600 }}>{C.transportLabel}</p>
-                    <p style={{ margin: `0 0 var(--space-2)`, color: "var(--ink)" }}>{refusal.detail}</p>
-                    <p style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: "0.85rem", color: "var(--muted)" }}>
-                        {refusal.code}
-                    </p>
-                </div>
-            );
-    }
-    return unhandledRefusal(refusal);
-}
-
-/** The server's remedies, composed once server-side so a screen and an agent
- *  offer the same way out. Rendered, never rewritten. */
-function Remedies({ remedies }: { readonly remedies: WireRemedy[] | undefined }) {
-    if (remedies === undefined || remedies.length === 0) return null;
+function ScreenRefusal({ refusal }: { readonly refusal: Refusal }) {
     return (
-        <>
-            <p style={{ margin: `0 0 var(--space-1)`, fontSize: "0.85rem", color: "var(--muted)" }}>{C.remedies}</p>
-            <ul style={{ margin: 0, paddingLeft: "var(--space-3)", color: "var(--ink)" }}>
-                {remedies.map((remedy) => (
-                    <li key={`${remedy.destination}:${remedy.label}`}>
-                        {remedy.label}{" "}
-                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.8rem", color: "var(--muted)" }}>
-                            {remedy.destination}
-                        </span>
-                    </li>
-                ))}
-            </ul>
-        </>
+        <RefusalPanel
+            refusal={refusal}
+            words={{
+                label: refusal.kind === "registry" ? C.errorLabel : C.transportLabel,
+                remedies: C.remedies,
+            }}
+        />
     );
 }
 
@@ -202,11 +169,3 @@ function OrganizationList({ items }: { readonly items: readonly Organization[] }
         </ul>
     );
 }
-
-const panelStyle = {
-    border: `1px solid var(--accent)`,
-    borderLeft: `3px solid var(--accent)`,
-    borderRadius: "var(--radius)",
-    padding: "var(--space-3)",
-    background: "var(--surface-raised)",
-} as const;

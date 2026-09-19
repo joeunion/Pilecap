@@ -276,6 +276,73 @@ def test_the_instance_smtp_sender_is_reported(console: Console, capsys: Any) -> 
     assert "SMTP_CONFIG_ACTIVE" in line
 
 
+# --- and the owner of the instance-wide one qualifies the verdict ------------
+#
+# The sender is instance-wide, so on a shared instance it is whoever set it
+# last. Observed-and-not-judged is still the right class — this deployment
+# states no SMTP intent, so there is nothing for the sender to disagree with —
+# but "we cannot judge it" is not the same sentence as "Zitadel agrees with
+# every row", and the second is what the report used to print over another
+# product's mail configuration.
+
+
+def test_a_foreign_smtp_owner_is_named_and_counted_in_the_verdict(
+    console: Console, capsys: Any
+) -> None:
+    """A sibling product's sender, printed as theirs and counted as foreign.
+
+    Three claims, because they are three different failures if any is missing:
+    the owner is named on the observed line (a reader can see whose it is), a
+    `foreign` line says what follows from that (every reset and OTP mail this
+    instance sends goes out as them), and the verdict sentence carries the
+    count — which is the half that reaches somebody who read only the last
+    line.
+    """
+    out = _run(capsys, expect_exit=0)
+
+    smtp = next(line for line in _observed_lines(out) if line.strip().startswith("smtp"))
+    assert "owner: ExampleCRM" in smtp
+    foreign = next(line for line in out.splitlines() if line.startswith("foreign"))
+    assert "set by ExampleCRM" in foreign
+    assert "no-reply@example-crm.localhost" in foreign
+    assert "this deployment declares no SMTP intent" in foreign
+    assert "Zitadel agrees with every row." in out
+    assert "1 foreign." in out
+
+
+def test_our_own_smtp_owner_is_not_called_foreign(
+    console: Console, settings: Any, capsys: Any
+) -> None:
+    """The negative, without which the line above fires on every deployment.
+
+    A sender this product's own name is on is ours: it is still observed and
+    still unjudged — nothing states an intent for it — but it is not somebody
+    else's, so no `foreign` line and a zero in the count.
+    """
+    settings.PRODUCT_NAME = "ExampleCRM"
+
+    out = _run(capsys, expect_exit=0)
+
+    smtp = next(line for line in _observed_lines(out) if line.strip().startswith("smtp"))
+    assert "owner: ExampleCRM" in smtp
+    assert not [line for line in out.splitlines() if line.startswith("foreign")]
+    assert "0 foreign." in out
+
+
+def test_a_foreign_sender_is_still_not_drift(console: Console, capsys: Any) -> None:
+    """The class did not change: printed, named, counted — and never judged.
+
+    Asserted separately from the two above because "qualifies the verdict" is
+    the shape most likely to be turned into a drift count by somebody reading
+    the word `foreign` as a failure. There is no intent to disagree with, so
+    there is no disagreement; what the count buys is that the operator is told.
+    """
+    out = _run(capsys, expect_exit=0)
+
+    assert "DRIFT" not in out
+    assert "disagreement(s)" not in out
+
+
 # --- and judged by nothing ---------------------------------------------------
 
 

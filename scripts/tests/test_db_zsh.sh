@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# drives: scripts/check.sh scripts/db.sh
 # THE SOURCED-LIBRARY DRIVE — `scripts/db.sh` under a REAL zsh.
 #
 # WHY IT EXISTS, and it is one incident. `scripts/db.sh` is the only file in

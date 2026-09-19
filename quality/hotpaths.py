@@ -356,10 +356,17 @@ def probe_list_widgets(world: World) -> ProbeResult:
     registering its own hot path owes its probe the dereference: fetching a
     queryset proves the query, and only rendering proves the page.
     """
+    from apps.core.actor import system_actor
     from apps.example.schemas import WidgetOut
     from apps.example.selectors import list_widgets
 
-    qs = list_widgets(tenant=world.tenant, org=world.branch)
+    # The system actor, because a probe is the platform measuring itself: since
+    # Phase R `list_widgets` asks `widget.read` at the hat, and this world has no
+    # person whose collection could answer. `allows` passes `system` at step 1, so
+    # the probe measures the query it exists to measure and not a refusal.
+    qs = list_widgets(
+        tenant=world.tenant, org=world.branch, actor=system_actor(world.tenant, world.branch)
+    )
     rows = list(qs[:50])
     for widget in rows:
         WidgetOut.from_orm(widget)

@@ -1,89 +1,72 @@
-"""Who may reshape a tenant's organization tree. Policies are code; roles are data.
+"""Who may reshape a tenant's organization tree — and, now, who does not need a rule.
 
-`core.authz.require(actor, "organization.move", node)` finds these by
-discovery — this file is never registered anywhere.
+`core.authz.require(actor, "organization.move", node)` finds this file by
+discovery — it is never registered anywhere.
 
-There is one predicate here and it is worth saying why there is only one.
-Creating a node, renaming it and moving it are all the same question —
-**"do you administer this part of the tree?"** — and the answer is always the
-same sentence: the actor's *effective* role over the node in question, which is
-the best role they hold on that node **or on one of its ancestors**, must be
-`admin` or better. Writing it once means a fourth operation cannot quietly
-acquire a fifth rule.
+**There is no predicate here any more, and that is the change.** Creating a
+node, renaming it, moving it, inviting into it, withdrawing an offer, changing
+a tenant's settings and removing a membership were all one question —
+*"do you administer this part of the tree?"* — answered by one predicate that
+read the actor's best ROLE over the node and compared it against a rank.
+Resolution asks that question now, and asks it better: `where_of(actor, obj)`
+is the node the object names, and the declared `admin` role holds `("*",)` over
+it, so the seven keys are held exactly where a membership on that node or on
+one of its ancestors says they are. Nothing about the answers moved; what moved
+is that a tenant can now take one of the seven away from one person, which a
+rank comparison could never express.
 
-Two things this file deliberately does not do:
+What this file still owns, and both are declarations rather than code:
 
-* **It does not read the acting hat for the answer.** The object decides the
-  question — "may you administer *this node*" — and the hat is only the default
-  when a caller asks in the abstract (`obj is None`). A branch manager acting
-  under the group's hat still may not touch a sibling branch, because the
-  sibling is not underneath any membership they hold.
+* **The renames** — the three keys `core` brought into the one shape, each
+  with the CRUD verb the act already was.
+* **The prose** — one plain sentence per action, which is what a refused caller
+  reads. The key is how a service asks the question; it is not English.
+
+Two things it deliberately still does not do:
+
 * **It does not implement the escalation wall.** That lives in
   `core.services._refuse_escalation`, next to the membership write it guards,
   because it is a rule about the *role being granted* rather than about the
   object being touched, and a policy predicate has no grant to look at.
+* **It does not read the acting hat.** The object decides the question. A
+  branch manager acting under the group's hat still may not touch a sibling
+  branch, because the sibling is underneath no membership they hold — and that
+  is now `effective_permissions`' sentence rather than a predicate's.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from apps.core.authz import Policy
 
-from apps.core.actor import Actor
-from apps.core.authz import ADMIN_RANK, Policy, effective_role, rank
-from apps.core.models import Organization
-
-
-def may_administer(actor: Actor, obj: Any = None) -> bool:
-    """`admin` or better over this node — held on it, or on an ancestor of it.
-
-    Without an object the acting hat stands in ("could I administer anything
-    here at all?"), and **without either it is no**: a call with no node and no
-    hat has not named a place, and the safe reading of "somewhere" is nowhere.
-    That is also what refuses a move of the root, whose parent is `None`.
-    """
-    where = obj if isinstance(obj, Organization) else actor.org
-    if where is None:
-        return False
-    return rank(effective_role(actor.user, actor.tenant, where)) >= ADMIN_RANK
+# **Empty, and it is a statement.** Every key `core` used to guard with the
+# administer predicate is a plain capability now: `organization.create/update/
+# move`, `invitation.create/revoke`, `tenant.update` and `membership.delete`
+# are held by whoever holds them at the node the object names, and there is
+# nothing left for a predicate to add. A predicate is for a question about the ROW — "is
+# this person the widget's own creator" — and none of the seven has one.
+#
+# `core` keeps the dict so the discovery walk finds a shape it recognises and so
+# the first product predicate here is an addition rather than a new file.
+POLICIES: dict[str, Policy] = {}
 
 
-POLICIES: dict[str, Policy] = {
-    "organization.create": may_administer,
-    "organization.rename": may_administer,
-    "organization.move": may_administer,
-    # Taking a hat away is an administrative act over the branch it sits on,
-    # which is the same question the three above ask — so it is the same
-    # predicate. The *ceiling* half of a removal (an admin may not remove an
-    # owner) is not here for the reason stated in the module header: it is a
-    # rule about the role being removed rather than about the object, so it
-    # lives beside the write, in `core.services.revoke_membership`.
-    "membership.revoke": may_administer,
-    # --- when these three services first got doors --------------------------
-    # All three were reachable from nothing until then, so the fact that
-    # they authorized nothing had never been a hole a caller could stand in.
-    # A door is what makes it one, and the answer is the same question the four
-    # above ask: do you administer the place this act lands in?
-    #
-    # The OBJECT matters more here than anywhere else in this file, and the two
-    # invitation actions and the settings one now differ about what it is.
-    #
-    # `tenant.configure` is the whole tenant by definition, so
-    # `update_tenant_settings` passes the ROOT node rather than letting
-    # `obj=None` fall back to the acting hat: without that, a branch admin
-    # acting under their own hat would clear `may_administer` for their branch
-    # and then rewrite settings for everybody, which is the escalation the tree
-    # exists to prevent.
-    #
-    # The two invitation actions are the opposite case (ADR core-20, the
-    # placement law). An invitation now RECORDS the node it was sent from, so
-    # the object is that node — `invite_member` passes where the offer lands and
-    # `revoke_invitation` passes where the offer stands. Passing the root, which
-    # is what both did until the placement law, refused a branch admin for a
-    # node they never named and let everybody else place an invitee above the
-    # hat they were acting under.
-    "invitation.create": may_administer,
-    "invitation.revoke": may_administer,
-    "tenant.configure": may_administer,
+# The three keys `core` renamed when the vocabulary became one shape, and the
+# WHOLE cost of renaming one: a line here (ADR core-25). `core.authz.allows`
+# resolves an alias one line BEFORE the policy lookup, so a product still
+# calling `require(actor, "organization.rename", org)` gets exactly the answer
+# it got before, with one deprecation printed per process — and never the role
+# default, which is what an alias resolved after the lookup would have handed
+# it. `manage.py rename_permission` is what rewrites rows once a deployment has
+# grants; on this tree the tables do not exist yet, so there is nothing to
+# rewrite and the rename costs no migration.
+#
+# Each of the three is the CRUD verb the act already was: renaming an
+# organization is updating it, configuring a tenant is updating it, revoking a
+# membership is deleting it. The sentences below did not move by one byte.
+RENAMED_PERMISSIONS: dict[str, str] = {
+    "organization.rename": "organization.update",
+    "tenant.configure": "tenant.update",
+    "membership.revoke": "membership.delete",
 }
 
 
@@ -101,10 +84,18 @@ POLICIES: dict[str, Policy] = {
 # describing one structure in two languages.
 ACTION_PROSE: dict[str, str] = {
     "organization.create": "You may not create an organization there.",
-    "organization.rename": "You may not rename that organization.",
+    "organization.update": "You may not rename that organization.",
     "organization.move": "You may not move that organization.",
-    "membership.revoke": "You may not remove that person's membership.",
+    "membership.delete": "You may not remove that person's membership.",
+    # The two derived keys the membership doors ask for. Both existed as
+    # permissions the moment every kind got its four verbs; what they had never
+    # had was a SENTENCE, and the sentence is what a refused caller reads. The
+    # `create` one closes a published contract that was not being kept: the
+    # route has always promised "403 — you do not administer that organization"
+    # and a member adding a member got 201.
+    "membership.create": "You may not add people to that organization.",
+    "membership.update": "You may not change what that person may do here.",
     "invitation.create": "You may not invite people into that organization.",
     "invitation.revoke": "You may not withdraw that invitation.",
-    "tenant.configure": "You may not change this tenant's configuration.",
+    "tenant.update": "You may not change this tenant's configuration.",
 }

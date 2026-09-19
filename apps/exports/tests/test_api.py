@@ -45,7 +45,14 @@ JSON = "application/json"
 #: (ADR core-18 — `has_more` comes from fetching one row more than asked for),
 #: and `select_related` is what keeps the two relations `ExportOut` walks off
 #: the per-row path. Removing either would move this number, which is the point.
-LIST_QUERY_BUDGET = 7
+#:
+#: **7 → 10 in Phase R, and the three are named.** `export.read` is asked at the
+#: hat inside `selectors.list_exports`, and resolving what one person holds at
+#: one node reads exactly three tables — their memberships in the tenant, the
+#: grants on those memberships, the role-delta rows for the role keys — once per
+#: actor. Once, not once per key: the actor carries the memo (PR0), which is why
+#: a door that also fetches through a `get_` pays 3 and never 6.
+LIST_QUERY_BUDGET = 10
 
 
 @pytest.fixture

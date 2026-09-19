@@ -47,6 +47,12 @@
 # A LIBRARY, NOT AN INSTRUMENT: sourced, never executed, mode 644 like every
 # other `scripts/*.sh` library here, and it starts nothing, forks nothing and
 # reads no file it was not handed.
+#
+# ---------------------------------------------------------------------------
+# AND ONE DIGEST, FOR THE SAME REASON THE CAUSE LIVES HERE: the gate's two
+# sourced libraries both need a SHA-256 and this is the one file both of them
+# already source. `sha256_of` is below, with the machine argument in its own
+# header.
 
 #: Set once, and read by every library below this one to decide whether it still
 #: needs to source this file. Re-sourcing is harmless; sourcing it twice per leg
@@ -154,5 +160,113 @@ gate_cause() {
         GATE_LAST_REFUSAL="$GATE_CAUSE_NONE"
         GATE_CAUSE_UNRECORDED=1
     fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# THE DIGEST, AND THE MACHINE IS THE ARGUMENT.
+#
+# sha256_of [<path>] — the SHA-256 of a file (or of stdin, with no argument) as
+# 64 bare hex digits on stdout, and nothing else. Exit 0 derived · 1 could not
+# derive, which every caller here turns into could-not-look and never into an
+# empty answer.
+#
+# WHY IT EXISTS. `shasum -a 256` is a Perl script that ships with macOS and is
+# NOT on a minimal Linux, which spells the same digest `sha256sum`. Every site
+# in this family spelled `shasum -a 256` because every site was written on a
+# Mac. The first off-box gate run measured the cost: on Amazon Linux 2023
+# `scripts/loop_tier.sh` printed `shasum: command not found`, the loop ledger's
+# distribution census derived nothing, and the run's verdict cell read
+# `miss(no-ledger)` — a gate that could not key its own verdict, on a machine
+# where nothing was wrong except the name of a program.
+#
+# NO CACHE, DELIBERATELY. `command -v` is a shell builtin over an already-built
+# hash table, and the sites here are counted in single digits per run; against
+# that, a cached tool name is a lie the moment anything moves PATH — which is
+# exactly what the drives that prove this branch do, in-process.
+#
+# THE PIPELINE'S STATUS IS THE LAST COMMAND'S, WHICH IS WHY THE SHAPE IS
+# CHECKED. `shasum … | awk '{print $1}'` exits 0 with an EMPTY answer when
+# `shasum` was never found, so a `||` fallback written across such a pipeline is
+# dead code that nobody notices — `scripts/publish.sh` carried exactly that, and
+# on Linux it would have named its export directory with an empty hash rather
+# than fall back. So the answer is validated as 64 hex digits before it is
+# returned, and an unvalidatable one is exit 1.
+#
+# WHAT IS DELIBERATELY NOT ROUTED THROUGH HERE, so a reader does not read the
+# grep as an omission: `scripts/db.sh` and `deploy/provision.sh` each resolve
+# both tools inline already, and both are reachable where this seam is not —
+# db.sh is the one sourced library in this tree deliberately without a belt
+# (its own header, db.sh:50-57) and provision.sh runs on a deployment host with
+# no gate beside it. Their inline shape is asserted by their own drives.
+sha256_of() {
+    local digest=""
+    case "$#" in
+    0) digest=$(sha256_of__stdin) || return 1 ;;
+    1)
+        [ -r "$1" ] || return 1
+        digest=$(sha256_of__stdin <"$1") || return 1
+        ;;
+    *) return 1 ;;
+    esac
+    # 64 lower-case hex, or it is not a digest and this did not answer.
+    case "$digest" in
+    '' | *[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#digest}" = "64" ] || return 1
+    printf '%s\n' "$digest"
+    return 0
+}
+
+# sha256_of__stdin — the tool, resolved per call, reading stdin. Not called
+# directly by anything but `sha256_of`, which owns the validation.
+sha256_of__stdin() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# THE INTERPRETER, AND THE MACHINE IS AGAIN THE ARGUMENT.
+#
+# checkout_python [<checkout root>] — the path to the interpreter THIS checkout
+# owns, on stdout. Exit 0 found · 1 there is none, which every caller turns into
+# a named could-not-look and never into a run on whatever `python3` happened to
+# be first on PATH. The root defaults to `.` (every gate leg runs from the
+# checkout root, and `check.sh` refuses elsewhere).
+#
+# WHY IT EXISTS. `python3` off PATH is SOME OTHER environment's Python. On this
+# Mac it is 3.12 or 3.13 and the difference never showed; on Amazon Linux 2023
+# it is the system's 3.9, and the first off-box gate run died there —
+# `scripts/queue_index.py`, which this repository writes and pins at 3.12,
+# reached `zip(expected, got, strict=True)` and got `TypeError: zip() takes no
+# keyword arguments` while `.venv/bin/python` two directories away was 3.12.14.
+# The leg went red on the interpreter and said `the queue index is not what
+# queue_index.py generates`, which is the wrong finding about the wrong file.
+#
+# `uv run python` IS NOT THE FALLBACK, and that is the settled answer here
+# rather than a new one: `loop_scope__python` (scripts/loop_tier.sh) and
+# `loop_env_reads` (scripts/gate_ledger.sh) both name the venv and refuse
+# without it, because `uv run` re-resolves on paths that must stay cheap and in
+# a checkout with no venv it would SYNC one — minutes of surprise side effect
+# inside a leg that reads a markdown table. An unprovisioned checkout is
+# could-not-look, and it costs nothing real: every other leg of this gate runs
+# under `uv run`, so a checkout with no venv cannot run the suite either and
+# this is never the first thing its owner meets.
+#
+# THE RULE THIS SERVES, stated so the census that enforces it can be read: a
+# PYTHON FILE THIS REPOSITORY SHIPS runs on this interpreter. An inline
+# `python3 -c` or heredoc program — the millisecond clocks, a `json.load`, a
+# `datetime` arithmetic — is stdlib on any Python 3 and stays as it is, guarded
+# by its own `command -v python3` where its absence would matter.
+checkout_python() {
+    local root="${1:-.}" py
+    py="${root%/}/.venv/bin/python"
+    [ -x "$py" ] || return 1
+    printf '%s\n' "$py"
     return 0
 }

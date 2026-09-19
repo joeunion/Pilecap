@@ -80,7 +80,7 @@ def register(server: MCPServer[Any]) -> None:
             # `api.py`: filtering returns the plain one, and narrowing a
             # queryset cannot widen its tenant.
             exports: QuerySet[Export] = ExportFilter(status=status).filter(
-                list_exports(tenant=acting.tenant, org=acting.org)
+                list_exports(tenant=acting.tenant, org=acting.org, actor=acting.actor())
             )
             exports = ordered_by(exports, ordering, allowed=ORDERING, default="-created_at")
             page = cursor_page(
@@ -107,7 +107,12 @@ def register(server: MCPServer[Any]) -> None:
             # is `not_found` exactly as it is over HTTP: a refusal that
             # distinguished the two would tell the caller the row exists.
             return ExportOut.from_orm(
-                get_export(tenant=acting.tenant, export_id=export_id, org=acting.org)
+                get_export(
+                    tenant=acting.tenant,
+                    export_id=export_id,
+                    org=acting.org,
+                    actor=acting.actor(),
+                )
             )
 
     @server.tool(

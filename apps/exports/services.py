@@ -94,9 +94,10 @@ def create_export(
     somebody asked for — and the EVENT is still `exports.export.requested`,
     which is the name a subscriber matches on.
 
-    **Two bars behind one action key.** `export.request` asks
+    **Two bars behind one action key.** `export.create` asks
     `policies.can_request`, which reads the scope off the row being made: an
-    export of the actor's own subtree needs only membership, because the walk
+    export of the actor's own subtree needs only the key a `member` holds by
+    default, because the walk
     reads exactly what `visible_to` already lets this actor see at every other
     door; a **tenant-wide** export needs `administers_the_whole_tenant` — the
     same ceiling erasure stands behind, deliberately reused rather than
@@ -159,7 +160,7 @@ def create_export(
     # scope off it — the same shape `widget.approve` uses to ask its question
     # over the widget's own branch. Before `save()`, so a refusal writes
     # nothing at all.
-    require(actor, "export.request", export)
+    require(actor, "export.create", export)
     with as_invalid():
         export.full_clean()
     export.save()
@@ -190,9 +191,16 @@ def mark_export_running(*, tenant: Tenant, actor: Actor, export: Export) -> Expo
     finished is left alone — a retry that landed after the first attempt
     completed must not reopen a finished export.
     """
-    require(actor, "export.build", export)
+    # **REACH BEFORE CAPABILITY** (rule 26's order, `core.services.revoke_membership`'s
+    # shape). `may_be_named` FIRST: an export in a branch this actor holds no hat
+    # over is `NotFound`, never a wall's sentence, because a `Forbidden` quoting
+    # "you may not build that export" about a row they cannot see would confirm
+    # the row exists — and this service takes an `Export` INSTANCE, so a caller
+    # holding one fetched outside their subtree is exactly the shape the order
+    # protects against. The two lines were the other way round until P20 PR4.e.
     if not may_be_named(actor, export):
         raise NotFound()
+    require(actor, "export.build", export)
     if export.status != Export.Status.PENDING:
         return export
     export.status = Export.Status.RUNNING
@@ -240,9 +248,16 @@ def finish_export(
     politeness, it is the difference between an orphaned object in a bucket and
     an object the purge can still find.
     """
-    require(actor, "export.build", export)
+    # **REACH BEFORE CAPABILITY** (rule 26's order, `core.services.revoke_membership`'s
+    # shape). `may_be_named` FIRST: an export in a branch this actor holds no hat
+    # over is `NotFound`, never a wall's sentence, because a `Forbidden` quoting
+    # "you may not build that export" about a row they cannot see would confirm
+    # the row exists — and this service takes an `Export` INSTANCE, so a caller
+    # holding one fetched outside their subtree is exactly the shape the order
+    # protects against. The two lines were the other way round until P20 PR4.e.
     if not may_be_named(actor, export):
         raise NotFound()
+    require(actor, "export.build", export)
     if version.tenant_id != export.tenant_id or version.organization_id != export.organization_id:
         # The belt the reachability clause on the parameter above promises. A
         # version filed for one part of the network, recorded on another part's
@@ -303,9 +318,16 @@ def record_export_failure(*, tenant: Tenant, actor: Actor, export: Export, error
     chain by the workflow. A row that said "Activity task failed" would be true
     and useless to whoever reads it six weeks later.
     """
-    require(actor, "export.build", export)
+    # **REACH BEFORE CAPABILITY** (rule 26's order, `core.services.revoke_membership`'s
+    # shape). `may_be_named` FIRST: an export in a branch this actor holds no hat
+    # over is `NotFound`, never a wall's sentence, because a `Forbidden` quoting
+    # "you may not build that export" about a row they cannot see would confirm
+    # the row exists — and this service takes an `Export` INSTANCE, so a caller
+    # holding one fetched outside their subtree is exactly the shape the order
+    # protects against. The two lines were the other way round until P20 PR4.e.
     if not may_be_named(actor, export):
         raise NotFound()
+    require(actor, "export.build", export)
     export.status = Export.Status.FAILED
     export.error = error[:2000]
     export.save(update_fields=["status", "error", "updated_at"])

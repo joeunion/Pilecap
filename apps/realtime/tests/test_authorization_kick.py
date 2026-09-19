@@ -18,11 +18,16 @@ the point of this module, so it is stated here rather than left in a report:
 * **Re-parenting — real, and closed here.** A move withdraws visibility without
   touching a single membership row, so nothing above the old parent sees it
   coming.
-* **Demotion — REFUTED.** Role gates *verbs*, never row visibility, at all four
-  seams that decide what a connection receives. A demoted person reads exactly
-  the same rows over REST, so a socket that keeps delivering them AGREES with
-  the REST door. `test_a_demotion_narrows_nothing_a_socket_delivers` is the
-  refutation, kept executable so the claim cannot rot back into a assumption.
+* **Demotion — REFUTED in Phase W, and the refutation EXPIRED in Phase R.** Role
+  gated *verbs* and never row visibility, at the four seams that then decided
+  what a connection receives, so a demoted person read exactly the same rows
+  over REST and a socket that kept delivering them agreed with the REST door.
+  ADR core-27 added a fifth seam — `consumers.may_hear`, against the read set —
+  and role is what fills it, so a demotion to a role holding no reads now closes
+  the socket. `test_a_demotion_that_narrows_a_read_closes_the_socket` replaces
+  the refutation and keeps its two facts (the hat and the subtree do not move)
+  executable beside the new answer, so nobody re-derives the old conclusion from
+  premises that are still true.
 
 **Why this module lives in `apps/realtime/tests` and not in `apps/core`'s.** The
 rung's app is `core`, but `realtime` sits *above* both `core` and `accounts` in
@@ -30,8 +35,8 @@ the layer contract, so a test here imports the services it drives without any
 `ignore_imports` line — where the same module under `apps/core/tests/` would
 need a new exemption in `pyproject.toml` for a socket client it only borrows.
 `test_hierarchy.py` is already the home of "the hierarchy on the socket" and
-this is that subject continued, so its `Network`, `hat` and `_emit_and_push`
-helpers are reused rather than re-derived.
+this is that subject continued, so its `Network` and `hat` helpers are reused
+rather than re-derived.
 
 Everything here drives the **real chain** — the service → `transaction.on_commit`
 → `core.bridge` → the channel layer → the consumer → the wire. The hops between
@@ -40,6 +45,11 @@ first.
 """
 
 from __future__ import annotations
+
+import importlib
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
 
 import pytest
 from django.db import transaction
@@ -51,25 +61,27 @@ from apps.core.asyncdb import run_db
 from apps.core.audit import AuditEntry
 from apps.core.exceptions import Conflict, Forbidden, NotFound
 from apps.core.middleware import resolve_org
-from apps.core.models import Membership, Organization, Tenant
+from apps.core.models import Membership, Organization, Role, RolePermission, Tenant
 from apps.core.services import (
     add_membership,
     apply_organization_move,
+    close_tenant,
+    resume_tenant,
     revoke_membership,
     set_role,
+    suspend_tenant,
 )
+from apps.realtime.bridge import user_group
 from apps.realtime.schemas import CLOSE_KICKED
 from apps.realtime.selectors import list_subtree_org_ids
+from apps.realtime.tests.test_consumers import opened, session_headers
 from apps.realtime.tests.test_hierarchy import (
-    EVENT_NAME,
     PASSWORD,
     Network,
     _build_network,
-    _emit_and_push,
     hat,
-    in_branch,
 )
-from apps.realtime.tests.websocket import Socket
+from apps.realtime.tests.websocket import Handshake, Socket
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
 
@@ -430,34 +442,39 @@ async def test_a_move_that_does_not_commit_kicks_nobody(network: Network) -> Non
         assert (await run_db(parent_of_leaf)).parent_id == network.branch_a.pk
 
 
-# --- The third claim, refuted ---------------------------------------------------
+# --- The third claim, refuted once and then expired -------------------------------
 
 
-async def test_a_demotion_narrows_nothing_a_socket_delivers(network: Network) -> None:
-    """**The third claim, and it is wrong.** The socket stays open on purpose.
+async def test_a_demotion_that_narrows_a_read_closes_the_socket(network: Network) -> None:
+    """**The third claim, refuted in Phase W and expired in Phase R.**
 
-    An earlier probe printed `PROBE: after demotion the socket STILL received:
-    example.widget.created` and read it as the same leak as the other two. It is
-    not. Role gates *verbs*; it has no part in deciding what a connection
-    receives, at any of the four seams that decide it:
+    It is worth saying what changed, because the test this replaces was right
+    when it was written. `test_a_demotion_narrows_nothing_a_socket_delivers`
+    asserted that a demotion moved neither the hat nor the subtree — both still
+    true — and concluded that nothing a socket delivers had narrowed. That
+    conclusion depended on a fact that is now gone: `allows` used to grant every
+    read verb to any membership regardless of role, so role decided verbs and
+    never rows. ADR core-27 made a read a permission, and
+    `consumers.may_hear` is a **fifth** seam deciding what a connection
+    receives — one that role fills. Trigger 1 in `apps/realtime/bridge.py`'s
+    docstring is the record of that expiry, marked FIRED rather than deleted.
 
-    * the consumer's group set is `tenant_group + org_group per subtree id +
-      user_group` (`apps/realtime/consumers.py`);
-    * the subtree comes from `list_subtree_org_ids`, a pure path prefix scan
-      that takes `tenant` and `org` and no role (`apps/realtime/selectors.py`);
-    * the hat comes from `resolve_org`, which reads `Membership.organization`
-      and never `Membership.role` (`apps/core/middleware.py`);
-    * `visible_to` is path-based (`apps/core/models.py`).
+    **The New Enemy Problem, which is SpiceDB's name for this window** (BVB-3).
+    A connection resolves what it may hear at the handshake and caches it for
+    hours; a permission shrinks; nothing tells the cache. SpiceDB closes that
+    window with a ZedToken the caller carries; there is no such token here and
+    the door has no per-frame read to spend, so the kick is what closes it — the
+    socket is hung up on and the reconnect recomputes.
 
-    So this test asserts the *reason* and not merely the behaviour: the hat and
-    the subtree the consumer would compute on a fresh reconnect are **identical
-    before and after** the demotion. There is nothing to narrow, the socket
-    agrees with the REST door, and kicking here would drop a live connection to
-    enforce a narrowing that does not exist.
+    The demotion is `admin` -> the custom `approver`, one include row and no
+    reads at all, because `admin` -> `member` narrows NOTHING (a member holds
+    every `<kind>.read`) and would kick nobody — correctly. The rival is the
+    control: their permissions were not touched and their socket stays working,
+    so "everything closed" and "the right thing closed" are told apart.
 
-    The trigger that would reverse this is recorded where the next reader will
-    look — `apps/realtime/bridge.py`'s module docstring — and the seam is
-    already built, so reversing it is one guarded line in `set_role`.
+    What the reconnected connection then computes is
+    `apps/realtime/tests/test_read_fanout.py::test_a_kick_then_reconnect_hears_less`;
+    this half is the hang-up.
     """
     owner_hat = await run_db(actor_for, user=network.owner, tenant=network.tenant, org=network.hq)
 
@@ -468,40 +485,39 @@ async def test_a_demotion_narrows_nothing_a_socket_delivers(network: Network) ->
 
     before = await run_db(resolved)
 
-    async with hat(user=network.manager, org=network.branch_a) as (socket, handshake):
-        assert handshake.accepted is True
+    async with (
+        hat(user=network.manager, org=network.branch_a) as (socket, handshake),
+        hat(user=network.rival, org=network.branch_b) as (rival, rival_handshake),
+    ):
+        assert [handshake.accepted, rival_handshake.accepted] == [True, True]
 
         def demote() -> Membership:
+            Role.objects.create(tenant=network.tenant, key="approver", name="Approver")
+            RolePermission.objects.create(
+                tenant=network.tenant,
+                role_key="approver",
+                permission="widget.approve",
+                effect=RolePermission.Effect.INCLUDE,
+            )
             membership = Membership.objects.get(user_id=network.manager.pk, tenant=network.tenant)
             return set_role(
                 tenant=network.tenant,
                 membership=membership,
-                role=Membership.Role.MEMBER,
+                role="approver",
                 actor=owner_hat,
             )
 
         demoted = await run_db(demote)
-        assert demoted.role == Membership.Role.MEMBER
+        assert demoted.role == "approver"
 
-        # The socket is untouched, and still working.
-        await assert_still_working(socket)
+        await assert_kicked(socket)
+        await assert_still_working(rival)
 
-        # And it is untouched for a reason: a fresh connection would join
-        # exactly the same groups, so nothing was left over-subscribed.
-        assert await run_db(resolved) == before
-
-        # The proof that this is not vacuous: the branch-A row still arrives,
-        # which is what the REST door would still answer this person too.
-        manager_hat = await run_db(
-            actor_for, user=network.manager, tenant=network.tenant, org=network.branch_a
-        )
-        await run_db(
-            _emit_and_push,
-            tenant=network.tenant,
-            actor=manager_hat,
-            payload=in_branch(network.branch_a),
-        )
-        assert (await socket.receive_json())["name"] == EVENT_NAME
+    # And the hat and the subtree are STILL what they were — the Phase-W
+    # argument's two facts, kept executable. What closed the socket is the read
+    # set and nothing else, so a reader cannot conclude that a demotion moved
+    # somebody's position in the tree.
+    assert await run_db(resolved) == before
 
 
 async def test_a_promotion_does_not_close_the_socket_either(network: Network) -> None:
@@ -572,27 +588,50 @@ async def test_a_removal_still_happens_where_the_socket_app_is_not_installed(
 
 
 async def test_the_kick_reasons_are_constants_and_distinct() -> None:
-    """Three reasons, three greppable strings, no literal at a call site.
+    """Ten reasons — five in `core`, five in `accounts` — derived below, never listed.
 
     A reason is the free text on the kick's log line, and a log line is a thing
     somebody greps months later during an incident. A literal at the call site
     would be one typo away from a withdrawal nobody can find again — and now
     that two apps call one seam, the reasons are also how you tell which app
     decided.
+
+    **The population is derived from the two modules rather than listed**, and
+    that is what changed here. The hand list this replaces named five
+    reasons and the tree already held seven: `accounts.user.deactivated` and
+    `accounts.user.identity_unlinked` were both live at call sites in
+    `apps/accounts/services.py` and in neither the set nor the count, so the
+    assertion `len(reasons) == 5` was green over a population of seven. A census
+    that cannot notice a member being added is a census wearing a number.
+
+    `core` holds **five** since R4-F3 — revoked, moved, the narrowing the
+    socket half above answers, and the two TENANT-wide withdrawals (suspended
+    and closed), which are the first reasons here that reach `tenant_group`
+    rather than one person's `user_group` — and `accounts` holds five.
     """
     from apps.accounts import services as accounts_services
     from apps.core import services as core_services
 
-    reasons = {
-        core_services.KICK_MEMBERSHIP_REVOKED,
-        core_services.KICK_ORGANIZATION_MOVED,
-        accounts_services.KICK_TOKEN_REVOKED,
-        accounts_services.KICK_USER_ERASED,
-        accounts_services.KICK_IDENTITY_REVOKED,
-    }
-    assert len(reasons) == 5
-    assert core_services.KICK_MEMBERSHIP_REVOKED.startswith("core.")
-    assert accounts_services.KICK_TOKEN_REVOKED.startswith("accounts.")
+    def kicks(module: Any) -> dict[str, str]:
+        return {
+            name: value
+            for name in dir(module)
+            if name.startswith("KICK_")
+            for value in [getattr(module, name)]
+            if isinstance(value, str)
+        }
+
+    core_reasons, accounts_reasons = kicks(core_services), kicks(accounts_services)
+    assert len(core_reasons) == 5, core_reasons
+    assert len(accounts_reasons) == 5, accounts_reasons
+    assert core_services.KICK_PERMISSIONS_NARROWED in core_reasons.values()
+    assert core_services.KICK_TENANT_SUSPENDED in core_reasons.values()
+    assert core_services.KICK_TENANT_CLOSED in core_reasons.values()
+
+    reasons = set(core_reasons.values()) | set(accounts_reasons.values())
+    assert len(reasons) == 10, reasons
+    assert all(reason.startswith("core.") for reason in core_reasons.values())
+    assert all(reason.startswith("accounts.") for reason in accounts_reasons.values())
 
 
 async def test_the_seam_was_promoted_and_not_copied() -> None:
@@ -610,3 +649,319 @@ async def test_the_seam_was_promoted_and_not_copied() -> None:
 
     assert accounts_services.close_sockets is core_services.close_sockets
     assert accounts_services.close_sockets_on_commit is core_services.close_sockets_on_commit
+
+
+# --- R4-F4 · the New Enemy window at CONNECT, closed by ordering ---------------
+
+
+@asynccontextmanager
+async def _at(
+    pattern: str, *, user: User, org: Organization
+) -> AsyncIterator[tuple[Socket, Handshake]]:
+    """A live socket for this person at ONE of the routes `introspect` lists.
+
+    `hat` opens the one route this app declares by name. The census below has to
+    open whichever routes the tree declares *today*, so the path is a parameter
+    and the pattern comes from the registry rather than from a literal here.
+    """
+    headers = await session_headers(user)
+    headers = [*headers, (b"x-org", org.slug.encode())]
+    async with opened(f"/{pattern}", headers=headers) as pair:
+        yield pair
+
+
+def _consumers_introspect_lists() -> list[dict[str, Any]]:
+    """The consumer population, derived from the instrument, never typed here.
+
+    `manage.py introspect` reports the patterns `config/asgi.py` discovered, so
+    the day a fifteenth app drops a `consumers.py` it joins this census without
+    anybody editing this file — which is the whole point of a population-derived
+    test and the reason R4's F1 was reachable at all.
+    """
+    from apps.core.management.commands.introspect import _consumers_payload
+
+    return list(_consumers_payload())
+
+
+async def test_the_user_group_is_joined_before_any_read(
+    network: Network, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**The ordering, as a census over every consumer the tree declares.**
+
+    A read is where a narrowing can commit underneath a handshake, and the user
+    group is the only way a kick reaches this connection. So a consumer that
+    reads BEFORE it joins its user group has a window whose width is the width
+    of its own reads, and a write landing inside it sends a `group_send` to an
+    empty group: the kick is lost and the socket accepts holding the set from
+    before the write. No amount of kicking closes that from outside; the fix is
+    ordering, and this is what holds it.
+
+    **Both spies are load-bearing and both are asserted non-empty.** `group_add`
+    on the live channel layer, `run_db` in the consumer's own module — which is
+    the one road a consumer has to the database, `test_read_fanout.py`'s own
+    observation. A trace with no read in it would pass the ordering assertion
+    while proving nothing, so the read is asserted to have happened.
+
+    The population is `introspect.consumers` and not a literal: one entry today,
+    and the fifteenth app's consumer joins this test the day it lands.
+    """
+    from channels.layers import get_channel_layer
+
+    entries = _consumers_introspect_lists()
+    assert entries, "introspect lists no consumer, so this census is watching nothing"
+
+    for entry in entries:
+        module = importlib.import_module(str(entry["consumer"]).rsplit(".", 1)[0])
+        trace: list[str] = []
+        layer = get_channel_layer()
+        real_group_add = layer.group_add
+        real_run_db = module.run_db
+
+        async def spy_group_add(
+            group: str, channel: str, _real: Any = real_group_add, _trace: Any = trace
+        ) -> Any:
+            _trace.append(f"group_add:{group}")
+            return await _real(group, channel)
+
+        async def spy_run_db(
+            func: Any, *args: Any, _real: Any = real_run_db, _trace: Any = trace, **kw: Any
+        ) -> Any:
+            _trace.append(f"run_db:{getattr(func, '__name__', repr(func))}")
+            return await _real(func, *args, **kw)
+
+        monkeypatch.setattr(layer, "group_add", spy_group_add)
+        monkeypatch.setattr(module, "run_db", spy_run_db)
+        try:
+            async with _at(str(entry["pattern"]), user=network.manager, org=network.branch_a) as (
+                _,
+                handshake,
+            ):
+                assert handshake.accepted is True, entry
+        finally:
+            monkeypatch.undo()
+
+        joins = [line for line in trace if line.startswith("group_add:")]
+        reads = [line for line in trace if line.startswith("run_db:")]
+        assert joins, f"{entry['consumer']} joined no group: {trace}"
+        assert reads, f"{entry['consumer']} made no read, so the order proves nothing: {trace}"
+        assert trace[0] == f"group_add:{user_group(network.manager.pk)}", (
+            f"{entry['consumer']} reads before it joins its user group, "
+            f"so a narrowing that commits during connect is kicked into an "
+            f"empty group and lost: {trace}"
+        )
+
+
+@pytest.mark.usefixtures("recorded_workflow_starts")
+async def test_a_narrowing_that_lands_during_connect_still_closes_the_socket(
+    network: Network, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**R4's D1, re-made: the interleaving, through the `read_kinds` seam.**
+
+    The demotion is committed from inside the read the consumer is making —
+    `apps.realtime.consumers.read_kinds`, on the worker thread `run_db` put it
+    on — which is the narrowest honest reproduction of "a write landed while
+    this connection was resolving what it may hear". The seam is a monkeypatch
+    because the window is one statement wide and nothing else can stand in it
+    reliably; what is REAL is everything either side of it — `set_role`, its
+    transaction, `transaction.on_commit`, `close_sockets`, `core.bridge`, the
+    channel layer, the group, the consumer.
+
+    **What the socket must do is accept and then immediately close.** Channels
+    dispatches one message at a time, so a kick that arrives while `connect` is
+    still running is delivered after `connect` returns: the handshake is
+    accepted and the very first frame after it is the close. That is the
+    correct outcome rather than a refused handshake — the client sees
+    `CLOSE_KICKED`, reconnects, and recomputes under the new read set.
+
+    On the shipped tree the kick went to `user.<pk>` before the connection had
+    joined it, so the `group_send` reached an empty group, the kick was lost and
+    the socket went on pinging under the set from before the demotion.
+    """
+    from apps.core import authz
+
+    owner_hat = await run_db(actor_for, user=network.owner, tenant=network.tenant, org=network.hq)
+    demotions: list[str] = []
+
+    def demote_then_read(user: Any, tenant: Any, org: Any) -> Any:
+        """The write lands INSIDE the read — the one-statement window, widened."""
+        if not demotions:
+            Role.objects.create(tenant=network.tenant, key="approver", name="Approver")
+            RolePermission.objects.create(
+                tenant=network.tenant,
+                role_key="approver",
+                permission="widget.approve",
+                effect=RolePermission.Effect.INCLUDE,
+            )
+            membership = Membership.objects.get(user_id=network.manager.pk, tenant=network.tenant)
+            with transaction.atomic():
+                set_role(
+                    tenant=network.tenant,
+                    membership=membership,
+                    role="approver",
+                    actor=owner_hat,
+                )
+            demotions.append("approver")
+        return authz.read_kinds(user, tenant, org)
+
+    monkeypatch.setattr("apps.realtime.consumers.read_kinds", demote_then_read)
+
+    async with hat(user=network.manager, org=network.branch_a) as (socket, handshake):
+        assert handshake.accepted is True
+        assert demotions == ["approver"], "the seam never ran, so nothing was interleaved"
+        await assert_kicked(socket)
+
+
+async def test_disconnect_still_discards_every_group_the_connection_joined(
+    network: Network,
+) -> None:
+    """The user group moved to the FRONT of `self.groups`, and nothing else moved.
+
+    `AsyncConsumer.websocket_disconnect` discards everything in `self.groups`,
+    so re-ordering that list is only safe while the user group is still IN it.
+    A `group_add` that stopped being matched by a `group_discard` leaks a channel
+    name into the layer that nothing will ever read from again — invisible on an
+    in-memory layer that dies with the test, and permanent on Redis.
+
+    Asserted as the whole set before and the empty set after, and the user group
+    is asserted to be the FIRST thing joined, which is R4-F4.2's other half.
+    """
+    from channels.layers import get_channel_layer
+
+    async with hat(user=network.manager, org=network.branch_a) as (_, handshake):
+        assert handshake.accepted is True
+        layer = get_channel_layer()
+        joined = {name for name, channels in layer.groups.items() if channels}
+        assert user_group(network.manager.pk) in joined, joined
+        assert len(joined) >= 3, joined
+
+    layer = get_channel_layer()
+    left_behind = {name for name, channels in layer.groups.items() if channels}
+    assert left_behind == set(), left_behind
+
+
+# --- R4-F3 · a tenant that goes dark hangs up ---------------------------------
+
+
+@pytest.mark.usefixtures("recorded_workflow_starts")
+async def test_suspending_a_tenant_closes_every_socket_in_it_and_nobody_elses(
+    network: Network, other_tenant: Tenant, stranger: User
+) -> None:
+    """**R4's F2/D2, re-made.** A suspended tenant's live sockets kept hearing.
+
+    `suspend_tenant` wrote a status and registered nothing: the only kick
+    primitive was per PERSON (`bridge.kick_user` -> `user_group`), and a tenant
+    going dark is not a fact about one person. So a connected manager heard a
+    widget after the suspension and pinged back a pong, while the REST door
+    answered 403 for the same credential — two doors, one question, two answers,
+    for the whole life of the connection, which the bridge's own docstring
+    expects to be hours. A NEW handshake was already refused (R1-F3), which is
+    precisely what made the gap invisible.
+
+    Two sockets inside the tenant, at two different hats, because the kick is
+    delivered to `tenant_group` and a fix that only reached the acting branch
+    would pass with one. The stranger's socket in a second tenant is the
+    control that tells "everything closed" from "the right thing closed".
+    """
+    from apps.core.services import root_organization
+
+    acting = await run_db(system_actor, tenant=network.tenant)
+    elsewhere_root = await run_db(root_organization, tenant=other_tenant)
+
+    async with (
+        hat(user=network.manager, org=network.branch_a) as (manager, first),
+        hat(user=network.owner, org=network.hq) as (owner_socket, second),
+        hat(user=stranger, org=elsewhere_root) as (elsewhere, third),
+    ):
+        assert [first.accepted, second.accepted, third.accepted] == [True, True, True]
+
+        def suspend() -> Tenant:
+            return suspend_tenant(tenant=network.tenant, reason="unpaid invoice", actor=acting)
+
+        assert (await run_db(suspend)).status == Tenant.Status.SUSPENDED
+
+        await assert_kicked(manager)
+        await assert_kicked(owner_socket)
+        await assert_still_working(elsewhere)
+
+
+@pytest.mark.usefixtures("recorded_workflow_starts")
+async def test_closing_a_tenant_closes_every_socket_in_it(network: Network) -> None:
+    """The terminal half, said separately because it is a different service.
+
+    `close_tenant` is not `suspend_tenant` with another constant: it is the
+    end of the relationship and it is the one that must never be the case that
+    somebody is still receiving. One service calling the seam does not make its
+    sibling call it, which is what the status-writer census in rule 36 is for
+    and what this test is the executable half of.
+    """
+    acting = await run_db(system_actor, tenant=network.tenant)
+
+    async with hat(user=network.manager, org=network.branch_a) as (manager, handshake):
+        assert handshake.accepted is True
+
+        def close() -> Tenant:
+            return close_tenant(tenant=network.tenant, actor=acting)
+
+        assert (await run_db(close)).status == Tenant.Status.CLOSED
+        await assert_kicked(manager)
+
+
+async def test_a_suspension_that_does_not_commit_kicks_nobody(network: Network) -> None:
+    """A refused write must not announce itself by hanging a whole tenant up.
+
+    The failure is planted inside the transaction the service's `@service`
+    joined, so the status never lands — and a kick registered anywhere but
+    `transaction.on_commit` would disconnect every socket in the tenant on the
+    strength of a suspension that did not happen. The same proof
+    `test_a_removal_that_does_not_commit_kicks_nobody` makes, one level up,
+    where the blast radius is the tenant rather than the person.
+    """
+    acting = await run_db(system_actor, tenant=network.tenant)
+
+    async with hat(user=network.manager, org=network.branch_a) as (socket, handshake):
+        assert handshake.accepted is True
+
+        def suspend_then_fail() -> None:
+            with transaction.atomic():
+                suspend_tenant(tenant=network.tenant, reason="unpaid invoice", actor=acting)
+                raise RuntimeError("planted: the surrounding write failed after the suspension")
+
+        with pytest.raises(RuntimeError):
+            await run_db(suspend_then_fail)
+
+        await assert_still_working(socket)
+
+        def still_active() -> str:
+            return str(Tenant.objects.get(pk=network.tenant.pk).status)
+
+        assert await run_db(still_active) == Tenant.Status.ACTIVE
+
+
+@pytest.mark.usefixtures("recorded_workflow_starts")
+async def test_resuming_a_tenant_kicks_nobody(network: Network) -> None:
+    """A widening kicks nobody, at the tenant level exactly as at the hat's.
+
+    Nothing a socket is delivering has been taken away by a resume, and hanging
+    somebody up to give them more is a reconnect storm with no security content
+    — `kick_if_reads_narrowed` states the asymmetry and this is the same one.
+    The socket here is opened AFTER the suspension, on a tenant whose handshake
+    is refused while it is dark, so the resume has to happen first: what this
+    proves is that `resume_tenant` registers no kick, not that a suspended
+    tenant can connect.
+    """
+    acting = await run_db(system_actor, tenant=network.tenant)
+
+    def suspend_then_resume() -> Tenant:
+        suspend_tenant(tenant=network.tenant, reason="unpaid invoice", actor=acting)
+        return resume_tenant(tenant=network.tenant, actor=acting)
+
+    assert (await run_db(suspend_then_resume)).status == Tenant.Status.ACTIVE
+
+    async with hat(user=network.manager, org=network.branch_a) as (socket, handshake):
+        assert handshake.accepted is True
+
+        def resume_again() -> Tenant:
+            return resume_tenant(tenant=network.tenant, actor=acting)
+
+        assert (await run_db(resume_again)).status == Tenant.Status.ACTIVE
+        await assert_still_working(socket)

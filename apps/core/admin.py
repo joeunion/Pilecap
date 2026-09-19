@@ -238,6 +238,36 @@ class ServiceModelAdmin[M: Model](admin.ModelAdmin[M]):
             return self.response_post_save_change(request, obj)
         return super().response_change(request, obj)
 
+    def has_view_permission(self, request: HttpRequest, obj: M | None = None) -> bool:
+        """**The admin asks the same question every other door asks** (rule 21).
+
+        Since Phase R a read is a permission (ADR core-27), and this is the door
+        that would otherwise have been left out: `get_queryset` scopes the rows
+        by tenant and hat, which answers *which rows* and has never answered
+        *whether this kind at all*. Without this hook the changelist of a kind
+        the acting hat may not read renders as an EMPTY PAGE — the one refusal
+        shape this system refuses everywhere else, because an empty list and a
+        refusal are different facts and a support agent cannot tell them apart.
+
+        `allows` rather than `require`: Django's admin asks for a boolean and
+        renders its own 403 from it, so raising here would replace a 403 page
+        with a 500. The sentence a refused caller reads on the other two doors
+        comes from `refusal_sentence`; the admin's own template is Django's.
+
+        **A model with no kind keeps today's answer.** `kind_of` returns `None`
+        for anything the registry does not name — `AuditEntry`'s siblings, a
+        third-party table registered here — and those are staff-only surfaces
+        whose gate is `is_staff` and the tenancy scoping, exactly as before.
+        """
+        from apps.core.authz import allows, kind_of
+
+        kind = kind_of(self.model)
+        if kind is None:
+            return super().has_view_permission(request, obj)
+        if not super().has_view_permission(request, obj):
+            return False
+        return allows(actor_from_request(request), f"{kind}.read", obj)
+
     def has_change_permission(self, request: HttpRequest, obj: M | None = None) -> bool:
         """An append-only model is not editable from here, by construction.
 
@@ -731,6 +761,55 @@ class MembershipAdmin(ServiceModelAdmin[Membership]):
         if obj is None:
             return ()
         return ("user", "tenant", "organization", "is_default")
+
+    def formfield_for_dbfield(self, db_field: Any, request: HttpRequest, **kwargs: Any) -> Any:
+        """`role` is a dropdown of the keys this tenant may actually name.
+
+        The column lost its `choices` in `0018` — a role is a key now, and two of
+        its three layers (a declared role, a tenant's own `core.Role` row) are
+        not knowable from a field definition. Django's default for a plain
+        `CharField` is a free-text input, and a free-text input on the one form
+        that hands out authority is an invitation to type `admn` and create a
+        membership that holds nothing.
+
+        So the choices are assembled per request, from the same three layers
+        `add_membership` validates against, and labelled the way a person reads
+        them (`role_label`). **It is the convenience and not the guard**: the
+        services refuse an unknown key whatever a form posts, and a posted value
+        outside this list is a `ChoiceField` validation error — the rendered "Select
+        a valid choice" on the form, never a 500 and never a silent write.
+
+        The tenant is the ACTING one, which is also what `get_queryset` narrows
+        this changelist to. With no acting tenant there is nothing to read the
+        third layer with, and the list is `owner` plus the declared roles —
+        which is exactly what a deployment with no custom roles has anyway.
+        """
+        if db_field.name == "role":
+            from apps.core.authz import OWNER_ROLE, role_declarations
+            from apps.core.services import known_role_keys, role_label
+
+            tenant = actor_from_request(request).tenant if request is not None else None
+            if tenant is None:
+                keys = sorted({OWNER_ROLE} | set(role_declarations()))
+                labels = [
+                    (key, "Owner" if key == OWNER_ROLE else role_declarations()[key].name)
+                    for key in keys
+                ]
+            else:
+                labels = [
+                    (key, role_label(tenant=tenant, key=key))
+                    for key in sorted(known_role_keys(tenant=tenant))
+                ]
+            # Built rather than passed through: the kwargs the admin hands this
+            # hook are shaped for a model field's own `formfield()`, and a
+            # `ChoiceField` accepts almost none of them.
+            return forms.ChoiceField(
+                label="Role",
+                choices=labels,
+                required=not db_field.blank,
+                help_text=db_field.help_text,
+            )
+        return super().formfield_for_dbfield(db_field, request, **kwargs)
 
     def service_for(self, action: Action) -> Any | None:
         from apps.core.services import add_membership, revoke_membership, set_role

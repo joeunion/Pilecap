@@ -49,6 +49,7 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from apps.core.authz import effective_role
 from apps.core.mcp import MCP_PATH
 from apps.core.middleware import ORG_HEADER, TENANT_HEADER
+from apps.core.models import Tenant
 from apps.core.requests import TenantRequest
 
 __all__ = [
@@ -274,6 +275,17 @@ def welcome(request: TenantRequest) -> HttpResponse:
     reached, so the page reports what the request WAS rather than re-deriving
     it — which is the point of showing it at all.
 
+    **The one place it says what to do next, and the one condition on it.** An
+    unresolved tenant has two entirely different causes. On a fresh clone
+    nobody has made a tenant yet and the next act is one command; on a live
+    installation the reader simply has no membership, and telling *them* to
+    open a shell is advice the machine would refuse (`create_first_tenant`
+    raises `Conflict` the moment a tenant exists). So the page tells the two
+    apart on that same predicate — `Tenant.objects.exists()` — and the command
+    sentence appears only on the empty installation, addressed to the reader's
+    own email. The query is the second half of an `and`, so a request that
+    resolved a tenant never pays for it.
+
     **`ensure_csrf_cookie` is deliberate and it is this page's second job.**
     A front end bootstrapping from a session has to get `csrftoken` from
     somewhere before it can send `X-CSRFToken` on its first write, and until
@@ -294,6 +306,7 @@ def welcome(request: TenantRequest) -> HttpResponse:
         {
             "actor_email": getattr(user, "email", ""),
             "tenant": request.tenant,
+            "fresh_deployment": request.tenant is None and not Tenant.objects.exists(),
             "org": org,
             "role": effective_role(user, request.tenant, org),
             "tenant_header": TENANT_HEADER,

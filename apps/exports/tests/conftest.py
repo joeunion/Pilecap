@@ -18,9 +18,9 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from apps.accounts.models import SsoConnection, User
-from apps.accounts.services import create_sso_connection, create_user
+from apps.accounts.services import create_sso_connection, create_user, verify_sso_domain
 from apps.conftest import organ
-from apps.core.actor import Actor, actor_for
+from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import add_membership, create_organization, invite_member
 from apps.example.services import create_widget, record_widget_entry
@@ -147,7 +147,7 @@ def sso_connection(world: World) -> SsoConnection:
     this app that depended on another app's conftest would be a test that breaks
     the day that app tidies its own fixtures.
     """
-    return create_sso_connection(
+    connection = create_sso_connection(
         tenant=world.tenant,
         actor=world.owner_actor,
         name="Acme Okta",
@@ -157,6 +157,18 @@ def sso_connection(world: World) -> SsoConnection:
         email_domains=["acme.com"],
         default_role=Membership.Role.MEMBER,
     )
+    # R2-F1 (a domain claim routes nothing until it is verified): a claim routes nobody until an
+    # operator verifies it,
+    # and these tests need a connection that behaves like a working one. The
+    # same one-line sweep `apps/accounts/tests/conftest.py` makes, repeated here
+    # for the reason the docstring above already gives about this fixture.
+    verify_sso_domain(
+        tenant=world.tenant,
+        actor=system_actor(world.tenant),
+        connection=connection,
+        domain="acme.com",
+    )
+    return connection
 
 
 # --- The object store, because the archive now lives in one -------------------

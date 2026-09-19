@@ -30,13 +30,14 @@ this app's tests.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.urls import reverse
 
+from apps.accounts import zitadel
 from apps.accounts.tests.conftest import FakeZitadel
 from apps.core.models import Tenant
 
@@ -44,11 +45,24 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 FIRST_ADMIN = "ada.lovelace@yourcompany.test"
 
-#: Zitadel's hosted set-password page, as `zitadel.invite_url` builds it. Pinned
-#: as a shape rather than a literal because the id and the code are minted by
-#: the fake at run time — what matters is that ONE such URL is printed and that
-#: it carries both halves.
-INVITE_URL = re.compile(r"http://zitadel\.test/ui/login/user/invite\?userID=(\d+)&code=([A-Z0-9]+)")
+
+def _minted(instance: FakeZitadel) -> tuple[str, list[str]]:
+    """The one person the command made, and every code minted for them, in order.
+
+    Read off the fake rather than parsed back out of the printed text. The URL's
+    ORIGIN is Zitadel's, and how it is spelled is a fact about Zitadel's front
+    end that `zitadel.invite_url` owns — a regexp here would be a second,
+    quieter copy of it, and under A5 the template's own URL changes.
+    """
+    assert len(instance.users) == 1, instance.users
+    user_id = next(iter(instance.users))
+    return user_id, list(instance.invite_codes[user_id])
+
+
+def _link(instance: FakeZitadel, *, code: str) -> str:
+    """The link the command is expected to have printed, built by its own builder."""
+    user_id, _codes = _minted(instance)
+    return zitadel.invite_url(user_id=user_id, code=code)
 
 
 @pytest.fixture(autouse=True)
@@ -114,14 +128,19 @@ def test_the_link_is_printed_once_and_carries_both_halves(
     Exactly one URL: a command that printed the link twice — in a summary and
     again in a step — would double the number of places somebody can paste a
     live credential out of a terminal.
+
+    The expected link is BUILT by `zitadel.invite_url` from the id and the code
+    the fake minted, and counted in the output. The URL's origin and shape are
+    Zitadel's own and that function is the tree's one place that knows them, so
+    a product whose issuer, or whose base URL under A5, is different asks this
+    same question and gets its own answer.
     """
     out = _run(capsys)
 
-    found = INVITE_URL.findall(out)
-    assert len(found) == 1, out
-    user_id, code = found[0]
-    assert user_id in instance.users
-    assert instance.invite_codes[user_id] == [code]
+    user_id, codes = _minted(instance)
+    assert codes == [codes[0]], codes
+    link = zitadel.invite_url(user_id=user_id, code=codes[0])
+    assert out.count(link) == 1, out
 
 
 def test_the_code_is_in_no_log_record(
@@ -132,12 +151,25 @@ def test_the_code_is_in_no_log_record(
     The client's own log line names the user id and nothing more; this asserts
     the command added no line that undoes that. A credential in a log line is a
     credential in every sink the deployment forwards to.
+
+    The code comes from the fake, not from a URL parsed back out of stdout — the
+    property is "this string is in no record", and it must hold whatever shape
+    the link the code travels in happens to have.
     """
     with caplog.at_level(0):
-        out = _run(capsys)
+        _run(capsys)
 
-    _user_id, code = INVITE_URL.findall(out)[0]
-    assert code not in caplog.text
+    _user_id, codes = _minted(instance)
+    code = codes[0]
+    # A census over every RECORD, and over everything a record carries: the
+    # rendered message, the raw format string, the arguments, and every value a
+    # structured processor hung on the record. `caplog.text` is only the
+    # rendered half, so a code that reached a sink as an extra field rather than
+    # as a formatted one would not have been seen.
+    for record in caplog.records:
+        haystack = [record.getMessage(), str(record.msg), str(record.args)]
+        haystack += [str(value) for value in record.__dict__.values()]
+        assert code not in "\n".join(haystack), record
     assert "accounts.zitadel.invite_code_created" in caplog.text
 
 
@@ -154,7 +186,10 @@ def test_it_prints_the_three_steps_in_order(instance: FakeZitadel, capsys: Any) 
     steps = [line for line in out.splitlines() if line.strip().startswith(("1.", "2.", "3."))]
     assert len(steps) == 3, out
     assert "set a password" in steps[0]
-    assert "/accounts/login/" in steps[1] and FIRST_ADMIN in steps[1]
+    # `reverse`, not the shipped path: where sign-in lives is the URLconf's
+    # answer, and a product that mounted allauth somewhere else still owes the
+    # step that tells the first person where to go.
+    assert reverse("account_login") in steps[1] and FIRST_ADMIN in steps[1]
     assert "bootstrap_tenant" in steps[2] and FIRST_ADMIN in steps[2]
 
 
@@ -190,11 +225,15 @@ def test_a_re_run_supersedes_and_says_the_old_link_is_void(
     second = _run(capsys)
 
     assert "is now void" in second
-    assert INVITE_URL.findall(first)[0][1] != INVITE_URL.findall(second)[0][1]
     # One person, two codes: the account was found, not made again.
-    assert len(instance.users) == 1
-    user_id = next(iter(instance.users))
-    assert len(instance.invite_codes[user_id]) == 2
+    _user_id, codes = _minted(instance)
+    assert len(codes) == 2, codes
+    assert codes[0] != codes[1]
+    # And each run printed the link for the code THAT run minted, built by
+    # `zitadel.invite_url` rather than matched against a pinned URL shape.
+    assert _link(instance, code=codes[0]) in first
+    assert _link(instance, code=codes[1]) in second
+    assert _link(instance, code=codes[0]) not in second
 
 
 def test_the_first_run_does_not_claim_a_previous_link_is_void(
@@ -327,3 +366,102 @@ def test_the_address_shapes_it_refuses(email: str, instance: FakeZitadel, capsys
     else, which is exactly how a loose regex passes review.
     """
     assert "is not an email address" in str(_refused(capsys, email=email))
+
+
+# --- which front end day zero lands on (A5.3, A5.5) ---------------------------
+# The link this command prints is the first screen of the product for the first
+# person in the deployment, and under `SIGN_IN_DOOR` there are two of them. ADR
+# ident-9 said "prints the hosted set-password link" when there was one; design
+# Decision 3 amends that to "the deployment's sign-in door's link", and these
+# two cases are the amendment as a pair rather than as a sentence — the default
+# unchanged, and the other door landing on our own host.
+
+
+def test_hosted_first_admin_prints_the_hosted_link(instance: FakeZitadel, capsys: Any) -> None:
+    """The DEFAULT, unchanged: step one is the identity platform's own page.
+
+    No `override_settings` and no environment: `hosted` is what a clone gets
+    and what every other case in this module already ran under, so this is the
+    one that would notice a door that had quietly become `ours` for everybody.
+    """
+    out = _run(capsys)
+
+    user_id, codes = _minted(instance)
+    assert out.count(zitadel.invite_url(user_id=user_id, code=codes[0])) == 1
+    assert zitadel.INVITE_PATH in out
+    steps = [line for line in out.splitlines() if line.strip().startswith("1.")]
+    assert "the identity platform's, not this product's" in steps[0], steps
+
+
+def test_ours_first_admin_prints_our_page(
+    instance: FakeZitadel, settings: Any, capsys: Any
+) -> None:
+    """Under `ours`, both the link and the sentence are about OUR front end.
+
+    Two halves, because either one alone is a day-zero walk that goes wrong in
+    a way nobody can see from here: a link to our page under a sentence saying
+    the page is somebody else's sends the first human looking for a screen that
+    is not there, and the reverse hands them a Zitadel URL they were told is
+    ours. The address is `reverse`d rather than spelled, so a product that
+    mounted the door elsewhere gets its own answer.
+    """
+    settings.SIGN_IN_DOOR = "ours"
+
+    out = _run(capsys)
+
+    user_id, codes = _minted(instance)
+    link = zitadel.invite_url(user_id=user_id, code=codes[0])
+    assert out.count(link) == 1, out
+    assert link.startswith(f"{settings.PUBLIC_BASE_URL}{reverse('account_login')}?")
+    assert f"userID={user_id}" in link and f"code={codes[0]}" in link
+    assert zitadel.INVITE_PATH not in out
+
+    steps = [line for line in out.splitlines() if line.strip().startswith("1.")]
+    assert "this product's own" in steps[0], steps
+
+
+# --- A7 · the walk the steps describe is the walk the door does ---------------
+
+
+def test_ours_the_walk_is_two_steps_because_the_road_signs_them_in(
+    instance: FakeZitadel, settings: Any, capsys: Any
+) -> None:
+    """A7.4 · under `ours`, "now go and sign in" would be an instruction to
+    do something the previous step already did.
+
+    The invite road sets the password and completes the sign-in on the same
+    page-load (design C-11), so the walk after the link is: land on the
+    product, then `bootstrap_tenant`. A third step telling the first human to
+    go to a sign-in page they are already past is the day-zero runbook being
+    wrong on the day it matters, and it is exactly the kind of wrongness
+    nobody catches from a terminal that printed it confidently.
+    """
+    settings.SIGN_IN_DOOR = "ours"
+
+    out = _run(capsys)
+
+    steps = [line for line in out.splitlines() if line.strip().startswith(("1.", "2.", "3."))]
+    assert len(steps) == 2, out
+    assert "set a password" in steps[0]
+    assert "bootstrap_tenant" in steps[1] and FIRST_ADMIN in steps[1]
+    assert "Sign in at" not in out
+    assert "signs them in here" in out
+
+
+def test_hosted_the_walk_is_still_three_steps_and_names_the_sign_in(
+    instance: FakeZitadel, capsys: Any
+) -> None:
+    """A7.5 · the default, unmoved — and the negative for the case above.
+
+    Under `hosted` the sign-in IS a separate act: the hosted page ends the
+    invite on Zitadel's own console (WATCH F6, `302 Location: /ui/console/`),
+    so the person genuinely has to come here afterwards. A rung that made the
+    walk two steps for everybody would have deleted the only instruction that
+    gets them out of that console.
+    """
+    out = _run(capsys)
+
+    steps = [line for line in out.splitlines() if line.strip().startswith(("1.", "2.", "3."))]
+    assert len(steps) == 3, out
+    assert reverse("account_login") in steps[1] and FIRST_ADMIN in steps[1]
+    assert "signs them in here" not in out

@@ -115,7 +115,7 @@ def register(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             endpoints: QuerySet[WebhookEndpoint] = WebhookEndpointFilter(
                 is_active=is_active
-            ).filter(list_endpoints(tenant=acting.tenant, active_only=False))
+            ).filter(list_endpoints(tenant=acting.tenant, active_only=False, actor=acting.actor()))
             endpoints = searched(endpoints, q, fields=ENDPOINT_SEARCH_FIELDS)
             endpoints = ordered_by(
                 endpoints, ordering, allowed=ENDPOINT_ORDERING, default="-created_at"
@@ -144,7 +144,7 @@ def register(server: MCPServer[Any]) -> None:
             # HTTP: a refusal that distinguished the two would tell the caller
             # the row exists, which is the fact the tenancy was hiding.
             return WebhookEndpointOut.from_orm(
-                get_endpoint(tenant=acting.tenant, endpoint_id=endpoint_id)
+                get_endpoint(tenant=acting.tenant, endpoint_id=endpoint_id, actor=acting.actor())
             )
 
     @server.tool(
@@ -184,7 +184,7 @@ def register(server: MCPServer[Any]) -> None:
     ) -> WebhookEndpointOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id)
+            endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=acting.actor())
             return WebhookEndpointOut.from_orm(
                 update_endpoint(
                     tenant=tenant,
@@ -205,7 +205,7 @@ def register(server: MCPServer[Any]) -> None:
     ) -> WebhookEndpointSecretOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id)
+            endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=acting.actor())
             return with_secret(
                 issue_endpoint_secret(tenant=tenant, actor=acting.actor(), endpoint=endpoint)
             )
@@ -217,7 +217,7 @@ def register(server: MCPServer[Any]) -> None:
     def pause_endpoint_tool(ctx: Context[Any], endpoint_id: UUID) -> WebhookEndpointOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id)
+            endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=acting.actor())
             return WebhookEndpointOut.from_orm(
                 deactivate_endpoint(tenant=tenant, actor=acting.actor(), endpoint=endpoint)
             )
@@ -229,7 +229,7 @@ def register(server: MCPServer[Any]) -> None:
     def resume_endpoint_tool(ctx: Context[Any], endpoint_id: UUID) -> WebhookEndpointOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id)
+            endpoint = get_endpoint(tenant=tenant, endpoint_id=endpoint_id, actor=acting.actor())
             return WebhookEndpointOut.from_orm(
                 resume_endpoint(tenant=tenant, actor=acting.actor(), endpoint=endpoint)
             )
@@ -280,7 +280,7 @@ def register(server: MCPServer[Any]) -> None:
         with tool_call(ctx) as acting:
             deliveries: QuerySet[Delivery] = DeliveryFilter(
                 status=status, endpoint_id=endpoint_id
-            ).filter(list_deliveries(tenant=acting.tenant))
+            ).filter(list_deliveries(tenant=acting.tenant, actor=acting.actor()))
             deliveries = ordered_by(
                 deliveries, ordering, allowed=DELIVERY_ORDERING, default="-created_at"
             )
@@ -311,7 +311,7 @@ def register(server: MCPServer[Any]) -> None:
     ) -> DeliveryPage:
         with tool_call(ctx) as acting:
             deliveries: QuerySet[Delivery] = ordered_by(
-                dead_lettered(tenant=acting.tenant),
+                dead_lettered(tenant=acting.tenant, actor=acting.actor()),
                 ordering,
                 allowed=DELIVERY_ORDERING,
                 default="-dead_lettered_at",
@@ -337,7 +337,7 @@ def register(server: MCPServer[Any]) -> None:
     def replay_dead_letter_tool(ctx: Context[Any], delivery_id: UUID) -> DeliveryOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            delivery = get_delivery(tenant=tenant, delivery_id=delivery_id)
+            delivery = get_delivery(tenant=tenant, delivery_id=delivery_id, actor=acting.actor())
             # The same service the HTTP route calls, so an agent gets the same
             # refusal for the same reason — `invalid` on a delivery that was
             # never dead-lettered, `not_found` on one in another tenant.

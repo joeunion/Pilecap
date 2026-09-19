@@ -184,9 +184,13 @@ def list_connections_route(
       a filter value was malformed. The response says what you may sort by.
     * `403 forbidden` — the request resolved no tenant. Send `X-Tenant` naming
       one you belong to.
+    * `403 forbidden` — your role here does not let you read connections. A
+      role with no read of this kind reads none of them: ask an administrator
+      for the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    connections: QuerySet[Connection] = selectors.list_connections(tenant=request.tenant)
+    actor, tenant = _acting(request)
+    connections: QuerySet[Connection] = selectors.list_connections(tenant=tenant, actor=actor)
     connections = filters.filter(connections)
     return ordered_by(connections, ordering, allowed=ORDERING, default="-created_at")
 
@@ -287,7 +291,7 @@ def oauth_callback(request: TenantRequest, code: str, state: str) -> Connection:
         raise HttpError(400, "That OAuth state belongs to another tenant.")
 
     connection = selectors.get_connection(
-        tenant=tenant, connection_id=UUID(str(stored["connection_id"]))
+        tenant=tenant, connection_id=UUID(str(stored["connection_id"])), actor=actor
     )
     provider = get_provider(connection.provider)
     credentials = provider.exchange_code(
@@ -319,9 +323,13 @@ def retrieve_connection(request: TenantRequest, connection_id: UUID) -> Connecti
     * `404 not_found` — no connection of this tenant's has that id.
     * `403 forbidden` — the request resolved no tenant. Send `X-Tenant` naming
       one you belong to.
+    * `403 forbidden` — your role here does not let you read connections. A
+      role with no read of this kind reads none of them: ask an administrator
+      for the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    return selectors.get_connection(tenant=request.tenant, connection_id=connection_id)
+    actor, tenant = _acting(request)
+    return selectors.get_connection(tenant=tenant, connection_id=connection_id, actor=actor)
 
 
 @router.post(
@@ -363,7 +371,7 @@ def update_credentials_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    connection = selectors.get_connection(tenant=tenant, connection_id=connection_id)
+    connection = selectors.get_connection(tenant=tenant, connection_id=connection_id, actor=actor)
     return services.update_credentials(
         tenant=tenant, actor=actor, connection=connection, credentials=payload.credentials
     )
@@ -404,7 +412,7 @@ def revoke_connection_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    connection = selectors.get_connection(tenant=tenant, connection_id=connection_id)
+    connection = selectors.get_connection(tenant=tenant, connection_id=connection_id, actor=actor)
     return services.revoke_connection(
         tenant=tenant, actor=actor, connection=connection, reason=payload.reason
     )
@@ -459,8 +467,8 @@ def oauth_start(
       it has not finished. Resend the identical request, or use a new key.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    _actor, tenant = _acting(request)
-    connection = selectors.get_connection(tenant=tenant, connection_id=connection_id)
+    actor, tenant = _acting(request)
+    connection = selectors.get_connection(tenant=tenant, connection_id=connection_id, actor=actor)
     provider = get_provider(connection.provider)
 
     redirect_uri = payload.redirect_uri or request.build_absolute_uri(

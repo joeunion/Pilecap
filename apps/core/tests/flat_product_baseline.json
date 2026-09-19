@@ -1,0 +1,502 @@
+{
+  "_": "DERIVED, never typed. Every cell is `allows(actor, key, obj=None)` on a FLAT product: one tenant, one node, no Role, RolePermission or Grant row, one person per role. The test re-runs the same census on this tree and asserts equality; a moved answer prints (key, role, before, after).",
+  "_baseline": "db6521fa",
+  "_command": "uv run python manage.py shell -c \"from apps.core.tests.permissions_world import write_flat_product_baseline as w; w('apps/core/tests/flat_product_baseline.json')\" \u2014 re-derived in place on the batch's own tree (R1-F2.3), which IS the merge tree, rather than on a scratch clone of it",
+  "answers": {
+    "accounts.user.deactivate": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "accounts.user.erase": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "api_token.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "audit_entry.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "channel_preference.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "channel_preference.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "connection.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "connection.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "connection.receive_webhook": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "connection.revoke": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "connection.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "delivery.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "delivery.replay": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "delivery_policy.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "delivery_policy.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "delivery_policy.retire": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "device.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "device.register": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "device.retire": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "endpoint.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "endpoint.deactivate": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "endpoint.issue_secret": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "endpoint.resume": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "endpoint.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "event.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "export.build": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "export.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "export.request": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "file.archive": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "file.create": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "file.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "file.replace": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "file_version.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "grant.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "idempotency_record.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "identity_branding.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "identity_platform.configure": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "inbound_webhook.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "invitation.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "invitation.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "invitation.revoke": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "membership.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "membership.delete": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "membership.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "membership.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "message.cancel": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "message.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "message.record_status": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "message.send": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "message_engagement.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "message_engagement.record": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "message_template.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "message_template.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "message_template.retire": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "organization.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "organization.move": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "organization.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "organization.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "outbox.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "preference.set": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "recipient.archive": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "recipient.create": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "recipient.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "recipient.update": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "role.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "sso_connection.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "sso_connection.disable": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "sso_connection.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "sso_connection.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "sso_domain.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "sso_domain.verify": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "sso_identity.provision": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "sso_identity.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "stored_file.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "suppression_surge.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "suppression_surge.record": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "tenant.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "tenant.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "usage.read_report": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "usage_entry.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "user.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "user.unlink": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "webhook_endpoint.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "widget.approve": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "widget.create": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "widget.delete": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "widget.onboard": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "widget.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "widget.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "widget_entry.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "widget_entry.record": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "widget_policy.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "widget_policy.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "workflow.signal": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "workflow_run.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "workflowrun.cancel": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "workflowrun.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "workflowrun.replay": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    }
+  },
+  "roles": [
+    "owner",
+    "admin",
+    "member"
+  ]
+}

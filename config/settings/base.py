@@ -900,6 +900,72 @@ ZITADEL_PAT: str = env.str("ZITADEL_PAT", default="")
 # How long one management call may take. See `accounts.zitadel.DEFAULT_TIMEOUT`
 # for why there is a number here at all.
 ZITADEL_MANAGEMENT_TIMEOUT: float = env.float("ZITADEL_MANAGEMENT_TIMEOUT", default=10.0)
+
+# --- The two clocks a sign-in CHECK runs under (design I-A §3.2) ------------
+# A management call is a seed step or a Temporal activity: ten seconds is
+# generous and nobody is waiting. A sign-in check is a person at a form, and
+# the two numbers below are the whole of what keeps that person from watching a
+# spinner while a hung socket times out on somebody else's schedule.
+#
+# **Two clocks, because one cannot express the property.** A per-CALL timeout
+# bounds one round trip; a sign-in check is three or four of them (open the
+# session, read its factors, ask what is enrolled, read the login settings), so
+# a 4-second per-call timeout alone bounds the check at sixteen. The DEADLINE
+# bounds the whole check: `apps.accounts.signin` stamps a monotonic start into
+# the ceremony and refuses to make the NEXT call once the deadline has passed,
+# answering "we could not reach the sign-in service" rather than making a call
+# whose answer nobody is still waiting for.
+#
+# Defaults only, never a product's choice (design §3.2: "two tunables ride with
+# it, defaults only"). They are settings rather than constants for the reason
+# `ZITADEL_MANAGEMENT_TIMEOUT` is: how long is too long is a property of the
+# deployment's network, and a staging box behind a slow link needs to be able
+# to say so without editing code.
+ZITADEL_SIGNIN_TIMEOUT: float = env.float("ZITADEL_SIGNIN_TIMEOUT", default=4.0)
+ZITADEL_SIGNIN_DEADLINE: float = env.float("ZITADEL_SIGNIN_DEADLINE", default=12.0)
+
+# How many sign-in tries one address gets per minute before this product's own
+# throttle refuses without asking Zitadel anything at all (design C-14, the
+# `throttled` row of §1's J7 table). It is OUR limit and it sits in front of
+# Zitadel's account lockout (`ZITADEL_MAX_PASSWORD_ATTEMPTS`), which is the
+# other half: the lockout protects one account over its lifetime, this bounds
+# what a form can spend in a minute — including on an address that has no
+# account, which the lockout cannot see.
+SIGNIN_THROTTLE_PER_MINUTE: int = env.int("SIGNIN_THROTTLE_PER_MINUTE", default=5)
+
+# --- Which sign-in door this deployment opens (design C-13) ------------------
+# **Two doors, one of them the default, and no third state.**
+#
+# `hosted` — what every deployment has had until now, and what a fresh clone
+# still gets. `/accounts/login/` is a page of ours with a button on it; the
+# button starts an OIDC round trip and the person types their password on the
+# identity platform's own screens. Nothing is declared on the applications
+# (`zitadel_seed.declared_login_base_uri` answers `None`), so a shared
+# instance is stamped by no checkout.
+#
+# `ours` — the product renders every interactive step on its own host
+# (`apps/accounts/views.py` over the seam in `apps/accounts/signin.py`), and
+# the seed DECLARES that to Zitadel as the applications' login-v2 base URI.
+#
+# **The default is `hosted` and it is a decision, not caution.** Turning this
+# to `ours` writes a declaration into somebody else's instance, and the road
+# back is what the consumer did not have when it locked an owner out of a
+# deployment for a morning. A deployment opts in; nothing opts it in for them.
+#
+# **An unknown value refuses at import** rather than falling back. A settings
+# module that read `DJB_SIGN_IN_DOOR=Ours` as "not ours, then" would answer a
+# typo with the other door — which is a whole sign-in experience decided by a
+# capital letter, discovered by a person who cannot get in.
+SIGN_IN_DOORS = ("ours", "hosted")
+SIGN_IN_DOOR: str = env.str("DJB_SIGN_IN_DOOR", default="hosted").strip()
+if SIGN_IN_DOOR not in SIGN_IN_DOORS:
+    raise ImproperlyConfigured(
+        f"DJB_SIGN_IN_DOOR is {SIGN_IN_DOOR!r}; it must be one of "
+        f"{', '.join(SIGN_IN_DOORS)}. `hosted` (the default) sends people to the "
+        "identity platform's own sign-in screens; `ours` renders every step on "
+        "this host and declares that to the platform."
+    )
+
 # What `zitadel_seed` names the objects it makes. They are settings rather than
 # command constants because a second deployment against the same instance — a
 # staging tree beside a development one — needs to be able to not collide.
@@ -1019,6 +1085,128 @@ ZITADEL_MCP_AUDIENCE: list[str] = [
 # trade is not made here, and this line is where it would be.
 ZITADEL_JWKS_CACHE_SECONDS: int = env.int("ZITADEL_JWKS_CACHE_SECONDS", default=300)
 
+# --- What a product kept of the template's identity SHAPE --------------------
+# The identity suite pins two different kinds of thing, and until this setting
+# existed it could not tell them apart. A **mechanism** is a property every
+# product must hold whatever page it draws — the login policy has one writer and
+# the audit compares it; a credential appears in no log line; an absent intent
+# is not drift. A **shape** is an assertion about the template's own example
+# surface — the marker string its entrance shell carries, which command writes
+# the posture, whether it kept the template's `compose.yaml`, whether sign-in
+# lands on the shipped `/welcome/`. A product that replaced a shape and then
+# read a red suite learned nothing; a product that deleted those tests lost the
+# mechanisms with them.
+#
+# So a product declares, once, what it replaced — `key=value;key=value`, in
+# `DJB_IDENTITY_SHAPE` — and the tests that assert the replaced shape SKIP, with
+# one fixed prefix so the skips are countable. Nothing else reads this: it is a
+# test-suite declaration, not a feature flag and not tenant configuration
+# (principle 14 — this value controls neither release nor a customer's
+# behaviour; it says which of the template's example surfaces this tree still
+# has). **The platform's own tree declares nothing and runs all of them**, which
+# is why the defaults below ARE the template's shape.
+#
+# The six keys, each with the tests it governs:
+#
+# * `entrance_marker` — the CSS custom property the entrance shell's token block
+#   declares. SKIPS `test_entrance_chain.py::test_the_shell_fetches_nothing` and
+#   `::test_the_shell_declares_both_themes`. READ BY the re-keyed shell census
+#   in the same module and by `test_welcome.py::test_it_extends_the_entrance_shell`.
+# * `login_page` — `template` if `/accounts/login/` is the shipped chooser,
+#   `own` if the product draws its own. SKIPS the five provider-chooser cases in
+#   `test_entrance_chain.py` (`no_provider_keeps_the_operator_sentence`,
+#   `one_provider_is_one_action_and_no_chooser`, `one_provider_names_the_hosted_hop`,
+#   `two_providers_bring_the_chooser_back`, `the_count_is_the_population_and_not_a_setting`).
+#   READ BY the census note in `apps/core/tests/test_template_shape.py`.
+# * `template_files` — `kept` if this tree still ships the template's
+#   `compose.yaml`, `.env.example` and `frontend/src/tokens/tokens.css`, `own` if
+#   it replaced them. SKIPS the file-content censuses:
+#   `test_entrance_chain.py::test_the_two_copies_of_the_shipped_accent_agree`,
+#   the three in `test_zitadel_posture.py`, and the two settings-derivation
+#   censuses in `test_identity_branding.py`.
+# * `posture_writer` — the management command that closes the registration and
+#   lockout posture. SKIPS the six cases in `test_zitadel_posture.py` that assert
+#   `zitadel_seed`'s own identity and wording. READ BY the re-keyed idempotence
+#   cases in the same module.
+# * `branding_writer` — the management command that writes the hosted screen's
+#   intent row. SKIPS `test_identity_branding.py::test_the_first_call_creates_and_activates`
+#   and `::test_an_agreeing_screen_is_reported_as_agreeing`. READ BY the re-keyed
+#   audit-section cases in the same module.
+# * `landing` — `template` if a completed sign-in lands on the shipped
+#   `/welcome/`, `own` if the product named its own. SKIPS
+#   `test_welcome.py::test_the_named_mechanism_has_a_reader`.
+#
+# An unknown key, a value outside a closed vocabulary, or an empty value is
+# `ImproperlyConfigured` **at settings import**: a typo in a declaration that
+# quietly ran every test would be worse than no declaration at all, because the
+# reds it produced would look like defects.
+#
+# **ONE TEST IN THE PLATFORM'S OWN SUITE REDS WHEN YOU DECLARE, AND IT IS
+# DELIBERATE.** `apps/core/tests/test_template_shape.py::test_the_platform_
+# declares_nothing` asserts that THIS tree declared nothing — its subject is the
+# environment, which is why it reads the ambient value where every other case in
+# that module is pinned. A product that declares a divergence and sees it go red
+# is watching the criterion fire, not finding a bug: it is the template saying
+# "this checkout is no longer the template's own tree". Delete that one case, or
+# pin it to your own shape. Do not widen it to accept any declaration — then
+# nothing is left that would notice the platform quietly declaring something.
+# It is the only case in that module that behaves this way, and the module names
+# it in a constant so the exception stays a population of one.
+IDENTITY_SHAPE_DEFAULTS: dict[str, str] = {
+    "entrance_marker": "--entrance-tokens",
+    "login_page": "template",
+    "template_files": "kept",
+    "posture_writer": "zitadel_seed",
+    "branding_writer": "zitadel_brand",
+    "landing": "template",
+}
+
+# Three of the six are CLOSED: they are a question about this tree with two
+# answers. The other three name a product's own string — a marker, a command —
+# and have no vocabulary to check beyond "not empty".
+IDENTITY_SHAPE_VOCABULARY: dict[str, tuple[str, ...]] = {
+    "login_page": ("template", "own"),
+    "template_files": ("kept", "own"),
+    "landing": ("template", "own"),
+}
+
+
+def _identity_shape(declaration: str) -> dict[str, str]:
+    """Parse `key=value;…` over the six keys, refusing anything else by name."""
+    shape = dict(IDENTITY_SHAPE_DEFAULTS)
+    for clause in declaration.split(";"):
+        clause = clause.strip()
+        if not clause:
+            continue
+        key, separator, value = clause.partition("=")
+        key, value = key.strip(), value.strip()
+        if not separator:
+            raise ImproperlyConfigured(
+                f"DJB_IDENTITY_SHAPE: {clause!r} is not `key=value`. "
+                f"The keys are {', '.join(IDENTITY_SHAPE_DEFAULTS)}."
+            )
+        if key not in IDENTITY_SHAPE_DEFAULTS:
+            raise ImproperlyConfigured(
+                f"DJB_IDENTITY_SHAPE: {key!r} is not one of the six keys "
+                f"({', '.join(IDENTITY_SHAPE_DEFAULTS)})."
+            )
+        if not value:
+            raise ImproperlyConfigured(
+                f"DJB_IDENTITY_SHAPE: {key!r} was declared with an empty value. "
+                "Leave the key out to keep the template's default "
+                f"({IDENTITY_SHAPE_DEFAULTS[key]!r})."
+            )
+        allowed = IDENTITY_SHAPE_VOCABULARY.get(key)
+        if allowed is not None and value not in allowed:
+            raise ImproperlyConfigured(
+                f"DJB_IDENTITY_SHAPE: {key}={value!r} is not one of {', '.join(allowed)}."
+            )
+        shape[key] = value
+    return shape
+
+
+IDENTITY_SHAPE: dict[str, str] = _identity_shape(env.str("DJB_IDENTITY_SHAPE", default=""))
+
 # --- Identity providers ------------------------------------------------------
 # Two doors, and they answer different questions (`architecture.md`, "Auth &
 # identity"):
@@ -1045,6 +1233,51 @@ GOOGLE_OAUTH_CLIENT_SECRET: str = env.str("GOOGLE_OAUTH_CLIENT_SECRET", default=
 GOOGLE_WORKSPACE_DOMAINS: list[str] = [
     domain.strip().lower().lstrip("@")
     for domain in env.list("GOOGLE_WORKSPACE_DOMAINS", default=[])
+    if domain.strip()
+]
+
+# **The domains no tenant may claim as its own** (a domain claim routes nothing until it is
+# verified). A courtesy at
+# the door, and NOT the wall: the wall is `SsoDomain.verified_at` — an operator
+# verifies a claim before it routes anybody, so a consumer mail domain nobody
+# thought of here is a 201 that routes nobody forever, which is the designed
+# degradation rather than a hole. What this list buys is that the mistake is
+# caught where it is made, in the response to the request that made it, instead
+# of sitting as a reserved claim somebody has to notice.
+#
+# Comma-separated in the environment, which REPLACES this default rather than
+# extending it — a deployment that wants the shipped set plus its own writes the
+# whole list, because a list you can only ever add to is one nobody can correct.
+# The default is the consumer providers a tenant's administrator most plausibly
+# types by mistake; it is not a survey and it goes stale, which is exactly why
+# it is not the wall.
+SSO_REFUSED_MAIL_DOMAINS: list[str] = [
+    domain.strip().lower().lstrip("@")
+    for domain in env.list(
+        "SSO_REFUSED_MAIL_DOMAINS",
+        default=[
+            "gmail.com",
+            "googlemail.com",
+            "outlook.com",
+            "hotmail.com",
+            "live.com",
+            "msn.com",
+            "yahoo.com",
+            "ymail.com",
+            "aol.com",
+            "icloud.com",
+            "me.com",
+            "mac.com",
+            "proton.me",
+            "protonmail.com",
+            "gmx.com",
+            "gmx.net",
+            "mail.com",
+            "zoho.com",
+            "yandex.com",
+            "qq.com",
+        ],
+    )
     if domain.strip()
 ]
 

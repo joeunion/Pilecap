@@ -411,8 +411,16 @@ if [ -n "$ONE_CLASS" ]; then
     fi
 fi
 
-command -v python3 >/dev/null 2>&1 ||
-    cannot_look "no python3 on PATH; the Temporal scans parse the CLI's JSON with it"
+# THE INTERPRETER THE SCANS WILL ACTUALLY USE, asked about by name. `python3`
+# off PATH is some other environment's: on a verifier box it is the system 3.9,
+# where `scripts/lifecycle_temporal.py` — this repository's file, written at the
+# venv's version — refuses at def time and every scan comes back empty into
+# `2>/dev/null`. A census that cannot parse is could-not-look, and it must
+# never be able to read as a machine with nothing on it.
+[ -n "${LC_PYTHON:-}" ] ||
+    cannot_look "this checkout has no .venv/bin/python, and the Temporal scans parse the
+   CLI's JSON with scripts/lifecycle_temporal.py, which is written at the
+   version that venv holds. Run ./scripts/setup.sh (or \`uv sync\`) first"
 command -v docker >/dev/null 2>&1 ||
     cannot_look "no docker on PATH; both servers are asked inside the compose stack"
 

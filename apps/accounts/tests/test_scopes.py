@@ -1,3 +1,4 @@
+# census: cross-app population=apps/**/*.py,config/**/*.py for scope declarations and readers
 """The ceiling a bearer token carries (ADR ident-7), proved end to end.
 
 Eight properties, one per criterion of the rung that built them, and they are

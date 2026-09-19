@@ -21,7 +21,8 @@ the same pair for meters. The two halves land together on purpose: refusing an
 undeclared name without publishing the declared ones would be a closed set
 nobody can read.
 
-The read goes through `selectors.get_usage`, which authorizes (`usage.read`) and
+The read goes through `selectors.get_usage`, which authorizes (`usage_entry.read`,
+the derived read of the row it totals — ADR core-27, a read is a permission) and
 narrows `.for_tenant(t).visible_to(actor)` — both halves, so a branch's report
 never tallies a sibling's consumption and an unresolved hat reads an empty
 ledger rather than the ledger. Nothing here re-decides any of that; the route

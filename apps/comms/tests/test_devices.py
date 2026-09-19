@@ -203,7 +203,12 @@ def test_a_sibling_branch_cannot_reach_the_device(branches: Branches) -> None:
 
     assert list(list_devices(tenant=branches.tenant, org=branches.seller_b)) == []
     with pytest.raises(NotFound):
-        get_device(tenant=branches.tenant, device_id=device.pk, org=branches.seller_b)
+        get_device(
+            tenant=branches.tenant,
+            device_id=device.pk,
+            org=branches.seller_b,
+            actor=actor_for(user=branches.owner, tenant=branches.tenant, org=branches.seller_b),
+        )
     # The manager one level up DOES see it — otherwise the assertion above
     # would pass on a read that returns nothing to anybody.
     assert [row.pk for row in list_devices(tenant=branches.tenant, org=branches.seller_a)] == [

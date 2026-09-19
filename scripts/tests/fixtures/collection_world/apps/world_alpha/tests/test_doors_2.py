@@ -1,0 +1,7 @@
+"""A fixture-world module. Collected by the drives; never run by the suite."""
+
+DOOR_PAIR = ("rest", "mcp")
+
+
+def test_world_alpha_doors_2_answer_alike() -> None:
+    assert DOOR_PAIR == ("rest", "mcp")

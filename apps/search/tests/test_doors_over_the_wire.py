@@ -386,3 +386,93 @@ async def test_a_caller_with_no_account_is_refused_at_the_door(
     # same refusal every other door in this product gives them.
     assert over_http.status_code == 403, over_http.text
     assert over_http.json()["code"] == "forbidden"
+
+
+@pytest.fixture
+def widget_read_withheld(tenant: Tenant, owner: User) -> Any:
+    """One `withhold` row on the owner's own membership. **`widget.read`, gone.**
+
+    A withhold beats everything — "forbid overrides permit" — and it beats it
+    for an owner too, which is what makes this the smallest world in which an
+    ordinary credential is refused a named kind at both doors. Nothing about the
+    role, the hat or the declaration changes: the only difference between this
+    test and its neighbours is this row.
+    """
+    from apps.core.models import Grant, Membership
+
+    membership = Membership.objects.filter(tenant=tenant).get(user=owner)
+    return Grant.objects.create(
+        tenant=tenant,
+        membership=membership,
+        permission="widget.read",
+        effect=Grant.Effect.WITHHOLD,
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
+    bearer: str, root_org: Any, two_hits: RecordingEngine, widget_read_withheld: Any
+) -> None:
+    """**PR4.g.2 — rule 46's named case for Phase R.**
+
+    A read is a permission now (ADR core-27), so `?kinds=widgets` from somebody
+    who may not read widgets is a NEW refusal — and a new refusal is exactly
+    where two doors come apart, because one composes a body and the other
+    stringifies an exception. Both go through `core.exceptions.wire_refusal`,
+    and this says so: the code AND the sentence, not just the status.
+
+    Read against its neighbour above, the pair is the whole claim: an UNKNOWN
+    kind is `invalid` on both doors, an unreadable one is `forbidden` on both,
+    and the two answers stay different from each other in the same way at each
+    door.
+
+    *Absent (baseline `11b1a765`):* 200 on both doors, with two widget hits.
+    """
+    from apps.core.authz import refusal_sentence
+    from config.asgi import build_application
+
+    application = build_application()
+    bearer_header = {"authorization": f"Bearer {bearer}"}
+    arguments = {"q": "sprocket", "kinds": "widgets"}
+    sentence = refusal_sentence("widget.read")
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.get(
+                SEARCH_URL, params=arguments, headers={**bearer_header, "accept": JSON}
+            )
+
+            headers = {**MCP_HEADERS, **bearer_header}
+            await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "initialize",
+                    {
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {"name": "search-read-parity", "version": "1"},
+                    },
+                    1,
+                ),
+            )
+            called = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc("tools/call", {"name": "search_query", "arguments": arguments}, 2),
+            )
+
+    assert over_http.status_code == 403, over_http.text
+    rest_body = over_http.json()
+    assert rest_body["code"] == "forbidden"
+    assert rest_body["detail"] == sentence
+
+    rendered = str(called.json())
+    assert "forbidden" in rendered
+    assert sentence in rendered, (
+        "the machine door says something different about a withheld read than the "
+        "HTTP door does — both render `wire_refusal` through the one composer"
+    )
+    assert two_hits.queries == [], "an engine was asked before the refusal"

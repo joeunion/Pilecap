@@ -13,9 +13,9 @@ import pytest
 from django.test import Client
 
 from apps.accounts.models import SsoConnection
-from apps.accounts.services import create_sso_connection
+from apps.accounts.services import create_sso_connection, verify_sso_domain
 from apps.accounts.tests.conftest import CLIENT_SECRET
-from apps.core.actor import Actor
+from apps.core.actor import Actor, system_actor
 from apps.core.models import Membership, Tenant
 
 pytestmark = pytest.mark.django_db
@@ -32,8 +32,17 @@ LIST_URL = "/api/v1/auth/sso-connections/"
 # `email_domains` would do.
 # ADR core-18 took the COUNT off this pin: the default list issues none any
 # more — `has_more` comes from fetching one row more than asked for.
-# `?include_count=true` puts it back, and costs exactly one more (nine).
-LIST_QUERY_BUDGET = 8
+# `?include_count=true` puts it back, and costs exactly one more (twelve).
+#
+# **8 -> 11 at the `accounts` read sweep**, and the three are the ask: the
+# selector now calls `require(actor, "sso_connection.read")` before the
+# queryset, and resolving what this hat holds is a membership read plus the two
+# delta reads `effective_permissions` makes (the `Grant` rows and the
+# `RolePermission` rows). It is a CONSTANT three — the whole reason the budget
+# is measured at four connections below is that a per-row cost would show up
+# here as four — and it is the same three every other swept `list_` in this
+# tree pays.
+LIST_QUERY_BUDGET = 11
 
 # How many connections the query pin is measured at. More than one, because a
 # budget measured at one row cannot tell a constant from a linear cost.
@@ -206,3 +215,44 @@ def test_a_request_with_no_tenant_is_refused_rather_than_guessed_at(
 ) -> None:
     api.force_login(nomad)
     assert api.post(LIST_URL, BODY, content_type="application/json").status_code == 403
+
+
+# --- which of the claims actually route (a domain claim routes nothing until it is verified)
+# -----------------------
+
+
+def test_a_fresh_connection_reports_no_verified_domains(api: Client, owner: Any) -> None:
+    """The `201` says what was claimed AND what routes, and they are not the same.
+
+    Claiming reserves a name; an operator verifying it is what makes the
+    platform sign-in answer for it. A client that only ever saw `email_domains`
+    would have no way to tell "configured" from "working", which is the state a
+    tenant's administrator sits in while they wait.
+    """
+    api.force_login(owner)
+    response = api.post(LIST_URL, BODY, content_type="application/json")
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["email_domains"] == ["acme.co.uk", "acme.com"]
+    assert body["verified_domains"] == []
+
+
+def test_a_verified_domain_appears_in_verified_domains(
+    api: Client, owner: Any, tenant: Tenant
+) -> None:
+    """One of the two claims verified: the lists differ, and the difference is readable."""
+    api.force_login(owner)
+    created = api.post(LIST_URL, BODY, content_type="application/json").json()
+    connection = SsoConnection.objects.get(pk=created["id"])
+    verify_sso_domain(
+        tenant=tenant,
+        actor=system_actor(tenant),
+        connection=connection,
+        domain="acme.com",
+    )
+
+    listed = api.get(LIST_URL).json()["items"]
+    row = next(item for item in listed if item["id"] == created["id"])
+    assert row["email_domains"] == ["acme.co.uk", "acme.com"]
+    assert row["verified_domains"] == ["acme.com"]

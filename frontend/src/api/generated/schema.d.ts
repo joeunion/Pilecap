@@ -40,6 +40,9 @@ export interface paths {
          *       a filter value was malformed. The response says what you may sort by.
          *     * `403 forbidden` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role here does not let you read organizations. A role
+         *       with no read of this kind reads none of them: ask an administrator for
+         *       the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `org-structure:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `org-structure:write` satisfies this too: within one section, the write scope includes the read.
@@ -112,6 +115,9 @@ export interface paths {
          *       purpose, so a guessed id tells you nothing.
          *     * `403 forbidden` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role here does not let you read organizations. A role
+         *       with no read of this kind reads none of them: ask an administrator for
+         *       the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `org-structure:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `org-structure:write` satisfies this too: within one section, the write scope includes the read.
@@ -243,6 +249,9 @@ export interface paths {
          *       a filter value was malformed. The response says what you may sort by.
          *     * `403 forbidden` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role here does not let you read memberships. A role
+         *       with no read of this kind reads none of them: ask an administrator for
+         *       the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `roles:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `roles:write` satisfies this too: within one section, the write scope includes the read.
@@ -391,6 +400,422 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/roles/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List roles
+         * @description List every role this tenant can name, from all three layers at once.
+         *
+         *     `kind` says which layer a role comes from and decides what you may do with
+         *     it. `owner` is the platform's one role: it holds every permission this
+         *     deployment declares, present and future, and nothing can change it.
+         *     `declared` is a role this product ships in code — you may adjust what it
+         *     holds here, not what it is called. `custom` is a role this tenant made for
+         *     itself, and both halves are yours.
+         *
+         *     `permissions` is what the role actually does **in this tenant**;
+         *     `default_permissions` is what the product declared it does, and
+         *     `added`/`removed` are the difference. For a custom role there is no code
+         *     layer, so `default_permissions` is `null`.
+         *
+         *     Narrow with `kind` or `q` (matches part of the key, name or description).
+         *     Sort with `ordering`, which accepts `key`, `name` or `created_at`, each
+         *     optionally prefixed with `-`; any other value is rejected. Walk it with
+         *     `?cursor=` and `?limit=`.
+         *
+         *     Returns `{"items": [...], "has_more": ..., "next_cursor": ...}`; `count` is
+         *     `null` unless you send `?include_count=true`.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `400 invalid` — `?ordering=` named a field this list does not accept. The
+         *       response says what you may sort by.
+         *     * `403 forbidden` — the request resolved no tenant, or your role here does
+         *       not let you read roles.
+         *     * `403 insufficient_scope` — the token you sent does not carry `roles:read`.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `roles:write` satisfies this too: within one section, the write scope includes the read.
+         */
+        get: operations["apps_core_api_routes_list_roles_route"];
+        put?: never;
+        /**
+         * Create a role
+         * @description Make a role this tenant owns, holding exactly what you put in it.
+         *
+         *     `permissions` takes keys from `GET /permissions/` and also accepts patterns:
+         *     `"*.read"` is how you give a role every read this deployment has, and it is
+         *     expanded to real keys when the role is saved, so the role does not silently
+         *     gain permissions as the product grows. A pattern that matches nothing is
+         *     rejected rather than stored.
+         *
+         *     **You cannot put a permission into a role that you do not hold yourself.**
+         *     The refusal names what you are short of, in the words a person reads rather
+         *     than the keys. `owner` and any role this product declares in code are taken
+         *     names and are rejected.
+         *
+         *     Send `Idempotency-Key` and a retry of the identical request replays the
+         *     first answer instead of making a second role.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `400 invalid` — the key is already a role this product declares, a
+         *       permission is not one this deployment has, or a pattern matched nothing.
+         *       `errors` names the field.
+         *     * `403 forbidden` — you may not create roles here, or the collection
+         *       contains something you do not hold.
+         *     * `409 conflict` — this tenant already has a role with that key.
+         *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
+         *       `Idempotency-Key` for a different request, or the first request under it
+         *       has not finished.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        post: operations["apps_core_api_routes_create_role_route"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/roles/{key}/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a role
+         * @description Read one role by its key, from whichever layer owns it.
+         *
+         *     The same shape the list returns. A key this tenant cannot name answers
+         *     `not_found` — there is no subtree to be outside of, because a role is
+         *     tenant-wide rather than held on a branch.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `403 forbidden` — the request resolved no tenant, or your role here does
+         *       not let you read roles.
+         *     * `403 insufficient_scope` — the token you sent does not carry `roles:read`.
+         *     * `404 not_found` — nothing in this tenant has that key.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `roles:write` satisfies this too: within one section, the write scope includes the read.
+         */
+        get: operations["apps_core_api_routes_get_role_route"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a role
+         * @description Remove a role this tenant made. Answers `204` with no body.
+         *
+         *     **Refused while anybody still wears it** — a membership or a pending
+         *     invitation naming the key — because the key is a string rather than a
+         *     foreign key, so nothing in the database would stop the row disappearing and
+         *     the people holding it would quietly hold nothing. Move them to another role
+         *     first; the refusal says how many there are.
+         *
+         *     `owner` and the roles this product declares in code live in code and cannot
+         *     be deleted here.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `400 invalid` — that key belongs to the product rather than to this
+         *       tenant.
+         *     * `403 forbidden` — you may not delete roles here.
+         *     * `404 not_found` — nothing in this tenant has that key.
+         *     * `409 conflict` — somebody still holds the role, or an invitation still
+         *       offers it.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        delete: operations["apps_core_api_routes_delete_role_route"];
+        options?: never;
+        head?: never;
+        /**
+         * Rename a role
+         * @description Change a custom role's display name or description. **Never its key.**
+         *
+         *     A membership, a pending invitation and every permission row join on the key,
+         *     so it is the immutable half: rename the label and nothing else has to be
+         *     rewritten. To change what the role *does*, send its whole collection to
+         *     `PUT /roles/{key}/permissions/`.
+         *
+         *     Only a role this tenant made can be renamed. `owner` and the roles this
+         *     product declares in code are named by the product, and are rejected.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `400 invalid` — that key belongs to the product rather than to this
+         *       tenant. `errors` names the field.
+         *     * `403 forbidden` — you may not change roles here.
+         *     * `404 not_found` — nothing in this tenant has that key.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        patch: operations["apps_core_api_routes_update_role_route"];
+        trace?: never;
+    };
+    "/api/v1/roles/{key}/permissions/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set what a role holds
+         * @description Say what this role may do, as the whole set rather than a list of changes.
+         *
+         *     Send the collection you want and the server works out the difference, which
+         *     is what makes a retry safe. For a role this product declares in code the
+         *     difference is stored as a delta, so the role keeps growing with the product:
+         *     a permission the next release adds to `member` arrives for you too, unless
+         *     you took it away here.
+         *
+         *     Patterns work exactly as they do on create — `"*.read"` expands to the reads
+         *     this deployment has, at the moment you save.
+         *
+         *     **Both directions are walled.** You cannot add a permission you do not hold
+         *     yourself, and you cannot take one away from a role if the people holding it
+         *     have something you do not. `owner` is the whole vocabulary by definition and
+         *     is rejected: withhold a key from one person instead.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `400 invalid` — `owner` cannot be edited, a permission is not one this
+         *       deployment has, or a pattern matched nothing.
+         *     * `403 forbidden` — you may not change roles here, or the change adds or
+         *       removes something you do not hold.
+         *     * `404 not_found` — nothing in this tenant has that key.
+         *     * `409 conflict` — the change would leave the tenant with no owner.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        put: operations["apps_core_api_routes_set_role_permissions_route"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/memberships/{membership_id}/grants/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a membership's exceptions
+         * @description List the permissions granted to, or withheld from, one person in one branch.
+         *
+         *     A grant is what you reach for when a role is the wrong size for one person:
+         *     `allow` gives them something their role does not carry, `withhold` takes
+         *     away something it does. **A withhold beats everything**, including the
+         *     `owner` role, which is why it is the one that needs watching.
+         *
+         *     Grants hang off the membership rather than the person, so the same person
+         *     can carry different exceptions in the branch they run and the branch they
+         *     merely belong to.
+         *
+         *     A membership outside the organizations you can see answers `not_found`.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *       organization, or your role here does not let you read grants.
+         *     * `403 insufficient_scope` — the token you sent does not carry `roles:read`.
+         *     * `404 not_found` — that membership is outside the part of the tree you can
+         *       see, or nothing has that id.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `roles:write` satisfies this too: within one section, the write scope includes the read.
+         */
+        get: operations["apps_core_api_routes_list_grants_route"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/memberships/{membership_id}/grants/{permission}/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Grant or withhold one permission
+         * @description Give one person one permission in one branch, or take one away.
+         *
+         *     The membership and the permission are in the path and the body says only
+         *     which way the exception points, so sending the same request twice leaves one
+         *     row with the last effect on it rather than two rows or a conflict.
+         *
+         *     **`allow` is bounded by what you hold**: you cannot hand out a permission
+         *     you do not have. **`withhold` is bounded by what THEY hold**: you cannot
+         *     restrict somebody who has something you do not — otherwise the ceiling would
+         *     be decorative, because taking away is the other road to the same power.
+         *
+         *     `tenant.own` is reserved to the `owner` role and no grant may name it in
+         *     either direction.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `400 invalid` — that permission is not one this deployment has, or it is
+         *       reserved.
+         *     * `403 forbidden` — you may not grant here, or the permission is not yours
+         *       to hand out or to take away.
+         *     * `404 not_found` — that membership is outside the part of the tree you can
+         *       see, or nothing has that id.
+         *     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
+         *       `Idempotency-Key` for a different request, or the first request under it
+         *       has not finished.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        put: operations["apps_core_api_routes_set_grant_route"];
+        post?: never;
+        /**
+         * Remove an exception
+         * @description Withdraw a grant, leaving the person with whatever their role says. `204`.
+         *
+         *     Removing an `allow` takes a capability away, so it is bounded by what the
+         *     person holds; removing a `withhold` gives one back, so it is bounded by what
+         *     you hold. The wall that applies depends on which way the row pointed, which
+         *     is why `effect` is on the row rather than in the request.
+         *
+         *     A permission that has no grant on that membership answers `not_found`.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `403 forbidden` — you may not remove grants here, or the permission is not
+         *       yours to restore or to take away.
+         *     * `404 not_found` — that membership is outside the part of the tree you can
+         *       see, or there is no such grant on it.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
+         */
+        delete: operations["apps_core_api_routes_delete_grant_route"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/memberships/{membership_id}/permissions/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What one person may do here
+         * @description Everything this membership may do at its own branch, and where each one
+         *     came from.
+         *
+         *     This is the read a permissions screen is built on: `held` carries every
+         *     permission with the sentence a person reads and a `via` saying whether it
+         *     comes from the role on this membership, a grant on it, or a role held
+         *     further up the tree. When `via` is `inherited`, `membership_id` names the
+         *     ancestor membership that carries it rather than this one.
+         *
+         *     `withheld` is kept separately rather than quietly subtracted, because a
+         *     withhold is a decision somebody made and "why has this stopped working" is
+         *     a question this answer should be able to settle.
+         *
+         *     A membership outside the organizations you can see answers `not_found`.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `403 forbidden` — the request resolved no tenant or no acting
+         *       organization, or your role here does not let you read memberships.
+         *     * `403 insufficient_scope` — the token you sent does not carry `roles:read`.
+         *     * `404 not_found` — that membership is outside the part of the tree you can
+         *       see, or nothing has that id.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `roles:write` satisfies this too: within one section, the write scope includes the read.
+         */
+        get: operations["apps_core_api_routes_membership_permissions_route"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/permissions/": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List permissions
+         * @description List every permission this deployment has, which is what a role's collection
+         *     is chosen from.
+         *
+         *     A key reads `<kind>.<verb>` — the kind is the thing (`widget`, `membership`)
+         *     and the verb is what you do to it. Most are **derived**: the product has a
+         *     `widget`, so `widget.create/read/update/delete` exist without anybody typing
+         *     them. Some are **declared**, where an app named a verb of its own
+         *     (`widget.approve`). One is **reserved** to the `owner` role and no role or
+         *     grant may name it.
+         *
+         *     `sentence` is what a refused caller is told; `default_roles` says which
+         *     roles this product gives the key to out of the box; `has_row_predicate`
+         *     warns you that holding the key is not the whole answer — the product also
+         *     asks about the row, so granting it grants the capability rather than the
+         *     outcome.
+         *
+         *     Narrow with `kind`, `verb`, `decided_by`, `is_read` or `q`. Walk it with
+         *     `?cursor=` and `?limit=`; `count` is `null` unless you send
+         *     `?include_count=true`.
+         *
+         *     This list is generated from the running system and is the same for every
+         *     customer: it describes what the product can authorize, not what you happen
+         *     to have granted.
+         *
+         *     Refusals you can get here:
+         *
+         *     * `403 forbidden` — the request resolved no tenant, or your role here does
+         *       not let you read roles.
+         *     * `403 insufficient_scope` — the token you sent does not carry `roles:read`.
+         *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+         *
+         *     **Token scope:** a bearer token must carry `roles:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `roles:write` satisfies this too: within one section, the write scope includes the read.
+         */
+        get: operations["apps_core_api_routes_list_permissions_route"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/invitations/": {
         parameters: {
             query?: never;
@@ -433,6 +858,9 @@ export interface paths {
          *       a filter value was malformed. The response says what you may sort by.
          *     * `403 forbidden` — the request resolved no tenant. Send `X-Tenant` naming
          *       one you belong to.
+         *     * `403 forbidden` — your role here does not let you read invitations. A role
+         *       with no read of this kind reads none of them: ask an administrator for
+         *       the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `invitations:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `invitations:write` satisfies this too: within one section, the write scope includes the read.
@@ -1201,6 +1629,12 @@ export interface paths {
          *     **An email domain belongs to exactly one provider across the whole
          *     product.** Claiming one somebody else already has is refused.
          *
+         *     **Claiming a domain reserves it; it does not route anybody yet.** Nobody
+         *     signs in through this provider until an operator of this deployment confirms
+         *     that your organisation owns the domain — ask them to, and they will tell you
+         *     when it is done. Public mail providers such as `gmail.com` are refused here
+         *     outright: an identity provider claims the domains its organisation owns.
+         *
          *     **`default_role` may not be higher than your own role in the tenant.** A
          *     provider is a grant that happens later, so an administrator cannot configure
          *     one that turns arrivals into owners.
@@ -1209,12 +1643,16 @@ export interface paths {
          *     reports `has_client_secret: true` instead.
          *
          *     Returns `201` with the provider. `protocol` is `oidc`; nothing else is
-         *     accepted.
+         *     accepted. `verified_domains` is empty until an operator verifies, and it is
+         *     the list that says which of your `email_domains` route a sign-in today.
          *
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — you are not an owner or administrator of this tenant, or
          *       the request resolved no tenant. Send `X-Tenant` naming one you belong to.
+         *       **Measured at the tenant's root**: an administrator of one branch
+         *       administers that branch, and may not configure the tenant's identity
+         *       provider.
          *     * `400 invalid` — a field is missing or malformed, or `protocol` was
          *       anything but `oidc`. `errors` names the fields.
          *     * `409 conflict` — one of the `email_domains` is already claimed.
@@ -1265,6 +1703,9 @@ export interface paths {
          *       acting in.
          *     * `403 forbidden` — you are not an owner or administrator of this tenant, or
          *       the request resolved no tenant.
+         *       **Measured at the tenant's root**: an administrator of one branch
+         *       administers that branch, and may not configure the tenant's identity
+         *       provider.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `auth:write` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted.
@@ -1286,9 +1727,12 @@ export interface paths {
          *     back to re-send it.
          *
          *     Sending `email_domains` **replaces** the list rather than adding to it, and
-         *     the same one-domain-one-provider rule applies.
+         *     the same one-domain-one-provider rule applies. A domain you keep keeps its
+         *     verification; one you remove and send again later starts unverified, and an
+         *     operator has to confirm it before it routes anybody again.
          *
          *     Returns the provider as it now is. No secret is ever in the response.
+         *     `verified_domains` says which of the claims route today.
          *
          *     Refusals you can get here:
          *
@@ -1296,6 +1740,9 @@ export interface paths {
          *       acting in.
          *     * `403 forbidden` — you are not an owner or administrator of this tenant, or
          *       the request resolved no tenant.
+         *       **Measured at the tenant's root**: an administrator of one branch
+         *       administers that branch, and may not configure the tenant's identity
+         *       provider.
          *     * `400 invalid` — a field you sent is malformed, or `default_role` is above
          *       your own role. `errors` names the fields.
          *     * `409 conflict` — one of the `email_domains` is already claimed elsewhere.
@@ -2711,6 +3158,9 @@ export interface paths {
          *       a filter value was malformed. The response says what you may sort by.
          *     * `403 forbidden` — the request resolved no tenant. Send `X-Tenant` naming
          *       one you belong to.
+         *     * `403 forbidden` — your role here does not let you read connections. A
+         *       role with no read of this kind reads none of them: ask an administrator
+         *       for the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `connections:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `connections:write` satisfies this too: within one section, the write scope includes the read.
@@ -2833,6 +3283,9 @@ export interface paths {
          *     * `404 not_found` — no connection of this tenant's has that id.
          *     * `403 forbidden` — the request resolved no tenant. Send `X-Tenant` naming
          *       one you belong to.
+         *     * `403 forbidden` — your role here does not let you read connections. A
+         *       role with no read of this kind reads none of them: ask an administrator
+         *       for the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `connections:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `connections:write` satisfies this too: within one section, the write scope includes the read.
@@ -3110,6 +3563,12 @@ export interface paths {
          *       this read needs. Reading is not role-gated: any member of the tenant may
          *       see where its events go. Registering, updating, pausing, resuming and
          *       re-keying an endpoint are the owner-or-administrator acts.
+         *     * `403 forbidden` — your role here does not let you read webhook endpoints. A
+         *       role with no read of this kind reads none of them: ask an administrator
+         *       for the permission, or act under an organization where you hold it.
+         *     * `403 forbidden` — your role here does not let you read webhook endpoints. A
+         *       role with no read of this kind reads none of them: ask an administrator
+         *       for the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `events:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `events:write` satisfies this too: within one section, the write scope includes the read.
@@ -3432,6 +3891,9 @@ export interface paths {
          *       do it. It is the acts that *change* a subscription — registering,
          *       updating, pausing, resuming, re-keying and replaying — that need an owner
          *       or an administrator.
+         *     * `403 forbidden` — your role here does not let you read deliveries. A
+         *       role with no read of this kind reads none of them: ask an administrator
+         *       for the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `events:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `events:write` satisfies this too: within one section, the write scope includes the read.
@@ -3478,6 +3940,9 @@ export interface paths {
          *       do it. Sending a given-up delivery again — `POST
          *       /dead-letters/{id}/replay/` — is the act that needs an owner or an
          *       administrator.
+         *     * `403 forbidden` — your role here does not let you read deliveries. A
+         *       role with no read of this kind reads none of them: ask an administrator
+         *       for the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `events:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `events:write` satisfies this too: within one section, the write scope includes the read.
@@ -3578,6 +4043,9 @@ export interface paths {
          *       a filter value was malformed. The response says what you may sort by.
          *     * `403 forbidden` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role here does not let you read widgets. A role
+         *       with no read of this kind reads none of them: ask an administrator for
+         *       the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
@@ -3656,6 +4124,9 @@ export interface paths {
          *
          *     * `403 forbidden` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role here does not let you read widgets. A role
+         *       with no read of this kind reads none of them: ask an administrator for
+         *       the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
@@ -3697,6 +4168,9 @@ export interface paths {
          *       a filter value was malformed. The response says what you may sort by.
          *     * `403 forbidden` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role here does not let you read widget policies. A role
+         *       with no read of this kind reads none of them: ask an administrator for
+         *       the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
@@ -3766,6 +4240,9 @@ export interface paths {
          *       nor anything above it has one.
          *     * `403 forbidden` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role here does not let you read widget policies. A role
+         *       with no read of this kind reads none of them: ask an administrator for
+         *       the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
@@ -3806,6 +4283,9 @@ export interface paths {
          *       a filter value was malformed. The response says what you may sort by.
          *     * `403 forbidden` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role here does not let you read ledger entries. A role
+         *       with no read of this kind reads none of them: ask an administrator for
+         *       the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
@@ -3880,6 +4360,9 @@ export interface paths {
          *       `X-Org` hat covers. A widget in a sibling branch answers this too.
          *     * `403 forbidden` — the request resolved no tenant or no acting
          *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *     * `403 forbidden` — your role here does not let you read widgets. A role
+         *       with no read of this kind reads none of them: ask an administrator for
+         *       the permission, or act under an organization where you hold it.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `widgets:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `widgets:write` satisfies this too: within one section, the write scope includes the read.
@@ -4025,7 +4508,8 @@ export interface paths {
          *     * `400 invalid` — `?ordering=` named a field this list does not accept, or
          *       a filter value was malformed. The response says what you may sort by.
          *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *       organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
+         *       your role does not include reading exports here.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
          *     **Token scope:** a bearer token must carry `exports:read` to make this call. A token minted with no limit carries every scope, and signing in with a browser session is not affected. `POST /tokens/` is where a token with this scope is minted. A token carrying `exports:write` satisfies this too: within one section, the write scope includes the read.
@@ -4111,7 +4595,8 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *       organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
+         *       your role does not include reading exports here.
          *     * `404 not_found` — nothing has that id where you can see.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
          *
@@ -4140,9 +4625,11 @@ export interface paths {
          *     Inside it there is one `models/<app>.<Model>.jsonl` file per table — one JSON
          *     object per line, in the table's own column names — and a `manifest.json`
          *     listing every table in the archive with its row count, the columns that were
-         *     left out and why, and the tables a single-organization export could not
-         *     carry. The manifest is the same document the export record shows you, so you
-         *     can check what you are about to download before you download it.
+         *     left out and why, the tables a single-organization export could not carry,
+         *     and the tables left out because whoever asked for the archive may not read
+         *     them (`omitted_models`, each with the reason `unreadable`). The manifest is
+         *     the same document the export record shows you, so you can check what you are
+         *     about to download before you download it.
          *
          *     **This route redirects.** It answers `302` with a short-lived signed link to
          *     the archive in object storage, and your client follows it to the bytes — the
@@ -4162,7 +4649,8 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — the request resolved no tenant or no acting
-         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *       organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
+         *       your role does not include reading exports here.
          *     * `404 not_found` — nothing has that id where you can see, or there is no
          *       archive on it to fetch.
          *     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
@@ -4615,6 +5103,12 @@ export interface paths {
          *     nothing searchable answers with an empty list, which is a true and useful
          *     answer — it is what tells you that no search here will ever find anything.
          *
+         *     **It does not shrink to what YOU may read**, and that is deliberate: a kind
+         *     you may not read is still a kind this product has, and this list is the
+         *     product's vocabulary rather than your entitlement. The search endpoint is
+         *     where your entitlement applies — it searches the kinds you may read and
+         *     refuses a kind you name and may not.
+         *
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — the request resolved no account. Send `X-Tenant` naming
@@ -4697,10 +5191,15 @@ export interface paths {
          *     Refusals you can get here:
          *
          *     * `403 forbidden` — the request resolved no account or no acting
-         *       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+         *       organization (send `X-Tenant` and `X-Org` naming ones you belong to), or
+         *       `kinds` named a kind your role does not include reading. Leave `kinds` out
+         *       to search everything you can read; a kind you may not read is simply not
+         *       in the results.
          *     * `400 invalid` — `kinds` named something this product cannot search. The
          *       message says what you sent and lists what it does have;
-         *       `GET /search/kinds/` is the same list.
+         *       `GET /search/kinds/` is the same list. **`403` and `400` are different
+         *       answers on purpose**: `400` means no such kind anywhere, `403` means that
+         *       kind exists and is not yours.
          *     * `400 invalid_cursor` — the cursor was edited, or came from a different
          *       endpoint. Start the walk again without one.
          *     * `404 not_found` — the cursor was minted for a different account.
@@ -5432,6 +5931,614 @@ export interface components {
             role: string;
         };
         /**
+         * RoleFilter
+         * @description Narrow the role list by which layer owns it, or by a word in it.
+         * @example {
+         *       "kind": "custom",
+         *       "q": "approv"
+         *     }
+         */
+        RoleFilter: {
+            /**
+             * Kind
+             * @example custom
+             */
+            kind?: string | null;
+            /**
+             * Q
+             * @example approv
+             */
+            q?: string | null;
+        };
+        /**
+         * PagedRoleOut
+         * @example {
+         *       "items": [
+         *         {
+         *           "key": "approver",
+         *           "name": "Approver",
+         *           "description": "May approve widgets, and read.",
+         *           "kind": "custom",
+         *           "permissions": [
+         *             "widget.approve",
+         *             "widget.read"
+         *           ],
+         *           "default_permissions": null,
+         *           "added": [],
+         *           "removed": [],
+         *           "is_default_for_new_members": false,
+         *           "created_at": "2026-09-16T09:30:00Z",
+         *           "updated_at": "2026-09-16T09:30:00Z"
+         *         }
+         *       ],
+         *       "has_more": true,
+         *       "next_cursor": "eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w",
+         *       "count": null
+         *     }
+         */
+        PagedRoleOut: {
+            /** Items */
+            items: components["schemas"]["RoleOut"][];
+            /**
+             * Has More
+             * @example true
+             */
+            has_more: boolean;
+            /**
+             * Next Cursor
+             * @example eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w
+             */
+            next_cursor: string | null;
+            /**
+             * Count
+             * @example null
+             */
+            count: number | null;
+        };
+        /**
+         * RoleOut
+         * @description One role, from whichever of the three layers owns it.
+         *
+         *     `kind` is which layer: `owner` is the platform's one role and IS the
+         *     vocabulary, `declared` is a role an app named in its `roles.py`, `custom` is
+         *     a row this tenant made for itself. The distinction is on the wire because it
+         *     decides what a caller may do with the row — a declared role's collection can
+         *     be adjusted and its name cannot, and a custom role is the other way round.
+         *
+         *     `permissions` is the EFFECTIVE collection in this tenant;
+         *     `default_permissions` is the declaration's own half (`null` for a custom
+         *     role, which has no code layer to differ from), and `added`/`removed` are the
+         *     difference. A reader gets "what this role does here" and "what this tenant
+         *     changed" without computing either.
+         * @example {
+         *       "key": "approver",
+         *       "name": "Approver",
+         *       "description": "May approve widgets, and read.",
+         *       "kind": "custom",
+         *       "permissions": [
+         *         "widget.approve",
+         *         "widget.read"
+         *       ],
+         *       "default_permissions": null,
+         *       "added": [],
+         *       "removed": [],
+         *       "is_default_for_new_members": false,
+         *       "created_at": "2026-09-16T09:30:00Z",
+         *       "updated_at": "2026-09-16T09:30:00Z"
+         *     }
+         */
+        RoleOut: {
+            /**
+             * Key
+             * @example approver
+             */
+            key: string;
+            /**
+             * Name
+             * @example Approver
+             */
+            name: string;
+            /**
+             * Description
+             * @example May approve widgets, and read.
+             */
+            description: string;
+            /**
+             * Kind
+             * @example custom
+             */
+            kind: string;
+            /**
+             * Permissions
+             * @example [
+             *       "widget.approve",
+             *       "widget.read"
+             *     ]
+             */
+            permissions: string[];
+            /**
+             * Default Permissions
+             * @example null
+             */
+            default_permissions?: string[] | null;
+            /**
+             * Added
+             * @example []
+             */
+            added?: string[];
+            /**
+             * Removed
+             * @example []
+             */
+            removed?: string[];
+            /**
+             * Is Default For New Members
+             * @example false
+             */
+            is_default_for_new_members: boolean;
+            /**
+             * Created At
+             * @example 2026-09-16T09:30:00Z
+             */
+            created_at?: string | null;
+            /**
+             * Updated At
+             * @example 2026-09-16T09:30:00Z
+             */
+            updated_at?: string | null;
+        };
+        /**
+         * RoleIn
+         * @description A role this tenant is making for itself.
+         *
+         *     `permissions` accepts fnmatch PATTERNS as well as keys — `"*.read"` is how a
+         *     role is given every read this deployment has — and they are expanded to keys
+         *     at write time, so the row that lands names real permissions and a pattern
+         *     that matches nothing is refused rather than stored.
+         * @example {
+         *       "key": "approver",
+         *       "name": "Approver",
+         *       "description": "May approve widgets.",
+         *       "permissions": [
+         *         "widget.approve",
+         *         "*.read"
+         *       ]
+         *     }
+         */
+        RoleIn: {
+            /**
+             * Key
+             * @example approver
+             */
+            key: string;
+            /**
+             * Name
+             * @example Approver
+             */
+            name: string;
+            /**
+             * Description
+             * @default
+             * @example May approve widgets.
+             */
+            description: string;
+            /**
+             * Permissions
+             * @example [
+             *       "widget.approve",
+             *       "*.read"
+             *     ]
+             */
+            permissions?: string[];
+        };
+        /**
+         * RolePatch
+         * @description The two columns a role's own row may move. **Never the key** (§D10).
+         *
+         *     A membership, a pending invitation and every delta row join on the key, so
+         *     renaming it would be a migration of three tables; the display name is the
+         *     renamable half by construction.
+         * @example {
+         *       "name": "Reviewer",
+         *       "description": "Reviews widgets."
+         *     }
+         */
+        RolePatch: {
+            /**
+             * Name
+             * @example Reviewer
+             */
+            name?: string | null;
+            /**
+             * Description
+             * @example Reviews widgets.
+             */
+            description?: string | null;
+        };
+        /**
+         * RolePermissionsIn
+         * @description What a role holds, as the WHOLE set rather than a diff.
+         *
+         *     A caller sends the collection they want and the server works out the delta —
+         *     which is what makes the request idempotent and what lets a declared role
+         *     keep its code layer underneath. Patterns are expanded exactly as on create.
+         * @example {
+         *       "permissions": [
+         *         "widget.approve",
+         *         "*.read"
+         *       ]
+         *     }
+         */
+        RolePermissionsIn: {
+            /**
+             * Permissions
+             * @example [
+             *       "widget.approve",
+             *       "*.read"
+             *     ]
+             */
+            permissions?: string[];
+        };
+        /**
+         * GrantOut
+         * @description One exception standing on one membership.
+         *
+         *     `organization_id` is the membership's node, which is what makes this row an
+         *     answer to "where" as well as "what" — an exception granted in one branch
+         *     says nothing about the branch beside it.
+         *
+         *     `sentence` travels beside the key because the key is a word for this
+         *     codebase and the sentence is the one a person reads.
+         * @example {
+         *       "id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b31",
+         *       "membership_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b32",
+         *       "organization_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b30",
+         *       "permission": "widget.approve",
+         *       "sentence": "You may not approve that widget.",
+         *       "effect": "allow",
+         *       "created_at": "2026-09-16T09:30:00Z"
+         *     }
+         */
+        GrantOut: {
+            /**
+             * Id
+             * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b31
+             */
+            id: string;
+            /**
+             * Membership Id
+             * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b32
+             */
+            membership_id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b30
+             */
+            organization_id: string;
+            /**
+             * Permission
+             * @example widget.approve
+             */
+            permission: string;
+            /**
+             * Sentence
+             * @example You may not approve that widget.
+             */
+            sentence: string;
+            /**
+             * Effect
+             * @example allow
+             */
+            effect: string;
+            /**
+             * Created At
+             * Format: date-time
+             * @example 2026-09-16T09:30:00Z
+             */
+            created_at: string;
+        };
+        /**
+         * PagedGrantOut
+         * @example {
+         *       "items": [
+         *         {
+         *           "id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b31",
+         *           "membership_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b32",
+         *           "organization_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b30",
+         *           "permission": "widget.approve",
+         *           "sentence": "You may not approve that widget.",
+         *           "effect": "allow",
+         *           "created_at": "2026-09-16T09:30:00Z"
+         *         }
+         *       ],
+         *       "has_more": true,
+         *       "next_cursor": "eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w",
+         *       "count": null
+         *     }
+         */
+        PagedGrantOut: {
+            /** Items */
+            items: components["schemas"]["GrantOut"][];
+            /**
+             * Has More
+             * @example true
+             */
+            has_more: boolean;
+            /**
+             * Next Cursor
+             * @example eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w
+             */
+            next_cursor: string | null;
+            /**
+             * Count
+             * @example null
+             */
+            count: number | null;
+        };
+        /**
+         * GrantIn
+         * @description Which way the exception points. `allow` widens, `withhold` narrows.
+         *
+         *     One field, because the membership and the permission are in the path: a
+         *     grant is addressed rather than described, which is what makes `PUT` the
+         *     honest verb for it.
+         * @example {
+         *       "effect": "allow"
+         *     }
+         */
+        GrantIn: {
+            /**
+             * Effect
+             * @example allow
+             */
+            effect: string;
+        };
+        /**
+         * HeldPermissionOut
+         * @description One key somebody holds, and where it came from.
+         *
+         *     `via` is `role`, `grant` or `inherited`; on `inherited`, `membership_id`
+         *     names the ANCESTOR membership that carries it rather than the one asked
+         *     about, because "a role you hold further up the tree" is the answer and a
+         *     screen that pointed at this row would be pointing at the wrong one.
+         * @example {
+         *       "key": "widget.approve",
+         *       "sentence": "You may not approve that widget.",
+         *       "via": "role",
+         *       "membership_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b32"
+         *     }
+         */
+        HeldPermissionOut: {
+            /**
+             * Key
+             * @example widget.approve
+             */
+            key: string;
+            /**
+             * Sentence
+             * @example You may not approve that widget.
+             */
+            sentence: string;
+            /**
+             * Via
+             * @example role
+             */
+            via: string;
+            /**
+             * Membership Id
+             * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b32
+             */
+            membership_id: string;
+        };
+        /**
+         * MembershipPermissionsOut
+         * @description **The one read every permissions screen needs.**
+         *
+         *     What this membership may do at its own node, each key with its provenance,
+         *     and separately what has been taken away. A withhold is kept rather than
+         *     subtracted-and-forgotten: it is a decision somebody made, and the screen
+         *     that hides it is the screen where "why has this stopped working" has no
+         *     answer.
+         * @example {
+         *       "membership_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b32",
+         *       "organization_id": "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b30",
+         *       "held": [],
+         *       "withheld": []
+         *     }
+         */
+        MembershipPermissionsOut: {
+            /**
+             * Membership Id
+             * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b32
+             */
+            membership_id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             * @example 019654f6-6c1b-7b0e-9e5f-2f6c4d1a8b30
+             */
+            organization_id: string;
+            /**
+             * Held
+             * @example []
+             */
+            held: components["schemas"]["HeldPermissionOut"][];
+            /**
+             * Withheld
+             * @example []
+             */
+            withheld: components["schemas"]["HeldPermissionOut"][];
+        };
+        /**
+         * PermissionFilter
+         * @description Narrow the vocabulary by kind, verb, who decided it, or a word in it.
+         * @example {
+         *       "kind": "widget",
+         *       "verb": "approve",
+         *       "decided_by": "derived",
+         *       "is_read": true,
+         *       "q": "widget"
+         *     }
+         */
+        PermissionFilter: {
+            /**
+             * Kind
+             * @example widget
+             */
+            kind?: string | null;
+            /**
+             * Verb
+             * @example approve
+             */
+            verb?: string | null;
+            /**
+             * Decided By
+             * @example derived
+             */
+            decided_by?: string | null;
+            /**
+             * Is Read
+             * @example true
+             */
+            is_read?: boolean | null;
+            /**
+             * Q
+             * @example widget
+             */
+            q?: string | null;
+        };
+        /**
+         * PagedPermissionOut
+         * @example {
+         *       "items": [
+         *         {
+         *           "key": "widget.approve",
+         *           "kind": "widget",
+         *           "verb": "approve",
+         *           "sentence": "You may not approve that widget.",
+         *           "app": "example",
+         *           "decided_by": "declared",
+         *           "is_read": false,
+         *           "default_roles": [
+         *             "admin",
+         *             "owner"
+         *           ],
+         *           "has_row_predicate": true,
+         *           "renamed_from": []
+         *         }
+         *       ],
+         *       "has_more": true,
+         *       "next_cursor": "eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w",
+         *       "count": null
+         *     }
+         */
+        PagedPermissionOut: {
+            /** Items */
+            items: components["schemas"]["PermissionOut"][];
+            /**
+             * Has More
+             * @example true
+             */
+            has_more: boolean;
+            /**
+             * Next Cursor
+             * @example eyJrIjpbIjIwMjYtMDgtMjNUMDk6MzA6MDBaIl0sInYiOjF9.p3Qb1w
+             */
+            next_cursor: string | null;
+            /**
+             * Count
+             * @example null
+             */
+            count: number | null;
+        };
+        /**
+         * PermissionOut
+         * @description One key in the vocabulary, with everything a role editor needs to choose it.
+         *
+         *     `decided_by` is the honest half: `derived` means the model registry produced
+         *     this key and nobody typed it, `declared` means an app's prose did, `reserved`
+         *     means the platform did and only `owner` holds it.
+         *
+         *     `has_row_predicate` says whether holding the key is the whole answer: a key
+         *     with a predicate is also asked about the ROW, so a role that names it grants
+         *     the capability and not the outcome.
+         * @example {
+         *       "key": "widget.approve",
+         *       "kind": "widget",
+         *       "verb": "approve",
+         *       "sentence": "You may not approve that widget.",
+         *       "app": "example",
+         *       "decided_by": "declared",
+         *       "is_read": false,
+         *       "default_roles": [
+         *         "admin",
+         *         "owner"
+         *       ],
+         *       "has_row_predicate": true,
+         *       "renamed_from": []
+         *     }
+         */
+        PermissionOut: {
+            /**
+             * Key
+             * @example widget.approve
+             */
+            key: string;
+            /**
+             * Kind
+             * @example widget
+             */
+            kind: string;
+            /**
+             * Verb
+             * @example approve
+             */
+            verb: string;
+            /**
+             * Sentence
+             * @example You may not approve that widget.
+             */
+            sentence: string;
+            /**
+             * App
+             * @example example
+             */
+            app: string;
+            /**
+             * Decided By
+             * @example declared
+             */
+            decided_by: string;
+            /**
+             * Is Read
+             * @example false
+             */
+            is_read: boolean;
+            /**
+             * Default Roles
+             * @example [
+             *       "admin",
+             *       "owner"
+             *     ]
+             */
+            default_roles: string[];
+            /**
+             * Has Row Predicate
+             * @example true
+             */
+            has_row_predicate: boolean;
+            /**
+             * Renamed From
+             * @example []
+             */
+            renamed_from?: string[];
+        };
+        /**
          * InvitationFilter
          * @description Narrow the invitation list by status, the address invited, or the branch.
          * @example {
@@ -5964,6 +7071,9 @@ export interface components {
          *           "email_domains": [
          *             "email domains"
          *           ],
+         *           "verified_domains": [
+         *             "acme.com"
+         *           ],
          *           "default_role": "admin",
          *           "enforced": true,
          *           "created_at": "2026-08-23T09:30:00Z",
@@ -6009,6 +7119,9 @@ export interface components {
          *       "email_domains": [
          *         "email domains"
          *       ],
+         *       "verified_domains": [
+         *         "acme.com"
+         *       ],
          *       "default_role": "admin",
          *       "enforced": true,
          *       "created_at": "2026-08-23T09:30:00Z",
@@ -6036,6 +7149,13 @@ export interface components {
             has_client_secret: boolean;
             /** Email Domains */
             email_domains: string[];
+            /**
+             * Verified Domains
+             * @example [
+             *       "acme.com"
+             *     ]
+             */
+            verified_domains: string[];
             /** Default Role */
             default_role: string;
             /** Enforced */
@@ -12627,6 +13747,3141 @@ export interface operations {
                      *         {
                      *           "label": "Ask for the first answer back instead of a second attempt",
                      *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_list_roles_route: {
+        parameters: {
+            query?: {
+                /** @example custom */
+                kind?: string | null;
+                /** @example approv */
+                q?: string | null;
+                ordering?: string;
+                cursor?: string | null;
+                limit?: number | null;
+                include_count?: boolean;
+            };
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PagedRoleOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. `errors` says which field and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`)
+             *
+             *     **`invalid_cursor`** — That cursor is not one this API issued for this walk. A cursor is opaque and signed, and it names a position in ONE list in ONE ordering — editing one, presenting one to a different list, or replaying one against a different sort order has no meaning to answer. Nothing was skipped and nothing was lost.
+             *     - Start the walk again with no cursor (`field:cursor`)
+             *     - Follow the next_cursor the last response gave you (`field:next_cursor`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_create_role_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+                /** @description A key of your choosing that makes this write safe to retry. An identical retry replays the first answer and carries `Idempotent-Replayed: true`; the same key with a different body is refused rather than executed. */
+                "Idempotency-Key"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoleIn"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    /** @description `true` when this answer is a replay of an earlier identical request. */
+                    "Idempotent-Replayed"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. `errors` says which field and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`)
+             *
+             *     **`idempotency_key_reuse`** — This Idempotency-Key has already been used, for a different request. The fingerprint covers the method, the path and the body, so one changed byte is a different request under a key that is already spoken for. Nothing was written.
+             *     - Resend the identical body to replay the first answer (`header:Idempotency-Key`)
+             *     - Give a genuinely different write a key of its own (`header:Idempotency-Key`)
+             *
+             *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
+             *     - Wait, then retry the identical request (`header:Idempotency-Key`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`invalid_body`** — The request does not match the shape this operation accepts. Nothing was read and nothing was written — no route ran at all. `errors` names each field and what is wrong with it, in the names you sent, including any field that is not part of this operation: unknown fields are refused rather than ignored, so a misspelled name can never look like a success.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this operation accepts (`docs:openapi`) */
+            422: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid_body",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this operation accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_get_role_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+            };
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleOut"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_delete_role_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+            };
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_update_role_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+                /** @description A key of your choosing that makes this write safe to retry. An identical retry replays the first answer and carries `Idempotent-Replayed: true`; the same key with a different body is refused rather than executed. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RolePatch"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description `true` when this answer is a replay of an earlier identical request. */
+                    "Idempotent-Replayed"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. `errors` says which field and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`)
+             *
+             *     **`idempotency_key_reuse`** — This Idempotency-Key has already been used, for a different request. The fingerprint covers the method, the path and the body, so one changed byte is a different request under a key that is already spoken for. Nothing was written.
+             *     - Resend the identical body to replay the first answer (`header:Idempotency-Key`)
+             *     - Give a genuinely different write a key of its own (`header:Idempotency-Key`)
+             *
+             *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
+             *     - Wait, then retry the identical request (`header:Idempotency-Key`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`invalid_body`** — The request does not match the shape this operation accepts. Nothing was read and nothing was written — no route ran at all. `errors` names each field and what is wrong with it, in the names you sent, including any field that is not part of this operation: unknown fields are refused rather than ignored, so a misspelled name can never look like a success.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this operation accepts (`docs:openapi`) */
+            422: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid_body",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this operation accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_set_role_permissions_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+                /** @description A key of your choosing that makes this write safe to retry. An identical retry replays the first answer and carries `Idempotent-Replayed: true`; the same key with a different body is refused rather than executed. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RolePermissionsIn"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description `true` when this answer is a replay of an earlier identical request. */
+                    "Idempotent-Replayed"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. `errors` says which field and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`)
+             *
+             *     **`idempotency_key_reuse`** — This Idempotency-Key has already been used, for a different request. The fingerprint covers the method, the path and the body, so one changed byte is a different request under a key that is already spoken for. Nothing was written.
+             *     - Resend the identical body to replay the first answer (`header:Idempotency-Key`)
+             *     - Give a genuinely different write a key of its own (`header:Idempotency-Key`)
+             *
+             *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
+             *     - Wait, then retry the identical request (`header:Idempotency-Key`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`invalid_body`** — The request does not match the shape this operation accepts. Nothing was read and nothing was written — no route ran at all. `errors` names each field and what is wrong with it, in the names you sent, including any field that is not part of this operation: unknown fields are refused rather than ignored, so a misspelled name can never look like a success.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this operation accepts (`docs:openapi`) */
+            422: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid_body",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this operation accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_list_grants_route: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number | null;
+                include_count?: boolean;
+            };
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+            };
+            path: {
+                membership_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PagedGrantOut"];
+                };
+            };
+            /** @description **`invalid_cursor`** — That cursor is not one this API issued for this walk. A cursor is opaque and signed, and it names a position in ONE list in ONE ordering — editing one, presenting one to a different list, or replaying one against a different sort order has no meaning to answer. Nothing was skipped and nothing was lost.
+             *     - Start the walk again with no cursor (`field:cursor`)
+             *     - Follow the next_cursor the last response gave you (`field:next_cursor`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid_cursor",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Start the walk again with no cursor",
+                     *           "destination": "field:cursor"
+                     *         },
+                     *         {
+                     *           "label": "Follow the next_cursor the last response gave you",
+                     *           "destination": "field:next_cursor"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_set_grant_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+                /** @description A key of your choosing that makes this write safe to retry. An identical retry replays the first answer and carries `Idempotent-Replayed: true`; the same key with a different body is refused rather than executed. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                membership_id: string;
+                permission: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GrantIn"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description `true` when this answer is a replay of an earlier identical request. */
+                    "Idempotent-Replayed"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GrantOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. `errors` says which field and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`)
+             *
+             *     **`idempotency_key_reuse`** — This Idempotency-Key has already been used, for a different request. The fingerprint covers the method, the path and the body, so one changed byte is a different request under a key that is already spoken for. Nothing was written.
+             *     - Resend the identical body to replay the first answer (`header:Idempotency-Key`)
+             *     - Give a genuinely different write a key of its own (`header:Idempotency-Key`)
+             *
+             *     **`in_progress`** — The first request under this Idempotency-Key is still running, so its answer does not exist yet. Yours was not run — which is the point: two concurrent retries of one write must not both write.
+             *     - Wait, then retry the identical request (`header:Idempotency-Key`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`invalid_body`** — The request does not match the shape this operation accepts. Nothing was read and nothing was written — no route ran at all. `errors` names each field and what is wrong with it, in the names you sent, including any field that is not part of this operation: unknown fields are refused rather than ignored, so a misspelled name can never look like a success.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this operation accepts (`docs:openapi`) */
+            422: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid_body",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this operation accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_delete_grant_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+            };
+            path: {
+                membership_id: string;
+                permission: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`conflict`** — Something that already exists holds the name, the identifier or the state this write asked for. Nothing was written.
+             *     - Re-read the row and retry against what is true now (`self:reread`)
+             *     - Ask for the first answer back instead of a second attempt (`header:Idempotency-Key`) */
+            409: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "conflict",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Re-read the row and retry against what is true now",
+                     *           "destination": "self:reread"
+                     *         },
+                     *         {
+                     *           "label": "Ask for the first answer back instead of a second attempt",
+                     *           "destination": "header:Idempotency-Key"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_membership_permissions_route: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+            };
+            path: {
+                membership_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MembershipPermissionsOut"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`rate_limited`** — You have asked for more than this door allows in the window it counts over. Nothing was written, and the allowance refills on its own.
+             *     - Wait the seconds Retry-After names, then retry (`header:Retry-After`) */
+            429: {
+                headers: {
+                    /** @description How many seconds to wait before trying again. Coming back sooner is refused the same way. */
+                    "Retry-After"?: string;
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "rate_limited",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the seconds Retry-After names, then retry",
+                     *           "destination": "header:Retry-After"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`database_unavailable`** — The database could not be reached for this request. Nothing about the request was wrong and nothing was written — the same request sent again shortly is expected to succeed.
+             *     - Wait the interval in Retry-After and send the same request again (`header:Retry-After`)
+             *     - Check whether this deployment is ready to serve (`route:readyz`) */
+            503: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "database_unavailable",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Wait the interval in Retry-After and send the same request again",
+                     *           "destination": "header:Retry-After"
+                     *         },
+                     *         {
+                     *           "label": "Check whether this deployment is ready to serve",
+                     *           "destination": "route:readyz"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+        };
+    };
+    apps_core_api_routes_list_permissions_route: {
+        parameters: {
+            query?: {
+                /** @example widget */
+                kind?: string | null;
+                /** @example approve */
+                verb?: string | null;
+                /** @example derived */
+                decided_by?: string | null;
+                /** @example true */
+                is_read?: boolean | null;
+                /** @example widget */
+                q?: string | null;
+                cursor?: string | null;
+                limit?: number | null;
+                include_count?: boolean;
+            };
+            header?: {
+                /** @description Which tenant to act in, by slug. **Omit it** and you act in your default membership's tenant, which is the ordinary case. **Send it** and it is honoured or the request is refused: a tenant you hold no membership in, one that does not exist, one a pinned token may not act in, and an empty value are all refused with `addressing_header_not_honoured` (403) — identically, so the refusal says nothing about what exists. Nothing is read and nothing is written. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Tenant"?: string;
+                /** @description Which PART of the tenant to act as, by slug — the hat you are wearing. It must be an organization you hold a membership on, or above; roles inherit downwards only, so naming your parent or a sibling is not wearable. **Omit it** and you act in your default membership's own node. **Send one you cannot wear** — or an empty value — and the request is refused with `addressing_header_not_honoured` (403) rather than answered under another hat. The value is trimmed and lower-cased before it is matched, and an empty or whitespace-only value counts as SENT. */
+                "X-Org"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PagedPermissionOut"];
+                };
+            };
+            /** @description **`invalid`** — The input does not hold. `errors` says which field and why, in the schema's own field names, so the failure can be pointed at rather than guessed at.
+             *     - Read the failing fields and resend (`field:errors`)
+             *     - Read the shape this endpoint accepts (`docs:openapi`)
+             *
+             *     **`invalid_cursor`** — That cursor is not one this API issued for this walk. A cursor is opaque and signed, and it names a position in ONE list in ONE ordering — editing one, presenting one to a different list, or replaying one against a different sort order has no meaning to answer. Nothing was skipped and nothing was lost.
+             *     - Start the walk again with no cursor (`field:cursor`)
+             *     - Follow the next_cursor the last response gave you (`field:next_cursor`) */
+            400: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "invalid",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Read the failing fields and resend",
+                     *           "destination": "field:errors"
+                     *         },
+                     *         {
+                     *           "label": "Read the shape this endpoint accepts",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`unauthenticated`** — We could not tell who is making this request. Either nothing was sent to identify you, or what was sent is no longer good — an expired or withdrawn token and no token at all are answered the same way on purpose, because a refusal that told them apart would confirm which tokens exist. Nothing was read and nothing was written.
+             *     - Sign in, and let the browser send the session it gives you (`self:session`)
+             *     - Or send a token you hold as `Authorization: Bearer <token>` (`header:Authorization`)
+             *     - Mint a fresh token — the operation is under API tokens (`docs:openapi`) */
+            401: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "unauthenticated",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Sign in, and let the browser send the session it gives you",
+                     *           "destination": "self:session"
+                     *         },
+                     *         {
+                     *           "label": "Or send a token you hold as `Authorization: Bearer <token>`",
+                     *           "destination": "header:Authorization"
+                     *         },
+                     *         {
+                     *           "label": "Mint a fresh token — the operation is under API tokens",
+                     *           "destination": "docs:openapi"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`forbidden`** — You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.
+             *     - Check the role your membership gives you here (`self:membership`)
+             *     - Ask somebody who administers this organization (`header:X-Org`)
+             *
+             *     **`insufficient_scope`** — This token is limited to a set of scopes, and this operation needs one it does not carry. Nothing was read and nothing was written. The limit is on the token, not on the person who minted it — the same person signed in with a browser, or holding a wider token, may well be allowed to do this.
+             *     - Mint a new token that carries the scope named here — the operation that mints one is under API tokens (`docs:openapi`)
+             *     - See which scope each operation needs, beside the operation (`docs:openapi`)
+             *
+             *     **`addressing_header_not_honoured`** — You are who you say you are, and this request named a place it cannot act in. An address you hold no membership in, one that does not exist, one your acting organization does not cover, and an empty value are all answered exactly the same way — the refusal is about what you asked for, never about what exists, so it confirms nothing. Nothing was read and nothing was written. Leaving the header out is different and still works: it acts in your default membership.
+             *     - Name a tenant you hold a membership in, or send no such header (`header:X-Tenant`)
+             *     - Name an organization you hold a role on, or above — roles inherit downwards only (`header:X-Org`)
+             *     - Check which memberships you actually hold (`self:membership`) */
+            403: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "forbidden",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check the role your membership gives you here",
+                     *           "destination": "self:membership"
+                     *         },
+                     *         {
+                     *           "label": "Ask somebody who administers this organization",
+                     *           "destination": "header:X-Org"
+                     *         }
+                     *       ]
+                     *     } */
+                    "application/json": components["schemas"]["Refusal"];
+                };
+            };
+            /** @description **`not_found`** — There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.
+             *     - Check which tenant you are acting in (`header:X-Tenant`)
+             *     - Check which organization you are wearing (`header:X-Org`) */
+            404: {
+                headers: {
+                    /** @description The id that ties this request to the rest of the same piece of work. Send the same value on every call in a chain and one search finds all of them; send none and this request's own id is used. */
+                    "X-Correlation-Id"?: string;
+                    /** @description How many requests this allowance is, in the window it counts over. It is the tighter of the limits that apply to you; which one that is is not said. */
+                    "X-RateLimit-Limit"?: string;
+                    /** @description How many requests are left in that allowance, this one included. At `0` the next request is refused with `429 rate_limited`; slow down before then. */
+                    "X-RateLimit-Remaining"?: string;
+                    /** @description How many seconds until the allowance frees a place — seconds from now, the same unit as `Retry-After`, never a timestamp. */
+                    "X-RateLimit-Reset"?: string;
+                    /** @description This one request's id — the value you sent, or one minted here if you sent none. Include this id when reporting a problem. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    /** @example {
+                     *       "detail": "The request could not be completed.",
+                     *       "code": "not_found",
+                     *       "remedies": [
+                     *         {
+                     *           "label": "Check which tenant you are acting in",
+                     *           "destination": "header:X-Tenant"
+                     *         },
+                     *         {
+                     *           "label": "Check which organization you are wearing",
+                     *           "destination": "header:X-Org"
                      *         }
                      *       ]
                      *     } */

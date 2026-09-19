@@ -1,0 +1,27 @@
+[Unit]
+# The idle reaper, one tick. Started by verifier-reaper.timer and by nothing
+# else; it decides once, says what it decided, and exits.
+#
+# WHY Type=oneshot AND NOT A DAEMON. A long-lived process that stops deciding
+# looks exactly like a healthy one. A timer plus a oneshot means the decision is
+# re-made from the files on disk every minute, so a box whose reaper died stops
+# printing decision lines — which is visible in the console log — rather than
+# quietly holding forever.
+Description=Verifier box idle and lifetime reaper (one decision)
+Documentation=file:/opt/verifier/idle_reaper.sh
+# The reaper's whole job is to halt the machine; ordering it after the network
+# is up keeps the console log's copy of the last decision reachable.
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Root, because `shutdown -h now` is root's. Nothing else here needs privilege
+# and the script asks for none.
+User=root
+ExecStart=/opt/verifier/idle_reaper.sh
+# A tick that fails is not a reason to disable the timer: the files it could not
+# read this minute are very often readable the next one, and a disabled reaper
+# is an unbounded bill.
+SuccessExitStatus=0 2
+StandardOutput=journal
+StandardError=journal

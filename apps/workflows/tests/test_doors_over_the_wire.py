@@ -48,7 +48,8 @@ import pytest
 from apps.accounts.models import User
 from apps.accounts.services import issue_token
 from apps.core.actor import actor_for
-from apps.core.models import Tenant
+from apps.core.authz import refusal_sentence
+from apps.core.models import Grant, Membership, Tenant
 
 # The transport harness, from the module that owns it. Copying it here would be
 # a second thing to keep in step with the MCP protocol version.
@@ -63,6 +64,12 @@ DOOR_PAIR = ("rest", "mcp")
 pytestmark = pytest.mark.django_db
 
 DETAIL_URL = "/api/v1/runs/{}/"
+
+#: The key the ledger is read under (ADR core-27). A literal here for the same
+#: reason it is one in `test_reads_ask.py`: a parity test that imported the
+#: constant the selector uses could not tell a rename from a door that quietly
+#: stopped asking.
+READ_KEY = "workflow_run.read"
 MCP_URL = "/mcp"
 JSON = "application/json"
 
@@ -212,3 +219,94 @@ async def test_the_two_doors_put_the_same_key_set_on_the_wire(
             f"The two doors disagree about {key!r}: "
             f"REST says {rest_body[key]!r}, MCP says {over_mcp[key]!r}."
         )
+
+
+@pytest.fixture
+def withheld_bearer(tenant: Tenant, member: User) -> str:
+    """A member whose tenant took `workflow_run.read` away from them.
+
+    The token carries no ceiling, deliberately: what has to refuse this call is
+    the READ KEY, and a token narrow enough to be refused by its scope ceiling
+    would prove `test_mcp.py`'s ceiling property a second time instead.
+    """
+    membership = Membership.objects.get(user=member, tenant=tenant)
+    Grant.objects.create(
+        tenant=tenant,
+        membership=membership,
+        permission=READ_KEY,
+        effect=Grant.Effect.WITHHOLD,
+    )
+    _, plaintext = issue_token(
+        user=member, tenant=tenant, name="withheld", actor=actor_for(user=member, tenant=tenant)
+    )
+    return plaintext
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
+    withheld_bearer: str, run: WorkflowRun
+) -> None:
+    """**Rule 46's named case for ADR core-27.** One withhold, two doors, one sentence.
+
+    Rule 17 proves `get_run` exists on both doors; only a test of this shape sees
+    them ANSWERING differently — and a refusal is where they are most likely to,
+    because the two bodies are composed by two different callers (`config/api.py`'s
+    mapper and `core.mcp.tool_call`) even though both build them from
+    `wire_refusal`.
+
+    Both sides are compared against `refusal_sentence(READ_KEY)` rather than
+    against each other: a door that grew a friendlier wording of its own fails
+    here instead of passing by symmetry. `code` leads on both, which is what a
+    client branches on.
+
+    And the negative half a reviewer should look for: the refused body carries no
+    RUN — the ledger a withheld reader gets is a refusal, not an empty page,
+    because an empty page reads as "nothing ever ran here".
+    """
+    from config.asgi import build_application
+
+    application = build_application()
+    bearer_header = {"authorization": f"Bearer {withheld_bearer}"}
+    sentence = refusal_sentence(READ_KEY)
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.get(
+                DETAIL_URL.format(run.pk), headers={**bearer_header, "accept": JSON}
+            )
+
+            headers = {**MCP_HEADERS, **bearer_header}
+            await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "initialize",
+                    {
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {"name": "run-withheld-read", "version": "1"},
+                    },
+                    1,
+                ),
+            )
+            called = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call",
+                    {"name": "get_run", "arguments": {"run_id": str(run.pk)}},
+                    2,
+                ),
+            )
+
+    assert over_http.status_code == 403, over_http.text
+    rest_body = over_http.json()
+    assert rest_body["code"] == "forbidden"
+    assert rest_body["detail"] == sentence
+
+    said = called.text
+    assert "forbidden" in said, said
+    assert sentence in said, said
+    assert run.workflow_id not in said, "a withheld read must not come back as a run"

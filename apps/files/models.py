@@ -83,6 +83,20 @@ class StoredFile(OrgScopedModel):
     about that residual is in the lifecycle declaration below.
     """
 
+    #: **The authorization kind, declared rather than derived** (rule 54 (a)).
+    #:
+    #: `snake_case(StoredFile)` is `stored_file`, and every key this app has ever
+    #: had is `file.*` — `file.create`, `file.read`, `file.replace`,
+    #: `file.archive`, written into policies, into published route contracts and
+    #: into whatever a deployment's `Grant` rows already say. The key vocabulary
+    #: predates the class name, and between renaming four published words and
+    #: writing one line here, this is the line.
+    #:
+    #: It is also the honest reading: the thing somebody is given authority over
+    #: is the DOCUMENT. `StoredFile` is what this codebase calls the row because
+    #: `File` is a builtin; `file` is what the product calls the thing.
+    authz_kind: ClassVar[str] = "file"
+
     #: ADR core-13, and the honest kind rather than the comfortable one.
     #:
     #: `bounded` would be wrong: `tenant` and `organization` are both PROTECT
@@ -211,6 +225,18 @@ class FileVersion(OrgScopedModel):
     `storage.py` (an upload URL is minted only for a `PENDING` version), and the
     conditional-write belt on the presigned PUT.
     """
+
+    #: **A version is authorized as its DOCUMENT** (rule 54 (e)). It names the
+    #: foreign key, not the kind: `core.authz` reads the field, walks to
+    #: `StoredFile` and takes that model's kind — and REFUSES the declaration if
+    #: the key is not `CASCADE`, because the claim being made is that a version
+    #: dies with its document and that writing a version IS writing the
+    #: document. Both are true here: the FK below cascades, and "add a version"
+    #: is the `file.replace` verb on the parent, which is the same argument
+    #: `quality/rules.yaml`'s `policy_exemptions` entry for this model already
+    #: makes. A `file_version.*` key would be a second, weaker vocabulary about
+    #: a question `file.*` has already answered.
+    authz_kind_of: ClassVar[str] = "file"
 
     #: `purged`, and it used to say `bounded`. **Both halves are true and only
     #: one of them can be the kind**, so this names the one with a sweeper behind

@@ -29,3 +29,13 @@ from __future__ import annotations
 #: A tenant's total for one meter passed a line that tenant configured, in the
 #: period the entry that crossed it landed in. Payload: `ThresholdCrossingOut`.
 THRESHOLD_CROSSED = "usage.threshold.crossed"
+
+
+#: Which authorization kind the noun above is about, for the socket door's read
+#: check (`apps.realtime.bridge.kind_of_event`, ADR core-27).
+EVENT_KINDS: dict[str, str | None] = {
+    # A crossing is a fact about the ledger it was counted from: whoever may
+    # read a tenant's `UsageEntry` rows may be told that their total passed a
+    # line, and nobody else.
+    "threshold": "usage_entry",
+}

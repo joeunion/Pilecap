@@ -31,6 +31,8 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: .env.example .gitignore docs/product manage.py pyproject.toml scripts/archaeology_lib.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks scripts/kill_mine.sh scripts/loop_tier.sh scripts/queue_cited.sh scripts/sweep.sh scripts/verifier_box.sh scripts/verify_start.sh
+# cites: scripts/check.sh
 # The drive for `scripts/verify_start.sh` — the verifier-start instrument.
 #
 #   ./scripts/tests/test_verify_start.sh          run every case
@@ -66,11 +68,18 @@ esac
 #
 # WHAT IT DOES NOT COVER, declared rather than discovered:
 #
-#   1. THE VENV, THE DATABASE AND THE SCHEMA. The instrument does not create
-#      them (its header's blind spot 2), so neither does this. What is driven
-#      is that the database NAME is derived by the clone's own `scripts/db.sh`
-#      and equals what that file independently answers — the seam, not the
-#      arithmetic.
+#   1. THE DATABASE AND THE SCHEMA, AND A REAL `uv sync`. The instrument does
+#      not create the database (its header's blind spot 2), so neither does
+#      this: what is driven is that the database NAME is derived by the clone's
+#      own `scripts/db.sh` and equals what that file independently answers —
+#      the seam, not the arithmetic. The VENV it now does provision, and this
+#      drive proves the STEP rather than `uv` — a `uv` shim first on PATH
+#      records its argv and writes the `.dist-info` directories the loop
+#      ledger's environment census counts (the `bin/docker` shape in
+#      `test_setup_env.sh`). No real sync runs in a case, so a `uv` that
+#      resolves differently, a lockfile that has drifted, or a wheel that will
+#      not build are outside what is asserted here; the belt for those is a
+#      verifier's own first `--loop` in a real clone.
 #   2. A COPY IS WHAT RUNS, in every case but the two that need no root (the
 #      pipe refusal and the unknown-option refusal, which run THIS TREE'S OWN
 #      FILE). `verify_start.sh` derives its root from its own location, so
@@ -125,6 +134,23 @@ case "${1:-}" in
 esac
 
 command -v git >/dev/null 2>&1 || cannot_look "no git on PATH"
+# EITHER SPELLING, because the machine is part of the subject. `shasum -a 256`
+# is macOS's and `sha256sum` is a minimal Linux's, and this drive has to run on
+# both: on a verifier box the bare `shasum` calls below died
+# `shasum: command not found` at line 454 and took the whole drive to exit 127
+# on the first bank on boxes. Resolved HERE rather than borrowed from
+# `sha256_of` — a drive that models a library with the library asserts nothing;
+# the same argument `test_setup_env.sh::digest_stdin` and
+# `test_loop_ledger.sh::hex64` are written for.
+command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1 ||
+    cannot_look "neither shasum nor sha256sum is on PATH — the read-only assertions below are digests"
+digest_stdin() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        sha256sum | awk '{print $1}'
+    fi
+}
 [ -x scripts/verify_start.sh ] ||
     cannot_look "scripts/verify_start.sh is not an executable file in this tree — there is nothing to drive"
 [ -r scripts/db.sh ] ||
@@ -152,6 +178,49 @@ OUT=""
 N=0
 SRC=""
 DEST=""
+
+# --- THE `uv` SHIM ------------------------------------------------------------
+#
+# THE SHIM IS THE POINT, and the shape is `test_setup_env.sh`'s stub `docker`.
+# A real `uv sync --frozen` in a scratch repository with no `pyproject.toml`
+# would be could-not-look on every machine, and a real one in a repository WITH
+# one would put a dependency resolution on the per-push wall for a property that
+# is not about `uv` at all. So `uv` is a script first on PATH that RECORDS every
+# invocation in order — the log IS the sequence, which is what lets a case
+# assert that the sync ran BEFORE the seed — and that writes exactly the thing
+# the loop ledger's environment census counts: `*.dist-info` directories under
+# `.venv`, at the depth `loop_env_fingerprint`'s `find -maxdepth 4` reaches.
+#
+# WHAT THE SHIM IS NOT ALLOWED TO BE is a `.venv` the drive plants directly.
+# The claim under test is that THE STEP provisions it; a drive that made the
+# directory itself would be green with the step deleted.
+UV_SHIM_DIR="${WORK}/bin"
+UV_LOG=""
+UV_RC=0
+
+plant_the_uv_shim() {
+    mkdir -p "$UV_SHIM_DIR"
+    cat >"${UV_SHIM_DIR}/uv" <<'UVSHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$DJB_DRIVE_UV_LOG"
+echo "uv-shim invoked: $*"
+case "$*" in
+*sync*)
+    if [ "${DJB_DRIVE_UV_RC:-0}" -ne 0 ]; then
+        echo "uv-shim: this sync was asked to fail by the drive" >&2
+        exit "${DJB_DRIVE_UV_RC}"
+    fi
+    site=".venv/lib/python3.12/site-packages"
+    mkdir -p "${site}/django-5.2.0.dist-info" "${site}/pytest-8.4.2.dist-info"
+    printf 'Name: django\nVersion: 5.2.0\n' >"${site}/django-5.2.0.dist-info/METADATA"
+    printf 'Name: pytest\nVersion: 8.4.2\n' >"${site}/pytest-8.4.2.dist-info/METADATA"
+    ;;
+esac
+exit 0
+UVSHIM
+    chmod +x "${UV_SHIM_DIR}/uv"
+}
+plant_the_uv_shim
 
 # The carried value. It is this drive's invention and it never leaves the
 # scratch directory; what the cases assert about it is that the instrument
@@ -214,8 +283,14 @@ says_not() {
 #
 #   $1 — "ignores-dotenv" (the normal shape) or "bare-gitignore" (blind spot 4)
 #        or "no-gitignore" (nothing ignored at all).
+#   $2 — "moved-on" (the default: main moved after the rung branch, so the union
+#        is a real merge commit) or "already-up-to-date" (the rung branch
+#        already contains main's tip, which is the ONE shape in which a seeded
+#        loop row can hit — the instrument's own blind spot 6 says so).
 fresh_source() {
     local shape="${1:-ignores-dotenv}"
+    local union="${2:-moved-on}"
+    UV_RC=0
     N=$((N + 1))
     SRC="${WORK}/src${N}"
     drive_require_scratch SRC "${SRC:-}"
@@ -228,9 +303,19 @@ fresh_source() {
     cp "$REAL" "${SRC}/scripts/verify_start.sh"
     chmod +x "${SRC}/scripts/verify_start.sh"
     cp "$REAL_DB" "${SRC}/scripts/db.sh"
+    # The loop ledger and its refusal seam. The python-dependencies step proves
+    # the venv by ASKING `loop_env_fingerprint` — the function the first `--loop`
+    # will call — rather than re-censusing `.venv` itself, so the clone needs
+    # both files or that step is could-not-look by design.
+    cp "${ROOT}/scripts/gate_ledger.sh" "${SRC}/scripts/gate_ledger.sh"
+    cp "${ROOT}/scripts/gate_refuse.sh" "${SRC}/scripts/gate_refuse.sh"
     case "$shape" in
     ignores-dotenv)
-        printf '.env\n.env.*\n!.env.example\n*.log\n' >"${SRC}/.gitignore"
+        # `.venv/` is here for the same reason `.env` is: this template ignores
+        # both (`.gitignore`, the Env block and line 7), and the clone now has a
+        # venv in it. A fixture that ignored one and not the other would be a
+        # checkout no product has.
+        printf '.env\n.env.*\n!.env.example\n*.log\n.venv/\n' >"${SRC}/.gitignore"
         git -C "$SRC" add .gitignore
         ;;
     bare-gitignore)
@@ -246,7 +331,8 @@ fresh_source() {
     # two cases below depend on, so there is nothing here to leak.
     printf 'DATABASE_NAME=djb_placeholder\nZITADEL_PAT=\n' >"${SRC}/.env.example" # pragma: allowlist secret
     echo "one" >"${SRC}/tracked.txt"
-    git -C "$SRC" add scripts/verify_start.sh scripts/db.sh .env.example tracked.txt
+    git -C "$SRC" add scripts/verify_start.sh scripts/db.sh scripts/gate_ledger.sh \
+        scripts/gate_refuse.sh .env.example tracked.txt
     git -C "$SRC" commit -q -m "base"
     git -C "$SRC" checkout -q -b rung-x
     echo "what the rung built" >"${SRC}/rung.txt"
@@ -256,6 +342,17 @@ fresh_source() {
     echo "two" >>"${SRC}/tracked.txt"
     git -C "$SRC" add tracked.txt
     git -C "$SRC" commit -q -m "main moved on afterwards"
+    if [ "$union" = "already-up-to-date" ]; then
+        # The builder's last fold, modelled: the rung branch carries main's tip,
+        # so step 2 takes its *already up to date* arm and the union IS the
+        # branch tip — the same sha in every clone this drive makes of it, which
+        # is what lets one case derive a key in one clone and look it up in the
+        # next.
+        git -C "$SRC" checkout -q rung-x
+        git -C "$SRC" -c user.email=drive@example.invalid -c user.name="verify start drive" \
+            merge -q --no-edit main
+        git -C "$SRC" checkout -q main
+    fi
 }
 
 # The primary's `.env` — the thing the ZITADEL carry reads. Never committed:
@@ -272,8 +369,16 @@ run_it() {
     N=$((N + 1))
     OUT="${WORK}/out${N}.log"
     DEST="${WORK}/clone${N}"
+    UV_LOG="${WORK}/uv${N}.log"
+    : >"$UV_LOG"
     RC=0
-    (cd "$SRC" && ./scripts/verify_start.sh "$@" "$DEST") >"$OUT" 2>&1 || RC=$?
+    (
+        cd "$SRC" || exit 2
+        export PATH="${UV_SHIM_DIR}:$PATH"
+        export DJB_DRIVE_UV_LOG="$UV_LOG"
+        export DJB_DRIVE_UV_RC="$UV_RC"
+        ./scripts/verify_start.sh "$@" "$DEST"
+    ) >"$OUT" 2>&1 || RC=$?
 }
 
 # Run the copy with an explicit argument list and NO appended destination.
@@ -282,8 +387,16 @@ run_raw() {
     shift
     N=$((N + 1))
     OUT="${WORK}/out${N}.log"
+    UV_LOG="${WORK}/uv${N}.log"
+    : >"$UV_LOG"
     RC=0
-    (cd "$SRC" && ./scripts/verify_start.sh "$@") >"$OUT" 2>&1 || RC=$?
+    (
+        cd "$SRC" || exit 2
+        export PATH="${UV_SHIM_DIR}:$PATH"
+        export DJB_DRIVE_UV_LOG="$UV_LOG"
+        export DJB_DRIVE_UV_RC="$UV_RC"
+        ./scripts/verify_start.sh "$@"
+    ) >"$OUT" 2>&1 || RC=$?
 }
 
 # =============================================================================
@@ -347,12 +460,20 @@ case_a_branch_this_checkout_does_not_have_is_refused() {
 case_the_happy_path_clones_merges_derives_and_ends_clean() {
     fresh_source
     source_env "ZITADEL_PAT=${CARRY_VALUE}" "ZITADEL_ISSUER=http://localhost:8081"
-    local branch_tip main_tip
+    local branch_tip main_tip reflog_before reflog_after
     branch_tip="$(git -C "$SRC" rev-parse rung-x)"
     main_tip="$(git -C "$SRC" rev-parse main)"
+    # CRITERION 47.5: this instrument never folds main into the SOURCE branch.
+    # A `git merge` into `rung-x` here would write a reflog entry, so the
+    # source's whole reflog is the witness — taken across the run rather than
+    # reasoned about, which is the same standard the seed's read-only assertion
+    # holds itself to.
+    reflog_before="$(git -C "$SRC" reflog --all 2>/dev/null | digest_stdin)"
 
     run_it "the happy path clones, merges, derives and ends clean" "rung-x"
     exits 0
+    reflog_after="$(git -C "$SRC" reflog --all 2>/dev/null | digest_stdin)"
+    is "$reflog_after" "$reflog_before" "the SOURCE's reflog across the run"
     says "== READY"
     says "step 4/${STEP_TOTAL_IN_SCRIPT}"
 
@@ -394,6 +515,48 @@ case_the_happy_path_clones_merges_derives_and_ends_clean() {
     else
         bad "the clone has no .env"
     fi
+}
+
+# CRITERION: the clone can be PUSHED FROM, which means its hooks run.
+#
+# WHAT `git clone` DOES NOT COPY. Committed state, and nothing else: not
+# `core.hooksPath` (config is per-repository), not a hook file — `.git/hooks` in
+# a fresh clone is populated from the templates and holds `*.sample` and no more.
+# A clone is therefore HOOKLESS, and hooklessness is silent in the direction that
+# costs: `git push --dry-run` from it exits 0 having consulted nothing, which is
+# indistinguishable from a wall that passed the tree.
+#
+# MEASURED ON 2026-09-18, and this line is the fix's other half. The verifier box
+# wrapper vouches for the tree it is about to send by running a `--dry-run`
+# through this machine's pre-push hook. From the primary that fired the hook and
+# demanded a full gate; from a clone of the same tree it fired NO hook, and the
+# box carried a tree no wall had ever seen. `scripts/verifier_box.sh` now refuses
+# a vouch whose hook left no sentinel; this sets the config that makes the hook
+# run at all.
+case_the_clone_carries_the_hooks_path() {
+    fresh_source
+    run_it "the clone carries the hooks path" "rung-x"
+    exits 0
+
+    if [ -d "${DEST}/.git" ]; then
+        ok "the clone exists at ${DEST}"
+    else
+        bad "no clone at ${DEST}"
+        return
+    fi
+
+    local configured
+    configured="$(git -C "$DEST" config --get core.hooksPath || true)"
+    if [ "$configured" = "scripts/githooks" ]; then
+        ok "the clone's core.hooksPath is scripts/githooks"
+    else
+        bad "the clone's core.hooksPath is '${configured:-<unset>}' — a clone that cannot run a hook vouches for nothing it pushes"
+    fi
+
+    # AND IT IS ANNOUNCED, not done quietly. Every other thing this script
+    # derives is printed; a hook setting nobody can see in the transcript is a
+    # thing the next verifier will not know to check when a push goes silent.
+    says "hooks        core.hooksPath=scripts/githooks"
 }
 
 # CRITERION: the derived name is db.sh's, not a second copy of its arithmetic.
@@ -454,8 +617,21 @@ case_an_exported_database_name_does_not_reach_the_clone() {
     N=$((N + 1))
     OUT="${WORK}/out${N}.log"
     DEST="${WORK}/clone${N}"
+    UV_LOG="${WORK}/uv${N}.log"
+    : >"$UV_LOG"
     RC=0
-    (cd "$SRC" && DATABASE_NAME=djb_the_callers_own ./scripts/verify_start.sh rung-x "$DEST") >"$OUT" 2>&1 || RC=$?
+    # THE SHIM IS ON PATH HERE TOO. This case has its own runner because the
+    # thing under test is an EXPORTED variable, but a run without the shim would
+    # reach the real `uv` in a repository with no `pyproject.toml` and fail at
+    # the python-dependencies step for a reason that has nothing to do with
+    # `DATABASE_NAME`. Every full run of the instrument goes through the shim.
+    (
+        cd "$SRC" || exit 2
+        export PATH="${UV_SHIM_DIR}:$PATH"
+        export DJB_DRIVE_UV_LOG="$UV_LOG"
+        export DJB_DRIVE_UV_RC="$UV_RC"
+        DATABASE_NAME=djb_the_callers_own ./scripts/verify_start.sh rung-x "$DEST"
+    ) >"$OUT" 2>&1 || RC=$?
     exits 0
     says "is set in this shell and is IGNORED here"
     if grep -q 'DATABASE_NAME=djb_the_callers_own' "${DEST}/.env" 2>/dev/null; then
@@ -682,7 +858,11 @@ case_it_never_reads_the_environment_file_into_its_own_shell() {
     fi
     # A second copy of the path-hash arithmetic is the thing the seam exists to
     # prevent. Code only, comments already stripped.
-    if grep -qE 'shasum|sha256sum|openssl dgst|cksum' "$code"; then
+    # `sha256_of` JOINS THE PATTERN. The gate family grew one helper for the
+    # two spellings of SHA-256 (scripts/gate_refuse.sh), and a pattern that
+    # only knew the tool names would wave a second copy through the moment it
+    # was written as a call to that helper instead.
+    if grep -qE 'shasum|sha256sum|sha256_of|openssl dgst|cksum' "$code"; then
         bad "it has grown its own path-hash arithmetic — that is the second copy db.sh exists to avoid"
     else
         ok "it hashes nothing itself; db.sh's answer is the name"
@@ -745,11 +925,18 @@ case_the_clone_is_given_a_local_main_ref_at_the_verified_sha() {
 # --- the loop-verdict seed ----------------------------------------------------
 #
 # The scratch source can carry a `.git/djb-loop-verdicts` with rows of both
-# shapes, which is the whole of what these cases need. THE LIVE HIT IS NOT HERE
-# and cannot be: a hit needs a real key, and the key's environment fingerprint
-# censuses `.venv/**/*.dist-info`, which this scratch repository has none of —
-# blind spot 1 of this drive, unchanged. The hit is the finisher's pasted
-# measurement in a real clone, and after that the next verifier's `loop:` row.
+# shapes, which is the whole of what the COUNTING cases need.
+#
+# THE LIVE HIT IS NOW HERE, and the sentence that used to stand on this line —
+# that it could not be, because the key's environment fingerprint censuses
+# `.venv/**/*.dist-info` and this scratch repository has none — is false from
+# the commit that gave the instrument a python-dependencies step. What made it
+# true was the absence the step closes: the `uv` shim writes the `.dist-info`
+# directories the census counts, so `loop_env_fingerprint` answers in the clone
+# and `case_a_seeded_row_is_a_hit_once_the_venv_exists` derives a real key in
+# one clone and looks it up in the next. What is still NOT claimed here is a
+# hit against a REAL builder's ledger row; that is the verifier's own first
+# `--loop` in a real clone, and its `loop:` row is where it shows up.
 
 # A well-formed loop row, and a malformed one, written into the source's ledger.
 seed_source_ledger() {
@@ -838,16 +1025,16 @@ case_the_seed_never_writes_to_the_source() {
     fresh_source
     local ledger before after
     ledger=$(seed_source_ledger 2 1)
-    before=$(shasum -a 256 <"$ledger" | awk '{print $1}')
+    before=$(digest_stdin <"$ledger")
     run_it "the seed never writes to the source" "rung-x"
     exits 0
-    after=$(shasum -a 256 <"$ledger" | awk '{print $1}')
+    after=$(digest_stdin <"$ledger")
     is "$after" "$before" "the SOURCE ledger's sha across the clone"
 
     # And the other direction: a row planted in the CLONE stays in the clone.
     printf 'loop-v1 loop-v1:%064d loop 2026-09-07T00:00:09Z caller=planted scope=x passes=1 tree=x env=x\n' 9 \
         >>"${DEST}/.git/djb-loop-verdicts"
-    is "$(shasum -a 256 <"$ledger" | awk '{print $1}')" "$before" \
+    is "$(digest_stdin <"$ledger")" "$before" \
         "the SOURCE ledger's sha after a row is planted in the clone"
 }
 
@@ -867,6 +1054,227 @@ case_step_four_is_still_green_over_the_seeded_file() {
         ok "git status in the clone is empty — the seed is invisible to it"
     else
         bad "the seed made the clone dirty: ${strays}"
+    fi
+}
+
+# --- the python-dependencies step ---------------------------------------------
+#
+# THE MEASURED DEFECT THESE CLOSE, from a field test on 2026-09-12: the seed above copied
+# 51 rows into a clone that had no `.venv`, the consult censused `.venv`, found
+# nothing, refused to derive a key at all, and measured the whole suite in full
+# (201 s). Every one of those rows was dead on arrival. The seed and the consult
+# were looking at two environments; these cases are how they are one.
+
+# THE ORDER IS THE PROPERTY, not the presence. A sync that ran AFTER the seed
+# would leave the seed written over an environment that did not exist yet, which
+# is the defect with an extra step in it — so the transcript's line positions
+# are compared rather than a pair of "it happened" assertions.
+case_the_venv_is_provisioned_before_the_seed_and_the_order_is_asserted() {
+    fresh_source
+    run_it "the venv is provisioned before the seed, and the order is asserted" "rung-x"
+    exits 0
+    says "python dependencies"
+    says "uv sync --frozen"
+
+    # (a) THE SHIM'S LOG: the sync really was asked for, with --frozen.
+    if grep -qF -- "sync --frozen" "$UV_LOG"; then
+        ok "the uv shim was invoked as \`sync --frozen\`"
+    else
+        bad "the uv shim's log does not carry \`sync --frozen\`: $(tr '\n' '|' <"$UV_LOG")"
+    fi
+
+    # (b) THE TRANSCRIPT'S LINE POSITIONS: union merge < sync < seed.
+    local merge_ln sync_ln seed_ln
+    # `|| true` on each: under `set -euo pipefail` a grep that matches nothing
+    # kills the whole drive, and "the banner is missing" is a FAILED ASSERTION
+    # here, never a dead driver.
+    merge_ln=$(grep -nF -- '· union merge' "$OUT" | head -1 | cut -d: -f1) || true
+    sync_ln=$(grep -nF -- 'uv-shim invoked: sync --frozen' "$OUT" | head -1 | cut -d: -f1) || true
+    seed_ln=$(grep -nF -- '· loop-verdict seed' "$OUT" | head -1 | cut -d: -f1) || true
+    if [ -n "$merge_ln" ] && [ -n "$sync_ln" ] && [ -n "$seed_ln" ]; then
+        if [ "$merge_ln" -lt "$sync_ln" ] && [ "$sync_ln" -lt "$seed_ln" ]; then
+            ok "the order in the transcript is union merge (${merge_ln}) < sync (${sync_ln}) < seed (${seed_ln})"
+        else
+            bad "out of order: union merge ${merge_ln}, sync ${sync_ln}, seed ${seed_ln}"
+        fi
+    else
+        bad "a banner is missing: union merge '${merge_ln}', sync '${sync_ln}', seed '${seed_ln}'"
+    fi
+
+    # (c) AND THE THING THE CENSUS ACTUALLY COUNTS is in the clone. Not "a
+    #     directory exists" — the `*.dist-info` directories `loop_env_fingerprint`
+    #     reaches with `find -maxdepth 4`.
+    local dists
+    dists=$(find "${DEST}/.venv" -maxdepth 4 -type d -name '*.dist-info' 2>/dev/null | wc -l | tr -d ' ') || dists=0
+    if [ "${dists:-0}" -gt 0 ]; then
+        ok "the clone's .venv carries ${dists} dist-info directories the census can count"
+    else
+        bad "the clone's .venv has nothing the loop ledger's census would find"
+    fi
+
+    # (d) The step says the fingerprint it derived, so a reader can compare it
+    #     with the one the miss banner prints.
+    says "fingerprint  "
+}
+
+case_no_sync_skips_the_step_and_says_the_seed_cannot_hit() {
+    fresh_source
+    seed_source_ledger 2 0 >/dev/null
+    run_it "--no-sync skips the step and says the seed cannot hit" "rung-x" "--no-sync"
+    exits 0
+    says "SKIPPED"
+    says "THE SEED BELOW CANNOT HIT"
+    says "re-measure the suite in full"
+    # The seed still runs — the skip costs the HIT, not the rows.
+    says "ledger seeded: 2 loop rows"
+    if [ -s "$UV_LOG" ]; then
+        bad "uv was invoked anyway: $(tr '\n' '|' <"$UV_LOG")"
+    else
+        ok "uv was never invoked"
+    fi
+    if [ -e "${DEST}/.venv" ]; then
+        bad "a venv was made anyway at ${DEST}/.venv"
+    else
+        ok "the clone has no .venv"
+    fi
+    # And the honest half: with no venv the ledger CANNOT answer, which is the
+    # exact refusal the field test measured.
+    local fp
+    fp=$(cd "$DEST" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 && loop_env_fingerprint 2>/dev/null) || fp=""
+    if [ -z "$fp" ]; then
+        ok "loop_env_fingerprint refuses in the skipped clone — env= unstated, as the skip says"
+    else
+        bad "the skipped clone somehow fingerprints: ${fp}"
+    fi
+    # AND THE PREDICTION SAYS THE SAME THING IN ITS OWN GRAMMAR. A clone with no
+    # venv derives no key at all, so no tree comparison could make it a hit —
+    # predicting one here would be the line claiming something it cannot know.
+    says "consult: WILL RUN (--no-sync"
+    says_not "EXPECTED HIT"
+}
+
+# A FAILING SYNC IS COULD-NOT-LOOK, AND NOTHING IS SEEDED. The clone is not
+# ready; a seed written over it would be rows nothing can ever match, which is
+# the measured defect with the extra insult of a green exit.
+case_a_failing_sync_is_could_not_look_and_seeds_nothing() {
+    fresh_source
+    seed_source_ledger 3 0 >/dev/null
+    UV_RC=1
+    run_it "a failing sync is could-not-look and seeds nothing" "rung-x"
+    UV_RC=0
+    exits 2
+    says "could not be VERIFIED"
+    says "uv sync --frozen"
+    says "Nothing was seeded."
+    if [ -e "${DEST}/.git/djb-loop-verdicts" ]; then
+        bad "the seed ran anyway over a clone with no environment"
+    else
+        ok "the seed file is absent — nothing was seeded"
+    fi
+    # The clone is left in place to be read, as every could-not-verify here is.
+    if [ -d "${DEST}/.git" ]; then
+        ok "the clone is left in place for the reader"
+    else
+        bad "the clone was removed — there is nothing left to diagnose"
+    fi
+}
+
+# THE WHOLE POINT OF THE STEP, END TO END, and it is two clones on purpose: the key
+# is derived in the FIRST by the clone's own `gate_ledger.sh`, the row is written
+# into the SOURCE's ledger at that key the way a builder's `--loop` would have
+# banked it, and the SECOND clone is where the lookup has to hit. The union is
+# the branch tip (`already-up-to-date`), which is the one shape the instrument's
+# blind spot 6 says a seeded row can hit in at all.
+case_a_seeded_row_is_a_hit_once_the_venv_exists() {
+    fresh_source "ignores-dotenv" "already-up-to-date"
+    local scope="mode=loop_own=x_scope=x_always=d"
+    local fp key tree clone_a clone_b key_b row ledger common
+
+    run_it "a seeded row is a hit once the venv exists (phase A: derive)" "rung-x"
+    exits 0
+    says "already up to date"
+    clone_a="$DEST"
+
+    fp=$(cd "$clone_a" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 &&
+        loop_env_fingerprint 2>/dev/null) || fp=""
+    if [ -n "$fp" ]; then
+        ok "the clone's own gate_ledger.sh derives an env fingerprint: ${fp}"
+    else
+        bad "env= unstated — the clone's gate_ledger.sh could not census .venv"
+        return
+    fi
+
+    tree=$(git -C "$clone_a" rev-parse 'HEAD^{tree}') || tree=""
+    key=$(cd "$clone_a" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 &&
+        loop_ledger_key "$tree" "$scope" 2>/dev/null) || key=""
+    if [ -n "$key" ]; then
+        ok "a loop key is derivable in the clone: ${key}"
+    else
+        bad "no loop key could be derived in the clone"
+        return
+    fi
+
+    # THE BUILDER'S ROW, at that key, in the SOURCE's ledger.
+    ledger=$(seed_source_ledger 1 0)
+    printf 'loop-v1 %s loop 2026-09-14T00:00:00Z caller=builder scope=%s passes=1 tree=%s env=%s\n' \
+        "$key" "$scope" "$tree" "$fp" >>"$ledger"
+
+    run_it "a seeded row is a hit once the venv exists (phase B: consult)" "rung-x"
+    exits 0
+    says "ledger seeded: 2 loop rows"
+    clone_b="$DEST"
+
+    key_b=$(cd "$clone_b" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 &&
+        loop_ledger_key "$(git rev-parse 'HEAD^{tree}')" "$scope" 2>/dev/null) || key_b=""
+    is "$key_b" "$key" "the key the SECOND clone derives"
+
+    row=$(cd "$clone_b" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 &&
+        loop_ledger_lookup "$key_b" 2>/dev/null) || row=""
+    if [ -n "$row" ]; then
+        ok "HIT — the lookup returns the seeded row: ${row}"
+    else
+        bad "miss(unmatched) — the seeded row is still dead on arrival"
+    fi
+
+    # AND THE CONTROL, so the hit is not an artefact of a lookup that matches
+    # anything: the same lookup at a key nothing seeded must miss.
+    common=$(printf 'loop-v1:%064d' 7)
+    row=$(cd "$clone_b" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 &&
+        loop_ledger_lookup "$common" 2>/dev/null) || row=""
+    if [ -z "$row" ]; then
+        ok "a key nothing seeded still misses — the lookup is not matching anything"
+    else
+        bad "the lookup answered for a key nothing seeded: ${row}"
+    fi
+}
+
+# THE VERDICT KEY IS UNCHANGED BY THE NEW STEP, which is the one way this step
+# could have broken the guard the whole script exists to run: `.venv` is ignored
+# in this template and in every product cloned from it, so the tree the last step
+# measures is the tree it measured before.
+case_the_verdict_key_ignores_the_provisioned_venv() {
+    fresh_source
+    run_it "the verdict key ignores the provisioned venv" "rung-x"
+    exits 0
+    says "clean"
+    says "READY"
+    if [ -d "${DEST}/.venv" ]; then
+        ok "the clone really does have a .venv to be ignored"
+    else
+        bad "no .venv in the clone — this case would pass vacuously"
+        return
+    fi
+    local strays
+    strays=$(git -C "$DEST" status --porcelain) || strays="git status itself failed"
+    if [ -z "$strays" ]; then
+        ok "git status in the clone is empty — the venv shifts no verdict key"
+    else
+        bad "the venv made the clone dirty: ${strays}"
+    fi
+    if git -C "$DEST" check-ignore -q .venv; then
+        ok "the clone's own .gitignore is what ignores it"
+    else
+        bad "git does not consider .venv ignored in the clone"
     fi
 }
 
@@ -962,6 +1370,295 @@ case_the_narrowing_does_not_reach_the_verdict_key_guard() {
     says "docs/${planted}"
 }
 
+# --- the consult prediction ---------------------------------------------------
+#
+# WHAT THESE ASSERT, AND THE HALF THEY DO NOT REACH — stated here rather than
+# left for a reader to discover, because a drive that is silent about its reach
+# is a drive whose green means less than it looks.
+#
+# The prediction is about ONE half of the loop's verdict key — the TREE — and
+# these cases drive exactly that half, plus the two worlds that distinguish it:
+# a rung branch that carries main's tip (the builder folded, so step 2 takes its
+# *already up to date* arm) and one that does not.
+#
+# THE LOOP'S OWN BANNER IS NOT PRINTED HERE, and it cannot be: a scratch source
+# repository carries four scripts, no Django, no pytest and no `check.sh`, so
+# `./scripts/check.sh --loop` has nothing to run in a clone of one. What IS
+# driven is THE SEAM THAT BANNER PRINTS FROM — `gate_measured_tree`,
+# `loop_ledger_key` and `loop_ledger_lookup`, in the clone, which are the three
+# calls `scripts/check.sh` makes at :1720, :1735 and :1738 and the whole of what
+# decides a hit from a miss. A prediction the loop's consult contradicts reds
+# here. The banner's WORDING is the declared blind spot, and it is the
+# verifier's to read in a real clone.
+
+# The clone's measured tree, derived the way the loop derives it: by asking the
+# clone's own `scripts/gate_ledger.sh`, never by re-implementing `git add -A`.
+clone_measured_tree() {
+    (cd "$1" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 && gate_measured_tree 2>/dev/null) || true
+}
+
+# The loop's consult in the clone: `hit <key>` or `miss <token>` — the pair
+# `scripts/check.sh` turns into its REUSED banner or its `miss(...)` banner.
+loop_seam_verdict() {
+    (
+        cd "$1" || exit 2
+        . ./scripts/gate_ledger.sh >/dev/null 2>&1 || exit 2
+        seam_tree=$(gate_measured_tree) || {
+            echo "miss no-tree"
+            exit 0
+        }
+        # PLAINLY, NOT IN A SUBSTITUTION — `check.sh:1734`'s own note: the
+        # globals a fingerprint sets in a subshell die with it, and the
+        # attributor below reads one of them.
+        loop_env_fingerprint >/dev/null 2>&1 || true
+        seam_key=$(loop_ledger_key "$seam_tree" "$2") || {
+            echo "miss no-key"
+            exit 0
+        }
+        if loop_ledger_lookup "$seam_key" >/dev/null; then
+            printf 'hit %s\n' "$seam_key"
+        else
+            printf 'miss %s\n' \
+                "$(loop_ledger_attribute "$seam_tree" "${LOOP_ENV_FINGERPRINT:-unstated}" "$2" | sed -n '1p')"
+        fi
+    ) || true
+}
+
+# A builder's banked row, written into the SOURCE's ledger at the key THIS clone
+# derives — the shape `case_a_seeded_row_is_a_hit_once_the_venv_exists` already
+# uses, asked for rather than re-spelled. The key lands on stdout.
+#
+# IT CARRIES THE COMPONENTS, AND THAT IS NOT DECORATION — it is the difference
+# between driving the attributor and driving a fixture artifact. A REAL banked
+# row is written by `loop_ledger_record`, which appends
+# `env-file= excluded= dists= env-reads= head= merge-base=` after `env=` from
+# the global `LOOP_ENV_COMPONENTS`; `loop_ledger_attribute`'s component pass
+# RANKS candidate rows by those fields and falls back to a three-line match
+# only for rows written before they existed. A planted row without them is
+# exactly that pre-components population, so the attributor could not rank it
+# and answered `unmatched` where a real row answers `tree` — a green case
+# codifying the fixture's own shortcut. A verification against a real banked
+# row measured the real token and sent it back; the components are asked for the
+# way every other derivation in this drive is, by calling the clone's own
+# `loop_env_fingerprint` and reading the global it sets.
+plant_builder_row() {
+    local clone="$1" scope="$2" ledger="$3" tree fp key derived components
+    tree=$(clone_measured_tree "$clone")
+    [ -n "$tree" ] || return 1
+    # PLAINLY INSIDE THE SUBSHELL, THEN PRINTED — `check.sh:1722-1733`'s own
+    # note: the globals `loop_env_fingerprint` sets die with the subshell that
+    # called it, so the components have to be printed out of the same shell
+    # that derived the digest or the two could disagree.
+    derived=$(cd "$clone" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 &&
+        loop_env_fingerprint >/dev/null 2>&1 &&
+        printf '%s\n%s\n' "$LOOP_ENV_FINGERPRINT" "$LOOP_ENV_COMPONENTS") || derived=""
+    fp="${derived%%$'\n'*}"
+    components="${derived#*$'\n'}"
+    components="${components%$'\n'}"
+    [ -n "$fp" ] || return 1
+    [ -n "$components" ] || return 1
+    key=$(cd "$clone" && . ./scripts/gate_ledger.sh >/dev/null 2>&1 &&
+        loop_ledger_key "$tree" "$scope" 2>/dev/null) || key=""
+    [ -n "$key" ] || return 1
+    printf 'loop-v1 %s loop 2026-09-18T00:00:00Z caller=builder scope=%s passes=1 tree=%s env=%s %s\n' \
+        "$key" "$scope" "$tree" "$fp" "$components" >>"$ledger"
+    printf '%s\n' "$key"
+}
+
+CONSULT_SCOPE="mode=loop_own=x_scope=x_always=d"
+
+# CRITERION 47.2 (a): the folded world predicts a hit, and names the row it
+# predicts from.
+case_a_folded_branch_predicts_a_hit() {
+    fresh_source "ignores-dotenv" "already-up-to-date"
+    local ledger key tree
+
+    run_it "a folded branch predicts a hit (phase A: derive)" "rung-x"
+    exits 0
+    says "already up to date"
+    tree=$(clone_measured_tree "$DEST")
+    if [ -z "$tree" ]; then
+        bad "the clone's own gate_ledger.sh could not measure its tree"
+        return
+    fi
+    ledger=$(seed_source_ledger 1 0)
+    key=$(plant_builder_row "$DEST" "$CONSULT_SCOPE" "$ledger") || key=""
+    if [ -z "$key" ]; then
+        bad "could not plant a builder row at this clone's key"
+        return
+    fi
+
+    run_it "a folded branch predicts a hit (phase B: predict)" "rung-x"
+    exits 0
+    says "consult: EXPECTED HIT ${key}"
+    says "(union = branch tip; seeded row tree=${tree})"
+    says_not "WILL RUN"
+    # THE FOLD POINT IS PRINTED IN BOTH ARMS, because 47.1's instrument is a
+    # comparison of two shas and the verifier cannot make it without this one.
+    says "fold point   $(git -C "$SRC" rev-parse main)"
+}
+
+# CRITERION 47.2 (b): main moved after the fold — a run, and the count.
+case_main_moved_after_the_fold_predicts_a_run_and_counts() {
+    fresh_source "ignores-dotenv" "already-up-to-date"
+    local ledger key fold
+
+    run_it "main moved after the fold (phase A: the fold's own clone)" "rung-x"
+    exits 0
+    ledger=$(seed_source_ledger 1 0)
+    key=$(plant_builder_row "$DEST" "$CONSULT_SCOPE" "$ledger") || key=""
+    if [ -z "$key" ]; then
+        bad "could not plant a builder row at the folded clone's key"
+        return
+    fi
+
+    # THE WORLD THE CRITERION NAMES: one commit on main after the builder folded.
+    fold=$(git -C "$SRC" rev-parse main)
+    echo "after the fold" >>"${SRC}/tracked.txt"
+    git -C "$SRC" add tracked.txt
+    git -C "$SRC" commit -q -m "main moved after the fold"
+
+    run_it "main moved after the fold predicts a run and counts" "rung-x"
+    exits 0
+    says "consult: WILL RUN (union differs: 1 commit(s) on main since the fold ${fold})"
+    says_not "EXPECTED HIT"
+
+    # AND A BRANCH THAT NEVER FOLDED AT ALL — the same arm, a bigger count, so a
+    # hard-coded `1` could not pass this case.
+    fresh_source
+    echo "and again" >>"${SRC}/tracked.txt"
+    git -C "$SRC" add tracked.txt
+    git -C "$SRC" commit -q -m "main moved a second time"
+    fold=$(git -C "$SRC" merge-base main rung-x)
+    run_it "a branch that never folded predicts a run and counts" "rung-x"
+    exits 0
+    says "consult: WILL RUN (union differs: 2 commit(s) on main since the fold ${fold})"
+}
+
+# CRITERION 47.2 (c): the tree is right and there is still no row — a NAMED
+# absence, never silence and never a hit.
+case_no_seeded_row_is_a_named_absence() {
+    fresh_source "ignores-dotenv" "already-up-to-date"
+    local tree
+
+    # Rows exist — at trees this clone does not have. "No row for THIS tree" is
+    # a different sentence from "no ledger", and both are driven.
+    seed_source_ledger 2 1 >/dev/null
+    run_it "no seeded row is a named absence" "rung-x"
+    exits 0
+    tree=$(clone_measured_tree "$DEST")
+    if [ -z "$tree" ]; then
+        bad "the clone's own gate_ledger.sh could not measure its tree"
+        return
+    fi
+    says "consult: WILL RUN (no seeded row for tree ${tree})"
+    says_not "EXPECTED HIT"
+
+    # And with no ledger at all in the source, the same sentence — the absence
+    # is about the ROW, which is what the next run will look up.
+    fresh_source "ignores-dotenv" "already-up-to-date"
+    run_it "no ledger at all is the same named absence" "rung-x"
+    exits 0
+    says "ledger not seeded:"
+    says "consult: WILL RUN (no seeded row for tree "
+}
+
+# CRITERION 47.3: the prediction is honest against the loop — both directions,
+# in one case, through the seam the loop's banner prints from (see the header
+# above for the half this cannot reach).
+case_the_prediction_matches_the_loops_own_verdict() {
+    fresh_source "ignores-dotenv" "already-up-to-date"
+    local ledger key seam
+
+    run_it "the prediction matches the loop's own verdict (phase A: derive)" "rung-x"
+    exits 0
+    ledger=$(seed_source_ledger 1 0)
+    key=$(plant_builder_row "$DEST" "$CONSULT_SCOPE" "$ledger") || key=""
+    if [ -z "$key" ]; then
+        bad "could not plant a builder row at this clone's key"
+        return
+    fi
+
+    # DIRECTION ONE — predicted HIT, and the consult hits.
+    run_it "the prediction matches the loop's own verdict (predicted hit)" "rung-x"
+    exits 0
+    says "consult: EXPECTED HIT ${key}"
+    seam=$(loop_seam_verdict "$DEST" "$CONSULT_SCOPE")
+    is "${seam%% *}" "hit" "the loop's consult in the clone that was predicted a hit"
+    is "${seam#* }" "$key" "the key that consult hits on"
+
+    # DIRECTION TWO — main moves, the prediction says WILL RUN, and the consult
+    # misses ON THE TREE. A prediction that were right only one way would be a
+    # line nobody could act on.
+    echo "main moved under the prediction" >>"${SRC}/tracked.txt"
+    git -C "$SRC" add tracked.txt
+    git -C "$SRC" commit -q -m "main moved under the prediction"
+    run_it "the prediction matches the loop's own verdict (predicted run)" "rung-x"
+    exits 0
+    says "consult: WILL RUN (union differs: 1 commit(s) on main since the fold "
+    seam=$(loop_seam_verdict "$DEST" "$CONSULT_SCOPE")
+    is "${seam%% *}" "miss" "the loop's consult in the clone that was predicted a run"
+    # THE TOKEN IS `tree`, AND THE ROW ABOVE IS WHY IT CAN BE. A commit on main
+    # moves both key halves — the tree, and the environment fingerprint, which
+    # carries `head=` and `merge-base=` among its six components — so the
+    # three-line match finds nothing and the answer comes from the COMPONENT
+    # pass, which ranks a banked row by those fields and names `tree` when the
+    # revisions are the only thing that moved. That pass needs a row that
+    # carries components, which `plant_builder_row` now writes exactly as
+    # `loop_ledger_record` does. An earlier draft planted a row without them,
+    # got `unmatched`, and asserted it — a case codifying its own fixture's
+    # shortcut, caught by a verification against a real banked row on a real
+    # clone (`tree`, with `since banked head <sha>: N path(s) changed`).
+    case "${seam#* }" in
+    tree*) ok "the consult misses on the TREE — the banked row carries components and the attributor ranks it" ;;
+    unmatched*) bad "the consult is unmatched: the planted row carries no components, so the attributor could not rank it" ;;
+    *) bad "the consult missed on '${seam#* }' — neither of the two readings this case knows" ;;
+    esac
+}
+
+# CRITERION 47.4 (R3-F2x): never across an environment change. The prediction
+# reads the tree and says so; the env half is measured when the loop runs.
+case_an_env_change_is_never_a_hit_whatever_the_prediction() {
+    fresh_source "ignores-dotenv" "already-up-to-date"
+    local ledger key seam tweaked
+
+    run_it "an env change is never a hit (phase A: derive)" "rung-x"
+    exits 0
+    ledger=$(seed_source_ledger 1 0)
+    key=$(plant_builder_row "$DEST" "$CONSULT_SCOPE" "$ledger") || key=""
+    if [ -z "$key" ]; then
+        bad "could not plant a builder row at this clone's key"
+        return
+    fi
+
+    run_it "an env change is never a hit whatever the prediction" "rung-x"
+    exits 0
+    says "consult: EXPECTED HIT ${key}"
+    # THE WORDING NEVER CLAIMS THE ENV HALF — asserted, because a prediction
+    # that read as a promise is the thing R3-F2x paid for.
+    says "the environment and the scope halves are measured when the loop runs"
+
+    # ONE VALUE IN THE CLONE'S OWN .env, CHANGED. The file is the clone's — the
+    # source is never touched, here as everywhere in this instrument.
+    tweaked="${DEST}/.env.tweaked-by-the-drive"
+    awk '{ if ($0 ~ /^ZITADEL_PAT=/) print "ZITADEL_PAT=changed-by-the-drive"; else print }' \
+        "${DEST}/.env" >"$tweaked"
+    mv "$tweaked" "${DEST}/.env"
+    if grep -qF "changed-by-the-drive" "${DEST}/.env"; then
+        ok "the clone's .env really did change"
+    else
+        bad "the .env rewrite planted nothing — this case would pass vacuously"
+        return
+    fi
+
+    seam=$(loop_seam_verdict "$DEST" "$CONSULT_SCOPE")
+    is "${seam%% *}" "miss" "the loop's consult after one .env value moved"
+    case "${seam#* }" in
+    env*) ok "the consult misses on the ENV half, exactly as R3-F2x requires" ;;
+    *) bad "the consult missed on '${seam#* }', not on the environment" ;;
+    esac
+}
+
 echo "== test_verify_start — driving scripts/verify_start.sh"
 echo "   scratch: ${WORK}"
 
@@ -970,6 +1667,7 @@ case_an_unknown_option_is_refused
 case_no_branch_at_all_is_refused
 case_a_branch_this_checkout_does_not_have_is_refused
 case_the_happy_path_clones_merges_derives_and_ends_clean
+case_the_clone_carries_the_hooks_path
 case_the_database_name_is_asked_for_and_matches_db_sh
 case_an_exported_database_name_does_not_reach_the_clone
 case_the_zitadel_carry_announces_names_and_never_values
@@ -987,9 +1685,19 @@ case_the_loop_ledger_is_seeded_and_the_counts_are_exact
 case_a_source_with_no_loop_ledger_is_a_named_absence
 case_the_seed_never_writes_to_the_source
 case_step_four_is_still_green_over_the_seeded_file
+case_the_venv_is_provisioned_before_the_seed_and_the_order_is_asserted
+case_no_sync_skips_the_step_and_says_the_seed_cannot_hit
+case_a_failing_sync_is_could_not_look_and_seeds_nothing
+case_a_seeded_row_is_a_hit_once_the_venv_exists
+case_the_verdict_key_ignores_the_provisioned_venv
 case_docs_only_dirt_in_the_source_is_announced_and_the_clone_proceeds
 case_docs_dirt_mixed_with_code_dirt_is_still_refused_naming_both
 case_the_narrowing_does_not_reach_the_verdict_key_guard
+case_a_folded_branch_predicts_a_hit
+case_main_moved_after_the_fold_predicts_a_run_and_counts
+case_no_seeded_row_is_a_named_absence
+case_the_prediction_matches_the_loops_own_verdict
+case_an_env_change_is_never_a_hit_whatever_the_prediction
 
 echo
 echo "== ${PASSED} passed, ${FAILED} failed"

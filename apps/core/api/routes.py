@@ -38,7 +38,7 @@ from typing import Any
 from uuid import UUID
 
 from django.contrib.auth import get_user_model
-from django.db.models import QuerySet
+from django.db.models import Case, QuerySet, Value, When
 from ninja import Query, Router, Status
 from ninja.errors import HttpError
 from ninja.pagination import paginate
@@ -47,13 +47,16 @@ from apps.core.actor import Actor, actor_from_request
 from apps.core.api.docs import Tag
 from apps.core.api.pagination import CursorPagination
 from apps.core.api.query import ordered_by, searched
+from apps.core.authz import refusal_sentence, renamed_permissions, vocabulary
 from apps.core.exceptions import NotFound
 from apps.core.flags import enabled_for
-from apps.core.models import Invitation, Membership, Organization, Tenant
+from apps.core.models import Grant, Invitation, Membership, Organization, Role, Tenant
 from apps.core.requests import TenantRequest
 from apps.core.schemas import (
     FlagIn,
     FlagsOut,
+    GrantIn,
+    GrantOut,
     InvitationAcceptIn,
     InvitationFilter,
     InvitationIn,
@@ -62,27 +65,44 @@ from apps.core.schemas import (
     MembershipFilter,
     MembershipIn,
     MembershipOut,
+    MembershipPermissionsOut,
     MembershipRolePatch,
     OrganizationFilter,
     OrganizationIn,
     OrganizationMoveIn,
     OrganizationOut,
     OrganizationPatch,
+    PermissionFilter,
+    PermissionOut,
+    RoleFilter,
+    RoleIn,
+    RoleOut,
+    RolePatch,
+    RolePermissionsIn,
     TenantSettingsIn,
     TenantSettingsOut,
 )
 from apps.core.selectors import (
     get_invitation,
     get_membership,
+    get_membership_permissions,
     get_organization,
+    get_role,
+    list_grants,
     list_invitations,
     list_memberships,
     list_organizations,
+    list_permissions,
+    list_roles,
 )
 from apps.core.services import (
     accept_invitation,
     add_membership,
+    create_grant,
     create_organization,
+    create_role,
+    delete_grant,
+    delete_role,
     hash_invitation_token,
     invite_member,
     move_organization,
@@ -91,6 +111,8 @@ from apps.core.services import (
     revoke_membership,
     set_flag,
     set_role,
+    set_role_collection,
+    update_role,
     update_tenant_settings,
 )
 
@@ -109,6 +131,10 @@ PREFIX = ""
 ORGANIZATION_ORDERING = ("created_at", "updated_at", "name", "path", "depth")
 MEMBERSHIP_ORDERING = ("created_at", "updated_at", "role")
 INVITATION_ORDERING = ("created_at", "updated_at", "email", "expires_at")
+# The roles list is assembled rather than queried, so this is applied in
+# Python — but it is the same closed allow-list every other list here has,
+# for the same reason: straight into a sort a client could order by anything.
+ROLE_ORDERING = ("key", "name", "created_at")
 
 # What `?q=` searches. Text columns on the row itself; never a related table's.
 ORGANIZATION_SEARCH_FIELDS = ("name", "slug")
@@ -302,6 +328,9 @@ def list_organizations_route(
       a filter value was malformed. The response says what you may sort by.
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role here does not let you read organizations. A role
+      with no read of this kind reads none of them: ask an administrator for
+      the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -311,7 +340,9 @@ def list_organizations_route(
     be able to set it.
     """
     actor, tenant = _acting(request)
-    organizations: QuerySet[Organization] = list_organizations(tenant=tenant, org=_hat(actor))
+    organizations: QuerySet[Organization] = list_organizations(
+        tenant=tenant, org=_hat(actor), actor=actor
+    )
     organizations = filters.filter(organizations)
     organizations = searched(organizations, q, fields=ORGANIZATION_SEARCH_FIELDS)
     return ordered_by(organizations, ordering, allowed=ORGANIZATION_ORDERING, default="path")
@@ -343,10 +374,15 @@ def get_organization_route(request: TenantRequest, organization_id: UUID) -> Org
       purpose, so a guessed id tells you nothing.
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role here does not let you read organizations. A role
+      with no read of this kind reads none of them: ask an administrator for
+      the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    return get_organization(tenant=tenant, org=_hat(actor), organization_id=organization_id)
+    return get_organization(
+        tenant=tenant, org=_hat(actor), organization_id=organization_id, actor=actor
+    )
 
 
 @org_structure_router.post(
@@ -392,7 +428,9 @@ def create_organization_route(
     write.
     """
     actor, tenant = _acting(request)
-    parent = get_organization(tenant=tenant, org=_hat(actor), organization_id=payload.parent_id)
+    parent = get_organization(
+        tenant=tenant, org=_hat(actor), organization_id=payload.parent_id, actor=actor
+    )
     return Status(
         201,
         create_organization(
@@ -441,7 +479,9 @@ def rename_organization_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    organization = get_organization(tenant=tenant, org=_hat(actor), organization_id=organization_id)
+    organization = get_organization(
+        tenant=tenant, org=_hat(actor), organization_id=organization_id, actor=actor
+    )
     return rename_organization(
         tenant=tenant, organization=organization, name=payload.name, actor=actor
     )
@@ -504,8 +544,12 @@ def move_organization_route(
     """
     actor, tenant = _acting(request)
     hat = _hat(actor)
-    organization = get_organization(tenant=tenant, org=hat, organization_id=organization_id)
-    new_parent = get_organization(tenant=tenant, org=hat, organization_id=payload.new_parent_id)
+    organization = get_organization(
+        tenant=tenant, org=hat, organization_id=organization_id, actor=actor
+    )
+    new_parent = get_organization(
+        tenant=tenant, org=hat, organization_id=payload.new_parent_id, actor=actor
+    )
     return move_organization(
         tenant=tenant,
         organization=organization,
@@ -550,6 +594,9 @@ def list_memberships_route(
       a filter value was malformed. The response says what you may sort by.
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
+    * `403 forbidden` — your role here does not let you read memberships. A role
+      with no read of this kind reads none of them: ask an administrator for
+      the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -558,7 +605,9 @@ def list_memberships_route(
     join is a join nobody sized.
     """
     actor, tenant = _acting(request)
-    memberships: QuerySet[Membership] = list_memberships(tenant=tenant, org=_hat(actor))
+    memberships: QuerySet[Membership] = list_memberships(
+        tenant=tenant, org=_hat(actor), actor=actor
+    )
     memberships = filters.filter(memberships)
     return ordered_by(memberships, ordering, allowed=MEMBERSHIP_ORDERING, default="role")
 
@@ -611,7 +660,9 @@ def add_membership_route(request: TenantRequest, payload: MembershipIn) -> Statu
     actor, tenant = _acting(request)
     hat = _hat(actor)
     organization = (
-        get_organization(tenant=tenant, org=hat, organization_id=payload.organization_id)
+        get_organization(
+            tenant=tenant, org=hat, organization_id=payload.organization_id, actor=actor
+        )
         if payload.organization_id is not None
         else None
     )
@@ -672,7 +723,9 @@ def set_role_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    membership = get_membership(tenant=tenant, org=_hat(actor), membership_id=membership_id)
+    membership = get_membership(
+        tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor
+    )
     return set_role(tenant=tenant, membership=membership, role=payload.role, actor=actor)
 
 
@@ -710,9 +763,556 @@ def revoke_membership_route(request: TenantRequest, membership_id: UUID) -> tupl
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    membership = get_membership(tenant=tenant, org=_hat(actor), membership_id=membership_id)
+    membership = get_membership(
+        tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor
+    )
     revoke_membership(tenant=tenant, membership=membership, actor=actor)
     return 204, None
+
+
+# --- Roles, grants and the vocabulary (ADR core-25) ---------------------------
+#
+# All eleven hang off `roles_router` and therefore off the `roles` tag, which is
+# the scope family a token's ceiling names (ADR ident-7). No new family: "who
+# may do what here" is one thing to be trusted with, and splitting the roles
+# themselves from the grants that adjust them would hand out a credential that
+# can edit a role but not the exception standing over it — two halves of one
+# decision, bought separately.
+
+
+def _role_matches(view: Any, filters: RoleFilter) -> bool:
+    """One row of the roles list against the query. **In Python, and it has to be.**
+
+    The list is assembled from three layers and only one of them is a table, so
+    there is no queryset for `FilterSchema.filter()` to narrow. The schema is
+    still the declaration — it is what the OpenAPI document publishes and what a
+    client reads — and this is the two lines that apply it.
+    """
+    if filters.kind is not None and view.kind != filters.kind:
+        return False
+    if filters.q:
+        wanted = filters.q.lower()
+        haystack = f"{view.key} {view.name} {view.description}".lower()
+        if wanted not in haystack:
+            return False
+    return True
+
+
+def _permission_matches(word: Any, filters: PermissionFilter) -> bool:
+    """One key of the vocabulary against the query, for the same reason."""
+    if filters.kind is not None and word.kind != filters.kind:
+        return False
+    if filters.verb is not None and word.verb != filters.verb:
+        return False
+    if filters.decided_by is not None and word.decided_by != filters.decided_by:
+        return False
+    if filters.is_read is not None and word.is_read != filters.is_read:
+        return False
+    if filters.q:
+        wanted = filters.q.lower()
+        if wanted not in f"{word.action} {word.sentence}".lower():
+            return False
+    return True
+
+
+def _sorted_roles(views: list[Any], ordering: str) -> list[RoleOut]:
+    """Apply `?ordering=` to the assembled list, refusing anything not allowed."""
+    field = ordering.lstrip("-")
+    if field not in ROLE_ORDERING:
+        raise HttpError(
+            400,
+            f"{ordering!r} is not a field this list can be sorted by. "
+            f"Use one of {', '.join(sorted(ROLE_ORDERING))}, optionally prefixed with '-'.",
+        )
+    rows = sorted(
+        views,
+        key=lambda view: (getattr(view, field) is None, getattr(view, field) or ""),
+        reverse=ordering.startswith("-"),
+    )
+    return [RoleOut.of(view) for view in rows]
+
+
+@roles_router.get("/roles/", response=list[RoleOut], url_name="role-list")
+@paginate(CursorPagination)
+def list_roles_route(
+    request: TenantRequest,
+    filters: Query[RoleFilter],
+    ordering: str = "key",
+) -> list[RoleOut]:
+    """List roles
+
+    List every role this tenant can name, from all three layers at once.
+
+    `kind` says which layer a role comes from and decides what you may do with
+    it. `owner` is the platform's one role: it holds every permission this
+    deployment declares, present and future, and nothing can change it.
+    `declared` is a role this product ships in code — you may adjust what it
+    holds here, not what it is called. `custom` is a role this tenant made for
+    itself, and both halves are yours.
+
+    `permissions` is what the role actually does **in this tenant**;
+    `default_permissions` is what the product declared it does, and
+    `added`/`removed` are the difference. For a custom role there is no code
+    layer, so `default_permissions` is `null`.
+
+    Narrow with `kind` or `q` (matches part of the key, name or description).
+    Sort with `ordering`, which accepts `key`, `name` or `created_at`, each
+    optionally prefixed with `-`; any other value is rejected. Walk it with
+    `?cursor=` and `?limit=`.
+
+    Returns `{"items": [...], "has_more": ..., "next_cursor": ...}`; `count` is
+    `null` unless you send `?include_count=true`.
+
+    Refusals you can get here:
+
+    * `400 invalid` — `?ordering=` named a field this list does not accept. The
+      response says what you may sort by.
+    * `403 forbidden` — the request resolved no tenant, or your role here does
+      not let you read roles.
+    * `403 insufficient_scope` — the token you sent does not carry `roles:read`.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+
+    ---
+    Paged over `key` rather than `name`: a display name is renamable and not
+    unique, and a cursor over a non-total field skips rows at the boundary.
+    """
+    actor, tenant = _acting(request)
+    views = [
+        view for view in list_roles(tenant=tenant, actor=actor) if _role_matches(view, filters)
+    ]
+    return _sorted_roles(views, ordering)
+
+
+@roles_router.post("/roles/", response={201: RoleOut}, url_name="role-create")
+def create_role_route(request: TenantRequest, payload: RoleIn) -> Status[RoleOut]:
+    """Create a role
+
+    Make a role this tenant owns, holding exactly what you put in it.
+
+    `permissions` takes keys from `GET /permissions/` and also accepts patterns:
+    `"*.read"` is how you give a role every read this deployment has, and it is
+    expanded to real keys when the role is saved, so the role does not silently
+    gain permissions as the product grows. A pattern that matches nothing is
+    rejected rather than stored.
+
+    **You cannot put a permission into a role that you do not hold yourself.**
+    The refusal names what you are short of, in the words a person reads rather
+    than the keys. `owner` and any role this product declares in code are taken
+    names and are rejected.
+
+    Send `Idempotency-Key` and a retry of the identical request replays the
+    first answer instead of making a second role.
+
+    Refusals you can get here:
+
+    * `400 invalid` — the key is already a role this product declares, a
+      permission is not one this deployment has, or a pattern matched nothing.
+      `errors` names the field.
+    * `403 forbidden` — you may not create roles here, or the collection
+      contains something you do not hold.
+    * `409 conflict` — this tenant already has a role with that key.
+    * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
+      `Idempotency-Key` for a different request, or the first request under it
+      has not finished.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = _acting(request)
+    create_role(
+        tenant=tenant,
+        actor=actor,
+        key=payload.key,
+        name=payload.name,
+        description=payload.description,
+        permissions=payload.permissions,
+    )
+    return Status(201, RoleOut.of(get_role(tenant=tenant, key=payload.key, actor=actor)))
+
+
+@roles_router.get("/roles/{key}/", response=RoleOut, url_name="role-detail")
+def get_role_route(request: TenantRequest, key: str) -> RoleOut:
+    """Get a role
+
+    Read one role by its key, from whichever layer owns it.
+
+    The same shape the list returns. A key this tenant cannot name answers
+    `not_found` — there is no subtree to be outside of, because a role is
+    tenant-wide rather than held on a branch.
+
+    Refusals you can get here:
+
+    * `403 forbidden` — the request resolved no tenant, or your role here does
+      not let you read roles.
+    * `403 insufficient_scope` — the token you sent does not carry `roles:read`.
+    * `404 not_found` — nothing in this tenant has that key.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = _acting(request)
+    return RoleOut.of(get_role(tenant=tenant, key=key, actor=actor))
+
+
+@roles_router.patch("/roles/{key}/", response=RoleOut, url_name="role-update")
+def update_role_route(request: TenantRequest, key: str, payload: RolePatch) -> RoleOut:
+    """Rename a role
+
+    Change a custom role's display name or description. **Never its key.**
+
+    A membership, a pending invitation and every permission row join on the key,
+    so it is the immutable half: rename the label and nothing else has to be
+    rewritten. To change what the role *does*, send its whole collection to
+    `PUT /roles/{key}/permissions/`.
+
+    Only a role this tenant made can be renamed. `owner` and the roles this
+    product declares in code are named by the product, and are rejected.
+
+    Refusals you can get here:
+
+    * `400 invalid` — that key belongs to the product rather than to this
+      tenant. `errors` names the field.
+    * `403 forbidden` — you may not change roles here.
+    * `404 not_found` — nothing in this tenant has that key.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = _acting(request)
+    row = Role.objects.for_tenant(tenant).filter(key=key).first()
+    if row is None:
+        raise NotFound()
+    update_role(
+        tenant=tenant,
+        actor=actor,
+        role=row,
+        name=payload.name,
+        description=payload.description,
+    )
+    return RoleOut.of(get_role(tenant=tenant, key=key, actor=actor))
+
+
+@roles_router.put(
+    "/roles/{key}/permissions/",
+    response=RoleOut,
+    url_name="role_permissions-update",
+)
+def set_role_permissions_route(
+    request: TenantRequest, key: str, payload: RolePermissionsIn
+) -> RoleOut:
+    """Set what a role holds
+
+    Say what this role may do, as the whole set rather than a list of changes.
+
+    Send the collection you want and the server works out the difference, which
+    is what makes a retry safe. For a role this product declares in code the
+    difference is stored as a delta, so the role keeps growing with the product:
+    a permission the next release adds to `member` arrives for you too, unless
+    you took it away here.
+
+    Patterns work exactly as they do on create — `"*.read"` expands to the reads
+    this deployment has, at the moment you save.
+
+    **Both directions are walled.** You cannot add a permission you do not hold
+    yourself, and you cannot take one away from a role if the people holding it
+    have something you do not. `owner` is the whole vocabulary by definition and
+    is rejected: withhold a key from one person instead.
+
+    Refusals you can get here:
+
+    * `400 invalid` — `owner` cannot be edited, a permission is not one this
+      deployment has, or a pattern matched nothing.
+    * `403 forbidden` — you may not change roles here, or the change adds or
+      removes something you do not hold.
+    * `404 not_found` — nothing in this tenant has that key.
+    * `409 conflict` — the change would leave the tenant with no owner.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = _acting(request)
+    set_role_collection(tenant=tenant, actor=actor, role_key=key, permissions=payload.permissions)
+    return RoleOut.of(get_role(tenant=tenant, key=key, actor=actor))
+
+
+@roles_router.delete("/roles/{key}/", response={204: None}, url_name="role-delete")
+def delete_role_route(request: TenantRequest, key: str) -> tuple[int, None]:
+    """Delete a role
+
+    Remove a role this tenant made. Answers `204` with no body.
+
+    **Refused while anybody still wears it** — a membership or a pending
+    invitation naming the key — because the key is a string rather than a
+    foreign key, so nothing in the database would stop the row disappearing and
+    the people holding it would quietly hold nothing. Move them to another role
+    first; the refusal says how many there are.
+
+    `owner` and the roles this product declares in code live in code and cannot
+    be deleted here.
+
+    Refusals you can get here:
+
+    * `400 invalid` — that key belongs to the product rather than to this
+      tenant.
+    * `403 forbidden` — you may not delete roles here.
+    * `404 not_found` — nothing in this tenant has that key.
+    * `409 conflict` — somebody still holds the role, or an invitation still
+      offers it.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = _acting(request)
+    row = Role.objects.for_tenant(tenant).filter(key=key).first()
+    if row is None:
+        raise NotFound()
+    delete_role(tenant=tenant, actor=actor, role=row)
+    return 204, None
+
+
+def _permission_sentences() -> Case:
+    """`permission` → its refusal sentence, as a `CASE` the page can be cut over.
+
+    THE SENTENCE IS THE DOOR'S WORD, and this is where rule 12 says it belongs:
+    `list_grants` hands back rows, and turning a key into the prose a person
+    reads is the door's job — the MCP twin does exactly this, one row at a time,
+    through `GrantOut.of(row, sentence=refusal_sentence(...))`.
+
+    Why a `CASE` here rather than a comprehension, which is the obvious form and
+    is what the twin uses: this door is `@paginate`d, so what the view returns IS
+    what the cursor is cut over. A list of built schemas is paged as a SEQUENCE,
+    and `_collection_key` (`apps/core/api/pagination.py`) derives the cursor's
+    collection from the item type rather than from the model — so a token minted
+    here would be refused by the twin and the twin's would be refused here, which
+    is a second door disagreement in the diff that closes the first. Keeping a
+    queryset keeps the two doors minting the same token by construction.
+
+    The branches are the vocabulary's, which is a per-process fact: a deployment
+    with a hundred and eighty keys emits a hundred and eighty `WHEN`s over a page
+    of at most `MAX_LIMIT` rows. The `default` is the same humanised fallback
+    `refusal_sentence` gives an unknown key, so a row naming a key this
+    deployment no longer has still reads as English — which is the state
+    `djb.W054`'s census exists to report rather than to crash on.
+    """
+    words = vocabulary()
+    return Case(
+        *[
+            When(permission=key, then=Value(refusal_sentence(key)))
+            for key in sorted({*words, *renamed_permissions()})
+        ],
+        default=Value("You may not do that here."),
+    )
+
+
+@roles_router.get(
+    "/memberships/{membership_id}/grants/",
+    response=list[GrantOut],
+    url_name="grant-list",
+)
+@paginate(CursorPagination)
+def list_grants_route(request: TenantRequest, membership_id: UUID) -> QuerySet[Grant]:
+    """List a membership's exceptions
+
+    List the permissions granted to, or withheld from, one person in one branch.
+
+    A grant is what you reach for when a role is the wrong size for one person:
+    `allow` gives them something their role does not carry, `withhold` takes
+    away something it does. **A withhold beats everything**, including the
+    `owner` role, which is why it is the one that needs watching.
+
+    Grants hang off the membership rather than the person, so the same person
+    can carry different exceptions in the branch they run and the branch they
+    merely belong to.
+
+    A membership outside the organizations you can see answers `not_found`.
+
+    Refusals you can get here:
+
+    * `403 forbidden` — the request resolved no tenant or no acting
+      organization, or your role here does not let you read grants.
+    * `403 insufficient_scope` — the token you sent does not carry `roles:read`.
+    * `404 not_found` — that membership is outside the part of the tree you can
+      see, or nothing has that id.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = _acting(request)
+    rows = list_grants(tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor)
+    return rows.annotate(sentence=_permission_sentences())
+
+
+@roles_router.put(
+    "/memberships/{membership_id}/grants/{permission}/",
+    response=GrantOut,
+    url_name="grant-update",
+)
+def set_grant_route(
+    request: TenantRequest, membership_id: UUID, permission: str, payload: GrantIn
+) -> GrantOut:
+    """Grant or withhold one permission
+
+    Give one person one permission in one branch, or take one away.
+
+    The membership and the permission are in the path and the body says only
+    which way the exception points, so sending the same request twice leaves one
+    row with the last effect on it rather than two rows or a conflict.
+
+    **`allow` is bounded by what you hold**: you cannot hand out a permission
+    you do not have. **`withhold` is bounded by what THEY hold**: you cannot
+    restrict somebody who has something you do not — otherwise the ceiling would
+    be decorative, because taking away is the other road to the same power.
+
+    `tenant.own` is reserved to the `owner` role and no grant may name it in
+    either direction.
+
+    Refusals you can get here:
+
+    * `400 invalid` — that permission is not one this deployment has, or it is
+      reserved.
+    * `403 forbidden` — you may not grant here, or the permission is not yours
+      to hand out or to take away.
+    * `404 not_found` — that membership is outside the part of the tree you can
+      see, or nothing has that id.
+    * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
+      `Idempotency-Key` for a different request, or the first request under it
+      has not finished.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = _acting(request)
+    membership = get_membership(
+        tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor
+    )
+    grant = create_grant(
+        tenant=tenant,
+        actor=actor,
+        membership=membership,
+        permission=permission,
+        effect=payload.effect,
+    )
+    return GrantOut.of(grant, sentence=refusal_sentence(permission))
+
+
+@roles_router.delete(
+    "/memberships/{membership_id}/grants/{permission}/",
+    response={204: None},
+    url_name="grant-delete",
+)
+def delete_grant_route(
+    request: TenantRequest, membership_id: UUID, permission: str
+) -> tuple[int, None]:
+    """Remove an exception
+
+    Withdraw a grant, leaving the person with whatever their role says. `204`.
+
+    Removing an `allow` takes a capability away, so it is bounded by what the
+    person holds; removing a `withhold` gives one back, so it is bounded by what
+    you hold. The wall that applies depends on which way the row pointed, which
+    is why `effect` is on the row rather than in the request.
+
+    A permission that has no grant on that membership answers `not_found`.
+
+    Refusals you can get here:
+
+    * `403 forbidden` — you may not remove grants here, or the permission is not
+      yours to restore or to take away.
+    * `404 not_found` — that membership is outside the part of the tree you can
+      see, or there is no such grant on it.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = _acting(request)
+    membership = get_membership(
+        tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor
+    )
+    row = (
+        Grant.objects.for_tenant(tenant)
+        .filter(membership=membership, permission=permission)
+        .first()
+    )
+    if row is None:
+        raise NotFound()
+    delete_grant(tenant=tenant, actor=actor, grant=row)
+    return 204, None
+
+
+@roles_router.get(
+    "/memberships/{membership_id}/permissions/",
+    response=MembershipPermissionsOut,
+    url_name="membership_permissions-detail",
+)
+def membership_permissions_route(
+    request: TenantRequest, membership_id: UUID
+) -> MembershipPermissionsOut:
+    """What one person may do here
+
+    Everything this membership may do at its own branch, and where each one
+    came from.
+
+    This is the read a permissions screen is built on: `held` carries every
+    permission with the sentence a person reads and a `via` saying whether it
+    comes from the role on this membership, a grant on it, or a role held
+    further up the tree. When `via` is `inherited`, `membership_id` names the
+    ancestor membership that carries it rather than this one.
+
+    `withheld` is kept separately rather than quietly subtracted, because a
+    withhold is a decision somebody made and "why has this stopped working" is
+    a question this answer should be able to settle.
+
+    A membership outside the organizations you can see answers `not_found`.
+
+    Refusals you can get here:
+
+    * `403 forbidden` — the request resolved no tenant or no acting
+      organization, or your role here does not let you read memberships.
+    * `403 insufficient_scope` — the token you sent does not carry `roles:read`.
+    * `404 not_found` — that membership is outside the part of the tree you can
+      see, or nothing has that id.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = _acting(request)
+    return MembershipPermissionsOut.of(
+        get_membership_permissions(
+            tenant=tenant, org=_hat(actor), membership_id=membership_id, actor=actor
+        )
+    )
+
+
+@roles_router.get("/permissions/", response=list[PermissionOut], url_name="permission-list")
+@paginate(CursorPagination)
+def list_permissions_route(
+    request: TenantRequest, filters: Query[PermissionFilter]
+) -> list[PermissionOut]:
+    """List permissions
+
+    List every permission this deployment has, which is what a role's collection
+    is chosen from.
+
+    A key reads `<kind>.<verb>` — the kind is the thing (`widget`, `membership`)
+    and the verb is what you do to it. Most are **derived**: the product has a
+    `widget`, so `widget.create/read/update/delete` exist without anybody typing
+    them. Some are **declared**, where an app named a verb of its own
+    (`widget.approve`). One is **reserved** to the `owner` role and no role or
+    grant may name it.
+
+    `sentence` is what a refused caller is told; `default_roles` says which
+    roles this product gives the key to out of the box; `has_row_predicate`
+    warns you that holding the key is not the whole answer — the product also
+    asks about the row, so granting it grants the capability rather than the
+    outcome.
+
+    Narrow with `kind`, `verb`, `decided_by`, `is_read` or `q`. Walk it with
+    `?cursor=` and `?limit=`; `count` is `null` unless you send
+    `?include_count=true`.
+
+    This list is generated from the running system and is the same for every
+    customer: it describes what the product can authorize, not what you happen
+    to have granted.
+
+    Refusals you can get here:
+
+    * `403 forbidden` — the request resolved no tenant, or your role here does
+      not let you read roles.
+    * `403 insufficient_scope` — the token you sent does not carry `roles:read`.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+
+    ---
+    No `ordering`: the vocabulary is totally ordered by key and there is nothing
+    else to order it by.
+    """
+    actor, _tenant = _acting(request)
+    return [
+        PermissionOut.of(word)
+        for word in list_permissions(actor=actor)
+        if _permission_matches(word, filters)
+    ]
 
 
 # --- Invitations --------------------------------------------------------------
@@ -761,6 +1361,9 @@ def list_invitations_route(
       a filter value was malformed. The response says what you may sort by.
     * `403 forbidden` — the request resolved no tenant. Send `X-Tenant` naming
       one you belong to.
+    * `403 forbidden` — your role here does not let you read invitations. A role
+      with no read of this kind reads none of them: ask an administrator for
+      the permission, or act under an organization where you hold it.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -769,7 +1372,9 @@ def list_invitations_route(
     can only ever have got narrower, which is the placement law's own direction.
     """
     actor, tenant = _acting(request)
-    invitations: QuerySet[Invitation] = list_invitations(tenant=tenant, org=_hat(actor))
+    invitations: QuerySet[Invitation] = list_invitations(
+        tenant=tenant, org=_hat(actor), actor=actor
+    )
     invitations = filters.filter(invitations)
     invitations = searched(invitations, q, fields=INVITATION_SEARCH_FIELDS)
     return ordered_by(invitations, ordering, allowed=INVITATION_ORDERING, default="-created_at")
@@ -841,7 +1446,9 @@ def invite_member_route(request: TenantRequest, payload: InvitationIn) -> Status
     actor, tenant = _acting(request)
     hat = _hat(actor)
     organization = (
-        get_organization(tenant=tenant, org=hat, organization_id=payload.organization_id)
+        get_organization(
+            tenant=tenant, org=hat, organization_id=payload.organization_id, actor=actor
+        )
         if payload.organization_id is not None
         else None
     )
@@ -974,7 +1581,9 @@ def revoke_invitation_route(request: TenantRequest, invitation_id: UUID) -> Invi
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    invitation = get_invitation(tenant=tenant, org=_hat(actor), invitation_id=invitation_id)
+    invitation = get_invitation(
+        tenant=tenant, org=_hat(actor), invitation_id=invitation_id, actor=actor
+    )
     return revoke_invitation(tenant=tenant, invitation=invitation, actor=actor)
 
 

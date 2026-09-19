@@ -37,7 +37,7 @@ subject.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -54,10 +54,113 @@ from apps.accounts.types import (
     IdentityConfigSync,
 )
 from apps.core.actor import actor_for, system_actor
+from apps.core.asyncdb import run_async
 from apps.core.models import Tenant
+from apps.core.tests.template_shape import template_shape
 from apps.workflows.models import WorkflowRun
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+
+# --- nothing here dials, and that is now enforced rather than asserted -------
+#
+# The module docstring has always said "nothing here dials Zitadel", and it was
+# true. What it did not say — because nobody had looked — is that two of the
+# command cases below reached **Temporal**: `zitadel_brand` writes the intent row
+# and asks for the sync run, `start_workflow_on_commit` registers an on-commit
+# hook, and under `transaction=True` that hook fires for real. It failed into
+# `robust=True` against `TEMPORAL_ADDRESS=127.0.0.1:1` and the tests passed, so
+# the leak was invisible: a connect attempt per run, inside a `--loop` that ADR
+# ident-5 says is Temporal-free.
+#
+# So the seam is stopped here, for the whole module, with a sentinel that RAISES
+# and RECORDS. The recording is the half that makes it a guard rather than a
+# mute: `robust=True` swallows a hook's exception, so a raise alone would leave
+# a dialling test green. The teardown assertion is what turns a dial into a red,
+# and it is per-test rather than one case at the end, which is what makes it
+# independent of collection order.
+
+
+class _Dialled(AssertionError):
+    """Raised by the sentinel when something in this module reaches Temporal."""
+
+
+@pytest.fixture(autouse=True)
+def no_dialling(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    """The sentinel, armed for every test in this module."""
+    reached: list[str] = []
+
+    async def _sentinel(*_args: Any, **_kwargs: Any) -> Any:
+        reached.append("apps.workflows.client.get_client")
+        raise _Dialled(
+            "a test in test_identity_branding.py reached Temporal — "
+            "use the `dispatch` stub below, which captures the on-commit hook."
+        )
+
+    monkeypatch.setattr("apps.workflows.client.get_client", _sentinel)
+    yield reached
+    assert reached == [], "this test dialled Temporal (ADR ident-5: --loop is Temporal-free)"
+
+
+class _StartedRun:
+    """What the stub hands back where a Temporal handle would be."""
+
+    result_run_id = "stub-run-id"
+
+
+class _DispatchStub:
+    """A client that RECORDS the start it was asked for and opens no socket."""
+
+    def __init__(self) -> None:
+        self.started: list[dict[str, Any]] = []
+
+    async def start_workflow(self, workflow: Any, arg: Any = None, **kwargs: Any) -> _StartedRun:
+        self.started.append({"workflow": workflow, "arg": arg} | kwargs)
+        return _StartedRun()
+
+
+@pytest.fixture
+def dispatch(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, Any]]]:
+    """The module's dispatch stub, for the two cases that ask for a run.
+
+    `django_capture_on_commit_callbacks` is NOT the tool here and the reason is
+    worth writing down: it reads `connection.run_on_commit`, and under
+    `transaction=True` the hooks have already fired and been drained by the time
+    it looks — it captures nothing and the dial happens anyway (measured here,
+    as the first attempt at this seam). So the seam is replaced instead. The stub
+    stands
+    where the client stands, so `start_workflow_on_commit` still writes its row,
+    still registers its hook, still runs it on commit, and the only thing that
+    changes is that the far end is an object rather than a socket.
+
+    Requested after the autouse sentinel, so this is what the hook reaches; the
+    sentinel's record stays empty, which is the assertion its teardown makes.
+    """
+    stub = _DispatchStub()
+
+    async def _stubbed(*_args: Any, **_kwargs: Any) -> _DispatchStub:
+        return stub
+
+    monkeypatch.setattr("apps.workflows.client.get_client", _stubbed)
+    yield stub.started
+
+
+def test_no_test_in_this_module_dials_temporal(no_dialling: list[str]) -> None:
+    """The guard above is armed, and it is not a no-op.
+
+    Driven rather than asserted: the seam is reached on purpose, the sentinel
+    raises, and the record is cleared again so the fixture's own teardown reads
+    what it would read for any other test. Without this case, a `monkeypatch`
+    aimed at a path that had been renamed would arm nothing and say nothing.
+    """
+    from apps.workflows import client as client_module
+
+    with pytest.raises(_Dialled):
+        run_async(client_module.get_client)
+
+    assert no_dialling == ["apps.workflows.client.get_client"]
+    no_dialling.clear()
+
 
 # The instance default, as the pinned build answers it — MEASURED by a
 # read-only probe against the live Zitadel this repository runs against, not
@@ -241,6 +344,7 @@ def test_only_one_branding_row_is_active_at_a_time(label: LabelPolicy, operator:
 # --- criterion 3: the one-declared-value law ---------------------------------
 
 
+@template_shape("template_files")
 def test_the_default_derives_from_the_settings_the_entrance_css_reads(
     label: LabelPolicy, operator: Any, settings: Any
 ) -> None:
@@ -280,6 +384,7 @@ def test_the_built_payload_carries_the_declared_accent(
     assert label.custom["primaryColor"] == "#0b7285"
 
 
+@template_shape("template_files")
 def test_an_unset_brand_accent_flows_the_shipped_neutral_to_both_consumers(
     label: LabelPolicy, operator: Any, settings: Any
 ) -> None:
@@ -364,6 +469,7 @@ def test_the_write_back_goes_through_the_service(label: LabelPolicy, operator: A
 # --- criterion 2: ensure_label_policy joins the family -----------------------
 
 
+@template_shape("branding_writer")
 def test_the_first_call_creates_and_activates(label: LabelPolicy) -> None:
     """A staged-but-unactivated policy is the failure that looks like success.
 
@@ -476,16 +582,37 @@ def _audit(capsys: Any, *, expect_exit: int = 0) -> str:
     return str(capsys.readouterr().out)
 
 
+def _branding_section() -> tuple[str, int]:
+    """The audit's branding SECTION, as its own `(lines, drift)` — I3's one read.
+
+    Read instead of the whole command's exit status and its `N disagreement(s)`
+    total. Both of those are sums over every section the audit has, and a
+    product's audit has sections this template does not: the same branding fact
+    then arrives at a different exit code, and a case about branding fails for a
+    reason that is not about branding. The section owns one subject and counts
+    its own disagreements, which is exactly what these four cases ask.
+
+    The lines are joined because what each case reads is one labelled line, and
+    `in` over the joined text is how every other case in this module reads the
+    audit's output.
+    """
+    from apps.accounts.management.commands.zitadel_audit import branding_section
+
+    section = branding_section()
+    return "\n".join(section.lines), section.drift
+
+
 def test_with_no_row_the_screen_is_unmanaged_and_not_drift(label: LabelPolicy, capsys: Any) -> None:
     """Nobody ever asked is a different fact from somebody changed it.
 
     The same distinction `SyncState.UNMANAGED` draws for a connection, and the
     reason the audit does not simply call an unbranded instance drift.
     """
-    out = _audit(capsys, expect_exit=0)
+    out, drift = _branding_section()
 
     assert "unmanaged   sign-in branding" in out
     assert "DRIFT       sign-in branding" not in out
+    assert drift == 0, out
 
 
 def test_a_console_repaint_is_reported_as_drift(
@@ -506,14 +633,16 @@ def test_a_console_repaint_is_reported_as_drift(
     assert label.custom is not None
     label.custom["primaryColor"] = "#ff00ff"
 
-    out = _audit(capsys, expect_exit=1)
+    out, drift = _branding_section()
 
     assert "DRIFT       sign-in branding" in out
     assert "primaryColor" in out
     assert "#3f4a5a" in out
     assert "#ff00ff" in out
+    assert drift == 1, out
 
 
+@template_shape("branding_writer")
 def test_an_agreeing_screen_is_reported_as_agreeing(
     label: LabelPolicy, operator: Any, capsys: Any
 ) -> None:
@@ -539,10 +668,11 @@ def test_a_row_against_an_unbranded_org_is_drift(
     """
     services.set_identity_branding(actor=operator, tenant=None, accent="#3f4a5a")
 
-    out = _audit(capsys, expect_exit=1)
+    out, drift = _branding_section()
 
     assert "DRIFT       sign-in branding" in out
     assert "NO label policy of its own" in out
+    assert drift == 1, out
 
 
 def test_an_unreadable_surface_is_not_called_drift(
@@ -552,17 +682,18 @@ def test_an_unreadable_surface_is_not_called_drift(
     services.set_identity_branding(actor=operator, tenant=None, accent="#3f4a5a")
     label.readable = False
 
-    out = _audit(capsys, expect_exit=0)
+    out, drift = _branding_section()
 
     assert "could not    sign-in branding" in out
     assert "DRIFT       sign-in branding" not in out
+    assert drift == 0, out
 
 
 # --- the shell door: manage.py zitadel_brand ---------------------------------
 
 
 def test_the_command_sets_branding_and_starts_the_run(
-    operator: Any, owner: Any, tenant: Tenant, capsys: Any
+    operator: Any, owner: Any, tenant: Tenant, capsys: Any, dispatch: list[dict[str, Any]]
 ) -> None:
     """The intent-writing half `set_identity_branding` had no caller for.
 
@@ -570,6 +701,12 @@ def test_the_command_sets_branding_and_starts_the_run(
     `apply_identity_config`, recording an OUTCOME — and nothing that could ever
     ask for one. This is that door, the same shape `sync_workforce_idp` is for
     `sync_workforce_identity_config`.
+
+    **The run is asked for, and the ask is not dialled.** `dispatch` captures the
+    on-commit hook rather than running it (see the stub at the top of this
+    module): the row and the ledger entry are both written synchronously, so
+    everything this case is about survives, and the connect attempt that used to
+    reach `TEMPORAL_ADDRESS` from inside `--loop` does not happen.
     """
     capsys.readouterr()
     call_command(
@@ -596,10 +733,19 @@ def test_the_command_sets_branding_and_starts_the_run(
     run = WorkflowRun.objects.for_platform().get(type=SYNC_IDENTITY_CONFIG_WORKFLOW)
     assert run.workflow_id.startswith("platform:accounts:identity_config:branding-")
 
+    # The dispatch was ASKED FOR — the half a door that wrote the row and never
+    # requested a run would lose, and the reason the stub yields its list.
+    assert len(dispatch) == 1
 
-def test_the_command_only_turns_the_watermark_off_never_back_on(operator: Any, owner: Any) -> None:
+
+def test_the_command_only_turns_the_watermark_off_never_back_on(
+    operator: Any, owner: Any, dispatch: list[dict[str, Any]]
+) -> None:
     """No `--enable-watermark`: a plain flag cannot tell "leave it" from "turn it
     back on", so this one only ever means OFF, and omitting it means "unchanged".
+
+    Two runs asked for, neither dialled — `dispatch` again, for the reason the
+    case above gives.
     """
     call_command("zitadel_brand", "--accent", "#111111", "--disable-watermark", "--as", owner.email)
     call_command("zitadel_brand", "--accent", "#222222", "--as", owner.email)

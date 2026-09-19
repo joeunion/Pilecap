@@ -153,7 +153,7 @@ def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
     return actor_from_request(request), request.tenant
 
 
-def document_of(*, tenant: Tenant | None, org: object, file_id: UUID) -> StoredFile:
+def document_of(*, tenant: Tenant | None, org: object, file_id: UUID, actor: Actor) -> StoredFile:
     """One document this hat may see, or `not_found` — **one lookup, both doors**.
 
     A one-line wrapper on the selector, and it earns its place by being the thing
@@ -165,7 +165,7 @@ def document_of(*, tenant: Tenant | None, org: object, file_id: UUID) -> StoredF
     stranger gets rather than a different refusal that would tell the two apart. A
     route that is about to WRITE refuses earlier and louder, in `_acting`.
     """
-    return get_file(tenant=tenant, file_id=file_id, org=org)
+    return get_file(tenant=tenant, file_id=file_id, org=org, actor=actor)
 
 
 def downloadable(
@@ -183,8 +183,10 @@ def downloadable(
     doors cannot come to disagree about when a version is signable — the kind of
     disagreement no value-by-value parity test would catch.
     """
-    document = document_of(tenant=tenant, org=actor.org, file_id=file_id)
-    row = get_downloadable_version(tenant=tenant, file=document, version=version, org=actor.org)
+    document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
+    row = get_downloadable_version(
+        tenant=tenant, file=document, version=version, org=actor.org, actor=actor
+    )
     return issue_download_url(tenant=tenant, actor=actor, file=document, version=row)
 
 
@@ -270,7 +272,9 @@ def list_files_route(
     `ScopedQuerySet` to `QuerySet` here: filtering returns the plain one, and
     narrowing a queryset cannot widen its tenant.
     """
-    files: QuerySet[StoredFile] = list_files_selector(tenant=request.tenant, org=request.org)
+    files: QuerySet[StoredFile] = list_files_selector(
+        tenant=request.tenant, org=request.org, actor=actor_from_request(request)
+    )
     files = filters.filter(files)
     return ordered_by(files, ordering, allowed=ORDERING, default="-created_at")
 
@@ -366,7 +370,12 @@ def retrieve_file(request: TenantRequest, file_id: UUID) -> StoredFile:
     * `404 not_found` — nothing has that id where you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    return document_of(tenant=request.tenant, org=request.org, file_id=file_id)
+    return document_of(
+        tenant=request.tenant,
+        org=request.org,
+        file_id=file_id,
+        actor=actor_from_request(request),
+    )
 
 
 @router.post("/{file_id}/archive/", response=StoredFileOut, url_name="file-archive")
@@ -409,7 +418,7 @@ def archive_file_route(request: TenantRequest, file_id: UUID, payload: ArchiveIn
     409 here would teach a client to handle one that never comes.
     """
     actor, tenant = _acting(request)
-    document = document_of(tenant=tenant, org=actor.org, file_id=file_id)
+    document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
     return archive_file(tenant=tenant, actor=actor, file=document)
 
 
@@ -513,9 +522,10 @@ def list_versions_route(
       sent belongs to a different walk.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    document = document_of(tenant=request.tenant, org=request.org, file_id=file_id)
+    acting = actor_from_request(request)
+    document = document_of(tenant=request.tenant, org=request.org, file_id=file_id, actor=acting)
     versions: QuerySet[FileVersion] = list_versions(
-        tenant=request.tenant, file=document, org=request.org
+        tenant=request.tenant, file=document, org=request.org, actor=acting
     )
     return ordered_by(versions, ordering, allowed=VERSION_ORDERING, default="-version")
 
@@ -563,7 +573,7 @@ def add_version_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    document = document_of(tenant=tenant, org=actor.org, file_id=file_id)
+    document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
     ticket = add_version(
         tenant=tenant,
         actor=actor,
@@ -619,8 +629,8 @@ def confirm_upload_route(
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    document = document_of(tenant=tenant, org=actor.org, file_id=file_id)
-    row = get_version(tenant=tenant, file=document, version=version, org=actor.org)
+    document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
+    row = get_version(tenant=tenant, file=document, version=version, org=actor.org, actor=actor)
     return Status(
         202,
         confirm_upload(

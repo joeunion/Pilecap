@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import pytest
+from django.test import Client
 
 from apps.connections import services
 from apps.connections.models import Connection
+from apps.connections.policies import ACTION_PROSE
 from apps.connections.services import (
     create_connection,
     record_failure,
@@ -25,12 +28,14 @@ from apps.connections.services import (
     update_credentials,
 )
 from apps.connections.tests.conftest import WEBHOOK_SECRET
-from apps.core.actor import Actor, system_actor
+from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.audit import AuditEntry
+from apps.core.authz import refusal_sentence
 from apps.core.exceptions import Forbidden, Invalid
 from apps.core.log import REDACTED
-from apps.core.models import Tenant
+from apps.core.models import Membership, Organization, Tenant
 from apps.core.observability import configure
+from apps.core.services import add_membership, create_organization, root_organization
 
 pytestmark = pytest.mark.django_db
 
@@ -253,3 +258,232 @@ def test_a_delivery_is_stored_even_with_no_event_spine_in_the_tree(
     assert received.status == received.Status.RECEIVED
     assert received.handed_off_to == ""
     assert received.handed_off_at is None
+
+
+# --- The tenant's configuration is asked at the tenant's root ------------------
+#
+# A connection holds one credential that acts as the WHOLE tenant against
+# somebody else's system: it is the tenant's configuration and not a branch's.
+# Asked at the acting hat — which is what a `require` with no node, or with the
+# row itself, resolves to for a row that names no organization — an
+# administrator of one leaf held every one of these keys, and could open,
+# re-credential and revoke the tenant's connections.
+#
+# The node is therefore resolved by the caller and handed to `require`, exactly
+# as `apps/accounts/services.py`'s SSO sites and `core.services`'
+# `update_tenant_settings` do. `record_inbound_webhook` is the one site that
+# does not, and it says why on its own line.
+
+
+@pytest.fixture
+def branch(tenant: Tenant, owner_actor: Actor) -> Organization:
+    """One node under the root, so "elsewhere in the tree" is a real place."""
+    return create_organization(
+        tenant=tenant,
+        parent=root_organization(tenant=tenant),
+        name="Branch",
+        slug="branch",
+        actor=owner_actor,
+    )
+
+
+@pytest.fixture
+def branch_admin_actor(tenant: Tenant, branch: Organization, owner_actor: Actor) -> Actor:
+    """An administrator of one branch and of nothing above it.
+
+    Privileged where they stand — `admin` holds `("*",)` — and holding no role
+    at all at the root, which is where a connection's authority reaches. The
+    shape is `apps/accounts/tests/test_sso_role_ceiling.py`'s fixture of the
+    same name, one app over.
+    """
+    from apps.accounts.services import create_user
+
+    user = create_user(email="branch-admin@example.com", password=None)
+    add_membership(
+        user=user,
+        tenant=tenant,
+        organization=branch,
+        is_default=True,
+        role=Membership.Role.ADMIN,
+        actor=owner_actor,
+    )
+    return actor_for(user=user, tenant=tenant, org=branch)
+
+
+def test_a_branch_administrator_may_not_configure_the_tenants_connections(
+    tenant: Tenant,
+    owner_actor: Actor,
+    admin_actor: Actor,
+    member_actor: Actor,
+    branch_admin_actor: Actor,
+    connection: Connection,
+) -> None:
+    """Four acts on the tenant's connection, four refusals, four sentences.
+
+    Each refusal is asserted against `ACTION_PROSE[key]` rather than a quoted
+    string, so the test says "the key's own sentence" and cannot come to mean
+    "these words". A bare `pytest.raises(Forbidden)` would pass on any wall at
+    all, including one that refused everybody.
+
+    `record_failure` is here although its ordinary caller is an activity: it has
+    no caller in this tree at all today, and the caller its docstring names
+    restores the actor from the workflow's headers — which carry a person's hat.
+    A site that is system-only *in the ordinary case* is not a site nothing but
+    the system can reach, so it asks at the root like the other three rather
+    than carrying a valve whose sentence would be a claim about a caller that
+    does not exist.
+    """
+    attempts: tuple[tuple[str, Callable[[], object]], ...] = (
+        (
+            "connection.create",
+            lambda: create_connection(
+                tenant=tenant, actor=branch_admin_actor, provider="example", name="A Branch's"
+            ),
+        ),
+        (
+            "connection.update",
+            lambda: update_credentials(
+                tenant=tenant,
+                actor=branch_admin_actor,
+                connection=connection,
+                credentials={"access_token": "captured"},
+            ),
+        ),
+        (
+            "connection.revoke",
+            lambda: revoke_connection(
+                tenant=tenant, actor=branch_admin_actor, connection=connection, reason="captured"
+            ),
+        ),
+        (
+            "connection.update",
+            lambda: record_failure(
+                tenant=tenant, actor=branch_admin_actor, connection=connection, reason="captured"
+            ),
+        ),
+    )
+    for key, attempt in attempts:
+        with pytest.raises(Forbidden) as refused:
+            attempt()
+        assert refused.value.detail == ACTION_PROSE[key], key
+
+    # NOTHING MOVED. A refusal that arrived after the write would leave the
+    # branch admin's credential in place and the test green on the sentence.
+    connection.refresh_from_db()
+    assert connection.status == Connection.Status.CONNECTED
+    assert connection.access_token == "an-access-token"
+    assert connection.webhook_secret == WEBHOOK_SECRET
+    assert connection.last_error == ""
+    assert Connection.objects.for_tenant(tenant).count() == 1
+
+    # The two hats that DO hold it, each on a victim of its own — a wall that
+    # refuses everybody is not a wall, it is an outage.
+    assert create_connection(
+        tenant=tenant, actor=owner_actor, provider="example", name="The Owner's"
+    ).pk
+    assert create_connection(
+        tenant=tenant, actor=admin_actor, provider="example", name="A Root Admin's"
+    ).pk
+    assert revoke_connection(tenant=tenant, actor=owner_actor, connection=connection).pk
+
+    # And the plain member is refused exactly as before — the branch
+    # administrator is the only actor the root narrows.
+    with pytest.raises(Forbidden) as refused_member:
+        create_connection(tenant=tenant, actor=member_actor, provider="example", name="A Member's")
+    assert refused_member.value.detail == ACTION_PROSE["connection.create"]
+
+
+def test_the_receiver_still_stores_a_delivery_as_the_system(
+    tenant: Tenant, connection: Connection
+) -> None:
+    """The reason `record_inbound_webhook` carries a valve instead of the root.
+
+    Its one caller is the inbound receiver (`api.py`), which authenticates an
+    HMAC over the raw body and then builds `system_actor(tenant)` on the spot —
+    there is no person on that path and no door that puts one there. `allows`
+    answers `system` at step 1, before any node is resolved, so resolving the
+    root for it would be a query per delivery for an answer nothing reads: the
+    per-delivery write is the hottest path in this app.
+
+    This is the assertion behind that sentence, so the valve's reason is driven
+    rather than asserted in a comment.
+    """
+    received = record_inbound_webhook(
+        tenant=tenant,
+        actor=system_actor(tenant),
+        connection=connection,
+        body='{"hello": "root"}',
+        headers={"Content-Type": "application/json"},
+        event_type="thing.happened",
+    )
+    assert received.pk is not None
+    assert received.tenant_id == tenant.pk
+
+
+def test_a_branch_administrator_may_not_configure_the_tenants_connections_on_the_wire(
+    api: Client,
+    tenant: Tenant,
+    owner: Any,
+    owner_actor: Actor,
+    branch_admin_actor: Actor,
+    connection: Connection,
+) -> None:
+    """The same acts through the door a person actually uses.
+
+    `POST /api/v1/connections/` is the case the root closes: it reaches the
+    service with no read in front of it, so at the acting hat it answered
+    **201** for an administrator of one leaf.
+
+    The revoke route resolves the row first (`selectors.get_connection`), and
+    that read asks `connection.read` at the tenant's ROOT today — so the branch
+    admin meets a wall one step earlier than the service's. Which of the two
+    tenant-wide walls speaks there is the READ register's question, and the
+    read sites are not this module's subject — so the assertion names both and
+    pins what the write side owns: 403, `forbidden`, and a row that did not
+    move.
+
+    **There is no MCP twin to look for.** `apps/connections` is a recorded rule
+    17 exemption (`quality/rules.yaml`: connection management is per-tenant
+    configuration done by a person in a browser, and the inbound receiver is a
+    machine door with an HMAC credential of its own).
+    """
+    from apps.accounts.models import User
+
+    branch_admin = User.objects.get(pk=str(branch_admin_actor.user_id))
+    revoke_url = f"/api/v1/connections/{connection.pk}/revoke/"
+
+    api.force_login(branch_admin)
+    created = api.post(
+        "/api/v1/connections/",
+        {"provider": "example", "name": "A Branch's"},
+        content_type="application/json",
+    )
+    assert created.status_code == 403
+    assert created.json()["code"] == "forbidden"
+    assert created.json()["detail"] == ACTION_PROSE["connection.create"]
+
+    revoked = api.post(revoke_url, {"reason": "captured"}, content_type="application/json")
+    assert revoked.status_code == 403
+    assert revoked.json()["code"] == "forbidden"
+    assert revoked.json()["detail"] in {
+        refusal_sentence("connection.read"),
+        ACTION_PROSE["connection.revoke"],
+    }, revoked.json()["detail"]
+    api.logout()
+
+    connection.refresh_from_db()
+    assert connection.status == Connection.Status.CONNECTED
+    assert connection.webhook_secret == WEBHOOK_SECRET
+    assert Connection.objects.for_tenant(tenant).count() == 1
+
+    # The owner, through the same two routes, on the same tenant.
+    api.force_login(owner)
+    mine = api.post(
+        "/api/v1/connections/",
+        {"provider": "example", "name": "The Owner's"},
+        content_type="application/json",
+    )
+    assert mine.status_code == 201
+    assert (
+        api.post(revoke_url, {"reason": "done"}, content_type="application/json").status_code == 200
+    )

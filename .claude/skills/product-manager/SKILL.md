@@ -290,6 +290,12 @@ Then **run it once immediately** rather than waiting for the first fire — the
 first check is the one most likely to find something, because it runs against
 whatever the previous session left behind.
 
+Then `scripts/verifier_box.sh census` — exit 0 and `no verifier boxes` is the
+answer you want; an `OVERDUE` line is a box no session remembers, `down` it now
+and record the reaper failure as a queue row; exit 2 means the profile is gone —
+the two commands it prints are the owner's, ask — and the bootstrap is typed with its three coordinates in front (`DJB_DEPLOY_NAMESPACE=<ns> DJB_VERIFIER_ACCOUNT=<12 digits> DJB_VERIFIER_REGION=<region> ./deploy/iam/verifier_bootstrap.sh`, per its own header; the tree carries no default for any of them). (Until the verifier-box
+script lands, the command does not exist and this step is a no-op.)
+
 **Know what it does not do, and say so rather than implying otherwise.** The job
 is session-only: held in memory, never written to disk, gone when the session
 ends, and auto-expired after seven days regardless. **It watches for a stalled
@@ -300,6 +306,17 @@ solve different halves, and neither substitutes for the other.
 
 If a watchdog that outlives the session is wanted, that is a cloud schedule and
 it runs outside this machine — ask the owner before setting one up.
+
+**A watcher on a long run matches terminal lines only (owner rule, 2026-09-16).**
+Every line a `Monitor` lets through re-invokes the PM with the whole context —
+one request per line. The filter names the lines that change what the PM does
+next (`^exit [0-9]`, the ritual's own `!!` refusal, the push) and nothing else;
+never `refus`, `passed`, `RED`, `ok ` or `!! ` alone, because the self-test
+drives print those words in every case name. Use `tail -n 0 -f`, never replay
+the backlog. A watcher caught firing on narration is a defect the PM stops and
+re-arms at once, not one it tolerates until the run ends — the bank's watcher
+fired sixty times in forty minutes on drive lines before the owner asked
+whether the loop was consuming tokens. It was.
 
 **Every time a watchdog check is a no-op, spend the window as the user.** Most
 of a cycle's wall-clock is the PM waiting on agents. Run one cheap read against
@@ -420,6 +437,40 @@ economics of the loop are the lead's to judge and cost nothing to ask.
 Discovering on pass five that four passes could have been two is a PM failure,
 not a process one.
 
+**Batched builds — the standing rule (owner, 2026-09-15).** Quarter-session
+rungs are dispatched in batches, never singly: DECOMPOSE groups every ¼-rung
+whose territory is one file set and whose criteria are independent into ONE
+build dispatch per territory, and the PM sends that batch as one brief. The
+fixed cost of a dispatch — a fresh agent reading the skills, the plan, the
+schema and the tree — is fifteen to twenty minutes and most of a rung's tokens
+for a ¼ change, and it is paid once per brief, not once per rung. What the
+batch may NOT change: each rung still lands as its own commit, red-first shown
+per rung, each rung's baseline named, each criterion passing by its own
+mechanism with no cross-explanation, findings attributed per rung, one drive
+file per rung (the append-collision class); the batch is verified in one pass
+exactly as a batch of separate builds would be. Caps, so the unit of failure
+stays legible: at most four rungs or one session of estimated size per batch,
+all in one app and one territory, none touching a frozen app, and a batch
+that stops on one rung reports the others as untouched by name. A builder
+that finds two rungs in its batch collide has found a plan error and stops.
+Paid for in P20 by fifteen singly-dispatched ¼-rungs whose read-in cost
+exceeded their build cost.
+
+**Batched verification — the standing rule (owner, 2026-09-15, "yes").** The
+same rule, one stage later: the rungs a batch built are VERIFIED by one
+field-test agent on one clone with one `--loop` consult, and follow-up rungs
+(`<id>F`, `<id>F2`…) are verified with the next verifier in their territory
+rather than each with a clone of its own. A verifier's fixed cost — the clone,
+the setup, the consult — is most of a ¼-rung's verification, and it is paid
+once per territory per wave. What the batch may NOT change: every rung's
+criteria judged by name with its own artifact, every red re-measured on its
+own baseline, findings attributed per rung, a NOT MET on any one rung blocks
+that rung alone (the verdict is per rung, the clone is shared). Caps as for
+builds: at most four rungs, one app, one territory. What still gets its own
+verifier: a security fix, a rung whose criteria touch a door over the wire,
+and any rung the PM names. Paid for in P20 by a three-line follow-up that
+cost a clone, a database and a 15-minute gate of its own.
+
 **Fan-out is argued, never assumed — and it is the default.** DESIGN,
 ratification and CLOSE are serial PM judgment; BUILD and PROVE fan out, with
 the concurrency map as the script and the PM in the loop between phases, never
@@ -469,7 +520,12 @@ hard:
 **Implemented, not merely written.** The stop signals below are columns in
 `docs/product/readouts.md` — one row per cycle, filled at CLOSE — and
 `python3 scripts/loop_health.py` evaluates them over the last two completed
-cycles. It exits 1 when two or more hold, and **2 when the scoreboard cannot be
+cycles. **The cost line is a column too (owner, 2026-09-15):** at CLOSE the PM
+pastes the usage screen's figures (per model, the main session's cache rate, the
+watchdog's fires and tokens, the weekly cap) as a dated row under
+`readouts.md` § COST BASELINE and states the per-rung figure against the
+baseline row — durable across sessions because it lives in the file, not the
+session. It exits 1 when two or more hold, and **2 when the scoreboard cannot be
 read** — a missing file, an unreadable table, or **fewer than two completed
 rows** — because a loop that cannot measure itself is in no position to claim
 it is fine. **A blank column counts as a miss, never a zero.** An empty

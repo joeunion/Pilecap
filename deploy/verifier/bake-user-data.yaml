@@ -1,0 +1,167 @@
+#cloud-config
+# THE BAKE BOX'S OWN BOOTSTRAP — a different file from the launch seam, and
+# deliberately so.
+#
+# A BAKE BOX IS NOT A VERIFIER BOX. It has no expiry file, no idle-minutes file
+# and NO REAPER RUNNING: a recipe that takes twenty minutes must not be halted
+# by the very timer it is installing, and an image captured from a machine whose
+# reaper had already fired would boot every verifier box into a halt. So the
+# reaper's unit is installed by the recipe and left DISABLED; the launch seam is
+# what enables it, on the boxes that want it.
+#
+# WHAT IT STILL NEEDS is the same two things the launch seam provides: an
+# account to reach over the transport, and the key to reach it with — and, for
+# the reason below, somewhere for the operator's first push to land. Two slots:
+#
+#   VERIFIER_PUBKEY    the per-bake public half, generated on the operator's
+#                      machine; the private half never leaves it.
+#   VERIFIER_CHECKOUT  where that push lands. IT IS NOT TYPED HERE: the wrapper
+#                      reads it out of `bake.sh`'s own BAKE_CHECKOUT knob — the
+#                      one place the path is written down — and renders it in,
+#                      so the seam that CREATES the repository, the push that
+#                      fills it and the recipe that checks it cannot drift.
+#
+# WHY A REPOSITORY IS CREATED HERE AT ALL, RATHER THAN BY THE RECIPE. The
+# recipe is run FROM the pushed tree, so the push happens first and there is
+# nothing on a raw Amazon Linux box for it to land in. FIELD TEST 2 is what
+# that costs: the push reached the box through the tunnel and the box's own
+# shell answered `bash: line 1: git-receive-pack: command not found` ·
+# `fatal: Could not read from remote repository` · exit 128. So: git, and a
+# repository, before anything asks for either.
+#
+# WHY A LIVE CHECKOUT AND NOT A BARE REPOSITORY. Every step of the recipe after
+# the push — `uv sync`, `./scripts/setup.sh`, `docker compose pull` — runs
+# INSIDE a working tree, and the recipe parks that tree on a branch nobody
+# pushes only at the end. A bare repository would need a checkout step the
+# recipe does not have. `receive.denyCurrentBranch=updateInstead` is what makes
+# a live checkout receivable: git otherwise refuses a push into the branch that
+# is checked out, and `main` is exactly the branch the wrapper pushes. HEAD is
+# put on `main` deliberately (`git init -b main`) — with HEAD anywhere else the
+# push would be ACCEPTED and the working tree would stay empty, which is the
+# same failure one step further along and silent.
+#
+# AND THE ORDER, WHICH IS THE OTHER HALF. `runcmd` is cloud-init's LAST stage;
+# the SSM agent is a systemd unit that starts at boot and reports `Online` on
+# its own schedule, long before a `dnf install` finishes. So Online does not
+# mean prepared, and the last thing below is a marker on a tmpfs that does. The
+# wrapper waits for THAT through the tunnel before it pushes
+# (`scripts/verifier_box.sh`'s `wait_for_bake_bootstrap`). It lives under /run
+# so it can neither be captured into the image nor survive a reboot into a lie.
+#
+# THE MARKER IS THE POINT. `/etc/verifier/bake` is written here and required by
+# `bake.sh`, which refuses at exit 2 without it. That is what stops the recipe
+# from running on somebody's laptop or on a live verifier box — the two places
+# where "install docker, create a user, wipe the cloud-init state" would be a
+# very bad afternoon.
+#
+# AND THE THIRD THING, WHICH FIELD TEST 5 PAID FOR: ROOT, WITHOUT A PASSWORD.
+# The launch seam next door grants its account no sudo rule and says why
+# ("nothing a verification does needs root"); this file must grant one, and the
+# two files disagreeing is the design rather than a drift. A bake INSTALLS the
+# machine: `dnf install`, `systemctl enable`, `useradd`, `usermod`, `install`
+# into /opt and /etc/systemd/system, `sed`/`tee` into /etc/environment, `sudo
+# env … sh` for the pinned `uv` installer, `truncate`, `cloud-init clean` — and
+# `sudo -u verifier` for the four steps that must run AS the account.
+#
+# WHY THE BOOTSTRAP ABOVE NEVER NEEDED IT, which is the whole reason this was
+# missing for five field tests: `runcmd` runs as ROOT. Every `sudo -u verifier`
+# in it is root dropping privilege, not the account climbing, so the bootstrap
+# worked perfectly and the recipe could not run at all. FIELD TEST 5's own
+# words, after eleven minutes of push: `sudo: a terminal is required to read
+# the password` then `sudo: a password is required` — a tunnelled session has
+# no tty, so the prompt is unanswerable and the recipe dies on its first line.
+#
+# WHY NOT NARROWER. A Cmnd_Alias over the eleven verbs above would be a second
+# list to keep in step with the recipe, and it would buy nothing: step 4 is
+# `curl … | sudo env UV_INSTALL_DIR=/usr/local/bin sh`, which is a shell
+# running a script fetched from the network — already equivalent to ALL — and
+# step 8 is `sudo -u verifier ./scripts/setup.sh`, the whole provisioner. The
+# rule is scoped by the MACHINE instead, and that scope is real: a bake box has
+# no ingress, an egress-only group, a two-hour expiry tag, one account and a
+# wrapper that terminates it the moment the image is captured. A NARROWER RULE
+# IS DAY-TWO HARDENING and this is the declaration of it — the day the recipe
+# stops needing `sudo env … sh` (a pinned `uv` rpm, or a user-local install),
+# the rule becomes the enumerated list and the recipe's own `sudo -n true`
+# check is what tells the operator it went too far.
+#
+# AND IT DOES NOT SURVIVE THE IMAGE. `create-image` captures the root volume as
+# it stands, and cloud-init's sudo rules are files on that volume, so a rule
+# left in place would be baked in and every verifier box launched from the image
+# would hand its account passwordless root — the launch seam's sentence broken
+# from the other side of the AMI. `bake.sh`'s last step removes this rule and
+# proves it is gone (`deploy/verifier/bake.sh`, step 14/14).
+#
+# The bake box is terminated by the wrapper the moment the image is captured,
+# and it is tagged with its own expiry so the census can call it out as a stale
+# bake if that ever fails to happen.
+
+users:
+  - name: verifier
+    gecos: verifier image baker
+    shell: /bin/bash
+    groups: [docker]
+    lock_passwd: true
+    # The recipe's own root — argued in full above, removed by the recipe's
+    # last step, and asserted by `sudo -n true` before its first step.
+    #
+    # THE PRAGMA IS NOT A SECRET BEING WAVED THROUGH. `detect-secrets`' Secret
+    # Keyword detector reads `NOPASSWD:ALL` as a password keyword with the
+    # value `ALL`; there is no credential on this line and nothing on a bake
+    # box to steal with one — the sudoers grammar is the whole of it. A YAML
+    # trailing comment after a plain scalar is not part of the value, so
+    # cloud-init still reads exactly `ALL=(ALL) NOPASSWD:ALL`.
+    sudo: ALL=(ALL) NOPASSWD:ALL # pragma: allowlist secret
+    ssh_authorized_keys:
+      - "${VERIFIER_PUBKEY}"
+
+write_files:
+  - path: /etc/verifier/bake
+    owner: "root:root"
+    permissions: "0644"
+    content: |
+      This machine is a verifier IMAGE BAKE box. deploy/verifier/bake.sh
+      refuses to run unless this file exists, because the recipe installs
+      packages, creates accounts and clears the cloud-init state.
+
+runcmd:
+  # Docker first, because the recipe runs as the verifier account and that
+  # account has to be in the docker group before its first session. `git` is
+  # here rather than left to the recipe because the PUSH comes before the
+  # recipe: without it the box answers `git-receive-pack: command not found`.
+  - [dnf, install, -y, docker, git]
+  - [systemctl, enable, --now, docker]
+  - [usermod, -aG, docker, verifier]
+  # The repository the operator's first push lands in. Created by root and
+  # GIVEN to the bake account, because every later step runs as that account
+  # and a tree it does not own is a tree `uv sync` cannot write to.
+  - [install, -d, -o, verifier, -g, verifier, -m, "0755", "${VERIFIER_CHECKOUT}"]
+  - [sudo, -u, verifier, git, init, -b, main, "${VERIFIER_CHECKOUT}"]
+  - [sudo, -u, verifier, git, -C, "${VERIFIER_CHECKOUT}", config, receive.denyCurrentBranch, updateInstead]
+  # THE READY MARKER, AND IT IS LAST ON PURPOSE — see the header. On a tmpfs,
+  # so it is neither captured into the image nor left behind by a reboot.
+  #
+  # IT ASSERTS WHAT IT CLAIMS RATHER THAN MERELY ARRIVING LAST. `runcmd` runs a
+  # generated script, and whether a failed entry stops the rest of it is
+  # cloud-init's business and not something this file should rest on: a marker
+  # that only means "the script reached its end" would be written by a boot
+  # where `git init` had failed, and the wrapper would push into it and get
+  # FIELD TEST 2's exit 128 back. So the last entry tests the repository it is
+  # vouching for.
+  #
+  # AND IT TESTS THE CONFIG, NOT ONLY THE REPOSITORY. If `git init` succeeds
+  # and the `config` entry above it fails, `.git` exists, a `.git`-only guard
+  # passes, the marker is written, the wrapper pushes — and git answers
+  # `! [remote rejected] main -> main (branch is currently checked out)`. That
+  # is FIELD TEST 2's class again, this time wearing a marker that said the box
+  # was prepared, which is worse than no marker at all. The drive derives the
+  # correspondence in both directions: a setting nobody guards, and a guard
+  # nobody sets, are both a red.
+  #
+  # `sudo -u verifier`, because the repository belongs to that account and git
+  # refuses a repository whose owner is not the caller (`detected dubious
+  # ownership`) — root reading it directly would fail the guard on a box that
+  # is in fact perfectly prepared. And `[ "$(…)" = updateInstead ]` rather than
+  # `… | grep -q`: a `grep -q` leaves on its first match and closes the pipe
+  # under its producer, which is a race this tree has already paid for once.
+  - [install, -d, -m, "0755", /run/verifier]
+  - [sh, -c, 'test -d "${VERIFIER_CHECKOUT}/.git" && [ "$(sudo -u verifier git -C "${VERIFIER_CHECKOUT}" config --get receive.denyCurrentBranch)" = updateInstead ] && touch /run/verifier/bake-ready']

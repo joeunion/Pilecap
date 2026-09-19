@@ -31,6 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: apps/ config/ deploy/compose.yaml docs/product/instruments.md manage.py scripts/backup.sh scripts/db.sh scripts/kill_mine.sh scripts/queue_cited.sh scripts/restore_drill.sh scripts/sweep.sh scripts/tests/test_pm_merge.sh
 # The refusal drive for scripts/backup.sh and scripts/restore_drill.sh.
 #
 #   ./scripts/tests/test_backup_restore.sh          run every case

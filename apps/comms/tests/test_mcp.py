@@ -90,7 +90,14 @@ TOOL_FOR_ROUTE: dict[str, str] = {
 # session row, no middleware and no savepoint out here — a tool call is not a
 # request — and after ADR core-18 there is no COUNT either unless the caller
 # sends `include_count`, which is what took this from 2 to 1.
-LIST_QUERY_BUDGET = 1
+# PR4.b (ADR core-27) adds exactly THREE: a read is a permission now, so the
+# selector behind this door calls `require(actor, "<kind>.read", ...)` once,
+# and the first `require` of a request reads the actor's three permission
+# tables — the memberships on the chain, their grants, and the delta rows for
+# the role keys those name. Three and not six because PR0's memo rides on the
+# actor: a second `require` in the same request costs nothing, which is what a
+# route that fetches through a `get_` and then calls a service is standing on.
+LIST_QUERY_BUDGET = 4
 
 
 # --- A tool call, without a transport ------------------------------------------

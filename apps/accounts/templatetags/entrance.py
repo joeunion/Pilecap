@@ -50,3 +50,22 @@ def brand_accent() -> str:
 def product_name() -> str:
     """What this deployment calls itself."""
     return str(getattr(settings, "PRODUCT_NAME", "") or "").strip()
+
+
+@register.simple_tag
+def sign_in_door() -> str:
+    """Which sign-in door this deployment opens: `ours` or `hosted` (A5.5).
+
+    Read, not decided — the same contract as the two tags above. It exists
+    because one page's COPY is a fact about the door and about nothing else:
+    `templates/account/logout.html` tells a person what signing out here does
+    to their session at the identity platform, and the true answer is
+    different under each door. A template cannot read a setting, and allauth
+    owns the logout view, so the fact arrives as a tag rather than as context.
+
+    A third tag rather than a boolean, so the template reads the vocabulary
+    `config/settings/base.py` refuses anything outside — a `{% if %}` on a
+    string somebody can compare to the setting's own values, rather than a
+    `not_hosted` nobody can trace back.
+    """
+    return str(getattr(settings, "SIGN_IN_DOOR", "hosted") or "hosted").strip()

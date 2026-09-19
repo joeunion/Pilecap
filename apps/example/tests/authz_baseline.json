@@ -1,0 +1,173 @@
+{
+  "_": "DERIVED, never typed. Every cell is `allows(actor, key, obj)` over the example app's declared keys x {owner, admin, member} x five object states. The sweep re-runs the same census on its own tree and asserts equality; a moved answer prints (key, actor, state, before, after).",
+  "_baseline": "5bf51daa",
+  "_command": "git worktree add <scratch> 5bf51daa --detach && cp apps/example/tests/authz_matrix.py <scratch>/apps/example/tests/ && cd <scratch> && ./scripts/rung_start.sh && uv run python manage.py shell -c \"from apps.example.tests.authz_matrix import write_baseline as w; w('<repo>/apps/example/tests/authz_baseline.json')\"",
+  "answers": {
+    "widget.approve": {
+      "admin": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": false,
+        "other_under_a1": true,
+        "own": true
+      },
+      "member": {
+        "none": false,
+        "other_at_hat": false,
+        "other_in_b": false,
+        "other_under_a1": false,
+        "own": false
+      },
+      "owner": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": true,
+        "other_under_a1": true,
+        "own": true
+      }
+    },
+    "widget.create": {
+      "admin": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": false,
+        "other_under_a1": true,
+        "own": true
+      },
+      "member": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": true,
+        "other_under_a1": true,
+        "own": true
+      },
+      "owner": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": true,
+        "other_under_a1": true,
+        "own": true
+      }
+    },
+    "widget.delete": {
+      "admin": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": false,
+        "other_under_a1": true,
+        "own": true
+      },
+      "member": {
+        "none": false,
+        "other_at_hat": false,
+        "other_in_b": false,
+        "other_under_a1": false,
+        "own": true
+      },
+      "owner": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": true,
+        "other_under_a1": true,
+        "own": true
+      }
+    },
+    "widget.onboard": {
+      "admin": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": false,
+        "other_under_a1": true,
+        "own": true
+      },
+      "member": {
+        "none": false,
+        "other_at_hat": false,
+        "other_in_b": false,
+        "other_under_a1": false,
+        "own": true
+      },
+      "owner": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": true,
+        "other_under_a1": true,
+        "own": true
+      }
+    },
+    "widget.update": {
+      "admin": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": false,
+        "other_under_a1": true,
+        "own": true
+      },
+      "member": {
+        "none": false,
+        "other_at_hat": false,
+        "other_in_b": false,
+        "other_under_a1": false,
+        "own": true
+      },
+      "owner": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": true,
+        "other_under_a1": true,
+        "own": true
+      }
+    },
+    "widget_entry.record": {
+      "admin": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": false,
+        "other_under_a1": true,
+        "own": true
+      },
+      "member": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": true,
+        "other_under_a1": true,
+        "own": true
+      },
+      "owner": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": true,
+        "other_under_a1": true,
+        "own": true
+      }
+    },
+    "widget_policy.create": {
+      "admin": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": false,
+        "other_under_a1": true,
+        "own": true
+      },
+      "member": {
+        "none": false,
+        "other_at_hat": false,
+        "other_in_b": false,
+        "other_under_a1": false,
+        "own": false
+      },
+      "owner": {
+        "none": true,
+        "other_at_hat": true,
+        "other_in_b": true,
+        "other_under_a1": true,
+        "own": true
+      }
+    }
+  },
+  "roles": [
+    "owner",
+    "admin",
+    "member"
+  ]
+}

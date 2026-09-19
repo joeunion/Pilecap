@@ -38,19 +38,26 @@ JSON = "application/json"
 RUNS_URL = "/api/v1/runs/"
 WIDGETS_URL = "/api/v1/widgets/"
 
-# Measured, not guessed, at ten runs and then again at thirty. The eight, in the
+# Measured, not guessed, at ten runs and then again at thirty. The ten, in the
 # order they run: the session row + the user row (session authentication) + the
 # membership read `TenantMiddleware` resolves the tenant from + the membership
 # read `resolve_org` resolves the acting ORG from + 1 SAVEPOINT
-# (ATOMIC_REQUESTS) + the membership read `authz.require` makes inside
-# `list_runs` (this list is policy-gated; the widget list is not, which is the
-# whole of why that pin is one lower) + the page + 1 RELEASE SAVEPOINT.
+# (ATOMIC_REQUESTS) + THE THREE `authz.require` resolves `workflow_run.read`
+# from inside `list_runs` + the page + 1 RELEASE SAVEPOINT.
 # `started_by` is `select_related`, which is the point of the pin — drop it and
 # this number grows with the page.
 # ADR core-18 took the COUNT off this pin: the default list issues none any
 # more — `has_more` comes from fetching one row more than asked for.
-# `?include_count=true` puts it back, and costs exactly one more (nine).
-LIST_QUERY_BUDGET = 8
+# `?include_count=true` puts it back, and costs exactly one more (eleven).
+#
+# **8 -> 10, and the arithmetic is +3 and -1** (PR4.i.3). The +3 is the read key
+# resolved at the acting hat — memberships, grants, role deltas — which is what
+# ADR core-27 costs every read door once per actor; the -1 is the single
+# membership read the retired `may_read_the_ledger` predicate used to make, which
+# the three statements subsume. The three are memoized on the actor, so a second
+# question in the same request is free; a request builds one actor, which is why
+# ten is what a request pays rather than what a loop pays.
+LIST_QUERY_BUDGET = 10
 
 
 def _make_widget(api: Client, owner: User, name: str) -> str:

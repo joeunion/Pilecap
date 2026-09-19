@@ -111,7 +111,7 @@ def test_every_core_route_carries_auth_even_though_the_router_inherits_it() -> N
         if str(operation.view_func.__module__).startswith("apps.core.api")
     ]
 
-    assert len(core_operations) == 17, [op.url_name for op in core_operations]
+    assert len(core_operations) == 28, [op.url_name for op in core_operations]
     for operation in core_operations:
         assert operation.auth_callbacks, operation.url_name
 
@@ -444,12 +444,18 @@ def _query_count(api: Client, url: str, query: str = "") -> int:
 
 #: Measured after ADR core-18, and it is one LOWER than it was: the default
 #: list no longer issues a `COUNT`.
-LIST_QUERY_BUDGET = 7
+#:
+#: **+3 at Phase R: `<kind>.read` asked at the hat** — the memberships, their
+#: grants and the delta rows for the role keys they name — and paid ONCE per
+#: actor whatever the number of questions in the request (PR0's memo). It moved
+#: 7 → 10, once, and the "once" is the claim: a request that asked twice would
+#: have moved it to 13.
+LIST_QUERY_BUDGET = 10
 
 #: What the same list costs when a caller asks for the total. Exactly one more
 #: statement, and the pair is the instrument: the count(*) tax the ADR removed
-#: is now something a test can see arrive and leave.
-COUNTED_LIST_QUERY_BUDGET = 8
+#: is now something a test can see arrive and leave. 8 → 11 with the read.
+COUNTED_LIST_QUERY_BUDGET = 11
 
 
 @pytest.mark.parametrize("url", [ORGANIZATIONS, MEMBERSHIPS, INVITATIONS])

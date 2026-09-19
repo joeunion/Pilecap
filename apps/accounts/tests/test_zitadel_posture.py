@@ -58,7 +58,7 @@ from typing import Any
 
 import pytest
 from django.conf import settings
-from django.core.management import call_command
+from django.core.management import call_command, get_commands, load_command_class
 
 from apps.accounts import zitadel
 from apps.accounts.tests.conftest import (
@@ -66,6 +66,7 @@ from apps.accounts.tests.conftest import (
     ORG_LOGIN_POLICY_OWN,
     FakeZitadel,
 )
+from apps.core.tests.template_shape import template_shape
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -112,6 +113,61 @@ def _seed(capsys: Any) -> str:
     return str(capsys.readouterr().out)
 
 
+def _posture_writer() -> str:
+    """The command THIS deployment declares writes its sign-in posture.
+
+    `DJB_IDENTITY_SHAPE`'s `posture_writer` key; `config/settings/base.py` is
+    the authority. The template's own answer is `zitadel_seed`, and the cases
+    below that assert `zitadel_seed`'s IDENTITY or its wording carry
+    `@template_shape("posture_writer")` and skip on a product that named its
+    own. The three that assert IDEMPOTENCE do not skip: "running the posture
+    writer twice writes nothing the second time" is every product's property,
+    and it is asked of whichever command the product declared.
+    """
+    return str(settings.IDENTITY_SHAPE["posture_writer"])
+
+
+def _writer_options(name: str) -> tuple[str, ...]:
+    """`--skip-user` when the declared writer takes it, and nothing when it does not.
+
+    The template's `zitadel_seed` does far more than the posture, and
+    `--skip-user` is what keeps these cases off its user half. A product's own
+    writer owes no such flag, so passing it blindly would red the re-keyed cases
+    on an unknown option rather than on the property they are about. Read off
+    the command's own parser through `format_help()` — the public surface —
+    rather than off a name this module would have to keep a list of.
+    """
+    parser = load_command_class(get_commands()[name], name).create_parser("manage.py", name)
+    return ("--skip-user",) if "--skip-user" in parser.format_help() else ()
+
+
+def _write_posture(capsys: Any) -> str:
+    """Run the DECLARED posture writer, and hand back what it printed.
+
+    The printed lines are the writer's own wording and no case below reads them;
+    what the re-keyed cases read is the fake's REQUEST LOG, which is the same
+    question asked of any writer.
+    """
+    capsys.readouterr()
+    writer = _posture_writer()
+    call_command(writer, *_writer_options(writer))
+    return str(capsys.readouterr().out)
+
+
+def _posture_section() -> tuple[list[str], int]:
+    """The audit's posture SECTION, as `(lines, drift)` — I3's one read.
+
+    Read instead of the whole command's exit status: a product's audit carries
+    sections this template does not have, so the command's total moves for
+    reasons that have nothing to do with the posture. The section's own count is
+    the number this case is about.
+    """
+    from apps.accounts.management.commands.zitadel_audit import posture_section
+
+    section = posture_section()
+    return list(section.lines), section.drift
+
+
 def _audit(capsys: Any, *, expect_exit: int = 0) -> str:
     capsys.readouterr()
     if expect_exit == 0:
@@ -126,6 +182,7 @@ def _audit(capsys: Any, *, expect_exit: int = 0) -> str:
 # --- the seed applies all three ----------------------------------------------
 
 
+@template_shape("posture_writer")
 def test_the_seed_closes_all_three_doors(
     fresh_instance: FakeZitadel, posture: None, capsys: Any
 ) -> None:
@@ -141,6 +198,7 @@ def test_the_seed_closes_all_three_doors(
     assert fresh_instance.restrictions.get("disallowPublicOrgRegistration") is True
 
 
+@template_shape("posture_writer")
 def test_the_seed_prints_one_line_for_each(
     fresh_instance: FakeZitadel, posture: None, capsys: Any
 ) -> None:
@@ -169,18 +227,20 @@ def test_a_second_seed_run_writes_nothing_and_says_exists(
 ) -> None:
     """Idempotence, as the property `scripts/setup.sh` depends on every run.
 
-    The `PUT` count is what makes this fail if the writers ever stop comparing:
-    a command that reported `exists` while still writing would be green on the
-    printed line and wrong on the wire.
+    **Asked of the DECLARED posture writer, on its request log.** The `PUT`
+    count is what makes this fail if the writers ever stop comparing: a command
+    that reported `exists` while still writing would be green on the printed
+    line and wrong on the wire — which is also why the printed line is no longer
+    what is read here. `exists` is `zitadel_seed`'s own wording (the template's
+    shape, pinned by `test_the_seed_prints_one_line_for_each`, which skips on a
+    product that named its own writer); the empty request log is the mechanism,
+    and it is the same mechanism whatever the writer is called.
     """
-    _seed(capsys)
+    _write_posture(capsys)
     fresh_instance.bodies.clear()
 
-    out = _seed(capsys)
+    _write_posture(capsys)
 
-    assert "exists  login policy" in out
-    assert "exists  lockout policy" in out
-    assert "exists  restrictions" in out
     posture_puts = [
         path
         for method, path, _ in fresh_instance.bodies
@@ -237,8 +297,46 @@ def test_the_audit_agrees_after_a_seed(instance: FakeZitadel, posture: None, cap
 
     assert "agrees      posture self-registration — False" in out
     assert "agrees      posture password lockout — 100" in out
-    assert "agrees      posture public org registration — True" in out
+    # The ALLOW shape, which is the label's own shape: this deployment is
+    # configured for `ZITADEL_ALLOW_PUBLIC_ORG_REGISTRATION=False` and Zitadel
+    # agrees, so the line reads `False` like its two siblings. It read `True`
+    # until the translation was moved off the printed value, and the sibling
+    # case below is the one that pins why.
+    assert "agrees      posture public org registration — False" in out
     assert "Zitadel agrees with every row" in out
+
+
+def test_the_public_org_registration_line_reads_like_its_siblings(
+    instance: FakeZitadel, posture: None, capsys: Any
+) -> None:
+    """Three registration doors, all shut, and all three lines have to say so.
+
+    The label is spelled in the ALLOW direction — `public org registration` —
+    and Zitadel's own field is spelled in the DISALLOW direction
+    (`disallowPublicOrgRegistration`). The comparison translates between the
+    two, as every other name Zitadel uses is translated at this edge. What must
+    not happen is the translated value reaching the PRINTED one: a reader who
+    sees `self-registration — False` and `org self-registration — False` beside
+    `public org registration — True` reads the third as the one door still open,
+    when all three mean shut.
+
+    Asserted on the three lines TOGETHER rather than on the one that moved,
+    because the property is that they agree with each other — a case naming only
+    the third would be satisfied by flipping the other two instead.
+    """
+    instance.org_login_policy = dict(ORG_LOGIN_POLICY_OWN)
+    instance.org_login_policy.pop("allowRegister", None)
+    _seed(capsys)
+
+    out = _audit(capsys, expect_exit=0)
+
+    closed = [
+        line
+        for line in out.splitlines()
+        if line.startswith("agrees      posture") and "registration" in line
+    ]
+    assert len(closed) == 3, closed
+    assert all(line.endswith("— False") for line in closed), closed
 
 
 @pytest.mark.parametrize(
@@ -380,6 +478,7 @@ def _management_puts(instance: FakeZitadel) -> list[str]:
     ]
 
 
+@template_shape("posture_writer")
 def test_the_seed_closes_the_orgs_own_login_policy(
     org_with_its_own_policy: FakeZitadel, posture: None, capsys: Any
 ) -> None:
@@ -395,6 +494,7 @@ def test_the_seed_closes_the_orgs_own_login_policy(
     assert org_with_its_own_policy.org_login_policy.get("allowRegister", False) is False
 
 
+@template_shape("posture_writer")
 def test_the_seed_says_which_org_it_closed(
     org_with_its_own_policy: FakeZitadel, posture: None, capsys: Any
 ) -> None:
@@ -420,14 +520,15 @@ def test_a_second_seed_run_writes_nothing_to_the_orgs_policy(
     The `PUT` count is the assertion: Zitadel refuses an unchanged login-policy
     body with `Org-5M9vdd` (measured), so a writer that stopped comparing would
     not merely be wasteful — it would fail on the second run, which is every run
-    `scripts/setup.sh` makes after the first.
+    `scripts/setup.sh` makes after the first. Asked of the DECLARED writer, and
+    on its request log alone — the `exists  login policy    org TestOrg:` line
+    is `zitadel_seed`'s wording and is pinned by the marked cases above.
     """
-    _seed(capsys)
+    _write_posture(capsys)
     org_with_its_own_policy.bodies.clear()
 
-    out = _seed(capsys)
+    _write_posture(capsys)
 
-    assert "exists  login policy    org TestOrg: self-registration OFF" in out
     assert _management_puts(org_with_its_own_policy) == []
 
 
@@ -472,13 +573,21 @@ def test_an_inheriting_org_is_left_inheriting(
     one, and a future instance-level change silently would not apply here. The
     fake starts in this state because it is the state every org on a fresh
     instance is in, which makes this the DEFAULT path rather than the exotic one.
-    """
-    out = _seed(capsys)
 
-    assert "org TestOrg inherits the instance policy (reconciled above)" in out
+    **Asked of the DECLARED writer, and read off its request log.** The
+    precondition is asserted rather than assumed — `isDefault` is how Zitadel
+    says "this org has no policy of its own" — so the empty log cannot pass for
+    the wrong reason on a fake somebody changed. The printed sentence is the
+    template writer's wording and is not read here.
+    """
+    assert instance.org_login_policy.get("isDefault") is True
+
+    _write_posture(capsys)
+
     assert _management_puts(instance) == []
 
 
+@template_shape("posture_writer")
 def test_the_management_put_is_refused_on_an_inheriting_org(
     instance: FakeZitadel, posture: None
 ) -> None:
@@ -501,6 +610,7 @@ def test_the_management_put_is_refused_on_an_inheriting_org(
     assert "Org-M0sif" in str(refused.value)
 
 
+@template_shape("posture_writer")
 def test_the_audit_counts_drift_on_the_orgs_own_allow_register(
     org_with_its_own_policy: FakeZitadel, posture: None, capsys: Any
 ) -> None:
@@ -530,19 +640,26 @@ def test_the_audit_defers_to_the_instance_verdict_when_the_org_inherits(
     The instance policy the section already compared IS this org's policy, so
     counting it again would report one console edit as two disagreements — and a
     number a reader acts on has to mean one thing.
+
+    Read off the posture SECTION's own `(lines, drift)` rather than off the
+    command's exit and its `N disagreement(s)` total: a product whose audit
+    carries sections this template does not have moves that total for reasons
+    that are nothing to do with the posture, and the section's count is the one
+    this case is about.
     """
-    _seed(capsys)
+    _write_posture(capsys)
     instance.instance_login_policy = {
         **instance.instance_login_policy,
         "allowRegister": True,
     }
     instance.org_login_policy = {**ORG_LOGIN_POLICY_INHERITED, "allowRegister": True}
 
-    out = _audit(capsys, expect_exit=1)
+    lines, drift = _posture_section()
+    out = "\n".join(lines)
 
     assert "inherits    posture org login policy inherits the instance (judged above)" in out
     assert "DRIFT       posture org self-registration" not in out
-    assert "1 disagreement(s). Nothing was changed." in out
+    assert drift == 1, out
 
 
 # --- one declared value, across three files ----------------------------------
@@ -573,6 +690,7 @@ def _compose_default(path: Path, key: str) -> str:
     return _compose_interpolation(path, key)[1]
 
 
+@template_shape("template_files")
 @pytest.mark.parametrize("compose", ["compose.yaml", "deploy/compose.yaml"])
 def test_the_compose_defaults_are_the_settings_defaults(compose: str) -> None:
     """The one-declared-value law, read out of both files rather than remembered.
@@ -610,6 +728,7 @@ def test_the_compose_defaults_are_the_settings_defaults(compose: str) -> None:
     )
 
 
+@template_shape("template_files")
 @pytest.mark.parametrize("compose", ["compose.yaml", "deploy/compose.yaml"])
 def test_no_posture_compose_key_interpolates_an_undocumented_variable(compose: str) -> None:
     """A compose knob no `.env.example` carries is a knob nobody can turn.
@@ -641,6 +760,7 @@ def test_no_posture_compose_key_interpolates_an_undocumented_variable(compose: s
         )
 
 
+@template_shape("template_files")
 @pytest.mark.parametrize("env_file", list(ENV_EXAMPLES))
 @pytest.mark.parametrize(
     "key",

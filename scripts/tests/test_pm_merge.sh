@@ -31,6 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
+# drives: scripts/check.sh scripts/db.sh scripts/kill_mine.sh scripts/pm_fold.sh scripts/pm_merge.sh scripts/queue_cited.sh scripts/sweep.sh scripts/tests/test_pm_fold.sh scripts/tests/test_sweep.sh
 # The drive for `scripts/pm_merge.sh` — the refusals, the exit propagation and
 # the proof of merge.
 #

@@ -35,18 +35,26 @@ from typing import Any
 import httpx
 import pytest
 
-from apps.accounts.services import issue_token
+from apps.accounts.services import create_user, issue_token
 from apps.core.actor import actor_for
+from apps.core.authz import refusal_sentence
 from apps.core.middleware import ORG_HEADER
+from apps.core.models import Grant, Membership
+from apps.core.services import add_membership
 from apps.core.tests.test_mcp import MCP_HEADERS, PROTOCOL_VERSION, running
 from apps.usage.services import record_usage
-from apps.usage.tests.conftest import METER, OTHER_METER, World
+from apps.usage.tests.conftest import METER, OTHER_METER, PASSWORD, World
 
 #: House rule 46. The door pair this module answers for `apps/usage`, read by
 #: the gate off this module-level assignment. This app is born with its pair
 #: answered — it has never been in the backlog `rules.yaml` records, and the
 #: number it would have started at is the number it stays at: none owed.
 DOOR_PAIR = ("rest", "mcp")
+
+#: The key the report is read under (ADR core-27). A literal here for the same
+#: reason it is one in `selectors.py`: a parity test that imported the name the
+#: selector uses could not tell a rename from a door quietly asking nothing.
+READ_KEY = "usage_entry.read"
 
 REST_URL = "/api/v1/usage/"
 METERS_URL = "/api/v1/meters/"
@@ -410,3 +418,107 @@ async def test_the_two_doors_refuse_the_same_unresolved_hat(bearer: str) -> None
     assert called.json() == rest_body, (called.text, over_http.text)
     said = called.text
     assert "meters" not in said, "a refused hat must never come back as a report at all"
+
+
+@pytest.fixture
+def withheld_bearer(seeded: World) -> str:
+    """A member whose tenant took `usage_entry.read` away from them, with a full ceiling.
+
+    The ceiling carries `usage:read`, deliberately: the refusal under test is the
+    READ KEY's and not the token's, and a token narrow enough to be refused by
+    the ceiling would prove the ceiling test above a second time instead.
+    """
+    person = create_user(email="withheld-on-the-wire@acme.com", password=PASSWORD)
+    membership = add_membership(
+        user=person,
+        tenant=seeded.tenant,
+        organization=seeded.root,
+        is_default=True,
+        role=Membership.Role.MEMBER,
+        actor=seeded.root_actor,
+    )
+    Grant.objects.create(
+        tenant=seeded.tenant,
+        membership=membership,
+        permission=READ_KEY,
+        effect=Grant.Effect.WITHHOLD,
+    )
+    _, plaintext = issue_token(
+        user=person,
+        tenant=seeded.tenant,
+        name="withheld",
+        scopes=["usage:read"],
+        actor=actor_for(user=person, tenant=seeded.tenant),
+    )
+    return plaintext
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
+    withheld_bearer: str,
+) -> None:
+    """**Rule 46's named case for ADR core-27.** One withhold, two doors, one sentence.
+
+    Rule 17 proves `get_usage` exists on both doors; only a test of this shape
+    sees them ANSWERING differently — and a refusal is where they are most
+    likely to, because the two bodies are composed by two different callers
+    (`config/api.py`'s mapper and `core.mcp.tool_call`) even though both compose
+    them from `wire_refusal`.
+
+    The comparison is against `refusal_sentence(READ_KEY)` on both sides rather
+    than the two doors against each other: a door that grew a friendlier wording
+    of its own fails here instead of passing by symmetry. `code` leads on both,
+    which is what a client branches on.
+
+    And the negative half, which is the one a reviewer should look for: the
+    refused body carries **no report at all** — not an empty one. A zero bill
+    and a refusal must never be the same answer (the hazard the unresolved-hat
+    case above exists for, reached here through the permission instead).
+    """
+    from config.asgi import build_application
+
+    application = build_application()
+    credential = {"authorization": f"Bearer {withheld_bearer}"}
+    sentence = refusal_sentence(READ_KEY)
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.get(
+                f"{REST_URL}?period=month&on={ON}", headers={**credential, "accept": JSON}
+            )
+
+            headers = {**MCP_HEADERS, **credential}
+            await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "initialize",
+                    {
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": {"name": "usage-withheld-read", "version": "1"},
+                    },
+                    1,
+                ),
+            )
+            called = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call",
+                    {"name": "get_usage", "arguments": {"period": "month", "on": ON}},
+                    2,
+                ),
+            )
+
+    assert over_http.status_code == 403, over_http.text
+    rest_body = over_http.json()
+    assert rest_body["code"] == "forbidden"
+    assert rest_body["detail"] == sentence
+
+    said = called.text
+    assert "forbidden" in said, said
+    assert sentence in said, said
+    assert "sum(day_totals)" not in said, "a withheld read must not come back as a report"

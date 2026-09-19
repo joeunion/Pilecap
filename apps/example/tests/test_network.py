@@ -78,6 +78,24 @@ LIST_URL = "/api/v1/widgets/"
 PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
 
 
+def reading(tenant: Tenant | None, org: Any) -> Actor:
+    """The actor these scoping tests read as, now that reads are permissions.
+
+    `system`, on purpose (ADR core-27; `allows` passes it at step 1). Every
+    selector assertion in this file is about WHICH rows a hat sees —
+    `visible_to`, `governing`, `for_tenant`, which is rule 24's question — and a
+    person-shaped actor would make each of them depend on `widget.read` as well.
+    Whether a kind may be read at all is `test_reads_ask.py`'s subject; holding
+    the capability half constant is what keeps this file measuring the scoping
+    half, which is the only half it was ever written about.
+
+    The `org` argument is whatever the call site passed — a node, an `Actor`, or
+    `None` — because these selectors take any of the three; only a real node
+    means anything to `system_actor`.
+    """
+    return system_actor(tenant, org if isinstance(org, Organization) else None)
+
+
 # --- The tree ----------------------------------------------------------------
 
 
@@ -209,31 +227,67 @@ def test_every_tenant_gets_a_root_named_after_it(tenant: Tenant) -> None:
 
 def test_a_sub_seller_sees_only_its_own(network: Network) -> None:
     seed(network)
-    assert names(list_widgets(tenant=network.tenant, org=network.sub_a1)) == {"At A1"}
+    assert names(
+        list_widgets(
+            tenant=network.tenant, org=network.sub_a1, actor=reading(network.tenant, network.sub_a1)
+        )
+    ) == {"At A1"}
 
 
 def test_a_seller_sees_its_own_and_its_sub_sellers(network: Network) -> None:
     seed(network)
-    assert names(list_widgets(tenant=network.tenant, org=network.seller_a)) == {"At A", "At A1"}
+    assert names(
+        list_widgets(
+            tenant=network.tenant,
+            org=network.seller_a,
+            actor=reading(network.tenant, network.seller_a),
+        )
+    ) == {"At A", "At A1"}
 
 
 def test_sideways_is_blocked(network: Network) -> None:
     """A and B are siblings. Neither is any of the other's business."""
     seed(network)
-    assert "At B" not in names(list_widgets(tenant=network.tenant, org=network.seller_a))
-    assert "At A" not in names(list_widgets(tenant=network.tenant, org=network.seller_b))
-    assert "At A1" not in names(list_widgets(tenant=network.tenant, org=network.seller_b))
+    assert "At B" not in names(
+        list_widgets(
+            tenant=network.tenant,
+            org=network.seller_a,
+            actor=reading(network.tenant, network.seller_a),
+        )
+    )
+    assert "At A" not in names(
+        list_widgets(
+            tenant=network.tenant,
+            org=network.seller_b,
+            actor=reading(network.tenant, network.seller_b),
+        )
+    )
+    assert "At A1" not in names(
+        list_widgets(
+            tenant=network.tenant,
+            org=network.seller_b,
+            actor=reading(network.tenant, network.seller_b),
+        )
+    )
 
 
 def test_upward_is_blocked(network: Network) -> None:
     """A1 is under A. That gives A sight of A1, and gives A1 nothing."""
     seed(network)
-    assert names(list_widgets(tenant=network.tenant, org=network.sub_a1)) == {"At A1"}
+    assert names(
+        list_widgets(
+            tenant=network.tenant, org=network.sub_a1, actor=reading(network.tenant, network.sub_a1)
+        )
+    ) == {"At A1"}
 
 
 def test_the_root_sees_all_of_it(network: Network) -> None:
     seed(network)
-    assert names(list_widgets(tenant=network.tenant, org=network.hq)) == {
+    assert names(
+        list_widgets(
+            tenant=network.tenant, org=network.hq, actor=reading(network.tenant, network.hq)
+        )
+    ) == {
         "At HQ",
         "At A",
         "At A1",
@@ -244,8 +298,11 @@ def test_the_root_sees_all_of_it(network: Network) -> None:
 def test_no_hat_reads_nothing(network: Network) -> None:
     """`visible_to(None)` fails closed, exactly as `for_tenant(None)` does."""
     seed(network)
-    assert list_widgets(tenant=network.tenant, org=None).count() == 0
-    assert list_widgets(tenant=None, org=network.hq).count() == 0
+    assert (
+        list_widgets(tenant=network.tenant, org=None, actor=reading(network.tenant, None)).count()
+        == 0
+    )
+    assert list_widgets(tenant=None, org=network.hq, actor=reading(None, network.hq)).count() == 0
 
 
 def test_a_superuser_with_no_membership_still_sees_nothing(network: Network, root: User) -> None:
@@ -261,6 +318,7 @@ def test_a_superuser_with_no_membership_still_sees_nothing(network: Network, roo
         list_widgets(
             tenant=network.tenant,
             org=actor_for(user=root, tenant=network.tenant),
+            actor=reading(network.tenant, None),
         ).count()
         == 0
     )
@@ -467,7 +525,13 @@ def test_a_write_lands_in_the_hat_it_was_made_under(api: Client, network: Networ
     assert json.loads(response.content)["organization_slug"] == "sub-a1"
     # And it is invisible from the sibling, immediately.
     assert (
-        list_widgets(tenant=network.tenant, org=network.seller_b).filter(name="Made as A1").count()
+        list_widgets(
+            tenant=network.tenant,
+            org=network.seller_b,
+            actor=reading(network.tenant, network.seller_b),
+        )
+        .filter(name="Made as A1")
+        .count()
         == 0
     )
 
@@ -569,12 +633,24 @@ def test_re_parenting_moves_the_subtrees_rows_with_it(network: Network) -> None:
     )
 
     # A sees its own row plus everything at A1, which is now two rows.
-    assert names(list_widgets(tenant=network.tenant, org=network.seller_a)) == {
+    assert names(
+        list_widgets(
+            tenant=network.tenant,
+            org=network.seller_a,
+            actor=reading(network.tenant, network.seller_a),
+        )
+    ) == {
         "At A",
         "At A1",
         "Deep in A1",
     }
-    assert names(list_widgets(tenant=network.tenant, org=network.seller_b)) == {"At B"}
+    assert names(
+        list_widgets(
+            tenant=network.tenant,
+            org=network.seller_b,
+            actor=reading(network.tenant, network.seller_b),
+        )
+    ) == {"At B"}
 
     moved = move(network, network.sub_a1, network.seller_b, hat(network, network.owner, network.hq))
 
@@ -582,8 +658,20 @@ def test_re_parenting_moves_the_subtrees_rows_with_it(network: Network) -> None:
     assert moved.path.startswith(network.seller_b.path + ".")
     assert moved.depth == network.seller_b.depth + 1
     # A has lost sight of A1's rows; B has gained them.
-    assert names(list_widgets(tenant=network.tenant, org=network.seller_a)) == {"At A"}
-    assert names(list_widgets(tenant=network.tenant, org=network.seller_b)) == {
+    assert names(
+        list_widgets(
+            tenant=network.tenant,
+            org=network.seller_a,
+            actor=reading(network.tenant, network.seller_a),
+        )
+    ) == {"At A"}
+    assert names(
+        list_widgets(
+            tenant=network.tenant,
+            org=network.seller_b,
+            actor=reading(network.tenant, network.seller_b),
+        )
+    ) == {
         "At B",
         "At A1",
         "Deep in A1",
@@ -592,7 +680,16 @@ def test_re_parenting_moves_the_subtrees_rows_with_it(network: Network) -> None:
     deep.refresh_from_db()
     assert deep.organization_id == network.sub_a1.pk
     # And the root still sees everything, as it did before.
-    assert len(names(list_widgets(tenant=network.tenant, org=network.hq))) == 5
+    assert (
+        len(
+            names(
+                list_widgets(
+                    tenant=network.tenant, org=network.hq, actor=reading(network.tenant, network.hq)
+                )
+            )
+        )
+        == 5
+    )
 
 
 def test_a_deeper_subtree_keeps_its_shape_through_a_move(network: Network) -> None:
@@ -842,32 +939,40 @@ def test_the_nearest_policy_on_the_chain_is_the_one_that_governs(network: Networ
     """
     policies = seed_policies(network)
 
-    at_a1 = get_governing_widget_policy(tenant=network.tenant, org=network.sub_a1)
+    at_a1 = get_governing_widget_policy(
+        tenant=network.tenant, org=network.sub_a1, actor=reading(network.tenant, network.sub_a1)
+    )
     assert at_a1.pk == policies["a"].pk, "A1 must resolve A's, not the root's — nearest wins"
 
-    at_b = get_governing_widget_policy(tenant=network.tenant, org=network.seller_b)
+    at_b = get_governing_widget_policy(
+        tenant=network.tenant, org=network.seller_b, actor=reading(network.tenant, network.seller_b)
+    )
     assert at_b.pk == policies["hq"].pk, "B has nothing of its own and nothing between it and HQ"
 
     # And the two ends of the chain resolve themselves, which is what makes
     # "the chain includes me" true rather than assumed.
-    assert get_governing_widget_policy(tenant=network.tenant, org=network.seller_a).pk == (
-        policies["a"].pk
-    )
-    assert get_governing_widget_policy(tenant=network.tenant, org=network.hq).pk == (
-        policies["hq"].pk
-    )
+    assert get_governing_widget_policy(
+        tenant=network.tenant, org=network.seller_a, actor=reading(network.tenant, network.seller_a)
+    ).pk == (policies["a"].pk)
+    assert get_governing_widget_policy(
+        tenant=network.tenant, org=network.hq, actor=reading(network.tenant, network.hq)
+    ).pk == (policies["hq"].pk)
 
 
 def test_resolution_fails_closed_with_no_hat_and_when_nothing_governs(network: Network) -> None:
     """The two ways there is no answer, and both of them are `NotFound`."""
     with pytest.raises(NotFound):
         # A tree with no policies in it at all.
-        get_governing_widget_policy(tenant=network.tenant, org=network.sub_a1)
+        get_governing_widget_policy(
+            tenant=network.tenant, org=network.sub_a1, actor=reading(network.tenant, network.sub_a1)
+        )
     seed_policies(network)
     with pytest.raises(NotFound):
         # An unresolved hat resolves no configuration rather than the root's —
         # the same fail-closed shape `for_tenant(None)` and `visible_to(None)` have.
-        get_governing_widget_policy(tenant=network.tenant, org=None)
+        get_governing_widget_policy(
+            tenant=network.tenant, org=None, actor=reading(network.tenant, None)
+        )
 
 
 def test_a_branch_never_lists_the_policy_that_governs_it(api: Client, network: Network) -> None:
@@ -1147,12 +1252,22 @@ def test_the_ledger_is_scoped_like_everything_else(api: Client, network: Network
         )
 
     def lines(org: Organization) -> set[str]:
-        return {entry.note for entry in list_widget_entries(tenant=network.tenant, org=org)}
+        return {
+            entry.note
+            for entry in list_widget_entries(
+                tenant=network.tenant, org=org, actor=reading(network.tenant, org)
+            )
+        }
 
     assert lines(network.seller_a) == {"line for a", "line for a1"}
     assert lines(network.sub_a1) == {"line for a1"}
     assert lines(network.seller_b) == {"line for b"}
-    assert list_widget_entries(tenant=network.tenant, org=None).count() == 0
+    assert (
+        list_widget_entries(
+            tenant=network.tenant, org=None, actor=reading(network.tenant, None)
+        ).count()
+        == 0
+    )
 
 
 def test_the_ledger_has_no_write_back_door(api: Client, network: Network) -> None:
@@ -1195,7 +1310,11 @@ def test_approving_appends_a_line_where_the_widget_lives(api: Client, network: N
     response = api.post(approve_url(widgets["a1"]), content_type="application/json")
     assert response.status_code == 200, response.content
 
-    entries = list(list_widget_entries(tenant=network.tenant, org=network.sub_a1))
+    entries = list(
+        list_widget_entries(
+            tenant=network.tenant, org=network.sub_a1, actor=reading(network.tenant, network.sub_a1)
+        )
+    )
     assert [entry.kind for entry in entries] == [WidgetEntry.Kind.APPROVED]
     assert entries[0].organization_id == network.sub_a1.pk
 
@@ -1286,7 +1405,12 @@ def test_a_second_tenants_policies_and_entries_are_absent(
 
     # And from the selectors, so the claim is about the reads rather than about
     # one route's query string.
-    assert list_widget_entries(tenant=network.tenant, org=network.hq).count() == 0
+    assert (
+        list_widget_entries(
+            tenant=network.tenant, org=network.hq, actor=reading(network.tenant, network.hq)
+        ).count()
+        == 0
+    )
 
     # The sharp edge, said out loud: **both tenants' roots have path "0000"**,
     # because a materialized path is only unique inside its own tree. A
@@ -1296,6 +1420,8 @@ def test_a_second_tenants_policies_and_entries_are_absent(
     ours = create_widget_policy(
         tenant=network.tenant, actor=hat(network, network.owner, network.hq), name="Their rules"
     )
-    resolved = get_governing_widget_policy(tenant=network.tenant, org=network.hq)
+    resolved = get_governing_widget_policy(
+        tenant=network.tenant, org=network.hq, actor=reading(network.tenant, network.hq)
+    )
     assert resolved.pk == ours.pk
     assert resolved.tenant_id == network.tenant.pk

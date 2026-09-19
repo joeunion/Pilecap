@@ -38,6 +38,7 @@ from apps.events.models import Event
 from apps.example.events import WIDGET_CREATED
 from apps.example.models import Widget
 from apps.example.schemas import WidgetOut
+from apps.search.events import SEARCH_ENGINE_DEGRADED as ENGINE_DEGRADED
 
 pytestmark = pytest.mark.django_db
 
@@ -101,11 +102,18 @@ def test_an_org_less_subject_leaves_the_event_tenant_wide(
     A payload with no `organization_id` is an event about something no part of
     the tenant owns in particular. Before this column it went to the whole
     tenant's sockets; NULL is how it keeps doing exactly that.
+
+    **The subject is `search.engine.degraded` and no longer a widget** (R4-F2,
+    house rule 59). A widget is an `OrgScopedModel`: it always belongs to a
+    branch, so a widget event with no branch on it was never an org-less
+    subject — it was a body that had lost its narrowing key, and `emit` now
+    refuses one. The engine being down is the real thing nobody's branch owns,
+    which is what this test was always about.
     """
     event = services.emit(
-        name=WIDGET_CREATED,
+        name=ENGINE_DEGRADED,
         tenant=tenant,
-        payload={"id": "x", "name": "A widget"},
+        payload={"engine": "meilisearch"},
         actor=owner_actor,
     )
 
@@ -221,9 +229,16 @@ def test_the_envelope_says_null_for_a_tenant_wide_event(tenant: Tenant, owner_ac
 
     The key is present and null rather than absent, so the reader on the other
     side branches on a value instead of on whether a key exists.
+
+    The subject is the declared org-less name for the sibling test's reason
+    (R4-F2): a widget always belongs to a branch, so it can no longer stand in
+    for a thing no branch owns.
     """
     event = services.emit(
-        name=WIDGET_CREATED, tenant=tenant, payload={"id": "x"}, actor=owner_actor
+        name=ENGINE_DEGRADED,
+        tenant=tenant,
+        payload={"engine": "meilisearch"},
+        actor=owner_actor,
     )
 
     body = schemas.envelope(event)

@@ -52,7 +52,14 @@ JSON = "application/json"
 # ADR core-18 took one statement OFF this pin: the default list issues no
 # COUNT any more — `has_more` comes from fetching one row more than asked
 # for. `?include_count=true` puts it back, and costs exactly one more.
-LIST_QUERY_BUDGET = 7
+#
+# **+3 since Phase R** (ADR core-27, rule 5): the selector asks
+# ``widget.read`` at the acting hat, and resolution reads three tables —
+# this person's memberships in the tenant, the grants on them, and the role
+# deltas for the roles on the chain. It is paid ONCE per actor instance
+# whatever the number of `require`s (the PR0 memo), so a route that asked
+# twice would still be +3 and not +6.
+LIST_QUERY_BUDGET = 10
 
 
 def _body(response: Any) -> dict[str, Any]:
@@ -181,8 +188,14 @@ def test_a_user_with_no_membership_sees_nothing(
     create_widget(tenant=tenant, actor=owner_actor, name="Not yours")
     api.force_login(nomad)
     response = api.get(LIST_URL)
-    assert response.status_code == 200
-    assert len(_body(response)["items"]) == 0
+    # **The refusal got stronger at Phase R and the property did not move.** A
+    # person with no membership resolves no tenant, so the door refuses before
+    # the selector is reached — where it used to answer an empty page. "Sees
+    # nothing" is what this test is about, and 403 with no body is a stricter
+    # way of seeing nothing than 200 with an empty list; the assertion below is
+    # what stops the day it quietly becomes a page of somebody else's rows.
+    assert response.status_code == 403, response.content
+    assert "Not yours" not in response.content.decode()
 
 
 def test_a_superuser_with_no_membership_sees_nothing(
@@ -191,8 +204,10 @@ def test_a_superuser_with_no_membership_sees_nothing(
     create_widget(tenant=tenant, actor=owner_actor, name="Not yours either")
     api.force_login(root)
     response = api.get(LIST_URL)
-    assert response.status_code == 200
-    assert len(_body(response)["items"]) == 0
+    # No superuser exemption, and the refusal is the same one a nobody gets —
+    # see the test above for why 403 rather than an empty page.
+    assert response.status_code == 403, response.content
+    assert "Not yours either" not in response.content.decode()
 
 
 def test_a_user_with_no_membership_cannot_create(api: Client, nomad: User) -> None:
@@ -703,17 +718,41 @@ def test_an_admin_may_approve_anybodys(
 # The two COUNTs are the honest cost of an honest basis: a formula whose inputs
 # are measured costs one query per input, and a subtraction that saved one would
 # have made an input unmeasured.
-STATS_QUERY_BUDGET = 8
+#
+# **+3 since Phase R** (ADR core-27, rule 5): the selector asks
+# ``widget.read`` at the acting hat, and resolution reads three tables —
+# this person's memberships in the tenant, the grants on them, and the role
+# deltas for the roles on the chain. It is paid ONCE per actor instance
+# whatever the number of `require`s (the PR0 memo), so a route that asked
+# twice would still be +3 and not +6.
+#
+# The aggregate is covered by the one read key of the kind it counts: `/stats/`
+# reads widgets, so it asks `widget.read` and nothing else.
+STATS_QUERY_BUDGET = 11
 
 # `/policies/`: the same five request-shaped queries, plus the pagination COUNT
 # and the page. `select_related("organization")` is what keeps the page at one
 # query no matter how many policies come back — `WidgetPolicyOut` reads the
 # slug off the relation for every row.
-POLICIES_QUERY_BUDGET = 7
+#
+# **+3 since Phase R** (ADR core-27, rule 5): the selector asks
+# ``widget_policy.read`` at the acting hat, and resolution reads three tables —
+# this person's memberships in the tenant, the grants on them, and the role
+# deltas for the roles on the chain. It is paid ONCE per actor instance
+# whatever the number of `require`s (the PR0 memo), so a route that asked
+# twice would still be +3 and not +6.
+POLICIES_QUERY_BUDGET = 10
 
 # `/entries/`: identical in shape to the policies list, for the same reasons —
 # five for the request, the COUNT, the page, the RELEASE.
-ENTRIES_QUERY_BUDGET = 7
+#
+# **+3 since Phase R** (ADR core-27, rule 5): the selector asks
+# ``widget_entry.read`` at the acting hat, and resolution reads three tables —
+# this person's memberships in the tenant, the grants on them, and the role
+# deltas for the roles on the chain. It is paid ONCE per actor instance
+# whatever the number of `require`s (the PR0 memo), so a route that asked
+# twice would still be +3 and not +6.
+ENTRIES_QUERY_BUDGET = 10
 
 
 def test_stats_query_count_does_not_grow_with_rows(

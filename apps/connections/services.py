@@ -41,6 +41,7 @@ from apps.core.exceptions import Invalid, as_invalid
 from apps.core.log import get_logger
 from apps.core.models import Tenant
 from apps.core.service import service
+from apps.core.services import root_organization
 from apps.core.types import Swept
 
 log = get_logger(__name__)
@@ -143,7 +144,14 @@ def create_connection(
     credentials: dict[str, Any] | None = None,
 ) -> Connection:
     """Open a connection to an external system for this tenant."""
-    require(actor, "connection.create")
+    # **AT THE TENANT'S ROOT, not at the acting hat.** A connection holds one
+    # credential that acts as the WHOLE tenant against somebody else's system,
+    # so it is the tenant's configuration and never a branch's. A `require` with
+    # no node resolves at the caller's hat, where an administrator of one leaf
+    # holds `*` — and did open, re-credential and revoke the tenant's
+    # connections. The shape is `update_tenant_settings`' (`core/services.py`)
+    # and the SSO sites' (`accounts/services.py`), for the same reason.
+    require(actor, "connection.create", root_organization(tenant=tenant))
     connection = Connection(
         tenant=tenant,
         provider=str(provider).strip().lower(),
@@ -174,7 +182,11 @@ def update_credentials(
     verification days later. A key is removed by `revoke_connection`, which
     removes all of them, which is the only removal that has ever been wanted.
     """
-    require(actor, "connection.update", connection)
+    # At the root: this row is the tenant's, not a branch's (see `create`).
+    # Asked with the ROW, the question resolves at the hat exactly as a question
+    # with no node does — a `Connection` names no organization, so there is
+    # nothing on it for `where_of` to read.
+    require(actor, "connection.update", root_organization(tenant=tenant))
     if not credentials:
         raise Invalid({"credentials": ["There is nothing to store."]})
     connection.credentials = {**(connection.credentials or {}), **credentials}
@@ -206,7 +218,8 @@ def revoke_connection(
     `ConnectionManager.for_webhook` refuse further deliveries — the inbound door
     closes with the outbound one, rather than a release later.
     """
-    require(actor, "connection.revoke", connection)
+    # At the root: this row is the tenant's, not a branch's (see `create`).
+    require(actor, "connection.revoke", root_organization(tenant=tenant))
     connection.credentials = {}
     connection.status = Connection.Status.REVOKED
     connection.revoked_at = timezone.now()
@@ -231,12 +244,26 @@ def record_failure(
     Called by whatever made the outbound call — an activity, in the ordinary
     case. `reason` is a summary, never a response body and never a header: an
     upstream 401 very often echoes the token straight back.
+
+    **It asks at the root like the three services above, and does not carry the
+    valve `record_inbound_webhook` does.** "An activity, in the ordinary case"
+    is not "nothing but the system can reach this": an activity restores its
+    actor from the workflow's headers, and those carry the person and the hat
+    the run was started under. A valve claiming a system-only caller would be a
+    claim about a caller this tree does not have — the function has none today.
     """
-    require(actor, "connection.update", connection)
+    # At the root: this row is the tenant's, not a branch's (see `create`).
+    require(actor, "connection.update", root_organization(tenant=tenant))
     connection.status = Connection.Status.ERROR
     connection.last_error = str(reason)[:500]
     connection.save(update_fields=["status", "last_error", "updated_at"])
     return connection
+
+
+#: The columns the hand-off stamps on a stored delivery. A module constant so the
+#: write line has room for its `# authz-kind:` valve, which rule 13 reads on the
+#: line itself — the reason is the one `record_inbound_webhook`'s docstring gives.
+HANDED_OFF_FIELDS = ["status", "handed_off_to", "handed_off_at", "updated_at"]
 
 
 @service
@@ -285,8 +312,31 @@ def record_inbound_webhook(
     can both pass the lookup, and the second loses on
     `inboundwebhook_unique_delivery_per_connection`, which a sender retries
     through. The read is what makes the ordinary case free.
+
+    **Why the two `InboundWebhook` writes carry `# authz-kind:`** (house rule
+    13): the row IS the act, and the act is the key asked on the first line.
+    An `InboundWebhook` is the RECEIPT of a delivery to this connection — nobody
+    creates one, a sender causes one — so there is no `inbound_webhook.create`
+    capability for anybody to hold or to be refused, and minting one would be a
+    second word for `connection.receive_webhook`. The kind exists for its READ
+    half (`inbound_webhook.read`, the receipt log), which
+    `selectors.list_inbound_webhooks` asks for.
+
+    **And why the `require` below carries `# hat-scoped:` where the three
+    services above resolve the tenant's root.** `connection` is a tenant-wide
+    row — it names no organization — so a question asked *with* it resolves at
+    the CALLER'S HAT, which for an administrator of one branch is that branch;
+    the other three sites therefore hand `require` the tenant's root instead.
+    This one has exactly one caller: the receiver in `api.py`, which arrives
+    with no session and no user, verifies an HMAC over the raw body and builds
+    `system_actor(tenant)` on the spot. `allows` answers a system actor at step
+    one, before any node is resolved, so resolving the root here would be a
+    query per delivery for an answer nothing reads — on the hottest write in
+    this app. The valve is that sentence, and
+    `test_the_receiver_still_stores_a_delivery_as_the_system` is that sentence
+    driven rather than left as prose.
     """
-    require(actor, "connection.receive_webhook", connection)
+    require(actor, "connection.receive_webhook", connection)  # hat-scoped: system-only caller
     delivery_id = _delivery_id(headers)
     if delivery_id is not None:
         already = (
@@ -313,14 +363,14 @@ def record_inbound_webhook(
     )
     with as_invalid():
         received.full_clean()
-    received.save()
+    received.save()  # authz-kind: the receipt of the act asked above (docstring)
 
     handed_off_to = _hand_off(received=received, actor=actor)
     if handed_off_to:
         received.status = InboundWebhook.Status.HANDED_OFF
         received.handed_off_to = handed_off_to
         received.handed_off_at = timezone.now()
-        received.save(update_fields=["status", "handed_off_to", "handed_off_at", "updated_at"])
+        received.save(update_fields=HANDED_OFF_FIELDS)  # authz-kind: same row, same act
     _hand_to_registered_handler(received=received, actor=actor)
     return received
 

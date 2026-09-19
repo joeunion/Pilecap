@@ -24,7 +24,7 @@ importing upward; so does this.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from django.contrib.auth.base_user import AbstractBaseUser
@@ -55,6 +55,67 @@ class Actor:
     #: never remembered from the last one. `None` means no hat was resolved,
     #: and every org-scoped read made with it returns nothing (`visible_to`).
     org: Organization | None = None
+    #: **The permission memo, and it is a cache with a declared contract.**
+    #:
+    #: * **Source of truth** — the three tables `core.authz.effective_permissions`
+    #:   reads: this person's `Membership` rows in this tenant, the `Grant` rows
+    #:   on them, and the `RolePermission` delta rows for the role keys they
+    #:   name. The RAW rows are what is held, never a resolved answer, because
+    #:   the rows are `at`-independent (the chain filter is Python) and one
+    #:   fetch therefore answers the question at every node.
+    #: * **Key** — this actor INSTANCE, and inside it the one identity the
+    #:   instance is about: `(user.pk, tenant.pk)`. A question about anybody
+    #:   else — the TARGET of a hand-out, the person a wall is measuring — misses
+    #:   and reads the tables, which is what keeps a wall reading the truth
+    #:   rather than the granter's warm rows.
+    #: * **TTL** — the instance's lifetime, which is one request, one activity,
+    #:   one command. Doors build a fresh `Actor` per request
+    #:   (`actor_from_request`), so nothing outlives the call that made it.
+    #: * **Invalidation** — `forget_permissions()`, and nothing else.
+    #: * **Failure** — a miss is the three statements. A miss never widens.
+    #: * **Stampede** — none: one actor, one thread, one request.
+    #:
+    #: **THE STALE WINDOW, said rather than hidden, and it has two halves.**
+    #:
+    #: 1. **This person narrows themselves.** A write that changes what the
+    #:    ACTING person may do, made inside a request that has already asked —
+    #:    an owner withholding a key from their own membership and then acting
+    #:    again in the same request — is answered from the pre-write rows until
+    #:    the request ends. A service that must see its own narrowing
+    #:    immediately calls `forget_permissions()` after the write.
+    #: 2. **SOMEBODY ELSE narrows this person, concurrently.** Another request,
+    #:    another process, an activity: nothing in *this* process holds the
+    #:    actor instance, so no service can call `forget_permissions()` for it
+    #:    and the answer is the pre-write one until this actor dies. **The bound
+    #:    is one actor instance** — a request, an activity, a command — and the
+    #:    remedies are the socket kick (`core.services.kick_if_reads_narrowed`,
+    #:    which closes the sockets of a person whose reads just shrank) and the
+    #:    next request, which reads the tables again.
+    #:
+    #: A write about somebody else's set is never stale *here*: a question about
+    #: another identity misses the memo entirely (`core.authz._memo_box`).
+    #:
+    #: **`init=False`, and that is a wall rather than tidiness.**
+    #: `dataclasses.replace(actor, user=other)` copies every `init=True` field
+    #: into the new instance, so a memo that arrived through `__init__` would
+    #: travel into a REBASED actor and pass the identity gate on that actor's
+    #: own identity — the old person's rows answering for the new person, with
+    #: nothing to see at the call site. `init=False` gives every constructed
+    #: actor, replaced ones included, its own empty box.
+    _permission_rows: dict[str, Any] = field(
+        default_factory=dict, init=False, compare=False, repr=False
+    )
+
+    def forget_permissions(self) -> None:
+        """Drop the memoised rows; the next question pays the three statements.
+
+        The one invalidation, called by a service that narrowed the acting
+        person's own set and must not answer the rest of the request from what
+        it just changed. It is a `clear()` rather than a reassignment because
+        an `Actor` is frozen: the slot is a container the instance owns, and
+        emptying it is not mutating the statement the actor makes about a call.
+        """
+        self._permission_rows.clear()
 
     @property
     def user_id(self) -> Any | None:

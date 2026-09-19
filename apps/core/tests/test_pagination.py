@@ -46,7 +46,7 @@ from django.test import Client
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.core.actor import actor_for
+from apps.core.actor import actor_for, system_actor
 from apps.core.api.pagination import (
     CURSOR_VERSION,
     FOREIGN_CURSOR,
@@ -101,10 +101,17 @@ def _seed(*, tenant: Tenant, owner: User, count: int, offset: int = 0) -> list[O
 
 
 def _rows(tenant: Tenant, _owner: User) -> Any:
-    """The list every door reads: scoped, hatted, newest first."""
-    return list_organizations(tenant=tenant, org=root_organization(tenant=tenant)).order_by(
-        *RECENCY
-    )
+    """The list every door reads: scoped, hatted, newest first.
+
+    `system_actor` because this file measures the PAGINATOR, not the permission:
+    a human actor here would make every cursor case depend on a role, and the
+    read gate has its own file (`test_reads_ask.py`).
+    """
+    return list_organizations(
+        tenant=tenant,
+        org=root_organization(tenant=tenant),
+        actor=system_actor(tenant=tenant),
+    ).order_by(*RECENCY)
 
 
 def _walk(tenant: Tenant, owner: User, *, limit: int) -> list[str]:
