@@ -22,8 +22,12 @@ from __future__ import annotations
 
 import importlib
 import re
+from collections.abc import Mapping
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
+import pytest
 import yaml
 
 #: Reached through `importlib` for the reason `test_audit_rule_seam.py` records:
@@ -301,18 +305,157 @@ def test_with_no_namespace_declared_a_product_rule_is_unmatched_and_gets_no_arro
     assert "PRODUCT" not in out
 
 
+# --- HOTFIX-FOLDMAP-3: THE SELF-MAP IS TEMPLATE-ONLY ---------------------------
+#
+# The case below asserts the map of THIS TREE onto ITSELF has nothing to do,
+# and that is a property of the TEMPLATE's own tree and of no other. A product
+# that has folded declares `rule_id_namespace:` in `quality/local/rules.yaml`,
+# carries drawer rules under it and a drawer fixture tree beside them — and
+# `_fold_map_fixture_findings()` walks `quality/local/canary` and
+# `quality/local/negative` on exactly the same three keys it walks the
+# template's trees on, so a FIXTURES section with content is what a folded tree
+# produces by construction. The first consumer measured it red on their fold of
+# v2.1.3, and it is red on every consumer forever: a suite the template ships
+# must not carry a case a product cannot make green.
+#
+# The condition is the ENGINE's own reading and not a second one. There is no
+# sibling template-only mark in this tree to join — the only skip mechanism
+# under `apps/` is `apps/core/tests/template_shape.py`, and it is keyed to the
+# SIX `DJB_IDENTITY_SHAPE` keys (it raises `ValueError` on a seventh, on
+# purpose), so widening it to carry "has this tree folded?" would break the
+# closed population that makes its skips countable. One template-only case
+# exists today, so the helper lives here beside it rather than in
+# `apps/conftest.py`; the second one that arrives is what moves it.
+
+
+def _declared_namespace(doc: Mapping[str, object] | None = None) -> str | None:
+    """The `rule_id_namespace:` this tree declares, or `None` on a template.
+
+    Read off the ENGINE's own drawer parse — `quality.gate._read_local()`,
+    whose result is the module global `LOCAL_DOC` — rather than by opening
+    `quality/local/rules.yaml` here. A second reader of that file is a second
+    opinion about whether this tree has folded, and every refusal ADR gate-5
+    exists for is keyed on the engine's.
+
+    The RAW declaration and not `RULE_ID_NAMESPACE`: that global is `None`
+    whenever the declaration is malformed (`_read_namespace()` reports the
+    problem and yields nothing), and a product with a typo in its namespace is
+    still a product. The question here is whether the tree has folded, never
+    whether its declaration parses.
+
+    `doc` exists for the drive below and is the same device
+    `template_shape(shape=...)` uses for the same reason: a mark passes
+    nothing and gets the ambient declaration, while the test OF the mechanism
+    hands it a drawer it built, because reading the ambient one there would
+    make the template's own test of the mechanism red on the first product
+    that declares anything.
+    """
+    declared = (G.LOCAL_DOC if doc is None else doc).get("rule_id_namespace")
+    return str(declared or "").strip() or None
+
+
+def _skip_unless_template_tree(doc: Mapping[str, object] | None = None) -> None:
+    """Skip with ONE reason string naming the condition that turned the case off."""
+    namespace = _declared_namespace(doc)
+    if namespace is not None:
+        pytest.skip(
+            f"template-only: this tree declares rule_id_namespace {namespace}; "
+            "the self-map has content by construction on a product"
+        )
+
+
 def test_this_template_tree_maps_onto_itself_with_nothing_to_do(tmp_path: Path) -> None:
     """The live end: the real reader, on the real tree, is the steady state.
 
     The fixture pair proves the three drifted shapes; this proves the shipped
     defaults reach them — that `fold_map_lines()` with no arguments but the
     path reads THIS tree's `quality/rules.yaml` and its real fixture trees.
+
+    TEMPLATE-ONLY — see the block above. On a folded tree the assertion below
+    is red by construction, so the case skips naming the declaration that made
+    it so rather than handing a product a red it cannot clear.
     """
+    _skip_unless_template_tree()
     rc, lines = G.fold_map_lines(G.ROOT / "quality" / "rules.yaml")
     out = "\n".join(lines)
     assert rc == 0, out
     assert "none — every template fixture on this tree is at the path it ships at." in out
     assert "unchanged; nothing to renumber" in out
+
+
+def _swap(module: ModuleType, name: str, value: Any) -> Any:
+    """Set a module global and hand back what was there. (`setattr`, not `.attr=`.)
+
+    The idiom `apps/core/tests/test_drawer_seam.py` records: `G` is a
+    `ModuleType` to mypy `--strict`, so a bare `G.LOCAL_RULES_PATH = ...` is an
+    error there — the same reason the module is reached through `importlib` at
+    all. The one caller below restores in a `finally`: this is a process
+    global, and a case that left it moved would hand the next case a drawer
+    nobody wrote.
+    """
+    was = getattr(module, name)
+    setattr(module, name, value)
+    return was
+
+
+def _read_drawer(path: Path) -> dict[str, object]:
+    """`quality.gate._read_local()` run over a drawer THIS test wrote.
+
+    The engine's reader and not a `yaml.safe_load()` here: the subject is
+    whether the declaration a consumer types is the declaration the mark sees,
+    and a second parser would only prove the second parser agrees with itself.
+    An absent path is legal and is the TEMPLATE's own state — `_read_local()`
+    answers `{}` for it, which is what `LOCAL_DOC` holds on this tree.
+    """
+    was = _swap(G, "LOCAL_RULES_PATH", path)
+    try:
+        doc, _rules, problems = G._read_local()
+    finally:
+        _swap(G, "LOCAL_RULES_PATH", was)
+    assert problems == [], problems
+    assert isinstance(doc, dict), doc
+    out: dict[str, object] = doc
+    return out
+
+
+def test_the_self_map_is_template_only_and_the_skip_names_the_declaration(
+    tmp_path: Path,
+) -> None:
+    """The mark's own drive: it fires on a product's drawer and not on this tree.
+
+    The product side is a REAL drawer read by the engine's real reader — the
+    file written under `tmp_path` and `_read_local()` run over it — rather than
+    a hand-built mapping, so what is proved is that the declaration a consumer
+    types is the declaration the skip sees.
+    """
+    drawer = tmp_path / "quality" / "local" / "rules.yaml"
+    drawer.parent.mkdir(parents=True, exist_ok=True)
+    drawer.write_text("rule_id_namespace: acme\ntemplate_rule_ids_through: 60\n")
+    product = _read_drawer(drawer)
+    assert _declared_namespace(product) == "acme", product
+
+    with pytest.raises(pytest.skip.Exception) as raised:
+        _skip_unless_template_tree(product)
+    assert str(raised.value) == (
+        "template-only: this tree declares rule_id_namespace acme; "
+        "the self-map has content by construction on a product"
+    ), str(raised.value)
+
+    # THE CONTROL, and it is the TEMPLATE's own drawer state — no file at all —
+    # read by the same reader. Without it the mark could be firing on every
+    # tree, and a case that skips everywhere reads in a run exactly like a case
+    # that passed.
+    #
+    # It is built rather than read off THIS tree on purpose: an assertion that
+    # the ambient tree declares no namespace is itself red by construction on a
+    # product, which is the very defect the skip above closes — the mechanism's
+    # own drive must not re-enter the divergence class it polices. That this
+    # tree really is a template is what the self-map case above proves by
+    # RUNNING in the template's suite.
+    template = _read_drawer(tmp_path / "quality" / "local" / "absent.yaml")
+    assert template == {}, template
+    assert _declared_namespace(template) is None, template
+    _skip_unless_template_tree(template)
 
 
 # --- HOTFIX-RULEMAP-2: WHICH FILE IS THE TEMPLATE SIDE -------------------------

@@ -50,6 +50,31 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.1.4] — A template-only test skips on a product
+
+One test. `test_fold_map.py`'s self-map case asserted that this tree's fixtures
+are all where the release ships them — true of the template's own tree and
+false by construction on any product that has folded, so it was red on every
+consumer forever. It now skips, with the reason, when the tree declares a
+`rule_id_namespace`. Nothing else changes; a product that skipped it as a named
+divergence deletes the line at this fold.
+
+### Fixed
+
+- **A template-only test no longer reds every product's suite.** The case that
+  maps this tree's `quality/rules.yaml` onto itself and asserts there is
+  nothing to do
+  (`apps/core/tests/test_fold_map.py::test_this_template_tree_maps_onto_itself_with_nothing_to_do`)
+  asserted a property only the TEMPLATE's own tree has: a folded product
+  carries drawer rules and a drawer fixture tree, and `--fold-map` walks
+  `quality/local/canary` and `quality/local/negative` on the same three keys
+  it walks the template's trees on — so the FIXTURES section has content by
+  construction and the assertion was red on every consumer, forever. The case
+  now skips when the tree declares `rule_id_namespace:`, with one reason
+  string naming that declaration, read through the engine's own drawer parse
+  rather than a second reader of `quality/local/rules.yaml`. A product that
+  has folded sees one skip saying why; the template runs it unchanged.
+
 ## [2.1.3] — The drawer holds what the first fold found it could not
 
 **A second patch from the same fold.** Every item is a place the first product
@@ -2841,7 +2866,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.1.3...HEAD
+[Unreleased]: ../../compare/v2.1.4...HEAD
+[2.1.4]: ../../compare/v2.1.3...v2.1.4
 [2.1.3]: ../../compare/v2.1.2...v2.1.3
 [2.1.2]: ../../compare/v2.1.1...v2.1.2
 [2.1.1]: ../../compare/v2.1.0...v2.1.1
