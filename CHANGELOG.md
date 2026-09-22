@@ -50,6 +50,107 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.1.3] — The drawer holds what the first fold found it could not
+
+**A second patch from the same fold.** Every item is a place the first product
+to fold 2.1.2 put a rule, a count or a fixture where the release told it to and
+met a refusal the drawer could not answer — or an instrument that answered
+cleanly in the wrong direction. Nothing here changes what the template does at
+run time.
+
+### What a product does at the merge
+
+1. **The fold map takes the release's own rules file as its second argument**
+   (2.1.2's item 2 is corrected in place below): after `git merge` the tree's
+   `quality/rules.yaml` is the merge result, and the map now refuses it, exit
+   2, naming the pair. `--template-tree <dir>` makes the FIXTURES section
+   release-true; without it the section says it is a lower bound.
+2. **A product rule whose subject is not under `apps/`, `config/` or
+   `frontend/` declares its own kind** under `scope_kinds:` in
+   `quality/local/rules.yaml` (the fifth key) and names it in `kind:`; a root
+   may be a directory or a file. A drawer rule that names a template `check:`
+   runs in-process as before and needs no kind.
+3. **A backlog on a template rule's own finding class lives in the drawer** —
+   `ratchets:` accepts a class the template rule declares; the red prints the
+   paste line; the drawer's count ADDS to the template's.
+4. **A directory the engine plants is claimed by its `ENGINE_FIXTURES` entry**;
+   a product that patched `unclaimed_fixture_directories` deletes the patch.
+
+### Fixed
+
+- **A product rule may be about the product's own files.** `quality/local/rules.yaml`
+  takes a fifth key, `scope_kinds:`, in the same shape `quality/rules.yaml` writes
+  its two — `roots:`, `suffixes:`, `comment:`, optional `skip_dirs:`/`needs_tree:` —
+  and the engine reads the union. The template declares `py` (apps, config) and
+  `js` (frontend) and nothing else, so a product rule whose subject was a ledger,
+  a doc, a `.env.example` or a canary under `quality/local/` had no kind it could
+  name and its runner's every finding was refused: *findings[0].path
+  'docs/product/queue.md' is outside the roots this rule declares (apps, config)*.
+  That refusal stands — a runner may still only report about what it was pointed
+  at — and now names the drawer key as the remedy when the rule is the product's.
+  A product kind may not reuse a template kind's name (refused, naming both
+  files); a root may be any directory **or file** this tree carries — a file
+  root's walk is itself, in all four readers, `--selftest-inputs` included; a
+  root that names nothing, or that git does not carry, is refused in the
+  drawer's own file rather than four readers later. **The walk is the union and
+  the attribution is not**: a `rule-<id>` valve counts only where that rule's
+  own kind reaches, so a product kind rooted at `docs/` with `comment: "#"`
+  cannot turn every `# rule-13:` shaped line of prose into an override of a
+  template rule it does not own.
+- **A product's backlog for a template rule's own finding class has a home.**
+  `ratchets:` in the drawer accepted only app-keyed classes on a template rule,
+  so a product folding rules 50–53 — which ratchet per FINDING class (`literal`,
+  `api-reach`, `barrel`, `consumed-undeclared`) — was told its class `literal`
+  was *not a directory under apps/*. Those rules now declare their classes at
+  `0` (a measurement, ADR gate-6 (b)), the drawer may name any class a template
+  rule declares, and the drawer's count is **added** to the template's rather
+  than replacing it — so a product records its own backlog and still cannot
+  erase a template ceiling from a file the template never reads. A name that is
+  neither an app nor a declared class is refused with the sentence it always
+  had, now listing the classes that rule does declare. A finding class over its
+  ceiling now prints the `recorded-at <sha> [fold]` line to paste — it never did,
+  because `unmeasured_app` answers `None` for a class that names no app — and a
+  summed ceiling's finding is homed at the file the number lives in and says
+  `(template n + drawer m)`.
+- **A fixture directory the ENGINE plants into can be claimed.** `ENGINE_FIXTURES`
+  claimed a fixture FILE, but the directory census built `claimed` from rule ids
+  alone — so a directory the engine plants into whose name is no rule's id was
+  *a fixture directory no rule claims*, exit 2, with nothing a reader could
+  declare to clear it. The census now claims the directories its engine fixtures
+  sit in. The template had not met it only because its one engine fixture sits
+  inside rule 50's directory.
+- **`--fold-map` takes the TEMPLATE side as an argument, and refuses to guess
+  it off a merged tree.** The first consumer measured the 2.1.2 instrument in
+  the wrong direction: § [2.1.2] item 2 sent them here AFTER `git merge`, and
+  on that tree `quality/rules.yaml` is the merge result — their names at their
+  numbers — not the release's. Same previous file, measured on their worktree:
+  the merged file as the template side printed `unchanged; nothing to
+  renumber` rule after rule, UNMATCHED empty, exit 0 — a clean-looking map
+  that renames TEMPLATE rules into the product's namespace and leaves PRODUCT
+  rules on template integers, the exact failure the map exists to prevent; the
+  release's own file printed twelve renames and twenty-seven fixture findings.
+  **Nothing in the output distinguished the two.** So the grammar is now
+  `--fold-map <previous rules.yaml> [<template rules.yaml>] [--template-tree <dir>]`,
+  the header line names the path it used as the template side and whether it
+  was GIVEN or TAKEN from the tree, and with no second argument two teeth
+  refuse (exit 2, naming the pair and printing the two-argument remedy) the
+  states in which the tree's file is not a release file: (a) the tree's
+  `quality/rules.yaml` is not the same rule set as the previous file — a name
+  at a different id, or a name in one and not the other, either direction; (b)
+  `quality/local/rules.yaml` already namespaces a rule whose name the template
+  side still carries at a bare integer. *(a) is the whole comparison rather
+  than "the same name at a different number" on purpose: that half is the
+  HEALTHY case — a template rule at a drifted number is exactly a shared name
+  at two ids — and the consumer's own measured run contained no such pair.*
+  The FIXTURES section declares itself a **lower bound** whenever the fixture
+  bytes came from this tree, because a rules.yaml cannot carry bytes;
+  `--template-tree <dir>` (a `git worktree` or `git archive` of the tag) is
+  what makes it complete. `quality/gate.py` (`fold_map_lines`,
+  `_fold_map_template_side_problems`, `_fold_map_drawer_pairs`,
+  `_fold_map_remedy`), driven by `apps/core/tests/test_fold_map.py` and
+  `scripts/tests/test_gate_explain.sh`; § [2.1.2] item 2 is corrected in
+  place.
+
 ## [2.1.2] — The fold's instruments, from the first consumer's fold
 
 **A patch, and everything in it was measured on the first product to fold
@@ -67,12 +168,26 @@ rules are actually yours.
    the tag you are folding, then run the census — `git show v2.1.2:scripts/divergence_census.sh > scripts/divergence_census.sh`
    and the same for `scripts/archaeology_lib.sh`; the census refuses, exit 2,
    naming both if only one was taken.
-2. **Before renaming any rule:** `python -m quality.gate --fold-map <your pre-merge quality/rules.yaml>`
-   (`git show <your pre-merge sha>:quality/rules.yaml > /tmp/before.yaml`).
-   It decides by NAME which rules are the template's (renumber to its number)
-   and which are yours (`<ns>-<n>`, into the drawer), names all five places an
-   id lives, and lists every fixture file the template ships that sits under
-   one of your ids — DELETE those, never `git mv` a template fixture directory.
+2. **Before renaming any rule — and HAND IT THE RELEASE'S OWN rules.yaml, as a
+   second argument.** Take both files first:
+   `git show <your pre-merge sha>:quality/rules.yaml > /tmp/before.yaml` and
+   `git show v<the release you are folding>:quality/rules.yaml > /tmp/template-rules.yaml`,
+   then `python -m quality.gate --fold-map /tmp/before.yaml /tmp/template-rules.yaml`.
+   **The second path is not optional in practice: after `git merge`, the tree's
+   own `quality/rules.yaml` IS THE MERGE RESULT — your names at your numbers —
+   not the release's, so a map built against it renames the template's rules
+   into your namespace and leaves yours on template integers.** The reader
+   refuses (exit 2) rather than printing that map, and the header line now
+   names the path it used as the template side. Add
+   `--template-tree <a git worktree or git archive of the tag>` for the
+   FIXTURES section at full strength; without it that section says in its own
+   header that it is a lower bound, because the fixture BYTES can only be read
+   off a tree and with no tree named that tree is yours.
+   The map decides by NAME which rules are the template's (renumber to its
+   number) and which are yours (`<ns>-<n>`, into the drawer), names all five
+   places an id lives, and lists every fixture file the template ships that
+   sits under one of your ids — DELETE those, never `git mv` a template
+   fixture directory.
 3. Then 2.1.1's items 3–16 as written, with its items 1, 2 and 7 corrected
    below.
 
@@ -2726,7 +2841,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.1.2...HEAD
+[Unreleased]: ../../compare/v2.1.3...HEAD
+[2.1.3]: ../../compare/v2.1.2...v2.1.3
 [2.1.2]: ../../compare/v2.1.1...v2.1.2
 [2.1.1]: ../../compare/v2.1.0...v2.1.1
 [2.1.0]: ../../compare/v2.0.0...v2.1.0

@@ -99,12 +99,28 @@ _DOC: dict = yaml.safe_load((ROOT / "quality" / "rules.yaml").read_text())
 # `quality/local/runners/`, so a product adds a rule without touching one
 # template-owned path and a fold has nothing to merge.
 #
-# FOUR KEYS AND NO MORE. `rule_id_namespace`, `template_rule_ids_through`,
-# `rules:` and `ratchets:`. Anything else — a local `scope_kinds:`, a local
-# `seam:`, a local `selftest_residence_backlog:` — is exit 2 NAMING THE KEY AND
-# THE FILE, because each of those is a statement about the ENGINE rather than
-# about a rule, and an engine a product can reconfigure in a file the template
-# never reads is an engine the template cannot vouch for.
+# FIVE KEYS AND NO MORE. `rule_id_namespace`, `template_rule_ids_through`,
+# `rules:`, `ratchets:` and `scope_kinds:`. Anything else — a local `seam:`, a
+# local `selftest_residence_backlog:` — is exit 2 NAMING THE KEY AND THE FILE,
+# because each of those is a statement about the ENGINE rather than about a
+# rule, and an engine a product can reconfigure in a file the template never
+# reads is an engine the template cannot vouch for.
+#
+# WHY `scope_kinds:` IS THE FIFTH, AND WHY IT WAS THE FOURTH'S MISTAKE. D1 read
+# it as an engine statement and refused it by name. It is not: a scope kind is
+# WHAT A RULE IS ABOUT — its roots, its suffixes, its valve token — and the
+# template declares exactly two, `py` (apps, config) and `js` (frontend). A
+# product rule whose subject is a ledger, a doc, a `.env.example` or a canary
+# under `quality/local/` therefore had NO kind it could name, and
+# `check_v1._refuse_outside_roots` refused its runner's every finding: `path
+# 'docs/product/queue.md' is outside the roots this rule declares (apps,
+# config)`. The first consumer met it on four rules that had run as in-process
+# checks for a year. So the key is the drawer's, under the same law as every
+# other drawer: a product kind may NOT reuse a template kind's name (refused,
+# naming both files), its roots may name any directory or file this tree
+# carries, and `SCOPE_KINDS` is the UNION — which is what makes `kind_roots`,
+# the override walk, the memo's walk and every floor read the product's roots
+# without one template-owned byte moving.
 #
 # THE TWO NAMESPACE KEYS LIVE HERE AND NOWHERE ELSE. D1 put them in the
 # template-owned file because the drawer did not exist yet; this is the home
@@ -125,11 +141,118 @@ LOCAL_RUNNER_DIR = LOCAL_DIR / "runners"
 
 #: The whole vocabulary of the drawer. Closed, and the refusal names the key.
 LOCAL_KEYS: frozenset[str] = frozenset(
-    {"rule_id_namespace", "template_rule_ids_through", "rules", "ratchets"}
+    {"rule_id_namespace", "template_rule_ids_through", "rules", "ratchets", "scope_kinds"}
 )
 
 #: The keys whose HOME is the drawer — refused in the template-owned file.
 MOVED_KEYS: tuple[str, ...] = ("rule_id_namespace", "template_rule_ids_through")
+
+
+def _git_tracks(rel: str) -> bool:
+    """Does git carry anything at this path? (a file, or a file under it).
+
+    ITS OWN SUBPROCESS, at import time, because `_tracked_paths()` is four
+    thousand lines below this one and the drawer is read before it exists. It
+    runs only when a drawer declares `scope_kinds:`, which is at most a handful
+    of roots on the trees that have one and none at all on the trees that do
+    not.
+
+    UNREADABLE IS TRUE, never false: a checkout with no git (an exported tree,
+    a tarball) must not have every drawer root refused as untracked. The
+    existence test beside this one is what still holds there.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "--error-unmatch", "-z", "--", rel],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:  # no git, no repository, no answer — existence stands alone
+        return True
+    return done.returncode == 0 and bool(done.stdout.strip("\0").strip())
+
+
+def _local_scope_kind_problems(raw: object) -> list[str]:
+    """The drawer's `scope_kinds:`, shape-checked — the rest is `seam_consistency`'s.
+
+    THREE REFUSALS AND NOT ONE MORE, because the other half of a kind's shape
+    (non-empty `suffixes:`, a dot on each one, a comment token) is already the
+    engine's own census over the UNION, and a second opinion here would be two
+    spellings of one law that can disagree.
+
+    (a) A NAME THE TEMPLATE ALREADY DECLARES is refused NAMING BOTH FILES. A
+        silent win by either side is the worst answer there is: the drawer
+        shadowing `py` would re-point every template rule's roots from a file
+        the template never reads, and the template shadowing the drawer would
+        make a product's rules quietly about somebody else's tree.
+    (b) A ROOT THAT IS NOT A PATH OF THIS TREE — absolute, or carrying `..` —
+        is refused with the identical sentence `needs_tree` and
+        `check_v1._refuse_outside_roots` already use, rather than a third,
+        looser one.
+    (c) A ROOT THIS TREE DOES NOT CARRY is refused, because a kind whose roots
+        name nothing is a rule that scans nothing and reports clean. A root may
+        be a DIRECTORY or a FILE (`.env.example` is a subject a product really
+        has), and both halves of the walk below know it.
+    """
+    if raw is None:
+        return []
+    where = "quality/local/rules.yaml: `scope_kinds:`"
+    if not isinstance(raw, dict) or not raw:
+        return [f"{where} is {raw!r}, not a non-empty mapping of kind name -> declaration"]
+    template_kinds = _DOC.get("scope_kinds") or {}
+    problems: list[str] = []
+    for name, kind in raw.items():
+        label = str(name)
+        if label in template_kinds:
+            problems.append(
+                f"{where} declares the kind {label!r}, which quality/rules.yaml already "
+                f"declares. A product kind may not reuse a template kind's name: the two "
+                f"files would each believe they owned {label!r}'s roots, and whichever won "
+                f"would re-point rules written in the other. Name yours something the "
+                f"template does not ({', '.join(sorted(template_kinds)) or 'none'} are taken)"
+            )
+            continue
+        if not isinstance(kind, dict):
+            problems.append(f"{where} kind {label!r}: {kind!r} is not a declaration")
+            continue
+        roots = kind.get("roots")
+        if not isinstance(roots, list) or not roots:
+            problems.append(f"{where} kind {label!r}: roots is {roots!r}, not a non-empty list")
+            continue
+        for root in roots:
+            candidate = Path(str(root))
+            if candidate.is_absolute() or ".." in candidate.parts:
+                problems.append(
+                    f"{where} kind {label!r}: root {root!r} is not a path RELATIVE to the "
+                    "checkout root — an absolute path or a `..` segment could name something "
+                    "this tree does not own"
+                )
+                continue
+            if not (ROOT / candidate).exists():
+                problems.append(
+                    f"{where} kind {label!r}: root {root!r} is neither a directory nor a "
+                    "file on this tree. A kind whose roots name nothing is a rule that "
+                    "scans nothing and reports clean — which is the one verdict this "
+                    "engine will not produce"
+                )
+                continue
+            # TRACKED, NOT MERELY PRESENT, and refused HERE rather than four
+            # readers later. The engine's input list is derived from the
+            # repository's own answer about what is in a walk
+            # (`selftest_inputs_for`, population 6), so an UNTRACKED root scans
+            # happily all the way to `--selftest-inputs`, which then refuses it
+            # with a sentence about an emptied walk — a refusal whose subject
+            # is the drawer, arriving from a reader whose subject is not.
+            if not _git_tracks(str(candidate)):
+                problems.append(
+                    f"{where} kind {label!r}: root {root!r} is on this tree and git carries "
+                    "nothing at it. The engine's input list is the tracked set, so an "
+                    "untracked root walks files no verdict is keyed on — the walk reads "
+                    "full and the key reads empty. Track it, or name a root that is"
+                )
+    return problems
 
 
 def _read_local() -> tuple[dict, list[dict], list[str]]:
@@ -180,6 +303,7 @@ def _read_local() -> tuple[dict, list[dict], list[str]]:
             "reconfigure it in a file the template never reads would be running a gate "
             "nothing vouches for"
         )
+    problems.extend(_local_scope_kind_problems(loaded.get("scope_kinds")))
     raw_rules = loaded.get("rules")
     local_rules: list[dict] = []
     if raw_rules is not None:
@@ -277,30 +401,46 @@ def _merge_local_ratchets() -> list[str]:
         merged = dict(recorded)
         for klass, count in classes.items():
             name = str(klass)
-            # THE TWO REFUSALS THAT MAKE X3.4 TRUE RATHER THAN POLITE, and they
-            # are HERE rather than in a later census because a census that
-            # prints a note has already let the merge happen: the ceiling is
-            # raised, the finding is a note, and the drawer has quietly widened
-            # a rule the template owns. A refused class is NOT merged.
-            if not drawer_rule:
-                if name in recorded:
-                    problems.append(
-                        f"{where} rule {rid} is a TEMPLATE rule and already records class "
-                        f"{name!r} at {recorded[name]!r}; the drawer names it at {count!r}. "
-                        "The drawer is where a PRODUCT's own backlog lives — it may add a "
-                        "class the template never measured, never restate one it did. A "
-                        "template ceiling moves in quality/rules.yaml, in a diff a reviewer "
-                        "reads, and it moves DOWN"
-                    )
-                    continue
+            # THE REFUSAL THAT MAKES X3.4 TRUE RATHER THAN POLITE, and it is
+            # HERE rather than in a later census because a census that prints a
+            # note has already let the merge happen: the ceiling is raised, the
+            # finding is a note, and the drawer has quietly widened a rule the
+            # template owns. A refused class is NOT merged.
+            #
+            # TWO NAMES A DRAWER CLASS ON A TEMPLATE RULE MAY BE, and the
+            # second is what D1 missed. One is an APP of the product's, which
+            # is what ADR gate-6 was written for. The other is a FINDING CLASS
+            # THE TEMPLATE RULE ITSELF DECLARES under its own `ratchets:` —
+            # `literal`, `api-reach`, `barrel`, `consumed-undeclared` — which
+            # is not an app and never will be, so the app-directory test
+            # refused it with a sentence about `apps/literal/`. A product
+            # folding rules 50-53 met exactly that: a backlog in a template
+            # rule's own finding class, and no product-owned place to record it.
+            #
+            # AND THE DRAWER'S NUMBER IS ADDED TO THE TEMPLATE'S, never
+            # substituted for it. The template's count is the template's
+            # measurement and moves down in a template diff a reviewer reads;
+            # the drawer's is the PRODUCT's backlog and moves down in the
+            # product's. A substitution would let a drawer erase a template
+            # ceiling from a file the template never reads, which is the one
+            # move the paragraph above exists to stop. Where the template
+            # records the class at 0 — the ordinary case, a class the template
+            # declares and has never had a finding in — the sum IS the drawer's
+            # number and the two readings coincide.
+            template_declared = not drawer_rule and name in recorded
+            if not drawer_rule and not template_declared:
                 app_part = name.split(".", 1)[0]
                 if not (ROOT / "apps" / app_part).is_dir():
                     problems.append(
                         f"{where} rule {rid} is a TEMPLATE rule and the drawer adds class "
-                        f"{name!r}, whose app {app_part!r} is not a directory under apps/. "
+                        f"{name!r}, whose app {app_part!r} is not a directory under apps/, "
+                        f"and which is not one of the finding classes rule {rid} declares "
+                        f"under its own `ratchets:` "
+                        f"({', '.join(sorted(str(k) for k in recorded)) or 'none'}). "
                         "A drawer class on a template rule records one of YOUR apps' "
-                        "backlogs; a name that is no app on this tree records nothing and "
-                        "no later run can shrink it"
+                        "backlogs, or YOUR count for a finding class that rule already "
+                        "declares; a name that is neither records nothing and no later "
+                        "run can shrink it"
                     )
                     continue
             try:
@@ -310,8 +450,10 @@ def _merge_local_ratchets() -> list[str]:
             except (TypeError, ValueError):
                 problems.append(f"{where} rule {rid}: class {name!r} is {count!r}, not a count")
                 continue
-            merged[name] = value
+            base = int(recorded[name]) if template_declared else 0
+            merged[name] = base + value
             DRAWER_RATCHET_CLASSES.add((rid, name))
+            DRAWER_RATCHET_PARTS[(rid, name)] = (base, value)
         rule["ratchets"] = merged
     return problems
 
@@ -322,6 +464,12 @@ def _merge_local_ratchets() -> list[str]:
 #: sent to a template-owned file a fold overwrites — which is the whole thing
 #: EP2 exists to stop, reappearing in the remedy rather than in the rule.
 DRAWER_RATCHET_CLASSES: set[tuple[str, str]] = set()
+
+#: `(rule id, class) -> (what the TEMPLATE recorded, what the DRAWER added)`.
+#: The merged ceiling is their sum, and a finding printed against it has to be
+#: able to say which half is whose: "past the recorded ratchet of 12" sends a
+#: reader looking for a 12 that is written in neither file.
+DRAWER_RATCHET_PARTS: dict[tuple[str, str], tuple[int, int]] = {}
 
 _LOCAL_PROBLEMS.extend(_merge_local_ratchets())
 
@@ -338,7 +486,65 @@ def ratchet_home(rule_id: str, klass: str) -> str:
 # The languages a rule may be written about: roots, file suffixes, and the
 # comment token a valve is written with. Data, like everything else here, so
 # that adding one is a diff a reviewer reads rather than an edit to the walk.
-SCOPE_KINDS: dict = _DOC.get("scope_kinds") or {}
+def _scope_kinds() -> dict:
+    """The template's kinds, then the drawer's — one mapping, template first.
+
+    THE UNION IS THE WHOLE FIX. Every reader of kinds in this engine already
+    goes through this one name: `kind_roots` (what a runner is pointed at and
+    measured against), `kind_of_path` (which comment token a valve is written
+    with), `_kind_walk` (where the standing override census looks), the memo's
+    walk, the `--selftest-inputs` census and `rule_seam_consistency`'s
+    "kind {k!r} is not one of the declared scope kinds". So a product declaring
+    a kind in its drawer gets all seven, and none of them is a second list that
+    can drift from this one.
+
+    A drawer kind whose NAME the template already declares is dropped here and
+    refused by `_local_scope_kind_problems` — a refused declaration is never
+    merged, for the reason a refused ratchet class is not: half a declaration
+    reads as a smaller engine rather than as a broken one.
+    """
+    kinds = dict(_DOC.get("scope_kinds") or {})
+    for name, kind in (LOCAL_DOC.get("scope_kinds") or {}).items():
+        if str(name) in kinds or not isinstance(kind, dict):
+            continue
+        kinds[str(name)] = kind
+    return kinds
+
+
+SCOPE_KINDS: dict = _scope_kinds()
+
+#: The kind names the DRAWER contributed — read by the remedy below, so a
+#: product that already has a kind is told to point the rule at it rather than
+#: to declare a second one.
+LOCAL_SCOPE_KINDS: frozenset[str] = frozenset(
+    str(name) for name in (LOCAL_DOC.get("scope_kinds") or {}) if str(name) in SCOPE_KINDS
+) - frozenset(str(name) for name in (_DOC.get("scope_kinds") or {}))
+
+
+def drawer_roots_remedy(rule_id: str) -> str:
+    """The one sentence `finding-outside-roots` owes a PRODUCT's rule.
+
+    THE REFUSAL WAS RIGHT AND MUTE. A runner may only report about what it was
+    pointed at — that law does not bend for a drawer rule — but the refusal
+    named no way to point it anywhere else, and the roots it named come out of
+    a template-owned file a fold overwrites. So the remedy rides on the
+    refusal, and only for a rule the drawer contributed: a TEMPLATE rule
+    reporting outside its roots is a broken instrument, not a missing
+    declaration, and telling its author to widen the scope would be the worst
+    advice in this module.
+    """
+    if not is_local_rule(rule_id):
+        return ""
+    have = f" (yours today: {', '.join(sorted(LOCAL_SCOPE_KINDS))})" if LOCAL_SCOPE_KINDS else ""
+    return (
+        "This is a rule from YOUR drawer, so its roots are yours to declare: add a scope "
+        "kind under `scope_kinds:` in quality/local/rules.yaml — "
+        '`<name>: {roots: [...], suffixes: [...], comment: "#"}` — and give the rule '
+        f"`kind: <name>`{have}. A product kind's roots may name any directory or file this "
+        "tree carries (docs/, quality/local/, .env.example among them); it may not reuse a "
+        "kind name quality/rules.yaml already declares"
+    )
+
 
 # The recorded population of the SEAM's own canaries — the process boundary's
 # failure modes, which no planted file can exercise because their subject is a
@@ -770,15 +976,59 @@ def _kind_walk() -> list[tuple[str, str, frozenset[str]]]:
     return walk
 
 
+def override_reaches(rule_id: str, rel: str) -> bool:
+    """Can the rule this marker names report about this path at all?
+
+    THE WALK IS THE UNION AND A VALVE IS NOT. `_kind_walk()` reads every scope
+    kind on the tree — the template's two and any the drawer declares — because
+    a valve has to be FINDABLE wherever one can be written. But a valve is an
+    exemption FROM ONE RULE, and a rule's subject is its own kind's roots. So a
+    product kind rooted at `docs/` with `comment: "#"` made every `# rule-13:`
+    shaped line in this repository's prose an override of TEMPLATE rule 13 —
+    standing overrides went 41 to 56, and two lines of documentation whose
+    "reason" was shorter than `MIN_REASON` became findings recorded against
+    rules 13 and 16. A product kind turned a green tree red on rules it does
+    not own (V-HD1, HIGH-2, 2026-09-22).
+
+    AN ID NO RULE CLAIMS IS KEPT, never dropped: `rule-99` in a source file is
+    somebody's mistake and some other census's finding, and a reach test that
+    silently swallowed it would be this fix causing the next one.
+    """
+    rule = RULES_BY_ID.get(str(rule_id))
+    if rule is None:
+        return True
+    roots = W.kind_roots(rule, SCOPE_KINDS)
+    if not roots:
+        return True
+    for root in roots:
+        base = str(root).rstrip("/")
+        if rel == base or rel.startswith(base + "/"):
+            return True
+    return False
+
+
 def all_overrides() -> list[tuple[str, str, int, str]]:
-    """(rule_id, relpath, line, reason) for every override marker in the tree."""
+    """(rule_id, relpath, line, reason) for every override marker in the tree.
+
+    The walk is every kind's; the ATTRIBUTION is one rule's — see
+    `override_reaches` for the difference and what it cost to learn.
+    """
     found: list[tuple[str, str, int, str]] = []
     seen: set[tuple[str, int]] = set()
     for sub, suffix, skip in _kind_walk():
         base = ROOT / sub
         if not base.exists():
             continue
-        for path in sorted(base.rglob(f"*{suffix}")):
+        # A ROOT MAY BE A FILE. A template kind's roots are all directories, so
+        # this branch is dead on a tree with no drawer — but a product kind may
+        # name `.env.example`, and a valve written in a file root has to be
+        # findable by the same census that finds one in a directory root, or it
+        # is an exemption nobody counts.
+        if base.is_file():
+            candidates = [base] if base.name.endswith(suffix) else []
+        else:
+            candidates = sorted(base.rglob(f"*{suffix}"))
+        for path in candidates:
             if skip & set(path.parts):
                 continue
             rel = str(path.relative_to(ROOT))
@@ -786,6 +1036,8 @@ def all_overrides() -> list[tuple[str, str, int, str]]:
             for lineno, text in enumerate(_file_lines(path), start=1):
                 m = pattern.search(text)
                 if m and (rel, lineno) not in seen:
+                    if not override_reaches(m.group(1), rel):
+                        continue
                     seen.add((rel, lineno))
                     found.append((m.group(1), rel, lineno, m.group(2).strip()))
     return sorted(found, key=lambda row: (row[1], row[2]))
@@ -906,6 +1158,48 @@ def unmeasured_line(rid: str, klass: str, app: str, count: int) -> str:
     )
 
 
+def drawer_ratchetable_class(rule_id: str, klass: str, rule: dict) -> bool:
+    """May a PRODUCT record its own count for this class, in its own drawer?
+
+    The mirror of the acceptance branch in `_merge_local_ratchets`, and it has
+    to be a predicate rather than a comment because a finding that cannot say
+    "you may record this" leaves the product to reverse-engineer the grammar —
+    which is the whole of ADR gate-6's context, reappearing one class-kind
+    over. True for a TEMPLATE rule's own FINDING class: one the rule declares
+    under its `ratchets:` whose name is not an app on this tree (an app-keyed
+    class takes `unmeasured_app`'s route, and a PLATFORM app's ceiling is the
+    template's under X3.4).
+    """
+    if is_local_rule(rule_id):
+        return False
+    if str(klass) not in {str(k) for k in (rule.get("ratchets") or {})}:
+        return False
+    return not (ROOT / "apps" / str(klass).split(".", 1)[0]).is_dir()
+
+
+def finding_class_line(rid: str, klass: str, recorded: int, count: int) -> str:
+    """The `recorded-at` paste line for a template rule's own finding class.
+
+    `unmeasured_line`'s sibling, and the reason it exists: `unmeasured_app`
+    answers None for a class that is not app-keyed, so `literal` — rule 50's
+    own class, the one a product folding v2.1.2 actually had a backlog in —
+    printed no paste line at all and the product typed its number by hand.
+    """
+    mine = max(0, count - recorded)
+    return (
+        f"class {klass!r} is at {count} violations against rule {rid}'s own recorded ceiling "
+        f"of {recorded} — this is a TEMPLATE rule's FINDING class, not an app: the template "
+        f"measured its own tree at {recorded} and yours is the backlog on top of it. RECORD "
+        f"YOURS — in quality/local/rules.yaml, YOUR drawer, under its top-level `ratchets:`, "
+        f'under `"{rid}":`, paste:  {klass}: {mine}  # recorded-at {recording_sha()} [fold]'
+        f"  — the drawer's number is ADDED to the template's {recorded} and never replaces "
+        f"it, so the template's measurement stays the template's to move; the recording "
+        f"belongs to the fold that brought your code in, and after it the class moves DOWN "
+        f"only, by a person's hand, in a diff a reviewer reads (ADR gate-6). The whole class "
+        f"follows:"
+    )
+
+
 def apply_ratchets(rule: dict, kept: list[Finding]) -> list[Finding]:
     """Findings within a recorded backlog are notes; one over it, all of them fail.
 
@@ -935,15 +1229,35 @@ def apply_ratchets(rule: dict, kept: list[Finding]) -> list[Finding]:
         allowed = int(recorded.get(klass, 0)) if klass else 0
         label = klass or "(rule)"
         if len(findings) > allowed:
+            parts = DRAWER_RATCHET_PARTS.get((rid, str(klass)))
+            # THE FINDING IS HOMED WHERE THE NUMBER IS WRITTEN, and it says
+            # which half of a summed ceiling is whose — "past the recorded
+            # ratchet of 12" sends a reader looking for a 12 that is written in
+            # neither file once the template's own count is non-zero.
+            home = ratchet_home(rid, str(klass)) if klass else "quality/rules.yaml"
+            split = f" (template {parts[0]} + drawer {parts[1]})" if parts else ""
             if allowed:
                 out.append(
                     Finding(
-                        "quality/rules.yaml",
+                        home,
                         0,
                         f"class {label!r} is at {len(findings)} violations, past the recorded "
-                        f"ratchet of {allowed} — a backlog may shrink and never grow. Fix the "
-                        f"new one, or reduce another; raising the number is a diff a reviewer "
-                        f"reads. The whole class follows:",
+                        f"ratchet of {allowed}{split} — a backlog may shrink and never grow. "
+                        f"Fix the new one, or reduce another; raising the number is a diff a "
+                        f"reviewer reads, in {home}. The whole class follows:",
+                        klass,
+                    )
+                )
+            elif klass and drawer_ratchetable_class(rid, str(klass), rule):
+                # A TEMPLATE RULE'S OWN FINDING CLASS, recorded at 0 and now
+                # over it. `unmeasured_app` answers None here — the class names
+                # no app and never will — so before this branch the product got
+                # the findings and no line to paste anywhere.
+                out.append(
+                    Finding(
+                        "quality/local/rules.yaml",
+                        0,
+                        finding_class_line(rid, str(klass), allowed, len(findings)),
                         klass,
                     )
                 )
@@ -1056,6 +1370,7 @@ def run_runner(rule: dict) -> CheckResult:
         roots=W.kind_roots(rule, SCOPE_KINDS),
         where=f"rule {rule['id']} runner {' '.join(argv)!r}",
         timeout=int(runner.get("timeout") or check_v1.DEFAULT_TIMEOUT),
+        remedy=drawer_roots_remedy(str(rule["id"])),
     )
 
 
@@ -1104,6 +1419,7 @@ def run_rule(rule: dict, *, floors: bool = True) -> tuple[list[Finding], dict, s
                     argv=argv,
                     roots=W.kind_roots(rule, SCOPE_KINDS),
                     where=f"rule {rid} local runner {' '.join(argv)!r}",
+                    remedy=drawer_roots_remedy(rid),
                     timeout=int(
                         (rule.get("runner") or {}).get("timeout") or check_v1.DEFAULT_TIMEOUT
                     ),
@@ -1735,6 +2051,33 @@ def fixture_census() -> None:
     broken.extend(orphan_fixture_findings(RULES, on_disk))
 
 
+def engine_fixture_dirs(engine: dict[Path, str] | None = None) -> set[str]:
+    """The fixture DIRECTORY names `ENGINE_FIXTURES` claims, for the dir census.
+
+    THE HALF `claimed_fixtures` COULD NOT REACH. That function claims engine
+    fixtures BY PATH, so the FILE census is satisfied; the DIRECTORY census
+    builds `claimed` out of rule ids alone, so a directory the engine plants
+    into — one whose name is not any rule's id — is "a fixture directory no
+    rule claims", exit 2, and NOTHING a reader declares can clear it. The
+    template has never met it only because its one engine fixture happens to
+    sit inside rule 50's directory; the first consumer's `read_census`
+    partition fixtures do not, and their tree was exit 2 whatever they wrote.
+
+    The name is the FIRST segment under the fixture tree, not `path.parent.name`
+    — an engine fixture nested two deep belongs to the directory at the top of
+    that tree, which is the thing the census iterates.
+    """
+    names: set[str] = set()
+    for path in ENGINE_FIXTURES if engine is None else engine:
+        for _kind, base in fixture_trees():
+            if base in path.parents:
+                names.add(path.relative_to(base).parts[0])
+                break
+        else:
+            names.add(path.parent.name)
+    return names
+
+
 def fixture_dir_findings(
     bases: tuple[tuple[str, Path], ...] | None = None,
     claimed: set[str] | None = None,
@@ -1762,7 +2105,7 @@ def fixture_dir_findings(
     if bases is None:
         bases = fixture_trees()
     if claimed is None:
-        claimed = {str(rule["id"]) for rule in RULES}
+        claimed = {str(rule["id"]) for rule in RULES} | engine_fixture_dirs()
     if namespace is ...:
         namespace = RULE_ID_NAMESPACE
     found: list[str] = []
@@ -4123,12 +4466,23 @@ def remedy_pointer(rid: str) -> str:
     return f" · fix form: --explain {rid}"
 
 
+#: The two files a RATCHET HEADER is pathed at. A header is not a valvable
+#: finding — there is no comment you can write in a rules file to excuse a
+#: backlog — so it must not contribute a valve token to its rule's trailer.
+#: Before rules 50-53 declared their finding classes no js rule had a ratchet,
+#: so no js rule had ever carried a yaml-pathed row; the day one did, rule 52's
+#: block printed a `# rule-52:` line for findings that were all `.ts`, which is
+#: precisely the defect `valve_lines`' per-finding-kind substitution exists to
+#: prevent (found by `case_a_frontend_finding_prints_the_slash_valve_token`).
+RATCHET_HEADER_PATHS: frozenset[str] = frozenset({"quality/rules.yaml", "quality/local/rules.yaml"})
+
+
 def record_violation(rid: str, finding: object, *, path: str = "") -> None:
     """Append a finding AND remember whose it is, so the trailer can group."""
     text = f"rule {rid}: {finding}{remedy_pointer(rid)}"
     violations.append(text)
     violation_rule[text] = rid
-    if path:
+    if path and str(path) not in RATCHET_HEADER_PATHS:
         token = W.comment_token(W.kind_of_path(path, SCOPE_KINDS))
         finding_kinds.setdefault(rid, set()).add(token)
 
@@ -4490,6 +4844,16 @@ def _expand_input(value: str, tracked: frozenset[str]) -> tuple[list[str], str]:
             return [], f"names the directory {value!r}, which holds no tracked file"
         return under, ""
     if target.exists():
+        # A FILE, AND THE TRACKED RULE APPLIES TO IT TOO. Every other branch
+        # here answers out of `tracked`; this one used to answer out of the
+        # filesystem, so an untracked file entered a list whose whole purpose
+        # is to be the repository's own answer about what was read.
+        if value not in tracked:
+            return [], (
+                f"names {value!r}, which git does not carry — the input list is the "
+                "repository's own answer about what was read, and an untracked file in it "
+                "is a byte that moves the verdict without moving the key"
+            )
         return [value], ""
     return [], f"names {value!r}, which does not exist on this tree"
 
@@ -4606,6 +4970,18 @@ def selftest_inputs_for(rules: list[dict]) -> tuple[list[str], list[str]]:
         if not (ROOT / root).exists():
             continue
         walked_per_root.setdefault(root, 0)
+        # A FILE ROOT IS ITS OWN WALK — the fourth reader of that rule, and the
+        # one a drawer kind rooted at `.env.example` reached first: a prefix
+        # test spelled `root + "/"` matches nothing for a file, the count stays
+        # 0, and this census refuses a root that is exactly where it said it
+        # would be. The suffix filter does not apply for the same reason it does
+        # not in `all_overrides()` and `_kind_walk()`: a suffix filter over ONE
+        # named path is a second opinion about a file somebody declared.
+        if (ROOT / root).is_file():
+            if root in tracked:
+                paths.add(root)
+                walked_per_root[root] += 1
+            continue
         for p in tracked:
             if not p.startswith(root + "/") or not p.endswith(suffix):
                 continue
@@ -4669,6 +5045,47 @@ def selftest_inputs() -> int:
 # current one on this tree. The drawer (`quality/local/rules.yaml`) contributes
 # the namespace a product block is spelled with, and nothing else.
 #
+# WHICH FILE IS THE TEMPLATE SIDE (HOTFIX-RULEMAP-2, the same consumer, one
+# release later). The sentence above — "the TEMPLATE's current one on this
+# tree" — was the defect, and it was a defect IN THE WRONG DIRECTION: CHANGELOG
+# § [2.1.2] item 2 sent a product here AFTER `git merge`, and on that tree
+# `quality/rules.yaml` is THE MERGE RESULT — the product's names at the
+# product's numbers — not the release's. Measured on the consumer's own
+# worktree, same previous file: the merged file as the template side printed
+# `unchanged; nothing to renumber` for rule after rule at exit 0, UNMATCHED
+# empty, a map with nothing to do; the RELEASE's own file printed twelve
+# renames and twenty-seven fixture findings. NOTHING IN THE OUTPUT
+# DISTINGUISHED THE TWO. So:
+#
+#   the template side is an argument — `--fold-map <previous> [<template>]` —
+#   and the header line NAMES THE PATH it used and whether it was given;
+#   with no second argument the tree's file is used as before, and TWO TEETH
+#   refuse (exit 2) the states in which that file is not a release file;
+#   the fixture BYTES are a third road, `--template-tree <dir>`, because a
+#   rules.yaml alone cannot carry them — and without it the FIXTURES section
+#   SAYS IN ITS OWN HEADER that it is a lower bound.
+#
+# THE TEETH, AND WHY NEITHER IS "THE SAME NAME AT A DIFFERENT NUMBER". That
+# predicate is the healthy case — a template rule at a drifted number IS a
+# shared name at two ids, and refusing it would refuse the two-argument road
+# this hotfix exists to open. And the consumer's own measured run had NO such
+# pair: every shared name sat at the same id (those were the `unchanged` lines)
+# and the rest were absent from the merged file altogether. So the tooth is the
+# whole comparison, not one half of it:
+#
+#   TOOTH A — the tree's `quality/rules.yaml` is not the SAME RULE SET as the
+#   previous file: some name at a different id, a name in one and not the
+#   other, either direction. A pre-merge tree passes it because there the two
+#   files ARE the same file (which is also the template's own steady state, and
+#   the one-argument form's only honest use); a merged tree never does, because
+#   a merge that changed nothing is a fold with nothing to map.
+#   TOOTH B — `quality/local/rules.yaml` already carries a rule under the
+#   namespace whose NAME still sits in the template side at a bare integer: a
+#   rule the product namespaced that is the template's after all. Not the same
+#   predicate as A (its input is the drawer, not the previous file) and it
+#   fires where A is silent, so it is a second clause of one function rather
+#   than a second function.
+#
 # THE FIFTH PLACE. Item 7 names four places a rule id is written: the id, the
 # fixture directory, the valve and the check tag. There is a FIFTH, and it is
 # the one a renumber reds on: a rule declaring `django_check_ids:` has that id
@@ -4708,6 +5125,149 @@ def _fold_map_rules(path: Path) -> tuple[list[dict], str]:
     if not isinstance(raw, list) or not all(isinstance(r, dict) for r in raw):
         return [], f"{path}: `rules:` is not a list of rule mappings"
     return raw, ""
+
+
+def _fold_map_local_rules(tree: Path) -> list[dict]:
+    """The drawer's `rules:` on the GIVEN tree — absent is empty, never a raise.
+
+    `LOCAL_RULES` is the module-level read of ROOT's drawer; this one takes the
+    tree as an argument for the reason every other input to this reader does:
+    the state tooth B exists for is one no template checkout is ever in, so a
+    drive has to be able to build it somewhere else. A drawer nobody can parse
+    is empty HERE and could-not-look in `consistency()`, which owns that
+    refusal — two opinions about one file is the thing principle 9 forbids.
+    """
+    try:
+        doc = yaml.safe_load((tree / "quality" / "local" / "rules.yaml").read_text())
+    except (OSError, yaml.YAMLError):
+        return []
+    if not isinstance(doc, dict):
+        return []
+    raw = doc.get("rules")
+    if not isinstance(raw, list):
+        return []
+    return [r for r in raw if isinstance(r, dict)]
+
+
+def _by_name(rules: list[dict]) -> dict[str, str]:
+    """name -> id, first occurrence wins, nameless skipped."""
+    out: dict[str, str] = {}
+    for rule in rules:
+        name = str(rule.get("name") or "").strip()
+        if name:
+            out.setdefault(name, str(rule.get("id", "")).strip())
+    return out
+
+
+def _fold_map_drawer_pairs(
+    local_rules: list[dict], template_by_name: dict[str, str]
+) -> list[tuple[str, str, str]]:
+    """(name, the id the drawer gives it, the integer id the template side does).
+
+    A rule the product has ALREADY namespaced whose name the template side
+    still carries at a bare integer is the first of the two silent directions
+    in this reader's header: a template rule parked under a product namespace
+    stops being folded. It is a REFUSAL when the template side was taken from
+    the tree (the file may be a merge result, so the reader cannot tell which
+    of the two files is wrong) and a FINDING when the release's own file was
+    handed in (there the answer is certain: the drawer is wrong).
+    """
+    out: list[tuple[str, str, str]] = []
+    for rule in local_rules:
+        name = str(rule.get("name") or "").strip()
+        if not name:
+            continue
+        there = template_by_name.get(name)
+        if there is not None and there.isdigit():
+            out.append((name, str(rule.get("id", "")).strip(), there))
+    return out
+
+
+def _fold_map_remedy(tree: Path) -> list[str]:
+    """The two-argument road, with the tag left as a PLACEHOLDER.
+
+    WHY A PLACEHOLDER AND NOT `TEMPLATE_VERSION`, WHICH IS RIGHT THERE. The
+    census hotfix in this same release paid for this: the checkout's own
+    version answers a DIFFERENT question on either side of the merge — before
+    it, the release you are LEAVING; after it, the one you just folded — and
+    this refusal fires on both trees, so a derived tag would be confidently
+    wrong half the time, which is worse than a blank a reader fills in. The
+    reading is still handed over, on its own line and LABELLED as this
+    checkout's, because a datum a reader can judge is worth having and a datum
+    pasted into a command is not.
+    """
+    out = [
+        "  Take the RELEASE's own file and hand it in as the second argument:",
+        "    git show v<the release you are folding>:quality/rules.yaml > /tmp/template-rules.yaml",
+        "    python -m quality.gate --fold-map <previous rules.yaml> /tmp/template-rules.yaml",
+        "  and add `--template-tree <a git worktree or git archive of that tag>` if you want "
+        "the FIXTURES section at full strength — the rules.yaml alone cannot carry bytes.",
+    ]
+    try:
+        version = (tree / "TEMPLATE_VERSION").read_text().strip()
+    except OSError:
+        version = ""
+    if version:
+        out.append(
+            f"  The tag is a placeholder on purpose: THIS CHECKOUT's TEMPLATE_VERSION reads "
+            f"{version}, which after the merge is the release you just folded and before it is "
+            "the one you are leaving — this refusal fires on both trees, so the reader names "
+            "the number rather than pasting it into the command."
+        )
+    return out
+
+
+def _fold_map_template_side_problems(
+    *, previous: list[dict], template_rules: list[dict], local_rules: list[dict]
+) -> list[str]:
+    """The two teeth on an IMPLICIT template side — empty when it looks like a release.
+
+    Read the header block above for why neither tooth is "the same name at a
+    different number". A is the whole comparison of two rule sets; B is the
+    drawer's own contradiction. Both are printed here; the caller refuses.
+    """
+    problems: list[str] = []
+    prev_by_name = _by_name(previous)
+    template_by_name = _by_name(template_rules)
+    drifted = [
+        (n, i, template_by_name[n])
+        for n, i in prev_by_name.items()
+        if n in template_by_name and template_by_name[n] != i
+    ]
+    only_previous = [n for n in prev_by_name if n not in template_by_name]
+    only_template = [n for n in template_by_name if n not in prev_by_name]
+    total = len(drifted) + len(only_previous) + len(only_template)
+    if total:
+        if drifted:
+            name, old, new = drifted[0]
+            problems.append(
+                f"`{name}` is `{old}` in the previous file and `{new}` in this tree's "
+                "quality/rules.yaml"
+            )
+        if only_previous:
+            problems.append(
+                f"`{only_previous[0]}` is in the previous file and NOT in this tree's "
+                "quality/rules.yaml"
+            )
+        if only_template:
+            problems.append(
+                f"`{only_template[0]}` is in this tree's quality/rules.yaml and NOT in the "
+                "previous file"
+            )
+        problems.append(
+            f"{total} rule name(s) differ in all — the previous file and this tree's "
+            "quality/rules.yaml are not the same rule set: this is your merged tree, or a "
+            "release checkout that is not your pre-merge tree — either way hand the release's "
+            "file in as the second argument"
+        )
+    for name, mine, theirs in _fold_map_drawer_pairs(local_rules, template_by_name):
+        problems.append(
+            f"`{name}` is in your drawer as `{mine}` AND in this tree's quality/rules.yaml at "
+            f"the template integer `{theirs}` — a rule you namespaced that is the template's "
+            "after all, which is the direction that stops being folded"
+        )
+        break
+    return problems
 
 
 def _fold_map_fixture_paths(rules: list[dict], root: Path) -> set[Path]:
@@ -4903,6 +5463,12 @@ def fold_map_lines(
     """
     if namespace is ...:
         namespace = RULE_ID_NAMESPACE
+    # WAS THE TEMPLATE SIDE GIVEN, OR TAKEN? Captured BEFORE the defaults fill
+    # it in, because every sentence below turns on it: the header says which,
+    # the two teeth run only on the taken one, and the FIXTURES section
+    # declares itself a lower bound whenever the bytes came from this tree.
+    template_given = template_path is not None or template_rules is not None
+    template_root_given = template_root is not None
     if template_path is None:
         template_path = tree / "quality" / "rules.yaml"
     if template_root is None:
@@ -4933,6 +5499,30 @@ def fold_map_lines(
             lines.append(f"  !! {previous_path}: rule {rid} declares no `name:`")
         return 2, lines
 
+    local_rules = _fold_map_local_rules(tree)
+    if not template_given:
+        # THE TEETH. They run ONLY here: with an explicit second argument the
+        # caller has said which file is the release's, and a reader that
+        # second-guessed that would refuse the road this hotfix exists to open.
+        side_problems = _fold_map_template_side_problems(
+            previous=previous, template_rules=template_rules, local_rules=local_rules
+        )
+        if side_problems:
+            lines.append(
+                "‼ --fold-map COULD NOT LOOK (exit 2). The template side was TAKEN from this "
+                f"tree ({template_path}) because no second argument was given, and that file "
+                "is not a template RELEASE file:"
+            )
+            lines.extend(f"  !! {p}" for p in side_problems)
+            lines.append(
+                "  AFTER `git merge`, quality/rules.yaml IS THE MERGE RESULT — your names at "
+                "your numbers — so a map built against it renames the TEMPLATE's rules into "
+                "your namespace and leaves YOURS on template integers: the exact failure this "
+                "reader exists to prevent, printed as a clean map at exit 0."
+            )
+            lines.extend(_fold_map_remedy(tree))
+            return 2, lines
+
     template_by_name: dict[str, str] = {}
     for rule in template_rules:
         name = str(rule.get("name") or "").strip()
@@ -4940,7 +5530,10 @@ def fold_map_lines(
             template_by_name.setdefault(name, str(rule.get("id", "")))
 
     ships = _fold_map_template_files(template_rules, template_root)
-    lines.append(f"fold map · previous {previous_path} · template {template_path}")
+    lines.append(
+        f"fold map · previous {previous_path} · template side {template_path} "
+        + ("(GIVEN)" if template_given else "(TAKEN from this tree — no second argument)")
+    )
     lines.append(
         f"matched BY NAME, never by number · {len(previous)} rule(s) in the previous file · "
         f"{len(template_rules)} in the template's"
@@ -4985,10 +5578,38 @@ def fold_map_lines(
         )
         lines.append("")
 
+    drawer_pairs = _fold_map_drawer_pairs(local_rules, template_by_name)
+    if drawer_pairs:
+        # The same pairs tooth B refuses on, printed as FINDINGS because here
+        # the release's own file was handed in: with that file certain, the
+        # drawer is the side that is wrong, and the reader can say so.
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.append("DRAWER — namespaced in quality/local/rules.yaml, and still the TEMPLATE's:")
+        for name, mine, theirs in drawer_pairs:
+            lines.append(
+                f"  {mine} → {theirs}  {name} — the release carries this name at the template "
+                f"integer {theirs}, so it is not yours to namespace: delete `{mine}` from the "
+                "drawer (and its fixtures under quality/local/) and take the template's copy"
+            )
+
     findings = _fold_map_fixture_findings(template_rules, tree=tree, template_root=template_root)
     if lines and lines[-1] != "":
         lines.append("")
     lines.append("FIXTURES — bytes the template ships, found at another path on this tree:")
+    if not template_root_given:
+        # A SILENT LOWER BOUND IS NOT ACCEPTABLE. The inventory's paths come
+        # from the template side's rules, but the BYTES can only be read off a
+        # tree, and with no `--template-tree` that tree is this one — which
+        # after a merge holds the merge result, so a template fixture the merge
+        # overwrote in place reads as at home and a release path this tree does
+        # not have degrades to a NAME MATCH.
+        lines.append(
+            f"  A LOWER BOUND — the fixture BYTES were read from THIS TREE ({template_root}), "
+            "not from a checkout of the release, so a template fixture the merge overwrote in "
+            "place reads as at home. `--template-tree <a git worktree or git archive of the "
+            "tag>` is what makes this section complete."
+        )
     if findings:
         for finding in findings:
             lines.append(f"  {finding}")
@@ -5087,9 +5708,22 @@ def _fold_map_product_block(rule: dict, *, old: str, ns: str, name: str) -> list
     return out
 
 
-def fold_map(previous: str) -> int:
-    """`--fold-map <previous rules.yaml>`, printed. 0 with the map · 2 could-not-look."""
-    rc, lines = fold_map_lines(Path(previous))
+def fold_map(previous: str, template: str | None = None, template_tree: str | None = None) -> int:
+    """`--fold-map <previous> [<template>] [--template-tree <dir>]`, printed.
+
+    0 with the map · 2 could-not-look. `--template-tree` alone is enough: a
+    checkout of the tag carries its own `quality/rules.yaml`, so naming the
+    tree names the file, and the two-argument form stays the short road for a
+    reader who only has the yaml.
+    """
+    root = Path(template_tree) if template_tree else None
+    if template is not None:
+        template_path: Path | None = Path(template)
+    elif root is not None:
+        template_path = root / "quality" / "rules.yaml"
+    else:
+        template_path = None
+    rc, lines = fold_map_lines(Path(previous), template_path=template_path, template_root=root)
     for line in lines:
         say(line)
     return rc
@@ -5467,11 +6101,18 @@ def memo_components(rule: dict) -> tuple[dict[str, str], str]:
     for root in (str(r) for r in (kind.get("roots") or [])):
         if not (ROOT / root).exists():
             continue
-        here = [
-            p
-            for p in names
-            if p.startswith(root + "/") and p.endswith(suffixes) and not (skip & set(Path(p).parts))
-        ]
+        if (ROOT / root).is_file():
+            # A FILE ROOT IS ITS OWN WALK, and a suffix filter over one named
+            # path would be a second opinion about a file somebody declared.
+            here = [root] if root in names else []
+        else:
+            here = [
+                p
+                for p in names
+                if p.startswith(root + "/")
+                and p.endswith(suffixes)
+                and not (skip & set(Path(p).parts))
+            ]
         if not here:
             return {}, (
                 f"the walk root {root!r} is on this tree and holds no file of any suffix its "
@@ -6039,6 +6680,14 @@ def inputs_census() -> None:
         for p in (ROOT / str(root)).rglob(f"*{suffix}")
         if not (W.kind_skip_dirs(kind) & set(p.relative_to(ROOT).parts))
     ]
+    # A FILE ROOT is its own member of the walk — see `all_overrides`. Dead on a
+    # tree with no drawer, for the same reason the branch there is.
+    walked.extend(
+        root
+        for kind in SCOPE_KINDS.values()
+        for root in (str(r) for r in (kind.get("roots") or []))
+        if (ROOT / root).is_file()
+    )
     tracked_now = _tracked_paths()[0]
     populations = {
         "the engine's own text": ["quality/rules.yaml", "quality/gate.py"],
@@ -6228,13 +6877,16 @@ def live_scan(diff_ref: str | None, *, terse: bool = False) -> None:
 #: list is exactly how a flag comes to exist that no refusal mentions.
 GRAMMAR = (
     "quality.gate takes --selftest, --selftest-inputs, --diff <ref>, "
-    "--fold-map <previous rules.yaml>, --terse, --explain [<id>] or --rules"
+    "--fold-map <previous rules.yaml> [<template rules.yaml>] [--template-tree <dir>], "
+    "--terse, --explain [<id>] or --rules"
 )
 
 
 def main(argv: list[str]) -> int:
     diff_ref: str | None = None
     fold_map_previous: str | None = None
+    fold_map_template: str | None = None
+    fold_map_template_tree: str | None = None
     mode = "scan"
     terse = False
     explain_id: str | None = None
@@ -6276,10 +6928,33 @@ def main(argv: list[str]) -> int:
                 )
                 return 2
             mode, fold_map_previous = "fold-map", args.pop(0)
+            # THE SECOND PATH IS THE TEMPLATE SIDE, AND IT IS OPTIONAL. Taking
+            # it positionally rather than behind a flag is what keeps the
+            # refusals' one-line remedy a line somebody pastes; a following
+            # FLAG is still a flag, by the same test the first argument uses.
+            if args and not args[0].startswith("-"):
+                fold_map_template = args.pop(0)
+        elif arg == "--template-tree":
+            if not args or args[0].startswith("-"):
+                say("‼ --template-tree needs a directory. " + GRAMMAR)
+                return 2
+            fold_map_template_tree = args.pop(0)
         else:
             # A mistyped flag must never be a silently different run.
             say(f"‼ unknown argument {arg!r}: " + GRAMMAR)
             return 2
+
+    if fold_map_template_tree is not None and mode != "fold-map":
+        # A flag that only means something to one mode must never be a silently
+        # ignored flag in another: the same law `--tesre` is refused under. THE
+        # `mode` CLAUSE IS THE POINT AND IT WAS MISSING (F1, HOTFIX-RULEMAP-2F):
+        # without it this guard fired on the one mode the flag EXISTS for, so
+        # `--template-tree` was reachable from the function and dead from the
+        # command line — the shape a pytest suite that calls `fold_map_lines`
+        # and never `main` cannot see, which is why the case that pins it is an
+        # sh probe through `main`s own argv dispatch.
+        say("‼ --template-tree is only meaningful with --fold-map. " + GRAMMAR)
+        return 2
 
     # THE FOUR READERS RETURN BEFORE ANYTHING MEASURES. `--explain`, the
     # listing, `--selftest-inputs` and `--fold-map` read the parsed yaml and the
@@ -6300,7 +6975,7 @@ def main(argv: list[str]) -> int:
         # and whose consistency may be broken precisely BECAUSE the ids
         # collided. A reader that refused to answer there would be a reader
         # nobody could use on the only day they need it.
-        return fold_map(str(fold_map_previous))
+        return fold_map(str(fold_map_previous), fold_map_template, fold_map_template_tree)
 
     # BEFORE ANYTHING MEASURES ANYTHING. A tree carrying a dead run's fixtures
     # is a tree every leg below would read wrongly, and the failure is silent in

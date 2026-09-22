@@ -7742,6 +7742,17 @@ rules:
       where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { files_scanned: 1 }
+    # THE FINDING CLASSES THIS RULE EMITS, DECLARED AND MEASURED AT ZERO.
+    # Not a backlog: the template's own frontend has none of these, and a
+    # recorded 0 is a MEASUREMENT where an absent key is silence (ADR gate-6
+    # (b)). Declaring them is what gives a PRODUCT somewhere to record its
+    # own count for them — `quality/local/rules.yaml`'s `ratchets:` accepts a
+    # class a template rule declares here, and its number is ADDED to this
+    # one rather than replacing it. Before the declaration existed the drawer
+    # could only name an app, and a product folding this rule with a real
+    # backlog was told its class `literal` was not a directory under apps/.
+    ratchets:
+      literal: 0
     does_not_cover: >
       ENTROPY, DELIBERATELY. The instrument reads NAMES, so a credential bound
       to a name that claims nothing — `const k = "…"` — is invisible to it, and
@@ -7866,6 +7877,18 @@ rules:
             module's document shapes go to screens DIRECTLY under the
             statement's type-only clause rather than through here.
     floors: { files_scanned: 1 }
+    # THE FINDING CLASSES THIS RULE EMITS, DECLARED AND MEASURED AT ZERO.
+    # Not a backlog: the template's own frontend has none of these, and a
+    # recorded 0 is a MEASUREMENT where an absent key is silence (ADR gate-6
+    # (b)). Declaring them is what gives a PRODUCT somewhere to record its
+    # own count for them — `quality/local/rules.yaml`'s `ratchets:` accepts a
+    # class a template rule declares here, and its number is ADDED to this
+    # one rather than replacing it. Before the declaration existed the drawer
+    # could only name an app, and a product folding this rule with a real
+    # backlog was told its class `literal` was not a directory under apps/.
+    ratchets:
+      api-reach: 0
+      upward-import: 0
     does_not_cover: >
       RENDERING — whether a screen assembled through a legal import chain
       actually PRODUCES the right pixels is the W3 census's job, never this
@@ -8036,6 +8059,17 @@ rules:
       where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { files_scanned: 1 }
+    # THE FINDING CLASSES THIS RULE EMITS, DECLARED AND MEASURED AT ZERO.
+    # Not a backlog: the template's own frontend has none of these, and a
+    # recorded 0 is a MEASUREMENT where an absent key is silence (ADR gate-6
+    # (b)). Declaring them is what gives a PRODUCT somewhere to record its
+    # own count for them — `quality/local/rules.yaml`'s `ratchets:` accepts a
+    # class a template rule declares here, and its number is ADDED to this
+    # one rather than replacing it. Before the declaration existed the drawer
+    # could only name an app, and a product folding this rule with a real
+    # backlog was told its class `literal` was not a directory under apps/.
+    ratchets:
+      barrel: 0
     does_not_cover: >
       RENDERING — whether removing a barrel changes what a screen produces is
       the W3 census's job, never this static instrument's. A BARREL HIDING
@@ -8101,6 +8135,18 @@ rules:
       where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
     scope: {}
     floors: { files_scanned: 1 }
+    # THE FINDING CLASSES THIS RULE EMITS, DECLARED AND MEASURED AT ZERO.
+    # Not a backlog: the template's own frontend has none of these, and a
+    # recorded 0 is a MEASUREMENT where an absent key is silence (ADR gate-6
+    # (b)). Declaring them is what gives a PRODUCT somewhere to record its
+    # own count for them — `quality/local/rules.yaml`'s `ratchets:` accepts a
+    # class a template rule declares here, and its number is ADDED to this
+    # one rather than replacing it. Before the declaration existed the drawer
+    # could only name an app, and a product folding this rule with a real
+    # backlog was told its class `literal` was not a directory under apps/.
+    ratchets:
+      consumed-undeclared: 0
+      declared-unread: 0
     does_not_cover: >
       RENDERING — whether a declared, consumed, syntactically fine token
       actually resolves to a real value in the cascade is a RENDERED fact

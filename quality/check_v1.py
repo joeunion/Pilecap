@@ -172,6 +172,7 @@ def invoke(
     roots: list[str],
     where: str,
     timeout: int = DEFAULT_TIMEOUT,
+    remedy: str = "",
 ) -> CheckResult:
     """Run the runner over `root` and read its reply, or refuse.
 
@@ -185,6 +186,14 @@ def invoke(
     scope" and "what the instrument scanned" cannot be two lists that drift.
     A runner that took its roots from its own configuration would be deciding
     its rule's subject, which is a verdict semantic wearing a file path.
+
+    `remedy` is one sentence the caller knows and this module does not: WHICH
+    declaration would widen the roots, in the file the caller's rule is written
+    in. It rides only on the out-of-roots refusal, because that is the one
+    refusal whose cause can be "the rule is about something its kind cannot
+    name" rather than "the instrument is broken" — and a refusal that says the
+    scope is wrong without saying where the scope is declared sends a product
+    to the template-owned file a fold overwrites.
     """
     program = resolve_runner(root, argv)
     command = [program, *argv[1:], *roots]
@@ -215,10 +224,10 @@ def invoke(
             f"clean.\n      stdout: {proc.stdout.strip()[-400:]!r}"
             f"\n      stderr: {proc.stderr.strip()[-400:]!r}",
         )
-    return parse(proc.stdout, roots=roots, where=where)
+    return parse(proc.stdout, roots=roots, where=where, remedy=remedy)
 
 
-def parse(payload: str, *, roots: list[str], where: str) -> CheckResult:
+def parse(payload: str, *, roots: list[str], where: str, remedy: str = "") -> CheckResult:
     """A runner's stdout as a CheckResult, or a refusal naming the malformation.
 
     Split out from `invoke` deliberately: the parsing half is a pure function of
@@ -261,7 +270,7 @@ def parse(payload: str, *, roots: list[str], where: str) -> CheckResult:
         )
     result = CheckResult()
     _read_targets(reply.get("targets"), result=result, where=where)
-    _read_findings(reply.get("findings"), result=result, roots=roots, where=where)
+    _read_findings(reply.get("findings"), result=result, roots=roots, where=where, remedy=remedy)
     return result
 
 
@@ -295,7 +304,9 @@ def _read_targets(raw: Any, *, result: CheckResult, where: str) -> None:
         result.count(key, value)
 
 
-def _read_findings(raw: Any, *, result: CheckResult, roots: list[str], where: str) -> None:
+def _read_findings(
+    raw: Any, *, result: CheckResult, roots: list[str], where: str, remedy: str = ""
+) -> None:
     """`findings` into the CheckResult, or a refusal naming what is wrong with one."""
     if not isinstance(raw, list):
         raise _refuse(
@@ -306,10 +317,14 @@ def _read_findings(raw: Any, *, result: CheckResult, roots: list[str], where: st
             "grammar is not saying the tree is clean",
         )
     for index, item in enumerate(raw):
-        result.findings.append(_read_finding(item, index=index, roots=roots, where=where))
+        result.findings.append(
+            _read_finding(item, index=index, roots=roots, where=where, remedy=remedy)
+        )
 
 
-def _read_finding(item: Any, *, index: int, roots: list[str], where: str) -> Finding:
+def _read_finding(
+    item: Any, *, index: int, roots: list[str], where: str, remedy: str = ""
+) -> Finding:
     at = f"findings[{index}]"
     if not isinstance(item, dict):
         raise _refuse(
@@ -345,11 +360,13 @@ def _read_finding(item: Any, *, index: int, roots: list[str], where: str) -> Fin
         raise _refuse("finding-bad-type", where, f"{at}.msg is {msg!r}, not a message")
     if not isinstance(klass, str):
         raise _refuse("finding-bad-type", where, f"{at}.klass is {klass!r}, not a class name")
-    _refuse_outside_roots(path, index=index, roots=roots, where=where)
+    _refuse_outside_roots(path, index=index, roots=roots, where=where, remedy=remedy)
     return Finding(path, line, msg, klass)
 
 
-def _refuse_outside_roots(path: str, *, index: int, roots: list[str], where: str) -> None:
+def _refuse_outside_roots(
+    path: str, *, index: int, roots: list[str], where: str, remedy: str = ""
+) -> None:
     """A finding must land inside the roots the rule pointed the runner at.
 
     THE SUBJECT IS SCOPE, NOT TIDINESS. A rule's roots are what its floors are
@@ -377,5 +394,5 @@ def _refuse_outside_roots(path: str, *, index: int, roots: list[str], where: str
         where,
         f"findings[{index}].path {path!r} is outside the roots this rule declares "
         f"({', '.join(roots) or 'none'}) — a runner may only report about what it was "
-        "pointed at",
+        "pointed at" + (f". {remedy}" if remedy else ""),
     )

@@ -22,7 +22,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: CLAUDE.md apps/ config/ frontend/src/components quality/ scripts/kill_mine.sh scripts/queue_cited.sh scripts/sweep.sh
-# cites: docs/product/architecture.md
+# cites: docs/product/architecture.md .env.example
 # The drive for the LEGIBLE RED — `quality/gate.py`'s per-rule trailer, its two
 # readers (`--explain <id>` and the listing `--rules` aliases), and `--terse`.
 #
@@ -502,6 +502,13 @@ probes = [
     ("fold-map-bare", ["--fold-map"]),
     ("fold-map-flag-next", ["--fold-map", "--rules"]),
     ("fold-map-self", ["--fold-map", "quality/rules.yaml"]),
+    # HOTFIX-RULEMAP-2. The TEMPLATE SIDE is an argument now, so the two
+    # ways of typing it wrongly are part of the same grammar: a second path
+    # that is not a file, and `--template-tree` with no --fold-map to be
+    # meaningful to.
+    ("fold-map-second-missing", ["--fold-map", "quality/rules.yaml", "no-such-template.yaml"]),
+    ("template-tree-orphan", ["--template-tree", "."]),
+    ("fold-map-with-tree", ["--fold-map", "quality/rules.yaml", "--template-tree", "."]),
 ]
 for name, argv in probes:
     rc, text = gate._captured(list(argv))
@@ -1549,6 +1556,61 @@ case_fold_map_of_this_tree_against_itself_has_nothing_to_do() {
     fi
 }
 
+# HOTFIX-RULEMAP-2. The grammar sentence is where a reader learns the template
+# side can be TYPED — and until it could be, `--fold-map` on a merged tree read
+# the merge result as the release and printed a clean map of nothing.
+case_the_grammar_names_the_two_argument_fold_map() {
+    reader_probe unknown-flag
+    CURRENT="case_the_grammar_names_the_two_argument_fold_map"
+    if grep -q -- '--fold-map <previous rules.yaml> \[<template rules.yaml>\]' "$OUT" &&
+        grep -q -- '--template-tree <dir>' "$OUT"; then
+        ok "the grammar names the template side as an argument and --template-tree beside it"
+    else
+        bad "the grammar sentence does not name the two-argument --fold-map (see ${OUT})"
+    fi
+}
+
+# A SECOND PATH THAT IS NOT A FILE IS COULD-NOT-LOOK, never an empty template
+# side: a map built from half its inputs is a rename list somebody would paste.
+case_fold_map_second_argument_that_is_not_a_file_is_exit_2() {
+    reader_probe fold-map-second-missing
+    CURRENT="case_fold_map_second_argument_that_is_not_a_file_is_exit_2"
+    if [ "$RC" = "2" ] &&
+        grep -q 'COULD NOT LOOK' "$OUT" &&
+        grep -q 'no-such-template.yaml' "$OUT"; then
+        ok "a template side nobody can read is exit 2 naming the file"
+    else
+        bad "--fold-map with an unreadable second path exited ${RC} (see ${OUT})"
+    fi
+}
+
+# F1 (HOTFIX-RULEMAP-2F). THE GUARD ABOVE FIRED ON THE ONE MODE THE FLAG EXISTS
+# FOR: `--template-tree` was reachable from `fold_map_lines()` and DEAD from the
+# command line, and the pytest module could not see it because all nineteen of
+# its cases call the function and none of them calls `main`. This probe goes
+# through `main`s own argv dispatch, which is the only place the defect lived.
+case_template_tree_inside_fold_map_is_the_road_it_exists_for() {
+    reader_probe fold-map-with-tree
+    CURRENT="case_template_tree_inside_fold_map_is_the_road_it_exists_for"
+    if [ "$RC" = "0" ] && ! grep -q 'only meaningful' "$OUT"; then
+        ok "--fold-map <previous> --template-tree <dir> runs: the flag is reachable from the CLI"
+    else
+        bad "--fold-map with --template-tree exited ${RC} — the flag is dead from the command line (see ${OUT})"
+    fi
+}
+
+# A flag that means something to one mode must never be silently ignored in
+# another — the same law `--tesre` is refused under.
+case_template_tree_without_fold_map_is_exit_2() {
+    reader_probe template-tree-orphan
+    CURRENT="case_template_tree_without_fold_map_is_exit_2"
+    if [ "$RC" = "2" ] && grep -q 'only meaningful with --fold-map' "$OUT"; then
+        ok "--template-tree outside --fold-map is refused rather than ignored"
+    else
+        bad "--template-tree with no --fold-map exited ${RC} (see ${OUT})"
+    fi
+}
+
 # --- the flag ----------------------------------------------------------------
 
 case_terse_keeps_the_count_and_drops_only_the_ok_lines() {
@@ -2130,19 +2192,28 @@ sys.exit(0 if ok else 1)
 # `namespace_leg`'s fixture-directory canary's shape (quality/gate.py): the
 # victim is created by the probe, never found on the tree.
 
-case_a_drawer_ratchet_may_not_raise_a_template_ceiling() {
-    forge "case_a_drawer_ratchet_may_not_raise_a_template_ceiling" '
+case_a_drawer_ratchet_adds_to_a_template_class_and_never_replaces_it() {
+    forge "case_a_drawer_ratchet_adds_to_a_template_class_and_never_replaces_it" '
 import pathlib
 import sys
 sys.argv = ["gate"]
 from quality import gate
 
-# THE DEFECT THIS CASE EXISTS FOR. A drawer that named a class the TEMPLATE
-# already records used to MERGE — `nonconforming: 0` became `nonconforming: 99`
-# — and the only thing printed was a note. The ceiling of a template rule had
-# been raised from a file the template never reads, which is exactly what the
-# drawer is not allowed to do. So both halves are asserted: the refusal, AND
-# that the recorded number did not move.
+# THE DEFECT THIS CASE EXISTS FOR, IN TWO ACTS. A drawer that named a class
+# the TEMPLATE already records used to MERGE — `nonconforming: 0` became
+# `nonconforming: 99` — and the only thing printed was a note: the template'"'"'s
+# own recorded number was ERASED from a file the template never reads. D1
+# closed it by refusing the class outright, and that refusal turned out to be
+# too wide: rules 50-53 ratchet per FINDING class, so a product with a real
+# backlog in `literal` was told its class was not a directory under `apps/`
+# and had nowhere to record it at all (HOTFIX-DRAWER-1, from the first
+# consumer'"'"'s fold).
+#
+# SO THE LAW IS ADDITION. A drawer class that a template rule DECLARES is
+# accepted and its count is ADDED to the template'"'"'s; the template'"'"'s own number
+# survives, which is the half that was ever actually at stake. A class that is
+# neither an app on this tree nor one the rule declares is still refused, and
+# still does not move the ceiling.
 target = next(str(r["id"]) for r in gate.RULES if (r.get("ratchets") or {}))
 rule = gate.RULES_BY_ID[target]
 before = dict(rule.get("ratchets") or {})
@@ -2158,7 +2229,7 @@ def merge(classes):
     rule["ratchets"] = dict(before)
     return out, after
 
-restated, after_restated = merge({already: 99})
+declared, after_declared = merge({already: 99})
 no_app, after_no_app = merge({"acme_nowhere.read": 3})
 
 made = pathlib.Path(gate.ROOT) / "apps" / product_app
@@ -2168,26 +2239,26 @@ try:
 finally:
     made.rmdir()
 
-print("restated:", restated)
-print("  ceiling after:", after_restated.get(already), "was", before.get(already))
+print("a class the rule declares:", declared)
+print("  ceiling after:", after_declared.get(already), "was", before.get(already))
 print("no such app:", no_app)
 print("a real product app:", allowed, "->", after_allowed.get(f"{product_app}.read"))
 sys.exit(0 if (
-    len(restated) == 1
-    and already in restated[0]
-    and "TEMPLATE rule" in restated[0]
-    and after_restated == before
+    not declared
+    and after_declared.get(already) == int(before.get(already, 0)) + 99
     and len(no_app) == 1
     and "acme_nowhere" in no_app[0]
+    and "TEMPLATE rule" in no_app[0]
+    and already in no_app[0]
     and after_no_app == before
     and not allowed
     and after_allowed.get(f"{product_app}.read") == 3
 ) else 1)
 '
     if [ "$RC" = "0" ]; then
-        ok "a drawer class restating one a TEMPLATE rule already records is refused AND not merged (the ceiling does not move); so is one whose app is no directory under apps/; a real product app's class records"
+        ok "a drawer class naming one a TEMPLATE rule DECLARES is accepted and ADDED to the template's number (never replacing it); a class that is neither an app on this tree nor one the rule declares is refused, names the rule's declared classes, and does not move the ceiling; a real product app's class records"
     else
-        bad "the drawer raised or restated a template rule's recorded ceiling, or refused a product app that belongs there (see ${OUT})"
+        bad "the drawer replaced a template rule's recorded number, or refused a class that rule declares, or accepted one that is neither (see ${OUT})"
     fi
 }
 
@@ -2652,6 +2723,266 @@ sys.exit(0 if ok else 1)
     fi
 }
 
+# THE FIFTH DRAWER KEY, driven end to end. `case_a_drawer_rule_is_a_rule_end_to_end`
+# above proves a product RULE is a rule; this proves a product's rule may be
+# ABOUT the product's own files. The template declares two scope kinds — `py`
+# (apps, config) and `js` (frontend) — so before `scope_kinds:` was the
+# drawer's fifth key a rule whose subject was a ledger, a doc or a
+# `.env.example` had no kind to name and `check_v1._refuse_outside_roots`
+# refused its runner's every finding. The first consumer of v2.1.2 met exactly
+# that on four rules, and the refusal it pasted is the one this case drives
+# from both sides: SILENT with the kind declared, and REFUSED WITH THE REMEDY
+# when the same rule is pointed back at a template kind.
+case_a_product_scope_kind_points_a_drawer_rule_at_its_own_files() {
+    CURRENT=case_a_product_scope_kind_points_a_drawer_rule_at_its_own_files
+    N=$((N + 1))
+    OUT="${WORK}/drawerkind${N}.log"
+    RC=0
+    if [ -e quality/local ]; then
+        cannot_look "quality/local/ already exists in this checkout — this case plants one and will not overwrite yours"
+    fi
+    # THE PLANT SITES ARE TWO FILES THIS TREE ALREADY HAS, appended to and
+    # restored in a `finally` — the idiom `case_a_drawer_rule_is_a_rule_end_to_end`
+    # uses one file over. A plant that CREATED a new `docs/…md` would be a
+    # docs pointer spelled in this drive and absent from the tree, which the
+    # `dangling-docs` leg correctly reds; widening that leg's one exemption so
+    # a drive could name a file it deletes would be the census bending for its
+    # own driver.
+    [ -f docs/product/architecture.md ] || cannot_look "docs/product/architecture.md is not in this tree — the drawer kind's plant has no home"
+    # DERIVED, NEVER TYPED, for the reason the case above states in full.
+    local through
+    through="$(
+        uv run python -c '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+gate.namespace_leg()
+' 2>/dev/null | sed -n 's/.*integers minted through \([0-9][0-9]*\).*/\1/p' | tail -1
+    )"
+    case "$through" in
+    "" | *[!0-9]*)
+        cannot_look "the template's high-water rule id could not be read from namespace_leg()'s own line (got '${through}')"
+        ;;
+    esac
+    mkdir -p quality/local/canary/acme-2 quality/local/negative/acme-2 quality/local/runners
+    cat <<'RUNNER' >quality/local/runners/ledger_probe.py
+"""A product's own rule about its LEDGERS — the drive's product-side runner.
+
+THE SUBJECT IS THE RUNNER'S AND THE ROOTS ARE THE RULE'S, which is the whole
+shape the fifth drawer key exists for. This instrument is about `docs/`
+wherever it is pointed — exactly like the four in-process checks the first
+consumer moved into the drawer — and the engine holds it to the roots its
+kind declares. Under a kind rooted at `docs` it answers; under the template's
+`py` kind every finding it reports is outside the roots and the whole run is
+refused, which is the refusal the case drives from both sides.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+MARK = "UNFINISHED" + "-LEDGER-ROW"
+SUBJECT = Path("docs")
+
+
+def main(argv: list[str]) -> int:
+    scanned = 0
+    findings: list[dict] = []
+    for path in sorted(SUBJECT.rglob("*.md")) if SUBJECT.is_dir() else []:
+        if not path.is_file():
+            continue
+        scanned += 1
+        for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if MARK in line:
+                findings.append(
+                    {
+                        "path": str(path),
+                        "line": number,
+                        "msg": "a ledger row that names no artifact",
+                        "klass": "unfinished",
+                    }
+                )
+    json.dump(
+        {"protocol": "check-v1", "targets": {"files_scanned": scanned}, "findings": findings},
+        sys.stdout,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+RUNNER
+    # The marker is assembled rather than spelled, for the reason every plant in
+    # this drive assembles one: a literal here is a string a later census over
+    # this file would count as a real occurrence.
+    printf 'A ledger row: UNFINISHED%sLEDGER-ROW\n' "-" >quality/local/canary/acme-2/stale_row.md
+    printf '# A plan\n\n- the second form, a row inside a list: UNFINISHED%sLEDGER-ROW\n' "-" >quality/local/canary/acme-2/stale_row_in_a_list.md
+    printf 'A ledger row, with its artifact: apps/example/models.py\n' >quality/local/negative/acme-2/named_row.md
+    {
+        printf 'rule_id_namespace: acme\ntemplate_rule_ids_through: %s\n' "$through"
+        cat <<'DRAWER'
+scope_kinds:
+  ledgers:
+    # A DIRECTORY AND A FILE, because the seam claims both and a file root is
+    # the one three readers had to be taught (V-HD1 HIGH-1). `comment: "#"` is
+    # the token a product really picks for markdown, and it is what turned
+    # every `# rule-13:` shaped line of prose in this repository into an
+    # override of a TEMPLATE rule until the attribution was narrowed.
+    roots: [docs, .env.example]
+    suffixes: [".md"]
+    comment: "#"
+rules:
+  - id: acme-2
+    name: acme-every-ledger-row-names-its-artifact
+    enabled: true
+    kind: ledgers
+    statement: >
+      The product's own rule about the product's own ledgers. Every row names
+      the artifact that proves it.
+    check: ledger_probe
+    doc: { file: docs/product/architecture.md, contains: "house rules" }
+    valve:
+      marker: "<comment> rule-acme-2: <reason>"
+      where: on the flagged line itself, or in the contiguous comment block directly above it
+    scope: {}
+    floors: { files_scanned: 10 }
+    does_not_cover: >
+      a row whose artifact is named and does not exist; the probe reads the row,
+      never the tree it points at.
+    selftest_floor: { canaries: 2, negatives: 1 }
+    canaries:
+      - fixture: stale_row.md
+        plant_at: docs/product/architecture.md
+        mode: append
+      - fixture: stale_row_in_a_list.md
+        plant_at: docs/product/architecture.md
+        mode: append
+    negatives:
+      - fixture: named_row.md
+        plant_at: docs/product/architecture.md
+        mode: append
+DRAWER
+    } >quality/local/rules.yaml
+    DJB_RULES_NO_MEMO=1 uv run python -c '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+
+print("kinds:", sorted(gate.SCOPE_KINDS))
+print("local kinds:", sorted(gate.LOCAL_SCOPE_KINDS))
+gate.broken.clear()
+gate.consistency()
+print("consistency broken:", gate.broken)
+clean = not gate.broken
+
+rule = gate.RULES_BY_ID["acme-2"]
+fired = []
+for kind in ("canaries", "negatives"):
+    for entry in rule[kind]:
+        plant = gate.Plant()
+        try:
+            plant.put(
+                gate.fixture_home(kind, "acme-2") / entry["fixture"],
+                entry["plant_at"],
+                entry["mode"],
+            )
+            kept, targets, why = gate.run_rule(rule, floors=True)
+        finally:
+            plant.restore()
+        paths = sorted({f.path for f in kept})
+        print(kind, entry["fixture"], "->", paths, "targets", targets, "why", repr(why))
+        fired.append((kind, kept, targets.get("files_scanned", 0), why))
+
+canaries = [row for row in fired if row[0] == "canaries"]
+negative = [row for row in fired if row[0] == "negatives"][0]
+in_docs = all(
+    row[1] and all(f.path.startswith("docs/") for f in row[1]) for row in canaries
+)
+
+# THE SAME RULE, POINTED BACK AT A TEMPLATE KIND. This is the refusal the
+# consumer pasted, and the half that proves the remedy is reachable: a rule
+# about docs/ whose kind is `py` is refused, and the refusal now says which
+# declaration widens the roots and which FILE it is written in.
+rule["kind"] = "py"
+plant = gate.Plant()
+try:
+    entry = rule["canaries"][0]
+    plant.put(gate.fixture_home("canary", "acme-2") / entry["fixture"], entry["plant_at"], entry["mode"])
+    gate.broken.clear()
+    _kept, _targets, why = gate.run_rule(rule, floors=False)
+finally:
+    plant.restore()
+    rule["kind"] = "ledgers"
+print("refusal:", why)
+
+# HIGH-2 · THE WALK IS THE UNION, THE ATTRIBUTION IS ONE RULE'"'"'S OWN ROOTS.
+# With `comment: "#"` and a root of `docs`, every `# rule-<id>:` shaped line of
+# prose in this repository entered the standing-override census; two carried
+# "reasons" shorter than MIN_REASON and became findings recorded against
+# TEMPLATE rules 13 and 16. A product kind must not be able to red a rule it
+# does not own.
+target = gate.ROOT / "docs" / "product" / "architecture.md"
+kept_text = target.read_text()
+try:
+    target.write_text(
+        kept_text
+        + "\n# rule-13: x\n# rule-acme-2: the product own valve on its own ledger rule\n"
+    )
+    rows = gate.all_overrides()
+finally:
+    target.write_text(kept_text)
+here = "docs/product/architecture.md"
+template_rows = [r for r in rows if r[0] == "13" and r[1] == here]
+product_rows = [r for r in rows if r[0] == "acme-2" and r[1] == here]
+print("template rule rows in docs/:", template_rows)
+print("product rule rows in docs/:", product_rows)
+attribution = not template_rows and len(product_rows) == 1
+refused = (
+    "finding-outside-roots" in why
+    and "scope_kinds:" in why
+    and "quality/local/rules.yaml" in why
+)
+
+ok = (
+    "ledgers" in gate.SCOPE_KINDS
+    and sorted(gate.LOCAL_SCOPE_KINDS) == ["ledgers"]
+    and clean
+    and len(canaries) == 2
+    and in_docs
+    and all(row[2] >= 10 and not row[3] for row in canaries)
+    and not negative[1]
+    and refused
+    and attribution
+)
+sys.exit(0 if ok else 1)
+' >"$OUT" 2>&1 || RC=$?
+    local tagged=1
+    uv run python -m quality.gate --explain acme-2 >>"$OUT" 2>&1 || true
+    grep -qF 'home: quality/local/rules.yaml' "$OUT" || tagged=0
+    # HIGH-1 · THE FOURTH READER, run as the CLI the gate runs (check.sh's
+    # selftest leg). A file root's walk is itself: a prefix test spelled
+    # `root + "/"` counted 0 for the file root and this reader refused a root
+    # that was exactly where it said it was — exit 2 at the bank, on the
+    # consumer's own case, while the release notes said "a directory or file".
+    local inputs="${WORK}/drawerkind-inputs${N}.txt"
+    if uv run python -m quality.gate --selftest-inputs >"$inputs" 2>&1; then
+        grep -qx '.env.example' "$inputs" || tagged=0
+    else
+        tagged=0
+    fi
+    cat "$inputs" >>"$OUT"
+    rm -rf quality/local
+    capture_floor
+    if [ "$RC" = "0" ] && [ "$tagged" = "1" ]; then
+        ok "a product's own scope kind joins SCOPE_KINDS (a directory root AND a file root), points a drawer rule at docs/, fires its canary THERE over a bound floor, keeps its negative silent, is the ONLY rule a valve under docs/ is attributed to, and carries its file root through --selftest-inputs — and the same rule under a template kind is refused with the remedy naming \`scope_kinds:\` in the drawer"
+    else
+        bad "a product rule cannot be about the product's own files (rc=${RC}, tagged=${tagged}) — see ${OUT}"
+    fi
+}
+
+
 case_no_drawer_is_byte_identical() {
     CURRENT=case_no_drawer_is_byte_identical
     N=$((N + 1))
@@ -3009,11 +3340,12 @@ run_case case_the_namespace_keys_are_refused_in_the_template_file
 run_case case_a_drawer_check_is_a_registry_name_or_a_drawer_runner
 run_case case_a_mute_drawer_runner_is_enforcement_broken
 run_case case_a_drawer_ratchet_may_not_name_a_platform_app
-run_case case_a_drawer_ratchet_may_not_raise_a_template_ceiling
+run_case case_a_drawer_ratchet_adds_to_a_template_class_and_never_replaces_it
 run_case case_a_drawer_rule_with_no_namespace_is_enforcement_broken
 run_case case_a_drawer_canary_may_not_plant_into_a_platform_app
 run_case case_the_drawers_key_moves_only_when_the_drawer_does
 run_case case_a_drawer_rule_is_a_rule_end_to_end
+run_case case_a_product_scope_kind_points_a_drawer_rule_at_its_own_files
 run_case case_no_drawer_is_byte_identical
 run_case case_a_rule_with_no_valve_is_enforcement_broken
 run_case case_a_none_valve_with_no_sentence_is_enforcement_broken
@@ -3038,6 +3370,10 @@ run_case case_the_refusal_names_every_argument_the_engine_takes
 run_case case_fold_map_with_no_argument_refuses_with_the_grammar
 run_case case_fold_map_does_not_eat_the_next_flag_as_a_path
 run_case case_fold_map_of_this_tree_against_itself_has_nothing_to_do
+run_case case_the_grammar_names_the_two_argument_fold_map
+run_case case_fold_map_second_argument_that_is_not_a_file_is_exit_2
+run_case case_template_tree_without_fold_map_is_exit_2
+run_case case_template_tree_inside_fold_map_is_the_road_it_exists_for
 run_case case_explain_prints_a_remedy_per_finding_class
 run_case case_a_finding_of_a_remedied_rule_names_its_fix_form
 run_case case_an_unmeasured_class_prints_the_line_to_paste

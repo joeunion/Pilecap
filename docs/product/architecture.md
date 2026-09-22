@@ -894,8 +894,8 @@ unrecognised-shape exit 2 firing, which means a machinery class exists that
 nobody declared.
 
 **ADR platform-extension-1 · a product extends the system layer by DECLARING
-beside it, never by editing it.** *PROPOSED 2026-09-21 — the owner chose this
-shape; the signature lands at CLOSE.* *Context*: the first
+beside it, never by editing it.** *SIGNED by the owner 2026-09-22 (proposed 2026-09-21 — the owner chose this
+shape; the signature lands at CLOSE.)* *Context*: the first
 consumer's fold of v2.1.0 cost 94 merge conflicts, 21 of them inside
 `scripts/ quality/ .github/`, and twelve commits whose entire content was
 re-applying local edits to template-owned files; the worst was silent in the
@@ -1451,7 +1451,7 @@ sampled canary corpus is a corpus with a hole somebody has to remember).
 Revisit when a dead canary is traced to a merge and the delay to push
 actually cost work, or when the selftest's wall time falls below ~10s.
 
-**ADR gate-5 · PROPOSED · rule ids are two namespaces.** *Proposed 2026-09-21
+**ADR gate-5 · SIGNED by the owner 2026-09-22 · rule ids are two namespaces.** *Proposed 2026-09-21
 (P21, team D, rung D1). The owner chose option A in the rule-id ruling of
 2026-09-21; the signature that turns this line into "Accepted" is the PM's
 ritual at the cycle's CLOSE.* *Context:* house-rule ids were one integer
@@ -1488,7 +1488,7 @@ product should record on every run. **(b)** the residence census counts TEMPLATE
 ids only (D4), so `selftest_residence_backlog` stays a template fact a product
 folds and never retypes, and a product's own rules are counted against zero.
 
-**ADR gate-6 · PROPOSED · an unmeasured class says how to be recorded.**
+**ADR gate-6 · SIGNED by the owner 2026-09-22 · an unmeasured class says how to be recorded.**
 *Proposed 2026-09-21 (P21, team D, the ratchet rung). The owner chose option B in the
 ratchet ruling of 2026-09-21; the signature that turns this line into
 "Accepted" is the PM's ritual at the cycle's CLOSE.* *Context:* per-app ratchet
@@ -1525,6 +1525,22 @@ partition is read through `quality/partition.py`, and a lockfile that will not
 read shuts the branch rather than emptying the app list — an empty partition
 would make every app on the tree a product's and turn one missing file into a
 refusal storm; it is exit 2 on its own line instead.
+
+*As built (rung HOTFIX-DRAWER-1, 2026-09-22), the fourth sentence, from the
+first consumer's fold: a drawer class on a TEMPLATE rule may name a FINDING
+CLASS that rule declares under its own `ratchets:`, as well as an app of the
+product's. The decision read every class as app-keyed because every ratcheted
+rule it was written against was; rules 50–53 ratchet per finding class
+(`literal`, `api-reach`, `barrel`, `consumed-undeclared`), which is not an app
+and never will be, so a product with a real backlog in one was refused with a
+sentence about `apps/literal/`. Those rules now declare their classes at `0` —
+a measurement, per (b) — and the drawer's number is **added** to the template's
+rather than substituted for it, so a product can record its own backlog without
+being able to erase a template ceiling from a file the template never reads;
+where the template records `0` the sum is the drawer's number and the two
+readings coincide. A name that is neither an app nor a declared class is
+refused with the sentence it always had, now carrying the list of the classes
+that rule does declare.*
 
 **ADR core-26 · `core` says what happened, through the bridge.** *Accepted
 2026-09-15 (P20, P4).* *Context*: `core` emitted no events at all. It sits
@@ -1595,8 +1611,8 @@ revisit*: the first product that wants per-FAMILY read precision in the token
 echo, or the first family-shaped withhold.
 
 **ADR core-28 · a template migration is grafted onto the product's leaf by a
-command, never by hand.** *PROPOSED 2026-09-21 (P21, team D, decision D2 —
-the owner chose option A; the signature at CLOSE).* *Context*: a product that
+command, never by hand.** *SIGNED by the owner 2026-09-22 (proposed 2026-09-21 (P21, team D, decision D2 —
+the owner chose option A; the signature at CLOSE).)* *Context*: a product that
 added migrations to `core`/`accounts` met each release's numbered ancestors
 twice — a leaf fork and, after one fold, ancestors it had renamed — and
 reparented by hand under `django-linear-migrations`' refusal.

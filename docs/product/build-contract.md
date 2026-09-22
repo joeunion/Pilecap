@@ -361,16 +361,28 @@ held | verifier bake steps — one consumer's headless-Chromium bake, diff unrea
 ```
 
 **`quality/local/`** holds `rules.yaml` (top-level keys `rule_id_namespace`,
-`template_rule_ids_through`, `rules:`, `ratchets:` — anything else is exit 2
-naming the key and the file), the fixtures its rules plant from
+`template_rule_ids_through`, `rules:`, `ratchets:`, `scope_kinds:` — anything
+else is exit 2 naming the key and the file), the fixtures its rules plant from
 (`quality/local/{canary,negative}/<ns>-<n>/`) and its check-v1 runners
 (`quality/local/runners/<name>.py`, reached from a rule's `check:` when the
 template's registry does not hold the name). A drawer rule goes through the
 whole protocol — consistency, canary, negative, floor, valve, memo — and both
 readers tag it `[local]`. `ratchets:` is `rule id → class → count`, the
 product-owned home for per-app backlogs, and a class naming an app inside
-`quality/partition.yaml`'s `platform_apps` is refused. **An absent drawer
-costs nothing: every number and every listing is byte-identical.**
+`quality/partition.yaml`'s `platform_apps` is refused; on a TEMPLATE rule a
+class may also name a finding class that rule declares under its own
+`ratchets:`, and the drawer's number is added to the template's rather than
+replacing it (ADR gate-6, as built). `scope_kinds:` declares a product's own
+scope kinds in the shape `quality/rules.yaml` uses — `roots:`, `suffixes:`,
+`comment:`, optional `skip_dirs:`/`needs_tree:` — and `SCOPE_KINDS` is the
+union, so a product rule may be about a ledger, a doc, a `.env.example` or the
+drawer itself. A product kind may not reuse a template kind's name (refused,
+naming both files), a root may be any directory **or file** this tree carries,
+and a root that names nothing — or that git does not carry — is refused in the
+drawer rather than by a later reader. The WALK is the union; the ATTRIBUTION is
+not — a `rule-<id>` valve counts only where that rule's own kind reaches, so a
+product kind cannot valve, or red, a template rule. **An absent
+drawer costs nothing: every number and every listing is byte-identical.**
 
 **`scripts/local/fold.d/<nn>-<name>.sh`** runs after the template's own fold
 steps, in name order, and DECLARES the paths it regenerates with the
