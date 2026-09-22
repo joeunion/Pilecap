@@ -12,6 +12,13 @@
 # the three properties, and for why an excluded path is one nothing measured
 # reads back.
 #
+# AND BOTH SIDES OF EVERY COMPARISON HERE ARE THAT SAME READING. The
+# ref being pushed is resolved through `gate_measured_tree_of`, never through a
+# raw `<sha>^{tree}`: a raw tree and a measured tree agree exactly when nothing
+# is declared, which made the two spellings look interchangeable on this
+# template and made every push from a DECLARING product refuse its own tree as
+# somebody else's. One arithmetic, on both sides, at every wall.
+#
 # THE DOCTRINE, IN ONE PARAGRAPH. One full gate per push to a FORGE: a tree that
 # leaves this machine for somewhere it will be kept, shared or merged is measured
 # here first, and that is the wall this file is. A VERIFIER BOX is not a forge —
@@ -115,9 +122,26 @@ while read -r local_ref local_sha _remote_ref _remote_sha; do
     [ -n "${local_sha:-}" ] || continue
     case "$local_sha" in "$ZERO" | "") continue ;; esac
     PUSHED_REFS=$((PUSHED_REFS + 1))
+    # THE PUSHED TREE IS READ IN THE MEASURED FORM, NOT RAW. What this
+    # loop collects is compared, below, against `$TREE` — which is
+    # `gate_measured_tree`, the checkout's tree with every DECLARED derived
+    # path subtracted. Reading the ref raw made the two sides of that compare
+    # two different arithmetics: identical on a template that declares
+    # nothing, and NEVER equal on a product that declares one, so the
+    # product's own `main` was refused as a foreign tree on every push it
+    # ever made. `gate_measured_tree_of` is the same subtraction asked of a
+    # ref, sharing the one site with `gate_measured_tree`.
+    #
     # `^{tree}` peels a tag as readily as a commit, so an annotated tag push
-    # names the tree it points at rather than the tag object.
-    t=$(git rev-parse -q --verify "${local_sha}^{tree}" 2>/dev/null) || t=""
+    # names the tree it points at rather than the tag object — and a ref this
+    # repository cannot resolve makes the reader exit non-zero, which is the
+    # same `UNRESOLVABLE` road it always was.
+    #
+    # `</dev/null` because THIS LOOP IS READING GIT'S REF LIST ON STDIN. The
+    # reader shells out several times; a child that inherited this stdin and
+    # read from it would eat refs the hook has not vouched for yet, and the
+    # push would go through carrying them.
+    t=$(gate_measured_tree_of "${local_sha}^{tree}" </dev/null 2>/dev/null) || t=""
     if [ -z "$t" ]; then
         echo "pre-push: cannot resolve a tree for the pushed ref ${local_ref} (${local_sha})." >&2
         echo "  A ref whose tree this repository cannot read is not a ref this hook can" >&2

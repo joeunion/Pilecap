@@ -71,7 +71,16 @@ EXEMPT_APPS = {"zzz_canary", "example"}
 #: is a Django app; a JS rule reads the frontend tree). The arrival that
 #: forced the ratio test's safe set to say what it always meant — see the
 #: safe-set ruling of 2026-09-02, cycles/2026-09-02-velocity-intake.md.
-OUTSIDE_APPS_PLANTS = 38
+#:
+#: 45 -> 49 (P21 X7): rule 60's second class — the drawers table is the rule's
+#: one reader — needs four more forms and not one of them can live in an app.
+#: Two plant a template-owned script that opens a drawer (`scripts/`), one with
+#: a row for it and one without; two plant a row into the table itself
+#: (`docs/product/build-contract.md`), one naming a reader the tree does not
+#: have and one reserving a name as `held`. The rule's subject is which files
+#: the TEMPLATE owns and where the seams beside them are written down, so a
+#: form inside an app would be a canary about somewhere the rule does not look.
+OUTSIDE_APPS_PLANTS = 49
 
 #: Measured once, then re-measured every time a rule arrived. Rule 43 added
 #: five product-app plants across three entries. Rule 44 added six — four in the
@@ -268,9 +277,33 @@ OUTSIDE_APPS_PLANTS = 38
 #: given, and a defect whose whole shape is that it is invisible — and each
 #: fixture carries the probe app and its models the way every rule-54 plant
 #: over a kind does.
-TOTAL_PLANTS = 501
+#: 501 -> 504 (rule 59's undecided-noun class): THREE more, every one into the
+#: WORKED EXAMPLE (218 -> 221) and none into the scaffold or a product app. The
+#: class refuses a declared event name whose noun no app decided, so its forms
+#: are declarations rather than call sites and they belong beside the rule's
+#: other `events.py` plant: one canary (a noun nobody decided) and two
+#: negatives (a noun the app decides, and a noun decided as None because no row
+#: is behind it — `None` is a DECIDED answer and the class must not read it as
+#: a missing one).
+#: 221 -> 223 in the worked example and 71 -> 69 in the product apps
+#: (2026-09-21): rule 59's remaining two `apps/usage` plants moved to
+#: `apps/example/services.py`. NOT a new plant — the TOTAL is unmoved, and that
+#: is the shape of a re-homing as opposed to an addition. The two forms leaned
+#: on `usage`'s `EVENT_KINDS` for the noun they announce, so a product that
+#: ships without the metering ingredient got a dead canary and a vacuous
+#: negative out of them; `WIDGET_CREATED` is the same org-scoped shape in the
+#: one app whose whole job is to hold one of everything.
+#: 504 -> 511 (rule 60's ownership partition): SEVEN more, every one OUTSIDE
+#: `apps/` (38 -> 45) and none into the scaffold, the worked example or a
+#: product app. The rule reads which files the TEMPLATE owns, so its forms
+#: are a document the template owns, a file in a directory it owns, the same
+#: file one directory over in the product's drawer, and the base declaration
+#: each of them needs — a tree with no declared base is the state THIS
+#: repository is permanently in, which is why three of the seven are that
+#: declaration.
+TOTAL_PLANTS = 515
 SCAFFOLD_PLANTS = 172
-EXAMPLE_PLANTS = 218
+EXAMPLE_PLANTS = 223
 
 #: The judgement: every plant into a real product app, by rule and site. Each
 #: one carries a dated MOVE-TRIGGER beside it in `quality/rules.yaml`; the test
@@ -326,12 +359,6 @@ PRODUCT_APP_PLANTS = {
     # which is where a SECOND app growing a socket door can be shown at all.
     ("58", "canaries", "apps/realtime/consumers.py"),
     ("58", "negatives", "apps/realtime/consumers.py"),
-    # Rule 59's two (P20 R4-F2). `apps/usage` is where the finding was — the
-    # crossing whose branch was one level down — and its emit site is the only
-    # one in the tree that a canary can append beside. The trigger: the day
-    # `usage` stops emitting an org-scoped event.
-    ("59", "canaries", "apps/usage/services.py"),
-    ("59", "negatives", "apps/usage/services.py"),
     ("40", "canaries", "apps/core/exceptions.py"),
     ("40", "canaries", "apps/realtime/consumers.py"),
     ("40", "negatives", "apps/accounts/auth.py"),
@@ -420,8 +447,13 @@ PRODUCT_APP_PLANTS = {
 #: 59 -> 67 and 63 -> 71 (P20 R4-F): rules 36, 58 and 59's product-app plants,
 #: eight entries across four files — the two operator services in `core`, the
 #: one consumer in `realtime`, and the one org-scoped emit site in `usage`.
-PRODUCT_APP_PLANT_ENTRIES = 67
-PRODUCT_APP_PLANT_FILES = 71
+#:
+#: 67 -> 65 and 71 -> 69 (2026-09-21): rule 59's two `apps/usage` plants left
+#: for the worked example. Both counts fall by the same two because the pair was
+#: one entry per file — the split the two numbers exist for does not bite here,
+#: and each is written out rather than derived from the other for that reason.
+PRODUCT_APP_PLANT_ENTRIES = 65
+PRODUCT_APP_PLANT_FILES = 69
 
 #: A trigger is DATED and says the word. Both halves matter: a condition with no
 #: date is a note somebody wrote once, and a date with no condition is a

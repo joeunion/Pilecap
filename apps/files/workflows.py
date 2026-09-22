@@ -44,6 +44,33 @@ from apps.files.types import (
     VerifiedObject,
 )
 
+# --- The one setting a workflow module reads, and the seam it is read through -
+#
+# `workflow.unsafe.imports_passed_through()` is Temporal's own escape. The
+# replay sandbox RE-IMPORTS every module a workflow touches, and an unguarded
+# `from django.conf import settings` dies inside it on
+# `gettext.GNUTranslations.__mro_entries__` (measured). Passed through,
+# the module object the worker process already imported is reused and nothing
+# Django owns is re-executed in the sandbox.
+#
+# What is read is ONE number, ONCE, at import: the interval the first retry of
+# a failed activity waits. It is a constant exactly as the timeouts below are
+# constants — no clock, no ORM, no I/O, and the same value for every run this
+# worker serves — and it lives in settings so that `test` can turn a
+# fifteen-second production backoff curve into a tenth of a second without
+# touching one assertion. The argument in full, including why one knob and not
+# one per policy: `config/settings/base.py` § "The retry backoff every activity
+# policy starts at".
+with workflow.unsafe.imports_passed_through():
+    # rule-9: one deployment constant, read once at import through Temporal's
+    # own passthrough seam; the paragraph above is the whole argument.
+    from django.conf import settings
+
+#: How long the first retry of every policy below waits, doubling from there.
+#: The SDK's own default in a deployment; milliseconds under `test`, where the
+#: time-skipping server skips workflow timers and does NOT skip this.
+RETRY_INITIAL_INTERVAL = timedelta(seconds=settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS)
+
 #: How long one attempt at heading and digesting an object may take. Generous,
 #: because the object may be gigabytes and the digest is a full read of it;
 #: bounded, because an activity with no ceiling is a worker thread nobody can get
@@ -56,7 +83,7 @@ VERIFY_TIMEOUT = timedelta(minutes=30)
 #: attempts is a confirm for an upload that never happened, and the honest answer
 #: to that is a failed run and a version left `PENDING` for the sweep — not a run
 #: that stays technically trying until the retention policy deletes it.
-VERIFY_RETRY = RetryPolicy(maximum_attempts=5)
+VERIFY_RETRY = RetryPolicy(initial_interval=RETRY_INITIAL_INTERVAL, maximum_attempts=5)
 
 #: Writing the measurement down: one local transaction. Short, and retried,
 #: because the failures it has are a lock wait and a connection blip. A refusal
@@ -64,13 +91,13 @@ VERIFY_RETRY = RetryPolicy(maximum_attempts=5)
 #: domain error that will refuse identically on every attempt, and the run fails
 #: with the ledger's own sentence on the row.
 RECORD_TIMEOUT = timedelta(minutes=2)
-RECORD_RETRY = RetryPolicy(maximum_attempts=5)
+RECORD_RETRY = RetryPolicy(initial_interval=RETRY_INITIAL_INTERVAL, maximum_attempts=5)
 
 #: Closing out the `WorkflowRun` row (house rule 28). One local database write,
 #: bounded: a bookkeeping activity that retried forever would outlive the thing
 #: it is bookkeeping for.
 FINISH_TIMEOUT = timedelta(seconds=30)
-FINISH_RETRY = RetryPolicy(maximum_attempts=5)
+FINISH_RETRY = RetryPolicy(initial_interval=RETRY_INITIAL_INTERVAL, maximum_attempts=5)
 FINISH_ACTIVITY = "mark_run_finished"
 
 #: One pass of the sweep: an indexed read over two columns, a bulk delete, and

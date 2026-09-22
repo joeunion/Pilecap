@@ -12,8 +12,9 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: apps/example/models.py docs/product/queue.md quality/worlds.py scripts/fe_gate.sh scripts/goalpost_scan.py scripts/secrets_scan.sh
-# The 9-case leg-machinery harness for scripts/fe_gate.sh — the --loop `fe`
-# leg's tri-state (absent/untouched/full).
+# The 10-case leg-machinery harness for scripts/fe_gate.sh — the `fe` leg's
+# tri-state (absent/untouched/full) and the mode that decides which of them
+# is reachable.
 #
 #   ./scripts/tests/test_fe_leg.sh          run every case
 #   ./scripts/tests/test_fe_leg.sh --list   name them and stop
@@ -28,12 +29,12 @@ esac
 # three states — and the could-not-look cells inside `full` — are each
 # demonstrated on purpose rather than waited for.
 #
-# THE NINE CASES, and why there are exactly nine: one for `absent`, one for
-# `untouched` (proving pnpm is never even invoked there), and seven for
-# `full` — because "the toolchain is present and the tree is well-formed" is
-# not one fact, it is four (manifest exists, lockfile exists, the lockfile
-# satisfies the manifest, the declared test script exits 0) and this drive
-# demonstrates every one of the ways that chain can fail before it
+# THE FIRST NINE CASES, and why there are exactly nine of them: one for
+# `absent`, one for `untouched` (proving pnpm is never even invoked there),
+# and seven for `full` — because "the toolchain is present and the tree is
+# well-formed" is not one fact, it is four (manifest exists, lockfile exists,
+# the lockfile satisfies the manifest, the declared test script exits 0) and
+# this drive demonstrates every one of the ways that chain can fail before it
 # demonstrates the chain holding:
 #
 #   1. absent                                              -> exit 0, absent
@@ -45,6 +46,15 @@ esac
 #   7. present + touched, clean lockfile, no test script    -> exit 0, full
 #   8. present + touched, clean lockfile, test script PASSES -> exit 0, full
 #   9. present + touched, clean lockfile, test script FAILS  -> exit 1
+#
+# ALL NINE ARE ABOUT THE CHANGE-AWARE MODES, and every one of them calls
+# `fe_leg_run` with ONE argument — which is that function's contract for an
+# omitted mode. The TENTH case is about the mode itself: the
+# `untouched`/`suspect` fast path is `--loop`'s and `--fast`'s alone, and
+# under the full gate's `""` or one of its `--leg` shards the leg runs whole,
+# because a bank writes a verdict row naming `fe` as a leg that ran. It is
+# the one case here that drives a pnpm STUB rather than the real tool, and it
+# says why at its own head.
 #
 # NEEDS A REAL pnpm for cases 6-9 (frozen-lockfile is driven against the real
 # tool, not a shim of it — the target class is pnpm's own refusal, and a shim
@@ -152,6 +162,22 @@ run_fe() {
     RUN_OUT="${WORK}/run-$$-$RANDOM.log"
     set +e
     fe_leg_run "$CHANGED" >"$RUN_OUT" 2>&1
+    RC=$?
+    set -e
+}
+
+# run_fe_mode <mode> — the same call WITH check.sh's own `$MODE` handed over,
+# which is what the gate does. `run_fe` above passes ONE argument on purpose:
+# an omitted mode is the change-aware contract the nine cases are about, and
+# two other drives (`test_rung_tidy.sh`, `test_pm_fold.sh`) call it that way
+# too. The distinction between an ABSENT second argument and an EMPTY one is
+# load-bearing here — `""` IS a mode, the full gate's — so this helper always
+# passes one.
+run_fe_mode() {
+    local mode=$1
+    RUN_OUT="${WORK}/run-$$-$RANDOM.log"
+    set +e
+    fe_leg_run "$CHANGED" "$mode" >"$RUN_OUT" 2>&1
     RC=$?
     set -e
 }
@@ -334,6 +360,126 @@ json.dump(d, open(p, "w"))
     fi
 }
 
+# --- case 10: the mode decides whether the fast path is reachable ----------
+case_under_a_unit_or_full_run_an_untouched_frontend_still_runs_the_leg() {
+    # Ratified by the PM, 2026-09-21. The `untouched` fast path is a
+    # RUNG-TIME economy and it had leaked into the sharded full gate: MEASURED
+    # on f800ab5b, `./scripts/check.sh --leg static` — one shard of a bank —
+    # printed `UNTOUCHED (fast path)` and `(fe: 0s)` over this checkout's real
+    # `frontend/`, while the unit's own summary named `fe` among the legs it
+    # had run. A verdict row must not name a leg that took a fast path out.
+    #
+    # THE STUB IS A COUNTER, NOT A SHIM OF pnpm. Cases 6-9 drive the real tool
+    # because the frozen-lockfile refusal is pnpm's own; this case is about
+    # WHETHER the two commands are reached at all, so a stub that appends a
+    # line per invocation answers it exactly and costs nothing.
+    CURRENT="mode decides the fast path"
+    export FE_FRONTEND_DIR="${WORK}/fe-mode"
+    build_clean_frontend "$FE_FRONTEND_DIR"
+    # A DECLARED test script, so the second pnpm command is reachable: without
+    # one `fe_leg_tests` prints and returns before invoking anything, and this
+    # case would be asserting one marker where the ratified cost is two.
+    python3 -c '
+import json
+p = "'"$FE_FRONTEND_DIR"'/package.json"
+d = json.load(open(p))
+d["scripts"] = {"test": "exit 0"}
+json.dump(d, open(p, "w"))
+'
+    local marker="${WORK}/pnpm-mode-marker"
+    cat >"${WORK}/pnpm-counter" <<SH
+#!/usr/bin/env bash
+echo "\$*" >>"$marker"
+exit 0
+SH
+    chmod +x "${WORK}/pnpm-counter"
+    export FE_PNPM="${WORK}/pnpm-counter"
+
+    # THE CHANGED SET IS EMPTY OF FRONTEND PATHS AND OF THE CONTRACT SURFACE:
+    # under the change-aware modes this is `untouched`, which is what makes
+    # the two whole modes below a claim about the MODE rather than about the
+    # list.
+    changed_list "apps/example/models.py" "docs/product/queue.md"
+
+    local mode label calls
+    for mode in "--leg" ""; do
+        label="${mode:-<the full gate>}"
+        : >"$marker"
+        run_fe_mode "$mode"
+        calls=$(awk 'END { print NR + 0 }' "$marker")
+        if [ "$RC" = "0" ] && [ "$FE_LEG_STATE" = "full" ] && [ "$calls" = "2" ]; then
+            ok "${label}: exit 0, FE_LEG_STATE=full, 2 pnpm invocations (install --frozen-lockfile, run test)"
+        else
+            bad "${label}: exit $RC, FE_LEG_STATE=${FE_LEG_STATE:-<unset>}, pnpm calls=${calls} (want 0/full/2)"
+            show_out
+        fi
+        if grep -q "UNTOUCHED (fast path)" "$RUN_OUT"; then
+            bad "${label}: the leg printed UNTOUCHED (fast path) — the rung-time economy is still leaking into the bank"
+            show_out
+        else
+            ok "${label}: no UNTOUCHED fast path in the transcript"
+        fi
+        # THE RATIFIED PRICE, PRINTED. "Two pnpm commands per bank" is only a
+        # cost anybody can watch if the leg says what they took.
+        if grep -q "fe leg cost: frozen-lockfile .*tests .*(two pnpm commands)" "$RUN_OUT"; then
+            ok "${label}: the leg prints its measured cost — $(grep -o 'fe leg cost:.*' "$RUN_OUT")"
+        else
+            bad "${label}: no measured cost line; the ratified two-command price is unmeasured"
+            show_out
+        fi
+    done
+
+    CURRENT="mode decides the fast path — and --loop keeps it"
+    : >"$marker"
+    run_fe_mode "--loop"
+    calls=$(awk 'END { print NR + 0 }' "$marker")
+    if [ "$RC" = "0" ] && [ "$FE_LEG_STATE" = "untouched" ] && [ "$calls" = "0" ]; then
+        ok "--loop: exit 0, FE_LEG_STATE=untouched, pnpm never invoked — the builder's inner loop is unchanged"
+    else
+        bad "--loop: exit $RC, FE_LEG_STATE=${FE_LEG_STATE:-<unset>}, pnpm calls=${calls} (want 0/untouched/0)"
+        show_out
+    fi
+
+    CURRENT="mode decides the fast path — and --fast keeps it"
+    : >"$marker"
+    run_fe_mode "--fast"
+    calls=$(awk 'END { print NR + 0 }' "$marker")
+    if [ "$RC" = "0" ] && [ "$FE_LEG_STATE" = "untouched" ] && [ "$calls" = "0" ]; then
+        ok "--fast: exit 0, FE_LEG_STATE=untouched, pnpm never invoked"
+    else
+        bad "--fast: exit $RC, FE_LEG_STATE=${FE_LEG_STATE:-<unset>}, pnpm calls=${calls} (want 0/untouched/0)"
+        show_out
+    fi
+
+    # AND A WHOLE RUN THAT CANNOT LOOK SAYS SO. A bank whose box has no pnpm
+    # must not bank a row naming `fe`: the same tree-present/toolchain-absent
+    # cell `quality/worlds.py`'s `tree_verdict` calls broken, now reachable
+    # under a mode that never touches the frontend.
+    CURRENT="mode decides the fast path — a whole run with no toolchain is could-not-look"
+    export FE_PNPM="${WORK}/no-such-pnpm-binary"
+    run_fe_mode "--leg"
+    if [ "$RC" = "2" ]; then
+        ok "--leg with no toolchain: exit 2 (could-not-look), not a fast-path 0"
+    else
+        bad "--leg with no toolchain: exit $RC, want 2"
+        show_out
+    fi
+    unset FE_PNPM
+
+    # AND `absent` STILL SHORT-CIRCUITS UNDER A WHOLE MODE: a tree with no
+    # frontend/ has nothing to install, which is this template's steady state.
+    CURRENT="mode decides the fast path — absent still short-circuits"
+    export FE_FRONTEND_DIR="${WORK}/no-such-frontend-mode"
+    rm -rf "$FE_FRONTEND_DIR"
+    run_fe_mode ""
+    if [ "$RC" = "0" ] && [ "$FE_LEG_STATE" = "absent" ]; then
+        ok "the full gate over a tree with no frontend/: exit 0, absent"
+    else
+        bad "exit $RC, FE_LEG_STATE=${FE_LEG_STATE:-<unset>}, want 0/absent"
+        show_out
+    fi
+}
+
 case_absent
 case_untouched_pnpm_never_invoked
 case_touched_toolchain_absent
@@ -343,6 +489,7 @@ case_frozen_lockfile_mismatch
 case_full_clean_no_test_script
 case_full_clean_test_passes
 case_full_clean_test_fails
+case_under_a_unit_or_full_run_an_untouched_frontend_still_runs_the_leg
 
 echo
 echo "test_fe_leg: ${PASSED} passed, ${FAILED} failed"

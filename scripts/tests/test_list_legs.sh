@@ -11,7 +11,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: .github/workflows/ci.yml config/ docs/product/build-contract.md quality/ scripts/check.sh scripts/loop_tier.sh scripts/test.sh scripts/tests/fixtures/collection_world/ scripts/tests/test_loop_scope.sh scripts/tests/test_selftest_leg.sh scripts/verify_start.sh
+# drives: .github/workflows/ci.yml apps/conftest.py config/ docs/product/build-contract.md quality/ scripts/check.sh scripts/loop_tier.sh scripts/test.sh scripts/tests/fixtures/collection_world/ scripts/tests/test_loop_scope.sh scripts/tests/test_selftest_leg.sh scripts/verify_start.sh
 # cites: scripts/tests/test_shard_census.sh scripts/pytest_durations.json apps/example/services.py
 # The drive for the gate's UNIT TABLE and for `./scripts/check.sh --list-legs`.
 #
@@ -239,11 +239,13 @@ WORLD_TARGET="${WORLD_TARGET# }"
 #: least this many items — `case_an_empty_fixture_world_is_could_not_look`
 #: drives the refusal by removing one of the world's four apps.
 #:
-#: THE NUMBER IS DERIVED FROM THE WORLD, not chosen: the world collects 56
+#: THE NUMBER IS DERIVED FROM THE WORLD, not chosen: the world collects 57
 #: items and its SMALLEST app carries 10 of them, so a floor anywhere in
-#: 47..56 fails when any one app of the four goes missing and passes when all
+#: 48..57 fails when any one app of the four goes missing and passes when all
 #: four are there. Fifty is that window with room for the world to lose a
-#: module without the floor becoming the thing that reds.
+#: module without the floor becoming the thing that reds. (56 until
+#: 2026-09-21, when a fifth apps-root module joined the world to match the
+#: `apps_root_modules` floor — see world_install's header.)
 WORLD_FLOOR=50
 
 #: AND THE FLOOR FOR A DELIBERATELY NARROWED COLLECTION, which is a different
@@ -441,6 +443,55 @@ dry_out_for() {
     local mode="${1:-full}"
     printf '%s/dry-%s.out' "$WORK" "$(printf '%s' "$mode" | tr -c 'a-zA-Z0-9' '_')"
 }
+# WHY A DRY RUN TYPES `DJB_LOOP_HERE`, and it is the defect A2.5 was sent to
+# find rather than a convenience. `scripts/check.sh` refuses a `--loop` on a
+# machine that is not a verifier box, and EXEMPTS CI — `elif [ -n "${CI:-}" ]`,
+# right beside the valve. `drive_preamble.sh` §4 STRIPS `CI` and
+# `GITHUB_ACTIONS` from every drive's environment, for its own good reason (a
+# case whose verdict depends on who started it is not a case). The two are
+# correct separately and fatal together: on a GitHub runner this drive's child
+# `check.sh --loop` no longer sees `CI`, the exemption does not fire, and the
+# dry run exits 2 before a single leg is announced. That is the whole of the
+# template's own `selftest 2/3` red on 2026-09-21 (run 35599531093), and it
+# reproduces on a laptop for the same reason — the strip is the machine, not
+# the runner.
+#
+# THE VALVE IS THE RIGHT ANSWER AND NOT A WORKAROUND. What the refusal protects
+# is the machine's minutes: a `--loop` runs every leg body and the boxes exist
+# to carry them. A DRY run announces the legs and runs NO body — it is the one
+# population the refusal is not about — and the valve's own grammar
+# (`<who>: <why>`) is where that is said out loud, printed in the banner and
+# recorded beside the verdict. `DJB_LOOP_HERE` is the preamble's declared
+# doctrine applied at the case: a drive whose subject turns on an environment
+# pins it itself.
+DRY_LOOP_HERE="test_list_legs: a DRY sequence census — every leg body is switched off, nothing is measured"
+
+# THE REFUSAL'S OWN LINES, IN THIS DRIVE'S OUTPUT. A path under `/tmp` on a
+# runner is a path nobody will ever open: the machine is gone before anybody
+# reads the log, and "see /tmp/djb-test-listlegs.FeD6jA/dry-__loop.out" cost a
+# whole cycle of not knowing why CI was red. So the capture's own refusal is
+# lifted into the transcript and the path is kept beside it for a laptop.
+dry_capture_lines() {
+    local out="$1" lines
+    [ -s "$out" ] || {
+        printf '   (the capture is empty — the run printed nothing at all)\n'
+        return 0
+    }
+    lines="$(grep -nE '^(!!|Error|error:|cause:)' "$out" | head -20 || true)"
+    if [ -z "$lines" ]; then
+        # No refusal banner: the last lines are the closest thing to a cause.
+        printf '   no `!!` line in the capture; its last 20 lines:\n'
+        tail -20 "$out" | sed 's/^/   | /'
+        return 0
+    fi
+    printf '   the capture says:\n'
+    printf '%s\n' "$lines" | sed 's/^/   | /'
+    # A refusal's argument is the lines under its banner, and they are what
+    # says which valve fired; the banner alone reads like six other refusals.
+    printf '   and the first refusal in full:\n'
+    awk '/^!!/{on=1} on{print; n++} n>=18{exit}' "$out" | sed 's/^/   | /'
+}
+
 dry_sequence() {
     local out rc=0
     out="$(dry_out_for "${1:-full}")"
@@ -449,11 +500,13 @@ dry_sequence() {
             cd "$DRY_CLONE" &&
                 DJB_GATE_LEGS_DRY=1 \
                     DJB_GATE_LEASE_DIR="${WORK}/lease" \
+                    DJB_LOOP_HERE="$DRY_LOOP_HERE" \
                     DJB_GATE_SANCTION="test_list_legs: the dry sequence census — every leg announced, no body run" \
                     ./scripts/check.sh "$@"
         ) >"$out" 2>&1 || rc=$?
         if [ "$rc" != "0" ]; then
-            cannot_look "a dry \`check.sh $*\` exited ${rc} — the sequence census has no subject (see ${out})"
+            dry_capture_lines "$out" >&2
+            cannot_look "a dry \`check.sh $*\` exited ${rc} — the sequence census has no subject (the capture is printed above; on a laptop it is also at ${out})"
         fi
         [ -s "$out" ] ||
             cannot_look "a dry \`check.sh $*\` exited 0 and printed nothing — the sequence census would read an empty capture as a mode that announces no legs"
@@ -1129,6 +1182,17 @@ case_the_usage_header_names_the_listing() {
 SHARD_CLONE=""
 SHARD_BIN=""
 SHARD_FENCE=""
+# THE TWO THINGS THE FENCE STANDS ON, AND WHY THEY ARE HERE NOW. The shard
+# assignment is a DURATION-BALANCED partition: the leg reads the committed
+# measurement through the always-on fence's own reader
+# (`always_on__read_durations`) and derives its member population through
+# `selftest_registered_drives`, both of which live OUTSIDE the selftest fence.
+# Sourced without them the leg falls back to the index round-robin and says so
+# — green, and a census of the fallback rather than of the partition the gate
+# ships. The census below is the only place the partition is ever asked of the
+# REAL registered order, so it sources what the gate sources.
+SHARD_ALWAYS=""
+SHARD_REG=""
 shard_harness_build() {
     SHARD_CLONE="${WORK}/shard-clone"
     SHARD_BIN="${WORK}/shard-bin"
@@ -1153,6 +1217,16 @@ shard_harness_build() {
         "$SHARD_CLONE/scripts/check.sh" >"$SHARD_FENCE"
     grep -q '^selftest_drives_leg() {' "$SHARD_FENCE" ||
         cannot_look "the selftest-leg fence in scripts/check.sh defines no selftest_drives_leg — there is no leg body to shard"
+    SHARD_ALWAYS="${WORK}/shard-always.sh"
+    SHARD_REG="${WORK}/shard-registry.sh"
+    sed -n '/^# >>> always-on-leg >>>$/,/^# <<< always-on-leg <<<$/p' \
+        "$SHARD_CLONE/scripts/check.sh" >"$SHARD_ALWAYS"
+    grep -q '^always_on__read_durations() {' "$SHARD_ALWAYS" ||
+        cannot_look "the always-on fence in scripts/check.sh defines no always_on__read_durations — the selftest shard's partition reads the committed measurement through it, so a census sourced without it would be censusing the round-robin fallback and nothing else"
+    awk '/^selftest_registered_drives\(\) \{/, /^\}/' \
+        "$SHARD_CLONE/scripts/check.sh" >"$SHARD_REG"
+    grep -q '^selftest_registered_drives() {' "$SHARD_REG" ||
+        cannot_look "scripts/check.sh no longer defines selftest_registered_drives() with a closing brace at column 1 — the population the shard partitions cannot be extracted"
 }
 
 # shard_members [k K] — the drive names the leg actually RAN, one per line.
@@ -1189,8 +1263,29 @@ shard_members() {
         . ./scripts/gate_refuse.sh
         # shellcheck source=scripts/gate_ledger.sh
         . ./scripts/gate_ledger.sh
+        # THE PARTITION'S TWO READERS, SOURCED BEFORE THE FENCE exactly as the
+        # gate sources them: the always-on fence carries the durations reader
+        # the shard plan balances over, and the registry carries the member
+        # population it balances. Without them the leg is honest but is running
+        # the round-robin fallback, and this census would be green about a
+        # partition nobody ships.
+        # shellcheck disable=SC1090  # the extracted always-on fence, by design
+        . "$SHARD_ALWAYS"
+        # shellcheck disable=SC1090  # the extracted drive registry, by design
+        . "$SHARD_REG"
         # shellcheck disable=SC1090  # the extracted leg body, by design
         . "$SHARD_FENCE"
+        # THE RECORDER'S OWN TWO GLOBALS, HONOURED RATHER THAN LEFT UNSET.
+        # `selftest_member_end` hands every member's seconds to
+        # `gate_member_record`, which is in the always-on fence now sourced
+        # above and which reads `MODE` and `GATE_LEG_UNIT` to decide whether a
+        # run may write the durations file at all. This drive runs under
+        # `set -u`, subshells inherit it, and an unset `MODE` therefore KILLED
+        # the subshell after the first member — every later drive landed in no
+        # shard and the partition read as broken. A shard is a subset, so the
+        # unit is named and the recorder rightly records nothing.
+        MODE=""
+        GATE_LEG_UNIT="selftest"
         selftest_drives_leg "$@"
     ) >"$out" 2>&1 || true
     # A FLOOR ON THE READER ITSELF. Everything below compares SETS, and a
@@ -1237,6 +1332,15 @@ case_every_drive_is_in_exactly_one_drives_unit() {
         while [ "$k" -lt "$K" ]; do
             union="${union}$(shard_members "$k" "$K")
 "
+            # THE ARM IS ASSERTED, NOT ASSUMED. The shard assignment is a
+            # duration-balanced partition when the committed measurement is
+            # readable and the index round-robin when it is not — both are
+            # legal, and only one of them is what the gate ships. A census that
+            # silently ran the fallback would be green about arithmetic nobody
+            # uses, which is the exact shape of a floor satisfied by nothing.
+            if ! grep -qF "LPT over" "${WORK}/shard-run.out"; then
+                cannot_look "shard ${k}/${K} did not print an LPT plan line (see ${WORK}/shard-run.out) — the harness sourced the leg without its durations reader or its registry, so every set comparison below would be about the round-robin fallback"
+            fi
             k=$((k + 1))
         done
         union=$(printf '%s' "$union" | grep -v '^$' | grep -v '^house-rules-engine$' || true)
@@ -1904,8 +2008,16 @@ case_a_malformed_shard_pair_is_exit_2() {
     CURRENT="--shard outside a unit run is exit 2"
     rc=0
     (cd "$ROOT" && ./scripts/check.sh --loop --shard 1/3) >"${WORK}/shard-nounit.out" 2>&1 || rc=$?
-    if [ "$rc" = "2" ]; then
-        ok "exit 2: $(sed -n 1p "${WORK}/shard-nounit.out")"
+    # THE STATUS IS NOT THE CLAIM, AND THIS CASE PASSED BY ORDERING. Several
+    # refusals on this path exit 2 — the box guard among them — so `rc = 2`
+    # alone is satisfied by whichever one happens to fire FIRST, and a
+    # reordering that put another refusal in front would leave this case green
+    # while the modifier it is about was silently consumed. The SENTENCE is the
+    # claim: the parser refusing the argument it does not honour.
+    if [ "$rc" = "2" ] && grep -qF -- 'unexpected extra arguments: --shard 1/3' "${WORK}/shard-nounit.out"; then
+        ok "exit 2, and it is the parser refusing the modifier: $(sed -n 1p "${WORK}/shard-nounit.out")"
+    elif [ "$rc" = "2" ]; then
+        bad "exit 2, but for some other reason — a --shard this mode does not honour must be refused BY NAME: $(sed -n 1p "${WORK}/shard-nounit.out")"
     else
         bad "exit ${rc} — a --shard was consumed by a mode that does not honour it"
     fi
@@ -2179,8 +2291,11 @@ case_passes_outside_a_shard_or_malformed_is_exit_2() {
     CURRENT="--passes outside a unit run is exit 2 (a modifier a mode does not honour is never consumed)"
     rc=0
     (cd "$ROOT" && ./scripts/check.sh --loop --passes 1) >"$out" 2>&1 || rc=$?
-    if [ "$rc" = "2" ]; then
-        ok "exit 2: $(sed -n 1p "$out")"
+    # The sentence, not only the status — the case above argues why in full.
+    if [ "$rc" = "2" ] && grep -qF -- 'unexpected extra arguments: --passes 1' "$out"; then
+        ok "exit 2, and it is the parser refusing the modifier: $(sed -n 1p "$out")"
+    elif [ "$rc" = "2" ]; then
+        bad "exit 2, but for some other reason — a --passes this mode does not honour must be refused BY NAME: $(sed -n 1p "$out")"
     else
         bad "exit ${rc} — a --passes was consumed by a mode that does not honour it"
     fi
@@ -2385,8 +2500,19 @@ collect_ids_read() {
     [ -f "${out}.rc" ] ||
         cannot_look "a --collect-only left no status beside ${out} — it was read before it was waited for, or it never started"
     rc="$(cat "${out}.rc")"
-    [ "$rc" = "0" ] ||
-        cannot_look "a --collect-only exited ${rc} (see ${out})"
+    # THE TRANSCRIPT'S TAIL TRAVELS WITH THE REFUSAL, and it is not a nicety.
+    # This refusal used to say only `see ${out}` — and `${out}` is under a
+    # mktemp directory on whatever machine ran the drive. On a verifier box that
+    # is a path that DIES WITH THE BOX: BOXBANK-22's whole red was one line
+    # naming a file nobody could ever open again, and the cause it was hiding
+    # (`LAYER 2 (named population): apps_root_modules (floor 5, derived 4
+    # module(s))`) was one grep away from being in the bank's own log. A
+    # could-not-look that points at a file the reader cannot reach is a
+    # could-not-look nobody can act on.
+    if [ "$rc" != "0" ]; then
+        cannot_look "a --collect-only exited ${rc} (see ${out}) — its last lines:
+$(grep -v '^[[:space:]]*$' "$out" 2>/dev/null | tail -5)"
+    fi
     [ -s "$out" ] ||
         cannot_look "a --collect-only exited 0 and printed nothing (${out}) — an empty collection makes every union below vacuously equal"
     # THE WORLD FLOOR, ASSERTED WHERE THE IDS ARE READ rather than once at the
@@ -2852,8 +2978,19 @@ case_clone_into_gets_a_main_from_either_source_shape() {
     local branch="hl-scratch-rung-branch"
 
     CURRENT="clone_into gives the clone a main from a source on main AND from one on a rung branch"
-    want=$(git -C "$ROOT" rev-parse --verify -q main 2>/dev/null) || {
-        bad "this checkout has no local main — the case has no sha to aim at"
+    # THE BASE IS DERIVED, NOT SPELLED `main`. This line used to be
+    # `git -C "$ROOT" rev-parse --verify -q main`, which is exit 1 on a runner:
+    # `actions/checkout` detaches HEAD and creates no local branch, so the case
+    # reported "this checkout has no local main" and asserted nothing while a
+    # perfectly good `refs/remotes/origin/main` sat beside it unasked. The
+    # reader in `drive_preamble.sh` §8 answers for every shape, and a REFUSAL
+    # from it is could-not-look (exit 2) rather than a red: a case with no base
+    # ref has not cleared itself.
+    local base
+    base="$(drive_base_ref "$ROOT")" ||
+        cannot_look "no base ref in ${ROOT} — this case has no sha to aim at"
+    want=$(git -C "$ROOT" rev-parse --verify -q "${base}^{commit}") || {
+        bad "the base ref ${base} does not resolve to a commit in ${ROOT}"
         return 0
     }
     rm -rf "$src"
@@ -2924,8 +3061,12 @@ case_the_dry_loop_derives_a_scope_from_a_source_ahead_of_main() {
     local branch="g10f-scratch-ahead-branch" probe="apps/example/services.py"
 
     CURRENT="a dry --loop in a clone of a source AHEAD of main derives its scope"
-    want=$(git -C "$ROOT" rev-parse --verify -q main 2>/dev/null) || {
-        bad "this checkout has no local main — the case has no sha to fork from"
+    # Derived, for the reason the case above states in full.
+    local base
+    base="$(drive_base_ref "$ROOT")" ||
+        cannot_look "no base ref in ${ROOT} — this case has no sha to fork from"
+    want=$(git -C "$ROOT" rev-parse --verify -q "${base}^{commit}") || {
+        bad "the base ref ${base} does not resolve to a commit in ${ROOT}"
         return 0
     }
     [ -f "${ROOT}/${probe}" ] || {
@@ -2973,6 +3114,7 @@ case_the_dry_loop_derives_a_scope_from_a_source_ahead_of_main() {
         cd "${WORK}/g10f-ahead" &&
             DJB_GATE_LEGS_DRY=1 \
                 DJB_GATE_LEASE_DIR="${WORK}/lease" \
+                DJB_LOOP_HERE="$DRY_LOOP_HERE" \
                 DJB_GATE_SANCTION="test_list_legs: the ahead-of-main dry scope" \
                 ./scripts/check.sh --loop
     ) >"$out" 2>&1 || rc=$?
@@ -3005,6 +3147,7 @@ case_the_dry_loop_derives_a_scope_from_a_source_ahead_of_main() {
             cd "${WORK}/g10f-onmain" &&
                 DJB_GATE_LEGS_DRY=1 \
                     DJB_GATE_LEASE_DIR="${WORK}/lease" \
+                    DJB_LOOP_HERE="$DRY_LOOP_HERE" \
                     DJB_GATE_SANCTION="test_list_legs: the on-main dry scope" \
                     ./scripts/check.sh --loop
         ) >"$out" 2>&1 || rc=$?

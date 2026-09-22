@@ -31,7 +31,8 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: .secrets.baseline README.md TEMPLATE_VERSION apps/example/models.py docs/product docs/runbooks/deploy.md scripts/archaeology_lib.sh scripts/backup.sh scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/kill_mine.sh scripts/publish.sh scripts/queue_cited.sh scripts/sweep.sh scripts/tests
+# drives: .secrets.baseline README.md TEMPLATE_VERSION apps/example/models.py docs/product docs/runbooks/deploy.md scripts/archaeology_lib.sh scripts/backup.sh scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/publish.sh scripts/queue_cited.sh scripts/sweep.sh scripts/tests
+# cites: CHANGELOG.md manage.py scripts/test_impact.json scripts/pytest_durations.json scripts/gate_member_durations.json
 # The refusal-and-property drive for `scripts/publish.sh`.
 #
 # Exit: 0 every case held · 1 a refusal did not fire or a property did not hold
@@ -212,6 +213,21 @@ build_fixture() {
     echo "rules: []" >"$d/quality/rules.yaml"
     echo "| Instrument | a | b | c | d |" >"$d/docs/product/instruments.md"
     echo "# the gate" >"$d/scripts/check.sh"
+    # A FLAG LITERAL IN THE FIXTURE'S OWN GATE, for `changelog-flags` to
+    # resolve a green claim against. One line, and it is the whole of what
+    # that leg reads: a flag is a literal in the named script, or it is not.
+    echo "# --loop is this fixture gate's one declared flag" >>"$d/scripts/check.sh"
+    # R12's three members. THE ARM IS DECORATION WITHOUT THEM — exactly R11's
+    # lesson one rule over: a bucket rule whose row prints 0 is as untested as
+    # a rule that is missing, and R12's whole point is that these three files
+    # do NOT reach the artifact. They are planted with real-shaped content
+    # (the writers' own top-level keys) so that a case reading the artifact
+    # for them is reading for the thing a consumer would actually inherit.
+    printf '{"generated":{"tree":"tree:%s","pytest":3},"tests":{}}\n' \
+        "0000000000000000000000000000000000000000" >"$d/scripts/test_impact.json"
+    printf '{"a::b": 0.5}\n' >"$d/scripts/pytest_durations.json"
+    printf '{"measured_at":"tree:0000000","machine":"fixture","members":{}}\n' \
+        >"$d/scripts/gate_member_durations.json"
     echo "[project]" >"$d/pyproject.toml"
     printf '*.log\n' >"$d/.gitignore"
     echo "# the guide" >"$d/CLAUDE.md"
@@ -299,8 +315,51 @@ else
 $(grep -E '^ +R[0-9]+' "$OUT" | sed 's/^/             /')"
 fi
 
+# R12 — THE MEASURED FILES, and the same argument as R11's above: the arm is
+# proven by a fixture that has members for it to place, never by the rule
+# existing. The row must be a NONZERO TRIM, because a zero row and a deleted
+# clause read identically in a green run.
+if [ "$RC" = 0 ] && grep -E '^ +R12 +TRIM +3$' "$OUT" >/dev/null; then
+    ok "R12 places the three measured files in TRIM, and the fixture has all three"
+else
+    bad "R12's row is not \`TRIM 3\` in the census — the three measured files are the
+             whole population of that rule, so anything else means the arm is
+             unreached or the fixture lost a member. Census rows:
+$(grep -E '^ +R[0-9]+' "$OUT" | sed 's/^/             /')"
+fi
+
 run "$FIX" --census --to "$WORK/x"
 [ "$RC" = 2 ] && ok "--census with a target is refused (it exports nothing)" || bad "--census --to: exit $RC, want 2"
+
+# --- case_r12_equals_the_readers_defaults ------------------------------------
+# R12 IS THE ONE HAND LIST IN THE BUCKET RULES, AND THIS IS WHAT RE-DERIVES IT.
+# The three names are typed in `rules_for` because there is no glob that means
+# "the files our own boxes measured" — `scripts/*.json` would sweep up a
+# configuration file the next rung writes. A hand list is legal here only
+# because the population has an independent derivation: every one of the three
+# is some reader's DEFAULT path, spelled at that reader's own `:-` fallback.
+# So this case greps the readers and compares the two sets. A fourth measured
+# file — a new default with no R12 row — reds here rather than shipping.
+#
+# IT READS THE REAL CHECKOUT, not the fixture, and that is deliberate: the
+# derivation being pinned is a property of THIS tree's readers, and a fixture
+# copy of them would only ever agree with itself.
+r12_rule=$(awk '/hit="\$hit R12"/ {print}' "$ROOT/scripts/archaeology_lib.sh" |
+    grep -oE 'scripts/[a-z_]+\.json' | LC_ALL=C sort -u || true)
+r12_readers=$( {
+    grep -ohE 'DJB_GATE_DURATIONS_PATH:-scripts/[a-z_]+\.json' "$ROOT/scripts/check.sh"
+    grep -ohE 'DJB_GATE_MEMBER_DURATIONS:-scripts/[a-z_]+\.json' "$ROOT/scripts/check.sh"
+    grep -ohE 'LOOP_SCOPE_MAP_PATH="scripts/[a-z_]+\.json"' "$ROOT/scripts/loop_tier.sh"
+} | grep -oE 'scripts/[a-z_]+\.json' | LC_ALL=C sort -u || true)
+if [ -z "$r12_rule" ] || [ -z "$r12_readers" ]; then
+    bad "case_r12_equals_the_readers_defaults could not look: rule set '$r12_rule', reader set '$r12_readers' — one of the two greps found nothing, so nothing was compared"
+elif [ "$r12_rule" = "$r12_readers" ]; then
+    ok "R12's names ARE the three readers' own defaults ($(echo "$r12_rule" | tr '\n' ' '))"
+else
+    bad "R12 and the readers' defaults disagree — a measured file with no bucket row ships, or a row names a file nobody reads.
+             R12:     $(echo "$r12_rule" | tr '\n' ' ')
+             readers: $(echo "$r12_readers" | tr '\n' ' ')"
+fi
 
 echo "dirt" >"$FIX/untracked-thing"
 run "$FIX" --census
@@ -321,6 +380,50 @@ else
     bad "unplaced path: exit $RC, want 2 naming UNPLACEABLE.txt"
 fi
 (cd "$FIX" && git rm -q UNPLACEABLE.txt && git -c user.name=t -c user.email=t@t commit -q -m undo)
+
+# --- R0: a reserved path is refused, and the refusal NAMES it ----------------
+# THE DRAWER IS THE PRODUCT'S. A `local/` sibling of a template directory, and
+# a `.local.md` sibling of a template document, are where a product extends the
+# system layer without editing it (the extension-point decision) — which works only
+# because the template never ships one, so a release cannot conflict with a
+# drawer. Before R0 this fixture published a tracked drawer file CLEAN: bucket
+# R3's `scripts/*` glob placed it in SHIP, every leg agreed, and the artifact
+# carried it. The bucket rules were not wrong; the path was, and nothing read
+# the path.
+#
+# BOTH SHAPES, because they are two globs and either can rot alone: a `local/`
+# directory segment anywhere, and a `.local.md` document beside its template
+# original. The second is planted under the docs tree the manifest actually
+# reserves it in, and its name is ASSEMBLED for this drive's standing reason —
+# a literal would be a pointer in every artifact this file helps publish.
+#
+# AND THE THIRD SHAPE IS AN EXACT PATH, WHICH IS WHY IT NEEDS ITS OWN CASE.
+# The fixtures drawer is a `conftest.py` sibling pytest collects by name, so
+# it cannot live under `apps/local/` and match the first glob — and R1 ships
+# `apps/*` whole, so before R0 named it a tracked one shipped in silence.
+# A shape that no glob reaches is the shape a glob-only drive cannot notice.
+R0_DRAWER="scripts/local/legs/x.sh"
+R0_DOC="$PROD/instruments"".local.md"
+R0_FIXTURES="apps/conftest""_local.py"
+for r0_path in "$R0_DRAWER" "$R0_DOC" "$R0_FIXTURES"; do
+    mkdir -p "$FIX/$(dirname "$r0_path")"
+    printf '# a product-owned extension\n' >"$FIX/$r0_path"
+    (cd "$FIX" && git add -A && git -c user.name=t -c user.email=t@t commit -q -m reserved)
+    run "$FIX" --census
+    if [ "$RC" = 2 ] && grep -qF "$r0_path" "$OUT" && grep -q "RESERVED PATH IS TRACKED" "$OUT"; then
+        ok "R0: a tracked $r0_path is exit 2, named — the template ships no drawer"
+    else
+        bad "R0 reserved path $r0_path: exit $RC, want 2 naming it"
+        sed 's/^/         /' "$OUT"
+    fi
+    (cd "$FIX" && git rm -q "$r0_path" && git -c user.name=t -c user.email=t@t commit -q -m undo)
+done
+run "$FIX" --census
+if [ "$RC" = 0 ] && grep -q "R0   reserved        none tracked" "$OUT"; then
+    ok "R0 stays silent with no drawer tracked, and SAYS it looked"
+else
+    bad "R0 with no reserved path: exit $RC, want 0 with the census line printed"
+fi
 
 printf '# nothing\n' >"$FIX/$SK/not-a-ledger.md"
 (cd "$FIX" && git add -A && git -c user.name=t -c user.email=t@t commit -q -m orphan)
@@ -357,6 +460,25 @@ TREE1=$(git -C "$ART" rev-parse HEAD^{tree} 2>/dev/null || echo none)
 [ -f "$ART/$CY/$PLAN" ] &&
     bad "the trim did not trim: cycles/plan.md is in the artifact" ||
     ok "TRIM holds — no cycle plan reached the artifact"
+# --- case_the_measured_files_are_trimmed -------------------------------------
+# R12's WHOLE POINT, asserted over the artifact rather than over the census.
+# The census row above says what the rule DECIDED; this says what the export
+# DID, and the two are different claims — the trim loop reads the census's own
+# TRIM list, so a rule that classified correctly and a file that actually left
+# are still two facts. Step 3's file-set leg green in the clean run above is
+# the third: the artifact is exactly the ship-set, so a trimmed file that
+# somehow survived would have reddened there too.
+m_left=""
+for m in scripts/test_impact.json scripts/pytest_durations.json scripts/gate_member_durations.json; do
+    [ -e "$ART/$m" ] && m_left="$m_left $m"
+    git -C "$ART" ls-files --error-unmatch "$m" >/dev/null 2>&1 && m_left="$m_left $m(indexed)"
+done
+if [ -z "$m_left" ]; then
+    ok "the three MEASURED files are not in the artifact — on disk or in its index"
+else
+    bad "the measured files reached the artifact:$m_left"
+fi
+
 [ -d "$ART/docs/product/skeletons" ] &&
     bad "the skeleton SOURCES shipped at their own path" ||
     ok "the skeleton sources are consumed, not shipped"
@@ -557,10 +679,122 @@ gitq() { # gitq <dir> <args...> — git with a fixture identity and no signing
     git -C "$d" -c user.name=t -c user.email=t@t \
         -c commit.gpgsign=false -c tag.gpgsign=false "$@"
 }
-fixture_release() { # fixture_release <version> [with-changelog-section]
+# --- leg changelog-flags: the release section's flag claims ------------------
+# DRIVEN AT THE BODY, NOT THROUGH THE GATE, for the reason every drive in this
+# tree states: the body is `docs_changelog_flags` in `scripts/docs_legs.sh`,
+# publish.sh is one of its callers, and a case that can plant a CHANGELOG and
+# read the finding line is a case that can say WHICH span was judged. The
+# WIRING — that release mode calls it at all — is its own case further down,
+# beside the other release cases, because that is a property of publish.sh.
+. "$ROOT/scripts/gate_refuse.sh"
+. "$ROOT/scripts/docs_legs.sh"
+CLR="$WORK/clroot"
+clroot() { # clroot <changelog-section-body>
+    rm -rf "$CLR"
+    mkdir -p "$CLR/scripts" "$CLR/apps/thing/management/commands"
+    printf '# a gate\n# the flags it really has: --loop --fast\n' >"$CLR/scripts/gate.sh"
+    printf '"""a command"""\n# it really takes --email\n' >"$CLR/apps/thing/management/commands/dothing.py"
+    {
+        printf '# Changelog\n\n## [9.9.9]\n\n'
+        printf '%s\n' "$1"
+        printf '\n## [9.9.8]\n\n- and this section is HISTORY: `./scripts/gate.sh --gone`\n'
+    } >"$CLR/CHANGELOG.md"
+}
+clflags() { # clflags <version> ; output to $CLOUT, status in $CLRC
+    CLOUT="$WORK/clflags.out"
+    set +e
+    docs_changelog_flags "$CLR" "$1" >"$CLOUT" 2>"$WORK/clflags.err"
+    CLRC=$?
+    set -e
+}
+
+# case_a_flag_no_script_declares_reds
+clroot '- run `./scripts/gate.sh --nosuchflag` at every boundary.'
+clflags 9.9.9
+if [ "$CLRC" = 1 ] && grep -q 'changelog-flags: --nosuchflag is not a literal in scripts/gate.sh' "$CLOUT"; then
+    ok "case_a_flag_no_script_declares_reds: a flag the named script does not carry is exit 1, flag and script named"
+else
+    bad "case_a_flag_no_script_declares_reds: exit $CLRC, want 1. Output:
+$(sed 's/^/             /' "$CLOUT")"
+fi
+
+# case_an_unscripted_span_is_counted_not_judged
+# THE MEASURED SHAPE, not an invented one: a subcommand and a flag in one span
+# with the script named only in the PROSE around it. The prose makes the script
+# obvious to a human and this leg still refuses to infer it, because inferring
+# is naming a cause it has not proven. It must be COUNTED, and the count must
+# be printed, so the size of what was not judged is visible.
+clroot '- `./scripts/gate.sh` is the gate; the recipe is printed by `gate --nosuchflag` first.'
+clflags 9.9.9
+if [ "$CLRC" = 0 ] && [ "$DOCS_CHANGELOG_UNRESOLVED" = 1 ] && [ "$DOCS_CHANGELOG_CLAIMS" = 0 ]; then
+    ok "case_an_unscripted_span_is_counted_not_judged: a flag span naming no script is counted (1), judged never, exit 0"
+else
+    bad "case_an_unscripted_span_is_counted_not_judged: exit $CLRC, claims $DOCS_CHANGELOG_CLAIMS, unresolved $DOCS_CHANGELOG_UNRESOLVED; want 0, 0, 1. Output:
+$(sed 's/^/             /' "$CLOUT")"
+fi
+
+# case_a_declared_flag_is_green — both resolvers, in one section
+clroot '- `./scripts/gate.sh --loop` at every boundary, and `manage.py dothing --email <a>`.'
+clflags 9.9.9
+if [ "$CLRC" = 0 ] && [ "$DOCS_CHANGELOG_CLAIMS" = 2 ] && [ ! -s "$CLOUT" ]; then
+    ok "case_a_declared_flag_is_green: a script flag and a command flag that both exist are exit 0, 2 claims, no finding"
+else
+    bad "case_a_declared_flag_is_green: exit $CLRC, claims $DOCS_CHANGELOG_CLAIMS. Output:
+$(sed 's/^/             /' "$CLOUT")"
+fi
+
+# OLDER SECTIONS ARE HISTORY AND ARE NOT READ. Every fixture above carries a
+# `## [9.9.8]` section whose span names a flag `scripts/gate.sh` does not have.
+# It has been silent in all three cases; this asserts that rather than leaving
+# it as a thing nobody looked at — and it is the property that keeps an
+# instrument from ever being the reason a shipped release note is rewritten.
+clroot '- nothing to say.'
+clflags 9.9.9
+if [ "$CLRC" = 0 ] && ! grep -q -- '--gone' "$CLOUT"; then
+    ok "an older section's stale flag claim is NOT read — the leg judges the section being released and no other"
+else
+    bad "the leg read past its own section: exit $CLRC. Output:
+$(sed 's/^/             /' "$CLOUT")"
+fi
+
+# THE TWO COULD-NOT-LOOKS. An instrument that cannot look says so.
+clflags 4.4.4
+if [ "$CLRC" = 2 ] && grep -q 'has no `## \[4.4.4\]` section' "$WORK/clflags.err"; then
+    ok "a version with no section in the CHANGELOG is exit 2 — could-not-look, named"
+else
+    bad "absent section: exit $CLRC, want 2. stderr:
+$(sed 's/^/             /' "$WORK/clflags.err")"
+fi
+
+clroot '- run `./scripts/absent.sh --whatever` once.'
+clflags 9.9.9
+if [ "$CLRC" = 2 ] && grep -q 'names scripts/absent.sh, which is not in' "$WORK/clflags.err"; then
+    ok "a claim naming a script that is not in the tree is exit 2 — the leg cannot read what the claim is about"
+else
+    bad "absent script: exit $CLRC, want 2. stderr:
+$(sed 's/^/             /' "$WORK/clflags.err")"
+fi
+
+clroot '- an unbalanced ` span that never closes.'
+clflags 9.9.9
+if [ "$CLRC" = 2 ] && grep -q 'ODD number of' "$WORK/clflags.err"; then
+    ok "a section with unbalanced backticks is exit 2 — every span after the break is mis-paired"
+else
+    bad "unbalanced backticks: exit $CLRC, want 2. stderr:
+$(sed 's/^/             /' "$WORK/clflags.err")"
+fi
+rm -rf "$CLR"
+
+fixture_release() { # fixture_release <version> [with-section|with-bad-flag]
     printf '%s\n' "$1" >"$FIX/TEMPLATE_VERSION"
     if [ "${2:-}" = with-section ]; then
         printf '# changelog\n\n## [%s]\n\n- the fixture drop\n' "$1" >"$FIX/CHANGELOG.md"
+    elif [ "${2:-}" = with-bad-flag ]; then
+        # A SECTION THAT EXISTS AND LIES. The `changelog` leg above is green on
+        # it — there IS a section — and only `changelog-flags` can see that the
+        # thing it tells a consumer to type does not exist in what ships.
+        printf '# changelog\n\n## [%s]\n\n- the fixture drop: `./scripts/check.sh --nosuchflag`\n' \
+            "$1" >"$FIX/CHANGELOG.md"
     else
         printf '# changelog\n' >"$FIX/CHANGELOG.md"
     fi
@@ -601,6 +835,23 @@ if [ "$RC" = 1 ] && grep -q "VIOLATION  changelog" "$OUT" &&
     ok "a release whose CHANGELOG has no section for the version is exit 1 — no commit, no tag"
 else
     bad "changelog leg: exit $RC, commits $(pub_commits), want 1 and 1"
+fi
+
+# --- changelog-flags IS WIRED INTO RELEASE MODE ------------------------------
+# The body's own cases are above; this is the only thing they cannot say — that
+# `publish.sh --release` calls it at all, over the ARTIFACT, after `changelog`,
+# and that its finding is a VIOLATION (exit 1, nothing committed) rather than a
+# printed remark. Without this case the leg could be deleted from publish.sh
+# and every case above would still be green.
+fixture_release 0.2.0 with-bad-flag
+run "$FIX" --release "$PUB" --to "$ART"
+if [ "$RC" = 1 ] && grep -q "VIOLATION  changelog-flags: --nosuchflag is not a literal in scripts/check.sh" "$OUT" &&
+    grep -q "ok — ## \[0.2.0\] is in the published CHANGELOG.md" "$OUT" &&
+    [ "$(pub_commits)" = 1 ] && ! git -C "$PUB" rev-parse -q --verify refs/tags/v0.2.0 >/dev/null; then
+    ok "changelog-flags fires in release mode: the section is there, its flag is not — exit 1, no commit, no tag"
+else
+    bad "changelog-flags wiring: exit $RC, commits $(pub_commits), want 1 and 1. Transcript:
+$(grep -E 'changelog' "$OUT" | sed 's/^/             /')"
 fi
 
 # --- the happy path, and the equality that is the whole claim ----------------

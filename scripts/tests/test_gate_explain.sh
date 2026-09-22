@@ -22,6 +22,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: CLAUDE.md apps/ config/ frontend/src/components quality/ scripts/kill_mine.sh scripts/queue_cited.sh scripts/sweep.sh
+# cites: docs/product/architecture.md
 # The drive for the LEGIBLE RED — `quality/gate.py`'s per-rule trailer, its two
 # readers (`--explain <id>` and the listing `--rules` aliases), and `--terse`.
 #
@@ -47,6 +48,10 @@ esac
 #                 override rows, and NEVER the ENFORCEMENT BROKEN block
 #   the CENSUS  — the trailer and CLI censuses SAY they ran, so deleting the
 #                 call is visible rather than silent
+#   the TREE CENSUS — a rule's `census:` callable, run by `--explain <id>` over
+#                 this tree: it prints, an absent key changes nothing, an
+#                 unresolvable one is exit 2 naming it, a raising one is a
+#                 could-not-look line rather than a dead reader
 #   the MEMO    — the per-rule cache in front of every `check:`: one tree gives
 #                 one key, a moved input misses THAT rule and names what moved,
 #                 a hit replays the red rather than printing ok, a rule that
@@ -125,6 +130,18 @@ cannot_look() {
     exit 2
 }
 
+# >>> one case, by name >>>
+# `--case <name>` runs exactly that case and nothing else. The seam exists so
+# rule 60's drawer census can prove ONE PLANT PER DRAWER through the drive that
+# already owns the property, rather than re-implementing the drawer's reader —
+# a second implementation of a reader is a second opinion about it. A name this
+# file does not define is exit 2, never a silent run of nothing.
+ONLY_CASE=""
+run_case() {
+    [ -z "$ONLY_CASE" ] || [ "$1" = "$ONLY_CASE" ] || return 0
+    "$@"
+}
+# <<< one case, by name <<<
 case "${1:-}" in
 "") ;;
 --list)
@@ -134,8 +151,19 @@ case "${1:-}" in
     grep -n '^case_[A-Za-z0-9_]*() {' "$0" | sed 's/() {.*//; s/^/  /'
     exit 0
     ;;
+--case)
+    [ -n "${2:-}" ] || {
+        echo "!! --case needs a case name; --list names them" >&2
+        exit 2
+    }
+    grep -q "^${2}() {" "$0" || {
+        echo "!! --case: test_gate_explain.sh defines no case named '${2}'; --list names them" >&2
+        exit 2
+    }
+    ONLY_CASE="$2"
+    ;;
 *)
-    echo "!! unknown argument '$1': test_gate_explain.sh takes nothing or --list" >&2
+    echo "!! unknown argument '$1': test_gate_explain.sh takes nothing, --list or --case <name>" >&2
     exit 2
     ;;
 esac
@@ -460,6 +488,8 @@ from quality import gate
 out = pathlib.Path(os.environ["DJB_READERS_DIR"])
 probes = [
     ("explain-13", ["--explain", "13"]),
+    ("explain-54", ["--explain", "54"]),
+    ("explain-55", ["--explain", "55"]),
     ("explain-999", ["--explain", "999"]),
     ("listing-explain", ["--explain"]),
     ("listing-rules", ["--rules"]),
@@ -1268,6 +1298,169 @@ case_the_listing_is_the_same_under_both_names() {
     fi
 }
 
+# --- the remedies: a fix form per finding class (ADR gate-6) -----------------
+
+case_explain_prints_a_remedy_per_finding_class() {
+    reader_probe explain-54
+    CURRENT="case_explain_prints_a_remedy_per_finding_class"
+    local fifty_four
+    fifty_four="$(grep -c '^remedies: ' "$OUT" || true)"
+    if [ "$RC" != "0" ]; then
+        bad "--explain 54 exited ${RC}"
+        return
+    fi
+    if [ "$fifty_four" != "3" ]; then
+        bad "--explain 54 printed ${fifty_four} remedies lines, not one per finding class (3)"
+        return
+    fi
+    if ! grep -q '^remedies: nonconforming .*RENAMED_PERMISSIONS' "$OUT" ||
+        ! grep -q '^remedies: role-value .*holds(actor' "$OUT" ||
+        ! grep -q '^remedies: read .*require(actor' "$OUT"; then
+        bad "--explain 54's remedies do not name the three fix forms a reader writes instead"
+        return
+    fi
+    reader_probe explain-55
+    CURRENT="case_explain_prints_a_remedy_per_finding_class"
+    local fifty_five
+    fifty_five="$(grep -c '^remedies: ' "$OUT" || true)"
+    if [ "$RC" = "0" ] && [ "$fifty_five" = "1" ] && grep -q '^remedies: \* ' "$OUT"; then
+        ok "rule 54 prints three remedies (nonconforming, role-value, read) and rule 55 the one its per-app classes share"
+    else
+        bad "--explain 55 exited ${RC} with ${fifty_five} remedies lines; its per-app classes share exactly one"
+    fi
+}
+
+case_a_finding_of_a_remedied_rule_names_its_fix_form() {
+    forge "case_a_finding_of_a_remedied_rule_names_its_fix_form" '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+
+gate.record_violation("54", "apps/acme/selectors.py:12: asks no gadget.read")
+with_remedy = gate.violations[-1]
+gate.record_violation("13", "apps/acme/services.py:3: a write outside a service")
+without = gate.violations[-1]
+print("54:", with_remedy)
+print("13:", without)
+sys.exit(
+    0
+    if with_remedy.endswith("fix form: --explain 54") and "fix form" not in without
+    else 1
+)
+'
+    if [ "$RC" = "0" ]; then
+        ok "a finding of a rule that declares remedies ends with 'fix form: --explain 54'; one of a rule that declares none carries no tail"
+    else
+        bad "the fix-form pointer is missing from a remedied rule's finding, or was added to a rule that has no remedies"
+    fi
+}
+
+# --- the unmeasured ratchet class (ADR gate-6) -------------------------------
+
+case_an_unmeasured_class_prints_the_line_to_paste() {
+    forge "case_an_unmeasured_class_prints_the_line_to_paste" '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+from quality.checks import Finding
+
+hit = Finding("apps/acme/selectors.py", 12, "asks no gadget.read", "acme.read")
+unrecorded = gate.apply_ratchets({"id": "54", "ratchets": {}}, [hit])
+headers = [f for f in unrecorded if f.path == "quality/rules.yaml"]
+kept = [f for f in unrecorded if f.path != "quality/rules.yaml"]
+recorded = gate.apply_ratchets({"id": "54", "ratchets": {"acme.read": 1}}, [hit])
+template_app = gate.apply_ratchets(
+    {"id": "54", "ratchets": {}},
+    [Finding("apps/core/selectors.py", 12, "asks no gadget.read", "core.read")],
+)
+paste = "acme.read: 1  # recorded-at %s [fold]" % gate.recording_sha()
+print("headers:", [f.msg for f in headers])
+print("kept:", [str(f) for f in kept])
+print("after recording:", [str(f) for f in recorded])
+print("template app:", [str(f) for f in template_app])
+ok = (
+    len(headers) == 1
+    and paste in headers[0].msg
+    and "apps/acme" in headers[0].msg
+    and "platform_apps" in headers[0].msg
+    and "quality/local/rules.yaml" in headers[0].msg
+    and chr(34) + "54" + chr(34) + ":" in headers[0].msg
+    and len(kept) == 1
+    and not recorded
+    and not [f for f in template_app if f.path == "quality/rules.yaml"]
+    and len(template_app) == 1
+)
+sys.exit(0 if ok else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "a class keyed on an app outside the partition with no entry is still exit 1 and prints the ratchets: line to paste INTO THE DRAWER (quality/local/rules.yaml, under its \"54\": block); pasting it makes the class a note; a template app is offered nothing"
+    else
+        bad "the unmeasured branch did not print the line to paste, softened the violation, or offered a template app a recording (see ${OUT})"
+    fi
+}
+
+# --- the product valve, end to end (V-D rider) -------------------------------
+
+case_a_product_valve_suppresses_and_is_counted() {
+    forge "case_a_product_valve_suppresses_and_is_counted" '
+import copy
+import pathlib
+import shutil
+import sys
+sys.argv = ["gate"]
+from quality import gate
+
+rule = copy.deepcopy(gate.RULES_BY_ID["1"])
+rule["id"] = "acme-1"
+made = []
+for base in (gate.CANARY_DIR, gate.NEGATIVE_DIR):
+    dst = base / "acme-1"
+    shutil.copytree(base / "1", dst)
+    made.append(dst)
+through = max(int(r["id"]) for r in gate.RULES if gate.is_template_id(str(r["id"])))
+entry = rule["canaries"][0]
+rc = 1
+try:
+    with gate._as_product_tree("acme", through):
+        plant = gate.Plant()
+        try:
+            plant.put(
+                gate.CANARY_DIR / "acme-1" / entry["fixture"],
+                entry["plant_at"],
+                entry["mode"],
+            )
+            bare, _t, _why = gate.run_rule(rule, floors=False)
+            if not bare:
+                raise SystemExit(1)
+            target = pathlib.Path(gate.ROOT) / bare[0].path
+            lines = target.read_text().splitlines()
+            index = bare[0].line - 1
+            lines[index] = lines[index] + "  # rule-acme-1: the product excuses its own rule here"
+            target.write_text("\n".join(lines) + "\n")
+            valved, _t2, _why2 = gate.run_rule(rule, floors=False)
+            counted = [
+                row
+                for row in gate.all_overrides()
+                if row[0] == "acme-1" and row[1] == bare[0].path
+            ]
+        finally:
+            plant.restore()
+    print("unvalved:", [str(f) for f in bare])
+    print("valved:", [str(f) for f in valved])
+    print("counted:", counted)
+    rc = 0 if (not valved and len(counted) == 1) else 1
+finally:
+    for d in made:
+        shutil.rmtree(d, ignore_errors=True)
+sys.exit(rc)
+'
+    if [ "$RC" = "0" ]; then
+        ok "under a declared namespace a rule-acme-1 valve suppresses the product rule's own finding AND is counted in the standing override census"
+    else
+        bad "a product's valve did not suppress its own rule end to end, or was suppressed without being counted (see ${OUT})"
+    fi
+}
+
 case_an_unknown_flag_is_still_exit_2() {
     reader_probe unknown-flag
     CURRENT="case_an_unknown_flag_is_still_exit_2"
@@ -1665,39 +1858,1113 @@ sys.exit(0 if cold == warm and all(rc == 0 for rc, _ in warm.values()) and banke
         bad "a reader's output moved when the memo was warmed, or a reader stopped answering (see ${OUT})"
     fi
 }
-case_every_rule_declares_a_valve
-case_a_rule_with_no_valve_is_enforcement_broken
-case_a_none_valve_with_no_sentence_is_enforcement_broken
-case_a_valve_declaring_both_forms_is_enforcement_broken
-case_a_red_carries_its_trailer_once_after_its_findings
-case_the_trailers_valve_is_the_marker_a_reader_can_paste
-case_the_budget_trailer_names_the_budget_file
-case_a_rule_whose_trailer_lost_a_key_is_enforcement_broken
-case_a_frontend_finding_prints_the_slash_valve_token
-case_the_plant_refuses_a_path_that_already_exists
-case_the_drive_creates_no_frontend_tree_on_a_tree_that_has_none
-case_a_rule_with_findings_in_two_kinds_prints_both_valve_tokens
-case_the_trailer_and_cli_censuses_print_and_are_asserted
-case_a_function_less_services_module_is_not_a_budget_subject
-case_one_function_is_a_subject_and_still_reds_without_a_ceiling
-case_a_new_function_subject_prints_its_paste_line
-case_explain_prints_the_rules_own_declaration
-case_explain_of_an_unknown_id_is_exit_2_naming_the_listing
-case_the_listing_is_the_same_under_both_names
-case_an_unknown_flag_is_still_exit_2
-case_terse_keeps_the_count_and_drops_only_the_ok_lines
-case_terse_prints_enforcement_broken_in_full
-case_a_memoised_rule_is_not_rescanned
-case_a_moved_input_misses_one_rule_and_names_it
-case_a_hit_replays_the_red
-case_the_selftest_bypasses_the_memo_and_its_canaries_still_fire
-case_memo_no_scans_always_and_needs_a_reason
-case_an_undecidable_key_scans
-case_the_three_readers_ignore_the_memo
-case_an_empty_capture_is_could_not_look
-case_the_exit_census_never_lowers_the_drives_own_status
+# --- the id grammar: two namespaces (ADR gate-5) -----------------------------
+#
+# WHY THESE CASES LIVE IN THIS FILE AND NOT IN ONE OF THEIR OWN. The rung that
+# wrote them asked for a drive sentinel of their own in the gate script and
+# took the lead's fallback instead: a registration block is a dozen lines in a
+# file another rung was editing in the same wave, and an unregistered drive is
+# a promise rather than a leg (this file's own header says so, and it shipped
+# hand-run for a wave for exactly that reason). They belong beside the FIELD
+# cases above either way — the subject is the same one, `consistency()`
+# refusing a declaration a reader cannot act on.
+
+case_a_product_rule_under_its_namespace_loads_and_fires() {
+    forge "case_a_product_rule_under_its_namespace_loads_and_fires" '
+import copy
+import shutil
+import sys
+sys.argv = ["gate"]
+from quality import gate
+
+rule = copy.deepcopy(gate.RULES_BY_ID["1"])
+rule["id"] = "acme-1"
+made = []
+for base in (gate.CANARY_DIR, gate.NEGATIVE_DIR):
+    dst = base / "acme-1"
+    shutil.copytree(base / "1", dst)
+    made.append(dst)
+gate.RULE_ID_NAMESPACE = "acme"
+gate.TEMPLATE_IDS_THROUGH = max(
+    int(r["id"]) for r in gate.RULES if gate.is_template_id(str(r["id"]))
+)
+gate.RULES.append(rule)
+gate.RULES_BY_ID["acme-1"] = rule
+rc = 1
+try:
+    gate.broken.clear()
+    gate.consistency()
+    named = [b for b in gate.broken if "acme-1" in b]
+    entry = rule["canaries"][0]
+    plant = gate.Plant()
+    try:
+        plant.put(gate.CANARY_DIR / "acme-1" / entry["fixture"], entry["plant_at"], entry["mode"])
+        findings, _floors, why = gate.run_rule(rule, floors=False)
+    finally:
+        plant.restore()
+    print("consistency named acme-1:", named)
+    print("could-not-look:", repr(why))
+    print("findings:", [str(f) for f in findings])
+    rc = 0 if (not named and findings and not why) else 1
+finally:
+    for d in made:
+        shutil.rmtree(d, ignore_errors=True)
+sys.exit(rc)
+'
+    if [ "$RC" = "0" ]; then
+        ok "acme-1 loaded under rule_id_namespace: acme, planted from quality/canary/acme-1/ and fired through the real scope"
+    else
+        bad "a product rule under a declared namespace did not load, or its canary did not fire through the real scope"
+    fi
+}
+
+case_a_product_rule_with_an_integer_id_is_refused() {
+    forge "case_a_product_rule_with_an_integer_id_is_refused" '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+gate.RULE_ID_NAMESPACE = "acme"
+gate.TEMPLATE_IDS_THROUGH = 59
+problem = gate.id_shape_problem("60")
+print(problem)
+sys.exit(0 if problem and "acme-<n>" in problem and "60" in problem else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "a bare integer above the folded template release is refused, naming acme-<n>"
+    else
+        bad "a product that typed an integer id was accepted, or the refusal did not name the grammar"
+    fi
+}
+
+case_a_namespaced_id_on_a_template_tree_is_refused() {
+    forge "case_a_namespaced_id_on_a_template_tree_is_refused" '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+if gate.RULE_ID_NAMESPACE is not None:
+    print("this tree declares a namespace; the template case cannot be driven here")
+    sys.exit(1)
+problem = gate.id_shape_problem("acme-1")
+valve = gate.override_re("#").search("# rule-acme-1: a namespace nobody claimed")
+print(problem)
+print("valve matched:", bool(valve))
+sys.exit(0 if problem and "rule_id_namespace" in problem and not valve else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "acme-1 is refused on a tree that declares no namespace, and a rule-acme-1 marker is not a valve there"
+    else
+        bad "a namespaced id, or a valve naming a namespace nobody claimed, was accepted on the template"
+    fi
+}
+
+case_a_fixture_dir_under_an_unclaimed_namespace_is_exit_2() {
+    forge "case_a_fixture_dir_under_an_unclaimed_namespace_is_exit_2" '
+import pathlib
+import shutil
+import sys
+import tempfile
+sys.argv = ["gate"]
+from quality import gate
+
+scratch = pathlib.Path(tempfile.mkdtemp(prefix="djb-nsdir-case-"))
+try:
+    (scratch / "canary" / "1").mkdir(parents=True)
+    (scratch / "canary" / "other-9").mkdir()
+    bases = (("canary", scratch / "canary"),)
+    loud = gate.fixture_dir_findings(bases, claimed={"1"}, namespace="acme")
+    quiet = gate.fixture_dir_findings(bases, claimed={"1", "other-9"}, namespace="acme")
+    print("loud:", loud)
+    print("quiet:", quiet)
+    named = [line for line in loud if "other-9" in line and "other" in line]
+    sys.exit(0 if named and not quiet else 1)
+finally:
+    shutil.rmtree(scratch, ignore_errors=True)
+'
+    if [ "$RC" = "0" ]; then
+        ok "a fixture directory under a namespace the tree never claimed is named; one every rule claims is silent"
+    else
+        bad "an unclaimed namespaced fixture directory was not named, or a claimed one was reported anyway"
+    fi
+}
+
+case_a_tree_with_no_product_rules_is_unchanged() {
+    forge "case_a_tree_with_no_product_rules_is_unchanged" '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+from quality import worlds as W
+
+template, product = W.split_residence_census(W.residence_census(gate.RULES, gate.OPTIONAL_APPS))
+shapes = [gate.id_shape_problem(str(r["id"])) for r in gate.RULES]
+dirs = gate.fixture_dir_findings()
+findings = gate.residence_findings(gate.RULES)
+print("namespace:", gate.RULE_ID_NAMESPACE, "through:", gate.TEMPLATE_IDS_THROUGH)
+print("residence template/product:", len(template), len(product), "backlog:", gate.RESIDENCE_BACKLOG)
+print("id shapes refused:", [s for s in shapes if s])
+print("fixture dir findings:", dirs)
+print("residence findings:", findings)
+ok = (
+    gate.RULE_ID_NAMESPACE is None
+    and gate.TEMPLATE_IDS_THROUGH is None
+    and not product
+    and len(template) == gate.RESIDENCE_BACKLOG
+    and not [s for s in shapes if s]
+    and not dirs
+    and not findings
+)
+sys.exit(0 if ok else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "the template tree declares neither key: every id legal, no fixture directory unclaimed, the residence census wholly template and exactly at its recorded backlog"
+    else
+        bad "the wall moved a number on a tree with no product rules at all (see ${OUT})"
+    fi
+}
+
+# --- the product's drawer: quality/local/ (P21 EP2, X3) ----------------------
+#
+# WHY THEY LIVE IN THIS FILE. Same answer D1's namespace cases above give, and
+# the same subject: `consistency()` refusing a declaration a reader cannot act
+# on, plus the two readers printing whose rule it is. The drawer's END-TO-END
+# half — a product rule planted into the real tree, loaded by a fresh
+# interpreter and fired through the real scope — is the last case here, and it
+# is the only one that writes a byte outside $WORK.
+#
+# THE FIRST FIVE DRIVE THE SHIPPED FUNCTIONS OVER A TREE THE CASE BUILDS, by
+# pointing the module's own `LOCAL_*` paths at a tempdir and calling
+# `_read_local()` / `fixture_dir_findings()` / `resolve_check_problem()` /
+# `local_ratchet_consistency()` / `local_plant_consistency()`. That is
+# `namespace_leg`'s fixture-directory canary's shape (quality/gate.py): the
+# victim is created by the probe, never found on the tree.
+
+case_a_drawer_ratchet_may_not_raise_a_template_ceiling() {
+    forge "case_a_drawer_ratchet_may_not_raise_a_template_ceiling" '
+import pathlib
+import sys
+sys.argv = ["gate"]
+from quality import gate
+
+# THE DEFECT THIS CASE EXISTS FOR. A drawer that named a class the TEMPLATE
+# already records used to MERGE — `nonconforming: 0` became `nonconforming: 99`
+# — and the only thing printed was a note. The ceiling of a template rule had
+# been raised from a file the template never reads, which is exactly what the
+# drawer is not allowed to do. So both halves are asserted: the refusal, AND
+# that the recorded number did not move.
+target = next(str(r["id"]) for r in gate.RULES if (r.get("ratchets") or {}))
+rule = gate.RULES_BY_ID[target]
+before = dict(rule.get("ratchets") or {})
+already = sorted(before)[0]
+product_app = "zzz_probe_drawer_app"
+
+def merge(classes):
+    gate.LOCAL_DOC["ratchets"] = {target: classes}
+    rule["ratchets"] = dict(before)
+    out = gate._merge_local_ratchets()
+    after = dict(rule.get("ratchets") or {})
+    gate.LOCAL_DOC.pop("ratchets", None)
+    rule["ratchets"] = dict(before)
+    return out, after
+
+restated, after_restated = merge({already: 99})
+no_app, after_no_app = merge({"acme_nowhere.read": 3})
+
+made = pathlib.Path(gate.ROOT) / "apps" / product_app
+made.mkdir(parents=True, exist_ok=False)
+try:
+    allowed, after_allowed = merge({f"{product_app}.read": 3})
+finally:
+    made.rmdir()
+
+print("restated:", restated)
+print("  ceiling after:", after_restated.get(already), "was", before.get(already))
+print("no such app:", no_app)
+print("a real product app:", allowed, "->", after_allowed.get(f"{product_app}.read"))
+sys.exit(0 if (
+    len(restated) == 1
+    and already in restated[0]
+    and "TEMPLATE rule" in restated[0]
+    and after_restated == before
+    and len(no_app) == 1
+    and "acme_nowhere" in no_app[0]
+    and after_no_app == before
+    and not allowed
+    and after_allowed.get(f"{product_app}.read") == 3
+) else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "a drawer class restating one a TEMPLATE rule already records is refused AND not merged (the ceiling does not move); so is one whose app is no directory under apps/; a real product app's class records"
+    else
+        bad "the drawer raised or restated a template rule's recorded ceiling, or refused a product app that belongs there (see ${OUT})"
+    fi
+}
+
+case_a_drawer_rule_with_no_namespace_is_enforcement_broken() {
+    forge "case_a_drawer_rule_with_no_namespace_is_enforcement_broken" '
+import pathlib
+import sys
+import tempfile
+sys.argv = ["gate"]
+from quality import gate
+
+# WHY. `id_shape_problem` accepts a plain integer when the tree declares no
+# namespace, because on a template that IS the only legal shape. A drawer
+# carrying rules and no `rule_id_namespace:` therefore loaded `60` as a rule of
+# its own — an integer minted from the drawer, colliding with the next template
+# release, with every refusal ADR gate-5 exists for switched off.
+scratch = pathlib.Path(tempfile.mkdtemp(prefix="djb-drawer-ns-"))
+gate.LOCAL_DIR = scratch
+gate.LOCAL_RULES_PATH = scratch / "rules.yaml"
+
+def read(text):
+    gate.LOCAL_RULES_PATH.write_text(text)
+    doc, rules, problems = gate._read_local()
+    return rules, problems
+
+body = "rules:\n  - id: \"60\"\n    name: minted-from-the-drawer\n"
+nameless, refused = read(body)
+named, fine = read("rule_id_namespace: acme\ntemplate_rule_ids_through: 59\n" + body)
+empty, quiet = read("rules: []\n")
+print("nameless rules loaded:", nameless)
+print("refusal:", refused)
+print("with a namespace:", len(named), fine)
+print("an empty rules list:", empty, quiet)
+sys.exit(0 if (
+    not nameless
+    and len(refused) == 1
+    and "rule_id_namespace" in refused[0]
+    and "quality/local/rules.yaml" in refused[0]
+    and len(named) == 1
+    and not fine
+    and not empty
+    and not quiet
+) else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "a drawer that carries rules and no rule_id_namespace is refused BY KEY and merges nothing — no integer is ever minted from the drawer; with the key it loads, and an empty rules list is silent"
+    else
+        bad "the drawer minted a rule under the template's own grammar, or refused a drawer that declared its namespace (see ${OUT})"
+    fi
+}
+
+case_the_drawers_keys_are_closed_and_the_refusal_names_the_key() {
+    forge "case_the_drawers_keys_are_closed_and_the_refusal_names_the_key" '
+import pathlib, sys, tempfile
+sys.argv = ["gate"]
+from quality import gate
+
+scratch = pathlib.Path(tempfile.mkdtemp(prefix="djb-drawer-keys-"))
+gate.LOCAL_DIR = scratch
+gate.LOCAL_RULES_PATH = scratch / "rules.yaml"
+
+def read(text):
+    gate.LOCAL_RULES_PATH.write_text(text)
+    return gate._read_local()[2]
+
+legal = read("rule_id_namespace: acme\ntemplate_rule_ids_through: 59\nrules: []\nratchets: {}\n")
+strange = read("rule_id_namespace: acme\ntemplate_rule_ids_through: 59\nscope_kinds:\n  js: {}\n")
+broken_yaml = read("rules: [ {id: half\n")
+not_a_map = read("- one\n- two\n")
+gate.LOCAL_RULES_PATH.unlink()
+absent = gate._read_local()[2]
+print("legal:", legal)
+print("strange:", strange)
+print("broken_yaml:", broken_yaml)
+print("not_a_map:", not_a_map)
+print("absent:", absent)
+sys.exit(0 if (
+    not legal
+    and any("scope_kinds" in p and "quality/local/rules.yaml" in p for p in strange)
+    and any("could not be read as YAML" in p for p in broken_yaml)
+    and any("not a mapping" in p for p in not_a_map)
+    and not absent
+) else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "the drawer takes four keys and no more: an engine key, unparseable bytes and a non-mapping are each refused BY NAME, and an absent drawer is silent"
+    else
+        bad "the drawer accepted a key that is not its own, or refused a legal one, or read a malformed file as an empty drawer (see ${OUT})"
+    fi
+}
+
+case_the_namespace_keys_are_refused_in_the_template_file() {
+    forge "case_the_namespace_keys_are_refused_in_the_template_file" '
+import pathlib, sys, tempfile
+sys.argv = ["gate"]
+from quality import gate
+
+scratch = pathlib.Path(tempfile.mkdtemp(prefix="djb-drawer-home-"))
+gate.LOCAL_DIR = scratch
+gate.LOCAL_RULES_PATH = scratch / "rules.yaml"
+
+clean = gate._read_local()[2]
+gate._DOC["rule_id_namespace"] = "acme"
+gate._DOC["template_rule_ids_through"] = 59
+moved = gate._read_local()[2]
+del gate._DOC["rule_id_namespace"]
+del gate._DOC["template_rule_ids_through"]
+print("clean:", clean)
+for line in moved:
+    print("moved:", line)
+names_home = [p for p in moved if "quality/local/rules.yaml" in p and "quality/rules.yaml" in p]
+sys.exit(0 if (not clean and len(moved) == 2 and len(names_home) == 2) else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "either namespace key left in the template-owned quality/rules.yaml is refused with the line that names its home in the drawer; a tree with neither is silent"
+    else
+        bad "a namespace key in the template-owned file was accepted, or its refusal did not name the move (see ${OUT})"
+    fi
+}
+
+case_a_drawer_check_is_a_registry_name_or_a_drawer_runner() {
+    forge "case_a_drawer_check_is_a_registry_name_or_a_drawer_runner" '
+import pathlib, sys, tempfile
+sys.argv = ["gate"]
+from quality import gate
+
+scratch = pathlib.Path(tempfile.mkdtemp(prefix="djb-drawer-check-"))
+gate.LOCAL_DIR = scratch
+gate.LOCAL_RUNNER_DIR = scratch / "runners"
+gate.LOCAL_RUNNER_DIR.mkdir(parents=True)
+
+registry_name = sorted(gate.REGISTRY)[0]
+rescoped = gate.resolve_check_problem("acme-1", registry_name)
+missing = gate.resolve_check_problem("acme-1", "acme_no_widget")
+(gate.LOCAL_RUNNER_DIR / "acme_no_widget.py").write_text("print()\n")
+runner = gate.resolve_check_problem("acme-1", "acme_no_widget")
+print("re-scoped registry name:", rescoped)
+print("neither:", missing)
+print("drawer runner:", runner)
+sys.exit(0 if (
+    rescoped is None
+    and runner is None
+    and missing
+    and "REGISTRY" in missing
+    and "quality/local/runners/acme_no_widget.py" in missing
+    and "checks.py" in missing
+) else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "one resolver: a registry name re-scoped resolves, a check-v1 runner in the drawer resolves, and neither is a refusal naming BOTH places it looked"
+    else
+        bad "a check: that resolves to nothing was accepted, or a legal one refused, or the refusal did not name both homes (see ${OUT})"
+    fi
+}
+
+case_a_mute_drawer_runner_is_enforcement_broken() {
+    forge "case_a_mute_drawer_runner_is_enforcement_broken" '
+import copy, pathlib, sys, tempfile
+sys.argv = ["gate"]
+from quality import gate
+
+scratch = pathlib.Path(tempfile.mkdtemp(prefix="djb-drawer-mute-"))
+gate.LOCAL_DIR = scratch
+gate.LOCAL_RUNNER_DIR = scratch / "runners"
+gate.LOCAL_RUNNER_DIR.mkdir(parents=True)
+mute = gate.LOCAL_RUNNER_DIR / "acme_mute.py"
+mute.write_text("import sys\nsys.exit(0)\n")
+
+rule = copy.deepcopy(gate.RULES_BY_ID["1"])
+rule["id"] = "acme-9"
+rule["check"] = "acme_mute"
+rule.pop("memo", None)
+gate.memo_state["bypass"] = True
+gate.broken.clear()
+findings, _targets, why = gate.run_rule(rule, floors=False)
+print("findings:", findings)
+print("why:", why)
+for line in gate.broken:
+    print("broken:", line)
+sys.exit(0 if (
+    not findings
+    and why.startswith(gate.COULD_NOT_LOOK)
+    and any("LOCAL RUNNER REFUSED" in b for b in gate.broken)
+) else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "a drawer runner that prints nothing is could-not-look — REFUSED by name, producing no findings, never a clean tree"
+    else
+        bad "a mute drawer runner read as zero findings, which is the cheapest way in the world to ship a rule that never fires (see ${OUT})"
+    fi
+}
+
+case_a_drawer_ratchet_may_not_name_a_platform_app() {
+    forge "case_a_drawer_ratchet_may_not_name_a_platform_app" '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+
+platform = gate.PLATFORM_APPS
+if platform is None:
+    print(gate._PARTITION_PROBLEM)
+    sys.exit(1)
+platform = sorted(platform)
+product = "acme_billing"
+victim = platform[0] if platform[0] != "example" else platform[1]
+target = next(str(r["id"]) for r in gate.RULES)
+
+def judge(classes):
+    gate.LOCAL_DOC["ratchets"] = {target: classes}
+    gate.broken.clear()
+    gate.notes.clear()
+    gate.local_ratchet_consistency()
+    out = list(gate.broken)
+    gate.LOCAL_DOC.pop("ratchets", None)
+    return out
+
+bare = judge({victim: 3})
+dotted = judge({f"{victim}.role-value": 3})
+allowed = judge({product: 3})
+print("bare platform app:", bare)
+print("dotted platform class:", dotted)
+print("a product app:", allowed)
+sys.exit(0 if (
+    len(bare) == 1 and victim in bare[0] and "platform_apps" in bare[0]
+    and len(dotted) == 1 and victim in dotted[0]
+    and not allowed
+) else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "a drawer ratchet naming a partition.yaml platform app is refused — as <app> and as <app>.<kind> — and one naming a product app is recorded"
+    else
+        bad "the drawer raised a platform rule's ceiling from a file the template never reads, or refused a product app that belongs there (see ${OUT})"
+    fi
+}
+
+case_a_drawer_canary_may_not_plant_into_a_platform_app() {
+    forge "case_a_drawer_canary_may_not_plant_into_a_platform_app" '
+import copy, sys
+sys.argv = ["gate"]
+from quality import gate
+
+platform = gate.PLATFORM_APPS
+if platform is None:
+    print(gate._PARTITION_PROBLEM)
+    sys.exit(1)
+platform = sorted(platform)
+victim = platform[0] if platform[0] != "example" else platform[1]
+
+rule = copy.deepcopy(gate.RULES_BY_ID["1"])
+rule["id"] = "acme-1"
+gate.RULES.append(rule)
+gate.LOCAL_RULE_IDS = frozenset({"acme-1"})
+
+def judge(target):
+    rule["canaries"] = [{"fixture": "planted.py", "plant_at": target, "mode": "append"}]
+    rule["negatives"] = []
+    gate.broken.clear()
+    gate.local_plant_consistency()
+    return list(gate.broken)
+
+into_platform = judge(f"apps/{victim}/models.py")
+into_example = judge("apps/example/models.py")
+into_product = judge("apps/acme_billing/models.py")
+gate.RULES.pop()
+print("platform app:", into_platform)
+print("apps/example:", into_example)
+print("a product app:", into_product)
+sys.exit(0 if (
+    len(into_platform) == 1 and victim in into_platform[0] and "plant portability" in into_platform[0]
+    and not into_example
+    and not into_product
+) else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "a drawer canary planting into a template-owned app is refused BY APP NAME; apps/example and a product app are silent"
+    else
+        bad "a drawer rule planted a fixture into an app the next fold overwrites, or the refusal named no app (see ${OUT})"
+    fi
+}
+
+case_the_drawers_key_moves_only_when_the_drawer_does() {
+    forge "case_the_drawers_key_moves_only_when_the_drawer_does" '
+import copy, sys
+sys.argv = ["gate"]
+from quality import gate
+
+blobs, trouble = gate.measured_blobs()
+if trouble:
+    print(trouble)
+    sys.exit(1)
+
+def engine():
+    gate._ENGINE_DIGEST = None
+    return gate._engine_digest(blobs)
+
+base = engine()
+same = engine()
+gate.LOCAL_DOC["rule_id_namespace"] = "acme"
+moved = engine()
+gate.LOCAL_DOC.pop("rule_id_namespace")
+back = engine()
+
+template = copy.deepcopy(gate.RULES_BY_ID["1"])
+local = copy.deepcopy(template)
+local["id"] = "acme-1"
+one = gate.memo_key(template)[0]
+local["statement"] = str(local.get("statement", "")) + " (edited)"
+two = gate.memo_key(template)[0]
+local_a = gate.memo_key(local)[0]
+local["statement"] = str(local["statement"]) + " again"
+local_b = gate.memo_key(local)[0]
+print("engine base == same:", base == same)
+print("engine moved by a non-rule drawer key:", base != moved)
+print("engine restored:", base == back)
+print("a template rule untouched by another rules text:", one == two)
+print("a rules own text moves only its own key:", local_a != local_b)
+sys.exit(0 if (base == same and base != moved and base == back and one == two and local_a != local_b) else 1)
+'
+    if [ "$RC" = "0" ]; then
+        ok "the drawer's NON-rule keys fold into the engine digest (every rule re-keys), a no-op moves nothing, and one rule's own text re-keys only that rule (X3.5)"
+    else
+        bad "a drawer edit either re-keyed nothing or re-keyed everything — the first banks a verdict for a tree nobody measured, the second throws the memo away (see ${OUT})"
+    fi
+}
+
+case_a_drawer_rule_is_a_rule_end_to_end() {
+    CURRENT=case_a_drawer_rule_is_a_rule_end_to_end
+    N=$((N + 1))
+    OUT="${WORK}/drawer${N}.log"
+    RC=0
+    if [ -e quality/local ]; then
+        cannot_look "quality/local/ already exists in this checkout — this case plants one and will not overwrite yours"
+    fi
+    # THE HIGH-WATER IS DERIVED, NEVER TYPED, and this is the line that pays
+    # for it. A literal `59` here was green the day it was written and red the
+    # day the template minted rule 60 — `consistency()` correctly refused an
+    # integer id above the recorded release, in a case about the DRAWER, for a
+    # reason that had nothing to do with the drawer. So the number comes from
+    # the ONE reader that already answers it: `namespace_leg()`'s own
+    # `integers minted through <n>` line, which is the sentence a product is
+    # told to copy. A rule 61 cannot red this case either.
+    local through
+    through="$(
+        uv run python -c '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+gate.namespace_leg()
+' 2>/dev/null | sed -n 's/.*integers minted through \([0-9][0-9]*\).*/\1/p' | tail -1
+    )"
+    case "$through" in
+    "" | *[!0-9]*)
+        cannot_look "the template's high-water rule id could not be read from namespace_leg()'s own line — the drawer case cannot record a release it cannot name (got '${through}')"
+        ;;
+    esac
+    mkdir -p quality/local/canary/acme-1 quality/local/negative/acme-1
+    cp quality/canary/1/import_user.py quality/local/canary/acme-1/import_user.py
+    cp quality/canary/1/fk_label.py quality/local/canary/acme-1/fk_label.py
+    cp quality/negative/1/get_user_model.py quality/local/negative/acme-1/get_user_model.py
+    # The two derived lines are printf'd and the REST is a quoted heredoc: the
+    # body carries backticks (the doc anchor) and an unquoted heredoc would
+    # run them as commands.
+    {
+        printf 'rule_id_namespace: acme\ntemplate_rule_ids_through: %s\n' "$through"
+        cat <<'DRAWER'
+rules:
+  - id: acme-1
+    name: acme-no-auth-user-import
+    enabled: true
+    statement: >
+      The product's own rule, re-scoping a registry check the template ships.
+    check: auth_user_import
+    doc: { file: docs/product/architecture.md, contains: "`auth.User` is never imported" }
+    valve:
+      marker: "<comment> rule-acme-1: <reason>"
+      where: on the flagged line itself, or in the contiguous comment block directly above it
+    scope: {}
+    floors: { files_scanned: 90 }
+    does_not_cover: >
+      whatever rule 1 does not cover; this entry exists to drive the drawer.
+    selftest_floor: { canaries: 2, negatives: 1 }
+    canaries:
+      - fixture: import_user.py
+        plant_at: apps/example/services.py
+        mode: append
+      - fixture: fk_label.py
+        plant_at: apps/example/models.py
+        mode: append
+    negatives:
+      - fixture: get_user_model.py
+        plant_at: apps/example/services.py
+        mode: append
+DRAWER
+    } >quality/local/rules.yaml
+    DJB_RULES_NO_MEMO=1 uv run python -c '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+
+print("namespace:", gate.RULE_ID_NAMESPACE, gate.TEMPLATE_IDS_THROUGH)
+print("local ids:", sorted(gate.LOCAL_RULE_IDS))
+gate.broken.clear()
+gate.consistency()
+print("consistency broken:", gate.broken)
+rule = gate.RULES_BY_ID["acme-1"]
+fired = []
+for kind in ("canaries", "negatives"):
+    for entry in rule[kind]:
+        plant = gate.Plant()
+        try:
+            plant.put(
+                gate.fixture_home(kind, "acme-1") / entry["fixture"],
+                entry["plant_at"],
+                entry["mode"],
+            )
+            kept, targets, why = gate.run_rule(rule, floors=True)
+        finally:
+            plant.restore()
+        print(kind, entry["fixture"], "->", [str(f) for f in kept], "targets", targets, "why", repr(why))
+        fired.append((kind, bool(kept), targets.get("files_scanned", 0), why))
+entry = rule["canaries"][0]
+plant = gate.Plant()
+try:
+    plant.put(gate.fixture_home("canary", "acme-1") / entry["fixture"], entry["plant_at"], entry["mode"])
+    target = gate.ROOT / entry["plant_at"]
+    target.write_text(
+        target.read_text().replace(
+            "from django.contrib.auth.models import User",
+            "from django.contrib.auth.models import User  # rule-acme-1: the drawer own valve",
+        )
+    )
+    kept, _targets, _why = gate.run_rule(rule, floors=False)
+    counted = [row for row in gate.all_overrides() if row[0] == "acme-1"]
+finally:
+    plant.restore()
+print("valve suppressed:", not kept, "counted:", counted)
+canaries = [f for f in fired if f[0] == "canaries"]
+negatives = [f for f in fired if f[0] == "negatives"]
+ok = (
+    gate.RULE_ID_NAMESPACE == "acme"
+    and sorted(gate.LOCAL_RULE_IDS) == ["acme-1"]
+    and not gate.broken
+    and len(canaries) == 2
+    and all(hit and scanned >= 90 and not why for _k, hit, scanned, why in canaries)
+    and all(not hit for _k, hit, _s, _w in negatives)
+    and not kept
+    and len(counted) == 1
+)
+sys.exit(0 if ok else 1)
+' >"$OUT" 2>&1 || RC=$?
+    local tagged=1
+    uv run python -m quality.gate --rules >>"$OUT" 2>&1 || true
+    grep -qE '^acme-1  acme-no-auth-user-import .*\[local\]$' "$OUT" || tagged=0
+    uv run python -m quality.gate --explain acme-1 >>"$OUT" 2>&1 || true
+    grep -qF 'home: quality/local/rules.yaml' "$OUT" || tagged=0
+    rm -rf quality/local
+    capture_floor
+    if [ "$RC" = "0" ] && [ "$tagged" = "1" ]; then
+        ok "a drawer rule loaded from quality/local/rules.yaml, passed consistency, fired BOTH canaries through the real scope over a bound floor, kept its negative silent, was suppressed and COUNTED by its own valve, and is tagged [local] by both readers"
+    else
+        bad "a product rule in the drawer is not a rule end to end (rc=${RC}, tagged=${tagged}) — see ${OUT}"
+    fi
+}
+
+case_no_drawer_is_byte_identical() {
+    CURRENT=case_no_drawer_is_byte_identical
+    N=$((N + 1))
+    OUT="${WORK}/nodrawer${N}.log"
+    RC=0
+    if [ -e quality/local ]; then
+        cannot_look "quality/local/ already exists in this checkout — the absent-drawer negative cannot be driven over a tree that has one"
+    fi
+    local before="${WORK}/nodrawer-before.txt" after="${WORK}/nodrawer-after.txt"
+    uv run python -m quality.gate --rules >"$before" 2>&1 || RC=$?
+    mkdir -p quality/local
+    uv run python -m quality.gate --rules >"$after" 2>&1 || RC=$?
+    rmdir quality/local
+    cp "$before" "$OUT"
+    capture_floor
+    if [ "$RC" != "0" ]; then
+        bad "the listing did not answer on a tree with no drawer (exit ${RC})"
+        return
+    fi
+    if ! cmp -s "$before" "$after"; then
+        bad "an EMPTY quality/local/ moved the listing — the drawer must cost a tree that has none exactly nothing: $(diff "$before" "$after" | head -5 | tr '\n' '|')"
+        return
+    fi
+    ok "with no drawer, and with an empty one, \`--rules\` is byte-identical — the negative is the cmp, not a sentence"
+}
+
+# --- the TREE CENSUS (C0's `census:` seam) -----------------------------------
+#
+# Everything the readers above assert is a rule's DECLARATION, and all of it is
+# true of an empty checkout. `census:` is the other half: a dotted path to a
+# callable `--explain <id>` runs over THIS TREE, so the reader can answer "and
+# what does that mean here, right now?" The four cases are the four answers —
+# it prints, it is absent and changes nothing, it does not resolve, it stumbles
+# — plus rule 59's real one, which is the per-app `EVENT_KINDS` block a product
+# folding the template otherwise reassembles by hand out of a dozen findings.
+#
+# ONE PROCESS, like `readers_once` and for the same reason: five captures of
+# one parse are five interpreter starts otherwise. The probe module is written
+# into this drive's own scratch directory and reached through `sys.path`, so
+# nothing is planted in the checkout for the three synthetic cases; the fifth
+# plants rule 59's OWN canary through `gate.Plant` and restores it in a
+# `finally`, which is `case_a_product_rule_under_its_namespace_loads_and_fires`'
+# idiom one file over.
+CENSUS_DIR="${WORK}/census"
+CENSUS_READY=""
+census_probes_once() {
+    [ -z "$CENSUS_READY" ] || return 0
+    mkdir -p "$CENSUS_DIR" "${WORK}/censuspath"
+    cat >"${WORK}/censuspath/zzz_census_probe.py" <<'PROBE'
+"""A census that answers, and one that stumbles. Never on the checkout."""
+
+
+def two_lines(root, rule):
+    return ["the first line this tree offered", "the second line this tree offered"]
+
+
+def boom(root, rule):
+    raise RuntimeError("this tree would not answer")
+PROBE
+    CURRENT="the census probes, captured in one process"
+    N=$((N + 1))
+    OUT="${WORK}/census${N}.log"
+    RC=0
+    DJB_CENSUS_DIR="$CENSUS_DIR" DJB_CENSUS_PATH="${WORK}/censuspath" \
+        uv run python - >"$OUT" 2>&1 <<'PY' || RC=$?
+import copy
+import os
+import pathlib
+import sys
+
+sys.argv = ["gate"]
+sys.path.insert(0, os.environ["DJB_CENSUS_PATH"])
+from quality import gate
+
+out = pathlib.Path(os.environ["DJB_CENSUS_DIR"])
+
+
+def keep(name, rc, text):
+    (out / (name + ".log")).write_text(text, encoding="utf-8")
+    (out / (name + ".rc")).write_text(str(rc), encoding="utf-8")
+
+
+# The victim is a copy registered under its own id, so the engine's real
+# `explain` reads it exactly as it reads every other rule.
+plain = copy.deepcopy(gate.RULES_BY_ID["13"])
+plain.pop("census", None)
+gate.RULES_BY_ID["13"] = plain
+rc_plain, text_plain = gate._captured(["--explain", "13"])
+keep("no-census", rc_plain, text_plain)
+
+with_census = copy.deepcopy(plain)
+with_census["census"] = "zzz_census_probe.two_lines"
+gate.RULES_BY_ID["13"] = with_census
+keep("with-census", *gate._captured(["--explain", "13"]))
+
+# THE BYTE-IDENTICAL HALF, computed where both captures are in hand: cut the
+# census block — the blank line, the header, its indented lines — out of the
+# capture that has one, and what is left must be the other capture's bytes. A
+# rule that declares no census must explain exactly as it did before the seam
+# existed, and "exactly" is a diff, not an eyeball.
+lines = (out / "with-census.log").read_text(encoding="utf-8").splitlines(keepends=True)
+head = [i for i, line in enumerate(lines) if line.rstrip("\n") == "census (this tree):"]
+if len(head) != 1:
+    keep("stripped-matches-plain", 1, f"expected one census header, found {len(head)}\n")
+else:
+    start = head[0] - 1  # the blank line the block opens with
+    end = head[0] + 1
+    while end < len(lines) and lines[end].startswith("  "):
+        end += 1
+    stripped = "".join(lines[:start] + lines[end:])
+    same = stripped == text_plain
+    keep(
+        "stripped-matches-plain",
+        0 if same else 1,
+        "byte-identical\n"
+        if same
+        else "DIFFERS\n--- with the census block cut out\n"
+        + stripped
+        + "\n--- the same rule declaring no census\n"
+        + text_plain,
+    )
+
+unresolvable = copy.deepcopy(plain)
+unresolvable["census"] = "zzz_census_probe.no_such_callable"
+gate.RULES_BY_ID["13"] = unresolvable
+keep("unresolvable", *gate._captured(["--explain", "13"]))
+
+raising = copy.deepcopy(plain)
+raising["census"] = "zzz_census_probe.boom"
+gate.RULES_BY_ID["13"] = raising
+keep("raises", *gate._captured(["--explain", "13"]))
+
+# Rule 59's real census, over a tree carrying rule 59's own undecided-noun
+# canary. The plant is the shipped fixture at the shipped site, and it is
+# restored whatever happens below.
+rule59 = gate.RULES_BY_ID["59"]
+entry = rule59["canaries"][3]
+plant = gate.Plant()
+try:
+    plant.put(gate.CANARY_DIR / "59" / entry["fixture"], entry["plant_at"], entry["mode"])
+    keep("rule59-planted", *gate._captured(["--explain", "59"]))
+finally:
+    plant.restore()
+from quality import checks as _checks
+
+
+def _reads_agreement(gate, rule54):
+    """(agrees, silent rows, one readable line) for the tree as it stands now.
+
+    The census reads clause (d)'s whole population and says how many of them
+    ask nothing; the rule raises a finding for exactly those, classed
+    `<app>.read`. Two numbers, ONE walker — a census that had drifted from the
+    rule would be a census describing a different tree, which is what the
+    one-walker discipline exists to make impossible. The header's population
+    count is asserted against the rows actually printed, so a census that
+    stopped printing rows cannot pass by counting none of them either.
+    """
+    result = _checks.authz_vocabulary_shape(gate.ROOT, rule54)
+    findings = [f for f in result.findings if f.klass.endswith(".read")]
+    lines = _checks.reads_census(gate.ROOT, rule54)
+    header = lines[0] if lines else ""
+    silent = [line for line in lines[1:] if "asks NOTHING" in line]
+    rows = max(len(lines) - 2, 0)
+    agrees = (
+        f"{len(findings)} ask nothing" in header
+        and len(silent) == len(findings)
+        and rows > 0
+        and f"{rows} public get_/list_ selector(s) over a kind" in header
+    )
+    return (
+        agrees,
+        len(silent),
+        f"{len(findings)} read-class finding(s), {len(silent)} silent census row(s), "
+        f"{rows} row(s) in all · {header}",
+    )
+
+
+# Rule 54's census, over a tree carrying rule 54's OWN clause-(d)
+# canary: a public `list_` returning rows of a kind and asking nothing. The
+# census has to print that selector WITH the line that opens it, because the
+# product meeting the hard read rule at its own door is holding exactly this
+# shape and CHANGELOG item 5 names no door.
+rule54 = gate.RULES_BY_ID["54"]
+entry54 = next(c for c in rule54["canaries"] if c["fixture"] == "list_gadgets_without_require.py")
+plant54 = gate.Plant()
+try:
+    for extra in entry54.get("extra_files", []):
+        plant54.put(gate.CANARY_DIR / "54" / extra["fixture"], extra["plant_at"], extra["mode"])
+    plant54.put(gate.CANARY_DIR / "54" / entry54["fixture"], entry54["plant_at"], entry54["mode"])
+    keep("rule54-planted", *gate._captured(["--explain", "54"]))
+    _planted_agreement = _reads_agreement(gate, rule54)
+finally:
+    plant54.restore()
+
+# AND THE CENSUS AGREES WITH THE RULE, on this tree, unplanted. The census
+# reads clause (d)'s whole population and says how many of them ask nothing;
+# the rule raises a finding for exactly those, classed `<app>.read`. Two
+# numbers, ONE walker: a census that drifted from the rule would be a census
+# describing a different tree, which is what the one-walker discipline exists
+# to make impossible. Asserted rather than assumed, because the template's own
+# answer is ZERO and a census that had stopped looking would print zero too —
+# so the header's population count is asserted against the rows it printed.
+_bare_agreement = _reads_agreement(gate, rule54)
+# BOTH TREES, and the planted one is what makes this able to fail. The
+# template's own answer is ZERO silent reads, so an unplanted `0 == 0` is
+# satisfied by a census that had stopped looking altogether — the masking shape
+# rung-execution §2 names. The planted tree has exactly one, so the pair is
+# `0 == 0` and `1 == 1`, and a census that lost the class fails the second.
+_agrees = _bare_agreement[0] and _planted_agreement[0] and _planted_agreement[1] == 1
+keep(
+    "rule54-agrees",
+    0 if _agrees else 1,
+    "unplanted: " + _bare_agreement[2] + "\nplanted:   " + _planted_agreement[2] + "\n"
+    + ("agrees on both trees\n" if _agrees else "DISAGREES — see the two lines above\n"),
+)
+print("captured 7 census probes and the strip comparison")
+PY
+    [ "$RC" = "0" ] ||
+        cannot_look "the census capture exited ${RC} — every census case below would read a capture that was never taken (see ${OUT})"
+    CENSUS_READY=1
+}
+
+# census_probe <name> — one captured census probe, in `$OUT`/`$RC`.
+census_probe() {
+    local name=$1 base
+    census_probes_once
+    base="${CENSUS_DIR}/${name}"
+    [ -f "${base}.rc" ] ||
+        cannot_look "the census capture left no status for ${name} — the fold above did not run every probe it declares"
+    OUT="${base}.log"
+    RC="$(cat "${base}.rc")"
+    capture_floor
+}
+
+case_a_declared_census_prints_its_lines_under_explain() {
+    census_probe with-census
+    CURRENT="case_a_declared_census_prints_its_lines_under_explain"
+    if [ "$RC" != "0" ]; then
+        bad "--explain on a rule with a working census exited ${RC}"
+        return
+    fi
+    if grep -q '^census (this tree):$' "$OUT" &&
+        grep -q '^  the first line this tree offered$' "$OUT" &&
+        grep -q '^  the second line this tree offered$' "$OUT" &&
+        grep -q '^negatives:$' "$OUT"; then
+        ok "the callable's lines print under 'census (this tree):', after the rule's own declaration"
+    else
+        bad "a declared census printed no block, or lost the declaration above it"
+    fi
+}
+
+case_a_rule_with_no_census_explains_byte_identically() {
+    census_probe stripped-matches-plain
+    CURRENT="case_a_rule_with_no_census_explains_byte_identically"
+    if [ "$RC" = "0" ]; then
+        ok "cut the census block out and the capture is the no-census capture's bytes — the seam adds nothing to a rule that declares none"
+    else
+        bad "a rule declaring no census no longer explains as it did (see ${OUT})"
+    fi
+}
+
+case_a_census_that_does_not_resolve_is_exit_2_naming_it() {
+    census_probe unresolvable
+    CURRENT="case_a_census_that_does_not_resolve_is_exit_2_naming_it"
+    if [ "$RC" = "2" ] && grep -q 'zzz_census_probe.no_such_callable' "$OUT" &&
+        grep -q 'does not resolve' "$OUT"; then
+        ok "a census pointing at a callable that is not there is enforcement broken, and the refusal names the dotted path"
+    else
+        bad "an unresolvable census exited ${RC} without naming itself — a declaration nobody can follow read as a pass"
+    fi
+}
+
+case_a_census_that_raises_is_a_could_not_look_line() {
+    census_probe raises
+    CURRENT="case_a_census_that_raises_is_a_could_not_look_line"
+    if grep -q '^  could not look: zzz_census_probe.boom raised RuntimeError: this tree would not answer$' "$OUT" &&
+        grep -q '^selftest_floor:' "$OUT" && grep -q '^statement:$' "$OUT"; then
+        ok "a stumbling census says so on its own line and the whole declaration still prints"
+    else
+        bad "a raising census took the explanation down with it, or said nothing about why (rc ${RC})"
+    fi
+}
+
+case_rule_59s_census_is_the_per_app_draft_block() {
+    census_probe rule59-planted
+    CURRENT="case_rule_59s_census_is_the_per_app_draft_block"
+    if [ "$RC" != "0" ]; then
+        bad "--explain 59 over the planted canary exited ${RC}"
+        return
+    fi
+    if grep -q '^census (this tree):$' "$OUT" &&
+        grep -q '^  apps/example/events.py — 1 undecided noun; paste into EVENT_KINDS:$' "$OUT" &&
+        grep -q '^      "gizmo": ' "$OUT"; then
+        ok "rule 59's census groups every undecided noun under its app with the EVENT_KINDS line to paste"
+    else
+        bad "rule 59's census did not print the per-app draft block for the planted undecided noun"
+    fi
+}
+
+case_rule_54s_census_lists_a_silent_read_with_the_line_that_opens_it() {
+    census_probe rule54-planted
+    CURRENT="case_rule_54s_census_lists_a_silent_read_with_the_line_that_opens_it"
+    if [ "$RC" != "0" ]; then
+        bad "--explain 54 over the planted silent read exited ${RC}"
+        return
+    fi
+    # THREE SHAPES, ONE CAPTURE. The planted canary is the silent read; the
+    # tree it was planted into supplies the other two, which is the point of a
+    # census over THIS tree rather than a fixture: a product reading its own
+    # 403 needs the asking row with its DOOR (the consumer's case, verbatim —
+    # `GET /api/v1/memberships/mine/` is `list_memberships` behind
+    # `apps/core/api/routes.py`), and the already-open row so it can tell a
+    # read it must grant from a read it never had to.
+    if ! grep -q '^census (this tree):$' "$OUT"; then
+        bad "rule 54's census printed no block at all"
+        return
+    fi
+    if grep -q '^  apps/zzz_canary/selectors.py:[0-9]* list_gadgets -> Gadget (gadget); asks NOTHING' "$OUT" &&
+        grep -q 'opening: take `actor: Actor` and call require(actor, "gadget.read"' "$OUT"; then
+        ok "rule 54's census lists a read that asks nothing with the require() line that opens it"
+    else
+        bad "rule 54's census did not list the planted silent read, or listed it with no opening"
+    fi
+    if grep -q 'list_memberships -> Membership (membership); asks membership.read at the acting hat' "$OUT" &&
+        grep -q 'list_memberships .*door: apps/core/api/routes.py (route), apps/core/mcp.py (tool)' "$OUT"; then
+        ok "an asking read names the key, the node it resolves at and EVERY door that reaches it — the consumer's own 403, with its two doors"
+    else
+        bad "the census lost the asking row, the node it resolves at, or the doors that reach it"
+    fi
+    if grep -qc 'asks nothing — `# read-open:' "$OUT" && grep -q 'opening: already open' "$OUT"; then
+        ok "a read that is deliberately open is listed too, saying so, so a product can tell a read it must grant from one it never had"
+    else
+        bad "the census did not list the reads that are open by `# read-open:`"
+    fi
+}
+
+case_rule_54s_census_agrees_with_the_rules_own_read_findings() {
+    census_probe rule54-agrees
+    CURRENT="case_rule_54s_census_agrees_with_the_rules_own_read_findings"
+    if [ "$RC" = "0" ]; then
+        ok "on this tree AND on the planted one the census's silent rows are exactly rule 54's read-class findings, and its header counts the rows it printed"
+    else
+        bad "the census and rule 54 disagree about this tree (see ${OUT})"
+    fi
+}
+
+run_case case_every_rule_declares_a_valve
+run_case case_a_product_rule_under_its_namespace_loads_and_fires
+run_case case_a_product_rule_with_an_integer_id_is_refused
+run_case case_a_namespaced_id_on_a_template_tree_is_refused
+run_case case_a_fixture_dir_under_an_unclaimed_namespace_is_exit_2
+run_case case_a_tree_with_no_product_rules_is_unchanged
+run_case case_the_drawers_keys_are_closed_and_the_refusal_names_the_key
+run_case case_the_namespace_keys_are_refused_in_the_template_file
+run_case case_a_drawer_check_is_a_registry_name_or_a_drawer_runner
+run_case case_a_mute_drawer_runner_is_enforcement_broken
+run_case case_a_drawer_ratchet_may_not_name_a_platform_app
+run_case case_a_drawer_ratchet_may_not_raise_a_template_ceiling
+run_case case_a_drawer_rule_with_no_namespace_is_enforcement_broken
+run_case case_a_drawer_canary_may_not_plant_into_a_platform_app
+run_case case_the_drawers_key_moves_only_when_the_drawer_does
+run_case case_a_drawer_rule_is_a_rule_end_to_end
+run_case case_no_drawer_is_byte_identical
+run_case case_a_rule_with_no_valve_is_enforcement_broken
+run_case case_a_none_valve_with_no_sentence_is_enforcement_broken
+run_case case_a_valve_declaring_both_forms_is_enforcement_broken
+run_case case_a_red_carries_its_trailer_once_after_its_findings
+run_case case_the_trailers_valve_is_the_marker_a_reader_can_paste
+run_case case_the_budget_trailer_names_the_budget_file
+run_case case_a_rule_whose_trailer_lost_a_key_is_enforcement_broken
+run_case case_a_frontend_finding_prints_the_slash_valve_token
+run_case case_the_plant_refuses_a_path_that_already_exists
+run_case case_the_drive_creates_no_frontend_tree_on_a_tree_that_has_none
+run_case case_a_rule_with_findings_in_two_kinds_prints_both_valve_tokens
+run_case case_the_trailer_and_cli_censuses_print_and_are_asserted
+run_case case_a_function_less_services_module_is_not_a_budget_subject
+run_case case_one_function_is_a_subject_and_still_reds_without_a_ceiling
+run_case case_a_new_function_subject_prints_its_paste_line
+run_case case_explain_prints_the_rules_own_declaration
+run_case case_explain_of_an_unknown_id_is_exit_2_naming_the_listing
+run_case case_the_listing_is_the_same_under_both_names
+run_case case_an_unknown_flag_is_still_exit_2
+run_case case_explain_prints_a_remedy_per_finding_class
+run_case case_a_finding_of_a_remedied_rule_names_its_fix_form
+run_case case_an_unmeasured_class_prints_the_line_to_paste
+run_case case_a_product_valve_suppresses_and_is_counted
+run_case case_terse_keeps_the_count_and_drops_only_the_ok_lines
+run_case case_terse_prints_enforcement_broken_in_full
+run_case case_a_memoised_rule_is_not_rescanned
+run_case case_a_moved_input_misses_one_rule_and_names_it
+run_case case_a_hit_replays_the_red
+run_case case_the_selftest_bypasses_the_memo_and_its_canaries_still_fire
+run_case case_memo_no_scans_always_and_needs_a_reason
+run_case case_an_undecidable_key_scans
+run_case case_the_three_readers_ignore_the_memo
+run_case case_an_empty_capture_is_could_not_look
+run_case case_the_exit_census_never_lowers_the_drives_own_status
+run_case case_a_declared_census_prints_its_lines_under_explain
+run_case case_a_rule_with_no_census_explains_byte_identically
+run_case case_a_census_that_does_not_resolve_is_exit_2_naming_it
+run_case case_a_census_that_raises_is_a_could_not_look_line
+run_case case_rule_59s_census_is_the_per_app_draft_block
+run_case case_rule_54s_census_lists_a_silent_read_with_the_line_that_opens_it
+run_case case_rule_54s_census_agrees_with_the_rules_own_read_findings
 # LAST, deliberately: it reads the tree every case above left behind.
-case_the_drive_leaves_the_working_tree_as_it_found_it
+run_case case_the_drive_leaves_the_working_tree_as_it_found_it
 
 echo "test_gate_explain: ${PASSED} passed · ${FAILED} failed"
 drive_finished

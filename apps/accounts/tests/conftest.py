@@ -965,6 +965,13 @@ def zitadel_measure_reset_path() -> str:
 
 
 MEASURED_OIDC_CLIENT_ID = "8001"
+#: The subject a token carries when no session of this fake's is behind it.
+#: **A FALLBACK, not the fact**: MEASURED on v4.17.1 (2026-09-21, M12), the
+#: `sub` of an id_token finalized against a session IS that session's
+#: `factors.user.id` — one person, one string, both doors — so `_measured_token`
+#: reads the finalized session and this constant only stands in for a token
+#: minted with no session in play. A fake that kept a constant here would have
+#: agreed with itself whatever the build did to the join.
 MEASURED_SUBJECT = "8002"
 
 
@@ -1244,7 +1251,17 @@ class FakeMeasuredZitadel(FakeZitadel):
         access token carries `client_id` and no `azp`, the ID token carries
         both — because a fake that gave them the same claims could not tell a
         judgment that reads the access token from one that reads either.
+
+        **The `sub` is the finalized session's own `factors.user.id`** — M12's
+        measured fact, TRANSCRIBED rather than designed: this build makes the
+        two doors name one person with one string, so the fake has to as well
+        or M12 would read `DIFFERS` against a build that is behaving. A run
+        with no session behind the token falls back to `MEASURED_SUBJECT`.
         """
+        subject = MEASURED_SUBJECT
+        if self.finalized_sessions:
+            session = self.sessions.get(self.finalized_sessions[-1]) or {}
+            subject = str((dict(session.get("factors") or {}).get("user") or {}).get("id", ""))
         return httpx.Response(
             200,
             json={
@@ -1253,7 +1270,7 @@ class FakeMeasuredZitadel(FakeZitadel):
                 "access_token": _measured_jwt(
                     {
                         "iss": "http://zitadel.test",
-                        "sub": MEASURED_SUBJECT,
+                        "sub": subject,
                         "aud": [MEASURED_OIDC_CLIENT_ID],
                         "client_id": MEASURED_OIDC_CLIENT_ID,
                         "exp": 1,
@@ -1265,7 +1282,7 @@ class FakeMeasuredZitadel(FakeZitadel):
                 "id_token": _measured_jwt(
                     {
                         "iss": "http://zitadel.test",
-                        "sub": MEASURED_SUBJECT,
+                        "sub": subject,
                         "aud": [MEASURED_OIDC_CLIENT_ID],
                         "client_id": MEASURED_OIDC_CLIENT_ID,
                         "azp": MEASURED_OIDC_CLIENT_ID,
@@ -1297,7 +1314,23 @@ class FakeMeasuredZitadel(FakeZitadel):
                     "details": [{"id": "WEBAU-4G8sw", "message": "WebAuthN begin login failed"}],
                 },
             )
-        user_id = str((checks.get("user") or {}).get("userId", ""))
+        asked = dict(checks.get("user") or {})
+        user_id = str(asked.get("userId", ""))
+        if not user_id and asked.get("loginName"):
+            # **A login name resolves to an id here, as it does on the build.**
+            # The kit's Mode A round trip opens its session by login name, and
+            # a fake that left `factors.user.id` empty for that road made the
+            # id_token's subject empty too — which would have made M12 read
+            # `could not` on a world that is behaving.
+            login_name = str(asked["loginName"])
+            user_id = next(
+                (
+                    str(row.get("id", ""))
+                    for row in self.users.values()
+                    if str(row.get("userName", "")) == login_name
+                ),
+                "",
+            )
         session_id = self.id()
         token = f"session-token-{session_id}-1"
         self.sessions[session_id] = {

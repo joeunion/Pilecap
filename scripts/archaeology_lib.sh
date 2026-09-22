@@ -62,11 +62,26 @@ rules_for() {
     case "$p" in
     quality/* | docs/product/instruments.md) hit="$hit R2" ;;
     esac
+    # R12 BEFORE R3's GLOB, IN ONE `case` WITH TWO ARMS — the R8S/R8 shape
+    # exactly, and for its reason: `case` takes the FIRST matching pattern, so
+    # the three measured files are mutually exclusive with the instruments glob
+    # BY CONSTRUCTION rather than by care, and the census's double-match refusal
+    # still proves it. Split them into two blocks and every R12 path
+    # double-matches into exit 2.
+    #
+    # THE THREE PATHS ARE SPELLED, and that is the one hand list in this file.
+    # It is legal here because the rung that wrote it named what RE-DERIVES it:
+    # `case_r12_equals_the_readers_defaults` in scripts/tests/test_publish.sh
+    # greps the three readers' own defaults — `DJB_GATE_DURATIONS_PATH:-` and
+    # `DJB_GATE_MEMBER_DURATIONS:-` in scripts/check.sh, `LOOP_SCOPE_MAP_PATH=`
+    # in scripts/loop_tier.sh — and reds when the two sets differ, so a fourth
+    # measured file with no row here is a red rather than a silent ship.
     case "$p" in
+    scripts/test_impact.json | scripts/pytest_durations.json | scripts/gate_member_durations.json) hit="$hit R12" ;;
     scripts/* | deploy/* | perf/* | compose.yaml | compose/* | Dockerfile | .dockerignore | .devcontainer/* | .github/*) hit="$hit R3" ;;
     esac
     case "$p" in
-    pyproject.toml | uv.lock | .python-version | .env.example | .gitignore | .editorconfig | .secrets.baseline | vendor/* | templates/*) hit="$hit R4" ;;
+    pyproject.toml | uv.lock | .python-version | .env.example | .gitignore | .editorconfig | .gitattributes | .secrets.baseline | vendor/* | templates/*) hit="$hit R4" ;;
     esac
     case "$p" in
     .claude/skills/* | CLAUDE.md | README.md | docs/runbooks/* | docs/standards.md) hit="$hit R5" ;;
@@ -115,7 +130,15 @@ rules_for() {
     case "$p" in
     frontend/*) hit="$hit R11" ;;
     esac
-    printf '%s' "${hit# }"
+    # TWO WAYS TO READ ONE ANSWER, AND THEY ARE THE SAME ANSWER. `$(rules_for
+    # …)` is the obvious one and it FORKS: `scripts/divergence_census.sh`
+    # classifies every path in the tree — 1,571 of them here — and spent four
+    # of its five seconds in command substitution alone. A caller in a hot loop
+    # therefore calls `rules_for "$p" >/dev/null` and reads `$RULES_FOR`, which
+    # is set from the same variable the printf writes, on the same line, so the
+    # two cannot disagree. It is one assignment rather than a second reader.
+    RULES_FOR=${hit# }
+    printf '%s' "$RULES_FOR"
 }
 
 bucket_for_rule() {
@@ -134,6 +157,19 @@ bucket_for_rule() {
     # is a phantom, and the fix is always to name the class rather than the
     # instance.
     R8) printf 'TRIM' ;;
+    # R12 — THE MEASURED FILES. Three JSON files this platform's own boxes
+    # wrote about this platform's own suite: the test-impact map (a test list
+    # and the tree it was generated from), the pytest timings and the gate
+    # members' timings. They are MEASUREMENTS, not instruments, and a
+    # measurement of somebody else's suite on somebody else's machine is worse
+    # than nothing in a product's tree — it is a claim the product never made
+    # and cannot check, keyed on a tree that does not exist there. Every reader
+    # already treats ABSENCE as "measure it yourself" and says so on its own
+    # line, so trimming costs a consumer one measured run and buys them a
+    # clean modify/delete at every future fold. (The alternative — shipping
+    # them EMPTY — was rejected: an empty durations file is still a claim about
+    # a suite, and it still conflicts with the product's own copy.)
+    R12) printf 'TRIM' ;;
     R10) printf 'SKELETON-SOURCE' ;;
     *) printf 'UNKNOWN' ;;
     esac

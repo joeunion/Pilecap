@@ -492,7 +492,25 @@ DRIVE_CI_VARS="CI GITHUB_ACTIONS"
 # stripped here or DECLARED inherited in section 4b below. A knob CI grows and
 # nobody thinks about is then a red case, not a green drive measuring somebody
 # else's branch.
-DRIVE_GATE_VARS="DJB_GATE_SANCTION DJB_GATE_CALLER DJB_GATE_PYTEST_SEED"
+# A FOURTH, AND IT IS AN EXEMPTION IN EXACTLY `CI`'s SENSE. `DJB_LOOP_HERE`
+# is what lets a `--loop` run off a verifier box, and an operator who exports
+# one in the shell that starts a gate hands it to the selftest leg, to every
+# drive, and to every child `check.sh --loop` a drive spawns — so a case about
+# the refusal would meet the permission instead, and pass. The drives that
+# legitimately need it type it AT THEIR OWN CALL SITE (`test_list_legs.sh`'s
+# `DRY_LOOP_HERE` on the dry runs, which announce legs and run no body), which
+# is this file's doctrine for the whole class.
+#
+# A FIFTH, SIXTH AND SEVENTH, AND THEY ARE THE DRAWERS' OWN SEAMS.
+# `DJB_LOCAL_DRIVES_DIR` moves the product's DRIVE drawer and
+# `DJB_LOCAL_ENV_KEYS` moves the keys file section 4c reads, exactly as
+# `DJB_LOCAL_LEGS_DIR` moves the leg drawer — each exists so a drive can point
+# the reader at a planted set under its own scratch directory instead of
+# writing into the checkout the gate is measuring. Inherited by a CHILD drive
+# they would point that child's reader at somebody else's plant, which is
+# section 4's whole argument one drawer over. Section 4c reads its own name
+# BEFORE this loop runs, so being on this list costs the reader nothing.
+DRIVE_GATE_VARS="DJB_GATE_SANCTION DJB_GATE_CALLER DJB_GATE_PYTEST_SEED DJB_LOOP_HERE DJB_LOCAL_LEGS_DIR DJB_LOCAL_LEGS_KNOWN_NAMES DJB_LOCAL_LEGS_TEMPLATE_UNITS DJB_LOCAL_LEGS_CHANGED_FILES DJB_LOCAL_DRIVES_DIR DJB_LOCAL_ENV_KEYS"
 
 # --- 4b · WHAT CI SETS THAT A DRIVE IS MEANT TO INHERIT -----------------------
 #
@@ -523,6 +541,104 @@ DRIVE_GATE_VARS="DJB_GATE_SANCTION DJB_GATE_CALLER DJB_GATE_PYTEST_SEED"
 # shellcheck disable=SC2034
 DRIVE_INHERITED_VARS="DATABASE_NAME DATABASE_HOST DATABASE_PORT DATABASE_USER DATABASE_PASSWORD REDIS_URL CACHE_URL AWS_S3_ENDPOINT_URL AWS_S3_REGION_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY PYTHON_VERSION PYTEST_SHARDS UNIT SHARD PR_BASE"
 
+# --- 4c · WHAT THE PRODUCT DECLARES ITS OWN DRIVES NEED -----------------------
+#
+# THE SAME MECHANISM AS 4a, INVERTED, AND THAT IS THE WHOLE IDEA. The two lists
+# above are the TEMPLATE's: it strips what IT sets, and it declares what CI sets
+# that a drive should stand on. Neither of them can name a knob a PRODUCT
+# invented, because the template has never heard of it — and the only place to
+# put one was inside `DRIVE_GATE_VARS` and `DRIVE_INHERITED_VARS`, which is an
+# edit to a template-owned file. The first consumer's v2.1.0 CHANGELOG
+# INSTRUCTED that edit, in as many words; the fold then priced it, along with
+# the twenty other edits like it.
+#
+# SO THE PRODUCT DECLARES BESIDE US: `scripts/local/env_keys`, one variable NAME
+# per line — the drawer sibling of `scripts/local/legs/` and
+# `scripts/local/drives/`, under the same platform-extension-1 rule, and the
+# template never ships the path so a release can never conflict with one.
+#
+#   * IT MAY NAME THE PRODUCT'S OWN KEYS AND NOTHING ELSE, and that is a
+#     REFUSAL rather than a convention. The first draft of this section let the
+#     drawer re-admit a name the lists above strip, on the theory that a
+#     product overriding a template knob had at least said so in a file a
+#     reviewer can open. It had not thought about what those particular names
+#     ARE: `DJB_GATE_SANCTION` is the valve that lets an unsanctioned FULL gate
+#     run, `DJB_LOOP_HERE` the one that lets a `--loop` run off a verifier box,
+#     and `CI` the one that stands down the piped-stdout refusal — so a drawer
+#     naming those five turns any product drive on a runner into a shell that
+#     can start a bare `check.sh` with every guard already stood down. There is
+#     no product whose own knob is spelled `CI`. A name in
+#     `DRIVE_GATE_VARS`, in `DRIVE_CI_VARS`, or beginning `DJB_GATE_`,
+#     `DJB_LOOP_` or `DJB_LOCAL_` is EXIT 2 naming it and the list it belongs
+#     to. (Found in review; the first draft of this section shipped the hole.)
+#   * WHICH IS ALSO WHY "KEPT" NEEDS NO CODE. Nothing below strips a name that
+#     is not on one of the template's two lists, and the refusal above means a
+#     drawer name is never on one — so a declared key survives both scrubs by
+#     construction, and an override branch would be a line that can only ever
+#     be reached by the shape this section refuses.
+#   * A name here joins `DRIVE_INHERITED_VARS`, so
+#     `test_drive_preamble.sh::case_every_variable_the_workflow_sets_is_accounted_for`
+#     reads the product's own CI knobs as accounted for instead of as the
+#     "nobody has thought about this one" red it exists to print. That is the
+#     drawer's whole job.
+#   * The values are NEVER here. This file reads NAMES; a value in the drawer
+#     would be a secret in a tracked file, and the line is refused on its shape
+#     before anything else looks at it.
+#
+# MALFORMED IS EXIT 2, NAMING THE FILE AND THE LINE. A blank line and a
+# whole-line `#` comment are the only things skipped; anything that is not a
+# shell identifier — an `=`, a space, a quote, a lower-case habit — is a drive
+# that cannot look, because a drawer this file half-understands is a strip it
+# half-applies. Absent, every line below is byte-identical to a tree that has
+# never heard of a drawer.
+DRIVE_LOCAL_ENV_KEYS=""
+DRIVE_LOCAL_ENV_KEYS_FILE="${DJB_LOCAL_ENV_KEYS:-scripts/local/env_keys}"
+if [ -f "$DRIVE_LOCAL_ENV_KEYS_FILE" ]; then
+    _drive_env_key_lineno=0
+    while IFS= read -r _drive_env_key_line || [ -n "$_drive_env_key_line" ]; do
+        _drive_env_key_lineno=$((_drive_env_key_lineno + 1))
+        # Trailing carriage returns and surrounding blanks are the two ways a
+        # correct name arrives unreadable; both are the product's typo and
+        # neither is worth an exit 2, so they are trimmed and the SHAPE is what
+        # is judged.
+        _drive_env_key_line="${_drive_env_key_line%$'\r'}"
+        _drive_env_key_line="${_drive_env_key_line#"${_drive_env_key_line%%[![:space:]]*}"}"
+        _drive_env_key_line="${_drive_env_key_line%"${_drive_env_key_line##*[![:space:]]}"}"
+        case "$_drive_env_key_line" in
+        '' | '#'*) continue ;;
+        esac
+        case "$_drive_env_key_line" in
+        *[!A-Za-z0-9_]* | [0-9]*)
+            drive_cannot_look "${DRIVE_LOCAL_ENV_KEYS_FILE}:${_drive_env_key_lineno}: '${_drive_env_key_line}' is not a variable NAME — one identifier per line ([A-Za-z_][A-Za-z0-9_]*), no '=', no value, no quotes. A drawer this preamble half-understands is a strip it half-applies."
+            ;;
+        esac
+        # THE RESERVED NAMES. A drawer may declare the PRODUCT's keys; the
+        # template's own are not a product's to re-admit, and the prefixes are
+        # in the refusal so a knob this template grows TOMORROW is refused the
+        # day a product's drawer collides with it rather than silently winning.
+        case " ${DRIVE_GATE_VARS} ${DRIVE_CI_VARS} " in
+        *" ${_drive_env_key_line} "*)
+            drive_cannot_look "${DRIVE_LOCAL_ENV_KEYS_FILE}:${_drive_env_key_lineno}: '${_drive_env_key_line}' is a name THIS TEMPLATE strips from every drive on purpose (DRIVE_GATE_VARS / DRIVE_CI_VARS). Re-admitting it hands a product drive the gate's own valves — the full-gate sanction, the loop-here permission, the CI exemption — so a drive on a runner could start a bare check.sh with every guard stood down. The drawer names the PRODUCT's keys only."
+            ;;
+        esac
+        case "$_drive_env_key_line" in
+        DJB_GATE_* | DJB_LOOP_* | DJB_LOCAL_*)
+            drive_cannot_look "${DRIVE_LOCAL_ENV_KEYS_FILE}:${_drive_env_key_lineno}: '${_drive_env_key_line}' is in this template's own DJB_GATE_/DJB_LOOP_/DJB_LOCAL_ namespace. Those are the gate's valves and the drawers' own seams; a product's key carries the product's own prefix."
+            ;;
+        esac
+        DRIVE_LOCAL_ENV_KEYS="${DRIVE_LOCAL_ENV_KEYS}${DRIVE_LOCAL_ENV_KEYS:+ }${_drive_env_key_line}"
+    done <"$DRIVE_LOCAL_ENV_KEYS_FILE"
+    unset _drive_env_key_line _drive_env_key_lineno
+fi
+
+if [ -n "$DRIVE_LOCAL_ENV_KEYS" ]; then
+    # DECLARED INHERITED, for the census one screen up. Appended rather than
+    # merged into the literal: the template's own list stays readable as the
+    # template's.
+    DRIVE_INHERITED_VARS="${DRIVE_INHERITED_VARS} ${DRIVE_LOCAL_ENV_KEYS}"
+    echo "${DRIVE_NAME}: product env keys declared (${DRIVE_LOCAL_ENV_KEYS_FILE}): ${DRIVE_LOCAL_ENV_KEYS}"
+fi
+
 DRIVE_GATE_STRIPPED=""
 for _drive_gate_var in $DRIVE_GATE_VARS; do
     if [ -n "${!_drive_gate_var+set}" ]; then
@@ -535,7 +651,6 @@ unset _drive_gate_var
 if [ -n "$DRIVE_GATE_STRIPPED" ]; then
     echo "${DRIVE_NAME}: gate input variables unset for this drive: ${DRIVE_GATE_STRIPPED}"
 fi
-
 DRIVE_CI_STRIPPED=""
 for _drive_ci_var in $DRIVE_CI_VARS; do
     if [ -n "${!_drive_ci_var+set}" ]; then
@@ -815,4 +930,121 @@ drive_capture_refusal() {
         return 0
     fi
     return 1
+}
+
+# --- 8 · THE BASE REF A DRIVE COMPARES AGAINST, DERIVED AND NEVER TYPED ------
+#
+# THE DEFECT, measured rather than reasoned. Three drives asked git for
+# `main` by that bare name — `git rev-parse main:scripts/setup.sh`,
+# `git rev-parse --verify -q main` — and every one of them was written in a
+# checkout that has a local `main`. A GitHub runner on a pull request does not:
+# `actions/checkout` leaves HEAD DETACHED at the merge commit and creates no
+# local branch at all. What that does to the two spellings is different, and
+# the silent one is the one that cost a green run:
+#
+#   * `git rev-parse --verify -q main` exits 1 and prints nothing, so the case
+#     that guards it says `bad "this checkout has no local main"` — loud, and
+#     wrong only in that a perfectly good base ref (`refs/remotes/origin/main`)
+#     was sitting there unasked.
+#   * `git rev-parse main:scripts/setup.sh 2>/dev/null || true` exits 1 too —
+#     and the `|| true` swallows it, so the substitution captures git's
+#     ERROR-PATH stdout, which is THE ARGUMENT ITSELF. Measured on a detached
+#     no-main clone of this repository:
+#
+#         scripts/gate_lease.sh  main main:scr vs HEAD 66f86a3f
+#         scripts/setup.sh       main main:scr vs HEAD 5ca24c45
+#         .env.example           main main:.en vs HEAD b54efef2
+#
+#     Three blob comparisons, none of them between two blobs, and the failure
+#     reads as three files that moved. A string that is not a sha, truncated to
+#     eight characters and printed in a column of shas, is the shape a reader
+#     cannot see.
+#
+# SO THE RESOLUTION IS ONE FUNCTION AND IT IS HERE, for section 4's reason: the
+# alternative is a copy per drive and the copies drift. The order, and every
+# step of it is a deliberate answer to "which tree is this change measured
+# against":
+#
+#   1. `DJB_BASE_REF`, TYPED. The operator or the harness knows something the
+#      checkout does not — a PR base that is not `main`, a release branch, a
+#      tag. A TYPED ref that does not resolve is a REFUSAL and never a silent
+#      fall-through to `main`: somebody said which tree they meant, and
+#      measuring a different one is worse than measuring none.
+#   2. `refs/heads/main` — a laptop, a worktree, the primary checkout, and the
+#      shape every one of these drives was written in.
+#   3. `refs/remotes/origin/main` — the runner. `actions/checkout` fetches it
+#      whenever it is given any depth beyond the default, and this workflow
+#      takes `fetch-depth: 0`, so on CI it is there when a local `main` is not.
+#   4. NOTHING. rc 1, with the three sources named on stderr.
+#
+# WHY rc 1 AND NOT exit 2, when a drive that cannot find its base ref plainly
+# CANNOT LOOK. Because `drive_cannot_look` exits, and every caller here reads
+# this through a command substitution — a SUBSHELL — where an exit kills the
+# substitution and the drive sails on with an empty string. So the refusal is
+# returned rather than taken, exactly as `drive_capture_refusal` (section 7)
+# returns its sentence, and the caller spends its own `cannot_look` on it:
+#
+#     base="$(drive_base_ref "$ROOT")" || cannot_look "no base ref in $ROOT"
+#
+# That form — the substitution OUTSIDE the `||` — is the one that exits the
+# drive with 2. `base="$(drive_base_ref || cannot_look …)"` does not, and is
+# the mistake this paragraph exists to stop.
+#
+# WHAT IT DOES NOT COVER, declared rather than discovered:
+#
+#   * WHETHER THE BASE IS THE RIGHT ONE. This answers "which ref names the tree
+#     this change is measured against", never "is that tree current". A stale
+#     `origin/main` is a correct answer to this question and a wrong tree to
+#     compare against, and nothing here can tell them apart.
+#   * A DETACHED RUNNER WITH NO REMOTE REF EITHER — a depth-1 checkout, an
+#     archive export, `git init` over an unpacked tarball. That is step 4, and
+#     it is a refusal rather than a guess.
+#   * THE REF'S SHA. Callers that want one ask git themselves; returning the
+#     NAME is what lets `"${base}:path"` and `merge-base "$base" HEAD` both be
+#     spelled from one answer.
+#   * A `DJB_BASE_REF` LEFT EXPORTED IN SOMEBODY'S SHELL. It is a DIAL, not an
+#     exemption — section 4b's population rather than section 4a's — so it is
+#     deliberately NOT stripped: stripping it would make a typed base
+#     unreachable, which is the whole feature. The residual is real and it is
+#     the dial's own shape: an operator who exports one and forgets changes
+#     what every drive in this tree compares against, silently, and the only
+#     trace is that the answers moved. A drive whose case must compare against
+#     `main` SPECIFICALLY pins that at the case, exactly as `test_sweep.sh`
+#     pins `DATABASE_NAME`.
+drive_base_ref() {
+    local repo="${1:-.}" candidate
+
+    if [ -n "${DJB_BASE_REF:-}" ]; then
+        if git -C "$repo" rev-parse --verify -q "${DJB_BASE_REF}^{commit}" >/dev/null 2>&1; then
+            printf '%s\n' "$DJB_BASE_REF"
+            return 0
+        fi
+        drive__base_ref_refused "$repo" \
+            "DJB_BASE_REF is typed as '${DJB_BASE_REF}' and does not resolve there"
+        return 1
+    fi
+
+    for candidate in refs/heads/main refs/remotes/origin/main; do
+        if git -C "$repo" rev-parse --verify -q "${candidate}^{commit}" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    drive__base_ref_refused "$repo" "none of the three sources below resolves there"
+    return 1
+}
+
+# The sentence, in one place, naming all three sources whichever one failed —
+# because the reader of a refusal is deciding what to type next, and the answer
+# is always one of these three.
+drive__base_ref_refused() {
+    local repo="$1" why="$2"
+    echo "!! ${DRIVE_NAME}: no base ref for ${repo} — ${why}." >&2
+    echo "   A drive compares this tree against a base, and the base is derived in" >&2
+    echo "   this order, never typed into a case:" >&2
+    echo "     1. \$DJB_BASE_REF          (typed; unresolvable is a refusal, not a fallback)" >&2
+    echo "     2. refs/heads/main        (a laptop, a worktree, the primary checkout)" >&2
+    echo "     3. refs/remotes/origin/main  (a runner: actions/checkout detaches HEAD)" >&2
+    echo "   Nothing this drive would have compared can be trusted without one." >&2
 }

@@ -35,6 +35,33 @@ from apps.exports.types import (
     RunFinished,
 )
 
+# --- The one setting a workflow module reads, and the seam it is read through -
+#
+# `workflow.unsafe.imports_passed_through()` is Temporal's own escape. The
+# replay sandbox RE-IMPORTS every module a workflow touches, and an unguarded
+# `from django.conf import settings` dies inside it on
+# `gettext.GNUTranslations.__mro_entries__` (measured). Passed through,
+# the module object the worker process already imported is reused and nothing
+# Django owns is re-executed in the sandbox.
+#
+# What is read is ONE number, ONCE, at import: the interval the first retry of
+# a failed activity waits. It is a constant exactly as the timeouts below are
+# constants — no clock, no ORM, no I/O, and the same value for every run this
+# worker serves — and it lives in settings so that `test` can turn a
+# fifteen-second production backoff curve into a tenth of a second without
+# touching one assertion. The argument in full, including why one knob and not
+# one per policy: `config/settings/base.py` § "The retry backoff every activity
+# policy starts at".
+with workflow.unsafe.imports_passed_through():
+    # rule-9: one deployment constant, read once at import through Temporal's
+    # own passthrough seam; the paragraph above is the whole argument.
+    from django.conf import settings
+
+#: How long the first retry of every policy below waits, doubling from there.
+#: The SDK's own default in a deployment; milliseconds under `test`, where the
+#: time-skipping server skips workflow timers and does NOT skip this.
+RETRY_INITIAL_INTERVAL = timedelta(seconds=settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS)
+
 #: How long one attempt at building an archive may take. Generous, because the
 #: first export of a large tenant is the big one and a timeout there costs the
 #: whole run; bounded, because an activity with no ceiling is a worker thread
@@ -46,7 +73,7 @@ BUILD_TIMEOUT = timedelta(hours=2)
 #: for a reason a retry will not fix, and a customer waiting on an archive is
 #: better served by a `failed` row they can see than by a run that is still
 #: technically trying.
-BUILD_RETRY = RetryPolicy(maximum_attempts=5)
+BUILD_RETRY = RetryPolicy(initial_interval=RETRY_INITIAL_INTERVAL, maximum_attempts=5)
 
 #: Marking the row failed, and deleting expired archives. Both are short local
 #: writes; the purge's is longer because it deletes objects from a bucket one at
@@ -58,7 +85,7 @@ PURGE_TIMEOUT = timedelta(minutes=30)
 #: bounded: a bookkeeping activity that retried forever would outlive the thing
 #: it is bookkeeping for.
 FINISH_TIMEOUT = timedelta(seconds=30)
-FINISH_RETRY = RetryPolicy(maximum_attempts=5)
+FINISH_RETRY = RetryPolicy(initial_interval=RETRY_INITIAL_INTERVAL, maximum_attempts=5)
 FINISH_ACTIVITY = "mark_run_finished"
 
 #: The two terminal values of `apps.workflows.models.WorkflowRun.Status`. Named

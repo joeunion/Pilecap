@@ -3,13 +3,15 @@
     uv run python manage.py zitadel_measure
 
 **Every constant in `apps/accounts/zitadel.py` that says MEASURED is a claim
-about somebody else's product, and nothing re-asks it.** Nineteen of them are
+about somebody else's product, and nothing re-asks it.** Twenty of them are
 load-bearing: seven field sets that keep a `PUT` from zeroing a deployment's
 configuration, the deadline the invitation email prints, the flag that tells an
 org's own login policy from the instance's, two refusals the writers' idempotence
 is built on, the proto3 rule every reader keys on, the hosted page an invite
-link points at, and the eleven facts about the Session API and login v2 that
-DESIGN I-A's front door is drawn on. Zitadel ships a new minor every few weeks.
+link points at, and the twelve facts about the Session API and login v2 that
+DESIGN I-A's front door is drawn on — the last of which, M12, is the one the
+identity JOIN rests on: that both interactive doors name one person with one
+string. Zitadel ships a new minor every few weeks.
 The suite cannot check any of it — ADR ident-5(a) settles that the test suite
 never dials an external system — so until this existed the whole set was a
 docstring nobody could falsify.
@@ -38,7 +40,7 @@ design's eleven items cannot be measured from this tree today: M1 and M2 need
 the login-version declaration A2 writes, M3 and M4 need the auth-request
 finalize A8 builds, and M6 and M7 are browser observations A11 makes by hand.
 They are PRINTED, every run, naming the rung — because a population that
-quietly dropped its unbuilt half would make a nineteen-line report look
+quietly dropped its unbuilt half would make a twenty-line report look
 complete at thirteen. The rung name in the line is what a later builder greps
 for.
 
@@ -58,14 +60,18 @@ a blind spot a reader cannot see is not declared. See `blind_spots()`.
 
 from __future__ import annotations
 
+import json
 import re
 import secrets
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from django.conf import settings
 from django.core.management.base import CommandError
@@ -116,6 +122,16 @@ V1_AUTHORIZE_MARK = "/ui/login/login?authRequestID="
 #: served 200 with `<title>Set Password</title>`.
 RESET_PATH = "/ui/login/password/init"
 RESET_MARK = "Set Password"
+
+#: M12's id, spelled once for the same reason `M3` and `M4` are: the judgment,
+#: the population row and the orchestration all name it, and a typo in any one
+#: of them is an item that prints beside its own measurement.
+M12 = "M12 subject-is-session-user-id"
+
+#: The name every throwaway OIDC client M12 makes begins with. Its own, not
+#: mode A's: `check_mode_a` deactivates the client it made inside its own
+#: `finally`, so there is nothing left for a second journey to borrow.
+SUBJECT_CHECK_PREFIX = "subject-check"
 
 #: The password the throwaway human is given so the Session API's password
 #: check has something to verify. It is generated per run rather than fixed:
@@ -199,8 +215,8 @@ class World:
 
 # --- the population, closed and in print order -------------------------------
 #
-# Nineteen items: the eight constants this tree already took off the pinned
-# build, then the design's M1-M11 in the design's own order. The list is the
+# Twenty items: the eight constants this tree already took off the pinned
+# build, then the design's M1-M12 in the design's own order. The list is the
 # population — a fact with no row here is a fact this command does not measure,
 # and `blind_spots()` says which those are. Print order is declaration order so
 # two runs are diffable.
@@ -302,6 +318,12 @@ ITEMS: tuple[Item, ...] = (
         "GET /v2/settings/password/complexity answers the org's policy — the "
         "rule sentence the Choose-your-password frame prints",
     ),
+    Item(
+        "M12 subject-is-session-user-id",
+        "the two interactive doors answer the SAME subject for one person: the "
+        "`factors.user.id` a session reports to OUR door is byte-identical to "
+        "the `sub` an id_token carries to the hosted one",
+    ),
 )
 
 #: Which rung flips each `unmeasured` item to a check. Read by the printer, so
@@ -374,7 +396,7 @@ def compose_pin(root: Path | None = None) -> str:
 
 
 def blind_spots() -> list[str]:
-    """What a clean nineteen-line run does NOT cover, printed beside the verdict.
+    """What a clean twenty-line run does NOT cover, printed beside the verdict.
 
     The same shape, and the same reason, as `zitadel_audit.blind_spot_lines`: a
     blind spot declared only in a module docstring is a blind spot the person
@@ -404,9 +426,16 @@ def blind_spots() -> list[str]:
         "  organisation this run created. A tenant's own people, a federated",
         "  identity and an org carrying a policy somebody configured are all",
         "  outside the walk.",
-        "  M1 leaves a DEACTIVATED throwaway OIDC client under this",
-        "  deployment's own project, one per run, each named",
-        "  `login-version-check-<hex>`. Deactivated is not a door, and the",
+        "  M12 measures OUR instance, on a person this run made, through the",
+        "  ONE session both halves are read off. It says nothing about a subject",
+        "  a FEDERATED identity provider asserts through an `SsoConnection` —",
+        "  that subject is `SsoIdentity.subject`, a different column with a",
+        "  different writer — and nothing about a build a deployment other than",
+        "  this laptop is running.",
+        "  M1 and M12 each leave a DEACTIVATED throwaway OIDC client under this",
+        "  deployment's own project, one per run, named",
+        "  `login-version-check-<hex>` and `subject-check-<hex>`. Deactivated is",
+        "  not a door, and the",
         "  object is the evidence a measurement was taken — but a deployment",
         "  measured daily accumulates them, and nothing sweeps them.",
         "  Nothing here reaches the console, the instance's actions, its machine",
@@ -1133,6 +1162,235 @@ def _judge_refusal_enum(seen: Mapping[str, Any]) -> Outcome:
     )
 
 
+def _query_value(url: str, name: str) -> str:
+    """One query parameter off a URL, or `""`.
+
+    Deliberately not imported from the client module, where the same three
+    lines are private: the two legs below are the KIT's own reading of a
+    browser URL rather than anything `zitadel` offers its callers.
+    """
+    return (parse_qs(urlsplit(url).query).get(name) or [""])[0]
+
+
+def _unverified_subject(token: str) -> str:
+    """A JWT's `sub`, WITHOUT verifying the signature. For a measurement only.
+
+    The argument `zitadel._unverified_claims` records, for one more item: the
+    question is WHICH STRING this build puts in the claim, and a verifier here
+    would be a second opinion about token validity (principle 9) answering a
+    different question — a token that failed verification still carries the
+    subject M12 is comparing.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        return ""
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        parsed = json.loads(urlsafe_b64decode(payload))
+    except (ValueError, TypeError):
+        return ""
+    return str(parsed.get("sub", "")) if isinstance(parsed, dict) else ""
+
+
+def _one_person_through_both_doors(world: World) -> dict[str, Any]:
+    """**M12's journey: ONE session, read twice, once per door.**
+
+    A session is opened for the throwaway human with a user check and a
+    password check — which is what `signin.py` does at OUR door — and two
+    things are then read off that same session:
+
+    * what **our** door reads: `factors.user.id`, from `GET /v2/sessions/{id}`;
+    * what the **hosted** door reads: the `sub` of an id_token, by finalizing
+      an auth request against that session and spending the code it answers.
+
+    One session rather than two, because the claim is that one person's one
+    sign-in is one identity fact. Two sessions would measure two people who
+    happen to share an id, which is trivially true and not the question.
+
+    **It builds its own victim and deactivates it**, `check_mode_a`'s rule and
+    for its reason: the deployment's real browser client is what every person
+    signs in through, and a declaration change on it is the one breakage that
+    locks a deployment out of its own front door.
+
+    Returns facts, never a verdict — `measure_subject_is_session_user_id`
+    judges — with `trouble` naming the leg that would not answer.
+    """
+    found: dict[str, Any] = {"trouble": ""}
+    if not world.user_id:
+        found["trouble"] = "no throwaway human to open a session for"
+        return found
+    project_name = str(getattr(settings, "ZITADEL_PROJECT_NAME", "") or "")
+    project = zitadel.find_project(name=project_name) if project_name else None
+    public = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+    if not project or not public:
+        found["trouble"] = (
+            f"no project named {project_name!r} on this instance, or no PUBLIC_BASE_URL — "
+            "there is nothing to make a throwaway OIDC client under, so no id_token can "
+            "be minted and nothing is asserted here"
+        )
+        return found
+
+    project_id = str(project.get("id", ""))
+    base_uri = f"{public}{LOGIN_BASE_PATH}"
+    redirect_uri = f"{base_uri.rstrip('/')}/{SUBJECT_CHECK_PREFIX}/callback"
+    made = zitadel.ensure_native_application(
+        project_id=project_id,
+        name=f"{SUBJECT_CHECK_PREFIX}-{secrets.token_hex(6)}",
+        redirect_uris=[redirect_uri],
+        dev_mode=True,
+    )
+    client_id = str(made.detail.get("clientId", ""))
+    try:
+        zitadel.ensure_application_login_version(
+            project_id=project_id, app_id=made.id, base_uri=base_uri
+        )
+        opened = zitadel.open_session(
+            checks={
+                "user": {"userId": world.user_id},
+                "password": {"password": world.password},
+            },
+            org_id=world.org_id,
+        )
+        if opened.status != 201:
+            found["trouble"] = (
+                f"POST /v2/sessions for the throwaway human answered {opened.status} "
+                f"{opened.error_id or opened.text[:120]!r} — there is no session to read "
+                "either door's answer off"
+            )
+            return found
+        session_id = str(opened.body.get("sessionId", ""))
+        session_token = str(opened.body.get("sessionToken", ""))
+        world.sessions.append(session_id)
+
+        read = zitadel.read_session(session_id=session_id)
+        if not read.ok:
+            found["trouble"] = f"GET /v2/sessions/{{id}} answered {read.status}"
+            return found
+        factors = dict((read.body.get("session") or {}).get("factors") or {})
+        found["factors"] = sorted(factors)
+        found["session_user_id"] = str((factors.get("user") or {}).get("id", ""))
+
+        verifier = secrets.token_hex(48)
+        challenge = urlsafe_b64encode(sha256(verifier.encode()).digest()).decode().rstrip("=")
+        # **Both legs go through the client module's own factory**, which is
+        # what `check_mode_a` uses and what the suite's fake intercepts.
+        # `zitadel.probe` cannot model either: the authorize's whole answer is
+        # a `Location` HEADER, which `Probe` does not carry, and the token
+        # endpoint takes a FORM body, which `probe` does not send. The
+        # credential the factory attaches is ignored by both — measured, and
+        # recorded on `zitadel.authorize_redirect`: the 302 was taken with it on.
+        with zitadel._client() as browser:
+            started = browser.get(
+                "/oauth/v2/authorize",
+                params={
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "response_type": "code",
+                    "scope": "openid email profile",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                },
+            )
+        request_id = _query_value(str(started.headers.get("location", "")), "authRequest")
+        if not request_id:
+            found["trouble"] = (
+                "the authorize endpoint did not answer a v2 auth request for a client that "
+                "declares loginVersion — M1 is the item that says why"
+            )
+            return found
+
+        finished = zitadel.finalize_auth_request(
+            request_id=request_id, session_id=session_id, session_token=session_token
+        )
+        callback = str(finished.body.get("callbackUrl", ""))
+        code = _query_value(callback, "code")
+        if not finished.ok or not code:
+            found["trouble"] = (
+                f"the finalize answered {finished.status} "
+                f"{finished.error_id or finished.text[:120]!r} — M2 is the item that says "
+                "whether this credential may make one at all"
+            )
+            return found
+
+        with zitadel._client() as browser:
+            exchanged = browser.post(
+                "/oauth/v2/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": client_id,
+                    "code_verifier": verifier,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        if exchanged.status_code != 200:
+            found["trouble"] = (
+                f"the token exchange answered {exchanged.status_code} "
+                f"{exchanged.text[:160]!r}, so there is no id_token to read a subject off"
+            )
+            return found
+        id_token = str(dict(exchanged.json()).get("id_token", ""))
+        if not id_token:
+            found["trouble"] = (
+                "the token exchange answered 200 with no `id_token` — the hosted door's "
+                "whole subject comes out of that token, so nothing is asserted here"
+            )
+            return found
+        found["token_subject"] = _unverified_subject(id_token)
+        return found
+    finally:
+        zitadel.deactivate_application(project_id=project_id, app_id=made.id)
+
+
+def measure_subject_is_session_user_id(world: World) -> Outcome:
+    """**M12** — the two doors answer the same subject, or they do not.
+
+    The fact the whole identity join rests on, and until this row existed it
+    was an assumption in a docstring. `record_zitadel_identity` is keyed on
+    ONE column, `User.zitadel_sub`, and two doors write it down two different
+    roads: the hosted page comes back through allauth carrying an id_token's
+    `sub`, and this deployment's own form reads `factors.user.id` off a
+    Session API answer. If this build ever stopped making those the same
+    string, a person who used one door on Monday and the other on Tuesday
+    would meet `Conflict` — *That identity is already linked to a different
+    account* — at their own account, and nothing in the suite could see it:
+    the two fakes would go on agreeing with each other.
+
+    **No id_token is `could not`, never an `ok`.** A journey that did not
+    reach a token has measured nothing at all, and the kit's grammar puts that
+    above a disagreement (exit 2) rather than below it.
+    """
+    seen = _one_person_through_both_doors(world)
+    if seen.get("trouble"):
+        return could_not(str(seen["trouble"]))
+    ours = str(seen.get("session_user_id", ""))
+    hosted = str(seen.get("token_subject", ""))
+    if not ours:
+        return could_not(
+            "the session read carries no `factors.user.id`, so our door's half of the "
+            f"comparison does not exist (factors={seen.get('factors')})"
+        )
+    if not hosted:
+        return could_not(
+            "the id_token carries no `sub` claim, so the hosted door's half of the "
+            "comparison does not exist"
+        )
+    if ours != hosted:
+        return differs(
+            f"the session reports factors.user.id={ours!r} and the id_token minted for "
+            f"that same session carries sub={hosted!r} — the two doors no longer name one "
+            "person with one string, and `record_zitadel_identity` would refuse the second "
+            "door with `Conflict` at an account its owner is standing in front of"
+        )
+    return ok(
+        f"one session, both doors: factors={seen.get('factors')}, our door reads "
+        f"factors.user.id={ours!r} and the id_token finalized against that same session "
+        f"carries sub={hosted!r} — byte-identical, so a person who signs in through the "
+        "hosted page and then through ours is ONE identity fact"
+    )
+
+
 def measure_reset_landing(world: World) -> Outcome:
     """**M6** — where the password-reset mail's link lands, application on login v2.
 
@@ -1280,6 +1538,10 @@ def measure(world: World) -> dict[str, Outcome]:
         outcomes[M3] = could_not(str(error))
         outcomes[M4] = could_not(str(error))
         outcomes[M7] = could_not(str(error))
+    # M12 last: its journey needs the password M8's prelude gave the human,
+    # and it is the second item that makes an object outside the throwaway
+    # organisation — declared in `blind_spots()` beside M1's.
+    run(M12, lambda: measure_subject_is_session_user_id(world))
     for item_id, rung in PROMISED.items():
         outcomes[item_id] = unmeasured(rung, f"the ingredient lands at rung {rung}")
     return outcomes
@@ -1369,7 +1631,7 @@ class Command(BaseCommand):
 
         Not a partial report. An instrument that measured the six items needing
         no throwaway org and reported the rest as blind would exit 2 either way,
-        and the shorter road keeps one failure from being printed nineteen
+        and the shorter road keeps one failure from being printed twenty
         different ways.
         """
         outcomes = {item.id: could_not(reason) for item in ITEMS}

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The `--loop` `fe` leg's tri-state. Sourced by scripts/check.sh and by
-# scripts/tests/test_fe_leg.sh's 9-case harness.
+# The `fe` leg's tri-state. Sourced by scripts/check.sh and by
+# scripts/tests/test_fe_leg.sh's harness.
 # BASH ONLY, for the reason gate_ledger.sh states: sourced into an interactive
 # zsh, `local path` ties to $PATH and every helper dies silently.
 #
@@ -225,8 +225,51 @@ sys.exit(0 if "test" in d.get("scripts", {}) else 1)
     (cd "$dir" && "${FE_PNPM:-pnpm}" run test)
 }
 
+# ---------------------------------------------------------------------------
+# THE MODE, AND WHY THE FAST-PAIR ECONOMY STOPS AT THE FULL GATE (ratified
+# by the PM, 2026-09-21).
+#
+# `untouched` and `suspect` are a RUNG-TIME economy: the per-rung loop is a
+# builder's inner loop, and re-running two pnpm commands over a frontend the
+# active rung never touched buys that builder nothing. The full gate is not
+# that. A bank writes a verdict row naming `fe` as a leg that RAN, and the
+# pre-push wall reads that row as "a full gate has passed these bytes" — so a
+# bank that took the fast path vouched for a frontend nobody installed and
+# nobody tested. MEASURED on this tree at f800ab5b: `check.sh --leg static` —
+# one shard of a bank — printed `UNTOUCHED (fast path)` and `(fe: 0s)` while
+# the unit's own summary named `fe` among the legs it had run.
+#
+# SO THE MODE DECIDES, AND THE CALLER HANDS IT OVER VERBATIM. `check.sh` passes
+# its own `$MODE`:
+#
+#   ""       the FULL gate (and `--bank`/`--pr`, which normalise to it) -> WHOLE
+#   --leg    one unit of the full gate, i.e. a bank shard               -> WHOLE
+#   --loop   the per-rung gate                                          -> change-aware
+#   --fast   the pre-commit legs                                        -> change-aware
+#
+# WHOLE means the touched-frontend question is never asked: `absent` still
+# short-circuits (a tree with no `frontend/` has nothing to install), and
+# everything else is `full` — toolchain absent is then exit 2, could-not-look,
+# exactly as it already is for a touched frontend, because a bank that could
+# not look at the frontend must not bank a row that says it did.
+#
+# AN OMITTED MODE IS CHANGE-AWARE, AND THAT IS A CONTRACT, not a default that
+# drifted: three drives call this function with one argument to drive the
+# tri-state itself (`scripts/tests/test_fe_leg.sh`'s nine cases,
+# `scripts/tests/test_rung_tidy.sh`'s client offer, `scripts/tests/test_pm_fold.sh`'s
+# suspect/plain pair), and every one of them is about the per-rung states. An
+# ABSENT second argument and an EMPTY one therefore mean different things here
+# — `""` is the full gate's own `$MODE` and must run the leg whole — so this
+# reads `$#` rather than `${2:-}`.
+#
+# THE COST IS PRINTED, NOT ESTIMATED. The ratification names two pnpm commands
+# per bank as the price; a price nobody measures is a price that grows in
+# silence, so the `full` state times each command and prints the pair and the
+# total on its own line.
+# ---------------------------------------------------------------------------
+
 # fe_leg_run <changed-file-list (NUL-separated, secrets_scan_changed_files'
-# own output shape)>
+# own output shape)> [<mode: check.sh's $MODE, verbatim>]
 #
 # The whole state machine, one function, so a drive and check.sh call the exact
 # same decision. Sets FE_LEG_STATE (absent|untouched|suspect|full — cleared to
@@ -234,11 +277,17 @@ sys.exit(0 if "test" in d.get("scripts", {}) else 1)
 # `suspect` splits the old `untouched`: same fast path,
 # same exit 0, nothing re-run — but the backend contract surface moved, so the
 # committed client is NAMED as in question instead of being reassured about.
+# Under the WHOLE modes (see above) neither of those two states is reachable.
 # Exit: 0 clean (absent, untouched, suspect, or a clean full run) · 1 a finding
 # in the full state (a frozen lockfile mismatch or a failing test script) · 2
-# could-not-look (frontend/ present, touched, and its toolchain is not).
+# could-not-look (frontend/ present, the toolchain is not, and this mode was
+# going to look at it).
 fe_leg_run() {
-    local changed_list=$1 lockrc
+    local changed_list=$1 lockrc mode whole="" t0 lock_secs test_secs
+    if [ "$#" -ge 2 ]; then mode=$2; else mode="--loop"; fi
+    case "$mode" in
+    "" | --leg) whole=1 ;;
+    esac
     FE_LEG_STATE=""
 
     if [ ! -d "$FE_FRONTEND_DIR" ]; then
@@ -248,7 +297,12 @@ fe_leg_run() {
         return 0
     fi
 
-    if ! fe_leg_touched_frontend "$changed_list"; then
+    if [ -n "$whole" ]; then
+        echo "  WHOLE RUN — this is the ${mode:-full} gate, which banks a verdict row naming"
+        echo "  \`fe\` as a leg that ran, so the frontend's frozen-lockfile install and its"
+        echo "  declared tests run whatever the active rung touched. The untouched/suspect"
+        echo "  fast path belongs to --loop and --fast (scripts/fe_gate.sh, THE MODE)."
+    elif ! fe_leg_touched_frontend "$changed_list"; then
         # `untouched` used to be the ONLY answer here, and it was wrong
         # for the population above — a backend contract change that stales the
         # committed client printed the fast path's own reassurance. The suspect
@@ -288,17 +342,23 @@ fe_leg_run() {
     fi
 
     if ! fe_leg_toolchain_present; then
-        echo "!! COULD NOT LOOK — $FE_FRONTEND_DIR/ IS on this tree and the active rung" >&2
-        echo "   touched it, and its toolchain (${FE_PNPM:-pnpm}) is not on PATH. A tree" >&2
+        echo "!! COULD NOT LOOK — $FE_FRONTEND_DIR/ IS on this tree and this run was going" >&2
+        echo "   to look at it, and its toolchain (${FE_PNPM:-pnpm}) is not on PATH. A tree" >&2
         echo "   with a subject and no instrument is could-not-look, never a clean scan." >&2
         return 2
     fi
 
     FE_LEG_STATE=full
-    echo "  FULL — $FE_FRONTEND_DIR/ touched by the active rung, toolchain present."
+    if [ -n "$whole" ]; then
+        echo "  FULL — $FE_FRONTEND_DIR/ on this tree, toolchain present, run whole for this mode."
+    else
+        echo "  FULL — $FE_FRONTEND_DIR/ touched by the active rung, toolchain present."
+    fi
     echo "  -- frozen-lockfile --"
+    t0=$(date +%s)
     fe_leg_frozen_lockfile "$FE_FRONTEND_DIR"
     lockrc=$?
+    lock_secs=$(($(date +%s) - t0))
     if [ "$lockrc" = "2" ]; then
         return 2
     elif [ "$lockrc" != "0" ]; then
@@ -309,6 +369,17 @@ fe_leg_run() {
     echo "  ok — pnpm-lock.yaml satisfies package.json"
 
     echo "  -- frontend tests --"
-    fe_leg_tests "$FE_FRONTEND_DIR" || return 1
+    t0=$(date +%s)
+    fe_leg_tests "$FE_FRONTEND_DIR" || {
+        test_secs=$(($(date +%s) - t0))
+        echo "  fe leg cost: frozen-lockfile ${lock_secs}s + tests ${test_secs}s = $((lock_secs + test_secs))s (two pnpm commands)"
+        return 1
+    }
+    test_secs=$(($(date +%s) - t0))
+    # THE RATIFIED PRICE, MEASURED RATHER THAN ESTIMATED. A3.3's decision names
+    # "two pnpm commands per bank" as the cost of never skipping this leg at
+    # the full gate; this line is what makes that number readable on every run
+    # that pays it, in the leg's own banner, instead of a figure in a plan.
+    echo "  fe leg cost: frozen-lockfile ${lock_secs}s + tests ${test_secs}s = $((lock_secs + test_secs))s (two pnpm commands)"
     return 0
 }

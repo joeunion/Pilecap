@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib.util
 import os
 import pathlib
 import re
@@ -45,6 +46,61 @@ from apps.core.services import add_membership, create_tenant, root_organization
 from apps.core.tests.tree_census import source_tree
 
 PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
+
+
+# --- the product's fixture drawer -------------------------------------------
+#
+# WHAT THIS IS FOR. This file is template-owned (`quality/partition.yaml`
+# class C2): a product that edits it invalidates the platform partition, and
+# the first consumer of this template added 609 lines of its own fixtures here
+# because there was nowhere else to put a fixture every one of its apps needs.
+# `apps/<x>/tests/conftest.py` is scoped by directory ancestry, so it cannot
+# serve a product-wide fixture; the root conftest can, and it is mine.
+#
+# So: `apps/conftest_local.py` is the drawer. It is product-owned and it is
+# DISCOVERED — the template never writes it and a product never edits this
+# line. The template must never SHIP one either: the publication manifest's
+# reserved-path rule is where that is enforced, and this exact path belongs
+# on it.
+#
+# ABSENT IS BYTE-IDENTICAL: no module, no `pytest_plugins`, the collected set
+# unchanged.
+#
+# PRESENT, IT MOVES THE PARTITION KEY, and that is honest rather than
+# unfortunate. `pytest_plugins` loads the drawer for the WHOLE session, so an
+# `autouse=True` fixture in it runs inside every PLATFORM test as well as the
+# product's own — measured: a drawer autouse fixture errors
+# `apps/core/tests/test_refusals.py`. A product's drawer can therefore change
+# what the platform suite answers, so class C2 names this path as a member and
+# a drawer invalidates a banked verdict exactly as an edit to THIS file does.
+# The design's "never invalidates a banked verdict" could not be honoured
+# honestly and is withdrawn.
+#
+# ON A NAME CLASH, THIS FILE WINS AND SAYS NOTHING. A conftest's own fixtures
+# take precedence over a plugin's, so a drawer fixture sharing a name with one
+# below is silently ignored — no warning, no error, the template's version
+# used. Give a drawer fixture a name this file does not use.
+#
+# ONE KNOWN EDGE, since it is pytest's and not ours. `pytest_plugins` in a
+# conftest that is not the ROOTDIR's is refused by pytest — but only when that
+# conftest is loaded after configure, which happens when the rootdir itself is
+# the argument (`pytest .`). Every way this tree is actually run makes
+# `apps/conftest.py` an INITIAL conftest and is unaffected: a bare `pytest`
+# (`testpaths = ["apps"]`), any `pytest apps/...`, `scripts/test.sh`, and both
+# gate legs. A product that runs `pytest .` and has a drawer will see that
+# refusal; it runs `pytest apps` instead.
+#
+# WHY `find_spec` AND NOT A BARE `try: import ... except ImportError: pass`.
+# The two disagree exactly when the drawer is BROKEN. A try/except around the
+# import cannot tell "there is no drawer" from "the drawer raised ImportError
+# on line 40", so a product whose fixtures stopped loading would see every one
+# of its tests fail with `fixture not found` and nothing naming the cause.
+# `find_spec` answers only the question we are actually asking — does the
+# module exist — and then pytest imports it, so a broken drawer is a LOUD
+# ImportError (or SyntaxError) naming `apps/conftest_local.py`, never a silent
+# absence. `find_spec` locates; it does not execute, and it does not compile.
+if importlib.util.find_spec("apps.conftest_local") is not None:
+    pytest_plugins = ["apps.conftest_local"]
 
 
 # --- the absent-app world: the one subtraction a deployment may make ---------
@@ -560,23 +616,33 @@ DJB_REACH_FLOORS: dict[str, int] = {kind: 1 for kind in DJB_REACH_TOKENS}
 #:   xargs grep -lF 'management.commands.introspect' < /tmp/m | wc -l # introspect_registry_readers
 #:   grep -c 'tests/test_lifecycle\.py$'  /tmp/m                      # lifecycle_registry_walkers
 #:
-#: RUN 2026-09-18 on tree 05b95d786bf1d68c6a025421a5a404d38543f09a (main
-#: a3950afd), N = 4011 items collected over 267 modules → 4 · 14 · 3 · 6 · 8.
-#: FOUR OF THE FIVE INTEGERS BELOW ARE THAT RUN; `door_parity_census` and
-#: `introspect_registry_readers` ARE NOT, and the gap is recorded rather than
-#: closed here. `apps_root_modules` was re-derived from 3 to 4 —
-#: `apps/test_census_markers.py` joined the population and a floor of 3 under
-#: four members let a member be moved aside without the refusal ever naming
-#: the population it emptied, which is how `test_loop_scope.sh`'s moved-aside
-#: case found it. The other two read 14 and 6 against the 10 and 4 they still
-#: carry from the 2026-09-07 run on tree 08c4120e (3 · 10 · 3 · 4 · 8): a
-#: floor left under its own derivation cannot tell a deletion from a
+#: RUN 2026-09-21 on tree 8f6047a8bee0181f6895bb6a12dab1294327dd0d (main
+#: e1a06674), N = 4440 items collected over 280 modules → 5 · 14 · 3 · 7 · 8.
+#: THREE OF THE FIVE INTEGERS BELOW ARE THAT RUN — `apps_root_modules`,
+#: `absent_world_consumers`, `lifecycle_registry_walkers`; `door_parity_census`
+#: and `introspect_registry_readers` ARE NOT, and the gap is recorded rather
+#: than closed here. `apps_root_modules` has now been re-derived TWICE for the
+#: same reason, and the repeat is the point: 3 → 4 when
+#: `apps/test_census_markers.py` joined the population (2026-09-18), and 4 → 5
+#: when `apps/test_retry_floor.py` joined it (2026-09-21, S5F — a cross-app
+#: tripwire that lives at the apps root because the layer contract forbids
+#: `apps.workflows` importing `apps.events`). BOTH TIMES the symptom was the
+#: same: a floor one under its own membership lets a member be moved aside
+#: without the refusal ever naming the population it emptied, and both times
+#: `test_loop_scope.sh`'s moved-aside case is what found it — the second time
+#: only at a bank, because the case still reddened on `absent_world_consumers`
+#: (its victim is a member of two populations) while saying nothing about the
+#: population the case exists to name. **A rung that adds an `apps/test_*.py`
+#: raises this integer in the same commit**; it is not a number anyone reads
+#: off the tree later. The other two read 14 and 7 against the 10 and 4 they
+#: still carry from the 2026-09-07 run on tree 08c4120e (3 · 10 · 3 · 4 · 8):
+#: a floor left under its own derivation cannot tell a deletion from a
 #: derivation going blind, so both are a live gap and both are somebody's
 #: rung, not a line changed in passing by a hotfix whose territory was this
 #: one floor. The floor that moved is RE-DERIVED, not reworded, so the
 #: sentence above stays a fact of it.
 DJB_POPULATION_FLOORS: dict[str, int] = {
-    "apps_root_modules": 4,
+    "apps_root_modules": 5,
     "door_parity_census": 10,
     "absent_world_consumers": 3,
     "introspect_registry_readers": 4,

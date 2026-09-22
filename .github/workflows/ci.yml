@@ -247,6 +247,12 @@ jobs:
           # change must resolve on every row below, and the rows check out the
           # same way. Kept here so the two jobs' checkouts do not differ.
           fetch-depth: 0
+          # AND THE TAGS, for the same "do not differ" reason. `fetch-depth: 0`
+          # fetches every commit and NO tag object; the drives and the image
+          # side both reason about tags, and a runner that has none answers
+          # "this tree carries no tag" identically to a tree that really does
+          # not. See the legs job's checkout for the measurement.
+          fetch-tags: true
 
       - name: ask the gate what its units are
         id: units
@@ -343,6 +349,47 @@ jobs:
           # A depth-1 clone answers both questions wrongly — and the base of a
           # proposed change would not resolve at all.
           fetch-depth: 0
+          # TAGS ARE NOT COMMITS, and `fetch-depth: 0` does not bring them. The
+          # difference is invisible in exactly the direction that matters: a
+          # reader asking "what tag does this tree carry" gets the same silence
+          # from a runner with no tag objects as from a tree nobody has tagged,
+          # so a version claim measured here would be a claim about the
+          # CHECKOUT's completeness. The step below prints the count so the
+          # answer is falsifiable rather than assumed.
+          fetch-tags: true
+
+      - name: this runner's shape, printed
+        # WHAT A DRIVE MEETS HERE, SAID OUT LOUD, and it is one line because it
+        # is read by a human looking at a red run rather than by a case.
+        #
+        # THE THREE FACTS, and each of them has cost a cycle. HEAD STATE: on a
+        # `pull_request` event `actions/checkout` checks out the merge commit
+        # DETACHED and creates no local branch, so a drive that asked git for
+        # `main` got exit 1 (loud) or, with `|| true` around it, git's own
+        # error-path stdout — THE ARGUMENT — compared as a sha (silent). That
+        # is the silent one, and `drive_base_ref` in
+        # `scripts/tests/drive_preamble.sh` is
+        # the reader it now goes through. THE REFS PRESENT: whether
+        # `refs/heads/main` and `refs/remotes/origin/main` are here at all is
+        # what that reader falls through, so the log says which one answered.
+        # THE TAG COUNT: the tags fetch above is unfalsifiable on a
+        # repository with no tags — this template has none — so the count is
+        # printed rather than asserted, and a consumer whose origin carries
+        # tags reads a non-zero number here the day they adopt it.
+        run: |
+          if git symbolic-ref -q HEAD >/dev/null 2>&1; then
+              head_state="attached to $(git symbolic-ref --short HEAD)"
+          else
+              head_state="DETACHED at $(git rev-parse --short HEAD)"
+          fi
+          # `if`, not `cmd && var=yes`: this step's shell is `bash -e`, and an
+          # AND-list whose left side fails is a failing last command — the step
+          # would exit on the very answer it exists to print.
+          local_main=no
+          if git rev-parse --verify -q refs/heads/main >/dev/null 2>&1; then local_main=yes; fi
+          origin_main=no
+          if git rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then origin_main=yes; fi
+          echo "runner shape: HEAD ${head_state}; local main: ${local_main}; origin/main: ${origin_main}; tags: $(git tag -l | grep -c . || true)"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -569,6 +616,86 @@ jobs:
             echo "::error::the gate did not pass — see the rows named above"
             exit 1
           fi
+
+  local:
+    name: local
+    # THE PRODUCT'S OWN CI STEPS, AND THERE IS NO SECOND WORKFLOW FILE.
+    #
+    # WHY IT IS HERE AT ALL. A product that clones this template grows CI work
+    # of its own — the first consumer's deploy jobs are the measured case — and
+    # the only place to put it was inside THIS file, which is template-owned:
+    # every release then re-pays the conflict, and the v2.1.0 fold priced that
+    # at 21 conflicts across `scripts/ quality/ .github/`. A `ci.local.yml` was
+    # rejected as the fix (team F § 3): GitHub composes nothing, so a second
+    # workflow is a second copy of the whole setup — the checkout, the uv
+    # install, the database name, the stack — that nothing keeps in step with
+    # this one. One optional JOB, reading one optional DIRECTORY, is the
+    # smallest thing that is still one workflow.
+    #
+    # `needs: verdict` IS THE SAME CRITERION `images` STANDS ON. Whatever a
+    # product does here — a deploy, a publish, a notification — is downstream of
+    # the gate's own verdict, so it runs behind it rather than beside it. A
+    # product that wants something IN the gate writes a leg
+    # (`scripts/local/legs/`), which reaches the matrix through the listing with
+    # no edit to this file either.
+    #
+    # ABSENT, IT COSTS ONE SKIPPED LINE. The template ships no
+    # `scripts/local/` path (`publish.sh` § R0), so on this repository's own
+    # tree the step prints why it did nothing and exits 0 — printed and never
+    # silent, because a job that says nothing is indistinguishable from a job
+    # that ran something.
+    needs: verdict
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: the product's own CI steps
+        # >>> local-ci >>>
+        # EXTRACTED AND RUN BY `scripts/tests/test_drive_preamble.sh` between
+        # these sentinels — the `run_registration` idiom one layer over: the
+        # block CI ships is the block the case drives, because a copy of this
+        # logic in a drive would be a case that passes while the workflow
+        # drifts.
+        run: |
+          set -uo pipefail
+          dir=scripts/local/ci
+          if [ ! -d "$dir" ]; then
+            echo "no ${dir}/ in this tree — this product declares no CI steps of its own (the template never ships one)"
+            exit 0
+          fi
+          # NAME ORDER, AND IT IS THE GLOB'S. A product that wants an order
+          # numbers its files, exactly as `fold.d/` and every run-parts
+          # directory in this system does. `LC_ALL=C` so the order is the same
+          # on every runner rather than the locale's idea of one.
+          found=0
+          rc=0
+          for f in $(LC_ALL=C ls "$dir"/*.sh 2>/dev/null); do
+            found=$((found + 1))
+            if [ ! -x "$f" ]; then
+              echo "::error::${f} is not executable — a CI step this job cannot run is one it would silently skip (chmod +x)"
+              exit 2
+            fi
+            echo "--- ${f}"
+            "$f"
+            step_rc=$?
+            echo "--- ${f}: exit ${step_rc}"
+            # THE FIRST NON-ZERO IS THE JOB'S, AND EVERY STEP STILL RUNS. The
+            # gate's own selftest leg composes its exit from the whole
+            # population for the same reason: one failure per run is the cost
+            # this system refuses to keep paying.
+            [ "$step_rc" = "0" ] || rc="$step_rc"
+          done
+          if [ "$found" = "0" ]; then
+            echo "${dir}/ exists and holds no *.sh — nothing to run"
+            exit 0
+          fi
+          echo "${found} product CI step(s) ran; exit ${rc}"
+          exit "$rc"
+        # <<< local-ci <<<
 
   images:
     name: images

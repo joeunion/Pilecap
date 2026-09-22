@@ -154,6 +154,13 @@ NOT_A_SOURCE_CENSUS: dict[str, str] = {
         "this module — it has to say the names to count them, and everything it opens "
         "is either a `tmp_path` fixture it wrote itself or read through the seam"
     ),
+    "apps/core/tests/test_fold_migrations.py": (
+        "every directory it walks is a scratch migrations package it wrote in its own "
+        "`tmp_path` this test, so nothing else can plant in it or remove from it — the "
+        "race the seam exists for cannot reach it. Its one read outside that is "
+        "`quality/rules.yaml`, which no test plants (the same read, and the same "
+        "reason, as `test_plant_sites.py` above)"
+    ),
 }
 
 # NOT exemptions, because they never enter the population: `test_settings.py` and

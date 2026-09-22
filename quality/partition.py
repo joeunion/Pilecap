@@ -871,22 +871,60 @@ def bent_environment() -> list[str]:
 # --- §4 · the AST seam census -------------------------------------------------
 
 
-def _walking_modules() -> list[str]:
+#: The two halves of the discovery walk shape, as CALLED NAMES (see below).
+_REGISTRY_CALL = "get_app_configs"
+_SUBMODULE_CALLS = frozenset({"find_spec", "import_module"})
+
+
+def _called_names(tree: ast.AST) -> set[str]:
+    """Every name this module CALLS — `f(...)` as `f`, `a.b.f(...)` as `f`.
+
+    A call, not a mention. See `_walking_modules` for why the distinction is
+    the whole of this census's soundness.
+    """
+    return {
+        (node.func.id if isinstance(node.func, ast.Name) else node.func.attr)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute)
+    }
+
+
+def _walking_modules(*, root: Path = ROOT) -> list[str]:
     """Every platform module that performs the discovery walk shape.
 
-    The shape, stated so a reader can disagree with it: a module that asks the
-    app registry for its configs AND reaches for a submodule of an app by its
+    The shape, stated so a reader can disagree with it: a module that CALLS the
+    app registry for its configs AND CALLS for a submodule of an app by its
     dotted name (`importlib.util.find_spec` / `import_module`). That is what a
-    discovery seam looks like in this tree, in every one of the ten it already
-    has.
+    discovery seam looks like in this tree, in every one of the thirteen it
+    already has.
+
+    **WHAT THIS READS IS CALL NODES, NEVER THE TEXT OF A DUMP, and that is a
+    correction the gate itself made.** This census used to ask
+    `"get_app_configs" in ast.dump(tree)`, which is a substring test over a
+    serialization that contains every STRING CONSTANT in the module — so a file
+    holding the marker as data, never calling it, was counted as calling it.
+    It fired for real: `apps/conftest.py` carries `"get_app_configs"` as one
+    entry of `DJB_REACH_TOKENS`, a table of source tokens OTHER censuses search
+    for, and zero call sites; the day that file gained an unrelated
+    `find_spec` for the product fixture drawer, both halves read true and the
+    census refused a module that walks nothing. Measured at the fix: fourteen
+    walking modules became thirteen, the difference exactly `apps.conftest`,
+    every other seam and every `walks:` declaration untouched. The class is the
+    one the standing rule names — a guard that counts marker-shaped strings
+    wherever they appear cannot tell a registration from a mention — and the
+    answer is to read the syntax rather than the spelling.
 
     Tests are excluded: the census is about seams the platform READS THROUGH,
     and a test that walks the registry is a quantified assertion — which is §5's
     census, a different instrument with a different disposition.
+
+    `root` is the canary's seam, not configuration: §8.4 drives this exact
+    function over a scratch tree, because a canary that re-implemented the shape
+    test would be proving a copy of the check rather than the check.
     """
     found: list[str] = []
-    for path in sorted((ROOT / "apps").rglob("*.py")) + sorted((ROOT / "config").rglob("*.py")):
-        relative = path.relative_to(ROOT)
+    for path in sorted((root / "apps").rglob("*.py")) + sorted((root / "config").rglob("*.py")):
+        relative = path.relative_to(root)
         parts = relative.with_suffix("").parts
         if any(part == "tests" for part in parts) or parts[-1].startswith("test_"):
             continue
@@ -894,10 +932,8 @@ def _walking_modules() -> list[str]:
             tree = ast.parse(path.read_text(), filename=str(path))
         except SyntaxError as error:  # pragma: no cover - a broken file is exit 2
             raise Broken(f"the seam census cannot parse {relative}: {error}") from error
-        source = ast.dump(tree)
-        asks_registry = "get_app_configs" in source
-        reaches = "find_spec" in source or "import_module" in source
-        if asks_registry and reaches:
+        called = _called_names(tree)
+        if _REGISTRY_CALL in called and called & _SUBMODULE_CALLS:
             found.append(".".join(parts))
     return found
 
@@ -1304,6 +1340,70 @@ def canary_planted_app(say: Any) -> None:
     say("    the negative stays silent on part 1: product-shaped paths are not members")
 
 
+def canary_seam_census(say: Any) -> None:
+    """§8.4 — the seam census reads CALLS, and both directions are planted.
+
+    The census's soundness rests on one distinction — a module that CALLS the
+    registry versus a module that merely holds the marker as data — so both
+    sides are planted and driven through the REAL `_walking_modules`, never a
+    re-implementation of its shape test.
+
+    The negative is the one that was live: `apps/conftest.py` holds
+    `"get_app_configs"` as an entry of `DJB_REACH_TOKENS` and calls it nowhere,
+    and the old substring-over-`ast.dump` read counted it as a walking module
+    the day the file gained an unrelated `find_spec`. A census that cannot tell
+    a mention from a call refuses files that walk nothing, and the way it goes
+    wrong — refusing the honest file — is the way that gets a census widened
+    until it is silent.
+
+    The plants live in a temporary directory, never in the working tree: a
+    destructive demonstration creates its own victim.
+    """
+    marker, reach = _REGISTRY_CALL, sorted(_SUBMODULE_CALLS)[0]
+    with tempfile.TemporaryDirectory(prefix="djb-partition-seam-") as scratch:
+        root = Path(scratch)
+        (root / "apps").mkdir(parents=True)
+
+        # THE NEGATIVE — `apps/conftest.py`'s exact live shape: the registry
+        # marker as a STRING CONSTANT in a token table, never called, beside a
+        # genuine `find_spec` CALL for one hard-coded module. Both halves are
+        # present in the text; only one is present in the syntax.
+        (root / "apps" / "mentions_only.py").write_text(
+            "import importlib.util\n"
+            f'TOKENS = ("{marker}",)\n'
+            f'SPEC = importlib.util.{reach}("apps.one_named_module")\n'
+        )
+        # THE CANARY — both halves genuinely CALLED.
+        (root / "apps" / "really_walks.py").write_text(
+            "from django.apps import apps\n"
+            "import importlib.util\n"
+            "def seam():\n"
+            f"    for config in apps.{marker}():\n"
+            f'        importlib.util.{reach}(f"{{config.name}}.api")\n'
+        )
+
+        walking = _walking_modules(root=root)
+        if "apps.really_walks" not in walking:
+            raise Broken(
+                "THE SEAM CANARY DID NOT FIRE: a planted module CALLING "
+                f"{marker}() and {reach}() was not counted as a discovery walk "
+                f"(the census answered {walking!r}). A census that cannot see a "
+                "real seam is enforcement that is broken, not a tree that is clean."
+            )
+        say(f"    a planted module that CALLS both halves is a discovery walk: {walking!r}")
+
+        if "apps.mentions_only" in walking:
+            raise Violation(
+                "THE SEAM NEGATIVE FIRED — and a negative that fires is a finding, not a "
+                f"pass. A module holding {marker!r} as a STRING CONSTANT, calling it "
+                "nowhere, was counted as walking the app registry. That is the live "
+                "defect this census was corrected for: `apps/conftest.py`'s "
+                "`DJB_REACH_TOKENS` table holds that token as data and calls it zero "
+                "times, and a substring read over `ast.dump` cannot tell the two apart."
+            )
+        say("    the negative stays silent: the marker as a string constant is not a call")
+
+
 def canary_import_census(say: Any) -> None:
     """§8.4 — the import census, born provably non-vacuous.
 
@@ -1497,6 +1597,9 @@ def selftest(say: Any) -> tuple[str, str, dict[str, str]]:
         )
     say("    no platform test imports a product app")
 
+    # §8.4 FIRST, then the census it makes falsifiable — the plant proves the
+    # instrument can tell a CALL from a MENTION before its silence is evidence.
+    canary_seam_census(say)
     strays = seam_census()
     if strays:
         raise Violation(

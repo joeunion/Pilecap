@@ -457,6 +457,25 @@ code"** · and the standing conventions it will otherwise rediscover.
   a second gate. Fold main in at your last boundary, run it after that fold,
   and paste the `banked:` key it printed, so the verifier's consult has a tree
   to hit.
+- **The box loop goes in a DRIVER SCRIPT in the builder's scratchpad, and the
+  brief says so in the form below** — three exports on their own lines, then
+  the wrapper. The reason is one sentence and it belongs in the brief: *the
+  permission classifier does not match an inline env-prefix form
+  (`DJB_X=… ./scripts/verifier_box.sh …`), so a builder that types one loses a
+  turn to a prompt.* Every builder of one fifteen-rung wave paid that turn.
+
+  ```bash
+  # <scratchpad>/<rung>/vb.sh — exports on their own lines, then the wrapper
+  export DJB_DEPLOY_NAMESPACE=<namespace>
+  export DJB_VERIFIER_REGION=<region>
+  exec ./scripts/verifier_box.sh "$@"
+  ```
+
+  The ceiling on how many boxes the wave may hold is `verifier_box.sh ceiling`
+  — the file `~/.<namespace>/verifier/ceiling`, one integer, above the default
+  2 and below `DJB_VERIFIER_MAX_BOXES`; it is the operator's to set once for
+  the machine, and every ceiling refusal prints all three sources and the one
+  that bound.
 - **The full gate runs once, at push, and the builder does not run it by hand.**
   Pre-push consults the verdict ledger, so a tree already measured passes in
   seconds; a confirmatory full run before committing buys nothing and costs the

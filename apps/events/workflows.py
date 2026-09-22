@@ -68,6 +68,33 @@ from apps.events.types import (
     RunFinished,
 )
 
+# --- The one setting a workflow module reads, and the seam it is read through -
+#
+# `workflow.unsafe.imports_passed_through()` is Temporal's own escape. The
+# replay sandbox RE-IMPORTS every module a workflow touches, and an unguarded
+# `from django.conf import settings` dies inside it on
+# `gettext.GNUTranslations.__mro_entries__` (measured). Passed through,
+# the module object the worker process already imported is reused and nothing
+# Django owns is re-executed in the sandbox.
+#
+# What is read is ONE number, ONCE, at import: the interval the first retry of
+# a failed activity waits. It is a constant exactly as the timeouts below are
+# constants — no clock, no ORM, no I/O, and the same value for every run this
+# worker serves — and it lives in settings so that `test` can turn a
+# fifteen-second production backoff curve into a tenth of a second without
+# touching one assertion. The argument in full, including why one knob and not
+# one per policy: `config/settings/base.py` § "The retry backoff every activity
+# policy starts at".
+with workflow.unsafe.imports_passed_through():
+    # rule-9: one deployment constant, read once at import through Temporal's
+    # own passthrough seam; the paragraph above is the whole argument.
+    from django.conf import settings
+
+#: How long the first retry of every policy below waits, doubling from there.
+#: The SDK's own default in a deployment; milliseconds under `test`, where the
+#: time-skipping server skips workflow timers and does NOT skip this.
+RETRY_INITIAL_INTERVAL = timedelta(seconds=settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS)
+
 # One database read; a second is not worth waiting for.
 LOAD_TIMEOUT = timedelta(seconds=30)
 
@@ -129,11 +156,21 @@ INDEX_ATTEMPT_TIMEOUT = timedelta(seconds=60)
 # `manage.py search_reindex`** (R-c), which is stated here, at the call site,
 # because that is where the budget is chosen. The dispatch does NOT fail when
 # the budget is spent — see `_index`, below, for why.
+#
+# **The first interval is twice `RETRY_INITIAL_INTERVAL` and not a literal two
+# seconds.** An index that just refused a write is usually mid-settle rather
+# than down, so this one starts at double the platform's floor — the ratio is
+# the judgement, the floor is the deployment's. Turning the knob down under
+# `test` is what stopped `apps/search/tests/test_indexer.py::
+# test_a_failing_index_is_retried_and_converges_rather_than_being_lost` paying
+# 2 + 4 = 6 real seconds to prove that two refusals converge on the third
+# attempt: that test drives THIS dispatch workflow, so this is the policy it
+# was waiting on and `apps/search`' own is not.
 INDEX_DEADLINE = timedelta(hours=1)
 INDEX_RETRY = RetryPolicy(
-    initial_interval=timedelta(seconds=2),
+    initial_interval=2 * RETRY_INITIAL_INTERVAL,
     backoff_coefficient=2.0,
-    maximum_interval=timedelta(minutes=5),
+    maximum_interval=max(timedelta(minutes=5), 2 * RETRY_INITIAL_INTERVAL),
 )
 
 # Closing out the `WorkflowRun` row the starting service wrote. Until rung A11

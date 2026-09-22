@@ -229,7 +229,12 @@
 #   inert               a known territory with no pytest blast radius: docs,
 #                       skills, CI config, deploy, compose, the Dockerfile,
 #                       the vendor drop, the editor and git dotfiles, the rest
-#                       of `scripts/`.
+#                       of `scripts/`. `.gitattributes` is here with
+#                       `.gitignore`: git reads it at a MERGE and nothing in
+#                       this tree executes it, so the wall on the one line it
+#                       carries (`CHANGELOG.md merge=union`) is
+#                       `scripts/tests/test_pm_merge.sh` in the selftest leg,
+#                       not a pytest widening this table could do.
 #   declared-blind-spot `pyproject.toml` and `uv.lock` — see below.
 #   UNCLASSIFIABLE      -> EXIT 2, naming the path and this file.
 #
@@ -601,6 +606,7 @@ loop_scope__classify() {
     docs/* | .claude/* | .github/* | .devcontainer/* | deploy/* | compose/* | \
         perf/* | vendor/* | scripts/* | templates | frontend | Dockerfile | \
         .dockerignore | compose.yaml | .editorconfig | .gitignore | \
+        .gitattributes | \
         .python-version | .secrets.baseline | .env.example | TEMPLATE_VERSION | \
         *.md)
         printf 'inert\n'

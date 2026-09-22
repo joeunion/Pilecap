@@ -317,10 +317,20 @@ while [ "$#" -gt 0 ]; do
         fi
         ;;
     --list-classes)
+        # THE REGISTRY IS CHECKED BEFORE IT IS PRINTED, and this is not
+        # symmetry for its own sake. With a product drawer live
+        # (`scripts/local/lifecycle.d/`) a malformed declaration means a class
+        # this run REFUSED TO REGISTER, so the list below would be short by
+        # exactly the class somebody wrote — a listing that is wrong and says
+        # nothing, printed by the command a reader uses to ask what exists.
+        # The full census below reaches this same check; these two early exits
+        # did not, and they are the two commands most likely to be run first.
+        lc_registry_check || cannot_look "the lifecycle registry is malformed — see above"
         lc_classes
         exit 0
         ;;
     --registry)
+        lc_registry_check || cannot_look "the lifecycle registry is malformed — see above"
         printf '%-24s %-14s %s\n' "class" "kind" "identity · enumerate · liveness · destroy · warm · disposable"
         for name in $(lc_classes); do
             printf '%-24s %-14s %s\n' "$name" "$(lc_field "$name" 2)" "$(lc_field "$name" 3)"
@@ -886,7 +896,17 @@ unrecognized() {
 # and this list does not is invisible in every transcript while being exempt
 # from the UNRECOGNIZED check that exists to catch exactly that. It was in that
 # state for the length of one probe, which is how the line got written.
-DB_CLASSES="migration-template checkout-database test-database hot-path-cache perf-world restore-drill-database"
+#
+# DERIVED FROM THE REGISTRY, NOT TYPED. It was typed until a drawer existed, and
+# the paragraph above is the argument for deriving it: a class the registry
+# knows and this list does not is invisible in every transcript AND exempt from
+# the UNRECOGNIZED check that exists to catch exactly that. A product's class
+# arrives in `scripts/local/lifecycle.d/` and in no hand list anywhere, so a
+# hand list here would put every product's machinery into that state on the day
+# it was declared. `lc_classes_of_kind` walks the registry in declaration order,
+# which IS specificity order, so this is the same list it always was on a
+# checkout with no drawer.
+DB_CLASSES="$(lc_classes_of_kind database | tr '\n' ' ')"
 
 DB_WANTED=0
 for class in $DB_CLASSES; do

@@ -32,7 +32,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: README.md apps/ config/ docs/product/in-flight.md docs/product/queue.md docs/product/readouts.md quality/ scripts/archaeology_lib.sh scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks scripts/kill_mine.sh scripts/loop_health.py scripts/loop_tier.sh scripts/pm_push.sh scripts/publish.sh scripts/queue_cited.sh scripts/rung_start.sh scripts/secrets_scan.sh scripts/sweep.sh scripts/test.sh scripts/tests scripts/verify_start.sh
-# cites: uv.lock
+# cites: uv.lock CHANGELOG.md TEMPLATE_VERSION CLAUDE.md scripts/test_impact.json
 
 # The drive for the `--loop` LEDGER — the key, the environment fingerprint with
 # its deriver-declared exclusions, and the fail-closed direction of every doubt
@@ -2430,12 +2430,12 @@ case_a_bank_measured_on_a_dirty_tree_is_no_basis_for_a_docs_only_reuse() {
     git -C "$REPO" commit -q -m "queue row rowed [docs-only]"
     attribute_for_reuse "$dirty"
 
-    CURRENT="a basis row whose tree is not its head's committed tree is refused"
+    CURRENT="a basis row whose tree is not its head's measured tree is refused"
     reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
     is "$REUSE_RC" "1" "the decision"
     is "$LOOP_REUSE_TREE" "" "the tree the reuse would have rested on"
     case "$LOOP_REUSE_WHY" in
-    *"the banked verdict was measured on a tree that is not its head's committed tree"*)
+    *"the banked verdict was measured on a tree that is not its head's measured tree"*)
         ok "the refusal names the BASIS row as what refused it, in the criterion's own words"
         ;;
     *) bad "a dirty-tree bank was reused, or refused without saying so: '${LOOP_REUSE_WHY}'" ;;
@@ -2451,6 +2451,65 @@ case_a_bank_measured_on_a_dirty_tree_is_no_basis_for_a_docs_only_reuse() {
     is "$REUSE_RC" "0" "the decision on a bank that measured its own head"
     is "$LOOP_REUSE_TREE" "$BANKED_TREE" "the tree the reuse rests on"
     is "$LOOP_REUSE_WHY" "" "the refusal sentence (there is none to print)"
+}
+
+case_a_declaring_product_still_reuses_a_docs_only_loop_verdict() {
+    # THE LAST RAW-VS-MEASURED COMPARE, and it sat in the same file as the fix
+    # that closed the other three. A `--loop` row's `tree=` is written from
+    # `gate_measured_tree`; this equality held it up against a RAW
+    # `<head>^{tree}`. Identical wherever nothing is declared — which is why
+    # this drive was green through the whole of the wall's fix — and NEVER
+    # equal on a product that declares a derived path, so the `--loop`
+    # docs-only reuse was shut to exactly the products the road was widened
+    # for. ABSENT: rc 1 with "not its head's measured tree".
+    reuse_checkout
+    plant_derived_leg "$REPO" \
+        "derived — a per-box artefact; nothing measured reads it back"
+    plant_derived_member "$REPO" ||
+        cannot_look "the derived artefact would not commit in the reuse world"
+    BANKED_HEAD=$(git -C "$REPO" rev-parse HEAD)
+    local measured raw
+    raw=$(git -C "$REPO" rev-parse "${BANKED_HEAD}^{tree}")
+    measured=$(in_repo "$REPO" gate_measured_tree 2>/dev/null) || measured=""
+    [ -n "$measured" ] ||
+        cannot_look "gate_measured_tree would not read the declaring reuse world"
+
+    CURRENT="the planted bank is a DECLARING product's bank"
+    # THE PREMISE, ASSERTED. A world where the two readings agreed would let
+    # every line below pass while proving nothing at all.
+    differs "$raw" "$measured" \
+        "the measured tree of a declaring checkout is not its head's raw tree"
+    is "$(git -C "$REPO" status --porcelain)" "" "the checkout the bank was taken on"
+
+    printf 'one more row\n' >>"$REPO/docs/product/queue.md"
+    git -C "$REPO" add docs/product/queue.md >/dev/null
+    git -C "$REPO" commit -q -m "queue row rowed [docs-only]"
+    # The row a real `--loop` would have banked here: keyed on the MEASURED
+    # tree, because that is the only key `check.sh` ever writes.
+    attribute_for_reuse "$measured"
+
+    CURRENT="a docs-only delta on a DECLARING product reuses its loop verdict"
+    reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
+    is "$REUSE_RC" "0" "the decision"
+    is "$LOOP_REUSE_TREE" "$measured" "the tree the reuse rests on"
+    is "$LOOP_REUSE_N" "1" "the size of the delta"
+    is "$LOOP_REUSE_WHY" "" "the refusal sentence (there is none)"
+
+    # AND THE GUARD THE EQUALITY EXISTS TO BE IS UNTOUCHED, proved on THIS
+    # world rather than asserted about it: measured-working equals
+    # measured-committed if and only if the tree was clean, so one uncommitted
+    # byte in `apps/` still refuses — a declaration subtracts the paths it
+    # names and nothing else.
+    CURRENT="and one uncommitted byte still refuses it on the same declaring world"
+    printf 'a half-finished change nobody can name\n' \
+        >>"$REPO/apps/zzz_probe/tests/test_nothing.py"
+    reuse_in "$REPO" "$REUSE_TOKEN" "$REUSE_DETAIL"
+    is "$REUSE_RC" "1" "the decision on a dirty tree"
+    is "$LOOP_REUSE_TREE" "" "the tree the reuse would have rested on"
+    case "$LOOP_REUSE_WHY" in
+    *"WORKING TREE is not clean"*) ok "the refusal says the working tree is what refused it" ;;
+    *) bad "a dirty declaring tree was reused, or refused without saying so: '${LOOP_REUSE_WHY}'" ;;
+    esac
 }
 
 case_a_docs_path_spelled_under_apps_forces_a_measure() {
@@ -2622,6 +2681,397 @@ case_the_two_ledger_files_that_bought_a_2302s_remeasure_are_a_reuse() {
     is "$hit" "" "the modules naming docs/product/in-flight.md"
     hit=$(cd "$ROOT" && grep -rlF "$plan.md" apps/ --include='*.py' 2>/dev/null) || hit=""
     is "$hit" "" "the modules naming the cycle plan"
+}
+
+# --- the DOCS-ONLY PUSH path: the source, the list and the readers -----------
+#
+# WHY IT IS HERE AND NOT IN A DRIVE OF ITS OWN. The decision is three reads of
+# the FULL ledger — the nearest ancestor's row, the `from=` it may name, and
+# the legs and leak-proof it carries — and this file already owns "what the
+# full ledger says and when it may be believed". The half that RUNS the readers
+# and writes the row is `scripts/pm_push.sh`'s and is driven there.
+#
+# EVERY PATH THESE CASES SPELL IS A FIXTURE NAME THAT EXISTS IN NO TREE, with
+# one deliberate exception: the four real top-level names the declared list
+# rules IN and OUT (`CHANGELOG.md`, `TEMPLATE_VERSION`, `CLAUDE.md`,
+# `scripts/test_impact.json`) are the SUBJECT of the list case and are
+# therefore spelled. They are declared on this file's `cites:` line, which is
+# what that valve is for: this drive names them, and opens none of them.
+#
+# WHAT THESE CASES DO NOT COVER, declared rather than discovered:
+#
+#   * WHETHER A DERIVED READER REALLY IS THE ONLY THING THAT READS A PATH.
+#     The derivation asks the tree three questions (a literal read under
+#     `apps/`, `config/` or `quality/`, and a drive's own declaration). A
+#     module that builds a docs path from parts, walks a directory or globs for
+#     it is invisible to all three — the declared blind spot, whose belt is the
+#     next push that is not docs-only.
+#   * THE REAL LEGS. `--leg static` and `--leg full-house-rules` are NAMES
+#     here; that they are the legs that read `docs/` is `scripts/check.sh`'s
+#     claim and the builder's measurement, not this drive's.
+#   * THE TRUST CLASS, which is this file's throughout: a row is a cache line
+#     an agent could echo into the file, exactly as `--no-verify` is one flag
+#     away. What is asserted is that a row the ledger cannot VOUCH for does not
+#     become a reuse.
+
+#: THE FIXTURE DOC'S PATH IS COMPOSED, NEVER SPELLED. The dangling-docs leg
+#: refuses a `docs/` pointer with an .md suffix that is in no tree — correctly,
+#: since a pointer into trimmed history is the defect it exists to catch — and
+#: every doc these cases move is a fixture that lives only inside a scratch
+#: repository. So the DIRECTORY (which carries no suffix and is nobody's
+#: pointer) is spelled and the file name is joined to it here. The same
+#: reason, and the same shape, as the cycle-plan fixture one section up.
+DOCSONLY_DIR="docs/fixtures"
+DOCSONLY_DOC="${DOCSONLY_DIR}/rows.md"
+
+#: The leg set the scratch gates in this section declare, so `gate_full_legs`
+#: has something for `gate_ledger_lookup` to compare a row against.
+DOCSONLY_LEGS="ruff,mypy,pytest-x2,selftest"
+
+#: The measured commit and its tree — M, in the criterion's own letter.
+DOCSONLY_M=""
+DOCSONLY_MTREE=""
+
+# A scratch checkout with the four populations the derivation reads: an `apps/`
+# and a `config/` that open nothing, a `quality/` that opens nothing, a
+# a fixture docs directory to move, and a `scripts/tests/` holding two drives — one that
+# declares a docs directory and one that declares nothing of ours. `M` is
+# committed and ROWED, so every case starts from a measured tree.
+docs_only_world() {
+    fresh_checkout
+    mkdir -p "$REPO/apps" "$REPO/config" "$REPO/quality" "${REPO}/${DOCSONLY_DIR}" \
+        "$REPO/scripts/tests"
+    printf '#!/usr/bin/env bash\nFULL_LEGS=%s\n' "$DOCSONLY_LEGS" >"$REPO/scripts/check.sh"
+    chmod +x "$REPO/scripts/check.sh"
+    printf '"""A module that opens nothing at all."""\n' >"$REPO/apps/quiet.py"
+    printf '"""Settings that open nothing at all."""\n' >"$REPO/config/quiet.py"
+    printf 'rules: []\n' >"$REPO/quality/quiet.yaml"
+    printf 'the rows\n' >"${REPO}/${DOCSONLY_DOC}"
+    # THE MARKER LINE IS ASSEMBLED, never typed at column zero. A literal
+    # `<hash> drives:` at the start of a line in THIS file's own first forty
+    # lines would be a phantom declaration; writing it through printf keeps the
+    # drive's own declaration the only one this file carries.
+    {
+        echo '#!/usr/bin/env bash'
+        printf '# %s %s scripts/check.sh\n' 'drives:' "$DOCSONLY_DIR"
+        echo 'exit 0'
+    } >"$REPO/scripts/tests/test_reads_docs.sh"
+    {
+        echo '#!/usr/bin/env bash'
+        printf '# %s scripts/check.sh\n' 'drives:'
+        printf '# %s %s\n' 'cites:' "$DOCSONLY_DOC"
+        echo 'exit 0'
+    } >"$REPO/scripts/tests/test_cites_docs.sh"
+    chmod +x "$REPO/scripts/tests/test_reads_docs.sh" "$REPO/scripts/tests/test_cites_docs.sh"
+    git -C "$REPO" add -A >/dev/null
+    git -C "$REPO" commit -q -m "a tree with apps/, config/, quality/, docs/ and two drives"
+    DOCSONLY_M=$(git -C "$REPO" rev-parse HEAD)
+    DOCSONLY_MTREE=$(git -C "$REPO" rev-parse "HEAD^{tree}")
+    plant_full_row "$REPO" "$DOCSONLY_MTREE" "$DOCSONLY_LEGS"
+    echo "  PLANT TOOK · M is $(git -C "$REPO" log -1 --oneline) tree=${DOCSONLY_MTREE}"
+}
+
+# Move M forward over whatever the case has just written, and row the new
+# tree. A case whose SUBJECT is a module that reads a docs path needs that
+# module INSIDE the measured tree: committed after M it is part of the delta,
+# and the delta would then refuse for the module rather than for the read.
+docs_only_rebase_m() {
+    git -C "$REPO" add -A >/dev/null
+    git -C "$REPO" commit -q -m "$1"
+    DOCSONLY_M=$(git -C "$REPO" rev-parse HEAD)
+    DOCSONLY_MTREE=$(git -C "$REPO" rev-parse "HEAD^{tree}")
+    plant_full_row "$REPO" "$DOCSONLY_MTREE" "$DOCSONLY_LEGS"
+}
+
+# One docs-only commit on top, by path and content.
+docs_only_commit() {
+    local path="$1" text="$2" dir
+    dir="${REPO}/${path%/*}"
+    [ "$dir" = "$REPO/$path" ] || mkdir -p "$dir"
+    printf '%s\n' "$text" >>"${REPO}/${path}"
+    git -C "$REPO" add -A >/dev/null
+    git -C "$REPO" commit -q -m "a docs-only commit touching ${path}"
+}
+
+# Run `gate_docs_only_plan` IN THIS SHELL with the working directory moved to
+# the scratch checkout. Never `in_repo`: that is a subshell, and this
+# function's whole answer is six globals a subshell would take with it —
+# `reuse_in`'s rule, one mechanism over.
+PLAN_RC=0
+plan_in() {
+    local dir="$1" saved="$PWD"
+    shift
+    PLAN_RC=0
+    cd "$dir"
+    gate_docs_only_plan "$@" || PLAN_RC=$?
+    cd "$saved"
+}
+
+case_the_docs_only_source_is_the_nearest_MEASURED_ancestor() {
+    CURRENT="the functions exist at all"
+    # THE RED-FIRST CASE, and it is the criterion's own "Absent: no function".
+    # On the baseline tree there is nothing to call and this drive says so
+    # instead of passing over a mechanism that is not there.
+    if command -v gate_docs_only_plan >/dev/null 2>&1 &&
+        command -v gate_docs_only_source >/dev/null 2>&1 &&
+        command -v gate_docs_only_admits >/dev/null 2>&1; then
+        ok "scripts/gate_ledger.sh defines the docs-only source, list and plan"
+    else
+        bad "scripts/gate_ledger.sh defines no gate_docs_only_plan — there is no docs-only road to decide"
+        return
+    fi
+
+    docs_only_world
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+
+    CURRENT="R1 = M + one docs commit: the source is M's MEASURED tree"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "0" "the decision"
+    is "$GATE_DOCS_ONLY_SOURCE" "$DOCSONLY_MTREE" "the source tree"
+    is "$GATE_DOCS_ONLY_N" "1" "the size of the delta"
+    is "$GATE_DOCS_ONLY_LEGS" "$DOCSONLY_LEGS" "the legs field, copied from the source row"
+    is "$GATE_DOCS_ONLY_WHY" "" "the refusal sentence (there is none)"
+
+    CURRENT="R2 = R1 + one more docs commit: the source is STILL M, and the delta is against M"
+    # R1's own row, as the road writes it: an ordinary full row whose sanction
+    # names the measured tree it rests on.
+    local r1tree
+    r1tree=$(git -C "$REPO" rev-parse "HEAD^{tree}")
+    plant_full_row "$REPO" "$r1tree" "$DOCSONLY_LEGS" \
+        " sanction=docs-only from=${DOCSONLY_MTREE} paths=1 readers=static waited=0 took=0"
+    docs_only_commit "$DOCSONLY_DOC" "a second row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "0" "the decision"
+    is "$GATE_DOCS_ONLY_SOURCE" "$DOCSONLY_MTREE" "the source tree — followed through from=, never R1's own"
+    is "$GATE_DOCS_ONLY_N" "1" "the delta, taken against M and not against R1"
+
+    CURRENT="a FORGED from= is caught by the diff it forces, not by trusting the row"
+    # R1 says `from=M` and its tree differs from M by an `apps/` path. The road
+    # diffs against M, so the `apps/` path is IN the delta and the bank is full.
+    # A road that diffed against R1 would never see it.
+    docs_only_world
+    printf 'print("a source change nobody measured")\n' >"$REPO/apps/loud.py"
+    printf 'one more row\n' >>"${REPO}/${DOCSONLY_DOC}"
+    git -C "$REPO" add -A >/dev/null
+    git -C "$REPO" commit -q -m "a commit that is NOT docs-only, rowed as though it were"
+    r1tree=$(git -C "$REPO" rev-parse "HEAD^{tree}")
+    plant_full_row "$REPO" "$r1tree" "$DOCSONLY_LEGS" \
+        " sanction=docs-only from=${DOCSONLY_MTREE} paths=1 readers=static waited=0 took=0"
+    docs_only_commit "$DOCSONLY_DOC" "and a docs row on top of it"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "1" "the decision"
+    case "$GATE_DOCS_ONLY_WHY" in
+    *"apps/loud.py is not a docs-only path"*) ok "the refusal names the source path the forged row hid" ;;
+    *) bad "the forged chain was admitted, or refused without naming the path: '${GATE_DOCS_ONLY_WHY}'" ;;
+    esac
+
+    CURRENT="a loop row and a drive row on the ancestor are no source"
+    docs_only_world
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    local r1
+    r1=$(git -C "$REPO" rev-parse HEAD)
+    r1tree=$(git -C "$REPO" rev-parse "HEAD^{tree}")
+    # A DRIVE row keyed on a TREE — the shape this drive plants on purpose one
+    # section over — and a LOOP row at the same tree. Neither is a full verdict
+    # and neither may be followed.
+    in_repo "$REPO" drive_ledger_record "$r1tree" test_reads_docs.sh 1 "$r1tree" "x:1" ||
+        cannot_look "drive_ledger_record would not write into the scratch ledger"
+    docs_only_commit "$DOCSONLY_DOC" "a second row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "0" "the decision"
+    is "$GATE_DOCS_ONLY_SOURCE" "$DOCSONLY_MTREE" "the source tree — the drive row at ${r1} is not one"
+    is "$GATE_DOCS_ONLY_N" "1" "the delta against M — one PATH, moved by two commits"
+
+    CURRENT="a source row that is NOT HONOURED refuses, and does not walk past itself"
+    docs_only_world
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    r1tree=$(git -C "$REPO" rev-parse "HEAD^{tree}")
+    # One leg short of what this scratch gate declares — the row exists, the
+    # lookup refuses it, and the road must refuse with it rather than reach
+    # back to M, which is an older answer than the one the gate last gave.
+    plant_full_row "$REPO" "$r1tree" "ruff,mypy"
+    docs_only_commit "$DOCSONLY_DOC" "a second row"
+    N=$((N + 1))
+    OUT="${WORK}/docsonly-nothonoured${N}.log"
+    plan_in "$REPO" HEAD 2>"$OUT"
+    is "$PLAN_RC" "1" "the decision"
+    case "$GATE_DOCS_ONLY_WHY" in
+    *"nearest banked ancestor's row is not honoured"*) ok "the refusal names the row it would not stand on" ;;
+    *) bad "a short-legs source row was admitted, or refused silently: '${GATE_DOCS_ONLY_WHY}'" ;;
+    esac
+    if grep -F "missing 'pytest-x2'" "$OUT" >/dev/null; then
+        ok "the lookup's own note is printed beside it — the reader is told WHICH leg"
+    else
+        bad "the lookup's note was swallowed: a refusal nobody can act on"
+    fi
+    OUT=""
+
+    CURRENT="no honoured row anywhere on the line is a refusal that says so"
+    docs_only_world
+    : >"$(cd "$REPO" && gate_ledger_path)"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "1" "the decision"
+    case "$GATE_DOCS_ONLY_WHY" in
+    *"no honoured full row"*"full bank"*) ok "an empty ledger is a named refusal and a full bank" ;;
+    *) bad "an empty ledger did not refuse by name: '${GATE_DOCS_ONLY_WHY}'" ;;
+    esac
+}
+
+case_the_docs_only_road_admits_a_declaring_product() {
+    # THE OTHER SIDE OF THE SAME WALL. The docs-only road reads
+    # HEAD's tree RAW in two places — the ancestor walk in
+    # `gate_docs_only_source`, and the equality in `gate_docs_only_plan` that
+    # asks whether the key and the delta are about the same bytes. On a
+    # declaring product both reads answer a tree no row is ever keyed on, so
+    # the road refuses and the product pays a FULL BANK for a documentation
+    # push, every time, for the rest of its life.
+    CURRENT="the docs-only road can be asked at all"
+    if command -v gate_docs_only_plan >/dev/null 2>&1; then
+        ok "gate_docs_only_plan is defined"
+    else
+        bad "there is no docs-only road here to admit anybody"
+        return
+    fi
+
+    docs_only_world
+    plant_derived_leg "$REPO" \
+        "derived — a per-box artefact; nothing measured reads it back"
+    plant_derived_member "$REPO" ||
+        cannot_look "the derived artefact would not commit in the docs-only world"
+    DOCSONLY_M=$(git -C "$REPO" rev-parse HEAD)
+    DOCSONLY_MTREE=$(git -C "$REPO" rev-parse "HEAD^{tree}")
+    local measured
+    measured=$(in_repo "$REPO" gate_measured_tree 2>/dev/null) || measured=""
+    [ -n "$measured" ] ||
+        cannot_look "gate_measured_tree would not answer in the declaring docs-only world"
+    [ "$measured" != "$DOCSONLY_MTREE" ] ||
+        cannot_look "the planted declaration did not move the key — both readings are ${measured}"
+    # THE ROW A FULL GATE WOULD HAVE WRITTEN, keyed where a full gate keys it:
+    # on the MEASURED tree. Planting it on the raw tree instead would be
+    # writing a row this product's own gate never writes.
+    plant_full_row "$REPO" "$measured" "$DOCSONLY_LEGS"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+
+    CURRENT="a docs-only commit on a DECLARING product takes the docs-only road"
+    plan_in "$REPO" HEAD
+    # rc 0 is exactly what makes `pm_push.sh --bank` print `docs-only? yes`;
+    # rc 1 is the "… — full bank" sentence in GATE_DOCS_ONLY_WHY below.
+    is "$PLAN_RC" "0" "the decision"
+    is "$GATE_DOCS_ONLY_WHY" "" "the refusal sentence (there is none)"
+    is "$GATE_DOCS_ONLY_SOURCE" "$measured" "the source tree — the ancestor's MEASURED tree"
+    is "$GATE_DOCS_ONLY_N" "1" "the size of the delta"
+    is "$GATE_DOCS_ONLY_LEGS" "$DOCSONLY_LEGS" "the legs field, copied from the source row"
+
+    CURRENT="and a non-docs path in the delta still refuses on a declaring product"
+    # THE NEGATIVE THAT KEEPS THE ROAD FROM WIDENING. Subtracting the declared
+    # path must not subtract anything else: an `apps/` change on top of the
+    # same declaring world is a full bank, named, exactly as it is anywhere.
+    printf 'print("a change nothing measured")\n' >"$REPO/apps/loud.py"
+    git -C "$REPO" add -A >/dev/null
+    git -C "$REPO" commit -q -m "an apps/ change on the declaring product"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "1" "the decision"
+    case "$GATE_DOCS_ONLY_WHY" in
+    *"apps/loud.py is not a docs-only path"*) ok "the refusal names the path that closed the road" ;;
+    *) bad "an apps/ change was admitted, or refused without naming the path: '${GATE_DOCS_ONLY_WHY}'" ;;
+    esac
+}
+
+case_a_path_outside_the_declared_list_is_a_full_bank() {
+    docs_only_world
+    printf 'one more row\n' >>"${REPO}/${DOCSONLY_DOC}"
+    printf 'a lock line\n' >>"$REPO/uv.lock"
+    git -C "$REPO" add -A >/dev/null
+    git -C "$REPO" commit -q -m "a docs row and a lock file"
+
+    CURRENT="one path off the declared list and the whole delta is a full bank"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "1" "the decision"
+    is "$GATE_DOCS_ONLY_WHY" \
+        "docs-only? no — uv.lock is not a docs-only path — full bank" \
+        "the refusal"
+    is "$GATE_DOCS_ONLY_READERS" "" "the readers (none were derived)"
+
+    CURRENT="the declared list is exactly what was ratified, in and out"
+    local p
+    for p in docs/product/queue.md README.md CLAUDE.md \
+        .claude/skills/fixture/SKILL.md scripts/test_impact.json; do
+        if in_repo "$REPO" gate_docs_only_admits "$p"; then
+            ok "${p} is on the list"
+        else
+            bad "${p} is NOT on the declared list and the ratified list says it is"
+        fi
+    done
+    # OUT, AND OUT BY MEASUREMENT: pytest reads both, so a release still pays
+    # one bank. A green here the day somebody widens the list is the whole
+    # point of asserting the negative side.
+    for p in CHANGELOG.md TEMPLATE_VERSION uv.lock scripts/check.sh; do
+        if in_repo "$REPO" gate_docs_only_admits "$p"; then
+            bad "${p} is on the declared list and the ratification says it is OUT"
+        else
+            ok "${p} is not on the list"
+        fi
+    done
+}
+
+case_the_readers_are_derived_per_path_and_a_literal_read_refuses() {
+    CURRENT="a docs path a module under apps/ really OPENS is a full bank, named"
+    docs_only_world
+    printf 'PATH = "%s"\n' "$DOCSONLY_DOC" >"$REPO/apps/a.py"
+    docs_only_rebase_m "a module that opens a docs path"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "1" "the decision"
+    case "$GATE_DOCS_ONLY_WHY" in
+    *"apps/a.py:1"*"full bank"*) ok "the refusal names the file and the line: '${GATE_DOCS_ONLY_WHY}'" ;;
+    *) bad "the literal read was admitted, or refused without a coordinate: '${GATE_DOCS_ONLY_WHY}'" ;;
+    esac
+
+    CURRENT="the SAME path in a comment or in backticks is prose, and is admitted"
+    docs_only_world
+    {
+        printf '# the rows live in %s and nothing here opens them\n' "$DOCSONLY_DOC"
+        printf '"""A docstring naming `%s` and opening nothing."""\n' "$DOCSONLY_DOC"
+    } >"$REPO/apps/a.py"
+    docs_only_rebase_m "a module that MENTIONS a docs path"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "0" "the decision"
+    is "$GATE_DOCS_ONLY_WHY" "" "the refusal sentence (prose is not a read)"
+
+    CURRENT="a YAML file: value under quality/ runs the house-rules engine"
+    docs_only_world
+    printf 'rules:\n  - id: x\n    doc: { file: %s, contains: "a row" }\n' "$DOCSONLY_DOC" \
+        >"$REPO/quality/quiet.yaml"
+    docs_only_rebase_m "a rule whose doc: names a docs path"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "0" "the decision"
+    case ",${GATE_DOCS_ONLY_READERS}," in
+    *,full-house-rules,*) ok "the engine is a derived reader: ${GATE_DOCS_ONLY_READERS}" ;;
+    *) bad "a quality/ literal read derived no engine run: ${GATE_DOCS_ONLY_READERS}" ;;
+    esac
+
+    CURRENT="static is ALWAYS a reader, and a drive that declares the directory is one too"
+    docs_only_world
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "0" "the decision"
+    case "$GATE_DOCS_ONLY_READERS" in
+    static | static,*) ok "static leads the list: ${GATE_DOCS_ONLY_READERS}" ;;
+    *) bad "static is not a derived reader: ${GATE_DOCS_ONLY_READERS}" ;;
+    esac
+    case ",${GATE_DOCS_ONLY_READERS}," in
+    *,scripts/tests/test_reads_docs.sh,*) ok "the drive declaring the docs DIRECTORY is listed" ;;
+    *) bad "a drive declaring the docs directory was not derived for a file under it: ${GATE_DOCS_ONLY_READERS}" ;;
+    esac
+    # A CITATION IS NOT A SUBJECT. The second drive names the very file that
+    # moved, on its `cites:` line, and must NOT be re-driven for it.
+    case ",${GATE_DOCS_ONLY_READERS}," in
+    *,scripts/tests/test_cites_docs.sh,*) bad "a cited path selected a drive — a citation is not a subject" ;;
+    *) ok "the drive that only CITES the path is not a reader" ;;
+    esac
 }
 
 # --- the FULL ledger's legs field, which nobody read (R3's F3) ----------------
@@ -3223,9 +3673,17 @@ case_the_machine_half_is_the_image_on_a_box_and_the_host_elsewhere() {
 }
 
 case_the_declaration_is_read_from_check_sh_and_not_kept_here() {
-    # THE POPULATION IS THE GATE'S OWN LINE. A drive that typed the leg set
+    # THE POPULATION IS THE GATE'S OWN ANSWER. A drive that typed the leg set
     # would be the second list this whole file exists to refuse, and it would
     # pass on the day a leg was added and assert nothing ever after.
+    #
+    # AND ON THIS TREE THE ASSIGNMENT IS STILL THE ANSWER, because this tree
+    # has no product-leg drawer. `gate_full_legs` reads the LISTING instead the
+    # moment `scripts/local/legs/` holds one — there the text is wrong, since
+    # `check.sh` grows `FULL_LEGS` at runtime with one `local:<name>` per
+    # declared leg — and `scripts/tests/test_local_legs.sh` is where that half
+    # is driven. What this case holds is the half that belongs to the template:
+    # no drawer, no subprocess, and the same answer it has always given.
     CURRENT="gate_full_legs reads this repository's own FULL_LEGS assignment"
     local declared shipped
     declared=$(cd "$ROOT" && gate_full_legs)
@@ -3239,13 +3697,16 @@ case_the_declaration_is_read_from_check_sh_and_not_kept_here() {
     fi
 
     CURRENT="and the verdict for THIS repository's own rows is unaffected by it"
-    # Every row this gate writes carries `$FULL_LEGS` verbatim
-    # (`scripts/check.sh`'s one `gate_ledger_record` call), so the comparison
-    # can only ever refuse a row this gate did not write.
-    if grep -F 'gate_ledger_record "$MEASURED_START" "$FULL_LEGS"' "$ROOT/scripts/check.sh" >/dev/null; then
-        ok "the only recorder passes the same declaration the lookup compares against"
+    # THE WRITER AND THE READER ARE ONE FUNCTION, which is the property this
+    # case has always held and the only way it can be held now that the set is
+    # derived: `scripts/check.sh`'s one `gate_ledger_record` call passes
+    # `$(gate_full_legs)` — the same answer `gate_ledger_lookup` compares
+    # against — so the comparison can only ever refuse a row this gate did not
+    # write.
+    if grep -F 'gate_ledger_record "$MEASURED_START" "$(gate_full_legs)"' "$ROOT/scripts/check.sh" >/dev/null; then
+        ok "the only recorder passes the same derivation the lookup compares against"
     else
-        bad "the recorder no longer writes FULL_LEGS — a row this gate writes could now fail its own comparison"
+        bad "the recorder no longer writes gate_full_legs — a row this gate writes could now fail its own comparison"
     fi
 }
 
@@ -3477,6 +3938,160 @@ case_a_deletion_carries_no_tree_and_falls_back_to_the_working_tree() {
     else
         bad "a deletion-only push did not name its subject: $(sed -n '1,3p' "$OUT")"
     fi
+    OUT=""
+}
+
+# --- A DECLARING PRODUCT AT THE WALL -----------------------------------------
+#
+# THE DEFECT, IN ONE SENTENCE. The hook resolves each pushed ref to its RAW
+# commit tree and compares that against `$TREE`, which is `gate_measured_tree`
+# — the checkout's tree with every DECLARED derived path SUBTRACTED. On this
+# template nothing is declared, so the two readings are the same forty
+# characters and the disagreement was invisible. On a product that declares one
+# (the consumer's `frontend/quality/visual-baseline-evidence`) they can NEVER
+# agree, so EVERY push — to a forge, to a verifier box, of the checkout's own
+# `main` — takes the two-tree refusal that exists for pushing somebody ELSE's
+# tree. The product's own tree is mistaken for a foreign one, by arithmetic,
+# forever.
+#
+# THE FIX IS ONE READER AND NOT TWO KEYS. `gate_measured_tree_of <tree-ish>`
+# answers the same subtraction over a ref instead of the working tree, and it
+# shares the ONE subtraction site with `gate_measured_tree` — a copied helper
+# would be two keys computed two ways, which is the defect again with a longer
+# fuse. The cases below are the three roads a declaring checkout walks.
+
+#: The box wrapper's own throwaway probe, in the shape the hook demands:
+#: `<absolute>/.vouch-<digits>/probe.git`. The declaration alone opens nothing
+#: — that is what keeps the exemption from ever reaching `origin` — so a case
+#: that pushed anywhere else would be measuring the variable and not the wall.
+PUSH_PROBE=""
+push_probe() {
+    local home="${WORK}/.vouch-$$"
+    PUSH_PROBE="${home}/probe.git"
+    drive_require_scratch PUSH_PROBE "${PUSH_PROBE:-}"
+    rm -rf "$home"
+    mkdir -p "$home"
+    git init -q --bare "$PUSH_PROBE"
+}
+
+#: `push_world`, plus a leg that DECLARES a derived path and the tracked,
+#: committed artefact it names — the consumer's shape, planted. Sets
+#: PUSH_RAW_TREE and PUSH_MEASURED_TREE, and REFUSES if they agree: a world
+#: where the two readings happen to match would let every case here pass while
+#: proving nothing at all, which is the one outcome a plant must never have.
+PUSH_RAW_TREE=""
+PUSH_MEASURED_TREE=""
+push_world_that_declares_a_derived_path() {
+    push_world
+    plant_derived_leg "$PUSH_WORK" \
+        "derived — the box redraws these bytes on every green run; nothing measured reads them back"
+    plant_derived_member "$PUSH_WORK" ||
+        cannot_look "the derived artefact would not commit in the scratch checkout"
+    PUSH_MAIN_SHA=$(git -C "$PUSH_WORK" rev-parse HEAD)
+    PUSH_RAW_TREE=$(git -C "$PUSH_WORK" rev-parse "${PUSH_MAIN_SHA}^{tree}")
+    PUSH_MEASURED_TREE=$(in_repo "$PUSH_WORK" gate_measured_tree 2>/dev/null) || PUSH_MEASURED_TREE=""
+    [ -n "$PUSH_MEASURED_TREE" ] ||
+        cannot_look "gate_measured_tree would not answer in the declaring scratch checkout"
+    [ "$PUSH_RAW_TREE" != "$PUSH_MEASURED_TREE" ] ||
+        cannot_look "the planted declaration did not move the key — raw and measured both read ${PUSH_RAW_TREE}"
+    echo "  PLANT TOOK · a DECLARING checkout: raw ${PUSH_RAW_TREE} vs measured ${PUSH_MEASURED_TREE}"
+}
+
+case_one_subtraction_site_serves_both_measured_tree_readers() {
+    CURRENT="a ref can be read in the same measured form as the working tree"
+    if command -v gate_measured_tree_of >/dev/null 2>&1; then
+        ok "scripts/gate_ledger.sh defines gate_measured_tree_of"
+    else
+        bad "there is no gate_measured_tree_of — a ref can only be read RAW, which is the defect"
+        return
+    fi
+    # ONE SITE, AND THE COUNT IS THE ASSERTION. `git rm -r -f --cached` is the
+    # subtraction; a second occurrence is a copied helper, and two copies of a
+    # key's definition is two keys the day one of them is edited.
+    is "$(grep -c 'rm -r -f --cached' "$ROOT/scripts/gate_ledger.sh")" "1" \
+        "the number of subtraction sites in the library"
+
+    push_world_that_declares_a_derived_path
+    CURRENT="and the two readers agree wherever they are asked the same question"
+    # `gate_measured_tree` reads the WORKING tree; `gate_measured_tree_of HEAD`
+    # reads the COMMITTED one. On a clean checkout they are the same forty
+    # characters — declared paths or not — and that equality is what every
+    # caller below rests on.
+    is "$(in_repo "$PUSH_WORK" gate_measured_tree_of HEAD 2>/dev/null)" "$PUSH_MEASURED_TREE" \
+        "gate_measured_tree_of HEAD on a clean DECLARING checkout"
+    differs "$PUSH_RAW_TREE" "$PUSH_MEASURED_TREE" \
+        "the raw tree and the measured tree are different readings of one commit"
+    CURRENT="a ref this repository cannot read is a refusal, never an empty answer"
+    RC=0
+    in_repo "$PUSH_WORK" gate_measured_tree_of \
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef^{tree}" >/dev/null 2>&1 || RC=$?
+    is "$RC" "1" "the reader's exit status for a ref it cannot resolve"
+}
+
+case_a_box_push_of_a_tree_that_declares_a_derived_path_is_exempt() {
+    # ABSENT (the shipped hook): `wall refused`, rc 1 — the checkout's own tree,
+    # read raw, is not the checkout's measured tree, so the two-tree refusal
+    # fires on the one population it was written to let through.
+    push_world_that_declares_a_derived_path
+    push_probe
+    N=$((N + 1))
+    OUT="${WORK}/prepush-boxdecl${N}.log"
+    RC=0
+    DJB_PUSH_DESTINATION=verifier-box \
+        git -C "$PUSH_WORK" push --dry-run --force "$PUSH_PROBE" HEAD:refs/heads/main \
+        >"$OUT" 2>&1 || RC=$?
+
+    CURRENT="a DECLARING checkout's own tree reaches a verifier box"
+    is "$RC" "0" "the vouch's exit status"
+    if grep -F "pre-push: wall box-exempt ${PUSH_MEASURED_TREE}" "$OUT" >/dev/null; then
+        ok "the sentinel is box-exempt and names the MEASURED tree"
+    else
+        bad "the wall did not reach box-exempt for the measured tree ${PUSH_MEASURED_TREE}"
+    fi
+    if grep -F "REFUSED — the ref being pushed is not the tree in this checkout" "$OUT" >/dev/null; then
+        bad "the hook refused this checkout's OWN tree as foreign — the raw/measured mismatch"
+    else
+        ok "the checkout's own tree is not mistaken for somebody else's"
+    fi
+    if grep -F "STUB GATE RAN" "$OUT" >/dev/null; then
+        bad "the Mac's full gate ran for a tree that was only going to a verifier box"
+    else
+        ok "no gate ran here — the box's own run is the measurement"
+    fi
+    OUT=""
+}
+
+case_a_banked_measured_verdict_honours_a_push_from_a_declaring_checkout() {
+    # ABSENT: the consult is keyed on the RAW tree, which no full gate ever
+    # banks, so the lookup misses and the raw/measured compare then refuses —
+    # a green bank on a declaring product is a row nobody can ever hit.
+    push_world_that_declares_a_derived_path
+    in_repo "$PUSH_WORK" gate_ledger_record "$PUSH_MEASURED_TREE" "drive-legs" ||
+        cannot_look "gate_ledger_record would not write into the scratch repo's ledger"
+    N=$((N + 1))
+    OUT="${WORK}/prepush-decl-honoured${N}.log"
+    RC=0
+    git -C "$PUSH_WORK" push origin main >"$OUT" 2>&1 || RC=$?
+
+    CURRENT="a DECLARING checkout's banked verdict is honoured on an ordinary push"
+    is "$RC" "0" "the push's exit status"
+    if grep -F "pre-push: wall honoured" "$OUT" >/dev/null; then
+        ok "the wall honoured the row banked for the measured tree"
+    else
+        bad "the wall did not honour the row banked for ${PUSH_MEASURED_TREE}"
+    fi
+    if grep -F "this checkout measures:" "$OUT" >/dev/null; then
+        bad "the two-tree refusal fired on the checkout's own tree"
+    else
+        ok "no two-tree refusal — the pushed tree and the verdict key are one reading"
+    fi
+    if grep -F "STUB GATE RAN" "$OUT" >/dev/null; then
+        bad "the hook measured a tree that already carried a green verdict"
+    else
+        ok "no gate ran — the consult is the whole cost"
+    fi
+    CURRENT="and the ref reached the remote"
+    is "$(git -C "$PUSH_REMOTE" rev-parse refs/heads/main)" "$PUSH_MAIN_SHA" "the remote's tip"
     OUT=""
 }
 
@@ -4112,10 +4727,15 @@ case_a_docs_only_commit_reuses_the_pytest_verdict_and_banks_a_reuse_row
 case_a_mixed_delta_measures_in_full
 case_a_dirty_tree_is_never_docs_only
 case_a_bank_measured_on_a_dirty_tree_is_no_basis_for_a_docs_only_reuse
+case_a_declaring_product_still_reuses_a_docs_only_loop_verdict
 case_a_docs_path_spelled_under_apps_forces_a_measure
 case_mine_and_pr_never_reuse_on_a_docs_only_delta
 case_loop_health_reads_a_reuse_row
 case_the_two_ledger_files_that_bought_a_2302s_remeasure_are_a_reuse
+case_the_docs_only_source_is_the_nearest_MEASURED_ancestor
+case_the_docs_only_road_admits_a_declaring_product
+case_a_path_outside_the_declared_list_is_a_full_bank
+case_the_readers_are_derived_per_path_and_a_literal_read_refuses
 case_a_banked_row_whose_legs_do_not_cover_this_gate_is_not_honoured
 case_a_checkout_with_no_gate_declares_no_leg_set_and_compares_nothing
 case_the_leak_proof_field_is_appended_last_or_the_row_is_refused
@@ -4128,6 +4748,9 @@ case_pm_pushs_detached_sha_push_is_honoured_in_seconds
 case_an_ordinary_push_of_the_measured_branch_is_honoured
 case_a_multi_ref_push_is_vouched_for_only_when_every_tree_is_measured
 case_a_deletion_carries_no_tree_and_falls_back_to_the_working_tree
+case_one_subtraction_site_serves_both_measured_tree_readers
+case_a_box_push_of_a_tree_that_declares_a_derived_path_is_exempt
+case_a_banked_measured_verdict_honours_a_push_from_a_declaring_checkout
 case_the_wall_refuses_a_one_pass_row_without_its_proof
 
 echo "test_loop_ledger: ${PASSED} passed · ${FAILED} failed"

@@ -73,8 +73,11 @@ from apps.accounts.tests.conftest import (
     FakeModeAZitadel,
     FakeSignInZitadel,
 )
+from apps.accounts.tests.stub_issuer import StubIssuer
 from apps.accounts.tests.test_entrance_frames import BASELINES, FRAMES_DIR, _doors
+from apps.accounts.tests.test_rp_login import sign_in
 from apps.accounts.tests.test_signin import A_FOREIGN_SENDER
+from apps.core.audit import AuditEntry
 from apps.core.tests.tree_census import source_text, source_tree
 
 pytestmark = pytest.mark.django_db
@@ -496,6 +499,81 @@ def test_ours_records_the_subject_once(client: Client, door: FakeSignInZitadel, 
     assert _sign_in(client).status_code == 302
 
     assert list(User.objects.values_list("zitadel_sub", flat=True)) == [SIGNIN_USER_ID]
+
+
+@pytest.mark.parametrize("first", ["hosted", "ours"])
+def test_a_person_signs_in_again_through_the_other_door(
+    client: Client, door: FakeSignInZitadel, stub_issuer: StubIssuer, settings: Any, first: str
+) -> None:
+    """**One person, two doors, ONE identity fact** — and it is the same fact.
+
+    The seven tests this module and `test_rp_login` already carry each drive
+    ONE door twice. Every one of them goes red when
+    `record_zitadel_identity`'s `== cleaned` early return is removed, and not
+    one of them crosses: a tree could answer "nothing signs in twice" per door
+    and still refuse the person who used the hosted page on Monday and this
+    deployment's own form on Tuesday, because the two doors reach the subject
+    down different roads — the hosted one reads `sub` out of an id_token
+    allauth decoded, ours reads `factors.user.id` off a Session API answer.
+
+    **That the two are the same string is a fact about Zitadel, and it is
+    MEASURED, not assumed**: `manage.py zitadel_measure`'s
+    `M12 subject-is-session-user-id` opens a session for a throwaway human and
+    reads `factors.user.id` back, mints an id_token for that same human through
+    the kit's own round trip, and compares them. The world below is transcribed
+    from that exchange — `stub_issuer.subject` set to the Session API's own
+    person id — rather than designed, which is the rule a lane paid eight live
+    blockers for (memory `live-drive-before-return`).
+
+    Both orders, because they are different code paths and only one of them
+    was ever exercised: hosted-then-ours lands on our column already written
+    and allauth's `SocialAccount` already there; ours-then-hosted lands on
+    allauth's own `(provider, uid)` lookup finding the row this door wrote.
+
+    Neither leg may write a second `User`, neither may move the column, and
+    the ledger owes one `ok` row per sign-in — the no-op is audited, which is
+    `test_identity_join::test_the_same_subject_is_a_no_op_and_still_audited`'s
+    property seen from the door.
+    """
+    # TRANSCRIBED from M12: the hosted door's `sub` and our door's
+    # `factors.user.id` are the same string for one person, because Zitadel's
+    # OIDC subject IS the user id the Session API reports.
+    stub_issuer.subject = SIGNIN_USER_ID
+    stub_issuer.email = SIGNIN_LOGIN_NAME
+
+    def hosted() -> Any:
+        settings.SIGN_IN_DOOR = "hosted"
+        return sign_in(client)
+
+    def ours_door() -> Any:
+        settings.SIGN_IN_DOOR = "ours"
+        return _sign_in(client)
+
+    roads = {"hosted": hosted, "ours": ours_door}
+    second = "ours" if first == "hosted" else "hosted"
+
+    there = roads[first]()
+    assert there.status_code == 302, there.content
+    person = User.objects.get(email=SIGNIN_LOGIN_NAME)
+    assert person.zitadel_sub == SIGNIN_USER_ID
+    assert client.session.get("_auth_user_id") == str(person.pk)
+
+    client.logout()
+    cache.clear()
+
+    back = roads[second]()
+
+    assert back.status_code == 302, back.content
+    assert client.session.get("_auth_user_id") == str(person.pk)
+    assert User.objects.count() == 1
+    person.refresh_from_db()
+    assert person.zitadel_sub == SIGNIN_USER_ID
+    assert (
+        AuditEntry.objects.for_platform()
+        .filter(action="accounts.record_zitadel_identity", outcome="ok")
+        .count()
+        == 2
+    )
 
 
 def test_ours_next_survives_the_ceremony(

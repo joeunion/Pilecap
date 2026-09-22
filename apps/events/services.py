@@ -45,6 +45,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from django.core.exceptions import ImproperlyConfigured
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db.models import Q
 from opentelemetry import trace
@@ -53,6 +54,7 @@ from apps.core import bridge, context
 from apps.core.actor import Actor, system_actor
 from apps.core.authz import is_org_scoped_kind, kind_of_event, require
 from apps.core.exceptions import Invalid, as_invalid
+from apps.core.log import get_logger
 from apps.core.models import Organization, Tenant
 from apps.core.service import service
 from apps.core.services import root_organization
@@ -62,6 +64,8 @@ from apps.events import selectors
 from apps.events.events import ENDPOINT_REGISTERED, check_name, declared_names
 from apps.events.models import Delivery, Event, Outbox, WebhookEndpoint
 from apps.events.types import DispatchEvent
+
+log = get_logger(__name__)
 
 # What may appear un-redacted in this app's log lines and audit `input`. An
 # event's *name* is structural and is the thing you search on; its **payload is
@@ -233,6 +237,12 @@ ORG_KEY = "organization_id"
 #   ordinary case, and a hat-stamped event is a WRONG branch rather than a wide
 #   one — worse, because it survives the fix wearing the fix's clothes.
 #
+# AMENDED 2026-09-21, SIGNED by the owner: this ADR governs the two
+# PROVEN disagreements only. An UNDECIDED noun — one no app's `EVENT_KINDS`
+# decides — is no longer refused here at all; the gate refuses it once per noun
+# and the socket drops its frames. The paragraph on the function below carries
+# the amendment and `architecture.md`'s rule-59 section carries its signature.
+#
 # The price, stated. `emit` runs inside the emitting service's transaction, so an
 # `Invalid` here rolls that write back. The test this replaces
 # (`test_a_malformed_organization_id_is_null_rather_than_an_error`) argued the
@@ -242,6 +252,32 @@ ORG_KEY = "organization_id"
 # `RuntimeError` because house rule 14 keeps untranslated exceptions below the
 # doors. House rule 38 is the static half: it keeps `organization_id` on every
 # `Out` schema of an `OrgScopedModel`, so the key is there to be read.
+def _kind_if_anybody_decided(name: str) -> tuple[str | None, bool]:
+    """`(the kind this event is about, whether anybody decided the noun)`.
+
+    Two answers and not one, because `None` is a DECIDED answer here — "no row
+    is behind this event" — and an undecided noun is the absence of a decision.
+    Collapsing them is exactly F5's defect from the other side: a `None` kind is
+    delivered to every connection in the tenant.
+
+    Separate from its one caller so that the caller stays inside its length
+    budget and so the ERROR line has one home. The line is at ERROR and not at
+    WARNING deliberately: since the amendment (see the caller) this is the only
+    runtime signal that an event is being recorded which nobody will ever be
+    told about, and `remedy` names the command that prints the line to paste.
+    """
+    try:
+        return kind_of_event(name), True
+    except ImproperlyConfigured as undecided:
+        log.error(
+            "events.emit.kind_undecided",
+            event_name=str(name),
+            detail=str(undecided),
+            remedy="--explain 59",
+        )
+        return None, False
+
+
 def _refuse_a_branch_that_disagrees_with_the_name(*, name: str, payload: dict[str, Any]) -> None:
     """The payload and the event NAME must agree about whether a branch owns this.
 
@@ -251,14 +287,33 @@ def _refuse_a_branch_that_disagrees_with_the_name(*, name: str, payload: dict[st
 
     Separate from `_subject_organization` because it answers a different
     question: that one RESOLVES a branch from a key, and this one decides
-    whether the key belongs on this event at all. `kind_of_event` raises for a
-    noun nobody decided about and that raise is left to escape — `check_name`
-    has already agreed the name is declared, and the noun census walks the
-    whole declared population on every gate run, so an undecided noun here is a
-    configuration failure the tree already refuses; swallowing it would mean
-    emitting under the one condition in which the narrowing cannot be decided.
+    whether the key belongs on this event at all.
+
+    **AN UNDECIDED NOUN IS NOT A REFUSAL — the rule-59 amendment, SIGNED by the
+    owner 2026-09-21.** `kind_of_event` raises `ImproperlyConfigured` for
+    a noun no app decided about, and that raise used to be left to escape. It
+    escaped INTO THE EMITTING SERVICE'S TRANSACTION: a product that added an
+    event name and forgot the `EVENT_KINDS` line lost the WRITE the event was
+    about, and its doors answered 500 — availability, from a missing
+    declaration. The consumer measured it on `usage` (six service tests red,
+    the write rolled back).
+
+    So the two PROVEN disagreements above stay exactly as they are — they are
+    the two things `kind_of_event` can prove — and the undecided case is caught
+    here: the write COMMITS, the row is written with the noun undecided (the
+    branch stamped from the payload's top-level key exactly as any other event's
+    is, NULL when the key is absent, `Invalid` when it is present and does not
+    resolve), the dispatch is enqueued, and an ERROR line says so. The tree
+    still refuses the noun — in the two places that can refuse it without
+    costing a write: the GATE, where rule 59's third class prints one finding per
+    undecided noun WITH the `EVENT_KINDS` line to paste (`--explain 59`), and the
+    SOCKET, where `consumers._may_read` catches the same refusal per frame and
+    DROPS it, so an undecided noun is delivered to nobody. Closed at the reader,
+    loud at the gate, and no longer paid for by the writer.
     """
-    kind = kind_of_event(name)
+    kind, decided = _kind_if_anybody_decided(name)
+    if not decided:
+        return
     named = ORG_KEY in payload
     if is_org_scoped_kind(kind) and not named:
         raise Invalid(

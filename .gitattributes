@@ -1,0 +1,33 @@
+# THIS FILE IS THE MERGE CONTRACT FOR FILES EVERY LANE APPENDS TO.
+#
+# WHY IT EXISTS, and it is measured rather than tidy. `CHANGELOG.md` is
+# APPEND-ONLY UNDER ONE HEADING: every rung adds a bullet under
+# `## [Unreleased]`, so two rungs in one cycle change the same region of the
+# same file and git's default answer is a conflict. The PM resolved SEVEN of
+# those by hand in cycle P21 — each one a turn, a re-run of the hook and a
+# keep-both resolution nobody had any judgment to make about — and a hand
+# resolution in the same class went wrong on a CODE file the same week (a
+# whole-file `--theirs` on `scripts/tests/test_verifier_box.sh` dropped 902
+# lines and cost a 30-minute bank, BOXBANK-18).
+#
+# `merge=union` IS GIT'S OWN BUILT-IN DRIVER and needs no definition here: for
+# a region both sides changed it writes OURS' lines and then THEIRS', with no
+# conflict markers. Two appends therefore merge clean and both survive.
+#
+# IT IS A MERGE DRIVER AND NOT A JUDGE, and that is the honest half. Union can
+# INTERLEAVE — two sides that rewrite the opening line of one wrapped bullet
+# get that line twice and its closing half once, which is a broken code span
+# inside the section a consumer reads before merging a tag. Nothing here
+# notices. What notices is the release leg: `docs_changelog_flags` in
+# `scripts/docs_legs.sh` refuses a section with an ODD number of backticks at
+# exit 2, and `scripts/publish.sh` runs it on the way to a tag. Both
+# directions — the clean two-append merge AND the leg still refusing the
+# interleave — are driven by `scripts/tests/test_pm_merge.sh`.
+#
+# ONE LINE, AND THE POPULATION IS DELIBERATELY ONE FILE. Union over a code
+# file is two halves of a function silently concatenated, which is strictly
+# worse than the conflict it replaces: a conflict stops somebody, and a
+# silently concatenated function does not. A file joins this list when it is
+# append-only under a heading and a keep-both resolution is the only answer
+# anybody was ever going to type.
+CHANGELOG.md merge=union

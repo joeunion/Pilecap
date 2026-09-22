@@ -663,7 +663,21 @@ async def test_a_suppression_during_the_deferral_refuses_at_the_second_wall(
                 channel=Channel.EMAIL,
             )
 
-            await asyncio.sleep(max(0.0, (closes_at - timezone.now()).total_seconds()) + 0.25)
+            # **Only the simulated clock moves here, and that is the point.**
+            # Its sibling above waits `WINDOW_TAIL` out for real because it
+            # asserts a DELIVERY, and a delivery is exactly the answer the real
+            # window governs. This test asserts a refusal, and the arm it
+            # asserts does not consult the window at all: `services._refusal`
+            # checks `suppressed_at` BEFORE quiet hours and returns on it, so
+            # the second wall's verdict is the same whether the person's
+            # evening is over or not.
+            #
+            # So the eight real seconds this used to spend bought nothing but
+            # eight seconds. What has to move is Temporal's clock — the run is
+            # asleep on the deferral timer the first wall armed — and `env.sleep`
+            # moves that. The suppression above landed after `_first_timer` saw
+            # the timer armed and before this line steps past it, which is what
+            # "while the run is asleep" means.
             await env.sleep(WINDOW_TAIL + timedelta(seconds=5))
 
             refused = await _settled_at(tenant, message, Message.Status.SUPPRESSED)

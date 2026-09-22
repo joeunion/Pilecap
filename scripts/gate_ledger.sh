@@ -204,7 +204,17 @@ GATE_TREE_DECL_END='<<< derived-tree-paths <<<'
 #: The globs scanned for the sentinel — where this repository keeps the code
 #: that runs as a leg. NOT a list of derivers: a list of where a deriver may
 #: declare itself.
-GATE_TREE_DECL_SOURCES='scripts/*.sh quality/*.py frontend/scripts/*.sh'
+#:
+#: AND THE PRODUCT'S OWN DRAWERS ARE IN IT (the platform-extension-1 ruling). A product
+#: extends this system by DECLARING beside it — `scripts/local/legs/<name>.sh`,
+#: `scripts/local/fold.d/<step>.sh` — and a local deriver that writes a
+#: committed artefact has exactly the same claim on this exclusion as a template
+#: one. Two levels and not a `**`: bash 3.2 has no `globstar`, so a `**` here
+#: would be one literal `*` wearing two, matching less than it looks like it
+#: matches — which is the silent direction. The whole-tree sweep below NAMES a
+#: declaration that lands outside these globs, so a third level is a note and
+#: never a void.
+GATE_TREE_DECL_SOURCES='scripts/*.sh quality/*.py frontend/scripts/*.sh scripts/local/*.sh scripts/local/*/*.sh'
 
 # gate__derived_tree_paths [root] — the declared derived paths, repository
 # relative, one per line, sorted and unique, on stdout.
@@ -362,24 +372,28 @@ EOF
     printf '%s' "$paths" | LC_ALL=C sort -u
 }
 
-# The content address of the working state. GIT_INDEX_FILE points `git add` at
-# a scratch index, so the real index is untouched; `git add -A` honours
-# .gitignore, which makes the key "the content the gate can read" rather than
-# "the content plus every build artefact" — minus the paths a leg DECLARES it
-# derives, which makes it "the content the gate can read AND something it
-# measures reads back".
-gate_measured_tree() {
-    local idx tree root paths p
-    idx=$(mktemp "${TMPDIR:-/tmp}/djb-gate-index.XXXXXX") || return 1
-    rm -f "$idx" # git wants to create it, not inherit an empty one
-    if ! GIT_INDEX_FILE="$idx" git read-tree HEAD >/dev/null 2>&1; then
-        rm -f "$idx"
-        return 1
-    fi
-    if ! GIT_INDEX_FILE="$idx" git add -A >/dev/null 2>&1; then
-        rm -f "$idx"
-        return 1
-    fi
+# ---- THE ONE SUBTRACTION SITE -----------------------------------------------
+#
+# TWO READERS, ONE ARITHMETIC. `gate_measured_tree` asks the question of the
+# WORKING tree and `gate_measured_tree_of` asks it of a REF, and the day those
+# two subtract differently is the day a bank and a consult are about different
+# bytes while both call themselves "the measured tree". That is not a
+# hypothetical: it is this very defect with the fix applied badly — the
+# consumer's own first attempt copied the helper, and two keys computed two
+# ways is the defect again with a longer fuse. So the subtraction lives exactly
+# here, both readers hand it an index, and a census of the one cached-removal
+# command below counts exactly one occurrence of it in this file — the count
+# IS the assertion, and it is made by
+# `test_loop_ledger.sh::case_one_subtraction_site_serves_both_measured_tree_readers`,
+# which reds the moment a second copy appears. The literal is deliberately not
+# spelled in this paragraph: a prose mention would be counted like code and
+# would break the census it is describing.
+#
+# gate__subtract_and_write <index-file> — the declared derived paths removed
+# from that index, and the resulting tree on stdout. Exit 1 if nothing could be
+# written. The index is the caller's to make and the caller's to remove.
+gate__subtract_and_write() {
+    local idx="$1" root paths p tree
     # `--cached` never touches the working tree — a declared artefact stays on
     # disk, tracked, committed and reviewed; only this throwaway index forgets
     # it. `-f` because a declared path is by definition one whose disk bytes
@@ -395,6 +409,70 @@ gate_measured_tree() {
 $paths
 EOF
     tree=$(GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null)
+    [ -n "$tree" ] || return 1
+    printf '%s\n' "$tree"
+}
+
+# The content address of the working state. GIT_INDEX_FILE points `git add` at
+# a scratch index, so the real index is untouched; `git add -A` honours
+# .gitignore, which makes the key "the content the gate can read" rather than
+# "the content plus every build artefact" — minus the paths a leg DECLARES it
+# derives, which makes it "the content the gate can read AND something it
+# measures reads back".
+gate_measured_tree() {
+    local idx tree
+    idx=$(mktemp "${TMPDIR:-/tmp}/djb-gate-index.XXXXXX") || return 1
+    rm -f "$idx" # git wants to create it, not inherit an empty one
+    if ! GIT_INDEX_FILE="$idx" git read-tree HEAD >/dev/null 2>&1; then
+        rm -f "$idx"
+        return 1
+    fi
+    if ! GIT_INDEX_FILE="$idx" git add -A >/dev/null 2>&1; then
+        rm -f "$idx"
+        return 1
+    fi
+    tree=$(gate__subtract_and_write "$idx") || tree=""
+    rm -f "$idx"
+    [ -n "$tree" ] || return 1
+    printf '%s\n' "$tree"
+}
+
+# gate_measured_tree_of <tree-ish> — THE SAME KEY, ASKED OF A REF.
+#
+# WHY IT HAD TO EXIST. Everything that decides whether a tree has been measured
+# — the pre-push wall's consult and its identity compare, the docs-only road's
+# ancestor walk and its delta — was reading a ref RAW (`<sha>^{tree}`) and then
+# holding that answer up against `gate_measured_tree`, which is the same tree
+# with every declared derived path SUBTRACTED. On this template nothing is
+# declared, the two readings are the same forty characters, and the
+# disagreement was invisible for as long as the mechanism has existed. On a
+# product that declares one they can never agree, and the consequence is total:
+# every push is refused as "not the tree in this checkout" — the checkout's own
+# tree, mistaken for a foreign one, by arithmetic, on every push forever.
+#
+# NO `git add -A` HERE, and that is the whole difference. A ref HAS no working
+# tree: the answer is the committed bytes minus the declarations, which on a
+# clean checkout is exactly what `gate_measured_tree` answers, and the equality
+# of those two is what the wall's compare and the road's `measured != tree`
+# guard both rest on. On a dirty checkout they differ — which is the guard
+# working, not a defect.
+#
+# THE DECLARATION LIST IS THIS CHECKOUT'S, NOT THE REF'S (declared blind spot).
+# The subtraction reads the derivers on disk, so a ref that declared a
+# different set is measured with today's set. Every caller here is asking about
+# a ref in its own line of development, where the two are the same in practice;
+# a ref whose declarations genuinely differ would be measured slightly wrong,
+# and the belt is that a wrong key is a MISS — a re-measure — and never a false
+# hit on a tree nobody looked at.
+gate_measured_tree_of() {
+    local rev="${1:-HEAD}" idx tree
+    idx=$(mktemp "${TMPDIR:-/tmp}/djb-gate-index.XXXXXX") || return 1
+    rm -f "$idx"
+    if ! GIT_INDEX_FILE="$idx" git read-tree "$rev" >/dev/null 2>&1; then
+        rm -f "$idx"
+        return 1
+    fi
+    tree=$(gate__subtract_and_write "$idx") || tree=""
     rm -f "$idx"
     [ -n "$tree" ] || return 1
     printf '%s\n' "$tree"
@@ -552,22 +630,109 @@ gate_ledger_record() {
     fi
 }
 
-# gate_full_legs — the leg set a FULL run announces, as the gate's own
-# declaration spells it, on stdout. EMPTY when this directory has no gate to
-# read one from — which is a checkout with no `scripts/check.sh`, not a broken
-# read: a place with no gate makes no claim about a leg set.
+# gate_full_legs — the member set a FULL run covers, on stdout, comma-joined.
+# EMPTY when this directory has no gate to read one from — which is a checkout
+# with no `scripts/check.sh`, not a broken read: a place with no gate makes no
+# claim about a leg set.
 #
-# READ FROM `check.sh`'s OWN ASSIGNMENT, never listed here. The declaration is
-# one line and it is the same one the runner splits; a copy here would be right
-# on the day it was typed, which is the failure this whole file keeps closing.
+# TWO READERS, AND THE PRODUCT-LEG DRAWER IS WHAT CHOOSES BETWEEN THEM.
+#
+#   NO DRAWER — `check.sh`'s own `FULL_LEGS=` assignment, exactly as this
+#   function has always read it. On such a tree the assignment IS the leg set:
+#   the listing would add only the drives the selftest leg walks, which a full
+#   run does walk and which the row already covers either way, and reading it
+#   would mean running the gate as a subprocess from the pre-push hook's
+#   consult — whose whole point is that honouring a banked row costs a lookup
+#   and not a gate. So the answer, the row and the cost are byte-identical to
+#   the tree that had never heard of a drawer.
+#
+#   A DRAWER — `./scripts/check.sh --list-legs`, column 4 flattened. For that
+#   tree the assignment is WRONG: a product declares its own legs in
+#   `scripts/local/legs/` and `check.sh` grows `FULL_LEGS` at runtime with one
+#   `local:<name>` per declared leg, so a reader of the text would bank and
+#   compare a set that silently omitted every one of them — the row would
+#   vouch for legs the bank never named. The listing is the gate saying what
+#   its units are made of, it is what `pm_push.sh --bank --on-boxes` plans
+#   from, and it is the one answer both sides of the wall then read.
+#
+# THE DRAWER ANSWER IS A SUPERSET OF THE ANNOUNCED LEGS, deliberately: a unit
+# that shards by a registered population names that population in its
+# `composed-of`, so the selftest drives are members there too. A full run walks
+# every one of them, so the row is a stronger and truer claim; and
+# `gate_ledger_lookup` compares by COVER, with both sides built by this one
+# function, so they cannot drift apart.
+
+#: Memoised for the process. The listing costs a whole shell startup of
+#: `check.sh`, and the pre-push hook asks this question once per pushed tree.
+GATE_FULL_LEGS_MEMO=""
 gate_full_legs() {
-    local declared
+    local listing rc=0 drawer f tmp
+    [ -n "$GATE_FULL_LEGS_MEMO" ] && {
+        printf '%s' "$GATE_FULL_LEGS_MEMO"
+        return 0
+    }
     [ -r scripts/check.sh ] || return 0
-    # READ WHOLE, THEN SLICE. `sed` reads its input to the end, so it never
-    # closes the pipe under its producer; the first match is taken from the
-    # captured text rather than by an early-exiting reader.
-    declared=$(sed -n 's/^FULL_LEGS=//p' scripts/check.sh) || return 0
-    printf '%s' "${declared%%$'\n'*}"
+    # THE DRAWER DECIDES WHICH READER ANSWERS, AND THAT IS THE WHOLE OF IT.
+    # A tree with no product leg in `scripts/local/legs/` has a leg set that IS
+    # the assignment — the listing would add only the drives the selftest leg
+    # walks, and every one of them is already covered by the row the gate
+    # writes — so the text is read, the answer is byte-identical to what it has
+    # always been, and NO SUBPROCESS RUNS. That last clause is not tidiness:
+    # this function is on the pre-push hook's consult path, whose whole point
+    # is that honouring a banked row costs a lookup and not a gate.
+    #
+    # A tree WITH a drawer pays the listing, because for that tree the text is
+    # wrong: `check.sh` grows `FULL_LEGS` at runtime with one `local:<name>`
+    # per declared leg, and a reader of the assignment would bank and compare a
+    # set that silently omitted every product leg — the row would vouch for
+    # legs the bank never named. The product pays for its own feature.
+    drawer="${DJB_LOCAL_LEGS_DIR:-scripts/local/legs}"
+    if [ -d "$drawer" ]; then
+        for f in "$drawer"/*.sh; do
+            [ -f "$f" ] || continue
+            case "${f##*/}" in _*) continue ;; esac
+            rc=0
+            # IN PROCESS WHEN THE GATE IS THE CALLER, A SUBPROCESS OTHERWISE —
+            # one listing, two doors to it. `check.sh` sources this file and
+            # defines `gate_list_legs` below its own unit table, so by the time
+            # the gate banks a row the function is here and the answer costs
+            # nothing; the pre-push hook and `pm_push.sh` source this file
+            # ALONE, and for them the listing is what the gate prints.
+            if command -v gate_list_legs >/dev/null 2>&1; then
+                listing=$(gate_list_legs 2>/dev/null) || rc=$?
+            else
+                # REDIRECTED TO A FILE AND READ BACK, NEVER CAPTURED. A command
+                # substitution IS a pipe and the gate refuses one outright
+                # (exit 2, "run it bare or redirect to a file") — which is why
+                # this is four lines rather than one, and why `pm_push.sh` and
+                # `ci.yml` spell it the same way.
+                tmp=$(mktemp "${TMPDIR:-/tmp}/djb-gate-legs.XXXXXX") || break
+                ./scripts/check.sh --list-legs >"$tmp" 2>/dev/null || rc=$?
+                listing=$(cat "$tmp")
+                rm -f "$tmp"
+            fi
+            if [ "$rc" = "0" ] && [ -n "$listing" ]; then
+                GATE_FULL_LEGS_MEMO=$(printf '%s\n' "$listing" |
+                    awk -F'\t' 'NF >= 4 { print $4 }' | tr ',' '\n' |
+                    awk 'NF && !($0 in seen) { seen[$0] = 1; printf "%s%s", (n++ ? "," : ""), $0 } END { print "" }')
+            fi
+            break
+        done
+    fi
+    if [ -z "$GATE_FULL_LEGS_MEMO" ]; then
+        # NO DRAWER, OR A LISTING THIS READER COULD NOT SPLIT INTO FOUR COLUMNS
+        # — a stub gate, an older one, a table that has lost its subject. Both
+        # land here rather than on an empty answer, and the difference is
+        # fail-closed against fail-open: an empty answer switches the leg
+        # comparison OFF and honours every row whatever it names.
+        #
+        # READ WHOLE, THEN SLICE. `sed` reads its input to the end, so it never
+        # closes the pipe under its producer; the first match is taken from the
+        # captured text rather than by an early-exiting reader.
+        listing=$(sed -n 's/^FULL_LEGS=//p' scripts/check.sh) || return 0
+        GATE_FULL_LEGS_MEMO="${listing%%$'\n'*}"
+    fi
+    printf '%s' "$GATE_FULL_LEGS_MEMO"
 }
 
 # gate_ledger_lookup <tree> → most recent matching line on stdout, exit 0;
@@ -716,6 +881,431 @@ gate_ledger_lookup() {
 
 # gate_has_green <tree> → exit 0 iff a full green run measured this tree.
 gate_has_green() { gate_ledger_lookup "$1" >/dev/null; }
+
+# ---- the DOCS-ONLY push path ------------------------------------------------
+#
+# WHAT IT IS. The doctrine is one full gate per push and the verdict is keyed on
+# the TREE, so a ledger, readouts, queue or ADR-signature commit — bytes no leg
+# of the gate executes — moves the key and costs a whole bank. The v2.1 tail
+# paid three sequential banks (CLOSE, RELEASE, close-up) whose MEASURED surface
+# never moved, and BOXBANK-16 paid 28 minutes for eight of them. This says when
+# `pm_push.sh --bank` may run the readers those bytes actually have — seconds on
+# this Mac — and write an ORDINARY full row for the tree it is about to push.
+#
+# IT IS NOT A NEW KIND OF ROW, AND THAT IS THE DESIGN (the criterion's rejected
+# alternative (i)). The row `gate_ledger_record` writes here is the same row a
+# bank writes: same schema, same legs field, same `leak-proof=`, keyed on the
+# tree that is about to be PUSHED. The pre-push hook honours it unedited and
+# `gate_ledger_lookup` needs no new clause. What is different is the SANCTION —
+# `docs-only from=<M> paths=<n> readers=<csv>` — which is free text by
+# construction and is therefore the honest place for a claim that is a PM's to
+# read rather than a reader's to act on.
+#
+# THE FOUR DECLARATIONS (principle 10), stated where the code is:
+#   SOURCE OF TRUTH — the nearest ANCESTOR tree carrying an HONOURED full row,
+#     followed through `from=` so the source is always a tree a gate MEASURED
+#     rather than a tree that inherited. A reuse chain therefore never drifts:
+#     R2 is diffed against M, never against R1.
+#   KEY SEMANTICS — unchanged. The key is still the measured tree. This narrows
+#     the WORK a push of that tree costs, never the claim the row makes.
+#   INVALIDATION — any changed path outside the declared list; any path READ
+#     literally by a module under `apps/` or `config/`; a source row that is not
+#     honoured; a reader that exits non-zero. Every one of them is a full bank
+#     and every one of them SAYS SO.
+#   FAILURE BEHAVIOUR — fail closed, and never silent. A refusal names its cause
+#     and ends in "full bank"; a reader that could not look is a full bank and
+#     not a verdict. There is no silent admission anywhere on this path.
+#
+# WHAT IT DELIBERATELY DOES NOT DO: it does not take the delta out of the tree
+# hash (rejected alternative (i) — the verdict must name the tree pushed), it
+# does not read a commit SUBJECT (a `[docs-only]` subject is a claim, not a
+# measurement), and it does not reuse per-leg inside a full bank (that shape
+# still launches five boxes and still pays selftest's wall).
+
+#: THE DECLARED LIST, RATIFIED, AND IT IS THE RULE'S WHOLE TEXT. `docs/**` (no
+#: leg imports them), `README.md`, `CLAUDE.md`, `.claude/skills/**` (one drive
+#: and one `rules.yaml` `doc:` entry read them — the reader derivation below
+#: finds both), and `scripts/test_impact.json` (the bank's own output for the
+#: banked tree; only drives name it).
+#:
+#: `CHANGELOG.md` AND `TEMPLATE_VERSION` ARE OUT, AND THEY ARE OUT BY
+#: MEASUREMENT: pytest reads both (`apps/core/tests/test_settings.py`,
+#: `apps/core/views.py`, `quality/partition.yaml`), so a release still pays one
+#: bank. Widening this list is a ratified change and not a judgment call.
+GATE_DOCS_ONLY_PATHS='docs/** README.md CLAUDE.md .claude/skills/** scripts/test_impact.json'
+
+#: How far back the source walk looks along main's own first-parent line. A
+#: bound rather than the whole history: the population this exists for is the
+#: last handful of pushes, and an unbounded walk over a ledger of 300 kB is a
+#: cost nobody asked for. Exhausting it is a refusal that says so.
+GATE_DOCS_ONLY_DEPTH=${GATE_DOCS_ONLY_DEPTH:-60}
+
+#: The plan `gate_docs_only_plan` leaves behind. Empty until it has run, and
+#: empty is honest rather than stale — `LOOP_REUSE_TREE`'s contract, one
+#: mechanism over. They are globals and the function is therefore CALLED
+#: PLAINLY, never in `$(...)`: a substitution's copy of a global dies with the
+#: subshell that set it.
+GATE_DOCS_ONLY_SOURCE=""  # M — the measured tree the row rests on
+GATE_DOCS_ONLY_LEGS=""    # the source row's legs field, copied verbatim
+GATE_DOCS_ONLY_PROOF=""   # the source row's leak-proof value, or empty
+GATE_DOCS_ONLY_N=""       # how many paths changed since M
+GATE_DOCS_ONLY_READERS="" # the derived readers, comma separated
+GATE_DOCS_ONLY_WHY=""     # the refusal, ending in "full bank"
+
+# gate_docs_only_admits <path> → 0 when the path is on the declared list.
+# ONE FUNCTION READS THE LIST, so "what is a docs-only path" has one answer.
+gate_docs_only_admits() {
+    local p=$1 pat noglob=0
+    # THE LIST IS PATTERNS AND THE SHELL WOULD EXPAND THEM. `docs/**` in an
+    # unquoted `for` is pathname expansion, and it QUIETLY becomes the
+    # directories that happen to exist — so the declared list would mean
+    # something different in every checkout, and `docs/product/queue.md` was
+    # refused by the first draft of this function for exactly that reason.
+    case $- in
+    *f*) noglob=1 ;;
+    esac
+    set -f
+    for pat in $GATE_DOCS_ONLY_PATHS; do
+        case "$pat" in
+        *'/**')
+            case "$p" in
+            "${pat%'**'}"*)
+                [ "$noglob" = 1 ] || set +f
+                return 0
+                ;;
+            esac
+            ;;
+        *)
+            if [ "$p" = "$pat" ]; then
+                [ "$noglob" = 1 ] || set +f
+                return 0
+            fi
+            ;;
+        esac
+    done
+    [ "$noglob" = 1 ] || set +f
+    return 1
+}
+
+# gate_docs_only_row_field <row> <name> → the value of `<name>=` on the row.
+# AN EOF READER, `drive_row_parts`'s shape and for its reason: no pipe whose
+# exit status anything branches on.
+gate_docs_only_row_field() {
+    awk -v k="$2" '
+        { for (i = 1; i <= NF; i++) if (index($i, k "=") == 1) v = substr($i, length(k) + 2) }
+        END { if (v != "") print v }
+    ' <<EOF
+$1
+EOF
+}
+
+# gate_docs_only_source <head-commit> → M on stdout; GATE_DOCS_ONLY_SOURCE,
+# _LEGS and _PROOF set. Exit 1 with GATE_DOCS_ONLY_WHY set.
+#
+# THE WALK IS FIRST-PARENT AND IT SKIPS HEAD. First-parent because the line a
+# bank is taken on is main's own and a walk into a merged branch's history would
+# be asking about trees nobody pushed; skipping HEAD because a source is by
+# definition something to diff AGAINST.
+#
+# THE NEAREST BANKED ANCESTOR IS THE ONLY CANDIDATE. When its row exists and is
+# NOT honoured — a short legs field, a `pytest-x2/1` with no green proof — this
+# refuses instead of walking past it to an older row. Walking past would be a
+# reuse that stepped over the most recent thing the gate said about this line of
+# development, which is precisely the row a reader would expect it to rest on.
+#
+# THE ROW IS READ THROUGH `gate_ledger_lookup` AND NOTHING ELSE (rule 13, one
+# reader). "A row exists here but is not honoured" is therefore read off the
+# lookup's own NOTE, which is the only signal it has for that state: exit 1 with
+# nothing on stderr is "no row for this tree", exit 1 with a note is "a row, and
+# here is why it does not stand". A second grep of the ledger file would be a
+# second reader, and the day the two disagree is the day a reuse rests on a row
+# the lookup never approved.
+gate_docs_only_source() {
+    local head=$1 depth=0 c tree row note from hops
+    GATE_DOCS_ONLY_SOURCE=""
+    GATE_DOCS_ONLY_LEGS=""
+    GATE_DOCS_ONLY_PROOF=""
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        depth=$((depth + 1))
+        # THE MEASURED TREE OF THE ANCESTOR, because that is the only key a
+        # full gate ever banks. Read raw, this lookup asks the ledger
+        # for a tree no row is keyed on the moment a product declares a
+        # derived path — so the walk finds nothing, the road refuses, and a
+        # documentation push costs a full bank forever.
+        tree=$(gate_measured_tree_of "${c}^{tree}" 2>/dev/null) || continue
+        row=$(gate_ledger_lookup "$tree" 2>/dev/null) || row=""
+        if [ -z "$row" ]; then
+            note=$(gate_ledger_lookup "$tree" 2>&1 >/dev/null) || true
+            if [ -n "$note" ]; then
+                GATE_DOCS_ONLY_WHY="docs-only? no — the nearest banked ancestor's row is not honoured — full bank"
+                printf '%s\n' "$note" >&2
+                return 1
+            fi
+            continue
+        fi
+        # A REUSE ROW NAMES THE MEASURED TREE IT RESTS ON, AND THAT IS THE
+        # SOURCE. Following `from=` is what keeps a chain of docs-only pushes
+        # diffed against the last MEASURED tree rather than against the last
+        # INHERITED one: without it, R2 would be diffed against R1, and a forged
+        # or mistaken R1 row would hand R2 a delta that never showed the
+        # `apps/` path R1 really carried.
+        hops=0
+        while :; do
+            from=$(gate_docs_only_row_field "$row" from)
+            [ -n "$from" ] || break
+            hops=$((hops + 1))
+            case "$from" in
+            *[!0-9a-f]* | "") from="" ;;
+            esac
+            if [ -z "$from" ] || [ "$hops" -gt 4 ]; then
+                GATE_DOCS_ONLY_WHY="docs-only? no — the nearest banked ancestor's row names a source this reader cannot follow — full bank"
+                return 1
+            fi
+            row=$(gate_ledger_lookup "$from" 2>/dev/null) || row=""
+            if [ -z "$row" ]; then
+                GATE_DOCS_ONLY_WHY="docs-only? no — the nearest banked ancestor's row names from=${from}, which carries no honoured row of its own — full bank"
+                return 1
+            fi
+            tree="$from"
+        done
+        GATE_DOCS_ONLY_SOURCE="$tree"
+        GATE_DOCS_ONLY_LEGS=$(printf '%s\n' "$row" | awk '{print $5}')
+        case "$row" in
+        *" leak-proof="*) GATE_DOCS_ONLY_PROOF=${row##*" leak-proof="} ;;
+        *) GATE_DOCS_ONLY_PROOF="" ;;
+        esac
+        printf '%s\n' "$tree"
+        return 0
+    done <<EOF
+$(git rev-list --first-parent --skip=1 --max-count="$GATE_DOCS_ONLY_DEPTH" "$head" 2>/dev/null)
+EOF
+    GATE_DOCS_ONLY_WHY="docs-only? no — no honoured full row on any of the last ${GATE_DOCS_ONLY_DEPTH} first-parent ancestors (walked ${depth}) — full bank"
+    return 1
+}
+
+# gate_docs_only_literal_reads <needle>… → `<file>:<line> <needle>` per hit.
+#
+# WHAT A *LITERAL READ* IS, AND WHY THE DEFINITION IS NARROWER THAN "MENTIONS".
+# The `--loop` reuse one mechanism over refuses on ANY mention of a docs path in
+# `apps/`, and that was measured: it refuses `docs/product/queue.md` and
+# `docs/product/architecture.md`, which are the two commits this path exists
+# for. So the question asked here is not "is this path spelled" but "does
+# anything OPEN it": a value in quotes (`"P"`, `'P'`, or the quoted basename) or
+# a YAML `file:` value or list item. A backtick mention and a comment are prose
+# — every one of the forty-odd hits in `apps/` today is one of those two — and
+# prose is admitted.
+#
+# THE DIRECTION OF EVERY DOUBT IS STILL CLOSED. A quoted mention inside a
+# docstring is judged a read; a path assembled from parts, reached by a glob or
+# walked as a directory is judged prose and MISSED. That second half is this
+# path's declared blind spot, and the belt is the next non-docs push.
+gate_docs_only_literal_reads() {
+    local roots="" r out n
+    local -a args=()
+    for r in apps config quality; do
+        if [ -d "$r" ]; then
+            roots="${roots}${roots:+ }${r}"
+        fi
+    done
+    [ -n "$roots" ] || return 0
+    for n in "$@"; do
+        args+=(-e "$n")
+    done
+    [ "${#args[@]}" -gt 0 ] || return 0
+    # `-I` because a binary that happens to contain the bytes is not a read, and
+    # the judge below would see a line it cannot parse. A grep that matched
+    # nothing exits 1, which is not an error here — it is the ordinary answer.
+    # shellcheck disable=SC2086
+    out=$(grep -rnI -F "${args[@]}" $roots 2>/dev/null) || out=""
+    [ -n "$out" ] || return 0
+    awk -v needles="$*" '
+    BEGIN { nn = split(needles, NEEDLE, " "); sq = sprintf("%c", 39) }
+    {
+        i = index($0, ":"); if (i == 0) next
+        file = substr($0, 1, i - 1); rest = substr($0, i + 1)
+        j = index(rest, ":"); if (j == 0) next
+        lno = substr(rest, 1, j - 1); text = substr(rest, j + 1)
+        hash = index(text, "#")
+        for (k = 1; k <= nn; k++) {
+            needle = NEEDLE[k]
+            L = length(needle); start = 1
+            while (1) {
+                p = index(substr(text, start), needle)
+                if (p == 0) break
+                at = start + p - 1
+                start = at + 1
+                a = at
+                while (a > 1 && substr(text, a - 1, 1) ~ /[A-Za-z0-9_.\/-]/) a--
+                b = at + L - 1
+                while (b < length(text) && substr(text, b + 1, 1) ~ /[A-Za-z0-9_.\/-]/) b++
+                # THE TOKEN, NOT THE SUBSTRING. `src/primitives/README.md` is
+                # not a read of `README.md`, and a basename needle would say it
+                # was.
+                if (substr(text, a, b - a + 1) != needle) continue
+                # After the first `#` on the line is a comment mention.
+                if (hash > 0 && at > hash) continue
+                before = (a > 1) ? substr(text, a - 1, 1) : ""
+                after = (b < length(text)) ? substr(text, b + 1, 1) : ""
+                if (before == "`") continue
+                if (before == "\"" && after == "\"") { print file ":" lno " " needle; next }
+                if (before == sq && after == sq) { print file ":" lno " " needle; next }
+                lead = substr(text, 1, a - 1)
+                if (lead ~ /file:[ \t]*$/) { print file ":" lno " " needle; next }
+                if (lead ~ /^[ \t]*-[ \t]+$/) { print file ":" lno " " needle; next }
+            }
+        }
+    }
+    ' <<EOF
+$out
+EOF
+}
+
+# gate_docs_only_covers <declared> <path> → 0 when the declaration covers it.
+gate_docs_only_covers() {
+    local d=${1%/} p=$2
+    if [ "$d" = "$p" ]; then
+        return 0
+    fi
+    case "$p" in
+    "$d"/*) return 0 ;;
+    esac
+    return 1
+}
+
+# gate_docs_only_drives <path>… → every drive whose declaration names one of
+# these paths, or a directory prefix of one, on stdout.
+#
+# THE DECLARATION IS THE DRIVE'S OWN, read through `drive_marker_line` — the
+# same line the selftest leg's reuse keys on, so a drive that declares what it
+# reads is selected here for free and a drive that does not is missed here
+# exactly as it is missed there. A `# cites:` line is NOT read: a citation is
+# explicitly not a subject (see `drive_cites_line`), and selecting on one would
+# re-drive a drive that never opens the file.
+gate_docs_only_drives() {
+    local f line tok p out="" noglob=0
+    case $- in
+    *f*) noglob=1 ;;
+    esac
+    for f in scripts/tests/test_*.sh; do
+        [ -f "$f" ] || continue
+        line=$(drive_marker_line "$f") || continue
+        line=${line#*drives:}
+        # A DECLARED TOKEN IS A PATH AND NEVER A GLOB HERE, for
+        # `gate_docs_only_admits`'s reason: a declaration carrying a `*` would
+        # otherwise be expanded against this checkout before it was compared.
+        set -f
+        for tok in $line; do
+            for p in "$@"; do
+                if gate_docs_only_covers "$tok" "$p"; then
+                    out="${out}${f}
+"
+                    break 2
+                fi
+            done
+        done
+        [ "$noglob" = 1 ] || set +f
+    done
+    [ -n "$out" ] || return 0
+    printf '%s' "$out" | LC_ALL=C sort -u
+}
+
+# gate_docs_only_plan <head-commit>
+#   0  every changed path since M is on the declared list and the readers are
+#      derived: GATE_DOCS_ONLY_SOURCE, _LEGS, _PROOF, _N and _READERS are set.
+#   1  measure. GATE_DOCS_ONLY_WHY is the sentence, and it always ends in
+#      "full bank".
+#
+# IT DERIVES AND DECIDES; IT RUNS NOTHING. The readers are RUN by the caller
+# (`scripts/pm_push.sh`), which is the one place in this system that already
+# runs the gate and answers its status.
+gate_docs_only_plan() {
+    local head=$1 tree delta p n=0 needles="" hit file engine=0 d readers measured
+    GATE_DOCS_ONLY_N=""
+    GATE_DOCS_ONLY_READERS=""
+    GATE_DOCS_ONLY_WHY=""
+    # MEASURED, NOT RAW — and the delta below is taken between two
+    # measured trees, so a churn in a DECLARED derived path is subtracted from
+    # both ends and never shows up as a changed path. That is the same
+    # sentence the declaration already makes: nothing measured reads those
+    # bytes back, so they are not part of what a verdict is about.
+    tree=$(gate_measured_tree_of "${head}^{tree}" 2>/dev/null) || tree=""
+    if [ -z "$tree" ]; then
+        GATE_DOCS_ONLY_WHY="docs-only? no — ${head} resolves to no tree — full bank"
+        return 1
+    fi
+    # THE KEY AND THE DELTA MUST BE ABOUT THE SAME BYTES. The row is keyed on
+    # the MEASURED tree (`gate_measured_tree`, which reads through `git add -A`
+    # and subtracts every declared derived path) and the delta above is taken
+    # between MEASURED trees too, so the only thing this equality can now catch
+    # is the thing it was always for: a DIRTY working tree, where `git add -A`
+    # sees bytes HEAD does not carry. It used to compare against HEAD's RAW
+    # tree, which on a declaring product can never equal the measured one — so
+    # the guard fired on every clean checkout that declared anything, and the
+    # road was closed to exactly the products it was built for. Asked rather
+    # than assumed, and now asked of the same arithmetic on both sides.
+    measured=$(gate_measured_tree 2>/dev/null) || measured=""
+    if [ "$measured" != "$tree" ]; then
+        GATE_DOCS_ONLY_WHY="docs-only? no — the measured WORKING tree (${measured:-unreadable}) is not HEAD's measured tree (${tree}), so there is an uncommitted byte in the delta the row would key on — full bank"
+        return 1
+    fi
+    gate_docs_only_source "$head" >/dev/null || return 1
+    delta=$(git diff-tree -r --name-only "$GATE_DOCS_ONLY_SOURCE" "$tree" 2>/dev/null) || delta=""
+    if [ -z "$delta" ]; then
+        GATE_DOCS_ONLY_WHY="docs-only? no — HEAD's tree IS the source tree ${GATE_DOCS_ONLY_SOURCE}, so there is nothing to reuse and a row already stands — full bank"
+        return 1
+    fi
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        case "$p" in
+        *[[:space:]]*)
+            GATE_DOCS_ONLY_WHY="docs-only? no — a changed path carries whitespace and this reader cannot name it — full bank"
+            return 1
+            ;;
+        esac
+        if ! gate_docs_only_admits "$p"; then
+            GATE_DOCS_ONLY_WHY="docs-only? no — ${p} is not a docs-only path — full bank"
+            return 1
+        fi
+        n=$((n + 1))
+        needles="${needles}${needles:+ }${p} ${p##*/}"
+    done <<EOF
+$delta
+EOF
+    if [ "$n" -eq 0 ]; then
+        GATE_DOCS_ONLY_WHY="docs-only? no — the delta could not be read — full bank"
+        return 1
+    fi
+    # THE READERS, DERIVED PER PATH. `static` ALWAYS: the adr-census,
+    # dangling-docs, goalpost-census, queue-index and archaeology legs all read
+    # `docs/`, and the house-rules engine reads its own `doc:` targets there.
+    readers="static"
+    while IFS= read -r hit; do
+        [ -n "$hit" ] || continue
+        file=${hit%%:*}
+        case "$file" in
+        apps/* | config/*)
+            GATE_DOCS_ONLY_WHY="docs-only? no — ${hit#* } is read literally at ${hit%% *} — full bank"
+            return 1
+            ;;
+        quality/*) engine=1 ;;
+        esac
+    done <<EOF
+$(gate_docs_only_literal_reads $needles)
+EOF
+    if [ "$engine" = "1" ]; then
+        readers="${readers},full-house-rules"
+    fi
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        readers="${readers},${d}"
+    done <<EOF
+$(gate_docs_only_drives $delta)
+EOF
+    GATE_DOCS_ONLY_N="$n"
+    GATE_DOCS_ONLY_READERS="$readers"
+    return 0
+}
 
 # ---- a DRIVE's verdict, keyed on what the drive DRIVES ------------------
 #
@@ -2656,11 +3246,23 @@ EOF
     # green over a red committed suite, then banks a reusable reuse row saying so.
     #
     # THE QUESTION IS ASKED OF GIT AND THE ANSWER IS AN EQUALITY, not a
-    # heuristic: the basis row's `tree=` either IS `git rev-parse <head>^{tree}`
+    # heuristic: the basis row's `tree=` either IS THE MEASURED TREE OF `<head>`
     # or the row is not a verdict about any committed tree and cannot vouch for
     # one. A row too old to carry a `tree=` component, or a head this checkout
     # cannot resolve, is the same answer for the same reason — a basis that
     # cannot be checked is a basis that has not been.
+    #
+    # AND BOTH SIDES OF IT ARE THE SAME ARITHMETIC, which they were not. A
+    # `--loop` row's `tree=` is written from `gate_measured_tree` — the working
+    # tree with every DECLARED derived path subtracted — and this compared it
+    # against a RAW `<head>^{tree}`. Identical wherever nothing is declared, so
+    # the disagreement was invisible on this template; on a product that
+    # declares one they can never be equal, and the docs-only reuse was closed
+    # to exactly the products the road was widened for. `gate_measured_tree_of`
+    # is the same subtraction asked of a ref, and the guard this equality
+    # exists to be — a bank taken on a DIRTY working tree is no basis — is
+    # untouched: measured-working equals measured-committed if and only if the
+    # tree was clean when the bank was taken.
     #
     # AND THE LOCAL IS NOT CALLED `head_tree`, WHICH COST A GATE LEG TO LEARN.
     # `scripts/tests/test_pipefail_readers.sh`'s census matches `\| *head` over
@@ -2668,9 +3270,9 @@ EOF
     # the line reds as an early-exit reader that is not there. Renaming is the
     # fix; a valve would be spending a declared escape on a coincidence.
     banked_tree=$(loop_component_value "$basis" tree)
-    committed=$(git rev-parse -q --verify "${head}^{tree}" 2>/dev/null) || committed=""
+    committed=$(gate_measured_tree_of "$head" 2>/dev/null) || committed=""
     if [ -z "$banked_tree" ] || [ -z "$committed" ] || [ "$banked_tree" != "$committed" ]; then
-        LOOP_REUSE_WHY="the banked verdict was measured on a tree that is not its head's committed tree — measuring"
+        LOOP_REUSE_WHY="the banked verdict was measured on a tree that is not its head's measured tree — measuring"
         return 1
     fi
     # THE POPULATION IS DERIVED, PER CHANGED PATH, AT RUN TIME. A hand list of

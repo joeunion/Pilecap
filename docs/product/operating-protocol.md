@@ -55,7 +55,7 @@ here.)*
 
 ---
 
-> ## EXAMPLE — delete when the first real entry lands
+> ## EXAMPLE — the one marked worked example this ledger ships with (CLAUDE.md § What this is); a product keeps it beside its own entries and never renames it
 >
 > **This product runs at:** setting 2 for the first two cycles, then 3 — Joe,
 > 2026-03-01: *"everything but taste is machine-checked here; two cycles is

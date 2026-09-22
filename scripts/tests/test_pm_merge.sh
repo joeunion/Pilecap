@@ -31,7 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: scripts/check.sh scripts/db.sh scripts/kill_mine.sh scripts/pm_fold.sh scripts/pm_merge.sh scripts/queue_cited.sh scripts/sweep.sh scripts/tests/test_pm_fold.sh scripts/tests/test_sweep.sh
+# drives: .gitattributes CHANGELOG.md scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/pm_fold.sh scripts/pm_merge.sh scripts/queue_cited.sh scripts/sweep.sh scripts/tests/test_pm_fold.sh scripts/tests/test_sweep.sh
 # The drive for `scripts/pm_merge.sh` — the refusals, the exit propagation and
 # the proof of merge.
 #
@@ -669,6 +669,237 @@ case_a_clean_merge_prints_the_proof_line() {
     holds "clean merge: the gate ran once, with --fast" "--fast" "$(cat "$GATE_LOG")"
 }
 
+# --- the CHANGELOG's merge driver ---------------------------------------------
+#
+# WHAT IS UNDER TEST HERE IS `.gitattributes`, NOT `pm_merge.sh`. The wrapper is
+# unchanged by this; the one line `CHANGELOG.md merge=union` changes what
+# `git merge` does underneath it, and these cases drive THIS TREE'S FILE into a
+# scratch repository rather than re-typing the line, for `$SOURCE`'s reason: a
+# case that re-types its subject stops being a case about the tree.
+#
+# WHY IT IS HERE AND NOT SOMEWHERE ELSE. `CHANGELOG.md` is append-only under
+# `## [Unreleased]`, every rung appends to it, and the merge of two such
+# branches is what this drive already exists to measure. Seven hand
+# resolutions in cycle P21 were the cost, and the class' expensive half was a
+# hand resolution of a CODE file that dropped 902 lines.
+#
+# THREE CASES, AND THE THIRD IS THE ONE THAT KEEPS THE OTHER TWO HONEST:
+# the union merges two appends clean; WITHOUT the attribute the same two
+# appends conflict (the sever direction — a guard nobody can turn off is a
+# guard nobody has measured); and the union is a MERGE DRIVER AND NOT A JUDGE,
+# so the release leg still refuses the interleave it can produce.
+ATTRIBUTES_SRC="$PWD/.gitattributes"
+DOCS_LEGS_SRC="$PWD/scripts/docs_legs.sh"
+GATE_REFUSE_SRC="$PWD/scripts/gate_refuse.sh"
+
+# changelog_repo <yes|no> <lane-a body> <main body> — `fresh_repo` plus a
+# CHANGELOG.md and two lanes that both change it. The first argument decides
+# whether THIS TREE'S `.gitattributes` is in the checkout, which is the whole
+# variable between the first two cases.
+#
+# THE BODIES ARE WRITTEN WHOLE, never patched in place: `sed -i` is two
+# different commands on the two machines this drive runs on (BSD wants an
+# argument, GNU does not), and a fixture that builds itself differently on the
+# box and on the Mac is a fixture whose green means two different things.
+changelog_repo() {
+    local attrs="$1" base="$2" lane_a="$3" lane_b="$4"
+    fresh_repo
+    if [ "$attrs" = "yes" ]; then
+        [ -r "$ATTRIBUTES_SRC" ] || cannot_look "no readable ${ATTRIBUTES_SRC} — there is no merge contract to drive"
+        cp "$ATTRIBUTES_SRC" "$REPO/.gitattributes"
+        git -C "$REPO" add .gitattributes
+    fi
+    printf '%s' "$base" >"$REPO/CHANGELOG.md"
+    git -C "$REPO" add CHANGELOG.md
+    git -C "$REPO" commit -q -m "the changelog, and whatever merges it"
+
+    git -C "$REPO" checkout -q -b lane-a
+    printf '%s' "$lane_a" >"$REPO/CHANGELOG.md"
+    git -C "$REPO" commit -q -a -m "lane A: a bullet under [Unreleased]"
+
+    git -C "$REPO" checkout -q main
+    printf '%s' "$lane_b" >"$REPO/CHANGELOG.md"
+    git -C "$REPO" commit -q -a -m "lane B: a bullet under [Unreleased]"
+}
+
+# The appending scenario, whole files: what the base commit shipped and what
+# each lane made of it.
+CL_APPEND_BASE='# Changelog
+
+## [Unreleased]
+
+- the bullet the base commit shipped
+
+## [9.9.8]
+
+- a shipped section, and it is history
+'
+CL_APPEND_A='# Changelog
+
+## [Unreleased]
+
+- the bullet the base commit shipped
+- lane A appended this bullet
+
+## [9.9.8]
+
+- a shipped section, and it is history
+'
+CL_APPEND_B='# Changelog
+
+## [Unreleased]
+
+- the bullet the base commit shipped
+- lane B appended this bullet
+
+## [9.9.8]
+
+- a shipped section, and it is history
+'
+
+# The two INTERLEAVING lanes: both rewrite the OPENING line of one bullet whose
+# code span closes on the NEXT line. Union writes ours' version of that line and
+# then theirs', and the closing half — untouched context — follows ONCE. The
+# section then carries an odd number of backticks: a bullet split across the two
+# sides. This is the union's real failure mode, reproduced rather than described.
+CL_SPLIT_BASE='# Changelog
+
+## [Unreleased]
+
+- the bullet, naming `./scripts/gate.sh
+  --fast` and then prose
+
+## [9.9.8]
+
+- a shipped section, and it is history
+'
+CL_SPLIT_A='# Changelog
+
+## [Unreleased]
+
+- lane A rewrote this line, naming `./scripts/gate.sh
+  --fast` and then prose
+
+## [9.9.8]
+
+- a shipped section, and it is history
+'
+CL_SPLIT_B='# Changelog
+
+## [Unreleased]
+
+- lane B rewrote this line, naming `./scripts/gate.sh
+  --fast` and then prose
+
+## [9.9.8]
+
+- a shipped section, and it is history
+'
+
+# cl_backticks — how many backticks the fixture's CHANGELOG.md carries. The
+# leg's own balance test in one number, so a case can say WHY the leg refused.
+cl_backticks() { tr -cd '`' <"$REPO/CHANGELOG.md" | wc -c | tr -d ' '; }
+
+# cl_flags <version> — the release leg's BODY, run in a subshell against the
+# fixture. DRIVEN AT THE BODY AND NOT THROUGH publish.sh, for the reason every
+# drive here states: the body is `docs_changelog_flags` in
+# `scripts/docs_legs.sh` and a case that can read its status is a case that can
+# say what it refused. The subshell is not tidiness — the library sets `set -e`
+# expectations and globals of its own, and this drive's accumulators are not
+# its to touch.
+cl_flags() {
+    CLOUT="$WORK/clflags${N}.out"
+    [ -r "$DOCS_LEGS_SRC" ] || cannot_look "no readable ${DOCS_LEGS_SRC} — there is no release leg to ask"
+    set +e
+    (
+        . "$GATE_REFUSE_SRC"
+        . "$DOCS_LEGS_SRC"
+        docs_changelog_flags "$REPO" "$1"
+    ) >"$CLOUT" 2>&1
+    CLRC=$?
+    set -e
+}
+
+case_two_appends_to_the_changelog_merge_clean() {
+    changelog_repo yes "$CL_APPEND_BASE" "$CL_APPEND_A" "$CL_APPEND_B"
+    # THE ATTRIBUTE IS ASKED OF GIT, not assumed from the file's presence. On
+    # main this line answered `unspecified` and the merge below was the seven
+    # hand resolutions.
+    holds "changelog union: git resolves the attribute" "CHANGELOG.md: merge: union" \
+        "$(git -C "$REPO" check-attr merge CHANGELOG.md)"
+    drive "two appends merge clean" 0 -- in_repo ./scripts/pm_merge.sh lane-a
+    says "MERGED. Proof of merge"
+    says_not "WORKING TREE: MID-MERGE"
+    local mid="no"
+    git -C "$REPO" rev-parse --verify --quiet MERGE_HEAD >/dev/null && mid="yes"
+    holds "two appends: the tree is NOT mid-merge" "no" "$mid"
+    holds "two appends: no conflict marker survived" "0" \
+        "$(grep -c '^<<<<<<<\|^>>>>>>>\|^=======' "$REPO/CHANGELOG.md" || true)"
+    # BOTH BULLETS, AND IN THE ORDER THE DRIVER PROMISES: ours, then theirs.
+    # "Both are present" alone is satisfied by a resolution that shuffled the
+    # section, and the order is the half a reader of the released section sees.
+    holds "two appends: lane B's bullet is present" "1" \
+        "$(grep -c 'lane B appended this bullet' "$REPO/CHANGELOG.md" || true)"
+    holds "two appends: lane A's bullet is present" "1" \
+        "$(grep -c 'lane A appended this bullet' "$REPO/CHANGELOG.md" || true)"
+    holds "two appends: ours before theirs" "1" \
+        "$([ "$(grep -n 'lane B appended' "$REPO/CHANGELOG.md" | cut -d: -f1)" \
+            -lt "$(grep -n 'lane A appended' "$REPO/CHANGELOG.md" | cut -d: -f1)" ] && echo 1 || echo 0)"
+    # The heading was not duplicated and the base bullet was not eaten — the two
+    # ways a keep-both driver can keep the wrong both.
+    holds "two appends: one [Unreleased] heading" "1" \
+        "$(grep -c '^## \[Unreleased\]' "$REPO/CHANGELOG.md" || true)"
+    holds "two appends: the base bullet survived once" "1" \
+        "$(grep -c 'the bullet the base commit shipped' "$REPO/CHANGELOG.md" || true)"
+}
+
+case_without_the_attribute_the_same_two_appends_conflict() {
+    # THE SEVER DIRECTION. Byte-identical fixture, byte-identical lanes, one
+    # file removed — and this is the state main was in when the PM resolved
+    # seven of these by hand. Without it the case above could pass on a merge
+    # that was never going to conflict, and nobody would know.
+    changelog_repo no "$CL_APPEND_BASE" "$CL_APPEND_A" "$CL_APPEND_B"
+    holds "no attribute: git resolves nothing" "CHANGELOG.md: merge: unspecified" \
+        "$(git -C "$REPO" check-attr merge CHANGELOG.md)"
+    drive "the same two appends without the attribute" 1 -- in_repo ./scripts/pm_merge.sh lane-a
+    says "THE MERGE FAILED"
+    says "WORKING TREE: MID-MERGE"
+    says "CHANGELOG.md"
+    holds "no attribute: CHANGELOG.md is unmerged" "UU CHANGELOG.md" \
+        "$(git -C "$REPO" status --porcelain -- CHANGELOG.md)"
+    holds "no attribute: the gate never ran" "0" "$(wc -l <"$GATE_LOG" | tr -d ' ')"
+    git -C "$REPO" merge --abort
+}
+
+case_the_union_is_a_merge_driver_and_not_a_judge() {
+    # THE DECLARED COST OF THE LINE, DRIVEN. Union keeps both sides of a region
+    # both sides changed, and it has no idea what a bullet is: two lanes that
+    # rewrite the opening line of one wrapped bullet get that line twice and its
+    # closing half once. The merge is CLEAN — nothing in git objects — and the
+    # section is broken. What objects is the release leg, at exit 2, before a
+    # tag.
+    changelog_repo yes "$CL_SPLIT_BASE" "$CL_SPLIT_A" "$CL_SPLIT_B"
+    drive "the interleave merges clean" 0 -- in_repo ./scripts/pm_merge.sh lane-a
+    says "MERGED. Proof of merge"
+    holds "interleave: the opening line landed twice" "2" \
+        "$(grep -c 'rewrote this line, naming' "$REPO/CHANGELOG.md" || true)"
+    holds "interleave: the closing half landed once" "1" \
+        "$(grep -c -- '--fast` and then prose' "$REPO/CHANGELOG.md" || true)"
+    holds "interleave: an ODD number of backticks" "1" \
+        "$(( $(cl_backticks) % 2 ))"
+    # AND THE JUDGE STILL REFUSES IT.
+    cl_flags Unreleased
+    holds "interleave: the changelog-flags leg is could-not-look" "2" "$CLRC"
+    if grep -qF "ODD number of" "$CLOUT"; then
+        echo "  ok       ${CURRENT} — the leg names the odd backtick count"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   ${CURRENT} — the leg did not name the odd backtick count"
+        sed 's/^/             | /' "$CLOUT" | tail -20
+        FAILED=$((FAILED + 1))
+    fi
+}
+
 case_bank_runs_the_full_gate_instead_of_fast() {
     # THE FLAG THAT WAS ONLY PROSE. This script printed a paragraph telling the
     # reader to bank a verdict for the merged tree, and then ran `--fast`
@@ -822,6 +1053,9 @@ case_the_escape_itself_is_still_caught
 case_the_real_script_refuses_a_foreign_checkout
 case_a_conflicting_merge_surfaces_the_conflict
 case_a_clean_merge_prints_the_proof_line
+case_two_appends_to_the_changelog_merge_clean
+case_without_the_attribute_the_same_two_appends_conflict
+case_the_union_is_a_merge_driver_and_not_a_judge
 case_bank_runs_the_full_gate_instead_of_fast
 case_bank_with_no_fold_is_refused
 case_the_default_tier_is_still_fast

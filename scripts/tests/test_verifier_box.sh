@@ -12,6 +12,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .env.example README.md deploy/ scripts/check.sh scripts/gate_lease.sh scripts/gate_ledger.sh scripts/githooks scripts/setup.sh scripts/tests/test_loop_ledger.sh scripts/tests/test_verifier_image.sh scripts/verifier_box.sh scripts/verify_start.sh
+# cites: scripts/pm_push.sh quality/rules.yaml
 # THE VERIFIER BOX WRAPPER'S DRIVE — every refusal, every recorded argument, and
 # every exit status the wrapper owns.
 #
@@ -168,6 +169,93 @@ ROOT="$PWD"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/djb-test-verifier-box.XXXXXX") || cannot_look "could not make a scratch directory"
 drive_require_scratch WORK "${WORK:-}"
 drive_at_exit 'chmod -R u+rwX "$WORK" 2>/dev/null || true; rm -rf "$WORK"'
+
+# --- THE WRAPPER'S OWN FOOTPRINT, measured rather than asked of git ----------
+#
+# THE CLAIM IS "this wrapper did not touch the three files beside it",
+# and the claim was being made by comparing `main:<path>` to `HEAD:<path>` —
+# which is not a claim about the wrapper at all. It is a claim about the BRANCH,
+# and it is red on every CI run of a pull request that carries a template fold,
+# from the moment the fold lands until the PR merges:
+#
+#     FAILED  case_nothing_this_wrapper_promised_not_to_touch_moved
+#       scripts/setup.sh  main 5ca24c45 vs HEAD c99e45f0
+#
+# Nothing ran. No wrapper act took place between those two shas; a human
+# committed a byte, deliberately, and the drive scored it as the wrapper
+# reaching out of its lane. The same read is ALSO the argument-as-sha trap
+# on a detached no-main runner (`drive_preamble.sh` §8 has that measurement).
+#
+# SO THE MEASUREMENT IS THE ONE THE CLAIM IS ABOUT: the bytes of those three
+# files BEFORE this drive's first wrapper act, and the bytes AFTER its last. It
+# asks git nothing, so a branch, a fold, a detached HEAD, a shallow clone and a
+# missing `main` are all irrelevant to it — and it catches a wrapper that
+# writes and reverts nothing between two commits, which the git form never
+# could.
+#
+# BEFORE THE FIRST ACT is enforced by position: this runs while the file is
+# still defining its world, and every invocation of the wrapper in this drive
+# goes through `$VB_COUNTED` below. AFTER THE LAST ACT is enforced by the case
+# being the last line of this file.
+FOOTPRINT_FILES="scripts/gate_lease.sh scripts/setup.sh .env.example"
+
+# `<path> <cksum>` per file, or `<path> absent` — a neighbour that is not there
+# is a RECORDED state and never a skipped one, so a file that vanishes between
+# the two snapshots is a delta rather than two silences that match.
+footprint_of() {
+    local dir="$1" f
+    for f in $FOOTPRINT_FILES; do
+        if [ -f "${dir}/${f}" ]; then
+            printf '%s %s\n' "$f" "$(cksum <"${dir}/${f}")"
+        else
+            printf '%s absent\n' "$f"
+        fi
+    done
+}
+
+# The differing lines, one per file, or nothing. Compared per FILE rather than
+# as two blobs so the message names which neighbour moved.
+footprint_delta() {
+    local before="$1" after="$2" f a b out=""
+    for f in $FOOTPRINT_FILES; do
+        a="$(printf '%s\n' "$before" | awk -v k="$f" '$1 == k { sub($1 FS, ""); print; exit }')"
+        b="$(printf '%s\n' "$after" | awk -v k="$f" '$1 == k { sub($1 FS, ""); print; exit }')"
+        [ "$a" = "$b" ] && continue
+        out="${out}
+      ${f}  before ${a:-<unrecorded>} vs after ${b:-<unrecorded>}"
+    done
+    printf '%s' "$out"
+}
+
+FOOTPRINT_BEFORE="$(footprint_of "$ROOT")"
+
+# THE COUNTING WRAPPER, and it is a FILE rather than a shell function for one
+# measured reason: every call site here goes through `env -i`, which runs a
+# PROGRAM and cannot see a function. An absolute path survives the empty
+# environment, a background `&` and a pipeline — the three shapes the call
+# sites are actually in — and the count lands on disk, where a subshell's
+# increment would have been lost with the subshell.
+#
+# WHAT THE COUNT IS FOR: a footprint comparison that spans ZERO wrapper acts is
+# two identical snapshots of a file nobody touched, and it is green. The floor
+# in the case turns that into a red.
+VB_ACTS="${WORK}/vb-acts"
+: >"$VB_ACTS"
+VB_COUNTED="${WORK}/vb-counted"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf '# Written by test_verifier_box.sh. Every act of the wrapper, counted.\n'
+    printf 'printf "%%s\\n" "$*" >>%s\n' "$(printf '%q' "$VB_ACTS")"
+    printf 'exec bash %s "$@"\n' "$(printf '%q' "${ROOT}/${VB}")"
+} >"$VB_COUNTED"
+chmod +x "$VB_COUNTED"
+
+vb_act_count() {
+    local n
+    n="$(grep -c . "$VB_ACTS" 2>/dev/null || true)"
+    case "$n" in '' | *[!0-9]*) n=0 ;; esac
+    printf '%s\n' "$n"
+}
 
 # A namespace and a region that are nobody's product and nobody's account.
 NS="drivens"
@@ -331,6 +419,17 @@ if [ -f "$REC/ssh/${_n}.out" ]; then
     cat "$REC/ssh/${_n}.out"
 elif [ -f "$REC/ssh/default.out" ]; then
     cat "$REC/ssh/default.out"
+fi
+# AND WHAT SSH ITSELF SAID, which is a different channel and a different fact.
+# `TargetNotConnected` is written by the session plugin on STDERR with ssh's
+# own 255, and the subject now branches on that WORD and not on the status
+# alone — a plain 255 is a dead transport and is still an instant refusal. A
+# shim with no stderr could not tell the fixture's two kinds of 255 apart, so
+# the case that proves the retry is bounded would have proven nothing.
+if [ -f "$REC/ssh/${_n}.err" ]; then
+    cat "$REC/ssh/${_n}.err" >&2
+elif [ -f "$REC/ssh/default.err" ]; then
+    cat "$REC/ssh/default.err" >&2
 fi
 if [ -f "$REC/ssh/${_n}.rc" ]; then exit "$(cat "$REC/ssh/${_n}.rc")"; fi
 if [ -f "$REC/ssh/default.rc" ]; then exit "$(cat "$REC/ssh/default.rc")"; fi
@@ -607,7 +706,7 @@ run_vb() {
         DJB_VERIFIER_HOME="$W/vhome" \
         DJB_VERIFIER_OWNER="$OWNER" \
         "$@" \
-        bash "$ROOT/$VB" >"$W/out" 2>"$W/err" || VB_RC=$?
+        "$VB_COUNTED" >"$W/out" 2>"$W/err" || VB_RC=$?
 }
 
 # run_vb takes env assignments first and the subcommand after `--`; this keeps
@@ -630,7 +729,7 @@ vb() {
         DJB_VERIFIER_HOME="$W/vhome" \
         DJB_VERIFIER_OWNER="$OWNER" \
         "${env_extra[@]+"${env_extra[@]}"}" \
-        bash "$ROOT/$VB" "$@" >"$W/out" 2>"$W/err" || VB_RC=$?
+        "$VB_COUNTED" "$@" >"$W/out" 2>"$W/err" || VB_RC=$?
 }
 
 out_has() { grep -F -- "$1" "$W/out" >/dev/null 2>&1; }
@@ -692,7 +791,14 @@ world_up_ready() {
     ans "ec2_describe-security-groups" "sg-v"
     ans "ec2_describe-instances__ReservationsInstancesInstanceId" ""
     ans "service-quotas_get-service-quota" "32.0"
-    ans "ec2_run-instances" "i-up1"
+    # FOUR COLUMNS, WHICH IS WHAT `run-instances` REALLY ANSWERS now:
+    # `[InstanceId,SpotInstanceRequestId,Placement.AvailabilityZone,InstanceLifecycle]`.
+    # `up` reads the zone and the market off THIS answer and not off a
+    # describe, because a describe on a seconds-old id is inside EC2's
+    # eventual-consistency window; a one-column fixture here would leave the
+    # wrapper falling back to the describe on every case and the launch path
+    # would go unmeasured.
+    ans "ec2_run-instances" "$(printf 'i-up1\tsir-w1\t%sc\tspot' "$RG")"
     printf 'Pending\n' >"$REC/ans/ssm_describe-instance-information.1"
     printf 'Online\n' >"$REC/ans/ssm_describe-instance-information.2"
     ans "ec2_describe-instances__Reservations0Instances0Placement" "${RG}c"
@@ -757,9 +863,10 @@ world_pool_ready() {
     # `djb:price=0.203600<newline>None`. A fixture that is tidier than the API
     # is a fixture that cannot see the defect.
     ansf "ec2_describe-spot-price-history" "0.2085" "None"
-    # The tags `terminate_one` reads back before it will terminate anything.
-    ans "ec2_describe-instances__Reservations0Instances0TagsKeydjbrole" "verifier"
-    ans "ec2_describe-instances__Reservations0Instances0TagsKeydjbnames" "$NS"
+    # The state and the tags `terminate_one` reads back, in the one describe it
+    # now makes, before it will terminate anything.
+    ans "ec2_describe-instances__Reservations0Instances0StateNameStateRea" \
+        "$(printf 'running\tNone\tverifier\t%s' "$NS")"
 }
 
 # =============================================================================
@@ -776,11 +883,11 @@ case_the_wrapper_refuses_without_a_namespace_or_a_region() {
         if [ "$v" = "DJB_DEPLOY_NAMESPACE" ]; then
             env -i PATH="$W/bin:/usr/bin:/bin" HOME="$W/home" REC="$REC" USER=driveuser \
                 DJB_VERIFIER_REGION="$RG" DJB_VERIFIER_HOME="$W/vhome" \
-                bash "$ROOT/$VB" up --for X >"$W/out" 2>"$W/err" || VB_RC=$?
+                "$VB_COUNTED" up --for X >"$W/out" 2>"$W/err" || VB_RC=$?
         else
             env -i PATH="$W/bin:/usr/bin:/bin" HOME="$W/home" REC="$REC" USER=driveuser \
                 DJB_DEPLOY_NAMESPACE="$NS" DJB_VERIFIER_HOME="$W/vhome" \
-                bash "$ROOT/$VB" up --for X >"$W/out" 2>"$W/err" || VB_RC=$?
+                "$VB_COUNTED" up --for X >"$W/out" 2>"$W/err" || VB_RC=$?
         fi
         if [ "$VB_RC" != "2" ]; then
             bad "${v} unset: wanted exit 2, got ${VB_RC}"
@@ -966,6 +1073,14 @@ case_up_launches_exactly_the_box_the_design_describes() {
     case "$call" in
     *--key-name*) bad "the launch carries --key-name — a verifier box has no key pair at all" ;;
     *) ok "no --key-name: the only way in is the user-data's authorized key" ;;
+    esac
+    # AND NO --subnet-id, because no zone was asked for. `up --az Z` pins one;
+    # an ordinary `up` must leave the placement to EC2 exactly as it always
+    # did, or the zone axis has quietly decided where every box in the account
+    # lands and nothing would say so — the launch would still work.
+    case "$call" in
+    *--subnet-id*) bad "an up with no --az pinned a subnet anyway — the zone axis must cost an unzoned launch nothing" ;;
+    *) ok "no --subnet-id: with no --az the placement is still EC2's" ;;
     esac
     case "$call" in
     *"us-west-2"*) bad "the call inherited the operator's configured region" ;;
@@ -1346,24 +1461,26 @@ case_up_prints_the_market_ec2_reports_not_the_one_it_asked_for() {
     }
     out_has "market     spot" && ok "the market line reads spot, from EC2's own InstanceLifecycle" ||
         bad "no 'market     spot' line: $(tr '\n' ' ' <"$W/out")"
-    # EVERY describe, not a fixed ordinal: `up` asks EC2 three different
-    # questions through `describe-instances` (the pool listing, the headroom
-    # count, this one) and their order is not this case's business.
-    local q i=1 found=""
-    while q="$(nth_call_of "describe-instances" "$i" || true)"; do
-        [ -n "$q" ] || break
-        case "$q" in *InstanceLifecycle*) found=1 ;; esac
-        i=$((i + 1))
-    done
-    [ -n "$found" ] && ok "and it is asked for in the query rather than inferred" ||
-        bad "no describe-instances asks for InstanceLifecycle"
+    # ASKED FOR IN THE LAUNCH'S OWN QUERY, which is where it moved to: a
+    # describe on an id seconds old can answer NotFound, and the swallowed
+    # transient printed `market on-demand` over a Spot box.
+    local q
+    q="$(nth_call_of "run-instances" 1 || true)"
+    case "$q" in
+    *"Placement.AvailabilityZone,InstanceLifecycle"*)
+        ok "and both are asked for in the LAUNCH's own query rather than inferred or re-described" ;;
+    *) bad "the launch query does not carry the placement and the lifecycle: ${q}" ;;
+    esac
 
     world_new up_market_on_demand
     world_up_ready
     # EC2 says NOTHING for an on-demand instance and `--output text` prints that
     # nothing as `None`. The absence IS the answer, and reading it as one is the
-    # difference between "on-demand" and "unknown".
-    ans "ec2_describe-instances__Reservations0Instances0InstanceLifecycle" "$(printf 'None\t%sc' "$RG")"
+    # difference between "on-demand" and "unknown". On the launch's own answer
+    # the request id is absent for the same reason and the ZONE is still there
+    # — which is what lets an empty lifecycle beside a zone mean `on-demand`
+    # rather than "the answer did not say".
+    ans "ec2_run-instances" "$(printf 'i-up1\tNone\t%sc\tNone' "$RG")"
     vb -- up --for X --on-demand
     [ "$VB_RC" = "0" ] || {
         bad "on-demand up exited ${VB_RC}"
@@ -1513,14 +1630,250 @@ case_a_raised_ceiling_launches() {
         bad "$(op_count 'ec2 run-instances') run-instances calls"
 }
 
+# --- the ceiling FILE, and the precedence above it ---------------------------
+#
+# WHY THESE CASES EXIST. The ceiling was one environment variable, and an
+# environment variable is per-shell: fifteen builders in one cycle each got the
+# default 2, waited 20-45 minutes at it, and the one form that would have
+# raised it — an inline `DJB_VERIFIER_MAX_BOXES=… ./scripts/verifier_box.sh` —
+# costs an agent a permission-classifier turn. The number that governs one
+# machine now lives in one file on that machine, and these cases pin the
+# precedence, the refusal that has to explain it, and the subcommand that reads
+# and writes it.
+
+plant_ceiling_file() { printf '%s\n' "$1" >"$W/vhome/ceiling"; }
+
+case_the_ceiling_is_read_from_the_file_when_the_env_is_unset() {
+    CURRENT=case_the_ceiling_is_read_from_the_file_when_the_env_is_unset
+    world_new ceiling_file
+    world_up_ready
+    ans "ec2_describe-instances__ReservationsInstancesInstanceId" "i-a	i-b"
+    plant_ceiling_file 3
+    vb -- up --for X
+    [ "$VB_RC" = "0" ] || {
+        bad "up exited ${VB_RC} with a ceiling file of 3 and two boxes running"
+        report
+        return
+    }
+    [ "$(op_count 'ec2 run-instances')" = "1" ] &&
+        ok "the file raised the ceiling past the default 2 with no variable in the environment" ||
+        bad "$(op_count 'ec2 run-instances') run-instances call(s)"
+
+    # AND THE FILE CAN BIND DOWNWARDS TOO, which is the half that proves the
+    # file is read rather than merely tolerated: a file of 2 with two boxes up
+    # refuses, and the refusal says the FILE is what bound.
+    world_new ceiling_file_binds
+    world_up_ready
+    ans "ec2_describe-instances__ReservationsInstancesInstanceId" "i-a	i-b"
+    plant_ceiling_file 2
+    vb -- up --for X
+    [ "$VB_RC" = "2" ] || {
+        bad "wanted exit 2 at a ceiling file of 2, got ${VB_RC}"
+        report
+        return
+    }
+    said "ceiling is 2 (file)" && ok "and a ceiling the file set refuses AS the file" ||
+        bad "the refusal does not name the file as the source: $(cat "$W/err")"
+    [ "$(op_count 'ec2 run-instances')" = "0" ] && ok "nothing was launched" ||
+        bad "the file's ceiling was converted into a launch"
+}
+
+case_the_env_ceiling_wins_over_the_file() {
+    CURRENT=case_the_env_ceiling_wins_over_the_file
+    # THE VARIABLE IS THE TOP OF THE PRECEDENCE, both directions. Down: a file
+    # of 9 and a variable of 2 refuses at 2. Up: a file of 2 and a variable of
+    # 9 launches. One direction alone is satisfied by a wrapper that ignores
+    # one of the two inputs.
+    world_new ceiling_env_down
+    world_up_ready
+    ans "ec2_describe-instances__ReservationsInstancesInstanceId" "i-a	i-b"
+    plant_ceiling_file 9
+    vb DJB_VERIFIER_MAX_BOXES=2 -- up --for X
+    [ "$VB_RC" = "2" ] || {
+        bad "wanted exit 2 with the variable at 2 over a file of 9, got ${VB_RC}"
+        report
+        return
+    }
+    said "ceiling is 2 (env)" && ok "the variable wins over the file, and the refusal says which won" ||
+        bad "the refusal does not name env as the source: $(cat "$W/err")"
+    said "9" && ok "and the losing file's number is printed too — the operator can see what it overrode" ||
+        bad "the refusal hides the file's 9: $(cat "$W/err")"
+    [ "$(op_count 'ec2 run-instances')" = "0" ] && ok "nothing was launched" ||
+        bad "something was launched above the variable's ceiling"
+
+    world_new ceiling_env_up
+    world_up_ready
+    ans "ec2_describe-instances__ReservationsInstancesInstanceId" "i-a	i-b"
+    plant_ceiling_file 2
+    vb DJB_VERIFIER_MAX_BOXES=9 -- up --for X
+    [ "$VB_RC" = "0" ] || {
+        bad "up exited ${VB_RC} with the variable at 9 over a file of 2"
+        report
+        return
+    }
+    [ "$(op_count 'ec2 run-instances')" = "1" ] &&
+        ok "and a variable above a lower file launches — the file is not a second ceiling" ||
+        bad "$(op_count 'ec2 run-instances') run-instances call(s)"
+}
+
+case_the_ceiling_refusal_names_all_three_and_the_one_that_bound() {
+    CURRENT=case_the_ceiling_refusal_names_all_three_and_the_one_that_bound
+    world_new ceiling_refusal_sources
+    world_up_ready
+    ans "ec2_describe-instances__ReservationsInstancesInstanceId" "i-a	i-b"
+    vb -- up --for X
+    [ "$VB_RC" = "2" ] || {
+        bad "wanted exit 2, got ${VB_RC}"
+        report
+        return
+    }
+    local miss=""
+    said "ceiling is 2 (default)" || miss="${miss} the-binding-source"
+    said "DJB_VERIFIER_MAX_BOXES  unset" || miss="${miss} env-unset"
+    said "/ceiling  absent" || miss="${miss} file-absent"
+    said "default  2" || miss="${miss} the-default"
+    said "-> default" || miss="${miss} the-arrow"
+    [ -z "$miss" ] &&
+        ok "the refusal prints env, file and default, and marks the one that bound" ||
+        bad "the refusal does not carry:${miss}
+$(cat "$W/err")"
+    said "L-34B43A08" && ok "and the Spot vCPU quota the ceiling stands for is still named" ||
+        bad "the refusal dropped the quota code"
+    [ "$(op_count 'ec2 run-instances')" = "0" ] && ok "nothing was launched" ||
+        bad "the ceiling was converted into a launch"
+}
+
+case_ceiling_prints_the_file_the_env_and_the_quota() {
+    CURRENT=case_ceiling_prints_the_file_the_env_and_the_quota
+    world_new ceiling_read
+    ans "service-quotas_get-service-quota" "32.0"
+    vb -- ceiling
+    [ "$VB_RC" = "0" ] || {
+        bad "ceiling exited ${VB_RC} on a machine with no file and no variable"
+        report
+        return
+    }
+    local miss=""
+    out_has "ceiling 2 (default)" || miss="${miss} the-verdict"
+    out_has "DJB_VERIFIER_MAX_BOXES  unset" || miss="${miss} env"
+    out_has "/ceiling  absent" || miss="${miss} file"
+    out_has "default  2" || miss="${miss} default"
+    out_has "L-34B43A08  32.0" || miss="${miss} quota"
+    [ -z "$miss" ] &&
+        ok "ceiling prints the variable, the file, the default and the account's Spot vCPU quota" ||
+        bad "ceiling does not print:${miss}
+$(cat "$W/out")"
+
+    # THE WRITE, AND IT IS THE SAME SUBCOMMAND. A write that did not show its
+    # result is a write the operator verifies with a second command.
+    world_new ceiling_write
+    ans "service-quotas_get-service-quota" "32.0"
+    vb -- ceiling 6
+    [ "$VB_RC" = "0" ] || {
+        bad "ceiling 6 exited ${VB_RC}"
+        report
+        return
+    }
+    [ "$(cat "$W/vhome/ceiling" 2>/dev/null || true)" = "6" ] &&
+        ok "ceiling <n> writes the one integer into DJB_VERIFIER_HOME" ||
+        bad "the ceiling file holds '$(cat "$W/vhome/ceiling" 2>/dev/null || echo '<nothing>')'"
+    out_has "wrote " && out_has "ceiling 6 (file)" &&
+        ok "and prints what it wrote and the ceiling that now binds" ||
+        bad "the write does not print its result: $(cat "$W/out")"
+
+    # AND THE VARIABLE STILL WINS OVER THE FILE IT JUST WROTE.
+    vb DJB_VERIFIER_MAX_BOXES=4 -- ceiling
+    out_has "ceiling 4 (env)" && out_has "/ceiling  6" &&
+        ok "a later read under a variable says env binds and still shows the file's 6" ||
+        bad "the read under a variable is not the shape the design states: $(cat "$W/out")"
+
+    # A QUOTA IT CANNOT LOOK AT IS `unknown` AND NEVER A BLOCK. The credential
+    # that reads a quota is not the credential that reads a local integer.
+    world_new ceiling_quota_blind
+    rcf "service-quotas_get-service-quota" 255
+    errf "service-quotas_get-service-quota" "An error occurred (AccessDeniedException)"
+    vb -- ceiling
+    [ "$VB_RC" = "0" ] && ok "a quota it cannot read is not a refusal" ||
+        bad "ceiling exited ${VB_RC} because the quota could not be read"
+    out_has "L-34B43A08  unknown" && out_has "could not look" &&
+        ok "and it prints unknown and says so, rather than a number nobody measured" ||
+        bad "the unreadable quota is not printed as unknown: $(cat "$W/out")"
+}
+
+case_a_ceiling_file_that_is_not_a_number_is_exit_2_before_any_call() {
+    CURRENT=case_a_ceiling_file_that_is_not_a_number_is_exit_2_before_any_call
+    # A CEILING THAT CANNOT BE READ IS NOT A CEILING OF 2. The file is the wall
+    # between this loop and an unbounded Spot bill; a fat-fingered `1O` that
+    # quietly became the default would be a wave of one box, and a `1O` read as
+    # ten would be a bill nobody chose.
+    world_new ceiling_garbage
+    world_up_ready
+    plant_ceiling_file "1O"
+    vb -- up --for X
+    [ "$VB_RC" = "2" ] || {
+        bad "wanted exit 2 on a malformed ceiling file, got ${VB_RC}"
+        report
+        return
+    }
+    [ ! -f "$REC/aws.ops" ] && ok "exit 2 before a single AWS call" ||
+        bad "a malformed ceiling file still reached AWS: $(ops)"
+    said "1O" && said "/ceiling" &&
+        ok "and the refusal shows the text it could not read and the file it came out of" ||
+        bad "the refusal does not name the file and its contents: $(cat "$W/err")"
+
+    # THE SAME RULE FOR THE VARIABLE, so neither input has a silent path.
+    world_new ceiling_garbage_env
+    world_up_ready
+    vb DJB_VERIFIER_MAX_BOXES=lots -- up --for X
+    [ "$VB_RC" = "2" ] && ok "a malformed variable is exit 2 too" ||
+        bad "DJB_VERIFIER_MAX_BOXES=lots exited ${VB_RC}"
+    [ ! -f "$REC/aws.ops" ] && ok "and nothing was asked of AWS" ||
+        bad "a malformed variable still reached AWS: $(ops)"
+}
+
+case_census_prints_the_ceiling_beside_the_pool() {
+    CURRENT=case_census_prints_the_ceiling_beside_the_pool
+    # "CAN I HAVE A BOX RIGHT NOW" IS `ceiling - running`, and the census is
+    # where the running boxes are counted — so the wall belongs on the same
+    # page. It was not there, and the wall nobody could see was the default 2.
+    world_new census_ceiling
+    local now exp
+    now="$(cat "$REC/clock")"
+    exp="$(iso_utc $((now + 3600)))"
+    printf 'i-c1\tc7g.4xlarge\tverifier\t%s\t%s\t%s\tami-v1\n' \
+        "$OWNER" "$exp" "$(iso_utc $((now - 300)))" \
+        >"$REC/ans/ec2_describe-instances__ReservationsInstancesInstanceIdInstance"
+    plant_ceiling_file 8
+    vb -- census
+    [ "$VB_RC" = "0" ] || {
+        bad "census exited ${VB_RC}"
+        report
+        return
+    }
+    out_has "ceiling 8 (file) · pool: empty" &&
+        ok "an empty pool still prints the ceiling and where it came from" ||
+        bad "the census's empty-pool line is not the shape the design states: $(cat "$W/out")"
+
+    pool_listing "$(pool_row i-w1 30 ami-v1 0.2085)"
+    vb DJB_VERIFIER_MAX_BOXES=5 -- census
+    out_has "ceiling 5 (env) · pool: 1 warm · \$0.2085/h" &&
+        ok "and a pool line carries the ceiling, its source and the cost together" ||
+        bad "the census's pool line is not the shape the design states: $(cat "$W/out")"
+}
+
 # =============================================================================
 # 1.5 — down
 # =============================================================================
 
 world_tagged() {
-    # role, namespace — the two tags `down` reads before it terminates anything.
-    ans "ec2_describe-instances__Reservations0Instances0TagsKeydjbrole" "$1"
-    ans "ec2_describe-instances__Reservations0Instances0TagsKeydjbnames" "$2"
+    # role, namespace — the two tags `down` reads before it terminates anything,
+    # AND the state it reads them out of. `terminate_one` asks ONE describe for
+    # all four now (an API error and a vanished instance both answered `None`
+    # through two `tag_of` calls, and the wrapper called a reclaimed box
+    # somebody else's), so the fixture is one four-column answer and a case
+    # that wants a gone box plants the state rather than a missing tag.
+    ans "ec2_describe-instances__Reservations0Instances0StateNameStateRea" \
+        "$(printf 'running\tNone\t%s\t%s' "$1" "$2")"
 }
 
 case_down_refuses_an_instance_that_is_not_ours() {
@@ -1890,7 +2243,7 @@ case_two_claims_of_one_warm_box_yield_one_winner() {
         env -i PATH="$ww/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$ww/home" REC="$rr" \
             USER=driveuser DJB_DEPLOY_NAMESPACE="$NS" DJB_VERIFIER_REGION="$RG" \
             DJB_VERIFIER_HOME="$shared" DJB_VERIFIER_OWNER="$OWNER" \
-            bash "$ROOT/$VB" up --for "race-${side}" >"$ww/out" 2>"$ww/err" &
+            "$VB_COUNTED" up --for "race-${side}" >"$ww/out" 2>"$ww/err" &
     done
     wait
     local claims=0 launches=0
@@ -5891,6 +6244,847 @@ case_bake_prune_finds_snapshots_through_the_block_mappings() {
 # the family rules, and what must not move
 # =============================================================================
 
+# =============================================================================
+# 1.9 — the zone axis, the Spot request, and the box that names itself
+# =============================================================================
+#
+# WHY THERE IS A ZONE AXIS AT ALL. `run-instances` with no `--subnet-id` lets
+# EC2 pick, and EC2 picks the same zone for eight shards fired within a second
+# of each other — so one zone's Spot capacity is the whole bank's, and
+# `InsufficientInstanceCapacity` there refuses the bank. Everything in this
+# section is the machinery for asking somewhere else, plus the two things a
+# reclaim leaves behind that nothing could read: the request's own status code
+# and a box the wrapper never got as far as naming.
+
+# A world in which `up --az` can resolve a zone: the security group's VPC, the
+# zones that VPC reaches, and a subnet per zone. THREE SEPARATE FIXTURE KEYS,
+# one per question, because the shim's longest-prefix rule would otherwise let
+# the group's own `GroupId` answer stand in for its `VpcId` — and a fixture
+# that answers two questions is a fixture that hides which one was asked.
+world_zones_ready() {
+    ans "ec2_describe-security-groups__SecurityGroups0VpcId" "vpc-v"
+    ans "ec2_describe-subnets__SubnetsAvailabilityZone" "$(printf '%sa\t%sb\t%sc' "$RG" "$RG" "$RG")"
+}
+
+case_up_with_az_launches_into_that_zones_subnet() {
+    CURRENT=case_up_with_az_launches_into_that_zones_subnet
+    world_new up_az
+    world_up_ready
+    world_zones_ready
+    ans "ec2_describe-subnets__Subnets0SubnetId" "subnet-b"
+    vb -- up --for X --az "${RG}b"
+    if [ "$VB_RC" != "0" ]; then
+        bad "up --az exited ${VB_RC}"
+        report
+        return
+    fi
+    local call
+    call="$(nth_call_of "run-instances" 1 || true)"
+    case "$call" in
+    *"--subnet-id subnet-b"*) ok "the launch carries the subnet of the zone that was asked for" ;;
+    *) bad "the launch carries no --subnet-id: ${call}" ;;
+    esac
+    local sub
+    sub="$(nth_call_of "describe-subnets" 1 || true)"
+    case "$sub" in
+    *"Name=vpc-id,Values=vpc-v"*) ok "the subnet was looked for in the SECURITY GROUP's VPC, not the account's default" ;;
+    *) bad "the subnet lookup does not filter on the group's VpcId: ${sub}" ;;
+    esac
+    case "$sub" in
+    *"Name=availability-zone,Values=${RG}b"*) ok "and in the zone that was typed" ;;
+    *) bad "the subnet lookup does not filter on the typed zone: ${sub}" ;;
+    esac
+
+    # AND THE ARGV IS UNCHANGED WITHOUT THE FLAG. A default zone chosen here
+    # would be this wrapper quietly deciding where every box in the account
+    # lands, and it would be invisible: the launch would still work.
+    world_new up_no_az
+    world_up_ready
+    world_zones_ready
+    ans "ec2_describe-subnets__Subnets0SubnetId" "subnet-b"
+    vb -- up --for X
+    [ "$VB_RC" = "0" ] || {
+        bad "a plain up exited ${VB_RC}"
+        report
+        return
+    }
+    call="$(nth_call_of "run-instances" 1 || true)"
+    case "$call" in
+    *--subnet-id*) bad "a launch with no --az still pinned a subnet: ${call}" ;;
+    *) ok "no --az: the run-instances argv carries no --subnet-id at all" ;;
+    esac
+    [ "$(op_count 'ec2 describe-subnets')" = "0" ] &&
+        ok "and no subnet was even looked up — the zone axis costs an unzoned launch nothing" ||
+        bad "$(op_count 'ec2 describe-subnets') describe-subnets call(s) on a launch that asked for no zone"
+}
+
+case_a_zone_refusal_tries_the_next_zone_once_then_the_market_rule() {
+    CURRENT=case_a_zone_refusal_tries_the_next_zone_once_then_the_market_rule
+    world_new az_ring
+    world_up_ready
+    world_zones_ready
+    # The subnet lookup is asked twice: the typed zone, then the ring's next.
+    printf 'subnet-b\n' >"$REC/ans/ec2_describe-subnets__Subnets0SubnetId.1"
+    printf 'subnet-c\n' >"$REC/ans/ec2_describe-subnets__Subnets0SubnetId.2"
+    # Both zones refuse for capacity. As a BANK SHARD, so the market rule
+    # underneath the ring is reached and is the refusal it always was.
+    printf '255\n' >"$REC/rc/ec2_run-instances.1"
+    printf 'An error occurred (InsufficientInstanceCapacity) when calling the RunInstances operation\n' \
+        >"$REC/err/ec2_run-instances.1"
+    printf '255\n' >"$REC/rc/ec2_run-instances.2"
+    printf 'An error occurred (InsufficientInstanceCapacity) when calling the RunInstances operation\n' \
+        >"$REC/err/ec2_run-instances.2"
+    vb DJB_VERIFIER_BANK_SHARD=1 -- up --for X --az "${RG}b"
+    [ "$VB_RC" = "2" ] || {
+        bad "wanted exit 2 after both zones refused, got ${VB_RC}"
+        report
+        return
+    }
+    said "az ${RG}b refused (InsufficientInstanceCapacity); trying ${RG}c" &&
+        ok "the first zone's refusal is printed with the code and the zone it moved to" ||
+        bad "the zone refusal is not narrated: $(tr '\n' ' ' <"$W/err" | cut -c1-300)"
+    local n
+    n="$(op_count 'ec2 run-instances')"
+    [ "$n" = "2" ] && ok "exactly two launches were attempted — the ring turns ONCE" ||
+        bad "${n} run-instances call(s), wanted 2"
+    local second
+    second="$(nth_call_of "run-instances" 2 || true)"
+    case "$second" in
+    *"--subnet-id subnet-c"*) ok "the second attempt is in the NEXT zone's subnet" ;;
+    *) bad "the retry did not move zone: ${second}" ;;
+    esac
+    case "$second" in
+    *MarketType=spot*) ok "and it is still a Spot request — the ring is not an on-demand fallback" ;;
+    *) bad "the retry left the Spot market: ${second}" ;;
+    esac
+    said "THIS IS A BANK SHARD" &&
+        ok "a second refusal reaches the market rule, which for a shard is a refusal" ||
+        bad "the second refusal did not reach the bank-shard rule"
+    local od=0 call i=1
+    while call="$(nth_call_of "run-instances" "$i" 2>/dev/null)"; do
+        case "$call" in *MarketType=spot*) ;; *) od=$((od + 1)) ;; esac
+        i=$((i + 1))
+        [ "$i" -le 10 ] || break
+    done
+    [ "$od" = "0" ] && ok "and NOT ONE on-demand box was bought on the way there" ||
+        bad "${od} on-demand launch(es) — the ring must never become an unasked on-demand bank"
+}
+
+case_up_records_the_spot_request_id() {
+    CURRENT=case_up_records_the_spot_request_id
+    world_new sir_recorded
+    world_up_ready
+    ans "ec2_run-instances" "$(printf 'i-up1\tsir-0abc\t%sc\tspot' "$RG")"
+    vb -- up --for X
+    [ "$VB_RC" = "0" ] || {
+        bad "up exited ${VB_RC}"
+        report
+        return
+    }
+    local call
+    call="$(nth_call_of "run-instances" 1 || true)"
+    case "$call" in
+    *"Instances[0].[InstanceId,SpotInstanceRequestId,"*)
+        ok "the launch asks for the request id in the same call that makes the box" ;;
+    *) bad "the launch's --query does not ask for SpotInstanceRequestId: ${call}" ;;
+    esac
+    local f="$W/vhome/i-up1/spot-request"
+    if [ -r "$f" ]; then
+        [ "$(cat "$f")" = "sir-0abc" ] && ok "and it is written beside the box's key" ||
+            bad "the recorded request id is '$(cat "$f")', wanted sir-0abc"
+    else
+        bad "no ${f} was written — nothing can ask why this box was reclaimed"
+    fi
+
+    # AN ON-DEMAND BOX HAS NO SPOT REQUEST, and the file's ABSENCE is the
+    # record of that. A file holding `None` would be an id nobody can look up.
+    world_new sir_on_demand
+    world_up_ready
+    ans "ec2_run-instances" "$(printf 'i-up1\tNone\t%sc\tNone' "$RG")"
+    vb -- up --for X --on-demand
+    [ "$VB_RC" = "0" ] || {
+        bad "an on-demand up exited ${VB_RC}"
+        report
+        return
+    }
+    [ ! -e "$W/vhome/i-up1/spot-request" ] &&
+        ok "an on-demand launch writes no spot-request file at all" ||
+        bad "an on-demand box was given a spot request id: '$(cat "$W/vhome/i-up1/spot-request")'"
+}
+
+# A reclaimed box, ready for `wait` to walk into. The pid file is what makes
+# `wait` a real subject rather than a refusal about a missing detach.
+world_reclaimed_box() {
+    ans "ec2_describe-instances__Reservations0Instances0StateName" "terminated"
+    ans "ec2_describe-instances__Reservations0Instances0StateReason" "Server.SpotInstanceTermination"
+    mkdir -p "$W/vhome/i-gone"
+    printf 'key\n' >"$W/vhome/i-gone/id_ed25519"
+    printf 'a-rung\n' >"$W/vhome/i-gone/rung"
+    printf '4242\n' >"$W/vhome/i-gone/loop-x.pid"
+}
+
+case_wait_on_a_reclaimed_box_prints_the_spot_status_code() {
+    CURRENT=case_wait_on_a_reclaimed_box_prints_the_spot_status_code
+    world_new reclaim_status
+    world_reclaimed_box
+    printf 'sir-0abc\n' >"$W/vhome/i-gone/spot-request"
+    ans "ec2_describe-spot-instance-requests" \
+        "$(printf 'instance-terminated-no-capacity\tThere is no Spot capacity available')"
+    vb -- wait i-gone loop-x
+    [ "$VB_RC" = "2" ] || {
+        bad "wanted exit 2 on a reclaimed box, got ${VB_RC}"
+        report
+        return
+    }
+    out_has "box reclaimed (spot) i-gone status instance-terminated-no-capacity" &&
+        ok "the reclaim line carries the Spot service's OWN status code" ||
+        bad "the reclaim line has no status code: $(grep 'box reclaimed' "$W/out" || true)"
+    out_has "There is no Spot capacity available" &&
+        ok "and the message beside it, so the code is readable without a second lookup" ||
+        bad "the status message is not printed"
+    local q
+    q="$(nth_call_of "describe-spot-instance-requests" 1 || true)"
+    case "$q" in
+    *"sir-0abc"*) ok "it asked about the request id the launch recorded, not a search" ;;
+    *) bad "the status lookup does not name the recorded request: ${q}" ;;
+    esac
+
+    # AND A BOX WITH NO RECORDED REQUEST SAYS SO rather than asking about
+    # nothing. Every on-demand box and every box launched by a wrapper older
+    # than the recording is in this population.
+    world_new reclaim_unrecorded
+    world_reclaimed_box
+    vb -- wait i-gone loop-x
+    [ "$VB_RC" = "2" ] || {
+        bad "wanted exit 2, got ${VB_RC}"
+        report
+        return
+    }
+    out_has "status unrecorded" && ok "an unrecorded request reads 'unrecorded', never a made-up code" ||
+        bad "the unrecorded case does not say so: $(grep 'box reclaimed' "$W/out" || true)"
+    [ "$(op_count 'ec2 describe-spot-instance-requests')" = "0" ] &&
+        ok "and nothing was asked of the Spot API about a request nobody has an id for" ||
+        bad "it asked about a request id it does not have"
+}
+
+case_a_status_the_policy_cannot_read_is_named_not_hidden() {
+    CURRENT=case_a_status_the_policy_cannot_read_is_named_not_hidden
+    world_new reclaim_denied
+    world_reclaimed_box
+    printf 'sir-0abc\n' >"$W/vhome/i-gone/spot-request"
+    printf '\naws: [ERROR]: An error occurred (UnauthorizedOperation) when calling the DescribeSpotInstanceRequests operation\n' \
+        >"$REC/err/ec2_describe-spot-instance-requests"
+    printf '255\n' >"$REC/rc/ec2_describe-spot-instance-requests"
+    vb -- wait i-gone loop-x
+    [ "$VB_RC" = "2" ] || {
+        bad "wanted exit 2, got ${VB_RC}"
+        report
+        return
+    }
+    out_has "status unreadable" &&
+        ok "a refused status reads 'unreadable' — never a silent reclaim with no code" ||
+        bad "a refused status lookup left the line bare: $(grep 'box reclaimed' "$W/out" || true)"
+    out_has "ec2:DescribeSpotInstanceRequests not in the ops policy" &&
+        ok "and it names the grant that is missing, which is the whole remedy" ||
+        bad "the unreadable line does not name the missing IAM action"
+    out_has "box reclaimed (spot) i-gone" &&
+        ok "the reclaim itself is still reported — the status is an addition, never a replacement" ||
+        bad "a failed status read swallowed the reclaim sentence"
+}
+
+case_down_on_a_reclaimed_box_says_already_gone_and_is_not_a_refusal() {
+    CURRENT=case_down_on_a_reclaimed_box_says_already_gone_and_is_not_a_refusal
+    world_new down_already_gone
+    mkdir -p "$W/vhome/i-gone"
+    printf 'key\n' >"$W/vhome/i-gone/id_ed25519"
+    ans "ec2_describe-instances__Reservations0Instances0StateNameStateRea" \
+        "$(printf 'terminated\tServer.SpotInstanceTermination\tverifier\t%s' "$NS")"
+    vb -- down i-gone
+    [ "$VB_RC" = "0" ] || {
+        bad "wanted exit 0 on a box AWS has already taken, got ${VB_RC}"
+        report
+        return
+    }
+    out_has "already gone i-gone" && ok "exit 0 and it says the box was already gone" ||
+        bad "the line does not say 'already gone': $(head -n 1 "$W/out")"
+    out_has "Server.SpotInstanceTermination" &&
+        ok "and it names WHY it went, out of the same describe" ||
+        bad "the already-gone line carries no StateReason"
+    said "is not a verifier box" &&
+        bad "a reclaimed box was called foreign — the sentence this criterion exists to kill" ||
+        ok "it is never called somebody else's box"
+    [ "$(op_count 'ec2 terminate-instances')" = "0" ] &&
+        ok "nothing was terminated — there is nothing there to terminate" ||
+        bad "it called terminate-instances on an instance that is already terminated"
+    [ "$(op_count 'ec2 describe-instances')" = "1" ] &&
+        ok "and it asked ONE describe for the state and both tags" ||
+        bad "$(op_count 'ec2 describe-instances') describes, wanted 1 — the state and the tags are one question"
+    [ ! -d "$W/vhome/i-gone" ] && ok "the private key went with it" ||
+        bad "the box directory survived a box that does not"
+}
+
+case_down_that_cannot_look_says_so_and_never_calls_it_foreign() {
+    CURRENT=case_down_that_cannot_look_says_so_and_never_calls_it_foreign
+    world_new down_cannot_look
+    mkdir -p "$W/vhome/i-up1"
+    printf 'key\n' >"$W/vhome/i-up1/id_ed25519"
+    # THE LEADING BLANK LINE IS THE MEASURED SHAPE, not decoration: the AWS
+    # CLI v2 opens an error with one (measured against the real API on
+    # 2026-09-21), and a refusal that took `${out%%<newline>*}` printed
+    # `could not look at i-…: ` with the API's sentence dropped.
+    printf '\naws: [ERROR]: An error occurred (RequestLimitExceeded) when calling the DescribeInstances operation\n' \
+        >"$REC/ans/ec2_describe-instances__Reservations0Instances0StateNameStateRea"
+    printf '255\n' >"$REC/rc/ec2_describe-instances__Reservations0Instances0StateNameStateRea"
+    vb -- down i-up1
+    [ "$VB_RC" = "2" ] || {
+        bad "wanted exit 2 when the describe was refused, got ${VB_RC}"
+        report
+        return
+    }
+    said "could not look at i-up1" && ok "exit 2 and it says it could not look" ||
+        bad "the refusal does not say 'could not look': $(tr '\n' ' ' <"$W/err" | cut -c1-200)"
+    grep -F -- "could not look at i-up1: aws: [ERROR]: An error occurred (RequestLimitExceeded)" "$W/err" >/dev/null 2>&1 &&
+        ok "and the API's own line is ON the colon — past the CLI's leading blank line, which had been swallowing it whole" ||
+        bad "the refusal's colon carries nothing: $(grep 'could not look' "$W/err" || true)"
+    said "is not a verifier box" &&
+        bad "a blind call was reported as somebody else's box" ||
+        ok "it never claims the box is not ours — that is a fact it could not read"
+    [ "$(op_count 'ec2 terminate-instances')" = "0" ] &&
+        ok "and NOTHING was terminated" ||
+        bad "it terminated something it could not identify"
+    [ -d "$W/vhome/i-up1" ] && ok "the key is still here, because the box may still be up" ||
+        bad "the only way back into a box that may still be running was deleted"
+}
+
+case_a_probe_that_is_not_yet_connected_is_retried_within_the_ceiling() {
+    CURRENT=case_a_probe_that_is_not_yet_connected_is_retried_within_the_ceiling
+    world_new probe_not_yet_connected
+    ans "ec2_describe-instances__Reservations0Instances0StateName" "running"
+    mkdir -p "$W/vhome/i-up1"
+    printf 'key\n' >"$W/vhome/i-up1/id_ed25519"
+    # The first probe meets the session channel before it is up: ssh's own 255
+    # with the plugin's word on stderr. The second one lands.
+    printf '255\n' >"$REC/ssh/1.rc"
+    printf 'An error occurred (TargetNotConnected) when calling the StartSession operation\n' \
+        >"$REC/ssh/1.err"
+    vb DRIVE_SSH_SECONDS=1 -- push i-up1
+    if [ "$VB_RC" != "0" ]; then
+        bad "a probe that was merely early refused the whole push (exit ${VB_RC})"
+        report
+        return
+    fi
+    ok "the push goes: an early TargetNotConnected is a wait, not a refusal"
+    said "not yet connected; waited 5s" &&
+        ok "and the wait is printed with what it has spent" ||
+        bad "the retry is silent: $(tr '\n' ' ' <"$W/err" | cut -c1-300)"
+    said "DJB_VERIFIER_TUNNEL_WAIT_SECONDS" && ok "the line names the ceiling's own knob" ||
+        bad "the wait line does not name the knob that bounds it"
+
+    # THE CEILING HOLDS. A transport that never connects is the refusal it
+    # always was, and the wait is bounded by a number somebody can read.
+    world_new probe_never_connects
+    ans "ec2_describe-instances__Reservations0Instances0StateName" "running"
+    mkdir -p "$W/vhome/i-up1"
+    printf 'key\n' >"$W/vhome/i-up1/id_ed25519"
+    printf '255\n' >"$REC/ssh/default.rc"
+    printf 'An error occurred (TargetNotConnected) when calling the StartSession operation\n' \
+        >"$REC/ssh/default.err"
+    vb DRIVE_SSH_SECONDS=1 DJB_VERIFIER_TUNNEL_WAIT_SECONDS=10 -- push i-up1
+    [ "$VB_RC" = "2" ] || {
+        bad "a tunnel that never connects should be exit 2, got ${VB_RC}"
+        report
+        return
+    }
+    ok "past the ceiling it is the refusal it always was"
+    said "waited on for 10s and never connected" &&
+        ok "and the refusal says how long it waited" ||
+        bad "the refusal does not state the wait it spent"
+    local n
+    n="$(cat "$REC/seq/_ssh" 2>/dev/null || echo 0)"
+    [ "$n" = "3" ] && ok "a 10s ceiling at a 5s poll is three attempts — bounded, and the bound is arithmetic" ||
+        bad "${n} ssh attempt(s) under a 10s ceiling, wanted 3"
+
+    # AND A 255 THAT IS NOT THIS IS NOT RETRIED. A dead transport says so on
+    # the first attempt and a minute spent re-proving it is a minute lost.
+    world_new probe_dead_transport
+    ans "ec2_describe-instances__Reservations0Instances0StateName" "running"
+    mkdir -p "$W/vhome/i-up1"
+    printf 'key\n' >"$W/vhome/i-up1/id_ed25519"
+    printf '255\n' >"$REC/ssh/default.rc"
+    printf 'ssh: connect to host i-up1 port 22: Connection refused\n' >"$REC/ssh/default.err"
+    vb DRIVE_SSH_SECONDS=1 -- push i-up1
+    [ "$VB_RC" = "2" ] || {
+        bad "a dead transport should be exit 2, got ${VB_RC}"
+        report
+        return
+    }
+    n="$(cat "$REC/seq/_ssh" 2>/dev/null || echo 0)"
+    [ "$n" = "1" ] && ok "a 255 that is not TargetNotConnected is refused on the first attempt" ||
+        bad "${n} attempt(s) on a dead transport — only the not-yet-connected word is retried"
+}
+
+case_up_names_the_box_before_anything_can_fail_after_the_launch() {
+    CURRENT=case_up_names_the_box_before_anything_can_fail_after_the_launch
+    world_new launched_line
+    world_up_ready
+    # The probe's floor, raised past anything a fixture can reach: `up` gets
+    # as far as the push and the push refuses. Everything after the launch is
+    # in that failure's shadow, which is exactly the population this line is
+    # for.
+    vb DJB_VERIFIER_MIN_KBPS=999999999 -- up --for X
+    [ "$VB_RC" = "2" ] || {
+        bad "wanted exit 2 from a push under an impossible floor, got ${VB_RC}"
+        report
+        return
+    }
+    local line
+    line="$(grep -m1 '^launched   ' "$W/out" || true)"
+    case "$line" in
+    "launched   i-up1   az ${RG}c") ok "the box is named with its zone BEFORE the push, and the failure leaves the line" ;;
+    *) bad "no parsable 'launched <id> az <az>' line survived the refusal: '${line}'" ;;
+    esac
+    # AND IT IS THE SEAM'S GRAMMAR. `pm_push.sh` reads this line to record a
+    # box before it reads `up`'s status; a reader that has to guess at the
+    # column order is a reader that records the wrong id.
+    local id az
+    id="$(awk '$1 == "launched" { print $2 }' "$W/out")"
+    az="$(awk '$1 == "launched" && $3 == "az" { print $4 }' "$W/out")"
+    [ "$id" = "i-up1" ] && ok "field 2 is the instance id" || bad "field 2 is '${id}'"
+    [ "$az" = "${RG}c" ] && ok "field 3 is the literal 'az' and field 4 is the zone" ||
+        bad "field 4 is '${az}'"
+    said "KB/s" && ok "and the refusal that followed it is still the probe's own" ||
+        bad "the refusal is not the probe's"
+}
+
+case_census_prints_each_boxs_zone() {
+    CURRENT=case_census_prints_each_boxs_zone
+    world_new census_az
+    local future
+    future="$(python3 -c 'import datetime;print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+    printf 'i-one\tc7g.4xlarge\tverifier\t%s\t%s\t2026-09-15T10:00:00.000Z\tami-baked-7\tspot\t%sa\ni-two\tc7g.4xlarge\tverifier\t%s\t%s\t2026-09-15T10:00:00.000Z\tami-baked-7\tspot\t%sc\n' \
+        "$OWNER" "$future" "$RG" "$OWNER" "$future" "$RG" \
+        >"$REC/ans/ec2_describe-instances__ReservationsInstancesInstanceIdInstance"
+    vb -- census
+    [ "$VB_RC" = "0" ] || {
+        bad "census exited ${VB_RC}"
+        report
+        return
+    }
+    grep -E "^i-one .* az ${RG}a " "$W/out" >/dev/null 2>&1 &&
+        ok "the first box's line carries its zone" ||
+        bad "no zone on i-one's line: $(grep '^i-one' "$W/out" || true)"
+    grep -E "^i-two .* az ${RG}c " "$W/out" >/dev/null 2>&1 &&
+        ok "and the second's is a DIFFERENT zone — which is the whole thing a spread is judged by" ||
+        bad "no zone on i-two's line: $(grep '^i-two' "$W/out" || true)"
+    local q
+    q="$(nth_call_of "describe-instances" 1 || true)"
+    case "$q" in
+    *"Placement.AvailabilityZone"*) ok "read out of the query, never from a tag this wrapper wrote" ;;
+    *) bad "the census query does not read Placement.AvailabilityZone: ${q}" ;;
+    esac
+
+    # A ROW FROM AN OLDER WRAPPER HAS NO NINTH COLUMN, and it must read as
+    # `unknown` rather than shifting every field one to the left.
+    world_new census_az_absent
+    printf 'i-old\tc7g.4xlarge\tverifier\t%s\t%s\t2026-09-15T10:00:00.000Z\tami-baked-7\tspot\n' \
+        "$OWNER" "$future" \
+        >"$REC/ans/ec2_describe-instances__ReservationsInstancesInstanceIdInstance"
+    vb -- census
+    [ "$VB_RC" = "0" ] || {
+        bad "census over a short row exited ${VB_RC}"
+        report
+        return
+    }
+    out_has "az unknown" && ok "a row with no zone reads 'az unknown'" ||
+        bad "a short row did not degrade to 'az unknown': $(grep '^i-old' "$W/out" || true)"
+}
+
+case_zones_lists_the_vpcs_zones_and_refuses_when_it_cannot_look() {
+    CURRENT=case_zones_lists_the_vpcs_zones_and_refuses_when_it_cannot_look
+    world_new zones_ok
+    ans "ec2_describe-security-groups__SecurityGroups0VpcId" "vpc-v"
+    # Unsorted and with a duplicate, because two subnets in one zone is the
+    # ordinary shape of a real VPC and "the next zone" has to be well defined.
+    ans "ec2_describe-subnets__SubnetsAvailabilityZone" \
+        "$(printf '%sc\t%sa\t%sc\t%sb' "$RG" "$RG" "$RG" "$RG")"
+    vb -- zones
+    [ "$VB_RC" = "0" ] || {
+        bad "zones exited ${VB_RC}"
+        report
+        return
+    }
+    local got want
+    got="$(tr '\n' ' ' <"$W/out")"
+    want="${RG}a ${RG}b ${RG}c "
+    [ "$got" = "$want" ] && ok "one zone per line, sorted, de-duplicated" ||
+        bad "zones printed '${got}', wanted '${want}'"
+    [ "$(op_count 'ec2 run-instances')" = "0" ] && [ "$(op_count 'ec2 terminate-instances')" = "0" ] &&
+        ok "and it is a read: nothing was launched and nothing was terminated" ||
+        bad "zones is not read-only"
+    local sub
+    sub="$(nth_call_of "describe-subnets" 1 || true)"
+    case "$sub" in
+    *"Name=vpc-id,Values=vpc-v"*) ok "the zones are the SECURITY GROUP's VPC's, not the region's" ;;
+    *) bad "the zone listing does not filter on the group's VpcId: ${sub}" ;;
+    esac
+
+    # AN EMPTY ANSWER IS NOT ZERO ZONES. A bank that read silence as "one
+    # zone, then" would put every shard in the same place and call it a plan.
+    world_new zones_empty
+    ans "ec2_describe-security-groups__SecurityGroups0VpcId" "vpc-v"
+    ans "ec2_describe-subnets__SubnetsAvailabilityZone" ""
+    vb -- zones
+    [ "$VB_RC" = "2" ] && ok "no subnets at all is exit 2, never an empty list" ||
+        bad "an empty answer exited ${VB_RC}"
+    said "could not look" && ok "and it says it could not look" ||
+        bad "the empty refusal does not say 'could not look'"
+
+    world_new zones_no_group
+    ans "ec2_describe-security-groups__SecurityGroups0VpcId" "None"
+    vb -- zones
+    [ "$VB_RC" = "2" ] && ok "a group whose VPC cannot be read is exit 2 as well" ||
+        bad "an unreadable group exited ${VB_RC}"
+    said "${NS}-verifier" && ok "naming the group it could not resolve" ||
+        bad "the refusal does not name the security group"
+}
+
+case_a_describe_that_has_not_caught_up_cannot_lie_about_the_market() {
+    CURRENT=case_a_describe_that_has_not_caught_up_cannot_lie_about_the_market
+    world_new launch_eventual_consistency
+    world_up_ready
+    world_zones_ready
+    ans "ec2_describe-subnets__Subnets0SubnetId" "subnet-c"
+    # EVERY `describe-instances` IN THE ACCOUNT HAS NOT CAUGHT UP. An instance
+    # id is seconds old at this point and EC2's describe is eventually
+    # consistent over it: `InvalidInstanceID.NotFound` about a box that is
+    # running is a real answer, and the placement read swallowed its own error
+    # — so the transient arrived as silence, the zone degraded to `unknown`
+    # (honest) and `market_of_lifecycle ""` returned `on-demand`. A Spot box
+    # labelled at five times its price, in the one record that outlives it.
+    printf '\naws: [ERROR]: An error occurred (InvalidInstanceID.NotFound) when calling the DescribeInstances operation: The instance ID '"'"'i-up1'"'"' does not exist\n' \
+        >"$REC/ans/ec2_describe-instances__Reservations0Instances0InstanceLifecycle"
+    printf '255\n' >"$REC/rc/ec2_describe-instances__Reservations0Instances0InstanceLifecycle"
+    vb -- up --for X --az "${RG}c"
+    if [ "$VB_RC" != "0" ]; then
+        bad "up exited ${VB_RC} with a describe that had not caught up"
+        report
+        return
+    fi
+    ok "the launch path does not depend on a describe catching up"
+    local line
+    line="$(grep -m1 '^launched   ' "$W/out" || true)"
+    case "$line" in
+    "launched   i-up1   az ${RG}c") ok "the zone is the LAUNCH's own answer: ${line}" ;;
+    *) bad "the launched line lost its zone to the transient: '${line}'" ;;
+    esac
+    out_has "market     spot" &&
+        ok "and the market is still spot — the transient cannot relabel a Spot box as on-demand" ||
+        bad "the market line reads '$(grep -m1 '^market ' "$W/out" || true)' over a Spot launch"
+
+    # AND THE PLACEMENT IS NEVER RE-ASKED ON THE LAUNCH PATH. A describe that
+    # only sometimes answers is a describe whose absence must not be reachable
+    # at all here, not one whose failure is handled politely.
+    local q i=1 asked=""
+    while q="$(nth_call_of "describe-instances" "$i" || true)"; do
+        [ -n "$q" ] || break
+        case "$q" in *"Reservations[0].Instances[0].[InstanceLifecycle"*) asked=1 ;; esac
+        i=$((i + 1))
+    done
+    [ -z "$asked" ] &&
+        ok "no describe asks for the placement after a launch — the launch already answered" ||
+        bad "the launch path still re-describes the instance it has just been told about"
+}
+
+case_a_warm_claim_says_the_zone_you_typed_applied_to_nothing() {
+    CURRENT=case_a_warm_claim_says_the_zone_you_typed_applied_to_nothing
+    world_new claim_ignores_az
+    world_up_ready
+    world_zones_ready
+    ans "ec2_describe-subnets__Subnets0SubnetId" "subnet-c"
+    pool_listing "$(pool_row i-warm1 12 ami-v1 0.19)"
+    mkdir -p "$W/vhome/i-warm1"
+    printf 'key\n' >"$W/vhome/i-warm1/id_ed25519"
+    vb -- up --for X --az "${RG}c"
+    if [ "$VB_RC" != "0" ]; then
+        bad "a claim with --az exited ${VB_RC}"
+        report
+        return
+    fi
+    [ "$(op_count 'ec2 run-instances')" = "0" ] && ok "the warm box was claimed — nothing was launched" ||
+        bad "a warm box was available and a box was launched anyway"
+    said "--az ${RG}c you typed applied to nothing" &&
+        ok "and the claim SAYS the zone applied to nothing — the shape --ttl/--idle already use" ||
+        bad "a claim silently ignored --az: $(tr '\n' ' ' <"$W/err" | cut -c1-300)"
+    said "CLAIMED warm" && ok "naming the claim as the reason" ||
+        bad "the note does not say the box was claimed warm"
+    [ "$(op_count 'ec2 describe-subnets')" = "0" ] &&
+        ok "and no subnet was resolved for a zone nothing was going to be launched into" ||
+        bad "$(op_count 'ec2 describe-subnets') describe-subnets call(s) on a path that launches nothing"
+}
+
+# =============================================================================
+# 1.9b — the grant the status read needs, and the territory that did not move
+# =============================================================================
+
+case_the_ops_policy_grants_the_spot_request_read() {
+    CURRENT=case_the_ops_policy_grants_the_spot_request_read
+    # THE DOCUMENT IN THE TREE, NOT THE LIVE POLICY. An IAM policy that already
+    # exists keeps the version it was created with, so this file and the
+    # account can disagree for as long as it takes a hand to publish a new
+    # default version — `deploy/iam/verifier_bootstrap.sh` is what prints the
+    # `create-policy-version` command and the OWNER is what runs it. What this
+    # drive owes is that the document a bootstrap would publish carries the
+    # grant; the live half is the owner's and is reported, never asserted here.
+    local pol=deploy/iam/verifier-ops-policy.json
+    [ -r "$pol" ] || {
+        bad "${pol} is not in this tree"
+        return
+    }
+    python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+for s in d["Statement"]:
+    a=s.get("Action")
+    a=[a] if isinstance(a,str) else a
+    if "ec2:DescribeSpotInstanceRequests" in a:
+        print(s["Sid"]); sys.exit(0)
+sys.exit(1)' "$pol" >"$WORK/pol.sid" 2>/dev/null &&
+        ok "the ops policy document grants ec2:DescribeSpotInstanceRequests (Sid $(cat "$WORK/pol.sid"))" ||
+        bad "the ops policy does not grant ec2:DescribeSpotInstanceRequests — every reclaim's status reads 'unreadable'"
+    # AND THE WRAPPER'S UNREADABLE SENTENCE NAMES THAT EXACT ACTION, so the
+    # refusal and the remedy cannot drift apart.
+    grep -F -- "ec2:DescribeSpotInstanceRequests not in the ops policy" "$VB" >/dev/null 2>&1 &&
+        ok "and the wrapper's 'unreadable' sentence names the same action" ||
+        bad "the wrapper's unreadable sentence does not name the grant the policy carries"
+}
+
+case_the_territory_this_change_does_not_own_did_not_move() {
+    CURRENT=case_the_territory_this_change_does_not_own_did_not_move
+    # BY BLOB, not by `git diff --quiet HEAD`: a file edited and
+    # COMMITTED is exactly the case this claim exists to catch, and the
+    # working-tree comparison calls that clean.
+    #
+    # THE POPULATION IS THE BANK'S SIDE AND THE GATE'S. The zone axis lives
+    # entirely in this wrapper; `pm_push.sh` reads its printed seams and
+    # `check.sh` and the house rules read nothing of it at all, so a hunk in
+    # any of them is a merge conflict invented out of nothing and, for the
+    # first, a measurement taken from under whoever is building the bank half.
+    # `cmd_up` is in the list because the launch path is B-R1's and a ceiling
+    # rung promised not to touch it: the ceiling is read in `require_headroom`,
+    # which `cmd_up` CALLS and does not contain, so `cmd_up`'s own body is the
+    # thing that must not have moved.
+    #
+    # `cmd_pool` WAS in this list and IS NOT ANY MORE (owner's call, 2026-09-21).
+    # The ceiling stopped being one variable: it is env, then a file, then the
+    # default, and `pool --want N` refusing with "above DJB_VERIFIER_MAX_BOXES
+    # (8)" about an 8 that came out of the FILE is a refusal that names the
+    # wrong source. Printing the three sources there is therefore part of the
+    # ceiling, not a neighbour's line — so the pool's refusal moved into the
+    # rung's OWNED set, deliberately, and the claim about it was retired rather
+    # than quietly satisfied.
+    # AND THE OTHER SIDE IS THE FORK POINT, NOT `main`'s TIP. `main` moves under
+    # a rung all day — fifteen worktrees merge into it while one builds — so a
+    # branch that touched none of these files reds this claim the moment
+    # somebody else's rung lands one of them, and reds it AGAIN in the
+    # VERIFIER's clone, which is the union of the branch and a main that has
+    # moved since the fold. The honest question is "did THIS branch change
+    # it", and `merge-base` is where that question is asked.
+    local base f dirty="" a b
+    base="$(git merge-base main HEAD 2>/dev/null || true)"
+    [ -n "$base" ] || {
+        bad "no merge base between main and HEAD — this claim has no other side"
+        return
+    }
+    for f in scripts/pm_push.sh scripts/check.sh quality/rules.yaml; do
+        a="$(git rev-parse "${base}:${f}" 2>/dev/null || true)"
+        b="$(git rev-parse "HEAD:${f}" 2>/dev/null || true)"
+        if [ -z "$a" ] || [ -z "$b" ]; then
+            bad "could not read ${f} out of both ${base:0:8} and HEAD — this claim needs both"
+            return
+        fi
+        [ "$a" = "$b" ] || dirty="${dirty}
+      ${f}  main ${a:0:8} vs HEAD ${b:0:8}"
+        git diff --quiet HEAD -- "$f" 2>/dev/null || dirty="${dirty}
+      ${f}  uncommitted in the working tree"
+    done
+    [ -z "$dirty" ] && ok "pm_push.sh, check.sh and rules.yaml are byte-identical to the fork point's" ||
+        bad "files this change does not own have moved:${dirty}"
+
+    # THE MATCH IS LITERAL, AND THE ESCAPES ARE WHY. This extraction was
+    # `awk -v f="^${fn}\\(\\) \\{" '$0 ~ f …'`, and it matched NOTHING: the
+    # shell hands awk the string `^cmd_pool\(\) \{`, awk then parses THAT
+    # string's own escapes before it is ever a regex, and the result does not
+    # match the line it was written for. Both sides extracted zero bytes, both
+    # cksummed to `4294967295 0`, they were equal, and the case printed `ok`
+    # — a guard over the one function it exists to guard, green for a body
+    # that HAD moved (measured 2026-09-21: drive form `4294967295 0` both sides;
+    # a working match, `1360171546 4104` vs `3412959428 4398`). `index($0, …)`
+    # has no regex layer and therefore no escape layer to get wrong.
+    #
+    # AND AN EMPTY EXTRACTION IS NOW COULD-NOT-LOOK, WHICH IS EXIT 2. The old
+    # guard compared against `" 0 0"`, which is not what cksum prints for empty
+    # input on either platform — so the one thing that would have caught the
+    # bug above was itself unable to fire. A claim with no bytes on either side
+    # is not a passing claim and not a failing one; it is a drive that did not
+    # look, and this file's other could-not-looks all exit 2.
+    # AND IT READS ITS PRODUCER TO EOF. The awk above ended `on && /^}$/
+    # {exit}`, which is the very shape `case_no_early_exit_reader_follows_a_
+    # pipe_in_this_wrapper` forbids in the subject — and this drive is under
+    # the same `set -o pipefail`. It was harmless only because the broken
+    # regex never matched, so awk always ran to EOF; the moment the match was
+    # repaired, awk left at `cmd_up`'s closing brace, `git show` took SIGPIPE
+    # on a 4,300-line file, and THE WHOLE DRIVE DIED AT EXIT 141 before its
+    # tally — measured, 2026-09-21. `done` stops the printing without stopping
+    # the reading: read the whole, then slice.
+    local fn before after
+    local extract='index($0, f "() {") == 1 { on = 1 }
+                   on && !done { print; if ($0 == "}") done = 1 }'
+    for fn in cmd_up; do
+        before="$(git show "${base}:${VB}" 2>/dev/null | awk -v f="$fn" "$extract" | cksum)"
+        after="$(awk -v f="$fn" "$extract" "$VB" | cksum)"
+        case "${before}|${after}" in
+        *"4294967295 0"* | *" 0 0"*)
+            cannot_look "extracted nothing for ${fn} out of ${base:0:8}'s ${VB} or HEAD's
+   (before '${before}', after '${after}'). Two empty extractions COMPARE EQUAL,
+   which is how this claim was green over a body that had moved. A claim with
+   no bytes on either side did not look."
+            ;;
+        esac
+        [ "$before" = "$after" ] && ok "${fn}'s own body is byte-identical to the fork point's" ||
+            bad "${fn} moved: ${base:0:8} ${before} vs HEAD ${after}"
+    done
+}
+
+# =============================================================================
+# 1.9c — the detach that did not detach
+# =============================================================================
+#
+# FOUR BUILDERS REPORTED `loop` AND `leg` AS A HANG and it did not reproduce
+# on the two runs anyone looked at, so it was carried as a suspicion about the
+# transport. It is not the transport. `A && B && C && setsid … >/dev/null 2>&1
+# & echo $!` reads as if the redirects covered the background job; `&` binds to
+# the WHOLE `&&` list, bash runs that list in a subshell, and the redirects are
+# on `setsid` alone — so the subshell holds the ssh channel's stdout for as
+# long as the gate runs and the command substitution that wanted one line of
+# pid waits for the whole gate.
+#
+# MEASURED ON A REAL BOX (2026-09-21): the shipped `loop` returned after 400 s
+# over a 386 s gate and printed `gate detached … as pid` at the END of it.
+#
+# AND THIS CASE EXECUTES THE SHAPE RATHER THAN SPELLING IT. A census for `{`
+# and `}` would be a claim about punctuation; what the wrapper owes is that a
+# caller reading the detach's stdout gets its line back while the payload is
+# still running. So the RECORDED remote command — the real one, out of the
+# real `loop`'s and `leg`'s own ssh argv — has its payload swapped for a sleep
+# and its paths pointed at scratch, and is then run under a command
+# substitution, which waits for EOF on a pipe exactly as ssh waits for the
+# channel. Real wall clock, not the world's fake one: the case body runs
+# outside `vb`'s environment and `date` here is the machine's.
+
+# detach_payload_swapped <recorded argv> <scratch dir> <seconds>
+# The remote command out of a recorded ssh argv, with the gate's payload
+# replaced by a sleep and every path pointed somewhere this machine has. The
+# swap is textual and narrow on purpose: everything about the SHAPE — the
+# grouping, where the redirects sit, what the `&` binds to — is the wrapper's
+# own bytes, which is the whole point of reading it back rather than retyping
+# it.
+detach_payload_swapped() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import re, sys
+argv, scratch, secs = sys.argv[1], sys.argv[2], sys.argv[3]
+# The recorded flat argv is the whole command line; the remote command is
+# everything after the `--` the wrapper passes to ssh.
+i = argv.find(' -- ')
+cmd = argv[i + 4:] if i >= 0 else argv
+# The activity-marker touch the transport prepends is the box's, not the shape's.
+cmd = cmd.replace("touch /run/verifier/last-activity 2>/dev/null || true; ", "", 1)
+# The gate itself becomes a sleep. The payload carries no single quote, so the
+# first `sh -c '` and the next `'` bracket it exactly.
+a = cmd.index("sh -c '")
+b = cmd.index("'", a + 7)
+cmd = cmd[:a] + "sh -c 'sleep %s'" % secs + cmd[b + 1:]
+# And the paths this machine does not have. `~/verify/<rung>` is replaced as a
+# PREFIX — the pattern stops at the next `/`, because `\S+` swallowed the `;`
+# after `ledger.in` and handed bash an unterminated `if`, which fails to parse,
+# returns instantly and makes this whole case green over nothing. Measured: it
+# passed against the very shape it exists to refuse.
+cmd = re.sub(r'&& cd \S+ &&', '&& cd %s &&' % scratch, cmd)
+cmd = re.sub(r'~/verify/[^/\s;]+', scratch, cmd)
+sys.stdout.write(cmd)
+PY
+}
+
+case_the_detach_returns_while_the_gate_is_still_running() {
+    CURRENT=case_the_detach_returns_while_the_gate_is_still_running
+    local sub rec n cmd scratch t0 t1 took out
+    command -v python3 >/dev/null 2>&1 || cannot_look "no python3 — the recorded command cannot be re-pointed at scratch"
+    for sub in loop leg; do
+        world_new "detach_${sub}"
+        ans "ec2_describe-instances__Reservations0Instances0StateName" "running"
+        mkdir -p "$W/vhome/i-up1"
+        printf 'key\n' >"$W/vhome/i-up1/id_ed25519"
+        printf 'a-rung\n' >"$W/vhome/i-up1/rung"
+        printf '4242\n' >"$REC/ssh/default.out"
+        if [ "$sub" = "loop" ]; then
+            vb -- loop i-up1 --log v1
+        else
+            vb -- leg i-up1 --unit ruff --log v1
+        fi
+        if [ "$VB_RC" != "0" ]; then
+            bad "${sub} exited ${VB_RC}"
+            report
+            continue
+        fi
+        # The LAST ssh of the run is the detach; the two before it are the
+        # tree pre-flight. Read the ordinal the shim counted rather than a
+        # number typed here, which is what went stale the last time a session
+        # was added in front of this one.
+        n="$(cat "$REC/seq/_ssh" 2>/dev/null || echo 0)"
+        rec="$(cat "$REC/ssh/${n}.flat" 2>/dev/null || true)"
+        [ -n "$rec" ] || {
+            bad "${sub}: no ssh argv was recorded at all"
+            continue
+        }
+        scratch="${WORK}/detach-${sub}"
+        rm -rf "$scratch"
+        mkdir -p "$scratch/bin"
+        # `setsid` IS LINUX'S AND THIS DRIVE ALSO RUNS ON A LAPTOP. A shim that
+        # simply becomes its arguments keeps the recorded command VERBATIM —
+        # the grouping, the redirects and what the `&` binds to are the bytes
+        # under test and must not be edited to make the case runnable. Without
+        # it the command dies at `command not found`, returns instantly, and
+        # the case passes while proving nothing: measured, on this laptop,
+        # against the very shape it exists to refuse.
+        printf '#!/bin/sh\nexec "$@"\n' >"$scratch/bin/setsid"
+        chmod +x "$scratch/bin/setsid"
+        cmd="$(detach_payload_swapped "$rec" "$scratch" 8 || true)"
+        case "$cmd" in
+        *"sleep 8"*) ;;
+        *)
+            bad "${sub}: could not swap the payload out of the recorded command"
+            continue
+            ;;
+        esac
+        # THE COMMAND SUBSTITUTION IS THE INSTRUMENT. It waits for EOF on a
+        # pipe; ssh waits for the channel to close. Same wait, same cause.
+        t0="$(date +%s)"
+        out="$(PATH="${scratch}/bin:$PATH" bash -c "$cmd" 2>/dev/null || true)"
+        t1="$(date +%s)"
+        took=$((t1 - t0))
+        if [ "$took" -lt 4 ]; then
+            ok "${sub}: the detach returns in ${took}s while an 8s payload is still running"
+        else
+            bad "${sub}: the detach held its caller for ${took}s of an 8s payload — the \`&\` binds to the whole \`&&\` list and its subshell keeps the channel open; group the list and put the redirects on the GROUP"
+        fi
+        local pid
+        pid="$(printf '%s' "$out" | tr -d '[:space:]')"
+        case "$pid" in
+        '' | *[!0-9]*) bad "${sub}: the detach printed '${out}' instead of a pid" ;;
+        *) ok "${sub}: and what it printed is a pid" ;;
+        esac
+        rm -rf "$scratch"
+    done
+}
+
 case_a_piped_stdout_is_refused() {
     CURRENT=case_a_piped_stdout_is_refused
     world_new piped
@@ -5898,7 +7092,7 @@ case_a_piped_stdout_is_refused() {
     set +e
     env -i PATH="$W/bin:/usr/bin:/bin" HOME="$W/home" REC="$REC" USER=driveuser \
         DJB_DEPLOY_NAMESPACE="$NS" DJB_VERIFIER_REGION="$RG" DJB_VERIFIER_HOME="$W/vhome" \
-        bash "$ROOT/$VB" census 2>&1 | cat >"$W/out"
+        "$VB_COUNTED" census 2>&1 | cat >"$W/out"
     rc="${PIPESTATUS[0]}"
     set -e
     [ "$rc" = "2" ] && ok "a piped stdout is exit 2 — the exit status is the verdict" ||
@@ -6035,12 +7229,11 @@ case_the_host_key_posture_is_argued_where_it_is_used() {
 
 case_nothing_this_wrapper_promised_not_to_touch_moved() {
     CURRENT=case_nothing_this_wrapper_promised_not_to_touch_moved
-    # BY BLOB SHA AGAINST `main`, NOT BY `git diff --quiet HEAD`. The working-tree
-    # comparison answers "is anything UNCOMMITTED here", which is a different
-    # question and the wrong one: a rung that edits one of these files and
-    # COMMITS it is exactly the case this claim exists to catch, and the old
-    # form called that tree clean. Measured — a committed one-byte edit to
-    # `setup.sh` on a scratch branch was invisible to it.
+    # BY THE BYTES ON DISK, BEFORE THE FIRST WRAPPER ACT AND AFTER THE LAST —
+    # and it asks git NOTHING. The whole argument for that, and the two
+    # measurements that paid for it (a red on every PR carrying a fold, an
+    # argument compared as a sha on a detached runner), is at `footprint_of` where
+    # the snapshot is taken.
     #
     # `scripts/verify_start.sh` LEFT THIS POPULATION ON 2026-09-18, deliberately
     # and with its replacement below. The wrapper's vouch now REFUSES a checkout
@@ -6049,25 +7242,71 @@ case_nothing_this_wrapper_promised_not_to_touch_moved() {
     # clone it builds, because `git clone` copies neither the config nor a hook
     # file. The two files are PAIRED by that line, so "it did not move" is the
     # wrong claim about it; what this drive owes instead is that the pairing is
-    # still there, which is the positive assertion after the loop. The other
-    # three are untouched neighbours and stay measured as absences.
-    local f dirty="" a b
-    for f in scripts/gate_lease.sh scripts/setup.sh .env.example; do
-        a="$(git rev-parse "main:${f}" 2>/dev/null || true)"
-        b="$(git rev-parse "HEAD:${f}" 2>/dev/null || true)"
-        if [ -z "$a" ] || [ -z "$b" ]; then
-            bad "could not read ${f} out of both main and HEAD — this claim needs both"
-            return
-        fi
-        [ "$a" = "$b" ] || dirty="${dirty}
-      ${f}  main ${a:0:8} vs HEAD ${b:0:8}"
-        # And the working tree too, so an edit not yet committed is caught now
-        # rather than at the commit that would hide it.
-        git diff --quiet HEAD -- "$f" 2>/dev/null || dirty="${dirty}
-      ${f}  uncommitted in the working tree"
-    done
-    [ -z "$dirty" ] && ok "gate_lease.sh, setup.sh and .env.example are byte-identical to main's" ||
-        bad "files the wrapper does not own have moved:${dirty}"
+    # still there, which is the positive assertion after the comparison. The
+    # other three are untouched neighbours and stay measured as absences.
+    local after delta acts
+    after="$(footprint_of "$ROOT")"
+    delta="$(footprint_delta "$FOOTPRINT_BEFORE" "$after")"
+
+    # THE FLOOR FIRST, because two identical snapshots taken either side of
+    # NOTHING are green and prove nothing. The count is derived from the
+    # counting wrapper every call site in this file goes through, and it is
+    # PRINTED: a reader of the green line can see how much of the drive the
+    # comparison actually spans.
+    acts="$(vb_act_count)"
+    if [ "$acts" -ge 1 ]; then
+        ok "the comparison spans ${acts} wrapper act(s) — the snapshot was taken before the first and this is after the last"
+    else
+        bad "the comparison spans ${acts} wrapper act(s) — it is two snapshots of a file nothing touched, which is green by arithmetic"
+    fi
+
+    [ -z "$delta" ] && ok "gate_lease.sh, setup.sh and .env.example are byte-for-byte as this drive found them" ||
+        bad "files the wrapper does not own have moved:${delta}"
+
+    # ITS OWN VICTIM, and it is built rather than found (rung-execution §2): a
+    # comparison nobody has seen fail is a comparison that may be unable to
+    # fail. TWO victims, because the two ways a neighbour can move are answered
+    # by different branches of `footprint_of` — a WRITE (a wrapper that appends
+    # where it promised not to) and a REMOVAL (the `absent` state, which must be
+    # a recorded delta and not two silences that match).
+    local victim vbefore vafter vdelta
+    victim="${WORK}/footprint-victim"
+    rm -rf "$victim"
+    mkdir -p "${victim}/scripts"
+    cp "${ROOT}/scripts/gate_lease.sh" "${ROOT}/scripts/setup.sh" "${victim}/scripts/" 2>/dev/null ||
+        cannot_look "could not copy the two scripts into the victim tree ${victim}"
+    cp "${ROOT}/.env.example" "${victim}/" 2>/dev/null ||
+        cannot_look "could not copy .env.example into the victim tree ${victim}"
+    vbefore="$(footprint_of "$victim")"
+
+    # A PLANTED WRAPPER, not a shell line pretending to be one: the same
+    # counting shape every real call site uses, doing the one thing this case
+    # says never happens.
+    local plantwrap="${victim}/plant-wrapper"
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'printf "\\n# a wrapper that wrote where it promised not to\\n" >>%s\n' \
+            "$(printf '%q' "${victim}/scripts/setup.sh")"
+    } >"$plantwrap"
+    chmod +x "$plantwrap"
+    "$plantwrap" || cannot_look "the planted wrapper would not run"
+    vafter="$(footprint_of "$victim")"
+    vdelta="$(footprint_delta "$vbefore" "$vafter")"
+    case "$vdelta" in
+    *scripts/setup.sh*) ok "a planted wrapper appending to setup.sh is caught, and named:${vdelta}" ;;
+    *) bad "a planted wrapper appended to setup.sh and the comparison said '${vdelta:-nothing}' — this claim cannot fail" ;;
+    esac
+
+    # AND A REMOVED NEIGHBOUR IS `absent`, WHICH IS A DELTA. A comparator that
+    # skipped a missing file would call a deleted `.env.example` unchanged.
+    rm -f "${victim}/.env.example"
+    vafter="$(footprint_of "$victim")"
+    vdelta="$(footprint_delta "$vbefore" "$vafter")"
+    case "$vdelta" in
+    *".env.example  before"*"vs after absent"*) ok "a removed neighbour records \`absent\` and reads as a delta" ;;
+    *) bad "a removed .env.example produced '${vdelta:-nothing}' — an absence must be recorded, never skipped" ;;
+    esac
+    rm -rf "$victim"
     # THE PAIRING, ASSERTED RATHER THAN ASSUMED. The wrapper's no-hook refusal
     # names a remedy; a remedy nothing performs is a sentence. If this line ever
     # leaves `verify_start.sh`, every verification run from a clone refuses at
@@ -6189,6 +7428,12 @@ case_census_prints_the_market_each_box_is_on
 
 case_the_box_ceiling_refuses_before_the_call
 case_a_raised_ceiling_launches
+case_the_ceiling_is_read_from_the_file_when_the_env_is_unset
+case_the_env_ceiling_wins_over_the_file
+case_the_ceiling_refusal_names_all_three_and_the_one_that_bound
+case_ceiling_prints_the_file_the_env_and_the_quota
+case_a_ceiling_file_that_is_not_a_number_is_exit_2_before_any_call
+case_census_prints_the_ceiling_beside_the_pool
 
 case_down_refuses_an_instance_that_is_not_ours
 case_down_refuses_another_namespaces_box
@@ -6282,6 +7527,23 @@ case_the_image_is_named_for_the_tree_it_holds_not_local_main
 case_bake_refuses_before_the_launch_when_there_is_no_local_main
 case_bake_prune_keeps_the_newest_two
 case_bake_prune_finds_snapshots_through_the_block_mappings
+
+case_up_with_az_launches_into_that_zones_subnet
+case_a_zone_refusal_tries_the_next_zone_once_then_the_market_rule
+case_up_records_the_spot_request_id
+case_wait_on_a_reclaimed_box_prints_the_spot_status_code
+case_a_status_the_policy_cannot_read_is_named_not_hidden
+case_down_on_a_reclaimed_box_says_already_gone_and_is_not_a_refusal
+case_down_that_cannot_look_says_so_and_never_calls_it_foreign
+case_a_probe_that_is_not_yet_connected_is_retried_within_the_ceiling
+case_up_names_the_box_before_anything_can_fail_after_the_launch
+case_census_prints_each_boxs_zone
+case_zones_lists_the_vpcs_zones_and_refuses_when_it_cannot_look
+case_a_describe_that_has_not_caught_up_cannot_lie_about_the_market
+case_a_warm_claim_says_the_zone_you_typed_applied_to_nothing
+case_the_ops_policy_grants_the_spot_request_read
+case_the_territory_this_change_does_not_own_did_not_move
+case_the_detach_returns_while_the_gate_is_still_running
 
 case_a_piped_stdout_is_refused
 case_an_unknown_subcommand_or_flag_is_exit_2

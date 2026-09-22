@@ -346,6 +346,29 @@ case "$MODE" in
     GATE_PR=1
     MODE=""
     ;;
+--store-durations)
+    # A MEASUREMENT ASKED FOR AT THE FRONT, AND IT NORMALISES EXACTLY AS
+    # `--bank` AND `--pr` DO: `MODE=""`, so every line after this point runs
+    # the identical full gate and the member clock is written at the end.
+    #
+    # WHY IT IS HERE AT ALL, measured 2026-09-21 in the v2.1.1 fold. The header
+    # documents `./scripts/check.sh --store-durations`, the unknown-argument
+    # refusal lists it, and the always-on `--loop` set derives from the file it
+    # writes — and typed exactly as documented it arrived as `$MODE`, matched
+    # no arm, and exited 2 with `unknown argument '--store-durations'`. The
+    # only way to reach the second `case` below was to put something in front
+    # of it, which no reader of this file would ever guess. A flag that is
+    # documented, refused-by-name and unreachable is worse than one that does
+    # not exist: the measurement everything downstream reads could not be taken.
+    #
+    # THE OTHER TWO SITES ARE UNCHANGED AND BOTH STILL BIND. Under `--leg` the
+    # flag is the SUITE's own timing flag and is consumed in the modifier loop
+    # below; at `--fast` or `--loop` it is exit 2 in the second `case` below,
+    # because a measurement of a SUBSET written into the file the whole set
+    # derives from is the mistyped-flag hazard wearing a measuring tape.
+    GATE_STORE_MEMBERS=1
+    MODE=""
+    ;;
 --census)
     GATE_CENSUS=1
     ;;
@@ -436,6 +459,12 @@ case "${1:-}" in
     # above with its other sense; at `--fast` or `--loop` it would be a
     # measurement of a subset written into a file the whole gate is derived
     # from, which is the mistyped-flag hazard wearing a measuring tape.
+    #
+    # THIS ARM IS THE SECOND HALF OF ONE FLAG, not the only one: typed FIRST
+    # (`./scripts/check.sh --store-durations`, the documented form) the mode
+    # `case` above normalises it to `MODE=""` and sets the same variable. This
+    # arm is what still catches `--fast --store-durations` and
+    # `--loop --store-durations`, which is the whole reason it stays.
     if [ -n "$MODE" ]; then
         echo "!! --store-durations without --leg measures the WHOLE gate, so it belongs to" >&2
         echo "   the full mode: ./scripts/check.sh --store-durations" >&2
@@ -1074,6 +1103,14 @@ set -e
 # call sites and refuses (exit 2) when the two disagree, which is what stops the
 # next one.
 FULL_LEGS=ruff,mypy,import-linter,djb-checks,house-rules,migrations,goalpost-census,queue-index,db-pin,archaeology,adr-census,dangling-docs,loop-names,ci-env,deploy-check,fe,collectstatic,supply-chain,temporal-census,partition,pytest-x2,own-tree-census,selftest,full-house-rules
+#: THE TEMPLATE'S OWN SET, UNDER ITS OWN NAME, because `FULL_LEGS` above GROWS.
+#: A product's drawer (`scripts/local/legs/`, the local-legs block below)
+#: appends one `local:<name>` per declared leg to `FULL_LEGS` at startup, so the
+#: string a run announces is not always the string this file types. Everything
+#: that means "the legs THIS FILE ships" — the collision check a product leg's
+#: name is refused by — reads this one; everything that means "the legs THIS RUN
+#: announces" reads `FULL_LEGS`.
+FULL_LEGS_TEMPLATE="$FULL_LEGS"
 MEASURED_START=""
 T_MODE_START=$(date +%s)
 
@@ -1135,17 +1172,893 @@ T_MODE_START=$(date +%s)
 # siblings. The widening is a NAMED PATH and not a `deploy/tests/` glob,
 # because the reason the other deploy drives are out has not expired: they do
 # not source the preamble, and this leg runs inside the pre-push hook.
+#
+# IT IS ALSO THE ONE READER OF BOTH DRIVE HOMES, and that is `--with-path`'s
+# whole job, measured 2026-09-21 in the v2.1.1 fold. The widening above put ONE member
+# outside `scripts/tests/`, and the always-on leg's path composer went on
+# printf-ing `scripts/tests/test_<name>.sh` for every name this function hands
+# it — so `stage` resolved to `scripts/tests/test_stage.sh`, a file that has
+# never existed, and the member reported `could not look` forever. It was
+# LATENT only because the unreachable `--store-durations` mode arm kept
+# the durations file from ever naming `stage`; fixing that flag in the same
+# rung unmasks it, which is why both land together. A second place that knows
+# where a drive lives is a second answer to "where is this drive", and the
+# first tree where they disagreed is this one.
+#
+#   selftest_registered_drives              the names, one per line — the
+#                                           existing contract, byte-identical,
+#                                           and what the `selftest` unit row,
+#                                           `--list-legs` and the always-on
+#                                           member walk all read.
+#   selftest_registered_drives --with-path  `name<TAB>path`, the same
+#                                           population in the same order, for
+#                                           the one caller that needs to OPEN
+#                                           the file rather than name it.
+#
+# AND A THIRD HOME, WHICH IS THE PRODUCT'S AND IS NOT IN THIS FILE AT ALL.
+# `scripts/local/drives/test_<name>.sh` is the drive drawer — the same
+# platform-extension-1 convention as `scripts/local/legs/`, and here for the
+# same measured reason: the first consumer's v2.1.0 fold carried four product
+# drives of their own (`test_frontend_legs`, `test_seed2`, `test_criteria_lint`,
+# `test_grants_role`), and the only way to have this leg run one was to edit
+# THIS FILE, which is the edit that fast-forwarded 1826 lines away. A drawer
+# member is named `local:<name>` wherever a drive name is printed, so the
+# verdict row, the composed-of and the shard's own line all say which drives are
+# the product's — and it comes out of THIS function, because a second reader of
+# a third home is the `stage`-resolved-to-a-file-that-never-existed defect one
+# home further on.
+#
+# WHAT A DRAWER DRIVE OWES, and every one of these is exit 2 AT THE LISTING
+# naming the file — never a silently smaller drive set:
+#
+#   `+x`                    a drive this leg cannot execute is one it would
+#                           report as a could-not-look forever.
+#   the preamble            the file must source `scripts/tests/drive_preamble.sh`.
+#                           This is the SAME condition the `deploy/tests/` gap
+#                           below this leg is declared on, and for the same two
+#                           reasons: §1 neutralises the absolute `GIT_DIR` that
+#                           `git -C <linked worktree> push` exports into the
+#                           pre-push hook — which is the moment this leg runs in
+#                           — and §4 strips the CI exemption. A product drive
+#                           without it can write into the real repository from
+#                           inside a green gate.
+#   a name of its own       lower-case letters, digits and `_`, and not a name
+#                           this file's own drives already carry, and not a
+#                           name the LEG drawer carries either (both are printed
+#                           `local:<name>`, so two homes for one name would be
+#                           one label on the verdict row meaning two things).
+#
+# ABSENT, IT COSTS NOTHING: no drawer, and every line of output below is
+# byte-identical to a tree that has never heard of one —
+# `scripts/tests/test_selftest_leg.sh` asserts that by `cmp`, not by this
+# paragraph.
+#
+# ONE BODY, TWO SHAPES, and the name-only shape is the default because four
+# existing readers take it — including `scripts/tests/test_list_legs.sh`, which
+# EXTRACTS this function's text and runs it, so the body also stays
+# self-contained (no helper defined elsewhere, no `}` at column 1 inside it).
+# That is also why the drawer's directory, the leg drawer's directory and the
+# refusal text are all spelled inline here rather than reached through the
+# helpers one screen down: extracted standalone, this function has no helpers.
 selftest_registered_drives() {
-    awk '
+    local with_path="" template="" dir="" legdir="" f="" name="" known=""
+    case "${1:-}" in
+    "") ;;
+    --with-path) with_path=1 ;;
+    *)
+        echo "!! selftest_registered_drives: unknown argument '$1' (nothing, or --with-path)" >&2
+        return 2
+        ;;
+    esac
+    template=$(awk -v with_path="$with_path" '
         /^\.\/scripts\/tests\/test_[a-z_]+\.sh$/ {
-            name = $0
-            sub(/^\.\/scripts\/tests\/test_/, "", name)
+            path = $0
+            sub(/^\.\//, "", path)
+            name = path
+            sub(/^scripts\/tests\/test_/, "", name)
             sub(/\.sh$/, "", name)
-            print name
+            print (with_path == "" ? name : name "\t" path)
         }
-        /^\.\/deploy\/tests\/test_stage\.sh$/ { print "stage" }
-    ' scripts/check.sh
+        /^\.\/deploy\/tests\/test_stage\.sh$/ { print (with_path == "" ? "stage" : "stage\tdeploy/tests/test_stage.sh") }
+    ' scripts/check.sh)
+    [ -z "$template" ] || printf '%s\n' "$template"
+    # THE NAMES THIS FILE ALREADY CARRIES, taken from what was just printed
+    # rather than re-derived: one answer, one place. Spaces around each name so
+    # `case` matches a whole word and never a substring of one.
+    known=" $(printf '%s\n' "$template" | awk -F'	' 'NF { printf "%s ", $1 }')"
+    dir="${DJB_LOCAL_DRIVES_DIR:-scripts/local/drives}"
+    legdir="${DJB_LOCAL_LEGS_DIR:-scripts/local/legs}"
+    [ -d "$dir" ] || return 0
+    for f in "$dir"/test_*.sh; do
+        [ -f "$f" ] || continue
+        name=${f##*/}
+        name=${name#test_}
+        name=${name%.sh}
+        # `LC_ALL=C` AROUND THE CASE, because a bracket range is the locale's
+        # and not ASCII's: under `en_US.UTF-8` bash collates case-insensitively
+        # and `[!a-z0-9_]` admits `test_Probe.sh`, which then resolves to a
+        # `local:Probe` nothing else in this gate spells that way. Set and
+        # restored around the test alone, so nothing below inherits it.
+        local _drive_lc="${LC_ALL:-}"
+        LC_ALL=C
+        case "$name" in
+        "" | *[!a-z0-9_]* | [!a-z0-9]*)
+            LC_ALL="$_drive_lc"
+            [ -n "$_drive_lc" ] || unset LC_ALL
+            echo "!! product drive ${f}: '${name}' is not a drive name — lower-case letters, digits and '_', starting with a letter or a digit. The file is named test_<name>.sh." >&2
+            return 2
+            ;;
+        esac
+        LC_ALL="$_drive_lc"
+        [ -n "$_drive_lc" ] || unset LC_ALL
+        if [ ! -x "$f" ]; then
+            echo "!! product drive ${f}: it is not executable — a drive this leg cannot run is a drive it would report as could-not-look on every gate (chmod +x)." >&2
+            return 2
+        fi
+        # A SOURCE LINE, NOT A MENTION. `grep -q 'drive_preamble\.sh'` admitted
+        # `# does not source drive_preamble.sh` — a comment SAYING the file is
+        # not sourced registered as sourcing it, which is the whole guard
+        # inverted by a sentence the review that found it). The shape is a `.` or a `source`
+        # opening the line.
+        if ! grep -qE '^[[:space:]]*(\.|source)[[:space:]]+[^[:space:]]*drive_preamble\.sh' "$f"; then
+            echo "!! product drive ${f}: it does not source scripts/tests/drive_preamble.sh." >&2
+            echo "   That preamble is the same condition the deploy/tests/ gap is declared on:" >&2
+            echo "   its section 1 neutralises the absolute GIT_DIR a push exports into the" >&2
+            echo "   pre-push hook — which is the moment this leg runs in — and its section 4" >&2
+            echo "   strips the CI exemption. Without it a drive can write into the real" >&2
+            echo "   repository from inside a green gate, exiting 0 the whole way." >&2
+            return 2
+        fi
+        case "$known" in
+        *" ${name} "*)
+            echo "!! product drive ${f}: '${name}' is already a drive this gate has — one name, two members, and the verdict row would name it once." >&2
+            return 2
+            ;;
+        esac
+        if [ -e "${legdir}/${name}.sh" ]; then
+            echo "!! product drive ${f}: '${name}' is also a product LEG (${legdir}/${name}.sh) — both are printed 'local:${name}', so one label on the verdict row would mean two members." >&2
+            return 2
+        fi
+        known="${known}${name} "
+        if [ -z "$with_path" ]; then
+            printf 'local:%s\n' "$name"
+        else
+            printf 'local:%s\t%s\n' "$name" "$f"
+        fi
+    done
 }
+
+
+# >>> local-legs >>>
+# THE PRODUCT'S OWN LEGS, AND WHY THEY ARE NOT IN THIS FILE.
+#
+# WHAT IT IS FOR. This repository is a TEMPLATE: a product clones it and then
+# grows legs of its own — a typecheck, a partition census, a seed pass, a
+# licence scan. Until now the only place to put one was inside this file, and
+# the first consumer's v2.1.0 fold measured what that costs: 94 conflicts, 21
+# of them in `scripts/ quality/ .github/`, and `scripts/check.sh` itself
+# FAST-FORWARDED byte-identical — 1826 lines of their legs vanished with no
+# conflict at all. Silent, and in the wrong direction.
+#
+# SO A PRODUCT DECLARES BESIDE THIS FILE RATHER THAN EDITING IT (the
+# platform-extension-1 ruling). The drawer is `scripts/local/legs/`, the template
+# NEVER ships a `scripts/local/` path, and therefore a release can never
+# conflict with one. Absent, every line below is a no-op and this gate's
+# listing, transcripts and verdict rows are byte-identical to a tree that has
+# no drawer at all — which is the negative `scripts/tests/test_local_legs.sh`
+# asserts by DIFFING them, not by reading this paragraph.
+#
+# WHAT A LEG DECLARES, AND WHY EACH FIELD EXISTS RATHER THAN HAVING A DEFAULT.
+# The header is a versioned comment block at the top of the file:
+#
+#     # >>> leg v1 >>>
+#     # unit: local
+#     # needs: none
+#     # tier: loop
+#     # two-means: broken
+#     # touches: frontend
+#     # inputs: frontend/package.json
+#     # env: DJB_FE_BASE_URL
+#     # <<< leg <<<
+#
+#   unit:       the unit a runner is handed. `local` is the drawer's own unit;
+#               any other name MAKES a new local unit with its own `needs` (the
+#               consumer's `frontend node,network` is the worked case). A name
+#               this gate already declares is exit 2 — a product may not
+#               silently join `pytest-x2` and inherit its organs, its shards
+#               and its pass count.
+#   needs:      the organs the leg assumes, comma-joined, or `none`. A
+#               DECLARATION exactly as `gate_unit`'s is; the unit's field is the
+#               union of its legs'. Nothing reads it to bring a stack up.
+#   tier:       `fast`, `loop` or `full` — the CHEAPEST mode that runs it, and
+#               every mode above it runs it too. A product's typecheck sits in
+#               `--fast`; a census sits in `--loop`; a licence scan sits at the
+#               bank.
+#   two-means:  `broken` or `finding`, and the grammar is the one the first
+#               consumer arrived at after their own leg caught it on its first
+#               run. This file's convention is "2 is enforcement broken", and
+#               in-house instruments honour it — but `tsc` exits 2 for
+#               DIAGNOSTICS PRESENT, the most ordinary finding there is, so
+#               mapping that to broken plumbing files every type error as a
+#               dead canary.
+#                 `broken`  — 2 is ENFORCEMENT BROKEN (could-not-look, and it
+#                             outranks a pass); any other non-zero is a
+#                             finding. For instruments that declare this
+#                             contract in their own headers.
+#                 `finding` — 2 is a finding (this gate reads it as 1), and
+#                             **3 or above is enforcement broken**: a tool
+#                             that reserves 2 for findings and went past it is
+#                             the tool failing to do the job rather than the
+#                             tree failing the check, so nothing was judged.
+#               Declared, because guessing either way is a red that means the
+#               wrong thing.
+#   touches:    optional. Space-joined repository-relative path PREFIXES. Under
+#               `--fast` and `--loop` a leg none of whose prefixes is in the
+#               rung's changed set is SKIPPED WITH A PRINTED LINE; under the
+#               full gate and under `--leg` it ALWAYS runs, whatever it touches
+#               (the N820a rule: a narrowed mode may skip, a full one may not).
+#   inputs:     optional. Space-joined repository-relative path prefixes whose
+#               CONTENT joins the leg's reuse key, so a product leg's verdict is
+#               reused on exactly the terms the template's drives are.
+#   env:        optional. Environment variable NAMES whose values join the same
+#               key.
+#
+# WHAT IT REFUSES, AND THE REFUSAL IS ALWAYS 2. A file that is not executable,
+# a header whose version is not `v1`, a missing required field, an unknown
+# field, an unparsable value, a name colliding with a leg or a drive this gate
+# already has, two legs with one name, a `unit:` naming a template unit — each
+# is exit 2 AT THE LISTING, naming the file and the field. Never a silently
+# smaller gate.
+#
+# WHAT IT DOES NOT COVER, said here rather than discovered: a leg that must run
+# INSIDE the pytest process (a product fixture, a conftest plugin) is not
+# expressible here and has its own seam; and NOTHING in this file says a
+# product's leg is CORRECT — only that it was found, declared, run and named.
+
+#: The drawer. `DJB_LOCAL_LEGS_DIR` exists for the same reason
+#: `DJB_SELFTEST_DRIVES_DIR` does: so the leg's own drive can point the reader
+#: at a planted set under its scratch directory instead of writing an untracked
+#: executable into the checkout the gate is measuring.
+local_legs_dir() {
+    printf '%s\n' "${DJB_LOCAL_LEGS_DIR:-scripts/local/legs}"
+}
+
+#: The header sentinels and the fields. Required first, optional after; the
+#: split is what the refusal messages read.
+LOCAL_LEG_HEADER_OPEN='# >>> leg v1 >>>'
+LOCAL_LEG_HEADER_CLOSE='# <<< leg <<<'
+LOCAL_LEG_REQUIRED='unit needs tier two-means'
+LOCAL_LEG_OPTIONAL='touches inputs env'
+
+# local_legs__has <name> — 0 when stdin carries that exact line. The fence's
+# own copy of the one-line reader, so the extracted block is sourceable by its
+# drive without dragging the always-on leg in with it.
+local_legs__has() {
+    awk -v n="$1" '$0 == n { found = 1 } END { exit(found ? 0 : 1) }'
+}
+
+# local_legs__known_names — every member name this gate already has: the
+# template's own legs and the drives the selftest leg walks. DERIVED, never
+# listed: `DJB_LOCAL_LEGS_KNOWN_NAMES` is the drive's plant point and
+# `FULL_LEGS_TEMPLATE` is this file's own assignment one screen up.
+local_legs__known_names() {
+    if [ -n "${DJB_LOCAL_LEGS_KNOWN_NAMES+x}" ]; then
+        printf '%s\n' "$DJB_LOCAL_LEGS_KNOWN_NAMES"
+        return 0
+    fi
+    printf '%s\n' "${FULL_LEGS_TEMPLATE:-}" | tr ',' '\n'
+    if command -v selftest_registered_drives >/dev/null 2>&1; then
+        selftest_registered_drives
+    fi
+    return 0
+}
+
+# local_legs__template_units — the unit names THIS FILE declares, derived from
+# its own `gate_unit` call sites. Read rather than listed: a product may not
+# take a name the template already uses, and a hand list here would go stale
+# the first time a unit is added.
+local_legs__template_units() {
+    if [ -n "${DJB_LOCAL_LEGS_TEMPLATE_UNITS+x}" ]; then
+        printf '%s\n' "$DJB_LOCAL_LEGS_TEMPLATE_UNITS"
+        return 0
+    fi
+    [ -r scripts/check.sh ] || return 0
+    awk '/^gate_unit [a-z0-9-]+ /{ print $2 }' scripts/check.sh
+}
+
+#: The scan, memoised for the process. `LOCAL_LEGS_TABLE` is one TAB-separated
+#: row per leg — name, unit, needs, tier, two-means, touches, inputs, env,
+#: file — and `LOCAL_LEGS_RC` is the scan's own verdict, so a caller can print
+#: the refusal once and every later caller gets the same answer.
+LOCAL_LEGS_TABLE=""
+LOCAL_LEGS_RC=""
+LOCAL_LEGS_WHY=""
+
+# local_legs__refuse <file> <sentence> — record and print one refusal.
+local_legs__refuse() {
+    LOCAL_LEGS_WHY="local leg ${1}: $2"
+    # RECORDED, NOT ONLY PRINTED, so the caller's banner can name the cause
+    # and a reader with no scrollback is still told what went wrong
+    # (`scripts/gate_refuse.sh`, and the banner census in
+    # `scripts/tests/test_gate_lease.sh` — which counts the cause line by its
+    # literal text, so this paragraph may not spell it). Guarded by
+    # `command -v` because this block is EXTRACTED and sourced on its own by
+    # its drive, where the refusal library is not there to be called.
+    if command -v gate_refuse >/dev/null 2>&1; then
+        gate_refuse "$LOCAL_LEGS_WHY"
+    else
+        echo "!! ${LOCAL_LEGS_WHY}" >&2
+    fi
+    echo "   A product leg is DECLARED (scripts/check.sh, the local-legs block): a" >&2
+    echo "   header this gate cannot read is exit 2 at the listing and never a" >&2
+    echo "   silently smaller gate." >&2
+    return 2
+}
+
+# local_legs__header <file> — the header's field lines, `<field> <value>` per
+# line, on stdout. Exit 0 read · 2 refused (message printed).
+local_legs__header() {
+    local file=$1 block seen="" f v line got
+    block=$(awk -v o="$LOCAL_LEG_HEADER_OPEN" -v c="$LOCAL_LEG_HEADER_CLOSE" '
+        $0 == o { on = 1; next }
+        $0 == c { exit }
+        on { print }
+    ' "$file")
+    if [ -z "$block" ]; then
+        # THE VERSION IS PART OF THE OPENING SENTINEL, so an unknown version and
+        # a missing header are told apart here rather than left as one message:
+        # a product that wrote `# >>> leg v2 >>>` has declared something this
+        # gate does not implement, which is a different problem from a file
+        # with no header at all.
+        if grep -q '^# >>> leg ' "$file" 2>/dev/null; then
+            got=$(grep -m1 '^# >>> leg ' "$file" | awk '{print $4}')
+            local_legs__refuse "$file" "its header declares version '${got:-?}' and this gate implements v1 only — the opening line is exactly '${LOCAL_LEG_HEADER_OPEN}'"
+            return 2
+        fi
+        local_legs__refuse "$file" "it carries no '${LOCAL_LEG_HEADER_OPEN}' header block — a leg declares its unit, its needs, its tier and what its exit 2 means"
+        return 2
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+        '') continue ;;
+        '#'*) ;;
+        *)
+            local_legs__refuse "$file" "the header line '${line}' is not a comment — every line between the sentinels is '# <field>: <value>'"
+            return 2
+            ;;
+        esac
+        line=${line#\#}
+        line=${line# }
+        [ -n "$line" ] || continue
+        case "$line" in
+        *:*) ;;
+        *)
+            local_legs__refuse "$file" "the header line '${line}' carries no '<field>: <value>' colon"
+            return 2
+            ;;
+        esac
+        f=${line%%:*}
+        v=${line#*:}
+        v=${v# }
+        case " $LOCAL_LEG_REQUIRED $LOCAL_LEG_OPTIONAL " in
+        *" $f "*) ;;
+        *)
+            local_legs__refuse "$file" "unknown header field '${f}' — this gate reads ${LOCAL_LEG_REQUIRED} ${LOCAL_LEG_OPTIONAL}"
+            return 2
+            ;;
+        esac
+        case " $seen " in
+        *" $f "*)
+            local_legs__refuse "$file" "header field '${f}' is declared twice — a field with two values has none"
+            return 2
+            ;;
+        esac
+        seen="${seen}${seen:+ }${f}"
+        if [ -z "$v" ]; then
+            local_legs__refuse "$file" "header field '${f}:' is empty — an empty declaration says nothing; write the value"
+            return 2
+        fi
+        printf '%s %s\n' "$f" "$v"
+    done <<EOF
+${block}
+EOF
+    for f in $LOCAL_LEG_REQUIRED; do
+        case " $seen " in
+        *" $f "*) ;;
+        *)
+            local_legs__refuse "$file" "its header declares no '${f}:' — the required fields are ${LOCAL_LEG_REQUIRED}"
+            return 2
+            ;;
+        esac
+    done
+    return 0
+}
+
+# local_legs__field <header-text> <field> — that field's value, or nothing.
+local_legs__field() {
+    awk -v want="$2" '$1 == want { $1 = ""; sub(/^ /, ""); print; exit }' <<EOF
+${1}
+EOF
+}
+
+# local_legs_scan — the drawer, read and validated. Exit 0 (zero legs is a
+# clean read) · 2 refused, with the refusal printed once.
+local_legs_scan() {
+    local dir f name header unit needs tier twomeans touches inputs envnames hrc
+    local names="" units known rows=""
+    [ -z "$LOCAL_LEGS_RC" ] || return "$LOCAL_LEGS_RC"
+    LOCAL_LEGS_RC=0
+    LOCAL_LEGS_TABLE=""
+    dir=$(local_legs_dir)
+    [ -d "$dir" ] || return 0
+    known=$(local_legs__known_names)
+    units=$(local_legs__template_units)
+    for f in "$dir"/*.sh; do
+        [ -f "$f" ] || continue
+        name=${f##*/}
+        name=${name%.sh}
+        # `_`-LED FILES ARE NOT LEGS. `_provision-<unit>.sh` is a unit's own
+        # one-shot provisioner and the underscore is what keeps it out of the
+        # population without a second list saying so.
+        case "$name" in
+        _*) continue ;;
+        esac
+        case "$name" in
+        *[!a-z0-9_-]* | [!a-z0-9]*)
+            local_legs__refuse "$f" "the file name is not a leg name — lower-case letters, digits, '-' and '_', starting with a letter or a digit"
+            LOCAL_LEGS_RC=2
+            return 2
+            ;;
+        esac
+        if [ ! -x "$f" ]; then
+            local_legs__refuse "$f" "it is not executable — a leg this gate cannot run is a leg it would silently skip (chmod +x)"
+            LOCAL_LEGS_RC=2
+            return 2
+        fi
+        # THROUGH `gate_capture`, NOT A BARE `$( )`, and the difference is the
+        # caller's cause line. A command substitution is a SUBSHELL, so a
+        # `GATE_LAST_REFUSAL` the header reader records inside one dies with
+        # it and the drawer banner one screen down prints "the callee set
+        # none" about a callee that said exactly what was wrong (the F7 rule,
+        # `scripts/gate_refuse.sh`). `command -v` because this block is
+        # EXTRACTED and sourced on its own by its drive, where that library is
+        # not there to be called.
+        hrc=0
+        if command -v gate_capture >/dev/null 2>&1; then
+            gate_capture header local_legs__header "$f" || hrc=$?
+        else
+            header=$(local_legs__header "$f") || hrc=$?
+        fi
+        if [ "$hrc" != "0" ]; then
+            LOCAL_LEGS_RC=2
+            return 2
+        fi
+        unit=$(local_legs__field "$header" unit)
+        needs=$(local_legs__field "$header" needs)
+        tier=$(local_legs__field "$header" tier)
+        twomeans=$(local_legs__field "$header" two-means)
+        touches=$(local_legs__field "$header" touches)
+        inputs=$(local_legs__field "$header" inputs)
+        envnames=$(local_legs__field "$header" env)
+        case "$unit" in
+        *[!a-z0-9-]*)
+            local_legs__refuse "$f" "unit: '${unit}' is not a unit name — lower-case letters, digits and '-'"
+            LOCAL_LEGS_RC=2
+            return 2
+            ;;
+        esac
+        if printf '%s\n' "$units" | local_legs__has "$unit"; then
+            local_legs__refuse "$f" "unit: '${unit}' is a unit THIS GATE declares — a product leg may not join one and inherit its organs, its shards and its pass count. Use 'local', or a new name of your own"
+            LOCAL_LEGS_RC=2
+            return 2
+        fi
+        case "$tier" in
+        fast | loop | full) ;;
+        *)
+            local_legs__refuse "$f" "tier: '${tier}' — the tiers are fast, loop and full (the CHEAPEST mode that runs it; every mode above it runs it too)"
+            LOCAL_LEGS_RC=2
+            return 2
+            ;;
+        esac
+        case "$twomeans" in
+        finding | broken) ;;
+        *)
+            local_legs__refuse "$f" "two-means: '${twomeans}' — exit 2 from this leg is either 'broken' (enforcement itself, which outranks a pass) or 'finding' (an ordinary violation this gate reads as 1)"
+            LOCAL_LEGS_RC=2
+            return 2
+            ;;
+        esac
+        case "$needs" in
+        *[!a-z0-9,-]*)
+            local_legs__refuse "$f" "needs: '${needs}' — comma-joined organ names, or 'none'"
+            LOCAL_LEGS_RC=2
+            return 2
+            ;;
+        esac
+        case "$envnames" in
+        *[!A-Za-z0-9_\ ]*)
+            local_legs__refuse "$f" "env: '${envnames}' — space-joined variable NAMES, never values"
+            LOCAL_LEGS_RC=2
+            return 2
+            ;;
+        esac
+        if printf '%s\n' "$known" | local_legs__has "$name"; then
+            local_legs__refuse "$f" "'${name}' is already a leg or a drive this gate has — one name, two members, and the verdict row would name it once"
+            LOCAL_LEGS_RC=2
+            return 2
+        fi
+        case " $names " in
+        *" $name "*)
+            local_legs__refuse "$f" "'${name}' is declared twice in the drawer"
+            LOCAL_LEGS_RC=2
+            return 2
+            ;;
+        esac
+        names="${names}${names:+ }${name}"
+        rows="${rows}${name}	${unit}	${needs}	${tier}	${twomeans}	${touches}	${inputs}	${envnames}	${f}
+"
+    done
+    LOCAL_LEGS_TABLE="$rows"
+    return 0
+}
+
+# local_legs_names — `local:<name>` per leg, in the drawer's own order.
+local_legs_names() {
+    awk -F'	' 'NF { print "local:" $1 }' <<EOF
+${LOCAL_LEGS_TABLE}
+EOF
+}
+
+# local_legs_field <local:name|name> <column 1-9> — one field of one leg's row.
+local_legs_field() {
+    local want=${1#local:}
+    awk -F'	' -v w="$want" -v c="$2" '$1 == w { print $c; exit }' <<EOF
+${LOCAL_LEGS_TABLE}
+EOF
+}
+
+# local_legs_units — the unit names the drawer declares, first-seen order.
+local_legs_units() {
+    awk -F'	' 'NF && !($2 in seen) { seen[$2] = 1; print $2 }' <<EOF
+${LOCAL_LEGS_TABLE}
+EOF
+}
+
+# local_legs_unit_needs <unit> — the union of its legs' needs, comma-joined, or
+# `none`. `none` is dropped from a union that has a real organ in it: a unit
+# that needs a database and nothing-in-particular needs a database.
+local_legs_unit_needs() {
+    local out
+    out=$(awk -F'	' -v u="$1" '$2 == u { print $3 }' <<EOF | tr ',' '\n' | grep -v '^none$' | grep -v '^$' | LC_ALL=C sort -u | tr '\n' ',' | sed 's/,$//'
+${LOCAL_LEGS_TABLE}
+EOF
+)
+    printf '%s\n' "${out:-none}"
+}
+
+# local_legs_unit_members <unit> — `local:<name>` per leg of that unit.
+local_legs_unit_members() {
+    awk -F'	' -v u="$1" '$2 == u { print "local:" $1 }' <<EOF
+${LOCAL_LEGS_TABLE}
+EOF
+}
+
+# local_legs_tier_runs <declared tier> <mode tier> — 0 when a leg declaring the
+# first is run by a gate in the second. `fast` ⊂ `loop` ⊂ `full`: the tier is
+# the CHEAPEST mode that runs it, so every mode above it runs it too.
+local_legs_tier_runs() {
+    local want=$1 have=$2
+    case "$have" in
+    full) return 0 ;;
+    loop) [ "$want" != "full" ] ;;
+    fast) [ "$want" = "fast" ] ;;
+    *) return 1 ;;
+    esac
+}
+
+# local_legs_tier_any <mode tier> — `local:<name>` per leg this mode would run,
+# or nothing. The one question a mode's guard asks before announcing the leg at
+# all: a `--fast` run with no fast-tier leg in the drawer announces nothing, so
+# its transcript is the transcript of a tree with no drawer.
+local_legs_tier_any() {
+    local row name t out=""
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        name=$(printf '%s' "$row" | cut -f1)
+        t=$(printf '%s' "$row" | cut -f4)
+        local_legs_tier_runs "$t" "$1" || continue
+        out="${out}${out:+ }local:${name}"
+    done <<EOF
+${LOCAL_LEGS_TABLE}
+EOF
+    printf '%s\n' "$out"
+}
+
+# local_legs_touched <touches> <changed-file list> — 0 when the leg's declared
+# prefixes matched something the rung changed, 1 when they matched nothing, 2
+# when the changed set could not be read at all.
+#
+# A SET THIS CANNOT READ MEANS THE LEG RUNS. The whole point of `touches:` is to
+# SKIP work on a narrowed run, and skipping on an unreadable set would be a leg
+# that went quiet for a reason nobody measured.
+local_legs_touched() {
+    local globs=$1 changed=$2 g c
+    [ -n "$globs" ] || return 0
+    [ -n "$changed" ] || return 2
+    for g in $globs; do
+        for c in $changed; do
+            case "$c" in
+            "$g" | "$g"/*) return 0 ;;
+            esac
+        done
+    done
+    return 1
+}
+# local_legs_changed_files — the paths this run is narrowed to, space-joined,
+# or nothing when the run is not narrowed at all. `DJB_LOCAL_LEGS_CHANGED_FILES` is
+# the drive's plant point; `LOOP_SCOPE_CHANGED_FILES` is the `--loop` scope's
+# own derivation, computed once above and read here rather than re-derived.
+local_legs_changed_files() {
+    if [ -n "${DJB_LOCAL_LEGS_CHANGED_FILES+x}" ]; then
+        printf '%s\n' "$DJB_LOCAL_LEGS_CHANGED_FILES"
+        return 0
+    fi
+    printf '%s\n' "${LOOP_SCOPE_CHANGED_FILES:-}"
+}
+
+# local_leg_key <local:name> [<measured-tree listing>] — the reuse key for one
+# product leg, in `drive_key`'s own grammar (`ok <schema>:<digest> <parts>` or
+# `err <why>`) so `always_on__consult` reads ONE shape whatever the member is.
+#
+# WHAT IS IN IT. The leg's own bytes, its declared `inputs:` expanded through
+# the measured tree exactly as a drive's `# drives:` paths are, the VALUES of
+# its declared `env:` names, and this machine. A product leg's verdict is
+# therefore reused on precisely the terms the template's drives are — which is
+# the whole of the +140 lines the first consumer had to add to `gate_ledger.sh`
+# to get the same thing by hand.
+local_leg_key() {
+    local name=${1#local:} listing=${2:-} file text parts="" one d digest v
+    file=$(local_legs_field "$name" 9)
+    [ -n "$file" ] && [ -r "$file" ] || {
+        printf 'err the local leg %s is not readable\n' "${file:-local:$name}"
+        return 1
+    }
+    command -v sha256_of >/dev/null 2>&1 || {
+        printf 'err no digest reader in this shell\n'
+        return 1
+    }
+    text="${DRIVE_KEY_SCHEMA:-drive-v1}
+name local:${name}
+header $(local_legs_field "$name" 2)|$(local_legs_field "$name" 3)|$(local_legs_field "$name" 4)|$(local_legs_field "$name" 5)|$(local_legs_field "$name" 6)|$(local_legs_field "$name" 7)|$(local_legs_field "$name" 8)"
+    one=$(sha256_of "$file") || {
+        printf 'err %s could not be digested\n' "$file"
+        return 1
+    }
+    text="${text}
+self ${one}"
+    parts="self:$(printf '%s' "$one" | cut -c1-12)"
+    for d in $(local_legs_field "$name" 7); do
+        if [ -n "$listing" ] && command -v drive__expand >/dev/null 2>&1; then
+            one=$(drive__expand "$listing" "$d")
+        else
+            one=$(git ls-files -s -- "$d" 2>/dev/null || true)
+        fi
+        if [ -z "$one" ]; then
+            printf 'err its declared input %s expands to nothing in the measured tree — never a silently narrower key\n' "$d"
+            return 1
+        fi
+        digest=$(printf '%s\n' "$one" | sha256_of) || {
+            printf 'err %s could not be digested\n' "$d"
+            return 1
+        }
+        text="${text}
+${d} ${digest}"
+        parts="${parts},${d}:$(printf '%s' "$digest" | cut -c1-12)"
+    done
+    for d in $(local_legs_field "$name" 8); do
+        eval "v=\${${d}:-<unset>}"
+        digest=$(printf '%s' "$v" | sha256_of) || {
+            printf 'err the value of %s could not be digested\n' "$d"
+            return 1
+        }
+        text="${text}
+env:${d} ${digest}"
+        parts="${parts},env:${d}:$(printf '%s' "$digest" | cut -c1-12)"
+    done
+    if command -v drive_machine_digest >/dev/null 2>&1; then
+        one=$(drive_machine_digest) || {
+            printf 'err this machine could not be digested\n'
+            return 1
+        }
+        text="${text}
+machine ${one}"
+        parts="${parts},machine:$(printf '%s' "$one" | cut -c1-12)"
+    fi
+    digest=$(printf '%s\n' "$text" | sha256_of) || {
+        printf 'err the key could not be digested\n'
+        return 1
+    }
+    printf 'ok %s:%s %s cites=0 machine=%s\n' \
+        "${DRIVE_KEY_SCHEMA:-drive-v1}" "$digest" "$parts" \
+        "$(drive_machine_label 2>/dev/null || echo unstated)"
+}
+
+#: One `_provision-<unit>.sh` per local unit, run ONCE before that unit's first
+#: leg and never again — the seam a unit with its own organs needs (`node`,
+#: `network`) and the one thing a leg may not do for itself, because N legs
+#: would each pay it.
+LOCAL_LEGS_PROVISIONED=""
+local_legs_provision() {
+    local unit=$1 f rc=0
+    case " $LOCAL_LEGS_PROVISIONED " in
+    *" $unit "*) return 0 ;;
+    esac
+    f="$(local_legs_dir)/_provision-${unit}.sh"
+    if [ ! -f "$f" ]; then
+        # NOTHING TO RUN IS A UNIT THAT IS PROVISIONED, and it is marked so the
+        # `[ -f ]` is paid once rather than once per leg.
+        LOCAL_LEGS_PROVISIONED="${LOCAL_LEGS_PROVISIONED}${LOCAL_LEGS_PROVISIONED:+ }${unit}"
+        return 0
+    fi
+    if [ ! -x "$f" ]; then
+        echo "!! ${f} is not executable — a provisioner this gate cannot run is a unit whose legs run unprovisioned." >&2
+        return 2
+    fi
+    echo "  local unit ${unit}: provisioning — ${f}"
+    ("$f") || rc=$?
+    if [ "$rc" != "0" ]; then
+        echo "!! ${f} exited ${rc} — unit '${unit}' is NOT provisioned." >&2
+        return "$rc"
+    fi
+    # THE MARK GOES ON ON SUCCESS AND NOWHERE ELSE. Marked before the run, a
+    # FAILED provisioner made only the first leg of its unit could-not-look and
+    # every later leg RAN — unprovisioned, against organs nothing brought up,
+    # reporting whatever such a run reports. Once-only is a promise about
+    # SUCCESSFUL provisioning; a failure is a state every leg of the unit has
+    # to meet, and meeting it costs one `[ -f ]` and one re-run of a script
+    # that has already said it cannot work.
+    LOCAL_LEGS_PROVISIONED="${LOCAL_LEGS_PROVISIONED}${LOCAL_LEGS_PROVISIONED:+ }${unit}"
+    return 0
+}
+
+# gate_leg_local_legs — the product legs, run. The tier the caller is asking
+# about is `LOCAL_LEGS_MODE_TIER` and whether `touches:` may skip one is
+# `LOCAL_LEGS_TOUCH_FILTER`; both are set at the call site and neither is
+# guessed here, so there is one decision about a narrowed mode and it is made
+# where the mode is known.
+#
+# Exit 0 every selected leg green · 1 one was red · 2 one could not look — and
+# WHICH of the last two an exit 2 from a product's own tool means is the leg's
+# `two-means:` declaration, never this gate's guess.
+gate_leg_local_legs() {
+    local tier=${LOCAL_LEGS_MODE_TIER:-full} filter=${LOCAL_LEGS_TOUCH_FILTER:-0}
+    local row name unit t touches file rc worst=0 t0 took out changed tou prc twom
+    local green=0 red=0 cannot=0 skipped=0 rednames="" cannotnames=""
+    changed=$(local_legs_changed_files)
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        name=$(printf '%s' "$row" | cut -f1)
+        unit=$(printf '%s' "$row" | cut -f2)
+        t=$(printf '%s' "$row" | cut -f4)
+        touches=$(printf '%s' "$row" | cut -f6)
+        file=$(printf '%s' "$row" | cut -f9)
+        local_legs_tier_runs "$t" "$tier" || continue
+        # UNDER `--leg <unit>` A LEG OF ANOTHER UNIT IS NOT THIS RUNNER'S. The
+        # drawer may declare several units and one runner walks them all, so
+        # the unit filter has to be applied per LEG and not per announcement.
+        if [ -n "$GATE_LEG_UNIT_LEGS" ]; then
+            case "$GATE_LEG_UNIT_LEGS" in
+            *",local:${name},"*) ;;
+            *) continue ;;
+            esac
+        fi
+        if [ "$filter" = "1" ] && [ -n "$touches" ]; then
+            tou=0
+            local_legs_touched "$touches" "$changed" || tou=$?
+            if [ "$tou" = "1" ]; then
+                echo "  local:${name}: SKIPPED — its touches (${touches}) matched nothing this run changed. The full gate runs it regardless."
+                skipped=$((skipped + 1))
+                continue
+            fi
+            if [ "$tou" = "2" ]; then
+                echo "  local:${name}: touches (${touches}) not applied — this run's changed set could not be read, so the leg runs"
+            fi
+        fi
+        prc=0
+        local_legs_provision "$unit" || prc=$?
+        if [ "$prc" != "0" ]; then
+            echo "  local:${name}: could not look — unit '${unit}' did not provision"
+            cannot=$((cannot + 1))
+            cannotnames="${cannotnames} local:${name}"
+            continue
+        fi
+        out=$(mktemp "${TMPDIR:-/tmp}/djb-local-leg.XXXXXX") || {
+            echo "  local:${name}: could not look — no scratch file for its output"
+            cannot=$((cannot + 1))
+            cannotnames="${cannotnames} local:${name}"
+            continue
+        }
+        t0=$(date +%s)
+        rc=0
+        # UNPIPED, TO A FILE, AND READ AFTERWARDS — a reader in the pipeline
+        # would replace the leg's exit status with its own.
+        ("$file") >"$out" 2>&1 || rc=$?
+        took=$(($(date +%s) - t0))
+        echo "  local:${name}: exit ${rc} (${took}s)"
+        if [ "$rc" = "0" ]; then
+            green=$((green + 1))
+        else
+            sed 's/^/      | /' "$out"
+            # THE DECLARED GRAMMAR, BOTH HALVES. `broken` reads 2 as
+            # could-not-look; `finding` reads 2 as an ordinary red AND
+            # anything at or above 3 as could-not-look, because a tool that
+            # reserves 2 for findings and exited past it did not do the job.
+            twom=$(printf '%s' "$row" | cut -f5)
+            if { [ "$rc" = "2" ] && [ "$twom" = "broken" ]; } ||
+                { [ "$twom" = "finding" ] && [ "$rc" -ge 3 ]; }; then
+                cannot=$((cannot + 1))
+                cannotnames="${cannotnames} local:${name}"
+            else
+                red=$((red + 1))
+                rednames="${rednames} local:${name}"
+            fi
+        fi
+        rm -f "$out"
+    done <<EOF
+${LOCAL_LEGS_TABLE}
+EOF
+    echo "  local legs (${tier}): ${green} green · ${red} red · ${cannot} could-not-look · ${skipped} skipped by touches"
+    if [ "$cannot" -gt 0 ]; then
+        echo "!! LOCAL LEGS COULD NOT LOOK:${cannotnames}" >&2
+        [ "$red" = "0" ] || echo "!! and RED:${rednames}" >&2
+        echo "   2 outranks 1. A product leg's exit 2 means what its 'two-means:' says." >&2
+        worst=2
+    elif [ "$red" -gt 0 ]; then
+        echo "!! LOCAL LEGS RED:${rednames}" >&2
+        worst=1
+    fi
+    return "$worst"
+}
+# <<< local-legs <<<
+
+# THE DRIVE DRAWER IS READ HERE, FIRST, AND FOR THE LEG DRAWER'S OWN REASON.
+# `local_legs__known_names` below asks the registry what names this gate already
+# carries, and the registry now reads `scripts/local/drives/` — so a malformed
+# drive drawer met from inside the leg scan would print its refusal in the
+# middle of somebody else's message and be swallowed by a `$( )`. Read once,
+# here, above everything: a gate that answered `--fast` while it could not read
+# its own drive set would be a silently smaller gate, exactly as one that could
+# not read its leg set would be.
+#
+# THROUGH `gate_capture`, NOT A BARE `$( )`, for the always-on leg's reason:
+# a command substitution is a subshell, so a refusal recorded inside one dies
+# with it and the banner below would print whatever this process saw LAST. The
+# capture replays the callee's stderr where it would have printed and carries
+# its first `!!` line out as the cause, which is what makes "see above" a
+# sentence a reader without the scrollback can still act on.
+SELFTEST_DRIVE_NAMES=""
+if ! gate_capture SELFTEST_DRIVE_NAMES selftest_registered_drives; then
+    gate_cause
+    echo "!! the product-drive drawer (${DJB_LOCAL_DRIVES_DIR:-scripts/local/drives}) could not be read — see above." >&2
+    echo "   Nothing was judged: no lease, no lock, no slot, no drive." >&2
+    echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+    exit 2
+fi
+
+# THE DRAWER IS READ HERE, ONCE, AND IT IS WHAT MAKES `FULL_LEGS` A RUNTIME
+# STRING. Above the unit table because the table declares a unit per local unit;
+# above every mode because a malformed drawer is EXIT 2 AT THE LISTING and at
+# every other door too — a gate that answered `--fast` while it could not read
+# its own leg set would be a silently smaller gate.
+if ! local_legs_scan; then
+    gate_cause
+    echo "!! the product-leg drawer ($(local_legs_dir)) could not be read — see above." >&2
+    echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+    echo "   Nothing was judged: no lease, no lock, no slot, no leg." >&2
+    exit 2
+fi
+LOCAL_LEGS_MEMBERS=$(local_legs_names | tr '\n' ',' | sed 's/,$//')
+[ -z "$LOCAL_LEGS_MEMBERS" ] || FULL_LEGS="${FULL_LEGS},${LOCAL_LEGS_MEMBERS}"
 
 GATE_UNIT_ROWS=""
 gate_unit() {
@@ -1181,17 +2094,46 @@ gate_unit pytest-x2 db,redis,temporal,minio,meilisearch N-capable \
 # COLUMN ZERO by `scripts/tests/test_drive_preamble.sh`. So a `k/K` filter is a
 # per-block guard, one edit per drive, and the declaration says `0` until that
 # is built rather than promising a runner a split this body cannot do.
-gate_unit selftest db,docker,temporal N-capable selftest $(selftest_registered_drives)
+# `$SELFTEST_DRIVE_NAMES` AND NOT A SECOND `$(selftest_registered_drives)`: the
+# drawer was read once, above, where its refusal is exit 2 rather than a partial
+# list inside a command substitution nobody checks.
+# shellcheck disable=SC2086 # the names word-split into arguments, as gate_unit takes them
+gate_unit selftest db,docker,temporal N-capable selftest $SELFTEST_DRIVE_NAMES
 gate_unit full-house-rules none 0 full-house-rules
+
+# THE PRODUCT'S UNITS, ONE PER `unit:` THE DRAWER DECLARES. Indivisible (`0`):
+# a product leg is one command and there is no `k/N` for this gate to hand it.
+# The `needs` field is the UNION of the unit's legs' declarations, which is the
+# same thing the rows above say by hand about legs written in this file.
+for LOCAL_UNIT in $(local_legs_units); do
+    # shellcheck disable=SC2046 # the members word-split into arguments, as gate_unit takes them
+    gate_unit "$LOCAL_UNIT" "$(local_legs_unit_needs "$LOCAL_UNIT")" 0 $(local_legs_unit_members "$LOCAL_UNIT")
+done
+unset LOCAL_UNIT
 
 # gate_announced_full_legs — the full gate's leg sequence, DERIVED from this
 # file rather than remembered: every column-zero `leg <name>` call site, in
 # order, de-duplicated on first appearance (`temporal-census` is announced
 # before and after the suite and is one leg).
 gate_announced_full_legs() {
-    awk '
+    # `local-legs` IS ONE CALL SITE AND N MEMBERS, and that is why it is the one
+    # name this reader rewrites. The site is guarded by the drawer being
+    # non-empty, so a static read of this file would announce a leg an empty
+    # drawer never runs; and the leg runs the drawer's legs BY NAME, so what the
+    # sequence owes a reader is `local:<name>` per leg and not the name of the
+    # runner. Both halves come from the same scan `FULL_LEGS` was grown from, so
+    # the two can only disagree if the drawer changes mid-run.
+    awk -v members="${LOCAL_LEGS_MEMBERS:-}" '
         /^leg [a-z0-9-]+ / {
-            if (!($2 in seen)) { seen[$2] = 1; out = out (out ? "," : "") $2 }
+            if ($2 in seen) { next }
+            seen[$2] = 1
+            # ONE CALL SITE, N MEMBERS: see the comment above this function.
+            if ($2 == "local-legs") {
+                if (members == "") { next }
+                out = out (out ? "," : "") members
+                next
+            }
+            out = out (out ? "," : "") $2
         }
         END { print out }
     ' scripts/check.sh
@@ -1305,9 +2247,24 @@ always_on__legs() {
         index($0, m) == 1 { inloop = 1; next }
         inloop && $0 == "fi" { inloop = 0; past = 1; next }
         /^[[:space:]]*leg [a-z0-9-]+ / {
-            if (!($2 in seen)) { seen[$2] = 1; print (past ? "full" : "loop"), $2 }
+            if ($2 in seen) { next }
+            seen[$2] = 1
+            # THE RUNNER OF THE PRODUCT DRAWER IS NOT A MEMBER, ITS LEGS ARE.
+            # The `local-legs` call site runs N declared legs, each with its
+            # OWN tier, so the name that would land here means nothing to a
+            # reader asking "does this member join a --loop". The members are
+            # appended below, each under the tier its header declares.
+            if ($2 == "local-legs") { next }
+            print (past ? "full" : "loop"), $2
         }
     ' "$file"
+    # `fast` AND `loop` BOTH READ AS `loop` HERE, and `full` as `full`, because
+    # this reader's question is the always-on leg's: does a --loop run it. A
+    # fast-tier leg is run by --fast AND by every mode above it, so the answer
+    # for both is yes.
+    awk -F'\t' 'NF { print ($4 == "full" ? "full" : "loop"), "local:" $1 }' <<EOF
+${LOCAL_LEGS_TABLE:-}
+EOF
 }
 
 # always_on__unit_needs <member> — the `needs` field of the unit that names it,
@@ -1409,9 +2366,69 @@ always_on__drives() {
     selftest_registered_drives
 }
 
-# always_on__drive_file <name>
+# always_on__drive_file <name> — where that drive actually lives.
+#
+# IT ASKS THE REGISTRY; IT DOES NOT COMPOSE A PATH. The one-line
+# `printf '%s/test_%s.sh' scripts/tests "$1"` this replaces was a SECOND
+# derivation of a population `selftest_registered_drives` already owns, and it
+# was wrong for every member that registry places outside `scripts/tests/` —
+# `stage` (`deploy/tests/test_stage.sh`) resolved to a file that has never
+# existed and the member reported `could not look` with a path nobody could go
+# and look at. A composer is only ever right while both homes agree, and the
+# registry widened to two homes a cycle ago.
+#
+# THE SCRATCH BRANCH IS FIRST AND UNCHANGED: `DJB_SELFTEST_DRIVES_DIR` is a
+# planted directory, every member in it is `test_<name>.sh` by construction,
+# and `always_on__drives` derives the names from the same directory — so the
+# registry has nothing to say about a set it did not write.
+#
+# THE FALLBACK IS THE OLD COMPOSITION, DELIBERATELY. A name the registry does
+# not carry is not this function's refusal to make: it hands back the
+# conventional path so `always_on__run` can print its own honest
+# `could not look — <path> is not in this tree`, naming a path a reader can
+# check, which is a better answer than an empty string.
+#
+# AND THE READER RUNS TO EOF. No `exit` in the awk and no quiet early-exiting
+# tail: a consumer that stops at its first hit SIGPIPEs its producer, and under
+# `pipefail` — which this gate runs under — that is a nonzero pipeline and a
+# `set -e` death at the assignment (`scripts/tests/test_sweep.sh`'s
+# `quiet_tail_guard` reds the shape wherever it appears).
 always_on__drive_file() {
-    printf '%s/test_%s.sh\n' "${DJB_SELFTEST_DRIVES_DIR:-scripts/tests}" "$1"
+    # `local:` IS TWO POPULATIONS, AND THE REGISTRY IS ASKED FIRST. A product
+    # LEG and a product DRIVE are both printed `local:<name>` — the registry
+    # refuses a name that is in both drawers, so at most one of the two answers
+    # — and the DRIVE's path is the registry's, because the registry is the one
+    # reader of every drive home (that is the whole of `--with-path`'s job). A
+    # leg's path is the leg scan's row, which is the only place that knows it.
+    # Both are asked before the scratch branch, because a `local:` name can
+    # never be a member of a planted drive set either.
+    case "$1" in
+    local:*)
+        local localrows="" localpath=""
+        if command -v selftest_registered_drives >/dev/null 2>&1; then
+            localrows=$(selftest_registered_drives --with-path) || localrows=""
+            localpath=$(printf '%s\n' "$localrows" |
+                awk -F'\t' -v n="$1" '$1 == n && !seen { p = $2; seen = 1 } END { print p }')
+        fi
+        if [ -n "$localpath" ]; then
+            printf '%s\n' "$localpath"
+            return 0
+        fi
+        local_legs_field "$1" 9
+        return 0
+        ;;
+    esac
+    local name=$1 path="" rows=""
+    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
+        printf '%s/test_%s.sh\n' "$DJB_SELFTEST_DRIVES_DIR" "$name"
+        return 0
+    fi
+    if command -v selftest_registered_drives >/dev/null 2>&1; then
+        rows=$(selftest_registered_drives --with-path) || rows=""
+        path=$(printf '%s\n' "$rows" |
+            awk -F'\t' -v n="$name" '$1 == n && !seen { p = $2; seen = 1 } END { print p }')
+    fi
+    printf '%s\n' "${path:-scripts/tests/test_${name}.sh}"
 }
 
 # --- THE MEMBER'S VERDICT, CONSULTED BEFORE IT RUNS --------------------------
@@ -1472,7 +2489,31 @@ always_on__consult() {
         echo "  ${kind} ${name}: not consulted — the measured tree could not be read; running it${suffix}"
         return 0
     fi
-    keyout=$(drive_key "$file" "$ALWAYS_ON_TREE" "$ALWAYS_ON_LISTING") || true
+    # ONE SHAPE, TWO KEY BUILDERS. A drive's key is built from its `# drives:`
+    # declaration; a product leg has no such line and declares `inputs:`/`env:`
+    # in its own header instead. Both print `ok <schema>:<digest> <parts>`, so
+    # everything below this line reads one grammar.
+    case "$name" in
+    local:*)
+        # `local:` IS TWO POPULATIONS AND THEY KEY DIFFERENTLY. A product LEG
+        # declares `inputs:`/`env:` in its own header and `local_leg_key` reads
+        # them. A product DRIVE has neither, and it cannot borrow `drive_key`:
+        # that key REQUIRES a `drive_preamble.sh` beside the drive file
+        # (`scripts/gate_ledger.sh`), which is true of `scripts/tests/` and of
+        # `deploy/tests/` and false of `scripts/local/drives/` by construction.
+        # So a drawer drive is NOT KEYED AND NOT BANKED — it runs on every gate
+        # — and this branch says that out loud rather than handing its name to
+        # the LEG key, which is a key for a different member the review that found it).
+        if command -v selftest_registered_drives >/dev/null 2>&1 &&
+            selftest_registered_drives 2>/dev/null |
+            awk -v n="$name" '$0 == n { found = 1 } END { exit(found ? 0 : 1) }'; then
+            echo "  ${kind} ${name}: not consulted — a product drive carries no drive key (no preamble beside it); it runs on every gate${suffix}"
+            return 0
+        fi
+        keyout=$(local_leg_key "$name" "$ALWAYS_ON_LISTING") || true
+        ;;
+    *) keyout=$(drive_key "$file" "$ALWAYS_ON_TREE" "$ALWAYS_ON_LISTING") || true ;;
+    esac
     case "$keyout" in
     "ok ${DRIVE_KEY_SCHEMA}:"*)
         ALWAYS_ON_KEY=$(printf '%s\n' "$keyout" | awk '{print $2}')
@@ -1635,6 +2676,11 @@ always_on_leg() {
         if [ -n "$legs" ]; then
             printf '%s\n' "$legs" | while read -r where name; do
                 [ "$where" = "full" ] || continue
+                # A PRODUCT LEG IS NOT ONE OF THESE, and the reason below is
+                # not true of it: its body is a file, not a function defined
+                # past this block. Half three prints its own line, naming its
+                # own reason — its header said `tier: full`.
+                case "$name" in local:*) continue ;; esac
                 secs=$(always_on__recorded "$name")
                 echo "  always-on (measured): leg ${name} stays full-only — its body is defined below the --loop block's own exit, so this leg cannot call it${secs:+ (${secs} s recorded)}"
             done
@@ -1676,6 +2722,40 @@ always_on_leg() {
         measured=""
     fi
 
+    # --- half three: the PRODUCT LEGS whose tier reaches this mode -----------
+    #
+    # SELECTED HERE AND RUN BELOW, like the other two halves, and for the same
+    # reason: the reasons a member is out are printed beside its name. A
+    # product leg's tier is DECLARED rather than measured (its price is the
+    # product's, and this file has never measured it), and its `touches:` is
+    # the narrowed mode's own permission to skip it — the full gate runs it
+    # whatever it touches.
+    local locals="" lname ltouches ltier lchanged ltou
+    lchanged=$(local_legs_changed_files)
+    while read -r where lname; do
+        [ -n "$lname" ] || continue
+        case "$lname" in local:*) ;; *) continue ;; esac
+        [ "$where" = "loop" ] || {
+            echo "  always-on (local): ${lname} stays full-only — its header declares tier: full"
+            continue
+        }
+        ltouches=$(local_legs_field "$lname" 6)
+        if [ -n "$ltouches" ]; then
+            ltou=0
+            local_legs_touched "$ltouches" "$lchanged" || ltou=$?
+            if [ "$ltou" = "1" ]; then
+                echo "  always-on (local): ${lname} SKIPPED — its touches (${ltouches}) matched nothing this run changed; the full gate runs it regardless"
+                continue
+            fi
+        fi
+        locals="${locals} ${lname}"
+    done <<EOF
+$(always_on__legs 2>/dev/null || true)
+EOF
+    if [ -n "$locals" ]; then
+        echo "  always-on (local): joins this loop —${locals}"
+    fi
+
     # --- run them ------------------------------------------------------------
     if [ -n "$declared" ]; then
         while IFS="$(printf '\t')" read -r ALWAYS_ON_PATH ALWAYS_ON_REASON; do
@@ -1688,6 +2768,22 @@ EOF
     fi
     for name in $measured; do
         always_on__run member "$name"
+    done
+    for name in $locals; do
+        # THE LOOP HALF PROVISIONS TOO, and it did not: `always_on__run` is the
+        # shared member runner and knows nothing about units, so a loop-tier
+        # leg of a unit with a `_provision-<unit>.sh` ran UNPROVISIONED under
+        # every `--loop` while the full gate brought its organs up. One unit,
+        # two answers, and the cheap one was the wrong one.
+        local lprc=0
+        local_legs_provision "$(local_legs_field "$name" 2)" || lprc=$?
+        if [ "$lprc" != "0" ]; then
+            echo "  local ${name}: could not look — unit '$(local_legs_field "$name" 2)' did not provision"
+            ALWAYS_ON_CANNOT=$((ALWAYS_ON_CANNOT + 1))
+            ALWAYS_ON_CANNOT_NAMES="${ALWAYS_ON_CANNOT_NAMES} ${name}"
+            continue
+        fi
+        always_on__run local "$name"
     done
 
     if [ -n "$ALWAYS_ON_LISTING" ]; then
@@ -2801,6 +3897,28 @@ gate_leg_took() {
     gate_member_record "$1" "$2"
 }
 
+# gate_leg_in_unit <leg name> — 0 when this run is running that leg: either it
+# is not a `--leg <unit>` run at all, or the unit holds the leg.
+#
+# `local-legs` IS THE ONE LEG WHOSE NAME IS NOT ITS OWN MEMBERSHIP. It is the
+# RUNNER of the product drawer, and what the listing puts in a unit is the
+# drawer's legs — `local:<name>` — never the runner. So a unit that holds any
+# `local:` member holds the runner too, and a unit that holds none does not
+# announce it. Written once and read by both the announcement and the body,
+# because the day those two answer differently is the day a unit announces a
+# leg no runner was handed, or runs one nobody announced.
+gate_leg_in_unit() {
+    [ -n "$GATE_LEG_UNIT_LEGS" ] || return 0
+    case "$GATE_LEG_UNIT_LEGS" in
+    *",$1,"*) return 0 ;;
+    esac
+    if [ "$1" = "local-legs" ]; then
+        case "$GATE_LEG_UNIT_LEGS" in
+        *",local:"*) return 0 ;;
+        esac
+    fi
+    return 1
+}
 leg() {
     # UNDER `--leg <unit>`, A LEG OUTSIDE THE UNIT IS NOT ANNOUNCED AT ALL —
     # not announced, not timed, not skipped-with-a-line. A runner handed one
@@ -2808,12 +3926,7 @@ leg() {
     # of everything it did not run is noise the other N-1 runners are printing
     # too. `GATE_LEG_UNIT_LEGS` is empty on every other path, which is what
     # makes this a no-op everywhere else.
-    if [ -n "$GATE_LEG_UNIT_LEGS" ]; then
-        case "$GATE_LEG_UNIT_LEGS" in
-        *",$1,"*) ;;
-        *) return 0 ;;
-        esac
-    fi
+    gate_leg_in_unit "$1" || return 0
     # Announce a leg and print the previous leg's wall time. Timing is printed
     # per leg so a slow gate names its slow leg instead of being argued about.
     local now
@@ -2868,12 +3981,7 @@ gate_run_body() {
     # THE SAME ONE VARIABLE THE ANNOUNCEMENT READS. A body run for a leg the
     # unit does not hold would be the unit running work no runner was handed,
     # and reading a second variable here is how the two halves come apart.
-    if [ -n "$GATE_LEG_UNIT_LEGS" ]; then
-        case "$GATE_LEG_UNIT_LEGS" in
-        *",$1,"*) ;;
-        *) return 0 ;;
-        esac
-    fi
+    gate_leg_in_unit "$1" || return 0
     if [ -n "${DJB_GATE_LEGS_DRY:-}" ]; then
         echo "  leg: $1 (DJB_GATE_LEGS_DRY — announced, body not run)"
         return 0
@@ -3505,6 +4613,21 @@ fi
 gate_run_body ci-env gate_leg_ci_env
 
 if [ "$MODE" = "--fast" ]; then
+    # THE PRODUCT'S FAST-TIER LEGS, INSIDE THE FAST BLOCK AND INDENTED. Indented
+    # because that is this file's own rule for a leg that belongs to ONE mode:
+    # the listing reads column-zero call sites, and a second column-zero
+    # `leg local-legs` would put the drawer at the wrong place in the full
+    # gate's announced sequence. `--fast` is where a product's typecheck and
+    # lint belong, and `touches:` may skip one here because a narrowed mode is
+    # allowed to (the full gate is not).
+    if [ -n "$LOCAL_LEGS_MEMBERS" ] && [ -n "$(local_legs_tier_any fast)" ]; then
+        leg local-legs "the product's own legs (scripts/local/legs/), tier fast — declared beside this file, never in it"
+        LOCAL_LEGS_MODE_TIER=fast
+        LOCAL_LEGS_TOUCH_FILTER=1
+        LOCAL_LEGS_RUN_RC=0
+        gate_run_body local-legs gate_leg_local_legs || LOCAL_LEGS_RUN_RC=$?
+        [ "$LOCAL_LEGS_RUN_RC" = "0" ] || exit "$LOCAL_LEGS_RUN_RC"
+    fi
     leg_done
     echo "ok: fast checks passed ($(($(date +%s) - T_MODE_START))s)"
     echo "  NOT run: check --deploy, pytest, canary self-test, the shell refusal drives,"
@@ -3557,8 +4680,14 @@ gate_run_body deploy-check gate_leg_deploy_check
 # it. The fast path: nothing under frontend/ derives differently than it
 # did before the active rung's changes, so nothing frontend-shaped is re-run, mirroring
 # the own-app tiering the pytest leg above already applies one door over.
-# FULL — frontend/ exists and the active rung touched it: the
-# frozen-lockfile check runs, and the declared test script (if any) runs.
+# AND IT IS `--loop`'s AND `--fast`'s ALONE: at the full mode and
+# under `--leg` — one shard of that same full gate — the leg runs WHOLE,
+# because a bank writes a verdict row naming `fe` as a leg that ran and the
+# push wall reads that row as a full gate having passed these bytes. The
+# mode reaches the state machine through the one call site below.
+# FULL — frontend/ exists and either the active rung touched it or the mode
+# runs it whole: the frozen-lockfile check runs, the declared test script
+# (if any) runs, and the pair's measured seconds are printed.
 # TOOLCHAIN ABSENT while frontend/ is present AND touched is exit 2, not
 # a skip — the same tree-present/toolchain-absent cell
 # `quality/worlds.py`'s `tree_verdict` names `broken` for a rules.yaml
@@ -3567,7 +4696,7 @@ gate_run_body deploy-check gate_leg_deploy_check
 # lockstep by citation since neither imports the other across a
 # territory line — a rung that let the two disagree is the finding this
 # comment exists to make checkable.
-leg fe "the fe leg — three states (absent/untouched/full) over frontend/, deferring to the same tree-present/toolchain-absent could-not-look cell quality/worlds.py's tree_verdict names for a runner rule"
+leg fe "the fe leg — three states (absent/untouched/full) over frontend/, the untouched fast path belonging to --loop and --fast alone while the full gate and its --leg shards run it whole, deferring to the same tree-present/toolchain-absent could-not-look cell quality/worlds.py's tree_verdict names for a runner rule"
 gate_leg_fe() {
 FE_CHANGED=$(mktemp "${TMPDIR:-/tmp}/djb-fe-changed.XXXXXX")
 gate_refuse_reset
@@ -3583,7 +4712,16 @@ if [ "$FE_DERIVE_RC" != "0" ]; then
     exit 2
 fi
 set +e
-fe_leg_run "$FE_CHANGED"
+# THE MODE IS HANDED OVER VERBATIM, and that is the whole of the fix. One
+# call site, one leg, four modes: `""` (the full gate, and `--bank`/`--pr`
+# which normalise to it) and `--leg` (one shard of that same full gate) run the
+# frontend WHOLE; `--loop` and `--fast` keep the change-aware fast path that is
+# a builder's inner-loop economy. Before this, every mode got the change-aware
+# answer, so a bank on an untouched frontend printed `UNTOUCHED (fast path)`
+# and `(fe: 0s)` and then banked a verdict row naming `fe` among the legs it
+# had run. `scripts/fe_gate.sh`'s THE MODE block argues it; this line is the
+# only place the gate says which mode it is in.
+fe_leg_run "$FE_CHANGED" "$MODE"
 FE_RC=$?
 set -e
 rm -f "$FE_CHANGED"
@@ -5622,6 +6760,15 @@ selftest_drive_consult() {
             return 1
             ;;
         esac
+    elif [ "${name#local:}" != "$name" ]; then
+        # A PRODUCT DRIVE IS NOT KEYED HERE EITHER, AND FOR THE SAME REASON —
+        # `drive_key` wants a `drive_preamble.sh` beside the file and the
+        # drawer has none. It used to fall out of this function silently, on a
+        # `selftest_drive_file` that composed `scripts/tests/test_local:x.sh`
+        # and found nothing; silent is the one thing a member that runs every
+        # single gate must not be the review that found it).
+        echo "  drive ${name}: not consulted — a product drive is not keyed or banked; it runs on every gate"
+        return 0
     else
         file=$(selftest_drive_file "$name")
         [ -f "$file" ] || return 0
@@ -5712,10 +6859,45 @@ selftest_drive_consult() {
 # `selftest_registered_drives` reads exactly those, so the walk and the census
 # cannot come apart: there is no second list.
 #
-# THE SPLIT IS BY INDEX, MOD K. Drive i (0-based, in that order) runs when
-# `i % K == k`. `house-rules-engine` is not a drive under `scripts/tests/` and
-# has no index; it runs in shard 0, which is stated rather than discovered — a
-# canary self-test run once per shard would be K times the same twenty seconds.
+# THE SPLIT IS BY DURATION, NOT BY INDEX, AND THE MEASUREMENT BEHIND THAT IS
+# BOXBANK-20. The selftest unit took 1457 s on one box while the other five
+# units were done by minute 9, and 1457 is the arithmetic SUM of the forty
+# drives run one at a time (loop_scope 309 · the engine 238 · gate_explain 190 ·
+# list_legs 173 · …). Splitting that sum BY INDEX — drive i runs when
+# `i % K == k`, which is what this block did until now — balances the COUNT and
+# says nothing about the price: shard 0 drew the engine's own self-test AND
+# every index ≡ 0 member, so the split got WORSE past ten boxes (N=12 predicted
+# 643 s against N=10's 531). A round-robin over items whose costs differ by two
+# orders of magnitude is a count, and the wall is a sum.
+#
+# SO THE PARTITION IS LPT (longest-processing-time-first), the standard greedy
+# for exactly this problem: sort the members by their measured wall, heaviest
+# first, and give each one to the shard that is currently lightest. Its bound is
+# the one the drive asserts — the heaviest shard is at most `total/S` plus the
+# single heaviest member — so a shard can never be worse than one long drive
+# above the perfect split, at any S.
+#
+# THE WEIGHTS ARE READ, NEVER GUESSED, AND THE FILE IS A HINT. They come out of
+# `scripts/gate_member_durations.json` through the SAME reader the always-on leg
+# uses (`always_on__read_durations`) — one measurement, one parser, no second
+# table. A member the file does not name takes the MEDIAN of the rows that do
+# exist for this population, which is the cheapest honest guess and is stated on
+# the leg's own line. NO FILE AT ALL IS NOT A REFUSAL: absence means unmeasured,
+# the leg says so and falls back to the index round-robin this block shipped
+# before — a tree before its first `--store-durations` still shards.
+#
+# THE ENGINE IS A MEMBER LIKE ANY OTHER. `house-rules-engine` is not a drive
+# under `scripts/tests/` and has no index, which is why the round-robin had to
+# state its shard rather than derive one; under the partition it carries its own
+# row (or the median) and lands wherever the balance puts it. It is still run
+# exactly once across the S shards, which was the only property the stated
+# shard 0 was protecting.
+#
+# DETERMINISTIC FOR A TABLE AND AN S, because every shard computes the WHOLE
+# partition and then reads its own row out of it: same population, same table,
+# same S, same assignment on every box. Ties are broken by the registered order
+# (the first member wins the heavier slot; the lowest-numbered shard wins the
+# lighter load), so there is no clock, no hash and no `sort -R` anywhere in it.
 #
 # UNSHARDED IS THE DEFAULT AND COSTS NOTHING: with no k/K the gate below returns
 # immediately and this leg runs exactly what it always ran, in exactly the order
@@ -5723,17 +6905,178 @@ selftest_drive_consult() {
 SELFTEST_SHARD_K=""
 SELFTEST_SHARD_N=""
 SELFTEST_DRIVE_INDEX=0
+#: The computed partition: a scratch file of `<member> <shard>` lines, or empty
+#: when there was no table to balance over (the round-robin fallback below).
+SELFTEST_SHARD_MAP=""
+
+# selftest_shard_population — every member this leg is about to walk, in the
+# order it walks them: the engine first, then the drives.
+#
+# IT IS THE LEG'S OWN TWO BRANCHES, IN ONE PLACE. The real branch is the
+# registry (`selftest_registered_drives`, which already carries the product's
+# drawer as `local:<name>`); the scratch branch is the planted directory the
+# leg's own drive hands it, and the drawer runs BESIDE that set — which is
+# exactly what `selftest_scratch_drives` followed by `selftest_local_drives`
+# does one screen down. A population that disagreed with the walk would be a
+# partition naming members nobody runs, so it is derived from the same two
+# readers rather than from a third.
+selftest_shard_population() {
+    local d="" name="" rows=""
+    printf '%s\n' house-rules-engine
+    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
+        for d in "$DJB_SELFTEST_DRIVES_DIR"/test_*.sh; do
+            [ -f "$d" ] || continue
+            name=${d##*/}
+            name=${name#test_}
+            printf '%s\n' "${name%.sh}"
+        done
+    fi
+    command -v selftest_registered_drives >/dev/null 2>&1 || return 0
+    rows=$(selftest_registered_drives) || return 1
+    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
+        # THE DRAWER ONLY. The planted set stands in for this file's own drives;
+        # the registry's non-`local:` names are those, and printing them here
+        # would put a member in the partition that the scratch branch never
+        # walks.
+        printf '%s\n' "$rows" | awk '/^local:/ { print }'
+        return 0
+    fi
+    printf '%s\n' "$rows"
+}
+
+# selftest_shard_plan <k> <S> — fill `SELFTEST_SHARD_MAP` and print the one line
+# per shard this leg promises. Never a refusal: every arm that cannot balance
+# says so and leaves the map empty, which is the round-robin.
+selftest_shard_plan() {
+    local k=$1 n=$2 path="" pop="" plan="" mapf="" row="" med="" machine=""
+    SELFTEST_SHARD_MAP=""
+    if ! command -v always_on__read_durations >/dev/null 2>&1 ||
+        ! command -v always_on_durations_path >/dev/null 2>&1; then
+        echo "  selftest shard ${k}/${n}: the index round-robin (the durations reader is not in this shell; house-rules-engine runs in shard 0)"
+        return 0
+    fi
+    path=$(always_on_durations_path)
+    if ! always_on__read_durations "$path"; then
+        echo "  selftest shard ${k}/${n}: the index round-robin (no durations table at ${path} — the file is a HINT and its absence means unmeasured, never a refusal; house-rules-engine runs in shard 0)"
+        return 0
+    fi
+    machine=${ALWAYS_ON_MACHINE:-unstated}
+    pop=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-shard-pop.XXXXXX") || pop=""
+    plan=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-shard-plan.XXXXXX") || plan=""
+    mapf=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-shard-map.XXXXXX") || mapf=""
+    if [ -z "$pop" ] || [ -z "$plan" ] || [ -z "$mapf" ]; then
+        echo "  selftest shard ${k}/${n}: the index round-robin (no scratch file for the partition; house-rules-engine runs in shard 0)"
+        return 0
+    fi
+    selftest_shard_population >"$pop" || true
+    if [ ! -s "$pop" ]; then
+        echo "  selftest shard ${k}/${n}: the index round-robin (the member population would not derive; house-rules-engine runs in shard 0)"
+        return 0
+    fi
+    # THE PARTITION, IN ONE awk OVER TWO FILES: the measured table first, the
+    # population second. Bash 3.2 has no associative arrays and no `sort -k` by
+    # a numeric column that keeps the input order on a tie, so the sort is an
+    # insertion sort over forty items inside the same pass that assigns them.
+    awk -v n="$n" '
+        FNR == NR { secs[$1] = $2 + 0; next }
+        { cnt++; name[cnt] = $1 }
+        END {
+            # THE MEDIAN OF THE ROWS THAT EXIST, and the population it is taken
+            # over is THIS leg`s members — not every row in the file. A table
+            # naming members this gate no longer has would otherwise move the
+            # guess for the members it does have.
+            m = 0
+            for (j = 1; j <= cnt; j++) {
+                if (name[j] in secs) { m++; v[m] = secs[name[j]] }
+            }
+            for (a = 2; a <= m; a++) {
+                x = v[a]
+                b = a - 1
+                while (b >= 1 && v[b] > x) { v[b + 1] = v[b]; b-- }
+                v[b + 1] = x
+            }
+            med = 0
+            if (m == 1) { med = v[1] }
+            else if (m > 1) {
+                if (m % 2) { med = v[(m + 1) / 2] }
+                else { med = int((v[m / 2] + v[m / 2 + 1]) / 2) }
+            }
+            heaviest = 0
+            total = 0
+            for (j = 1; j <= cnt; j++) {
+                if (name[j] in secs) { w[j] = secs[name[j]]; meas[j] = 1 }
+                else { w[j] = med; meas[j] = 0 }
+                total += w[j]
+                if (w[j] > heaviest) { heaviest = w[j] }
+            }
+            for (t = 0; t < n; t++) { load[t] = 0; count[t] = 0; guessed[t] = 0 }
+            # LPT: the heaviest unassigned member, into the lightest shard.
+            # Both ties go to the LOWEST index, which is what makes this
+            # deterministic rather than merely balanced.
+            for (r = 1; r <= cnt; r++) {
+                best = 0
+                for (j = 1; j <= cnt; j++) {
+                    if (taken[j]) { continue }
+                    if (best == 0 || w[j] > w[best]) { best = j }
+                }
+                if (best == 0) { break }
+                taken[best] = 1
+                s = 0
+                for (t = 1; t < n; t++) { if (load[t] < load[s]) { s = t } }
+                load[s] += w[best]
+                count[s]++
+                if (!meas[best]) { guessed[s]++ }
+                print "map", name[best], s
+            }
+            for (t = 0; t < n; t++) {
+                print "shard", t, count[t], load[t], guessed[t]
+            }
+            print "meta", med, total, heaviest, cnt
+        }
+    ' "$ALWAYS_ON_TABLE" "$pop" >"$plan"
+    awk '$1 == "map" { print $2, $3 }' "$plan" >"$mapf"
+    if [ ! -s "$mapf" ]; then
+        echo "  selftest shard ${k}/${n}: the index round-robin (the partition came back empty; house-rules-engine runs in shard 0)"
+        return 0
+    fi
+    SELFTEST_SHARD_MAP="$mapf"
+    med=$(awk '$1 == "meta" { print $2 }' "$plan")
+    row=$(awk -v k="$k" '$1 == "shard" && $2 == k { print $3, $4, $5 }' "$plan")
+    # THE LINE SAYS WHICH TABLE IT READ, and that is not decoration: the file
+    # committed today was measured on a Mac (`sweep` 395 s there, 45 s on a
+    # box), so a shard predicting 400 s may be predicting somebody else's
+    # machine. A reader comparing the prediction against the wall needs to know
+    # whose clock the prediction came from.
+    echo "  selftest shard ${k}/${n}: $(printf '%s' "$row" | awk '{print $1}') members, predicted $(printf '%s' "$row" | awk '{print $2}') s (LPT over ${path} measured on ${machine}; $(printf '%s' "$row" | awk '{print $3}') unmeasured at the median ${med} s)"
+    return 0
+}
 
 # selftest_shard_takes <member> — 0 to run it, 1 to skip. It INCREMENTS the drive
 # index, so it is called exactly once per member and only from member_begin.
 selftest_shard_takes() {
     [ -n "$SELFTEST_SHARD_N" ] || return 0
-    if [ "$1" = "house-rules-engine" ]; then
+    local i="" assigned=""
+    if [ "$1" != "house-rules-engine" ]; then
+        i=$SELFTEST_DRIVE_INDEX
+        SELFTEST_DRIVE_INDEX=$((SELFTEST_DRIVE_INDEX + 1))
+    fi
+    if [ -n "$SELFTEST_SHARD_MAP" ] && [ -f "$SELFTEST_SHARD_MAP" ]; then
+        assigned=$(awk -v n="$1" '$1 == n { s = $2; seen = 1 } END { if (seen) { print s } }' "$SELFTEST_SHARD_MAP")
+        if [ -z "$assigned" ]; then
+            # A MEMBER THE PARTITION DOES NOT NAME — the population moved
+            # between the plan and the walk. Shard 0 takes it, EVERY shard
+            # computes the same partition so exactly one of them does, and the
+            # line is printed by all of them so the arithmetic is readable.
+            echo "  drive $1: not named by the partition (the population moved under the leg) — shard 0 takes it"
+            assigned=0
+        fi
+        [ "$assigned" = "$SELFTEST_SHARD_K" ]
+        return $?
+    fi
+    if [ -z "$i" ]; then
         [ "$SELFTEST_SHARD_K" = "0" ]
         return $?
     fi
-    local i=$SELFTEST_DRIVE_INDEX
-    SELFTEST_DRIVE_INDEX=$((SELFTEST_DRIVE_INDEX + 1))
     [ "$((i % SELFTEST_SHARD_N))" = "$SELFTEST_SHARD_K" ]
 }
 
@@ -5792,6 +7135,81 @@ selftest_member_end() {
         SELFTEST_RED_NAMES="${SELFTEST_RED_NAMES} ${SELFTEST_MEMBER}"
     fi
 }
+
+# >>> local-drives >>>
+# THE PRODUCT'S OWN DRIVES, AND THE SECOND PLACE THIS LEG IS A LOOP ON PURPOSE.
+#
+# Every registration below is a named straight-line block, deliberately, so the
+# set a census pins is readable out of this file — and that argument is about
+# THIS FILE's drives. A product's drives are not in this file and cannot be:
+# their whole point is that a product grows one by dropping a file into
+# `scripts/local/drives/`, the platform-extension-1 convention the leg drawer
+# already runs on. So the population is the REGISTRY's, read through the same
+# one reader as both of this file's own homes
+# (`selftest_registered_drives --with-path`), and this walks exactly what it is
+# handed, in the order it is handed it — which is what keeps the shard index,
+# the `composed-of` column and the verdict row agreeing about which member is
+# which.
+#
+# IT RUNS AFTER EVERY TEMPLATE DRIVE, and that is the honest order rather than
+# an arbitrary one: a product drive is the most likely member to be a SECONDARY
+# red left by state an earlier drive moved, so the composition's "read the FIRST
+# name first" advice stays true with the product's members last.
+#
+# IT IS CALLED FROM BOTH BRANCHES, the real one and the scratch one, because
+# the drawer is a DIFFERENT population from `DJB_SELFTEST_DRIVES_DIR`'s planted
+# set: the scratch branch stands in for this file's own drives, and a leg that
+# skipped the product's drawer whenever it was being driven would be a leg whose
+# product half no case could ever reach.
+#
+# THE STATUS VARIABLE IS ITS OWN, AND THIS PARAGRAPH MAY NOT SPELL THE OTHER
+# ONE. `test_selftest_leg.sh::case_every_exit_in_the_leg_body_is_inside_a_drive_subshell`
+# COUNTS the block wrapper's closing line, literally, once per registration,
+# against this file's own invocation lines — so a loop with one body and N
+# members must not borrow that spelling, and a COMMENT that quoted it would be
+# counted exactly like code (rung-execution §5: a sentence that spells a
+# censused marker is a phantom registration). Hence `drive_rc`, and hence this
+# sentence naming the case instead of the string.
+selftest_local_drives() {
+    local rows="" rc=0 name="" file="" drive_rc=0
+    # `gate_capture` and not a bare `$( )`: a refusal recorded inside a command
+    # substitution dies with the subshell, and the banner would then print some
+    # other leg's cause. Same reader, same reason, as the always-on leg's own
+    # census capture.
+    gate_capture rows selftest_registered_drives --with-path || rc=$?
+    if [ "$rc" != "0" ]; then
+        gate_cause
+        echo "!! the drive registry refused — see above. The product's drive drawer is" >&2
+        echo "   read by the same one reader as this file's own drives, so a refusal" >&2
+        echo "   there is this leg's could-not-look and never a smaller drive set." >&2
+        echo "   cause: ${GATE_LAST_REFUSAL}" >&2
+        selftest_member_cannot local-drives
+        return 0
+    fi
+    while IFS='	' read -r name file; do
+        case "$name" in
+        local:*) ;;
+        *) continue ;;
+        esac
+        if selftest_member_begin "$name"; then
+            drive_rc=0
+            ("$file") || drive_rc=$?
+            if [ "$drive_rc" = "2" ]; then
+                echo "!! ${name} COULD NOT LOOK — see above." >&2
+                echo "   A driver that could not run its cases has not cleared them." >&2
+            elif [ "$drive_rc" != "0" ]; then
+                echo "!! ${name} is red. It is the PRODUCT's drive: this gate found it, ran" >&2
+                echo "   it and named it, and says nothing about whether it is CORRECT." >&2
+                echo "   Read its own output above." >&2
+            fi
+            selftest_member_end "$drive_rc"
+        fi
+    done <<LOCAL_DRIVE_ROWS
+${rows}
+LOCAL_DRIVE_ROWS
+    return 0
+}
+# <<< local-drives <<<
 
 # THE SCRATCH BRANCH — the only loop over a directory in this leg, and it is
 # never the real one. `DJB_SELFTEST_DRIVES_DIR` is read here and nowhere else.
@@ -5882,7 +7300,8 @@ selftest_drives_leg() {
         SELFTEST_SHARD_N=$2
         echo "  shard ${SELFTEST_SHARD_K}/${SELFTEST_SHARD_N} of the registered drive order"
         echo "  (the order is this file's own ./scripts/tests/test_<name>.sh lines;"
-        echo "   house-rules-engine runs in shard 0)"
+        echo "   the partition below is duration-balanced, not by index)"
+        selftest_shard_plan "$SELFTEST_SHARD_K" "$SELFTEST_SHARD_N"
     fi
 
     if selftest_member_begin house-rules-engine; then
@@ -5905,6 +7324,7 @@ selftest_drives_leg() {
 
     if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
         selftest_scratch_drives
+        selftest_local_drives
         SELFTEST_COMPOSED_RC=0
         selftest_compose || SELFTEST_COMPOSED_RC=$?
         return "$SELFTEST_COMPOSED_RC"
@@ -6848,6 +8268,37 @@ fi
 selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
+# `test_divergence_census.sh` drives the other half of the same partition
+# `test_publish.sh` drives one door up: publish decides what a product
+# RECEIVES, and the divergence census decides what a product may CHANGE in
+# what it received. It exists because its subject is invisible from here —
+# this repository is the template, so it has no template, and a declared base,
+# a divergence and a NAMED divergence are all states this checkout by
+# construction cannot be in. Every case builds its own throwaway PRODUCT under
+# `mktemp -d` and reads nothing in this checkout. No docker, no database; ~3s.
+if selftest_member_begin divergence_census; then
+SELFTEST_BLOCK_RC=0
+(
+set +e
+./scripts/tests/test_divergence_census.sh
+DIVERGENCE_DRIVE_RC=$?
+set -e
+if [ "$DIVERGENCE_DRIVE_RC" = "2" ]; then
+    echo "!! the divergence-census drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$DIVERGENCE_DRIVE_RC" != "0" ]; then
+    echo "!! a scripts/divergence_census.sh refusal or silence did not hold. That" >&2
+    echo "   instrument is what tells a product which of its edits are deliberate" >&2
+    echo "   divergences and which are a merge conflict with a countdown on it, and" >&2
+    echo "   its SILENT half — the drawer, the product's own apps, the shared files," >&2
+    echo "   the ledgers — is the half a census gets wrong by crying wolf." >&2
+    exit "$DIVERGENCE_DRIVE_RC"
+fi
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
 if selftest_member_begin queue_index; then
 SELFTEST_BLOCK_RC=0
 (
@@ -7264,6 +8715,45 @@ fi
 selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
+if selftest_member_begin local_legs; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: local_legs >>>
+# THE PRODUCT'S OWN LEGS. A product that clones this template grows legs of its
+# own, and before `scripts/local/legs/` the only place to put one was inside
+# this file — which the first consumer's v2.1.0 fold priced at 21 conflicts in
+# `scripts/ quality/ .github/` and 1826 of their lines vanishing into a silent
+# fast-forward. This drive holds the replacement to its promise from both ends:
+# a declared leg is discovered, announced after `full-house-rules`, named
+# `local:<name>` on the verdict row, run by the tier and the touches it
+# declares, and REFUSED at the listing when its header is wrong; and a tree
+# with no drawer prints a byte-identical listing, which is asserted with `cmp`
+# and not with a paragraph.
+#
+# It plants into scratch directories and into one `git clone` of this checkout,
+# never into the checkout itself. No docker, no database, no network; git,
+# bash, jq and one dry gate.
+set +e
+./scripts/tests/test_local_legs.sh
+LOCAL_LEGS_DRIVE_RC=$?
+set -e
+if [ "$LOCAL_LEGS_DRIVE_RC" = "2" ]; then
+    echo "!! the local-legs drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$LOCAL_LEGS_DRIVE_RC" != "0" ]; then
+    echo "!! the product-leg drawer no longer does what a product is told it does." >&2
+    echo "   Both directions are silent from inside a green gate here, because this" >&2
+    echo "   template ships no drawer: a leg silently skipped is a product believing" >&2
+    echo "   its gate ran something it did not, and a drawer that is no longer free" >&2
+    echo "   when absent is a cost this repository would never feel." >&2
+    exit "$LOCAL_LEGS_DRIVE_RC"
+fi
+# <<< drive: local_legs <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
 if selftest_member_begin selftest_leg; then
 SELFTEST_BLOCK_RC=0
 (
@@ -7358,6 +8848,8 @@ fi
 ) || SELFTEST_BLOCK_RC=$?
 selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
+
+selftest_local_drives
 
     SELFTEST_COMPOSED_RC=0
     selftest_compose || SELFTEST_COMPOSED_RC=$?
@@ -7502,6 +8994,27 @@ fi
 }
 gate_run_body full-house-rules gate_leg_full_house_rules
 
+# --- the product's own legs, LAST -------------------------------------------
+#
+# AFTER `full-house-rules` AND NOT BEFORE IT, because the template's own
+# enforcement is what a product's leg is standing on: a red house rule is this
+# system's verdict about the tree, and running a product's licence scan ahead
+# of it would put the two in a race for which red a reader sees first.
+#
+# THE GUARD IS THE WHOLE NEGATIVE. With no drawer, `LOCAL_LEGS_MEMBERS` is
+# empty, nothing is announced, no body runs, and this run's transcript, its
+# listing and its verdict row are the ones a tree with no local-legs support at
+# all would have printed. `scripts/tests/test_local_legs.sh` asserts that by
+# DIFFING two runs rather than by reading this paragraph.
+if [ -n "$LOCAL_LEGS_MEMBERS" ]; then
+leg local-legs "the product's own legs (scripts/local/legs/) — every tier, every leg, whatever it touches; the verdict row names each one as local:<name>"
+LOCAL_LEGS_MODE_TIER=full
+LOCAL_LEGS_TOUCH_FILTER=0
+LOCAL_LEGS_RUN_RC=0
+gate_run_body local-legs gate_leg_local_legs || LOCAL_LEGS_RUN_RC=$?
+[ "$LOCAL_LEGS_RUN_RC" = "0" ] || exit "$LOCAL_LEGS_RUN_RC"
+fi
+
 leg_done
 echo "ok: all checks passed ($(($(date +%s) - T_MODE_START))s)"
 if [ -n "$GATE_LEG_UNIT" ]; then
@@ -7564,7 +9077,7 @@ elif [ "$MEASURED_START" != "$MEASURED_END" ]; then
     echo "    started on $MEASURED_START"
     echo "    ended on   $MEASURED_END"
     gate_run_note tree-changed
-elif gate_ledger_record "$MEASURED_START" "$FULL_LEGS"; then
+elif gate_ledger_record "$MEASURED_START" "$(gate_full_legs)"; then
     echo "  verdict recorded for tree $MEASURED_START"
     gate_run_verdict_written
 else

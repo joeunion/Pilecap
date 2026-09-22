@@ -16,7 +16,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: scripts/loop_metrics.py
+# drives: docs/product/in-flight.md docs/product/readouts.md scripts/loop_metrics.py scripts/pm_push.sh
 # cites: scripts/check.sh
 # The drive for `scripts/loop_metrics.py` — the velocity reader that derives
 # the cost-baseline row from the dispatch ledger's stamps, from git, and from
@@ -116,6 +116,9 @@ DRIVE_PY="$PWD/.venv/bin/python"
     cannot_look "this checkout has no .venv/bin/python, and the python file this drive
    runs is written at the version that venv holds. Run ./scripts/setup.sh first"
 READER="$PWD/scripts/loop_metrics.py"
+# The one site that PRINTS the docs-only road's own line, read by the case
+# that asserts this reader still matches it.
+PUSHER="$PWD/scripts/pm_push.sh"
 [ -f "$READER" ] || cannot_look "scripts/loop_metrics.py is not a file in this tree — there is nothing to drive"
 REAL_LEDGER="$PWD/docs/product/in-flight.md"
 REAL_READOUTS="$PWD/docs/product/readouts.md"
@@ -241,6 +244,26 @@ bank_log_red() {
         echo "  (house-rules: 25s)"
         echo "!! pm_push --bank: the full gate exited 1."
         echo "   Nothing was pinned and nothing was pushed."
+    } >"${DIR}/banks/${name}.log"
+}
+
+# A bank that took the DOCS-ONLY ROAD. It has no leg banner and no
+# "all checks passed", because it ran no full gate: it ran the readers the
+# changed documentation has and wrote the same row a bank writes. A reader
+# that only knew the full banner counted such a push as a bank that launched
+# and never went green — the cheapest green in the population dragging the
+# green percentage down every time it worked.
+bank_log_docs_only() {
+    local name=$1 wall=$2
+    {
+        echo "pm_push --bank: docs-only? yes — 3 path(s) changed since the"
+        echo "  measured tree 1111111111111111111111111111111111111111, every one of them on the declared list."
+        echo "  readers, DERIVED from what those paths are read by:"
+        echo "    static"
+        echo "  reader static: 41s (exit 0)"
+        echo "pm_push --bank: docs-only reuse of 1111111111111111111111111111111111111111 — readers 41 s, total ${wall} s"
+        echo "  source + delta + row: 2 s"
+        echo "pre-push: every pushed tree (6d03b4f9864dd3a087d4eb984cada3e6774b4b6d) is measured green by a full gate run — verdict honoured"
     } >"${DIR}/banks/${name}.log"
 }
 
@@ -503,6 +526,35 @@ case_the_json_carries_the_same_numbers() {
     fi
 }
 
+case_a_docs_only_bank_is_a_green_bank_with_its_own_wall() {
+    fresh case_a_docs_only_bank_is_a_green_bank_with_its_own_wall
+    bank_log_green bank-1 1879
+    bank_log_docs_only bank-2 43
+    bank_log_red bank-3
+    run_fixture
+    exits 0
+
+    CURRENT="a docs-only push is a bank that went green, and is named as one"
+    says "3 / 2 / 67%"
+    says "(1 docs-only)"
+
+    CURRENT="and its own total is the wall that goes into the population"
+    # The median of 1879 and 43. A reader that dropped the docs-only wall
+    # would report the full bank's alone, and the whole point of the road is
+    # that the population now has two very different kinds of member in it.
+    says "961"
+
+    CURRENT="the line the reader matches is the line the road PRINTS"
+    # A fixture typed here and a printer over there is exactly how a reader
+    # goes blind while its own drive stays green. The shape is asserted
+    # against the one site that writes it.
+    if grep -F 'docs-only reuse of ${GATE_DOCS_ONLY_SOURCE} — readers ' "$PUSHER" >/dev/null; then
+        ok "the push script prints the line this reader matches"
+    else
+        bad "the push script no longer prints 'docs-only reuse of <M> — readers …' — the reader is matching a line nothing writes"
+    fi
+}
+
 case_this_drive_cites_no_ledger_coordinate() {
     CURRENT=case_this_drive_cites_no_ledger_coordinate
     OUT=""
@@ -538,6 +590,7 @@ case_an_unknown_flag_is_exit_2
 case_an_absent_ledger_is_exit_2
 case_the_real_ledger_reads_and_names_what_it_could_not_measure
 case_the_json_carries_the_same_numbers
+case_a_docs_only_bank_is_a_green_bank_with_its_own_wall
 case_this_drive_cites_no_ledger_coordinate
 
 echo "test_loop_metrics: ${PASSED} passed · ${FAILED} failed"

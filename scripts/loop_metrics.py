@@ -364,6 +364,14 @@ _FULL_WALL = re.compile(r"^ok: all checks passed \((\d+)s\)")
 _LEG_WALL = re.compile(r"^\s*\(([a-z0-9-]+):\s*(\d+)s\)")
 _TOOK = re.compile(r"\btook=(\d+)\b")
 _PUSH_HONOURED = re.compile(r"^pre-push: .*verdict honoured")
+# THE DOCS-ONLY ROAD PRINTS NO LEG BANNER AND NO "all checks passed", BECAUSE
+# IT RAN NO FULL GATE — it ran the readers the changed documentation has and
+# wrote the same row a bank writes. A reader that only knew the full banner
+# counted such a push as a bank that LAUNCHED and never went green, which is
+# the opposite of what happened: the cheapest green in the population would
+# have dragged the green percentage down every time it worked. So the road's
+# own line is a green bank here, and the wall it carries is the road's total.
+_DOCS_ONLY_WALL = re.compile(r"^pm_push --bank: docs-only reuse of \S+ .* total (\d+) s")
 _ROOT_APPS = ("core", "accounts")
 
 CLASSES = ("leaf", "core", "shared", "empty")
@@ -424,6 +432,7 @@ def read_bank_logs(directory: str | None) -> dict[str, Any]:
         "launched": 0,
         "green": 0,
         "pushed": 0,
+        "docs_only": 0,
         "walls": [],
         "legs": {},
         "names": [],
@@ -435,6 +444,7 @@ def read_bank_logs(directory: str | None) -> dict[str, Any]:
         out["names"].append(os.path.basename(path))
         legs: dict[str, int] = {}
         wall = None
+        docs_wall = None
         pushed = False
         with open(path, encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -444,8 +454,17 @@ def read_bank_logs(directory: str | None) -> dict[str, Any]:
                 full = _FULL_WALL.match(line)
                 if full:
                     wall = int(full.group(1))
+                docs = _DOCS_ONLY_WALL.match(line)
+                if docs:
+                    docs_wall = int(docs.group(1))
                 if _PUSH_HONOURED.match(line):
                     pushed = True
+        # THE FULL BANNER WINS WHERE BOTH ARE PRESENT. A reader that could not
+        # look prints the road's refusal AND then pays the whole bank, and the
+        # wall that push cost is the bank's.
+        if wall is None and docs_wall is not None:
+            wall = docs_wall
+            out["docs_only"] += 1
         if wall is not None:
             out["green"] += 1
             out["walls"].append(wall)
@@ -775,7 +794,10 @@ def build_report(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
         ),
         (
             "banks launched / pushed / green %",
-            f"{banks['launched']} / {banks['pushed']} / {green_pct}"
+            (
+                f"{banks['launched']} / {banks['pushed']} / {green_pct}"
+                + (f" ({banks['docs_only']} docs-only)" if banks.get("docs_only") else "")
+            )
             if banks["launched"]
             else "— no bank log given",
             "the constraint: small batches, bounded retries on transients",

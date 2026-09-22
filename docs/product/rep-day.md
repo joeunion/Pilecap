@@ -39,7 +39,7 @@ queue, never the other way round.)*
 
 <!-- worked example — replace with your product's first real entry -->
 
-> ## EXAMPLE — delete when the first real entry lands
+> ## EXAMPLE — the one marked worked example this ledger ships with (CLAUDE.md § What this is); a product keeps it beside its own entries and never renames it
 >
 > ### J1 · "Get the customer's order in while they are on the phone" ⚠
 >

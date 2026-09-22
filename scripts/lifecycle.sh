@@ -380,6 +380,13 @@ LC_CLASS_DESTROY=()
 LC_CLASS_WARM=()
 LC_CLASS_DISPOSABLE=()
 LC_CLASS_CLAIM=()
+# A TENTH PARALLEL ARRAY AND IT IS NOT A COLUMN. Where the declaration came
+# from — empty for the built-ins below, the drawer file's path for a product's.
+# It is never a field a declaration can set, because the whole value of it is
+# that a refusal can name a file whose author is not in this repository, and a
+# declaration that could name its own source could name the wrong one.
+LC_CLASS_SOURCE=()
+LC_CLASS_DECLARED_IN=""
 
 lc_class() {
     LC_CLASS_NAME+=("$1")
@@ -391,12 +398,47 @@ lc_class() {
     LC_CLASS_WARM+=("$7")
     LC_CLASS_DISPOSABLE+=("$8")
     LC_CLASS_CLAIM+=("$9")
+    LC_CLASS_SOURCE+=("${LC_CLASS_DECLARED_IN}")
+}
+
+# lc_class_where <class> — "the built-in registry", or the drawer file that
+# declared it. One sentence, for a refusal to end with.
+lc_class_where() {
+    local want="$1" i=0
+    while [ "$i" -lt "${#LC_CLASS_NAME[@]}" ]; do
+        if [ "${LC_CLASS_NAME[$i]}" = "$want" ]; then
+            if [ -n "${LC_CLASS_SOURCE[$i]}" ]; then
+                printf '%s' "${LC_CLASS_SOURCE[$i]}"
+            else
+                printf '%s' "the built-in registry (scripts/lifecycle.sh)"
+            fi
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    printf '%s' "nowhere this run can name"
 }
 
 lc_classes() {
     local i=0
     while [ "$i" -lt "${#LC_CLASS_NAME[@]}" ]; do
         printf '%s\n' "${LC_CLASS_NAME[$i]}"
+        i=$((i + 1))
+    done
+}
+
+# lc_classes_of_kind <kind> — the classes of one kind, in declaration order
+# (which is specificity order). It exists so a census that walks one kind walks
+# THE REGISTRY rather than a second list beside it: `scripts/sweep.sh` kept one,
+# and its own comment says what that costs — "a class the registry knows and
+# this list does not is invisible in every transcript while being exempt from
+# the UNRECOGNIZED check that exists to catch exactly that". A product's class
+# arrives in the registry and in no hand list anywhere, so the second list stops
+# being a maintenance risk and becomes a guarantee that the drawer does nothing.
+lc_classes_of_kind() {
+    local want="$1" i=0
+    while [ "$i" -lt "${#LC_CLASS_NAME[@]}" ]; do
+        [ "${LC_CLASS_KIND[$i]}" != "$want" ] || printf '%s\n' "${LC_CLASS_NAME[$i]}"
         i=$((i + 1))
     done
 }
@@ -426,12 +468,44 @@ lc_field() {
     return 1
 }
 
+# lc_claim_matches <claim> <instance> — the claim column, applied.
+#
+# TWO FORMS, AND THE SECOND ONE IS WHAT MAKES A DRAWER POSSIBLE. A built-in
+# names a FUNCTION, because a built-in's claim is real reasoning — `db_valid_name`
+# first, then a shape, in specificity order. A product's class arrives in a
+# drawer that is DECLARATION-ONLY (`lc_local_declaration_only` below refuses a
+# function definition in it, and the reason is written there), so it cannot
+# bring a function with it; it declares `glob:<pattern>` instead and the pattern
+# is matched by the shell.
+#
+# THE PATTERN IS DELIBERATELY UNQUOTED in the `case` below — that is what makes
+# it a pattern rather than a literal, and it is the whole point of the form. It
+# is read from a file in this checkout, by a library this checkout sources; a
+# product that can write that file can already write anything else in
+# `scripts/local/`, so this is not a new trust boundary, and `case` expands no
+# command substitution in any event.
+lc_claim_matches() {
+    local claim="$1" instance="$2" pattern
+    case "$claim" in
+    glob:*)
+        pattern="${claim#glob:}"
+        [ -n "$pattern" ] || return 1
+        # shellcheck disable=SC2254
+        case "$instance" in
+        $pattern) return 0 ;;
+        esac
+        return 1
+        ;;
+    esac
+    "$claim" "$instance"
+}
+
 # Which class claims this instance? Prints the class name, or nothing.
 # $1 kind · $2 instance identity string
 lc_class_of() {
     local kind="$1" instance="$2" i=0
     while [ "$i" -lt "${#LC_CLASS_NAME[@]}" ]; do
-        if [ "${LC_CLASS_KIND[$i]}" = "$kind" ] && "${LC_CLASS_CLAIM[$i]}" "$instance"; then
+        if [ "${LC_CLASS_KIND[$i]}" = "$kind" ] && lc_claim_matches "${LC_CLASS_CLAIM[$i]}" "$instance"; then
             printf '%s' "${LC_CLASS_NAME[$i]}"
             return 0
         fi
@@ -444,21 +518,44 @@ lc_class_of() {
 # that does not say how it is enumerated is a class nothing enumerates, and a
 # census built on one is a census with a hole nobody can see.
 lc_registry_check() {
-    local i=0 j value name broken=0
+    local i=0 j value name broken=0 line
+    # A DRAWER FILE THIS RUN REFUSED TO SOURCE IS A REGISTRY DEFECT, reported
+    # here and nowhere else. It cannot be an `exit` at source time: this file is
+    # a LIBRARY and the instruments that source it own their exit statuses
+    # (`scripts/sweep.sh` calls this at its own precondition and turns a false
+    # into its own could-not-look). A refusal that killed the caller's shell
+    # from inside a `source` would take the decision away from the one place
+    # that is allowed to make it.
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        echo "!! lifecycle registry: ${line}" >&2
+        broken=1
+    done <<EOF
+${LC_LOCAL_DEFECTS:-}
+EOF
     while [ "$i" -lt "${#LC_CLASS_NAME[@]}" ]; do
         name="${LC_CLASS_NAME[$i]}"
         for j in 1 2 3 4 5 6 7 8 9; do
             value="$(lc_field "$name" "$j")"
             if [ -z "$value" ]; then
-                echo "!! lifecycle registry: class '${name}' declares nothing in column ${j}." >&2
+                echo "!! lifecycle registry: class '${name}' declares nothing in column ${j} — declared in $(lc_class_where "$name")." >&2
                 broken=1
             fi
         done
         value="${LC_CLASS_CLAIM[$i]}"
-        if ! declare -F "$value" >/dev/null 2>&1; then
-            echo "!! lifecycle registry: class '${name}' names claim function '${value}', which does not exist." >&2
+        case "$value" in
+        glob:?*) ;;
+        glob:*)
+            echo "!! lifecycle registry: class '${name}' declares an empty claim pattern — declared in $(lc_class_where "$name")." >&2
             broken=1
-        fi
+            ;;
+        *)
+            if ! declare -F "$value" >/dev/null 2>&1; then
+                echo "!! lifecycle registry: class '${name}' names claim function '${value}', which does not exist — declared in $(lc_class_where "$name")." >&2
+                broken=1
+            fi
+            ;;
+        esac
         i=$((i + 1))
     done
     [ "$broken" -eq 0 ]
@@ -589,6 +686,159 @@ lc_class "task-queue" "task-queue" "djb-<branch>_<8 hex> (the base with djb_ swa
 lc_class "schedule" "schedule" "<prefix>:djb-<branch>_<8 hex> in the schedule id" "temporal schedule list" "DescribeTaskQueue pollers on its queue (positive only)" "temporal schedule delete --schedule-id <id>" "no" "yes: the worker re-declares it at startup (ADR platform-lifecycle-1)" lc_claim_schedule
 lc_class "open-execution" "open-execution" "djb-<branch>_<8 hex> as the execution's task queue" "temporal workflow list --query ExecutionStatus=Running" "DescribeTaskQueue pollers on its queue (positive only)" "temporal workflow terminate --workflow-id <id>" "no" "no: it is work that is RUNNING, not a leftover" lc_claim_open_execution
 lc_class "test-server-process" "process" "NONE — a temporal-test-server process is named by its executable and carries no checkout in it; its owner is its parent pid" "the process table, matched on the executable's basename" "a live parent pid (parent 1 means the owner died)" "scripts/temporal_sweep.sh --sweep (TERM then KILL)" "no" "no: it has no checkout identity, so it can never be this checkout's own" lc_claim_test_server_process
+
+
+# --- THE PRODUCT'S OWN CLASSES: scripts/local/lifecycle.d/<class>.sh ---------
+#
+# A PRODUCT MINTS MACHINERY THIS TEMPLATE HAS NEVER HEARD OF, and the registry's
+# own header says what happens when a census does not know about it: "a broom
+# whose population is a list somebody typed goes stale the day a tenth kind of
+# thing is created, silently, exactly like the ninth did." Before this drawer
+# the only way to add a class was to EDIT THIS FILE — which a template release
+# then conflicts with, or fast-forwards over with the product's class silently
+# gone. The convention is the one every extension point here uses: a `local/`
+# sibling, discovered by path, never shipped by a release, absent = byte-
+# identical.
+#
+# DECLARATION-ONLY, AND IT IS READ RATHER THAN TRUSTED. A file in this drawer
+# may hold comments, blank lines and `lc_class` calls, and nothing else. That is
+# not tidiness:
+#
+#   * THIS FILE IS SOURCED BY EVERY BROOM AND BY THE GATE'S OWN CENSUS. A
+#     function definition here silently overrides one of the built-ins — a
+#     product's `lc_verdict` would change what `--force-foreign` destroys, in
+#     every instrument at once, from a file nobody reviews at release time.
+#   * A COMMAND HERE RUNS AT SOURCE TIME, inside the gate, inside the pre-push
+#     hook, inside `sweep.sh --assert-none`. There is no shape of "ran a
+#     command while being sourced by a broom" that is safe by default.
+#
+# So the file is READ FIRST and sourced only if it is what it claims to be, and
+# a file that is not is a REGISTRY DEFECT reported by `lc_registry_check` —
+# never an `exit` from inside a library (see that function for why).
+#
+# THE CLAIM COLUMN IS A `glob:` PATTERN here, because declaration-only means the
+# drawer brings no function with it. `lc_claim_matches` above holds both forms.
+#
+# WHAT THE DRAWER DOES NOT GIVE A PRODUCT, declared rather than discovered: a
+# new KIND. A class of an existing kind (`database`, `schedule`, …) is censused,
+# attributed and verdicted by the scan that kind already has. A kind nothing
+# scans has no enumerator, and an enumerator is code — which is exactly what
+# this drawer may not carry. That is a deliberate stop: a product needing a new
+# kind is a product needing a platform rung, and a silent empty census would be
+# the worse answer.
+LC_LOCAL_DIR="${DJB_LIFECYCLE_LOCAL_DIR:-$(dirname "${BASH_SOURCE[0]}")/local/lifecycle.d}"
+LC_LOCAL_DEFECTS=""
+
+# lc_local_declaration_only <file> — silent and 0 when the file is comments,
+# blank lines and `lc_class` calls AND NOTHING ELSE CAN RUN; otherwise it
+# prints `<line>\t<what is wrong>` for the first offence and returns 1.
+#
+# "STARTS WITH lc_class" IS NOT A TEST, AND THAT IS THE WHOLE OF THIS FUNCTION.
+# The first version tested the first word of the joined statement, which three
+# one-liners walk straight through — each of them measured against this file:
+#
+#   lc_class "x" … \                     a continuation, then a second command:
+#   ; lc_verdict() { printf OVERRIDDEN; }   the override every broom then uses
+#   lc_class "x" "$(touch pwned)" …      command substitution, run while the
+#                                          gate and the pre-push hook source us
+#   lc_class "x" … && touch pwned        a list, run the same way
+#
+# So the statement is WALKED, with the shell's own quoting rules, and judged on
+# what could still EXECUTE:
+#
+#   outside quotes   only a bare word may appear. `; & | ( ) { } < > $ ` \ #`
+#                    each end the run — they are command separators, lists,
+#                    subshells, groups, redirections, expansions and escapes,
+#                    which is the complete set of ways one line becomes two.
+#   inside "…"       text, but `$` and a backtick still expand, so both are
+#                    refused there too. This is the arm the first version had
+#                    no way to reach.
+#   inside '…'       anything: single quotes expand nothing. This is why the
+#                    built-ins' own prose — full of parentheses, `%`, `|` and
+#                    backslashes — is legal in a drawer as long as it is
+#                    QUOTED, which is what a declaration is made of anyway.
+#   unterminated     a quote or a continuation left open is its own refusal,
+#                    never a statement that silently vanished.
+lc_local_declaration_only() {
+    awk '
+        function offence(st,   i, c, q, n) {
+            q = ""
+            n = length(st)
+            for (i = 1; i <= n; i++) {
+                c = substr(st, i, 1)
+                if (q == "'"'"'") { if (c == "'"'"'") q = ""; continue }
+                if (q == "\"") {
+                    if (c == "\"") { q = ""; continue }
+                    if (c == "$") return "`$` expands inside a double-quoted field"
+                    if (c == "`") return "a backtick expands inside a double-quoted field"
+                    continue
+                }
+                if (c == "'"'"'" || c == "\"") { q = c; continue }
+                if (c == " " || c == "\t") continue
+                if (index(";&|(){}<>$`\\#", c) > 0) return "`" c "` outside quotes can run a command"
+            }
+            if (q != "") return "an unterminated " (q == "\"" ? "double" : "single") " quote"
+            return ""
+        }
+        {
+            line = $0
+            if (buf == "") {
+                sub(/^[ \t]+/, "", line)
+                if (line == "" || substr(line, 1, 1) == "#") next
+                buf = line
+                start = FNR
+            } else {
+                sub(/^[ \t]+/, "", line)
+                buf = buf " " line
+            }
+            if (buf ~ /\\$/) { sub(/\\$/, "", buf); next }
+            if (buf !~ /^lc_class([ \t]|$)/) {
+                printf "%d\t%s\n", start, buf
+                bad = 1
+                exit 1
+            }
+            rest = buf
+            sub(/^lc_class[ \t]*/, "", rest)
+            why = offence(rest)
+            if (why != "") {
+                printf "%d\t%s — in: %s\n", start, why, buf
+                bad = 1
+                exit 1
+            }
+            buf = ""
+        }
+        END {
+            if (!bad && buf != "") {
+                printf "%d\tline continuation that never ends\n", start
+                exit 1
+            }
+        }
+    ' "$1"
+}
+
+lc_load_local_classes() {
+    local f out
+    [ -d "$LC_LOCAL_DIR" ] || return 0
+    for f in "$LC_LOCAL_DIR"/*.sh; do
+        # A literal glob is an EMPTY drawer, which is byte-identical to none.
+        [ -e "$f" ] || continue
+        if [ ! -r "$f" ]; then
+            LC_LOCAL_DEFECTS="${LC_LOCAL_DEFECTS}${f} is not readable, so this run cannot say what it declares
+"
+            continue
+        fi
+        if ! out="$(lc_local_declaration_only "$f")"; then
+            LC_LOCAL_DEFECTS="${LC_LOCAL_DEFECTS}${f} is not declaration-only — line ${out%%	*} is \`${out#*	}\`, which is not an lc_class declaration. A file in this drawer is SOURCED by every broom and by the gate's own census: a function here overrides a built-in everywhere at once, and a command here runs inside the gate. It was NOT sourced and its class is not registered.
+"
+            continue
+        fi
+        LC_CLASS_DECLARED_IN="$f"
+        # shellcheck disable=SC1090
+        . "$f"
+        LC_CLASS_DECLARED_IN=""
+    done
+}
+lc_load_local_classes
 
 # --- REDIS: DECLARED EXEMPT, AND WHY --------------------
 #

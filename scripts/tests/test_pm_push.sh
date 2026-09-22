@@ -32,6 +32,11 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .github/workflows/ci.yml deploy/provision.sh deploy/verifier/bake.sh scripts/check.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks/pre-push scripts/kill_mine.sh scripts/pm_fold.sh scripts/pm_push.sh scripts/queue_cited.sh scripts/sweep.sh scripts/test_impact.json scripts/test_impact.py scripts/tests/drive_preamble.sh scripts/tests/test_pm_push.sh scripts/tests/test_verifier_box.sh scripts/verifier_box.sh
+# cites: uv.lock
+# A CITATION, NOT A SUBJECT: the docs-only cases below NAME `uv.lock`, because
+# the declared list rules it OUT and the refusal that says so is the assertion.
+# This drive never opens it, and declaring it as a subject would re-drive every
+# case here on every resolve.
 # The drive for `scripts/pm_push.sh --bank --on-boxes N` — the bank that moves
 # the constraint off this laptop.
 #
@@ -164,6 +169,109 @@ fi
 . scripts/gate_ledger.sh
 REAL_FULL_LEGS="$(gate_full_legs)"
 [ -n "$REAL_FULL_LEGS" ] || cannot_look "scripts/check.sh declares no FULL_LEGS"
+# WORLD_FULL_LEGS — what the stub gate in the next world declares, and it is a
+# VARIABLE because the two halves of a world have to be composed under the same
+# drawer. `gate_full_legs` reads the CHECKOUT's `scripts/local/legs/`, so a case
+# that hands its world a listing composed under a DIFFERENT drawer and lets the
+# stub echo this tree's leg set has built a world whose listing and whose
+# FULL_LEGS disagree — and the bank correctly refuses it (`covered by no
+# shard`). Every case but the drawer one wants this tree's own answer, so that
+# is the default and `fresh_world` restores it.
+WORLD_FULL_LEGS="$REAL_FULL_LEGS"
+WORLD_FULL_LEGS_NEXT=""
+
+# --- THE PLAN, DERIVED FROM THAT LISTING AND FROM THE SUBJECT ----------------
+#
+# WHY NOTHING BELOW IS TYPED. Every unit name, every shard count, every box
+# count and the floor itself are facts about the tree this drive is running in,
+# and a product that clones this template CHANGES THEM: X2's drawer gives a
+# product's own leg its own `local` unit, so a consumer with one drawer leg
+# declares six units where this template declares five. A drive that typed
+# `selftest-2of3`, `--on-boxes 8` or `floor of 5` was not asserting the bank's
+# behaviour — it was asserting this tree's unit table, and it reddened on THEIR
+# first bank with the subject behaving perfectly (327/49 on their 3e6312cf).
+# `pm_push.sh` derives its plan from `--list-legs`; so, from here, does this.
+#
+# THE SHAPE OF THE DERIVATION. Two layers. This block reads the LISTING alone —
+# the units, which of them shard, and which carries the suite leg — and the
+# probe case below runs ONE bank and reads the labels the SUBJECT produced,
+# then asserts that set equals a set composed here from the listing. What the
+# cases use is the intersection: derived from the listing, confirmed by the
+# subject, and never a number a person typed.
+PLAN_UNITS=0        # how many units this gate declares
+PLAN_INDIV=""       # the indivisible units, in listing order
+PLAN_CAPABLE=""     # the N-capable units, in listing order
+PLAN_SUITE_LEG=""   # the suite leg's NAME, read out of the subject
+PLAN_SUITE_UNIT=""  # the unit whose legs carry it, read out of the listing
+PLAN_BOXES=0        # the N every ordinary case runs at
+PLAN_FLOOR=0        # the DERIVED floor: one box per unit the listing declares
+PLAN_TYPED_FLOOR=0  # the SYNTACTIC floor, read out of the subject's own constant
+PLAN_LABELS=""      # every shard label the plan produces at PLAN_BOXES, in plan order
+PLAN_FLAT=""        # the indivisible units' labels (each takes a whole box)
+PLAN_FLAT1=""       # three of them by name, for the cases that perturb one box
+PLAN_FLAT2=""
+PLAN_FLAT3=""
+PLAN_SUITE_FIRST="" # the suite unit's first and last shard
+PLAN_SUITE_LAST=""
+PLAN_SUITE_K=0
+PLAN_VICTIM_UNIT="" # the LAST shardable unit — what the failure cases perturb
+PLAN_VICTIM=""      # its last shard
+PLAN_VICTIM_FIRST="" # its first shard
+PLAN_VICTIM_K=0
+PLAN_KILL_ALLOW=""  # the first three labels: "some boxes up, the rest in flight"
+
+# THE SUITE LEG'S NAME COMES OUT OF THE SUBJECT, not out of this file: it is
+# `pm_push.sh`'s own `BANK_SUITE_LEG`, the one leg name that file spells, and
+# the unit carrying it is whatever the listing says. Typing it here would be a
+# second opinion about the one thing the subject declares.
+PLAN_SUITE_LEG="$(sed -n 's/^BANK_SUITE_LEG="\(.*\)"$/\1/p' "$SOURCE")"
+PLAN_SUITE_LEG="${PLAN_SUITE_LEG%%$'\n'*}"
+[ -n "$PLAN_SUITE_LEG" ] ||
+    cannot_look "scripts/pm_push.sh declares no BANK_SUITE_LEG — every passes assertion here is about the unit that carries it"
+
+PLAN_SUITE_UNIT="$(awk -F'\t' -v leg="$PLAN_SUITE_LEG" \
+    '$4 ~ ("(^|,)" leg "(,|$)") { print $1; exit }' "$REAL_LISTING")"
+[ -n "$PLAN_SUITE_UNIT" ] ||
+    cannot_look "no unit in ./scripts/check.sh --list-legs carries the ${PLAN_SUITE_LEG} leg"
+
+while IFS=$'\t' read -r _u _needs _shards _legs; do
+    [ -n "$_u" ] || continue
+    PLAN_UNITS=$((PLAN_UNITS + 1))
+    if [ "$_shards" = "N-capable" ]; then
+        PLAN_CAPABLE="${PLAN_CAPABLE}${PLAN_CAPABLE:+ }${_u}"
+    else
+        PLAN_INDIV="${PLAN_INDIV}${PLAN_INDIV:+ }${_u}"
+    fi
+done <"$REAL_LISTING"
+unset _u _needs _shards _legs
+[ "$PLAN_UNITS" -gt 0 ] || cannot_look "the listing declares no units at all"
+[ -n "$PLAN_CAPABLE" ] ||
+    cannot_look "this tree's listing has no N-capable unit — every sharded assertion below has no subject"
+
+# THE FLOOR IS ONE BOX PER UNIT, which is `bank_boxes_plan`'s own arithmetic,
+# and PLAN_BOXES is three above it: enough slack for the plan's `per=2` rule to
+# bite and for the last shardable unit to take more than one shard, which is
+# what the failure cases perturb. On today's template that is 5 and 8 — the
+# numbers this drive used to type — so its evidence stays comparable.
+PLAN_FLOOR="$PLAN_UNITS"
+PLAN_BOXES=$((PLAN_UNITS + 3))
+
+# AND THE SYNTACTIC FLOOR IS THE SUBJECT'S OWN CONSTANT. It is a typo belt and
+# NOT the derived floor — `pm_push.sh` says so where it declares it — so the
+# case about it reads the constant rather than repeating its value.
+PLAN_TYPED_FLOOR="$(sed -n 's/^ON_BOXES_FLOOR=\([0-9][0-9]*\)$/\1/p' "$SOURCE")"
+PLAN_TYPED_FLOOR="${PLAN_TYPED_FLOOR%%$'\n'*}"
+[ -n "$PLAN_TYPED_FLOOR" ] ||
+    cannot_look "scripts/pm_push.sh declares no ON_BOXES_FLOOR — the syntactic-floor case has nothing to read"
+
+PLAN_FLAT="$PLAN_INDIV"
+set -- $PLAN_INDIV
+PLAN_FLAT1="${1:-}"
+PLAN_FLAT2="${2:-}"
+PLAN_FLAT3="${3:-}"
+set --
+[ -n "$PLAN_FLAT1" ] && [ -n "$PLAN_FLAT2" ] ||
+    cannot_look "this tree's listing has fewer than two indivisible units — the cases that perturb a whole-box shard need one each"
 
 # --- assertions (test_pm_merge.sh's four helpers, unchanged) -----------------
 DRIVE_OUT=""
@@ -247,6 +355,58 @@ field_lines() {
     awk -F'\t' -v f="$2" '{ print $f }' "$1"
 }
 
+# plan_round_robin <zones> — how many of this plan's shards land in each zone
+# when the bank deals them round-robin, largest bucket first, in the shape the
+# zone case compares against. Arithmetic over PLAN_BOXES, so a product whose
+# listing declares one more unit gets the right answer with no edit here.
+# drawer_plant <path> <unit> <needs> — one product leg, with X2's header.
+# A REAL FILE in this drive's own scratch directory, never in the checkout: an
+# untracked executable in the checkout reds the instrument census by design.
+drawer_plant() {
+    local path="$1" unit="$2" needs="$3"
+    {
+        echo '#!/usr/bin/env bash'
+        echo '# >>> leg v1 >>>'
+        echo "# unit: ${unit}"
+        echo "# needs: ${needs}"
+        echo '# tier: full'
+        echo '# two-means: broken'
+        echo '# <<< leg <<<'
+        echo "echo \"${path##*/}: a product's own leg\""
+        echo 'exit 0'
+    } >"$path"
+    chmod +x "$path"
+}
+
+# drawer_full_legs <drawer> — the leg set `gate_full_legs` composes UNDER THAT
+# DRAWER, for the stub gate of a world whose listing was composed under it too.
+#
+# THE TWO HALVES OF A WORLD MUST AGREE. `gate_full_legs` reads the CHECKOUT's
+# own `scripts/local/legs/`, so a world handed a listing from one drawer and a
+# `FULL_LEGS=` from another declares legs no shard covers — and the bank
+# refuses it, correctly, with `covered by no shard`. It went unnoticed because
+# on a template with no drawer the two answers coincide.
+#
+# IN A SUBSHELL, AND WITH THE MEMO CLEARED: `gate_full_legs` caches its answer
+# for the process, and a variable assignment in front of a shell FUNCTION does
+# not reliably stay scoped to the call.
+drawer_full_legs() {
+    (
+        export DJB_LOCAL_LEGS_DIR="$1"
+        GATE_FULL_LEGS_MEMO=""
+        gate_full_legs
+    )
+}
+
+plan_round_robin() {
+    local zones="$1" i=0 out=""
+    while [ "$i" -lt "$zones" ]; do
+        i=$((i + 1))
+        out="${out}$(((PLAN_BOXES + zones - i) / zones)) "
+    done
+    printf '%s' "$out"
+}
+
 fresh_world() {
     N=$((N + 1))
     W="${WORK}/w${N}-$1"
@@ -256,6 +416,11 @@ fresh_world() {
     RUNNER="${W}/run-bank.sh"
     drive_require_scratch W "${W:-}"
     drive_require_scratch REPO "${REPO:-}"
+    # THE OVERRIDE IS PER WORLD AND NEVER STICKY: a case that composed its own
+    # leg set says so before the `fresh_world` that uses it, and the next world
+    # is this tree's again.
+    WORLD_FULL_LEGS="${WORLD_FULL_LEGS_NEXT:-$REAL_FULL_LEGS}"
+    WORLD_FULL_LEGS_NEXT=""
     mkdir -p "$REPO/scripts/githooks" "$REC" "$W/tmp" "$W/lease"
     : >"$LEDGER"
 
@@ -333,7 +498,7 @@ PROV
     # is in the checkout and the composed row carries the answer.
     {
         echo '#!/usr/bin/env bash'
-        echo "FULL_LEGS=${REAL_FULL_LEGS}"
+        echo "FULL_LEGS=${WORLD_FULL_LEGS}"
         echo "printf '%s\\n' \"\$*\" >>\"${REC}/gate.calls\""
         echo 'if [ "${1:-}" = "--list-legs" ]; then'
         echo "    if [ -f \"${REC}/listlegs.err\" ]; then cat \"${REC}/listlegs.err\" >&2; fi"
@@ -385,6 +550,7 @@ PROV
 
 world_write_verifier_box() {
     sed -e "s|__REC__|${REC}|g" -e "s|__REPO__|${REPO}|g" \
+        -e "s|__SUITELEG__|${PLAN_SUITE_LEG}|g" \
         >"$REPO/scripts/verifier_box.sh" <<'STUB'
 #!/usr/bin/env bash
 # A STUB. It records every argv and answers from per-case fixtures. It makes no
@@ -392,6 +558,10 @@ world_write_verifier_box() {
 set -uo pipefail
 REC="__REC__"
 REPO="__REPO__"
+# THE SUITE LEG'S NAME, SUBSTITUTED IN rather than typed: it is the subject's
+# own `BANK_SUITE_LEG`, and this stub has to spell what a real `--leg … --passes
+# 1` banner spells.
+SUITELEG="__SUITELEG__"
 printf '%s\n' "$*" >>"$REC/vb.calls"
 
 label_of_rung() {
@@ -412,10 +582,28 @@ shift || true
 case "$cmd" in
 up)
     rung=""
+    az=""
+    ttl=""
+    idle=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --for)
             rung="${2:-}"
+            shift 2
+            ;;
+        # THE THREE ARGUMENTS R1 ADDS OR ALREADY HAS, PARSED HERE SO A CASE CAN
+        # ASSERT THEM. `--az` is R1's new one and this stub is what stands in
+        # for it until R1 merges; `--ttl`/`--idle` the wrapper already takes.
+        --az)
+            az="${2:-}"
+            shift 2
+            ;;
+        --ttl)
+            ttl="${2:-}"
+            shift 2
+            ;;
+        --idle)
+            idle="${2:-}"
             shift 2
             ;;
         *) shift ;;
@@ -426,7 +614,7 @@ up)
         exit 2
     }
     label="$(label_of_rung "$rung")"
-    printf '%s\t%s\n' "$label" "$rung" >>"$REC/up.calls"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$rung" "${az:--}" "${ttl:--}" "${idle:--}" >>"$REC/up.calls"
     if [ -f "$REC/up.allow" ] && ! grep -qx "$label" "$REC/up.allow"; then
         # THE OPERATOR'S HAND, MODELLED. A case that signals the bank after
         # exactly three boxes are up needs the other five to be still in
@@ -441,13 +629,40 @@ up)
         echo "stub up: ${label} released without launching" >&2
         exit 2
     fi
+    # HOW MANY TIMES THIS LABEL HAS BEEN BROUGHT UP. A retried shard is a
+    # SECOND box and it must be a second id: the same id twice would make
+    # "two boxes were launched and both were taken down" unassertable, and the
+    # retry case turns on exactly that. The FIRST attempt's id is byte-for-byte
+    # the one every other case already knows.
+    upn="$(cat "$REC/up.n.${label}" 2>/dev/null || echo 0)"
+    upn=$((upn + 1))
+    printf '%s\n' "$upn" >"$REC/up.n.${label}"
+    # THE REFUSAL IS SEQUENCED TOO — `up.rc.<label>.<n>` — because a RETRY's
+    # own box can be the one that will not come up, and a case about that
+    # needs the FIRST launch to succeed.
+    if [ -f "$REC/up.rc.${label}.${upn}" ]; then
+        echo "stub up: ${label} attempt ${upn} refused by fixture" >&2
+        exit "$(cat "$REC/up.rc.${label}.${upn}")"
+    fi
     if [ -f "$REC/up.rc.${label}" ]; then
         echo "stub up: ${label} refused by fixture" >&2
         exit "$(cat "$REC/up.rc.${label}")"
     fi
     id="i-$(printf '%s' "$label" | cksum | awk '{printf "%010d", $1}')"
+    [ "$upn" = "1" ] || id="${id}-r${upn}"
     printf '%s\n' "$label" >"$REC/label-of.${id}"
-    echo "instance   ${id}   c7g.4xlarge   market: spot   az xx-drive-9a"
+    # THE SEAM'S OWN LINE, PRINTED RIGHT AFTER THE LAUNCH AND BEFORE ANYTHING
+    # THAT CAN STILL FAIL (R1's `launched   <id>   az <az>`). A case that wants
+    # an `up` which LAUNCHED and then died plants `up.launched_then_rc.<label>`
+    # — which is the state the launch-then-die defect is about and the one
+    # `up.rc.<label>` cannot
+    # model, because that fixture refuses before any box exists.
+    echo "launched   ${id}   az ${az:-xx-drive-9a}"
+    if [ -f "$REC/up.launched_then_rc.${label}" ]; then
+        echo "stub up: ${label} launched and then failed by fixture" >&2
+        exit "$(cat "$REC/up.launched_then_rc.${label}")"
+    fi
+    echo "instance   ${id}   c7g.4xlarge   market: spot   az ${az:-xx-drive-9a}"
     # THE WRAPPER'S OWN MARKET LINE, which is where the bank's table reads the
     # market from — EC2's `InstanceLifecycle` as the wrapper read it back, not
     # the market the launch asked for. A case that wants a shard on on-demand
@@ -537,12 +752,56 @@ run)
     esac
     exit "$(cat "$REC/accept.rc" 2>/dev/null || echo 0)"
     ;;
+zones)
+    # R1's new subcommand: one availability zone per line, sorted, and exit 2
+    # when it cannot look. The bank reads it ONCE per run and spreads its
+    # shards across what comes back.
+    if [ -f "$REC/zones.rc" ]; then
+        echo "stub zones: could not look by fixture" >&2
+        exit "$(cat "$REC/zones.rc")"
+    fi
+    # A WRAPPER THAT SAYS SOMETHING ON STDERR AND STILL ANSWERS. `zones` warns
+    # (an unset pricing region, a slow describe); the ring is what is on
+    # STDOUT, and a reader that folded the two together would spread this
+    # bank's boxes over an English sentence.
+    [ ! -f "$REC/zones.noise" ] || echo "verifier_box: warning — DJB_VERIFIER_PRICING_REGION is unset" >&2
+    if [ -f "$REC/zones" ]; then
+        cat "$REC/zones"
+    else
+        printf '%s\n' xx-drive-9a xx-drive-9b xx-drive-9c
+    fi
+    exit 0
+    ;;
 wait)
     id="${1:-}"
     name="${2:-}"
     printf '%s\t%s\n' "$id" "$name" >>"$REC/wait.calls"
     lbl="$(cat "$REC/label-of.${id}" 2>/dev/null || echo unknown)"
-    [ ! -f "$REC/wait.out.${lbl}" ] || cat "$REC/wait.out.${lbl}"
+    # SEQUENCED PER LABEL, `leg`'s idiom one case up, and for the same reason:
+    # a shard whose box was RECLAIMED is retried on a fresh box, and the
+    # second wait has to be able to answer differently from the first. The
+    # sequence is per LABEL and not per id, because it is the shard that is
+    # retried and the id is what changes.
+    wn="$(cat "$REC/wait.n.${lbl}" 2>/dev/null || echo 0)"
+    wn=$((wn + 1))
+    printf '%s\n' "$wn" >"$REC/wait.n.${lbl}"
+    # A SLOW SHARD, MODELLED. The defect this exists for is invisible to a
+    # stub that answers instantly: every box finished at once, so nothing was
+    # ever idle while another leg ran. Bounded, so a case that forgets to
+    # release cannot hang the leg.
+    if [ -f "$REC/wait.block.${lbl}" ]; then
+        i=0
+        while [ ! -f "$REC/release-wait" ] && [ "$i" -lt 300 ]; do
+            sleep 0.2
+            i=$((i + 1))
+        done
+    fi
+    if [ -f "$REC/wait.out.${lbl}.${wn}" ]; then
+        cat "$REC/wait.out.${lbl}.${wn}"
+    elif [ -f "$REC/wait.out.${lbl}" ]; then
+        cat "$REC/wait.out.${lbl}"
+    fi
+    if [ -f "$REC/box.rc.${lbl}.${wn}" ]; then exit "$(cat "$REC/box.rc.${lbl}.${wn}")"; fi
     exit "$(cat "$REC/box.rc.${lbl}" 2>/dev/null || echo 0)"
     ;;
 fetch)
@@ -557,6 +816,19 @@ fetch)
         # real acceptance box writes one on every run and the world every
         # other case builds is the ordinary one. A case that wants the proof
         # missing, unparsable or red plants for it by name.
+        #
+        # AND A RECLAIMED ACCEPTANCE BOX SAYS SO HERE. `fetch` calls
+        # `refuse_if_reclaimed` like every other subcommand, so a box AWS took
+        # back between the run and the fetch is discovered at the fetch — which
+        # is the state this fixture models, on the FIRST attempt only.
+        pn="$(cat "$REC/accept.proof.n" 2>/dev/null || echo 0)"
+        pn=$((pn + 1))
+        printf '%s\n' "$pn" >"$REC/accept.proof.n"
+        if [ -f "$REC/accept.proof.reclaimed" ] && [ "$pn" = "1" ]; then
+            echo "box reclaimed (spot) ${id} status instance-terminated-no-capacity: not enough capacity" >&2
+            echo "!! verifier_box: the box was reclaimed by AWS mid-flight." >&2
+            exit 2
+        fi
         if [ -f "$REC/accept.proof.absent" ]; then
             echo "stub fetch: nothing at ${remote} on ${id}" >&2
             exit 1
@@ -565,6 +837,25 @@ fetch)
             cat "$REC/accept.proof" >"$dest"
         else
             printf 'seed=%s workers=16 pass1=0 pass2=0 map=0\n' 1073741827 >"$dest"
+        fi
+        exit 0
+        ;;
+    *pass1.log | *pass2.log)
+        # THE ACCEPTANCE BOX'S TWO PASS LOGS. They are fetched WHENEVER
+        # there is a box — laxer than the map's condition and laxer than the
+        # proof's, because the one moment they can be read is before the box is
+        # terminated and a red pass is exactly when somebody wants them.
+        pl="${remote##*/}"
+        pl="${pl%.log}"
+        if [ -f "$REC/accept.${pl}.absent" ]; then
+            echo "stub fetch: nothing at ${remote} on ${id}" >&2
+            exit 1
+        fi
+        if [ -f "$REC/accept.${pl}" ]; then
+            cat "$REC/accept.${pl}" >"$dest"
+        else
+            printf '%s\n' "Using --randomly-seed=1073741827" \
+                "== 2481 passed in 512.01s ==" >"$dest"
         fi
         exit 0
         ;;
@@ -594,7 +885,17 @@ fetch)
             echo "stub fetch: no exit status on ${id}" >&2
             exit 1
         fi
-        cat "$REC/box.rc.${lbl}" 2>/dev/null >"$dest" || printf '0\n' >"$dest"
+        # THE STATUS OF THE ATTEMPT THAT JUST RAN, `wait`'s own sequence: a
+        # retried shard's second box wrote a second status, and a fetch that
+        # served the first would hand the composition the reclaimed box's.
+        wn="$(cat "$REC/wait.n.${lbl}" 2>/dev/null || echo 1)"
+        if [ -f "$REC/box.rc.${lbl}.${wn}" ]; then
+            cat "$REC/box.rc.${lbl}.${wn}" >"$dest"
+        elif [ -f "$REC/box.rc.${lbl}" ]; then
+            cat "$REC/box.rc.${lbl}" >"$dest"
+        else
+            printf '0\n' >"$dest"
+        fi
         exit 0
         ;;
     *.log)
@@ -616,7 +917,7 @@ fetch)
             legs="$(awk -F'\t' -v u="$unit" '$1 == u { print $4 }' "$REC/listlegs.out")"
             if [ -n "$onepass" ]; then
                 legs=",${legs},"
-                legs="${legs/,pytest-x2,/,pytest-x2/1,}"
+                legs="${legs/,${SUITELEG},/,${SUITELEG}/1,}"
                 legs="${legs#,}"
                 legs="${legs%,}"
             fi
@@ -634,6 +935,12 @@ fetch)
             echo "  no verdict recorded — --leg ${unit}: one unit of the gate"
             echo "  is a targeted drive and vouches for no tree. The tree it ran on was ${tree}."
         } >"$dest"
+        # A RED SHARD'S PYTEST OUTPUT, PLANTED. `check.sh --leg` runs pytest
+        # inside the leg, so a red pytest shard's `leg.log` carries pytest's
+        # own seed banner and its `FAILED <nodeid>` summary lines — which is
+        # what the first-failing composer reads. A case that wants a red shard
+        # NAMED plants them.
+        [ ! -f "$REC/box.faillog.${lbl}" ] || cat "$REC/box.faillog.${lbl}" >>"$dest"
         exit 0
         ;;
     esac
@@ -760,11 +1067,88 @@ ledger_rows() { count_lines "$LEDGER"; }
 # S.1 — the flag is refused outside the bank, loudly, before anything launches
 # =============================================================================
 
+# =============================================================================
+# S.0 — the plan this tree's own listing produces, derived before anything else
+# =============================================================================
+#
+# IT RUNS FIRST AND EVERY CASE BELOW DEPENDS ON IT. One ordinary bank over this
+# tree's real unit table, and what it yields is the set of shard labels the
+# SUBJECT produced — which is then compared against a set composed HERE out of
+# the listing. Two derivations of one fact, asserted equal: the composition
+# below is what the cases use, and the probe is what stops it being a guess.
+#
+# WHY IT IS A PROBE AND NOT A TABLE. `bank_boxes_plan` decides k per unit from
+# N and from how many units shard; a drive that wrote `selftest-2of3` down was
+# encoding that arithmetic at one N on one tree. The consumer's first bank
+# reddened 49 assertions on a tree where the subject was right and this file's
+# table was stale — the exact class this cycle exists to remove.
+derive_the_plan_from_the_real_listing() {
+    CURRENT=derive_the_plan_from_the_real_listing
+    local observed unit k i composed last=""
+
+    fresh_world plan_probe
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    [ "$DRIVE_EXIT" = "0" ] ||
+        cannot_look "the probe bank over this tree's own listing exited ${DRIVE_EXIT} — every label below is derived from it, so there is nothing to derive"
+    # Field 1 of `up.calls` is the label; the acceptance box is not in the plan.
+    # ARRIVAL ORDER IS NOT PLAN ORDER — the boxes go up in parallel — so this
+    # is compared as a SET and the order is composed from the listing below.
+    observed="$(field_lines "${REC}/up.calls" 1 | grep -v '^acceptance$' || true)"
+    [ -n "$observed" ] ||
+        cannot_look "the probe bank brought up no shard box — nothing to derive the labels from"
+
+    composed=""
+    for unit in $PLAN_INDIV; do
+        composed="${composed}${composed:+ }${unit}"
+    done
+    for unit in $PLAN_CAPABLE; do
+        k="$(printf '%s\n' "$observed" | grep -c "^${unit}-[0-9]*of[0-9]*$" || true)"
+        case "$k" in '' | *[!0-9]*) k=0 ;; esac
+        [ "$k" -gt 0 ] ||
+            cannot_look "the probe's plan gave the N-capable unit '${unit}' no shard at all"
+        i=0
+        while [ "$i" -lt "$k" ]; do
+            i=$((i + 1))
+            composed="${composed}${composed:+ }${unit}-${i}of${k}"
+        done
+        last="$unit"
+        if [ "$unit" = "$PLAN_SUITE_UNIT" ]; then
+            PLAN_SUITE_K="$k"
+            PLAN_SUITE_FIRST="${unit}-1of${k}"
+            PLAN_SUITE_LAST="${unit}-${k}of${k}"
+        fi
+    done
+    PLAN_LABELS="$composed"
+    holds "the composed plan is the probe's own set of ${PLAN_BOXES} shards" \
+        "$(printf '%s\n' $observed | LC_ALL=C sort | paste -sd, -)" \
+        "$(printf '%s\n' $PLAN_LABELS | LC_ALL=C sort | paste -sd, -)"
+
+    # THE VICTIM: a shard of the LAST shardable unit. "The last" needs no
+    # opinion about which unit that is, and every failure case below wants one
+    # shard rather than a particular one.
+    PLAN_VICTIM_UNIT="$last"
+    PLAN_VICTIM_K="$(printf '%s\n' $PLAN_LABELS | grep -c "^${last}-" || true)"
+    PLAN_VICTIM="${last}-${PLAN_VICTIM_K}of${PLAN_VICTIM_K}"
+    PLAN_VICTIM_FIRST="${last}-1of${PLAN_VICTIM_K}"
+    # THE FIRST THREE LABELS OF THE PLAN, for the case that signals the bank
+    # once some boxes are up and the rest are still in flight. Three is "some
+    # but not all" and needs no opinion about which three.
+    PLAN_KILL_ALLOW="$(printf '%s\n' $PLAN_LABELS | sed -n '1,3p')"
+    [ -n "$PLAN_SUITE_FIRST" ] ||
+        cannot_look "the plan gave '${PLAN_SUITE_UNIT}' — the unit carrying the ${PLAN_SUITE_LEG} leg — no shard at all"
+    holds "the plan's boxes (one per shard, and the acceptance box)" \
+        "$((PLAN_BOXES + 1))" "$(count_lines "${REC}/up.calls")"
+    echo "  ..       ${PLAN_UNITS} units; plan at ${PLAN_BOXES} boxes: $(printf '%s ' $PLAN_LABELS)"
+    echo "  ..       suite leg '${PLAN_SUITE_LEG}' is in unit '${PLAN_SUITE_UNIT}' (${PLAN_SUITE_K} shard(s));"
+    echo "  ..       the last shardable unit is '${PLAN_VICTIM_UNIT}' (${PLAN_VICTIM_K}); the perturbed shard is '${PLAN_VICTIM}'"
+    echo "  ..       the syntactic floor the subject declares is ${PLAN_TYPED_FLOOR}; the derived one is ${PLAN_FLOOR}"
+}
+
 case_on_boxes_without_bank_is_refused() {
     CURRENT=case_on_boxes_without_bank_is_refused
     fresh_world on_boxes_without_bank
 
-    run_bank --on-boxes 8
+    run_bank --on-boxes "$PLAN_BOXES"
     exited 2
     says "--on-boxes is only meaningful with --bank"
     says_not "STUB GATE ran"
@@ -786,13 +1170,18 @@ case_on_boxes_without_bank_is_refused() {
     holds "up calls after the bare flag" "0" "$(count_lines "${REC}/up.calls")"
 }
 
-case_on_boxes_below_five_is_refused() {
-    CURRENT=case_on_boxes_below_five_is_refused
-    fresh_world on_boxes_below_five
+case_on_boxes_below_the_syntactic_floor_is_refused() {
+    CURRENT=case_on_boxes_below_the_syntactic_floor_is_refused
+    fresh_world on_boxes_below_the_floor
 
-    run_bank --bank --on-boxes 4
+    # THE VALUE IS READ OUT OF `pm_push.sh`'s OWN `ON_BOXES_FLOOR`. That
+    # constant is the typo belt and NOT the derived floor (the file says so
+    # where it declares it), so the assertion is that the subject refuses
+    # BELOW ITS OWN CONSTANT — a product that moves the constant moves both
+    # halves together and this case follows it.
+    run_bank --bank --on-boxes "$((PLAN_TYPED_FLOOR - 1))"
     exited 2
-    says "is below the floor of 5"
+    says "is below the floor of ${PLAN_TYPED_FLOOR}"
     says "N = 3 + P + S"
     holds "up calls" "0" "$(count_lines "${REC}/up.calls")"
     holds "fold calls" "0" "$(count_lines "${REC}/fold.calls")"
@@ -816,7 +1205,7 @@ case_the_composed_row_keys_on_the_post_fold_tree() {
     local before after row keyed
     before="$(repo_tree)"
 
-    run_bank --bank --on-boxes 8
+    run_bank --bank --on-boxes "$PLAN_BOXES"
     exited 0
     after="$(repo_tree)"
     if [ "$before" = "$after" ]; then
@@ -846,7 +1235,7 @@ case_the_mac_holds_no_lease_and_runs_no_gate() {
     fresh_world mac_no_lease
     local listed
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     listed="$(grep -c -- '--list-legs' "${REC}/gate.calls" 2>/dev/null || true)"
     holds "gate invocations, all of them --list-legs" "1" "${listed:-0}"
@@ -856,7 +1245,7 @@ case_the_mac_holds_no_lease_and_runs_no_gate() {
     # AND ON A RED RUN TOO, which is the half a green-only assertion misses.
     fresh_world mac_no_lease_red
     printf '1\n' >"${REC}/box.rc.static"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 1
     assert_mac_measured_nothing
 }
@@ -867,13 +1256,16 @@ case_the_mac_holds_no_lease_and_runs_no_gate() {
 
 case_the_plan_follows_the_listing() {
     CURRENT=case_the_plan_follows_the_listing
-    local extra_legs selftest_shards
+    local shards_now flat_shards want
 
     # (a) A LISTING WITH ONE MORE INDIVISIBLE UNIT. The plan gains a box for it
-    # and the last shardable unit loses one — with no edit to pm_push.sh.
+    # and the last shardable unit loses one — with no edit to pm_push.sh. The
+    # "one fewer" is arithmetic over what THIS tree's plan gave that unit, not
+    # a number: on a product whose drawer adds a `local` unit the whole row
+    # shifts and the claim is the same claim.
     fresh_world plan_extra_unit
     printf 'extra-unit\tnone\t0\textra-leg\n' >>"${REC}/listlegs.out"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     if grep -q -- '--unit extra-unit --log leg' "${REC}/leg.calls"; then
         ok "the new indivisible unit got its own box, unsharded"
@@ -881,36 +1273,43 @@ case_the_plan_follows_the_listing() {
         DRIVE_OUT="${REC}/leg.calls"
         bad "the plan did not give extra-unit a box of its own"
     fi
-    selftest_shards="$(grep -c -- '--unit selftest ' "${REC}/leg.calls" || true)"
-    holds "selftest shards at N=8 with four indivisible units" "2" "${selftest_shards:-0}"
-    holds "boxes (the plan's eight, and the acceptance box)" "9" "$(count_lines "${REC}/up.calls")"
+    shards_now="$(grep -c -- "--unit ${PLAN_VICTIM_UNIT} " "${REC}/leg.calls" || true)"
+    holds "${PLAN_VICTIM_UNIT} shards at N=${PLAN_BOXES} with one more indivisible unit (one fewer than the ${PLAN_VICTIM_K} it had)" \
+        "$((PLAN_VICTIM_K - 1))" "${shards_now:-0}"
+    holds "boxes (the plan's ${PLAN_BOXES}, and the acceptance box)" "$((PLAN_BOXES + 1))" \
+        "$(count_lines "${REC}/up.calls")"
 
-    # (b) A LISTING WHERE `selftest` IS INDIVISIBLE. The split drops; nothing
-    # in pm_push.sh knows the word `selftest`.
-    fresh_world plan_selftest_flat
-    awk -F'\t' 'BEGIN { OFS = "\t" } $1 == "selftest" { $3 = "0" } { print }' \
+    # (b) A LISTING WHERE THE LAST SHARDABLE UNIT IS INDIVISIBLE. The split
+    # drops; nothing in pm_push.sh knows that unit's name, and neither does
+    # this case — it is `the last shardable unit in the listing`.
+    fresh_world plan_victim_flat
+    awk -F'\t' -v victim="$PLAN_VICTIM_UNIT" 'BEGIN { OFS = "\t" } $1 == victim { $3 = "0" } { print }' \
         "$REAL_LISTING" >"${REC}/listlegs.out"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
-    if grep -q -- '--unit selftest --log leg' "${REC}/leg.calls"; then
-        ok "selftest took one whole box with no --shard"
+    if grep -q -- "--unit ${PLAN_VICTIM_UNIT} --log leg" "${REC}/leg.calls"; then
+        ok "${PLAN_VICTIM_UNIT} took one whole box with no --shard"
     else
         DRIVE_OUT="${REC}/leg.calls"
-        bad "selftest was still split after the listing called it indivisible"
+        bad "${PLAN_VICTIM_UNIT} was still split after the listing called it indivisible"
     fi
-    extra_legs="$(grep -c -- '--unit pytest-x2 --shard' "${REC}/leg.calls" || true)"
-    holds "pytest-x2 shards when selftest is indivisible" "4" "${extra_legs:-0}"
+    # WHAT IS LEFT FOR THE OTHER SHARDABLE UNITS is the arithmetic the plan
+    # does: every unit but the shardable ones takes a whole box, and the rest
+    # of N is split between them.
+    flat_shards="$(grep -c -- '--shard' "${REC}/leg.calls" || true)"
+    holds "shards left once ${PLAN_VICTIM_UNIT} is indivisible" \
+        "$((PLAN_BOXES - (PLAN_UNITS - 1)))" "${flat_shards:-0}"
     assert_mac_measured_nothing
 
-    # (c) AND THE FLOOR IS DERIVED TOO. Five is the floor of TODAY's five units
-    # and it is checked at the argument for a typo's sake; the floor that stays
-    # right when a unit is ADDED comes out of the listing, and it refuses with
-    # the arithmetic rather than with a constant.
+    # (c) AND THE FLOOR IS DERIVED TOO. The floor of TODAY's units is checked
+    # at the argument for a typo's sake; the floor that stays right when a
+    # unit is ADDED comes out of the listing, and it refuses with the
+    # arithmetic rather than with a constant.
     fresh_world plan_derived_floor
     printf 'extra-unit\tnone\t0\textra-leg\n' >>"${REC}/listlegs.out"
-    run_bank --bank --no-fold --on-boxes 5
+    run_bank --bank --no-fold --on-boxes "$PLAN_FLOOR"
     exited 2
-    says "this gate declares 6 units"
+    says "this gate declares $((PLAN_UNITS + 1)) units"
     says "cannot give every one of them a box"
     says "never typed"
     holds "up calls under the derived floor" "0" "$(count_lines "${REC}/up.calls")"
@@ -921,9 +1320,14 @@ case_the_plan_follows_the_listing() {
     # would be a unit the composition could not account for, which is its own
     # exit 2 one function over.
     fresh_world plan_at_the_floor
-    run_bank --bank --no-fold --on-boxes 5
+    run_bank --bank --no-fold --on-boxes "$PLAN_FLOOR"
     exited 0
-    for want in "--unit pytest-x2 --shard 1/1 --passes 1 --log leg" "--unit selftest --shard 1/1 --log leg"; do
+    for unit in $PLAN_CAPABLE; do
+        if [ "$unit" = "$PLAN_SUITE_UNIT" ]; then
+            want="--unit ${unit} --shard 1/1 --passes 1 --log leg"
+        else
+            want="--unit ${unit} --shard 1/1 --log leg"
+        fi
         if grep -qF -- "$want" "${REC}/leg.calls"; then
             ok "at the floor: leg <id> ${want}"
         else
@@ -931,8 +1335,184 @@ case_the_plan_follows_the_listing() {
             bad "at the floor, no shard was handed: ${want}"
         fi
     done
-    holds "boxes at the floor (five shards and the acceptance box)" "6" "$(count_lines "${REC}/up.calls")"
+    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_${PLAN_FLOOR}.log"
+    holds "boxes at the floor (one per unit, and the acceptance box)" \
+        "$((PLAN_FLOOR + 1))" "$(count_lines "${REC}/up.calls")"
     holds "one verdict row at the floor" "1" "$(ledger_rows)"
+}
+
+# =============================================================================
+# S.4a — a PRODUCT's leg, in the drawer, gets its own unit and its own box
+# =============================================================================
+#
+# WHY THIS CASE IS THE POINT OF THE REST OF THIS FILE. The template declares
+# the units it declares; a product that clones it puts its own legs in
+# `scripts/local/legs/` and the listing grows a unit — `local` for the
+# drawer's own, or a name of the product's choosing. `pm_push.sh` was always
+# right about that (it derives its plan from `--list-legs`), and this DRIVE was
+# wrong: it typed the template's unit table, so the first consumer's first bank
+# reddened 49 assertions with the subject behaving perfectly. Everything above
+# now derives from the listing; this case proves the derivation over a listing
+# the template itself does not have.
+#
+# THE PLANT IS A REAL FILE AND THE LISTING IS THE REAL READER'S. The leg is
+# written into this drive's own scratch directory and handed to
+# `check.sh --list-legs` through `DJB_LOCAL_LEGS_DIR` — the reader's own plant
+# point — so what the bank is given is a listing the gate composed, never a row
+# this file typed. Nothing is written into the checkout: an untracked
+# executable in it reds the instrument census by design.
+case_a_product_leg_in_the_drawer_gets_its_own_unit_and_its_own_box() {
+    CURRENT=case_a_product_leg_in_the_drawer_gets_its_own_unit_and_its_own_box
+    local drawer empty listing base units boxes
+
+    drawer="$WORK/drawer-legs"
+    empty="$WORK/drawer-empty"
+    rm -rf "$drawer" "$empty"
+    mkdir -p "$drawer" "$empty"
+    drawer_plant "$drawer/x.sh" local none
+
+    listing="$WORK/listlegs-drawer.tsv"
+    base="$WORK/listlegs-nodrawer.tsv"
+    # AN EMPTY DRAWER IS THE BASELINE. `PLAN_UNITS` is the listing of the tree
+    # AS IT STANDS, and on a PRODUCT that already keeps legs in the drawer that
+    # listing already has units of its own — so "one more than PLAN_UNITS"
+    # would be a claim that is true only on the template. Two readings of the
+    # same reader, one with an empty drawer and one with this leg in it, is the
+    # differential.
+    #
+    # THE VARIABLE IS SET FOR THESE COMMANDS ONLY. The drive preamble UNSETS
+    # every gate input (`DRIVE_GATE_VARS`) so an inherited one cannot perturb a
+    # drive's world — which is right, and means a case that WANTS one says so
+    # on the command itself.
+    if ! DJB_LOCAL_LEGS_DIR="$empty" ./scripts/check.sh --list-legs \
+        >"$base" 2>"$WORK/listlegs-nodrawer.err" ||
+        ! DJB_LOCAL_LEGS_DIR="$drawer" ./scripts/check.sh --list-legs \
+            >"$listing" 2>"$WORK/listlegs-drawer.err"; then
+        DRIVE_OUT="$WORK/listlegs-drawer.err"
+        bad "the gate could not list its legs with a drawer leg planted"
+        return
+    fi
+    units="$(count_lines "$listing")"
+    holds "one drawer leg adds exactly one unit to the listing" \
+        "$(($(count_lines "$base") + 1))" "$units"
+    if awk -F'\t' '$1 == "local" { found = 1 } END { exit !found }' "$listing"; then
+        ok "the listing carries a 'local' unit"
+    else
+        DRIVE_OUT="$listing"
+        bad "no 'local' unit in the listing after planting a drawer leg"
+        return
+    fi
+
+    # (a) THE PLAN GIVES IT A BOX, unsharded, like any other indivisible unit,
+    # and the bank composes one row over the whole set.
+    boxes=$((units + 3))
+    WORLD_FULL_LEGS_NEXT="$(drawer_full_legs "$drawer")"
+    fresh_world drawer_leg
+    cp "$listing" "${REC}/listlegs.out"
+    run_bank --bank --no-fold --on-boxes "$boxes"
+    exited 0
+    holds "one verdict row over a listing with a product's own unit" "1" "$(ledger_rows)"
+    if grep -qF -- "--unit local --log leg" "${REC}/leg.calls"; then
+        ok "the product's unit got its own box, unsharded"
+    else
+        DRIVE_OUT="${REC}/leg.calls"
+        bad "the plan gave the product's 'local' unit no box of its own"
+    fi
+    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_${boxes}.log"
+    holds "boxes (one per shard, and the acceptance box)" "$((boxes + 1))" \
+        "$(count_lines "${REC}/up.calls")"
+    holds "leg calls" "$boxes" "$(count_lines "${REC}/leg.calls")"
+    holds "downs" "$((boxes + 1))" "$(count_lines "${REC}/down.calls")"
+    assert_mac_measured_nothing
+
+    # (b) AND THE DERIVED FLOOR MOVED WITH IT. One box short of the units this
+    # listing declares is a refusal naming the arithmetic — which is the whole
+    # reason the floor is derived and not typed.
+    if [ "$((units - 1))" -ge "$PLAN_TYPED_FLOOR" ]; then
+        WORLD_FULL_LEGS_NEXT="$(drawer_full_legs "$drawer")"
+        fresh_world drawer_leg_floor
+        cp "$listing" "${REC}/listlegs.out"
+        run_bank --bank --no-fold --on-boxes "$((units - 1))"
+        exited 2
+        says "this gate declares ${units} units"
+        says "never typed"
+        holds "up calls under the product's own floor" "0" "$(count_lines "${REC}/up.calls")"
+        holds "verdict rows under the product's own floor" "0" "$(ledger_rows)"
+    else
+        ok "the syntactic floor is above this listing's unit count — the derived floor has no room to be asserted here"
+    fi
+
+    # (c) TWO LEGS IN TWO UNITS, which is the shape a real product has: the
+    # drawer's own `local` and one the product NAMED, with organs of its own.
+    # ONE leg in ONE unit passed for a reason worth writing down — the name
+    # `local` happens to be the unit this template's own drawer would make —
+    # so a second unit with a second name is what proves the plan is reading
+    # the listing rather than agreeing by coincidence.
+    drawer_plant "$drawer/y.sh" frontend node
+    if ! DJB_LOCAL_LEGS_DIR="$drawer" ./scripts/check.sh --list-legs \
+        >"$listing" 2>"$WORK/listlegs-drawer2.err"; then
+        DRIVE_OUT="$WORK/listlegs-drawer2.err"
+        bad "the gate could not list its legs with two drawer legs planted"
+        return
+    fi
+    units="$(count_lines "$listing")"
+    holds "two drawer legs in two units add exactly two units" \
+        "$(($(count_lines "$base") + 2))" "$units"
+    boxes=$((units + 3))
+    WORLD_FULL_LEGS_NEXT="$(drawer_full_legs "$drawer")"
+    fresh_world drawer_two_legs
+    cp "$listing" "${REC}/listlegs.out"
+    run_bank --bank --no-fold --on-boxes "$boxes"
+    exited 0
+    holds "one verdict row over two product units" "1" "$(ledger_rows)"
+    for want in "--unit local --log leg" "--unit frontend --log leg"; do
+        if grep -qF -- "$want" "${REC}/leg.calls"; then
+            ok "leg <id> ${want}"
+        else
+            DRIVE_OUT="${REC}/leg.calls"
+            bad "the plan gave no box to: ${want}"
+        fi
+    done
+    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_${boxes}.log"
+    holds "boxes with two product units" "$((boxes + 1))" "$(count_lines "${REC}/up.calls")"
+    # AND THE ROW NAMES BOTH PRODUCT LEGS. A composition that dropped one
+    # would be a green vouching for a leg no box ran, which is the one thing
+    # this ledger exists to prevent.
+    DRIVE_OUT="$LEDGER"
+    says "local:x"
+    says "local:y"
+    assert_mac_measured_nothing
+}
+
+# =============================================================================
+# S.4a2 — TWO shards go to the last shardable unit before any other gets two
+# =============================================================================
+#
+# WHY IT IS A DIFFERENTIAL. `bank_boxes_plan` gives every N-capable unit but
+# the last TWO shards once there are seven boxes or more, and the LAST takes
+# whatever is left — and nothing pinned that: the probe reads k back out of the
+# subject's own `up.calls`, so a plan that split them any other way would be
+# read as the plan and agreed with. One more box than the ordinary run, and the
+# only k that may move is the last unit's.
+case_one_more_box_goes_to_the_last_shardable_unit() {
+    CURRENT=case_one_more_box_goes_to_the_last_shardable_unit
+    local unit k
+
+    fresh_world one_more_box
+    run_bank --bank --no-fold --on-boxes "$((PLAN_BOXES + 1))"
+    exited 0
+    for unit in $PLAN_CAPABLE; do
+        k="$(grep -c -- "--unit ${unit} --shard" "${REC}/leg.calls" || true)"
+        case "$k" in '' | *[!0-9]*) k=0 ;; esac
+        if [ "$unit" = "$PLAN_VICTIM_UNIT" ]; then
+            holds "one more box went to the last shardable unit '${unit}'" \
+                "$((PLAN_VICTIM_K + 1))" "$k"
+        else
+            holds "'${unit}' kept the shards it had" \
+                "$(printf '%s\n' $PLAN_LABELS | grep -c "^${unit}-" || true)" "$k"
+        fi
+    done
+    assert_mac_measured_nothing
 }
 
 case_a_broken_listing_is_exit_2_before_any_box() {
@@ -941,7 +1521,7 @@ case_a_broken_listing_is_exit_2_before_any_box() {
     printf '2\n' >"${REC}/listlegs.rc"
     printf '!! --list-legs: a leg is in NO unit.\n' >"${REC}/listlegs.err"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     says "--list-legs exited 2"
     says "a leg is in NO unit"
@@ -951,39 +1531,171 @@ case_a_broken_listing_is_exit_2_before_any_box() {
 }
 
 # =============================================================================
+# S.4b — the plan spreads its shards across the zones the WRAPPER lists
+# =============================================================================
+#
+# WHY. Spot capacity is a per-availability-zone fact, so a bank that launched
+# every box into one zone is a bank that loses every box to one capacity event
+# — which is the measured shape of a reclaimed wave (five of nine, on the
+# consumer's own bank). The zones are READ from the wrapper and never typed
+# here: a hand list is a list that goes stale the first time an account gains
+# or loses a zone, and the bank would then refuse in a zone that exists or
+# crowd into one that does not.
+
+case_the_plan_spreads_shards_across_the_zones_the_wrapper_lists() {
+    CURRENT=case_the_plan_spreads_shards_across_the_zones_the_wrapper_lists
+    local counts reads azs
+
+    fresh_world zones_round_robin
+    printf '%s\n' xx-drive-9a xx-drive-9b xx-drive-9c >"${REC}/zones"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    says "zones xx-drive-9a xx-drive-9b xx-drive-9c"
+
+    # READ ONCE. The zone ring is one fact about this account and a second
+    # read is a second answer — and nine `zones` calls against the API for one
+    # bank is nine chances to answer differently halfway through a launch.
+    reads="$(grep -c '^zones' "${REC}/vb.calls" || true)"
+    holds "zones read once for the whole bank" "1" "${reads:-0}"
+
+    # EVERY `up` CARRIES ONE, and the eight shards are spread 3/3/2 over the
+    # three zones the wrapper named. The acceptance box is excluded from the
+    # count and takes the next place in the ring: it is not a shard and the
+    # criterion is about the shards.
+    counts="$(awk -F'\t' '$1 != "acceptance" { print $3 }' "${REC}/up.calls" |
+        LC_ALL=C sort | uniq -c | awk '{ print $1 }' | LC_ALL=C sort -rn | tr '\n' ' ')"
+    holds "shards per zone (${PLAN_BOXES} shards over three zones)" "$(plan_round_robin 3)" "$counts"
+    azs="$(awk -F'\t' '{ print $3 }' "${REC}/up.calls" | LC_ALL=C sort -u | grep -c . || true)"
+    holds "distinct zones used (the acceptance box included)" "3" "${azs:-0}"
+    if grep -q "$(printf '\t-\t')" "${REC}/up.calls"; then
+        DRIVE_OUT="${REC}/up.calls"
+        bad "a box was brought up with no --az at all"
+    else
+        ok "every up carried an --az"
+    fi
+    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_${PLAN_BOXES}.log"
+    holds "one verdict row" "1" "$(ledger_rows)"
+    assert_mac_measured_nothing
+
+    # AND THE RING IS STDOUT, NOT STDOUT AND STDERR. A wrapper that warns and
+    # still answers must not have its warning round-robined over as a zone.
+    fresh_world zones_noisy
+    printf '%s\n' xx-drive-9a xx-drive-9b xx-drive-9c >"${REC}/zones"
+    : >"${REC}/zones.noise"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    says "zones xx-drive-9a xx-drive-9b xx-drive-9c"
+    says_not "zones verifier_box: warning"
+    holds "distinct zones when the wrapper also warned" "3" \
+        "$(awk -F'\t' '{ print $3 }' "${REC}/up.calls" | LC_ALL=C sort -u | grep -c . || true)"
+
+    # AND THE RING IS THE WRAPPER'S, WHATEVER ITS LENGTH. Two zones is 4/4 and
+    # nothing in pm_push.sh knows how many there are.
+    fresh_world zones_two
+    printf '%s\n' xx-drive-9a xx-drive-9b >"${REC}/zones"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    counts="$(awk -F'\t' '$1 != "acceptance" { print $3 }' "${REC}/up.calls" |
+        LC_ALL=C sort | uniq -c | awk '{ print $1 }' | LC_ALL=C sort -rn | tr '\n' ' ')"
+    holds "shards per zone (${PLAN_BOXES} shards over two zones)" "$(plan_round_robin 2)" "$counts"
+}
+
+case_no_zones_is_exit_2_before_any_box() {
+    CURRENT=case_no_zones_is_exit_2_before_any_box
+
+    # (a) THE WRAPPER COULD NOT LOOK. A bank that carried on would launch into
+    # whatever zone the subnet default happens to be, which is the single-zone
+    # shape this criterion exists to end — silently.
+    fresh_world zones_unreadable
+    printf '2\n' >"${REC}/zones.rc"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 2
+    says "could not read the zones"
+    holds "up calls with no zones" "0" "$(count_lines "${REC}/up.calls")"
+    holds "verdict rows" "0" "$(ledger_rows)"
+    assert_mac_measured_nothing
+
+    # (b) AND AN EMPTY ANSWER IS THE SAME ANSWER. Exit 0 with nothing on
+    # stdout is a wrapper that looked and found none, and a ring of nothing is
+    # not a ring.
+    fresh_world zones_empty
+    : >"${REC}/zones"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 2
+    says "could not read the zones"
+    holds "up calls with an empty ring" "0" "$(count_lines "${REC}/up.calls")"
+    holds "verdict rows" "0" "$(ledger_rows)"
+}
+
+# =============================================================================
+# S.4c — every bank box reaps itself if this Mac dies (the killed-bank rider)
+# =============================================================================
+#
+# WHY. The bank's teardown is a TRAP and no shell covers a SIGKILL: a measured
+# `boxbank-17-killed.log` shows the trap firing and dying with the Mac, and
+# what was left underneath was the image's own 4 h hard ceiling — enough for
+# the bill, not for promptness. So every bank `up` types a ONE HOUR ceiling,
+# comfortably above the longest measured leg.
+#
+# AND THE IDLE MINUTES STAY THE IMAGE'S OWN THIRTY. A shorter idle is not a
+# tighter belt, it is a live defect: the box's idle clock starts when its LEG
+# EXITS, so a two-minute pytest shard is idle for the eighteen minutes the
+# selftest unit is still running. At ten it was reaped out from under the bank
+# — `box gone (terminated)`, no log, and a leak proof composed as LOST over a
+# tree every shard passed.
+case_bank_boxes_carry_a_one_hour_lifetime_and_a_thirty_minute_idle() {
+    CURRENT=case_bank_boxes_carry_a_one_hour_lifetime_and_a_thirty_minute_idle
+    local ttls idles
+
+    fresh_world box_lifetime
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    says "box lifetime: 1h hard, 30m idle - the box reaps itself if the Mac dies"
+    # EVERY BOX, THE ACCEPTANCE ONE INCLUDED: it is the box that outlives the
+    # shards and the one a killed bank is most likely to leave behind.
+    ttls="$(awk -F'\t' '$4 == "1" { n++ } END { print n + 0 }' "${REC}/up.calls")"
+    idles="$(awk -F'\t' '$5 == "30" { n++ } END { print n + 0 }' "${REC}/up.calls")"
+    holds "ups carrying --ttl 1" "$((PLAN_BOXES + 1))" "$ttls"
+    holds "ups carrying --idle 30" "$((PLAN_BOXES + 1))" "$idles"
+    assert_mac_measured_nothing
+}
+
+# =============================================================================
 # S.5 — N boxes, one leg per box, the seam's exact argv
 # =============================================================================
 
-case_eight_boxes_get_eight_shards() {
-    CURRENT=case_eight_boxes_get_eight_shards
-    fresh_world eight_shards
-    local tree8 ids uniq want
+# N BOXES, N SHARDS, AND THE SEAM'S EXACT ARGV — where N is what this tree's
+# own listing produced, never a number in this file.
+case_every_shard_gets_its_own_box_and_the_seams_argv() {
+    CURRENT=case_every_shard_gets_its_own_box_and_the_seams_argv
+    fresh_world every_shard
+    local tree8 ids uniq want label unit k
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
-    # NINE BOXES FOR EIGHT SHARDS. The ninth is the `acceptance` box and it is
-    # outside the plan by construction: it takes no unit, it is handed no leg,
-    # and its answer enters no part of the composed verdict. The plan is still
-    # the eight the listing declares.
-    holds "up calls" "9" "$(count_lines "${REC}/up.calls")"
-    holds "leg calls" "8" "$(count_lines "${REC}/leg.calls")"
-    holds "wait calls" "8" "$(count_lines "${REC}/wait.calls")"
+    # ONE MORE BOX THAN SHARDS. The extra one is the `acceptance` box and it
+    # is outside the plan by construction: it takes no unit, it is handed no
+    # leg, and its answer enters no part of the composed verdict.
+    holds "up calls" "$((PLAN_BOXES + 1))" "$(count_lines "${REC}/up.calls")"
+    holds "leg calls" "$PLAN_BOXES" "$(count_lines "${REC}/leg.calls")"
+    holds "wait calls" "$PLAN_BOXES" "$(count_lines "${REC}/wait.calls")"
     # TWO `run`s AND NOT ONE, and the second is the image: the acceptance
     # measurement in phase 3, and ONE build after the row is written. Both are
     # on the same verb and neither is a unit of the gate. A third would be a
     # second image of one tree, which is the shape the criteria rejected.
     holds "run calls (the acceptance measurement, and one image build)" "2" "$(count_lines "${REC}/run.calls")"
     holds "image builds (one, whatever the box count)" "1" "$(count_lines "${REC}/image.calls")"
-    holds "fetch calls (a log and a status per shard, plus the map and the leak proof)" \
-        "18" "$(count_lines "${REC}/fetch.calls")"
+    # TWO PER SHARD (a log and a status) PLUS THE NINTH BOX'S FOUR — the map,
+    # the leak proof and the two pass logs — which is arithmetic over the plan
+    # and not a number somebody counted once.
+    holds "fetch calls (a log and a status per shard, the map, the leak proof, two pass logs)" \
+        "$((PLAN_BOXES * 2 + 4))" "$(count_lines "${REC}/fetch.calls")"
 
     tree8="$(repo_tree)"
     tree8="${tree8:0:8}"
     DRIVE_OUT="${REC}/up.calls"
-    for want in "bank-${tree8}-static" "bank-${tree8}-supply-chain" \
-        "bank-${tree8}-full-house-rules" "bank-${tree8}-pytest-x2-1of2" \
-        "bank-${tree8}-pytest-x2-2of2" "bank-${tree8}-selftest-1of3" \
-        "bank-${tree8}-selftest-2of3" "bank-${tree8}-selftest-3of3"; do
+    for label in $PLAN_LABELS; do
+        want="bank-${tree8}-${label}"
         if grep -qF "$want" "${REC}/up.calls"; then
             ok "up --for ${want}"
         else
@@ -991,14 +1703,22 @@ case_eight_boxes_get_eight_shards() {
         fi
     done
 
+    # THE ARGV IS COMPOSED FROM THE LABEL, which is the plan's own grammar:
+    # `<unit>` for a whole box and `<unit>-<k>of<N>` for a shard, `--passes 1`
+    # exactly on the unit the listing puts the suite leg in.
     DRIVE_OUT="${REC}/leg.calls"
-    for want in "--unit static --log leg" "--unit supply-chain --log leg" \
-        "--unit full-house-rules --log leg" \
-        "--unit pytest-x2 --shard 1/2 --passes 1 --log leg" \
-        "--unit pytest-x2 --shard 2/2 --passes 1 --log leg" \
-        "--unit selftest --shard 1/3 --log leg" \
-        "--unit selftest --shard 2/3 --log leg" \
-        "--unit selftest --shard 3/3 --log leg"; do
+    for label in $PLAN_LABELS; do
+        case "$label" in
+        *-[0-9]of[0-9] | *-[0-9]of[0-9][0-9] | *-[0-9][0-9]of[0-9][0-9])
+            unit="${label%-*}"
+            k="${label##*-}"
+            k="${k/of//}"
+            want="--unit ${unit} --shard ${k} --log leg"
+            [ "$unit" != "$PLAN_SUITE_UNIT" ] ||
+                want="--unit ${unit} --shard ${k} --passes 1 --log leg"
+            ;;
+        *) want="--unit ${label} --log leg" ;;
+        esac
         if grep -qF -- "$want" "${REC}/leg.calls"; then
             ok "leg <id> ${want}"
         else
@@ -1009,36 +1729,22 @@ case_eight_boxes_get_eight_shards() {
     ids="$(field_lines "${REC}/leg.calls" 1 | LC_ALL=C sort || true)"
     uniq="$(printf '%s\n' "$ids" | LC_ALL=C sort -u)"
     holds "each box id handed exactly one leg" "$uniq" "$ids"
-    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_8.log"
+    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_${PLAN_BOXES}.log"
     assert_mac_measured_nothing
 }
 
-# =============================================================================
-# S.5b — a detach that ssh refused is the transport, and it gets one more go
-# =============================================================================
-
-# WHY 255 IS ITS OWN CASE. `up` returns when SSM says the agent is Online, and
-# the agent answers before the SSH tunnel does: a `leg` detached in that window
-# gets ssh's own exit 255 with an EMPTY log — no gate ran, nothing was
-# measured, and the bank refused a whole wave for a socket that was answering a
-# few seconds later. A measured bank came down that way with all five of its
-# boxes up and paid for.
-#
-# ONE RETRY, AND ONLY FOR 255. Anything else is the wrapper or the box saying
-# something real, and a retry there would be a second copy of a leg that may
-# already be running.
 case_a_detach_that_ssh_refused_is_retried_once() {
     CURRENT=case_a_detach_that_ssh_refused_is_retried_once
     fresh_world detach_255
-    printf '255\n' >"${REC}/leg.rc.selftest-2of3.1"
+    printf '255\n' >"${REC}/leg.rc.${PLAN_VICTIM}.1"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     # Nine detaches for eight shards: the one that met the closed tunnel went
     # twice.
-    holds "leg calls (eight shards, one retried)" "9" "$(count_lines "${REC}/leg.calls")"
+    holds "leg calls (every shard, one retried)" "$((PLAN_BOXES + 1))" "$(count_lines "${REC}/leg.calls")"
     says "exited 255"
-    says "selftest-2of3"
+    says "${PLAN_VICTIM}"
     says "retrying the detach"
     holds "ledger rows" "1" "$(ledger_rows)"
     assert_mac_measured_nothing
@@ -1047,12 +1753,12 @@ case_a_detach_that_ssh_refused_is_retried_once() {
 case_a_detach_that_failed_for_anything_else_is_not_retried() {
     CURRENT=case_a_detach_that_failed_for_anything_else_is_not_retried
     fresh_world detach_not_transport
-    printf '2\n' >"${REC}/leg.rc.selftest-2of3"
+    printf '2\n' >"${REC}/leg.rc.${PLAN_VICTIM}"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
-    holds "leg calls (no retry for a non-transport failure)" "8" "$(count_lines "${REC}/leg.calls")"
-    says "a unit could not be detached: selftest-2of3"
+    holds "leg calls (no retry for a non-transport failure)" "$PLAN_BOXES" "$(count_lines "${REC}/leg.calls")"
+    says "a unit could not be detached: ${PLAN_VICTIM}"
     says_not "retrying the detach"
     holds "ledger rows" "0" "$(ledger_rows)"
     assert_mac_measured_nothing
@@ -1090,12 +1796,12 @@ case_a_green_bank_brings_the_shards_drive_rows_home() {
     fresh_world harvest_drives
     local t
     t="$(repo_tree)"
-    boxledger_rows selftest-2of3 "$t"
+    boxledger_rows ${PLAN_VICTIM} "$t"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "harvest-drives calls (one per shard box, and none for the acceptance box)" \
-        "8" "$(count_lines "${REC}/harvest.calls")"
+        "$PLAN_BOXES" "$(count_lines "${REC}/harvest.calls")"
     holds "drive rows now in this checkout's ledger" "2" "$(ledger_drive_rows)"
     says "drive rows: 2 brought home"
     # THE TREE IS THE BANK'S OWN, not each box's idea of one: the rows are a
@@ -1113,11 +1819,11 @@ case_drive_rows_already_home_are_not_appended_twice() {
     fresh_world harvest_idempotent
     local t
     t="$(repo_tree)"
-    boxledger_rows selftest-2of3 "$t"
+    boxledger_rows ${PLAN_VICTIM} "$t"
     # ALREADY HERE, exactly as a second bank of the same tree would find them.
-    cat "${REC}/boxledger.selftest-2of3" >>"$LEDGER"
+    cat "${REC}/boxledger.${PLAN_VICTIM}" >>"$LEDGER"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "drive rows in the ledger, still" "2" "$(ledger_drive_rows)"
     says "drive rows: 0 brought home"
@@ -1130,10 +1836,10 @@ case_a_red_bank_harvests_nothing() {
     fresh_world harvest_red
     local t
     t="$(repo_tree)"
-    boxledger_rows selftest-2of3 "$t"
-    printf '1\n' >"${REC}/box.rc.selftest-2of3"
+    boxledger_rows ${PLAN_VICTIM} "$t"
+    printf '1\n' >"${REC}/box.rc.${PLAN_VICTIM}"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 1
     holds "harvest-drives calls on a red bank" "0" "$(count_lines "${REC}/harvest.calls")"
     holds "drive rows in the ledger" "0" "$(ledger_drive_rows)"
@@ -1156,7 +1862,7 @@ case_the_shard_table_names_the_market_each_box_is_on() {
     fresh_world table_market
     printf 'on-demand\n' >"${REC}/up.market.static"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     # THE HEADER, NAMED EXACTLY. A bare `says "market"` is satisfied by any
     # line anywhere in a bank's output that happens to carry the word, and
@@ -1171,10 +1877,10 @@ case_the_shard_table_names_the_market_each_box_is_on() {
     else
         bad "the table's static row does not carry its market: $(grep -E '^  static' "$DRIVE_OUT" || true)"
     fi
-    if grep -E '^  supply-chain .*spot' "$DRIVE_OUT" >/dev/null 2>&1; then
+    if grep -E "^  ${PLAN_FLAT2} .*spot" "$DRIVE_OUT" >/dev/null 2>&1; then
         ok "and a Spot shard's row says spot"
     else
-        bad "the table's supply-chain row does not carry its market: $(grep -E '^  supply-chain' "$DRIVE_OUT" || true)"
+        bad "the table's ${PLAN_FLAT2} row does not carry its market: $(grep -E "^  ${PLAN_FLAT2}" "$DRIVE_OUT" || true)"
     fi
     assert_mac_measured_nothing
 }
@@ -1186,18 +1892,18 @@ case_the_shard_table_names_the_market_each_box_is_on() {
 case_one_red_shard_is_exit_1_and_no_row() {
     CURRENT=case_one_red_shard_is_exit_1_and_no_row
     fresh_world one_red_shard
-    printf '1\n' >"${REC}/box.rc.selftest-2of3"
+    printf '1\n' >"${REC}/box.rc.${PLAN_VICTIM}"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 1
     says "the gate is RED"
-    says "selftest-2of3"
-    says "--leg selftest --shard 2/3"
+    says "${PLAN_VICTIM}"
+    says "--leg ${PLAN_VICTIM_UNIT} --shard ${PLAN_VICTIM_K}/${PLAN_VICTIM_K}"
     holds "verdict rows" "0" "$(ledger_rows)"
     # THE TABLE PRINTS ON EVERY EXIT PATH — a composition that refused and said
     # only "a shard was red" is a composition nobody can act on.
     says "shard"
-    says "pytest-x2-1of2"
+    says "${PLAN_SUITE_FIRST}"
     assert_mac_measured_nothing
 }
 
@@ -1206,7 +1912,7 @@ case_a_missing_or_exit_2_shard_is_exit_2() {
     # (a) a shard that exited 2 — enforcement broken over there
     fresh_world shard_exit_2
     printf '2\n' >"${REC}/box.rc.static"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     says "the shard exited 2"
     says "static"
@@ -1215,36 +1921,210 @@ case_a_missing_or_exit_2_shard_is_exit_2() {
 
     # (b) a shard whose .rc never came back
     fresh_world shard_no_rc
-    : >"${REC}/norc.supply-chain"
-    run_bank --bank --no-fold --on-boxes 8
+    : >"${REC}/norc.${PLAN_FLAT2}"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     says "no exit status came back from the box"
     holds "verdict rows with no status" "0" "$(ledger_rows)"
 
     # (c) a shard whose whole fixture is gone — nothing fetched at all
     fresh_world shard_absent
-    : >"${REC}/absent.selftest-1of3"
-    run_bank --bank --no-fold --on-boxes 8
+    : >"${REC}/absent.${PLAN_VICTIM_FIRST}"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     says "no log came back from the box"
     holds "verdict rows with no log" "0" "$(ledger_rows)"
     assert_mac_measured_nothing
 }
 
-case_a_reclaimed_box_is_exit_2_never_red() {
-    CURRENT=case_a_reclaimed_box_is_exit_2_never_red
-    fresh_world reclaimed
-    # `wait` says the words the wrapper says, and the shard's own status is the
-    # 2 a reclaimed box's `wait` passes through.
-    printf 'box reclaimed (spot) i-000\n' >"${REC}/wait.out.pytest-x2-2of2"
-    printf '2\n' >"${REC}/box.rc.pytest-x2-2of2"
+# =============================================================================
+# S.6b — a reclaimed shard is retried ONCE, in the next zone; twice is LOST
+# =============================================================================
+#
+# WHY IT IS A RETRY AND NOT A REFUSAL. A Spot reclaim is AWS taking the machine
+# back, and before this the whole bank was exit 2 over it: one box of nine
+# vanishing cost the other eight's work and a full re-run (the consumer lost
+# five of nine to one capacity event). ONE more box, in the NEXT zone, is the
+# cheapest thing that can be true — a reclaim is a per-zone capacity fact, so
+# the same zone is the one place not to go back to.
+#
+# AND ONLY ONCE. Two reclaims of one shard is capacity that is gone, and the
+# honest answer is the one this bank always gave: LOST, never red.
 
-    run_bank --bank --no-fold --on-boxes 8
+case_a_reclaimed_shard_is_retried_once_on_a_fresh_box_in_the_next_zone() {
+    CURRENT=case_a_reclaimed_shard_is_retried_once_on_a_fresh_box_in_the_next_zone
+    local ups azs first second
+
+    fresh_world reclaim_retried_once
+    # THE FIRST WAIT IS THE RECLAIM AND THE SECOND IS A CLEAN BOX. The wrapper
+    # says the words and passes 2 through; the shard's status is the 2 of a
+    # box nobody can read, which is why this may never be composed as red.
+    printf 'box reclaimed (spot) i-000 status instance-terminated-no-capacity: not enough capacity\n' \
+        >"${REC}/wait.out.${PLAN_SUITE_LAST}.1"
+    printf '2\n' >"${REC}/box.rc.${PLAN_SUITE_LAST}.1"
+
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    holds "one verdict row over a retried shard" "1" "$(ledger_rows)"
+    says "was RECLAIMED"
+    says "retried-from i-"
+    says_not "the verdict is LOST, never red"
+    says_not "the gate is RED"
+
+    # TWO BOXES FOR ONE SHARD, IN TWO ZONES. The ids differ (the old one is
+    # gone) and so do the zones (the reclaim is a fact about the zone).
+    ups="$(awk -F'\t' -v l="$PLAN_SUITE_LAST" '$1 == l { n++ } END { print n + 0 }' "${REC}/up.calls")"
+    holds "ups for the reclaimed shard" "2" "$ups"
+    first="$(awk -F'\t' -v l="$PLAN_SUITE_LAST" '$1 == l { print $3; exit }' "${REC}/up.calls")"
+    second="$(awk -F'\t' -v l="$PLAN_SUITE_LAST" '$1 == l { a = $3 } END { print a }' "${REC}/up.calls")"
+    if [ -n "$first" ] && [ -n "$second" ] && [ "$first" != "$second" ]; then
+        ok "the second box went to another zone: ${first} then ${second}"
+    else
+        DRIVE_OUT="${REC}/up.calls"
+        bad "the retry went back into '${first}' (second: '${second:-<none>}')"
+    fi
+    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_${PLAN_BOXES}.log"
+    holds "ups in all (every shard, the acceptance box, one retry)" "$((PLAN_BOXES + 2))" \
+        "$(count_lines "${REC}/up.calls")"
+    holds "leg calls (every shard and one re-detach)" "$((PLAN_BOXES + 1))" "$(count_lines "${REC}/leg.calls")"
+
+    # THE OLD BOX STAYS ON THE TEARDOWN LIST AND THE NEW ONE JOINS IT. A
+    # reclaimed instance is `already gone` to the wrapper's `down`, which is
+    # exit 0 and not a refusal; a bank that dropped the id instead would be
+    # trusting AWS to have finished what it started.
+    holds "downs (every box, and the retry's extra one)" "$((PLAN_BOXES + 2))" "$(count_lines "${REC}/down.calls")"
+    azs="$(sorted_lines "${REC}/down.calls")"
+    holds "each box taken down exactly once" "$(printf '%s\n' "$azs" | LC_ALL=C sort -u)" "$azs"
+    assert_mac_measured_nothing
+}
+
+# =============================================================================
+# S.6a — a finished shard's log comes home BEFORE the slowest shard returns
+# =============================================================================
+#
+# THE DEFECT THIS EXISTS FOR, and it is the one a stub that answers instantly
+# can never show. The bank used to join EVERY `wait` and only then fetch. On
+# the box, `idle_reaper.sh` counts from the moment the leg exits — no gate
+# running, no tty — so a pytest shard that finished at two and a half minutes
+# sat idle while the selftest unit ran for twenty, and the reaper shut it down
+# under the bank. What came back was `box gone (terminated)`: no log, no
+# status, and a leak proof composed as LOST — exit 2, no row, no retry, over a
+# tree on which every shard had passed. It is not a reclaim, so nothing
+# retried it; it is not a red, so nothing named a test. The fix is ordering,
+# and this case asserts the ordering rather than the timeout that hid it.
+
+case_a_finished_shards_log_is_fetched_before_the_slowest_shard_returns() {
+    CURRENT=case_a_finished_shards_log_is_fetched_before_the_slowest_shard_returns
+    local bankpid i rc early
+
+    fresh_world fetch_before_the_join
+    # ONE SLOW SHARD. Its `wait` blocks until this case releases it, which is
+    # the twenty-minute selftest unit in miniature.
+    : >"${REC}/wait.block.${PLAN_VICTIM}"
+    DRIVE_OUT="${W}/run-fetch-before-join.log"
+    set +e
+    "$RUNNER" --bank --no-fold --on-boxes "$PLAN_BOXES" >"$DRIVE_OUT" 2>&1 &
+    bankpid=$!
+    # THE ASSERTION IS THAT A DIFFERENT SHARD'S LOG IS ALREADY HERE while the
+    # slow one is still waiting. Bounded: if the fetch really is behind the
+    # join, this loop times out and the case FAILS rather than hanging.
+    early=0
+    i=0
+    while [ "$i" -lt 300 ]; do
+        i=$((i + 1))
+        if [ -f "${REC}/fetch.calls" ] && grep -q 'static/leg.rc' "${REC}/fetch.calls"; then
+            early=1
+            break
+        fi
+        sleep 0.2
+    done
+    : >"${REC}/release-wait"
+    wait "$bankpid"
+    rc=$?
+    set -e
+    DRIVE_EXIT="$rc"
+    if [ "$early" = "1" ]; then
+        ok "a finished shard's log was fetched while the slowest shard was still waiting"
+    else
+        bad "nothing was fetched until every wait had returned — a finished box is idle from its leg's exit, and its own reaper takes it"
+    fi
+    exited 0
+    holds "one verdict row" "1" "$(ledger_rows)"
+    # AND THE NINTH BOX'S FILES TOO: it finishes around six minutes and the
+    # slowest shard can be twenty, so it is the box most exposed to its own
+    # idle clock.
+    holds "the leak proof came home" "1" \
+        "$(grep -c 'proof.txt' "${REC}/fetch.calls" || true)"
+    assert_mac_measured_nothing
+}
+
+case_a_shard_reclaimed_twice_is_lost_never_red() {
+    CURRENT=case_a_shard_reclaimed_twice_is_lost_never_red
+    fresh_world reclaimed_twice
+    # BOTH BOXES TAKEN BACK. The unsequenced fixture answers every attempt, so
+    # the retry meets the same capacity the first box did.
+    printf 'box reclaimed (spot) i-000 status instance-terminated-no-capacity: not enough capacity\n' \
+        >"${REC}/wait.out.${PLAN_SUITE_LAST}"
+    printf '2\n' >"${REC}/box.rc.${PLAN_SUITE_LAST}"
+
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     says "RECLAIMED mid-flight"
     says "the verdict is LOST, never red"
     says_not "the gate is RED"
     holds "verdict rows" "0" "$(ledger_rows)"
+    # ONCE, AND THE SECOND RECLAIM IS NOT A THIRD BOX. A bank that kept trying
+    # would spend the operator's money on capacity that has already said no
+    # twice, and would do it with nobody watching.
+    holds "ups for the twice-reclaimed shard" "2" \
+        "$(awk -F'\t' -v l="$PLAN_SUITE_LAST" '$1 == l { n++ } END { print n + 0 }' "${REC}/up.calls")"
+    assert_mac_measured_nothing
+}
+
+# AND A RETRY WHOSE OWN BOX WILL NOT COME UP IS STILL LOST. The retry is one
+# more box and not a promise of one: capacity that refused a launch outright
+# is the same answer as capacity that took one back, and a bank that carried
+# on would be composing a verdict over a shard nothing ran.
+case_a_retry_box_that_will_not_come_up_is_lost() {
+    CURRENT=case_a_retry_box_that_will_not_come_up_is_lost
+    fresh_world retry_box_will_not_come_up
+    printf 'box reclaimed (spot) i-000 status instance-terminated-no-capacity: not enough capacity\n' \
+        >"${REC}/wait.out.${PLAN_SUITE_LAST}.1"
+    printf '2\n' >"${REC}/box.rc.${PLAN_SUITE_LAST}.1"
+    # THE SECOND LAUNCH, AND ONLY THE SECOND, IS REFUSED.
+    printf '2\n' >"${REC}/up.rc.${PLAN_SUITE_LAST}.2"
+
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 2
+    says "the second box did not come up either"
+    says "the verdict is LOST, never red"
+    says_not "the gate is RED"
+    holds "verdict rows" "0" "$(ledger_rows)"
+    holds "ups for the shard (one reclaimed, one refused, and no third)" "2" \
+        "$(awk -F'\t' -v l="$PLAN_SUITE_LAST" '$1 == l { n++ } END { print n + 0 }' "${REC}/up.calls")"
+    assert_mac_measured_nothing
+}
+
+case_a_reclaimed_acceptance_box_is_retried_once() {
+    CURRENT=case_a_reclaimed_acceptance_box_is_retried_once
+    fresh_world reclaimed_acceptance
+    # THE NINTH BOX IS THE ONE THE ROW RESTS ON SINCE ADR gate-1's AMENDMENT:
+    # every pytest shard ran ONE pass, so a reclaimed acceptance box is a bank
+    # with no leak proof at all — exit 2 over eight green shards. It gets the
+    # same one more box, in the next zone, for the same reason.
+    : >"${REC}/accept.proof.reclaimed"
+
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    holds "one verdict row over a retried acceptance box" "1" "$(ledger_rows)"
+    says "was RECLAIMED"
+    says "retried-from i-"
+    says_not "the leak proof could not be read"
+    holds "ups for the acceptance box" "2" \
+        "$(awk -F'\t' '$1 == "acceptance" { n++ } END { print n + 0 }' "${REC}/up.calls")"
+    holds "ups in all (every shard, the acceptance box, one retry)" "$((PLAN_BOXES + 2))" \
+        "$(count_lines "${REC}/up.calls")"
+    holds "downs" "$((PLAN_BOXES + 2))" "$(count_lines "${REC}/down.calls")"
     assert_mac_measured_nothing
 }
 
@@ -1253,9 +2133,9 @@ case_a_foreign_tree_on_a_box_is_exit_2_naming_both() {
     fresh_world foreign_tree
     local mine foreign
     foreign="dead0000dead0000dead0000dead0000dead0000"
-    printf '%s\n' "$foreign" >"${REC}/box.tree.selftest-3of3"
+    printf '%s\n' "$foreign" >"${REC}/box.tree.${PLAN_VICTIM}"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     mine="$(repo_tree)"
     says "a box measured a DIFFERENT tree"
@@ -1279,15 +2159,15 @@ case_legs_that_do_not_add_up_are_exit_2_naming_the_leg() {
     # naming a bare `pytest-x2` would be a plan/shard DISAGREEMENT and would
     # be refused one check earlier, for a reason this case is not about. The
     # leg set is short and nothing else is wrong with it.
-    full=",$(awk -F'\t' '$1 == "pytest-x2" { print $4 }' "$REAL_LISTING"),"
+    full=",$(awk -F'\t' -v u="$PLAN_SUITE_UNIT" '$1 == u { print $4 }' "$REAL_LISTING"),"
     full="${full//,own-tree-census,/,}"
-    full="${full//,pytest-x2,/,pytest-x2/1,}"
+    full="${full//,${PLAN_SUITE_LEG},/,${PLAN_SUITE_LEG}/1,}"
     full="${full#,}"
     full="${full%,}"
-    printf '%s\n' "$full" >"${REC}/box.legs.pytest-x2-1of2"
-    printf '%s\n' "$full" >"${REC}/box.legs.pytest-x2-2of2"
+    printf '%s\n' "$full" >"${REC}/box.legs.${PLAN_SUITE_FIRST}"
+    printf '%s\n' "$full" >"${REC}/box.legs.${PLAN_SUITE_LAST}"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     says "do not add up to a full gate"
     says "own-tree-census"
@@ -1305,11 +2185,11 @@ case_the_composed_row_has_the_grammar_and_one_writer() {
     local row tree looked onepass_legs
     # `took=` IS THE SLOWEST PYTEST SHARD'S OWN WALL, out of that shard's own
     # banner — not the Mac's elapsed, and not a shard that ran no suite.
-    printf '90\n' >"${REC}/box.wall.pytest-x2-1of2"
-    printf '140\n' >"${REC}/box.wall.pytest-x2-2of2"
-    printf '900\n' >"${REC}/box.wall.selftest-1of3"
+    printf '90\n' >"${REC}/box.wall.${PLAN_SUITE_FIRST}"
+    printf '140\n' >"${REC}/box.wall.${PLAN_SUITE_LAST}"
+    printf '900\n' >"${REC}/box.wall.${PLAN_VICTIM_FIRST}"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "exactly one line appended" "1" "$(ledger_rows)"
     row="$(cat "$LEDGER")"
@@ -1317,7 +2197,7 @@ case_the_composed_row_has_the_grammar_and_one_writer() {
     DRIVE_OUT="$LEDGER"
 
     if printf '%s\n' "$row" | grep -E \
-        "^v1 [0-9a-f]{40} full [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z [a-z0-9,/_-]+ caller=pm-bank sanction=push-wall boxes=8 shards=[A-Za-z0-9,._-]+ waited=0 took=[0-9]+ leak-proof=acceptance:i-[0-9a-f]+ rc=0\$" >/dev/null; then
+        "^v1 [0-9a-f]{40} full [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z [a-z0-9,:/_-]+ caller=pm-bank sanction=push-wall boxes=${PLAN_BOXES} shards=[A-Za-z0-9,.:_-]+ waited=0 took=[0-9]+ leak-proof=acceptance:i-[0-9a-f]+ rc=0\$" >/dev/null; then
         ok "the row matches the grammar byte for byte"
     else
         bad "the row does not match the composed grammar: ${row}"
@@ -1328,7 +2208,7 @@ case_the_composed_row_has_the_grammar_and_one_writer() {
     # a literal would be a second copy of the gate's own leg set, right on the
     # day it was written.
     onepass_legs=",${REAL_FULL_LEGS},"
-    onepass_legs="${onepass_legs//,pytest-x2,/,pytest-x2/1,}"
+    onepass_legs="${onepass_legs//,${PLAN_SUITE_LEG},/,${PLAN_SUITE_LEG}/1,}"
     onepass_legs="${onepass_legs#,}"
     onepass_legs="${onepass_legs%,}"
     holds "the row's leg field names the suite leg's ONE pass" "$onepass_legs" \
@@ -1338,18 +2218,25 @@ case_the_composed_row_has_the_grammar_and_one_writer() {
     # what it says, and would move every time the grammar gains one.
     holds "took= is the slowest pytest shard, not the slowest shard" "took=140" \
         "$(printf '%s\n' "$row" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^took=/) print $i }')"
-    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_8.log"
-    if grep -qE '^  pytest-x2-2of2 +i-[0-9]+ +(spot|on-demand|-) +1 +0 +140s +[0-9a-f]{40}$' "$DRIVE_OUT"; then
-        ok "the per-shard table carries that shard's own market, passes, wall, box, rc and tree"
+    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_${PLAN_BOXES}.log"
+    # AND THE ZONE IS A COLUMN OF IT. Afterwards the boxes are gone and this
+    # table is all there is to cost a bank from OR to see its spread in — a
+    # bank whose every row named one zone is the shape the round-robin exists
+    # to end, and nothing else printed afterwards would show it.
+    if grep -qE "^  ${PLAN_SUITE_LAST} +i-[0-9]+ +(spot|on-demand|-) +[a-z0-9-]+ +1 +0 +140s +[0-9a-f]{40}\$" "$DRIVE_OUT"; then
+        ok "the per-shard table carries that shard's own market, zone, passes, wall, box, rc and tree"
     else
-        bad "the per-shard table does not carry pytest-x2-2of2's own row"
+        bad "the per-shard table does not carry ${PLAN_SUITE_LAST}'s own row"
     fi
-    if grep -qE '^  static +i-[0-9]+ +(spot|on-demand|-) +- +0 ' "$DRIVE_OUT"; then
+    if grep -qE '^  static +i-[0-9]+ +(spot|on-demand|-) +[a-z0-9-]+ +- +0 ' "$DRIVE_OUT"; then
         ok "a unit that runs no suite carries a dash in the passes column, never a 2"
     else
         bad "the table's static row guesses a pass count: $(grep -E '^  static' "$DRIVE_OUT" || true)"
     fi
-    if printf '%s\n' "$row" | grep -F "shards=static,supply-chain,full-house-rules,pytest-x2-1of2,pytest-x2-2of2,selftest-1of3,selftest-2of3,selftest-3of3" >/dev/null; then
+    # THE SANCTION NAMES EVERY SHARD IN PLAN ORDER, and plan order is what
+    # the probe composed out of the listing: indivisible units first, then
+    # every shard of every N-capable unit.
+    if printf '%s\n' "$row" | grep -F "shards=$(printf '%s\n' $PLAN_LABELS | paste -sd, -)" >/dev/null; then
         ok "the sanction names every shard, in plan order"
     else
         bad "the sanction's shards field is not the plan: ${row}"
@@ -1384,7 +2271,7 @@ case_the_hook_honours_a_composed_row() {
     CURRENT=case_the_hook_honours_a_composed_row
     fresh_world hook_honours
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     : >"${REC}/gate.calls"
 
@@ -1399,7 +2286,7 @@ case_a_short_legs_field_is_not_honoured() {
     fresh_world hook_short_legs
     local row short
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     row="$(cat "$LEDGER")"
     # The SAME row, the SAME sanction and shards field, one leg short. A row
@@ -1421,6 +2308,21 @@ case_a_short_legs_field_is_not_honoured() {
 # S.9 — boxes down on every exit path
 # =============================================================================
 
+# bank_sink_field <basename> <awk program> — read one of the bank's own sink
+# files after the run. The sink is a `mktemp -d` under this world's TMPDIR and
+# it survives the bank, which is what makes the launch log readable here at
+# all; the glob is how its random name is found, and an absent file is NOTHING
+# rather than a could-not-look, because the assertion above is what decides.
+bank_sink_field() {
+    local f
+    for f in "$W"/tmp/djb-bank-boxes.*/"$1"; do
+        [ -f "$f" ] || continue
+        awk "$2" "$f" 2>/dev/null || true
+        return 0
+    done
+    return 0
+}
+
 boxes_in_flight() {
     local f n=0
     for f in "$W"/tmp/djb-bank-boxes.*/boxes.tsv; do
@@ -1437,9 +2339,9 @@ case_every_launched_box_is_taken_down_on_green_red_and_kill() {
     # (a) GREEN. The green path takes them down ITSELF, before the push: this
     # script ends in `exec git push` and an exec never runs an EXIT trap.
     fresh_world down_on_green
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
-    holds "downs on a green bank (eight shards and the acceptance box)" "9" \
+    holds "downs on a green bank (every shard and the acceptance box)" "$((PLAN_BOXES + 1))" \
         "$(count_lines "${REC}/down.calls")"
     downs="$(sorted_lines "${REC}/down.calls")"
     uniq="$(printf '%s\n' "$downs" | LC_ALL=C sort -u)"
@@ -1448,17 +2350,19 @@ case_every_launched_box_is_taken_down_on_green_red_and_kill() {
     # (b) RED.
     fresh_world down_on_red
     printf '1\n' >"${REC}/box.rc.static"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 1
-    holds "downs on a red bank" "9" "$(count_lines "${REC}/down.calls")"
+    holds "downs on a red bank" "$((PLAN_BOXES + 1))" "$(count_lines "${REC}/down.calls")"
 
     # (c) A SIGNAL AFTER THREE BOXES ARE UP. The other five `up`s are still in
     # flight; the trap takes down the three it can name and says so.
     fresh_world down_on_kill
-    printf 'static\nsupply-chain\nfull-house-rules\n' >"${REC}/up.allow"
+    # THE FIRST THREE SHARDS OF THIS TREE'S OWN PLAN, whatever they are
+    # called: the case needs three boxes up and the rest still in flight.
+    printf '%s\n' $PLAN_KILL_ALLOW >"${REC}/up.allow"
     DRIVE_OUT="${W}/run-kill.log"
     set +e
-    "$RUNNER" --bank --no-fold --on-boxes 8 >"$DRIVE_OUT" 2>&1 &
+    "$RUNNER" --bank --no-fold --on-boxes "$PLAN_BOXES" >"$DRIVE_OUT" 2>&1 &
     bankpid=$!
     i=0
     while [ "$(boxes_in_flight)" -lt 3 ] && [ "$i" -lt 300 ]; do
@@ -1484,6 +2388,42 @@ case_every_launched_box_is_taken_down_on_green_red_and_kill() {
     holds "verdict rows after a signal" "0" "$(ledger_rows)"
 }
 
+# WHY A BOX CAN LAUNCH AND THE `up` STILL FAIL. `up` launches the
+# instance, waits for SSM to report the agent Online, and THEN probes the
+# tunnel — and the probe's `die` fires before the `instance` line is printed.
+# The bank read its id out of that line, so a box whose probe failed was a box
+# the teardown could not name: launched, billing, and invisible to every list
+# this script keeps. The `launched` line is printed the moment the instance
+# exists, and this is the case that says the bank reads it BEFORE it reads the
+# status.
+case_a_box_whose_up_failed_after_the_launch_is_still_taken_down() {
+    CURRENT=case_a_box_whose_up_failed_after_the_launch_is_still_taken_down
+    local launched
+
+    fresh_world launched_then_failed
+    printf '2\n' >"${REC}/up.launched_then_rc.${PLAN_VICTIM}"
+
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    # THE BANK STILL REFUSES. A box that did not come up is a unit nobody
+    # measured, and naming the box is not the same as having its answer.
+    exited 2
+    says "a box did not come up: ${PLAN_VICTIM}"
+    holds "verdict rows" "0" "$(ledger_rows)"
+
+    launched="$(bank_sink_field up-${PLAN_VICTIM}.log '$1 == "launched" { print $2; exit }')"
+    if [ -z "$launched" ]; then
+        DRIVE_OUT="${REC}/down.calls"
+        bad "the stub's up printed no launched line — the case cannot assert what it is for"
+    elif grep -qxF "$launched" "${REC}/down.calls"; then
+        ok "the box that launched and then failed was taken down: ${launched}"
+    else
+        DRIVE_OUT="${REC}/down.calls"
+        bad "${launched} launched and was never taken down"
+    fi
+    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_${PLAN_BOXES}.log"
+    assert_mac_measured_nothing
+}
+
 case_a_failed_down_names_the_hand_and_keeps_the_status() {
     CURRENT=case_a_failed_down_names_the_hand_and_keeps_the_status
 
@@ -1492,7 +2432,7 @@ case_a_failed_down_names_the_hand_and_keeps_the_status() {
     # still billing must not read as success.
     fresh_world failed_down_green
     : >"${REC}/down.fail"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     says "IT IS STILL UP"
     says "scripts/verifier_box.sh down"
@@ -1504,8 +2444,8 @@ case_a_failed_down_names_the_hand_and_keeps_the_status() {
     # original failure's: what has to be fixed is still the red tree.
     fresh_world failed_down_red
     : >"${REC}/down.fail"
-    printf '1\n' >"${REC}/box.rc.selftest-1of3"
-    run_bank --bank --no-fold --on-boxes 8
+    printf '1\n' >"${REC}/box.rc.${PLAN_VICTIM_FIRST}"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 1
     says "IT IS STILL UP"
     holds "no row over a red tree" "0" "$(ledger_rows)"
@@ -1559,7 +2499,7 @@ case_the_acceptance_box_is_outside_the_verdict() {
     # today, and a tree every shard passed is green whatever the ninth box did.
     fresh_world acceptance_rc1
     printf '1\n' >"${REC}/accept.rc"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "verdict rows" "1" "$(ledger_rows)"
     says "acceptance: map NOT written (exit 1) — the loop keeps the closure scope"
@@ -1573,7 +2513,7 @@ case_the_acceptance_box_is_outside_the_verdict() {
 
     # (b) THE MAP LANDED. The same bank, the same composition, plus a file.
     fresh_world acceptance_rc0
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "verdict rows" "1" "$(ledger_rows)"
     says "acceptance: scripts/test_impact.json rewritten"
@@ -1589,7 +2529,7 @@ case_the_acceptance_box_is_outside_the_verdict() {
     # ONE `run` — never a `--leg`, because a unit is a part of the composed
     # verdict by definition and this box is not in it.
     fresh_world acceptance_argv
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     tree8="$(repo_tree)"
     tree8="${tree8:0:8}"
@@ -1619,7 +2559,7 @@ case_the_acceptance_box_is_outside_the_verdict() {
     # this case would otherwise measure that refusal instead of the plan.
     git -C "$REPO" rm -q deploy/verifier/bake.sh
     git -C "$REPO" commit -q -m "a checkout with no bake.sh to read"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "verdict rows" "1" "$(ledger_rows)"
     says "acceptance: no box"
@@ -1645,7 +2585,7 @@ case_the_acceptance_box_is_outside_the_verdict() {
     # row, and never a green.
     fresh_world acceptance_planned_no_box
     printf '2\n' >"${REC}/up.rc.acceptance"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     holds "verdict rows" "0" "$(ledger_rows)"
     says "the leak proof could not be read — one pass was measured and nothing proved it left nothing behind"
@@ -1698,20 +2638,22 @@ case_the_plan_hands_passes_1_only_when_a_proof_box_exists() {
     # compose a row whose legs field could not say which half of the suite ran
     # twice.
     fresh_world passes_with_proof_box
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
-    suite_shards="$(grep -c -- '--unit pytest-x2 --shard [0-9]*/[0-9]* --passes 1 --log leg' \
+    suite_shards="$(grep -c -- "--unit ${PLAN_SUITE_UNIT} --shard [0-9]*/[0-9]* --passes 1 --log leg" \
         "${REC}/leg.calls" || true)"
-    holds "suite shards handed --passes 1" "2" "${suite_shards:-0}"
+    holds "suite shards handed --passes 1" "$PLAN_SUITE_K" "${suite_shards:-0}"
     plain_shards="$(grep -c -- '--passes' "${REC}/leg.calls" || true)"
-    holds "shards handed --passes at all (the suite's two, and nothing else)" "2" "${plain_shards:-0}"
-    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_8.log"
-    says "--leg pytest-x2 --shard 1/2 --passes 1"
+    holds "shards handed --passes at all (the suite unit's, and nothing else)" "$PLAN_SUITE_K" "${plain_shards:-0}"
+    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_${PLAN_BOXES}.log"
+    says "--leg ${PLAN_SUITE_UNIT} --shard 1/${PLAN_SUITE_K} --passes 1"
     says "ONE pass per suite shard"
     # AND THE UNIT THAT RUNS NO SUITE IS NOT HANDED ONE. `selftest` shards the
     # same way and has no pass to drop; the plan reads WHICH unit carries the
     # suite leg out of the listing's own legs column.
-    says_not "--leg selftest --shard 1/3 --passes"
+    if [ "$PLAN_VICTIM_UNIT" != "$PLAN_SUITE_UNIT" ]; then
+        says_not "--leg ${PLAN_VICTIM_UNIT} --shard 1/${PLAN_VICTIM_K} --passes"
+    fi
     assert_mac_measured_nothing
 
     # (b) THE PLAN READS THE LISTING AND NOT A NAME. Move the suite leg onto
@@ -1722,14 +2664,14 @@ case_the_plan_hands_passes_1_only_when_a_proof_box_exists() {
         $1 == "pytest-x2" { $4 = "temporal-census,partition,own-tree-census" }
         $1 == "selftest"  { $4 = $4 ",pytest-x2" }
         { print }' "$REAL_LISTING" >"${REC}/listlegs.out"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     DRIVE_OUT="${REC}/leg.calls"
-    if grep -q -- '--unit selftest --shard [0-9]*/[0-9]* --passes 1 --log leg' "${REC}/leg.calls"; then
+    if grep -q -- "--unit ${PLAN_VICTIM_UNIT} --shard [0-9]*/[0-9]* --passes 1 --log leg" "${REC}/leg.calls"; then
         ok "the pass count followed the suite leg to the unit the listing puts it in"
     else
         bad "the plan handed --passes 1 by unit name and not by the listing's legs"
     fi
-    says_not "--unit pytest-x2 --shard 1/2 --passes 1"
+    says_not "--unit ${PLAN_SUITE_UNIT} --shard 1/${PLAN_SUITE_K} --passes 1"
 
     # (c) NO PROOF BOX, NO ONE-PASS SHARD. The world with no `bake.sh` is the
     # one state in which there can be no acceptance box at all, and every
@@ -1737,7 +2679,7 @@ case_the_plan_hands_passes_1_only_when_a_proof_box_exists() {
     fresh_world passes_without_proof_box
     git -C "$REPO" rm -q deploy/verifier/bake.sh
     git -C "$REPO" commit -q -m "a checkout with no bake.sh to read"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "shards handed --passes with no proof box" "0" \
         "$(grep -c -- '--passes' "${REC}/leg.calls" || true)"
@@ -1748,12 +2690,12 @@ case_the_plan_hands_passes_1_only_when_a_proof_box_exists() {
     # two. One of the two is wrong about what was measured and neither the
     # bank nor a reader afterwards can tell which, so nothing is banked.
     fresh_world passes_shard_disagrees
-    awk -F'\t' '$1 == "pytest-x2" { print $4 }' "$REAL_LISTING" \
-        >"${REC}/box.legs.pytest-x2-2of2"
-    run_bank --bank --no-fold --on-boxes 8
+    awk -F'\t' -v u="$PLAN_SUITE_UNIT" '$1 == u { print $4 }' "$REAL_LISTING" \
+        >"${REC}/box.legs.${PLAN_SUITE_LAST}"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     says "the plan and the unit listing disagree"
-    says "pytest-x2: planned --passes 1 and the shard reports pytest-x2"
+    says "${PLAN_SUITE_UNIT}: planned --passes 1 and the shard reports ${PLAN_SUITE_LEG}"
     holds "verdict rows" "0" "$(ledger_rows)"
     assert_mac_measured_nothing
 }
@@ -1763,7 +2705,7 @@ case_the_acceptance_command_mints_one_seed_and_writes_a_proof() {
     local cmd seeds
 
     fresh_world acceptance_proof_argv
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     # THE ARGV STRING THE BOX'S SHELL IS HANDED, read out of the stub's own
     # record. Everything past it is `scripts/verifier_box.sh`'s and the box's.
@@ -1820,7 +2762,7 @@ case_the_leak_proof_is_composed_and_the_map_is_not() {
     # own rc printed into a terminal.
     fresh_world proof_pass2_red
     printf 'seed=8675309 workers=16 pass1=0 pass2=1 map=0\n' >"${REC}/accept.proof"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 1
     holds "verdict rows" "0" "$(ledger_rows)"
     says "the gate is RED"
@@ -1832,7 +2774,7 @@ case_the_leak_proof_is_composed_and_the_map_is_not() {
     # (a2) AND SO DOES A RED PASS 1, for the same reason and by the same road.
     fresh_world proof_pass1_red
     printf 'seed=8675309 workers=16 pass1=1 pass2=0 map=2\n' >"${REC}/accept.proof"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 1
     holds "verdict rows" "0" "$(ledger_rows)"
     says "the leak proof is RED"
@@ -1841,7 +2783,7 @@ case_the_leak_proof_is_composed_and_the_map_is_not() {
     # SHARD'S PASS. One pass was measured and nothing says what it left behind.
     fresh_world proof_absent
     : >"${REC}/accept.proof.absent"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     holds "verdict rows" "0" "$(ledger_rows)"
     says "the leak proof could not be read — one pass was measured and nothing proved it left nothing behind"
@@ -1852,7 +2794,7 @@ case_the_leak_proof_is_composed_and_the_map_is_not() {
     # the suite and not a pair, whatever its statuses say.
     fresh_world proof_unparsable
     printf 'workers=16 pass1=0 pass2=0 map=0\n' >"${REC}/accept.proof"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     holds "verdict rows" "0" "$(ledger_rows)"
     says "the leak proof could not be read — one pass was measured and nothing proved it left nothing behind"
@@ -1862,7 +2804,7 @@ case_the_leak_proof_is_composed_and_the_map_is_not() {
     # readable evidence.
     fresh_world proof_rc_not_a_number
     printf 'seed=8675309 workers=16 pass1=0 pass2=ok map=0\n' >"${REC}/accept.proof"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     holds "verdict rows" "0" "$(ledger_rows)"
     says "the leak proof could not be read — one pass was measured and nothing proved it left nothing behind"
@@ -1874,7 +2816,7 @@ case_the_leak_proof_is_composed_and_the_map_is_not() {
     fresh_world proof_map_died
     printf 'seed=8675309 workers=16 pass1=0 pass2=0 map=1\n' >"${REC}/accept.proof"
     : >"${REC}/accept.map.absent"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "verdict rows" "1" "$(ledger_rows)"
     # THE MAP LINE NAMES THE CAUSE THE BOX PROVED. The command always exits 0,
@@ -1891,7 +2833,7 @@ case_the_leak_proof_is_composed_and_the_map_is_not() {
 
     # (d) TWO GREEN PASSES AND A GREEN MAP: one row, and the map rewritten.
     fresh_world proof_all_green
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "verdict rows" "1" "$(ledger_rows)"
     says "scripts/test_impact.json rewritten"
@@ -1912,12 +2854,113 @@ case_the_leak_proof_is_composed_and_the_map_is_not() {
     esac
 }
 
+# =============================================================================
+# a red bank NAMES the first failing test and the command that replays it
+# =============================================================================
+#
+# WHY. Before this, a red leak proof ended at `pass1=0 pass2=1` and a path to a
+# log on a machine that no longer exists: the boxes are terminated four lines
+# later, so a proof's two pass logs are readable exactly once — here, before
+# the teardown — and a refusal that did not bring them home was a refusal
+# nobody could act on without re-running the whole bank. The line is PRINTED
+# beside the table and composed nowhere: the verdict row's grammar gains
+# nothing, because a red bank writes no row at all.
+
+case_a_red_leak_proof_names_the_first_failing_test_and_the_replay() {
+    CURRENT=case_a_red_leak_proof_names_the_first_failing_test_and_the_replay
+    local fetched
+
+    fresh_world red_proof_names_the_test
+    printf 'seed=8675309 workers=16 pass1=0 pass2=1 map=0\n' >"${REC}/accept.proof"
+    {
+        echo "Using --randomly-seed=8675309"
+        echo "=========================== short test summary info ============================"
+        echo "FAILED apps/example/tests/test_doors.py::test_rest_and_mcp_agree - AssertionEr..."
+        echo "FAILED apps/core/tests/test_audit.py::test_append_only - assert 1 == 2"
+    } >"${REC}/accept.pass2"
+
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 1
+    holds "verdict rows" "0" "$(ledger_rows)"
+    says "the leak proof is RED"
+    says "first failing: apps/example/tests/test_doors.py::test_rest_and_mcp_agree (pass 2; 2 FAILED) - replay: ./scripts/test.sh -n 16 --randomly-seed=8675309 apps/example/tests/test_doors.py::test_rest_and_mcp_agree"
+
+    # THE LOGS CAME HOME BEFORE THE BOXES WENT. Both of them, on the laxer
+    # condition the proof itself is fetched on: whenever there is a box.
+    fetched="$(grep -c 'pass[12].log' "${REC}/fetch.calls" || true)"
+    holds "pass logs fetched" "2" "${fetched:-0}"
+    assert_mac_measured_nothing
+
+    # AND ON A GREEN BANK TOO — the fetch is not conditional on a red, because
+    # the condition is "there is a box to ask", and by the time anybody knows
+    # the bank is red the box is the one thing that is about to be gone.
+    fresh_world green_still_fetches_the_pass_logs
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    fetched="$(grep -c 'pass[12].log' "${REC}/fetch.calls" || true)"
+    holds "pass logs fetched on a green bank" "2" "${fetched:-0}"
+    says_not "first failing:"
+}
+
+case_a_red_shard_names_its_first_failing_test() {
+    CURRENT=case_a_red_shard_names_its_first_failing_test
+
+    fresh_world red_shard_names_the_test
+    printf '1\n' >"${REC}/box.rc.${PLAN_SUITE_FIRST}"
+    {
+        echo "Using --randomly-seed=424242"
+        echo "=========================== short test summary info ============================"
+        echo "FAILED apps/connections/tests/test_relay.py::test_at_least_once - TimeoutError"
+    } >"${REC}/box.faillog.${PLAN_SUITE_FIRST}"
+
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 1
+    holds "verdict rows" "0" "$(ledger_rows)"
+    says "the gate is RED"
+    says "first failing: apps/connections/tests/test_relay.py::test_at_least_once (${PLAN_SUITE_FIRST}; 1 FAILED) - replay: ./scripts/test.sh -n 16 --randomly-seed=424242 apps/connections/tests/test_relay.py::test_at_least_once"
+    assert_mac_measured_nothing
+
+    # A RED SHARD THAT IS NOT PYTEST NAMES NOTHING, and that is derived from
+    # the log rather than from a unit name: a `static` leg that reddened has
+    # no failing test to name, and a line saying `none named` under it would
+    # be noise claiming to be evidence.
+    fresh_world red_static_shard_names_nothing
+    printf '1\n' >"${REC}/box.rc.static"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 1
+    says "the gate is RED"
+    says_not "first failing:"
+}
+
+case_a_red_log_with_no_failed_line_says_none_named() {
+    CURRENT=case_a_red_log_with_no_failed_line_says_none_named
+
+    fresh_world red_proof_no_failed_line
+    printf 'seed=8675309 workers=16 pass1=0 pass2=1 map=0\n' >"${REC}/accept.proof"
+    # A PASS THAT DIED WITHOUT A SUMMARY — a collection error, an OOM, a box
+    # that went away mid-run. The status is red and there is no nodeid in it;
+    # a composer that invented one would be worse than one that says so.
+    {
+        echo "Using --randomly-seed=8675309"
+        echo "INTERNALERROR> RuntimeError: the worker crashed"
+    } >"${REC}/accept.pass2"
+
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 1
+    holds "verdict rows" "0" "$(ledger_rows)"
+    says "the leak proof is RED"
+    says "first failing: none named - no FAILED line in"
+    says "/pass2.log"
+    says_not "replay: ./scripts/test.sh"
+    assert_mac_measured_nothing
+}
+
 case_the_composed_row_carries_the_proof_and_the_hook_reads_it() {
     CURRENT=case_the_composed_row_carries_the_proof_and_the_hook_reads_it
     local row tree looked red_row aid f
 
     fresh_world row_leak_proof
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "exactly one line appended" "1" "$(ledger_rows)"
     row="$(cat "$LEDGER")"
@@ -2030,7 +3073,7 @@ case_the_map_lands_in_the_tree_uncommitted() {
 
     fresh_world map_uncommitted
     head_before="$(git -C "$REPO" rev-parse HEAD)"
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
 
     head_after="$(git -C "$REPO" rev-parse HEAD)"
@@ -2052,12 +3095,291 @@ case_the_map_lands_in_the_tree_uncommitted() {
     # bank produced has to be COMMITTED before the tree it vouches for is the
     # tree that gets pushed, which is the same rule `pm_fold.sh` exists to
     # satisfy for every other derived file. Nothing here is silently swallowed.
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 2
     says "has uncommitted changes"
     says "scripts/test_impact.json"
     holds "verdict rows after the refusal" "1" "$(ledger_rows)"
     holds "the map in the tree, untouched by the refusal" "tree:beefcafe1234" "$(accept_mapq tree)"
+}
+
+# =============================================================================
+# DOC-1 — the docs-only road, which runs before either arm
+# =============================================================================
+#
+# WHAT IS BEING ASSERTED. A bank whose whole delta since the nearest MEASURED
+# ancestor is documentation must (a) launch nothing, take no lease and take no
+# pytest slot, (b) run EXACTLY the readers those paths have and nothing else,
+# (c) write ONE ordinary full row the hook then honours, and (d) refuse, by
+# name and into a full bank, on every doubt. Each of those is a way the road
+# could be silently wrong: a road that launched a box would have spent the
+# money it exists to save, a road that ran no reader would be a green nobody
+# measured, and a road that wrote a row the hook cannot read would cost the
+# push the whole gate anyway.
+#
+# THE FIXTURE DOC'S PATH IS COMPOSED AND NOT SPELLED — `test_loop_ledger.sh`'s
+# reason and the cycle-plan fixture's before it: the dangling-docs leg refuses
+# a documentation pointer that is in no tree, and every doc here lives only
+# inside a scratch repository.
+PMPUSH_DIR="docs/fixtures"
+PMPUSH_DOC="${PMPUSH_DIR}/rows.md"
+
+#: The measured commit's tree in the world just built — M in the road's own
+#: letter, and the tree every `from=` here names.
+PMPUSH_MTREE=""
+#: The legs field the planted source row carries: the real declaration with
+#: the suite member at ONE pass, which is what a sharded bank banks today, and
+#: a green leak proof beside it. Composed from the real declaration rather
+#: than typed, `case_the_composed_row_has_the_grammar_and_one_writer`'s rule.
+PMPUSH_SOURCE_LEGS=""
+PMPUSH_PROOF=" leak-proof=acceptance:i-0drivebox0000000 rc=0"
+
+# A world whose HEAD is one docs-only commit on top of a MEASURED tree.
+#
+# `$1` is what the docs commit also touches, or nothing: a case that means to
+# put a path OUTSIDE the declared list in the delta names it here.
+world_docs_only() {
+    local also="${1:-}"
+    fresh_world docs_only
+    PMPUSH_SOURCE_LEGS=",${REAL_FULL_LEGS},"
+    PMPUSH_SOURCE_LEGS="${PMPUSH_SOURCE_LEGS//,${PLAN_SUITE_LEG},/,${PLAN_SUITE_LEG}/1,}"
+    PMPUSH_SOURCE_LEGS="${PMPUSH_SOURCE_LEGS#,}"
+    PMPUSH_SOURCE_LEGS="${PMPUSH_SOURCE_LEGS%,}"
+    mkdir -p "${REPO}/${PMPUSH_DIR}" "$REPO/scripts/tests" "$REPO/quality"
+    printf 'the rows\n' >"${REPO}/${PMPUSH_DOC}"
+    printf 'rules: []\n' >"$REPO/quality/probe.yaml"
+    # THE STUB DRIVE. It declares the fixture directory, records its argv and
+    # answers from a fixture — the same shape as every other stub in this
+    # drive, so a case can red it, break it, or watch it run.
+    {
+        echo '#!/usr/bin/env bash'
+        printf '# %s %s\n' 'drives:' "$PMPUSH_DIR"
+        echo "printf 'ran %s\\n' \"\$*\" >>\"${REC}/drive.calls\""
+        echo 'echo "STUB DRIVE ran"'
+        echo "exit \"\$(cat \"${REC}/drive.rc\" 2>/dev/null || echo 0)\""
+    } >"$REPO/scripts/tests/test_docs_probe.sh"
+    chmod +x "$REPO/scripts/tests/test_docs_probe.sh"
+    git -C "$REPO" add -A >/dev/null
+    git -C "$REPO" commit -q -m "a measured tree with a doc and a drive that reads it"
+    PMPUSH_MTREE="$(repo_tree)"
+    docs_only_row "$PMPUSH_MTREE" "$PMPUSH_SOURCE_LEGS" "$PMPUSH_PROOF"
+    printf 'one more row\n' >>"${REPO}/${PMPUSH_DOC}"
+    [ -z "$also" ] || printf 'a line nobody measured\n' >>"${REPO}/${also}"
+    git -C "$REPO" add -A >/dev/null
+    git -C "$REPO" commit -q -m "a documentation commit"
+}
+
+# One full row in this world's ledger, written the way a bank writes it.
+docs_only_row() {
+    printf 'v1 %s full 2026-09-19T00:00:00Z %s caller=pm-bank sanction=push-wall boxes=5 shards=static waited=0 took=100%s\n' \
+        "$1" "$2" "${3:-}" >>"$LEDGER"
+    echo "  PLANT TOOK · source row: tree=${1} legs=${2}"
+}
+
+# The rows THIS RUN wrote: every line in the ledger that is not one of the
+# source rows the world planted. `ledger_rows` counts the file, and a world
+# that seeds a measured ancestor has a row in it before the subject runs — so
+# a case asserting "one row" against the file would be asserting the plant.
+#
+# `grep -vc` PRINTS ITS ZERO AND EXITS 1, which is the trap `count_lines`
+# records one helper over; the same guard, for the same reason.
+docs_only_new_rows() {
+    local n
+    n="$(grep -vc ' full 2026-09-19T00:00:00Z ' "$LEDGER" 2>/dev/null || true)"
+    case "$n" in '' | *[!0-9]*) n=0 ;; esac
+    printf '%s\n' "$n"
+}
+
+# The gate's argv, with `--list-legs` taken out: what this Mac was asked to
+# MEASURE, which is the whole question S.15 asks.
+gate_measuring_calls() {
+    grep -v -- '--list-legs' "${REC}/gate.calls" 2>/dev/null || true
+}
+
+case_a_docs_only_delta_runs_the_readers_and_banks_without_a_box() {
+    CURRENT=case_a_docs_only_delta_runs_the_readers_and_banks_without_a_box
+    world_docs_only
+    local row tree calls
+
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    says "docs-only? yes"
+    says "docs-only reuse of ${PMPUSH_MTREE}"
+
+    # (a) NOTHING WAS LAUNCHED AND NOTHING WAS TAKEN. `--on-boxes 8` is on the
+    #     command line and no box exists: the road decided BEFORE the arms.
+    holds "up calls" "0" "$(count_lines "${REC}/up.calls")"
+    holds "verifier wrapper calls" "0" "$(count_lines "${REC}/vb.calls")"
+    if [ -e "${W}/lease/djb-gate-lease" ]; then
+        bad "the docs-only road took the machine-wide full-gate lease"
+    else
+        ok "no lease"
+    fi
+    if [ -e "${W}/lease/djb-gate-slots" ]; then
+        bad "the docs-only road took a pytest slot"
+    else
+        ok "no pytest slot"
+    fi
+
+    # (b) EXACTLY THE DERIVED READERS. `--leg static` always; the stub drive
+    #     because it DECLARES the directory that moved; and nothing else — in
+    #     particular never `--bank`, which is the whole bank this road exists
+    #     not to run.
+    calls="$(gate_measuring_calls)"
+    holds "the gate's measuring argv" "--leg static" "$calls"
+    holds "drive runs" "1" "$(count_lines "${REC}/drive.calls")"
+
+    # (c) ONE ROW, IN THE ORDINARY GRAMMAR, KEYED ON THE PUSHED TREE.
+    holds "rows this run wrote" "1" "$(docs_only_new_rows)"
+    row="$(grep -v ' full 2026-09-19T00:00:00Z ' "$LEDGER" || true)"
+    tree="$(repo_tree)"
+    DRIVE_OUT="$LEDGER"
+    if printf '%s\n' "$row" | grep -E \
+        "^v1 ${tree} full [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ${PMPUSH_SOURCE_LEGS} caller=pm-bank sanction=docs-only from=${PMPUSH_MTREE} paths=[0-9]+ readers=\S+ waited=0 took=0 leak-proof=acceptance:i-[0-9a-z]+ rc=0\$" >/dev/null; then
+        ok "the row matches the docs-only grammar byte for byte"
+    else
+        bad "the row does not match the docs-only grammar: ${row}"
+    fi
+    holds "paths=" "paths=1" \
+        "$(printf '%s\n' "$row" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^paths=/) print $i }')"
+    case "$row" in
+    *"readers=static,scripts/tests/test_docs_probe.sh"*) ok "the sanction names the readers that ran, in the order they ran" ;;
+    *) bad "the sanction's readers field is not the derived list: ${row}" ;;
+    esac
+    DRIVE_OUT="${W}/run-__bank___no_fold___on_boxes_${PLAN_BOXES}.log"
+
+    # (d) THE COST, WHICH IS THE WHOLE POINT. The readers are stubs here, so
+    #     what is asserted is the OVERHEAD the criterion bounds — the source
+    #     walk, the delta and the row — and never the readers' own wall.
+    local overhead
+    overhead="$(awk '/^  source \+ delta \+ row: / { print $6 }' "$DRIVE_OUT")"
+    case "${overhead:-x}" in
+    '' | *[!0-9]*) overhead="" ;;
+    esac
+    if [ -n "$overhead" ] && [ "$overhead" -le 5 ]; then
+        ok "source + delta + row took ${overhead}s, inside the 5s the criterion bounds"
+    else
+        bad "source + delta + row took '${overhead}'s (the line is absent, or over 5s)"
+    fi
+}
+
+case_the_hook_honours_the_docs_only_row_and_measures_nothing() {
+    CURRENT=case_the_hook_honours_the_docs_only_row_and_measures_nothing
+    world_docs_only
+
+    run_bank --bank --no-fold
+    exited 0
+    holds "rows this run wrote" "1" "$(docs_only_new_rows)"
+    : >"${REC}/gate.calls"
+
+    hook_run docs_only
+    exited 0
+    says "is measured green by a full gate run — verdict honoured"
+    holds "gate invocations from the hook" "0" "$(count_lines "${REC}/gate.calls")"
+}
+
+case_one_path_off_the_declared_list_and_the_arm_runs_as_it_always_did() {
+    CURRENT=case_one_path_off_the_declared_list_and_the_arm_runs_as_it_always_did
+    world_docs_only uv.lock
+
+    run_bank --bank --no-fold
+    exited 0
+    says "docs-only? no — uv.lock is not a docs-only path — full bank"
+    # TODAY'S ARM FOLLOWS, and that is the half a refusal-only assertion
+    # misses: the bank must still happen, not merely be declined.
+    holds "the gate's measuring argv" "--bank" "$(gate_measuring_calls)"
+    holds "drive runs" "0" "$(count_lines "${REC}/drive.calls")"
+    # THE STUB GATE BANKS NOTHING — the row a `--bank` writes is the real
+    # gate's, and this world has one that records argv and exits. So the
+    # assertion that the bank happened is the argv above; what is asserted
+    # here is that the ROAD wrote nothing of its own.
+    holds "rows the road wrote" "0" "$(docs_only_new_rows)"
+}
+
+case_a_red_reader_is_a_red_tree_and_a_reader_that_could_not_look_is_a_full_bank() {
+    CURRENT=case_a_red_reader_is_a_red_tree_and_a_reader_that_could_not_look_is_a_full_bank
+
+    # (a) RED. A reader that went red is NOT a cheaper road — it is a red tree.
+    world_docs_only
+    printf '1\n' >"${REC}/drive.rc"
+    run_bank --bank --no-fold
+    exited 1
+    says "docs-only readers RED: scripts/tests/test_docs_probe.sh"
+    holds "rows this run wrote" "0" "$(docs_only_new_rows)"
+    says_not "verdict banked"
+    # AND THE BANK NEVER RAN: a red reader does not fall through to a full
+    # gate that might disagree with it.
+    holds "the gate's measuring argv" "--leg static" "$(gate_measuring_calls)"
+
+    # (b) COULD NOT LOOK. Exit 2 is enforcement broken, and a reuse resting on
+    #     a reader that could not look would be a green nobody measured — so
+    #     the full bank follows and the row it writes is the bank's.
+    world_docs_only
+    printf '2\n' >"${REC}/drive.rc"
+    run_bank --bank --no-fold
+    exited 0
+    says "could not look"
+    says "full bank"
+    case "$(gate_measuring_calls)" in
+    *"--bank"*) ok "the full bank followed the reader that could not look" ;;
+    *) bad "nothing measured the tree after a reader exited 2: $(gate_measuring_calls)" ;;
+    esac
+    holds "rows the road wrote" "0" "$(docs_only_new_rows)"
+}
+
+case_a_source_row_that_is_not_honoured_is_a_full_bank_with_the_lookups_note() {
+    CURRENT=case_a_source_row_that_is_not_honoured_is_a_full_bank_with_the_lookups_note
+    world_docs_only
+    # THE SAME ROW, ONE LEG SHORT. `gate_ledger_lookup` refuses it and says
+    # which leg; the road refuses WITH that note rather than walking past the
+    # most recent thing the gate said about this line of development.
+    : >"$LEDGER"
+    docs_only_row "$PMPUSH_MTREE" "ruff,mypy"
+
+    run_bank --bank --no-fold
+    exited 0
+    says "nearest banked ancestor's row is not honoured — full bank"
+    says "so it is not honoured — measuring"
+    case "$(gate_measuring_calls)" in
+    *"--bank"*) ok "the full bank followed" ;;
+    *) bad "no bank ran after an unhonoured source row" ;;
+    esac
+
+    # AND A ONE-PASS ROW WITH NO PROOF IS THE SAME ANSWER, for the same
+    # reason: `pytest-x2/1` is half a claim without the box that proved it.
+    world_docs_only
+    : >"$LEDGER"
+    docs_only_row "$PMPUSH_MTREE" "$PMPUSH_SOURCE_LEGS"
+    run_bank --bank --no-fold
+    exited 0
+    says "nearest banked ancestor's row is not honoured — full bank"
+    says "carries no green leak proof"
+}
+
+case_a_dirty_tree_refuses_before_the_road_and_the_measuring_valve_skips_it() {
+    CURRENT=case_a_dirty_tree_refuses_before_the_road_and_the_measuring_valve_skips_it
+
+    # (a) THE CLEAN-TREE REFUSAL IS STILL FIRST. The road sits after it on
+    #     purpose: "the tree" has to be a thing that exists in history before
+    #     anything can diff it.
+    world_docs_only
+    printf 'an uncommitted byte nobody can name\n' >>"${REPO}/${PMPUSH_DOC}"
+    run_bank --bank --no-fold
+    exited 2
+    says "has uncommitted changes"
+    says_not "docs-only?"
+    holds "rows this run wrote" "0" "$(docs_only_new_rows)"
+
+    # (b) THE MEASURING VALVE. One typed variable turns the road off for one
+    #     run and says so in the transcript.
+    world_docs_only
+    export DJB_BANK_MEASURE=1
+    run_bank --bank --no-fold
+    unset DJB_BANK_MEASURE
+    exited 0
+    says "docs-only reuse SKIPPED by DJB_BANK_MEASURE — measuring"
+    says_not "docs-only? yes"
+    holds "the gate's measuring argv" "--bank" "$(gate_measuring_calls)"
 }
 
 # =============================================================================
@@ -2103,7 +3425,7 @@ case_the_acceptance_map_never_dirties_the_box() {
     fresh_world map_outside_the_checkout
     tag="$(world_image_tag)"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     # THE MAP IS WRITTEN OUTSIDE THE CHECKOUT — the property, read off the argv
     # the box was handed.
@@ -2137,7 +3459,7 @@ case_the_image_is_built_after_the_row_and_never_on_a_red() {
     fresh_world image_after_row
     tag="$(world_image_tag)"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "image builds (one box, never one per shard)" "1" "$(image_calls)"
     # THE ARGV THE BOX WAS HANDED, in full: the tag is the BANKED TREE's and
@@ -2181,16 +3503,16 @@ case_the_image_is_built_after_the_row_and_never_on_a_red() {
 case_a_red_bank_builds_no_image() {
     CURRENT=case_a_red_bank_builds_no_image
     fresh_world image_red
-    printf '1\n' >"${REC}/box.rc.selftest-2of3"
+    printf '1\n' >"${REC}/box.rc.${PLAN_VICTIM}"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 1
     # THE POSITIVE ANCHOR FIRST. Every other assertion here is an absence, and
     # a case made only of absences passes just as well when the bank refused
     # for some entirely different reason — or never ran at all. This line is
     # the composition saying WHY there is no image: the gate was red.
     says "the gate is RED. NO ROW WAS WRITTEN"
-    says "selftest-2of3"
+    says "${PLAN_VICTIM}"
     holds "image builds on a red bank" "0" "$(image_calls)"
     holds "verdict rows" "0" "$(ledger_rows)"
     says_not "pushed (web"
@@ -2211,7 +3533,7 @@ case_a_lying_tag_builds_nothing_and_the_bank_stands() {
     } >"${REC}/image.out"
     printf '3\n' >"${REC}/image.rc"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "verdict rows — the image is not the verdict" "1" "$(ledger_rows)"
     says "refusing to build under 'tree-00000000000a-dirty'"
@@ -2233,7 +3555,7 @@ case_a_failed_push_is_printed_and_the_row_still_stands() {
     } >"${REC}/image.out"
     printf '1\n' >"${REC}/image.rc"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "verdict rows" "1" "$(ledger_rows)"
     says "image: NOT built (exit 1)"
@@ -2241,7 +3563,7 @@ case_a_failed_push_is_printed_and_the_row_still_stands() {
     says "CI's images job builds a tag"
     # AND THE BOXES STILL GO DOWN AND THE PUSH STILL HAPPENS: a failed image is
     # not a reason to leave nine machines billing.
-    holds "boxes taken down" "9" "$(count_lines "${REC}/down.calls")"
+    holds "boxes taken down" "$((PLAN_BOXES + 1))" "$(count_lines "${REC}/down.calls")"
     assert_mac_measured_nothing
 }
 
@@ -2253,7 +3575,7 @@ case_no_registry_coordinate_is_printed_and_nothing_is_built() {
     fresh_world image_no_registry
     rm -f "${REC}/registry"
 
-    run_bank --bank --no-fold --on-boxes 8
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     holds "verdict rows" "1" "$(ledger_rows)"
     holds "image builds" "0" "$(image_calls)"
@@ -2382,13 +3704,19 @@ case_ci_skips_a_present_tag_and_builds_an_absent_one() {
 
 # --- run ----------------------------------------------------------------------
 
+derive_the_plan_from_the_real_listing
 case_on_boxes_without_bank_is_refused
-case_on_boxes_below_five_is_refused
+case_on_boxes_below_the_syntactic_floor_is_refused
 case_the_composed_row_keys_on_the_post_fold_tree
 case_the_mac_holds_no_lease_and_runs_no_gate
 case_the_plan_follows_the_listing
+case_a_product_leg_in_the_drawer_gets_its_own_unit_and_its_own_box
 case_a_broken_listing_is_exit_2_before_any_box
-case_eight_boxes_get_eight_shards
+case_one_more_box_goes_to_the_last_shardable_unit
+case_the_plan_spreads_shards_across_the_zones_the_wrapper_lists
+case_no_zones_is_exit_2_before_any_box
+case_bank_boxes_carry_a_one_hour_lifetime_and_a_thirty_minute_idle
+case_every_shard_gets_its_own_box_and_the_seams_argv
 case_a_detach_that_ssh_refused_is_retried_once
 case_a_detach_that_failed_for_anything_else_is_not_retried
 case_a_green_bank_brings_the_shards_drive_rows_home
@@ -2397,22 +3725,36 @@ case_a_red_bank_harvests_nothing
 case_the_shard_table_names_the_market_each_box_is_on
 case_one_red_shard_is_exit_1_and_no_row
 case_a_missing_or_exit_2_shard_is_exit_2
-case_a_reclaimed_box_is_exit_2_never_red
+case_a_finished_shards_log_is_fetched_before_the_slowest_shard_returns
+case_a_reclaimed_shard_is_retried_once_on_a_fresh_box_in_the_next_zone
+case_a_shard_reclaimed_twice_is_lost_never_red
+case_a_retry_box_that_will_not_come_up_is_lost
+case_a_reclaimed_acceptance_box_is_retried_once
 case_a_foreign_tree_on_a_box_is_exit_2_naming_both
 case_legs_that_do_not_add_up_are_exit_2_naming_the_leg
 case_the_composed_row_has_the_grammar_and_one_writer
 case_the_hook_honours_a_composed_row
 case_a_short_legs_field_is_not_honoured
 case_every_launched_box_is_taken_down_on_green_red_and_kill
+case_a_box_whose_up_failed_after_the_launch_is_still_taken_down
 case_a_failed_down_names_the_hand_and_keeps_the_status
 case_the_acceptance_box_is_outside_the_verdict
 case_the_plan_hands_passes_1_only_when_a_proof_box_exists
 case_the_acceptance_command_mints_one_seed_and_writes_a_proof
 case_the_leak_proof_is_composed_and_the_map_is_not
+case_a_red_leak_proof_names_the_first_failing_test_and_the_replay
+case_a_red_shard_names_its_first_failing_test
+case_a_red_log_with_no_failed_line_says_none_named
 case_the_composed_row_carries_the_proof_and_the_hook_reads_it
 case_the_bank_reads_the_real_checkout_path_out_of_bake_sh
 case_the_map_lands_in_the_tree_uncommitted
 case_the_acceptance_map_never_dirties_the_box
+case_a_docs_only_delta_runs_the_readers_and_banks_without_a_box
+case_the_hook_honours_the_docs_only_row_and_measures_nothing
+case_one_path_off_the_declared_list_and_the_arm_runs_as_it_always_did
+case_a_red_reader_is_a_red_tree_and_a_reader_that_could_not_look_is_a_full_bank
+case_a_source_row_that_is_not_honoured_is_a_full_bank_with_the_lookups_note
+case_a_dirty_tree_refuses_before_the_road_and_the_measuring_valve_skips_it
 case_the_image_is_built_after_the_row_and_never_on_a_red
 case_a_red_bank_builds_no_image
 case_a_lying_tag_builds_nothing_and_the_bank_stands

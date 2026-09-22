@@ -14,7 +14,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .secrets.baseline compose.yaml docs/product/build-contract.md docs/product/instruments.md scripts/check.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/ scripts/verifier_box.sh
-# cites: deploy/tests
+# cites: deploy/tests scripts/gate_member_durations.json
 # The drive for THE SELFTEST LEG ITSELF — `selftest_drives_leg` in
 # `scripts/check.sh`, the leg that runs every shell refusal drive in this
 # repository and composes one exit out of all of them.
@@ -105,14 +105,37 @@ cannot_look() {
     exit 2
 }
 
+# >>> one case, by name >>>
+# `--case <name>` runs exactly that case and nothing else. The seam exists so
+# rule 60's drawer census can prove ONE PLANT PER DRAWER through the drive that
+# already owns the property, rather than re-implementing the drawer's reader —
+# a second implementation of a reader is a second opinion about it. A name this
+# file does not define is exit 2, never a silent run of nothing.
+ONLY_CASE=""
+run_case() {
+    [ -z "$ONLY_CASE" ] || [ "$1" = "$ONLY_CASE" ] || return 0
+    "$@"
+}
+# <<< one case, by name <<<
 case "${1:-}" in
 "") ;;
 --list)
     grep -n '^case_' "$0" | sed 's/() {.*//; s/^/  /'
     exit 0
     ;;
+--case)
+    [ -n "${2:-}" ] || {
+        echo "!! --case needs a case name; --list names them" >&2
+        exit 2
+    }
+    grep -q "^${2}() {" "$0" || {
+        echo "!! --case: test_selftest_leg.sh defines no case named '${2}'; --list names them" >&2
+        exit 2
+    }
+    ONLY_CASE="$2"
+    ;;
 *)
-    echo "!! unknown argument '$1': test_selftest_leg.sh takes nothing or --list" >&2
+    echo "!! unknown argument '$1': test_selftest_leg.sh takes nothing, --list or --case <name>" >&2
     exit 2
     ;;
 esac
@@ -155,6 +178,22 @@ if ! grep -q '^gate_member_record() {' "$EXTRACT_DUR"; then
 fi
 if ! grep -q '^selftest_drives_leg() {' "$EXTRACT"; then
     cannot_look "the selftest-leg fence in scripts/check.sh defines no selftest_drives_leg — the function this drive exists for is not inside its own sentinels."
+fi
+
+# THE THIRD THING THIS BODY STANDS ON, and it is a FUNCTION rather than a fence.
+# `selftest_local_drives` asks `selftest_registered_drives` where the product's
+# own drives are — the same one reader `--list-legs`, the always-on leg and the
+# unit table ask, and the reason there is no second one. It is defined above
+# both fences, so the body sourced without it is a leg whose product half is a
+# `command not found` on stderr: which is exit 2 here, and would be a silent
+# could-not-look in a case that did not notice. Extracted by the function
+# header and its closing brace at column 1, which is the same extraction
+# `test_list_legs.sh` makes of it, and the reason that body stays
+# self-contained.
+EXTRACT_REG="${WORK}/registered_drives.sh"
+awk '/^selftest_registered_drives\(\) \{/, /^\}/' scripts/check.sh >"$EXTRACT_REG" 2>/dev/null || true
+if ! grep -q '^selftest_registered_drives() {' "$EXTRACT_REG" || ! grep -qx '}' "$EXTRACT_REG"; then
+    cannot_look "scripts/check.sh no longer defines selftest_registered_drives() with a closing brace at column 1 — the drive registry the leg's product half reads cannot be extracted, so nothing below could be trusted."
 fi
 
 # THE SHIMMED ENGINE. `selftest_drives_leg` runs `uv run python -m quality.gate
@@ -369,6 +408,24 @@ LEG_INPUTS_RC=""
 # `DJB_DRIVE_MACHINE_FILE` is the one seam that points it somewhere a case can
 # write. Empty means "this machine", which is every case that was here before.
 LEG_MACHINE_FILE=""
+# THE PRODUCT'S DRIVE DRAWER, and it is a SECOND population beside the scratch
+# set above. `DJB_SELFTEST_DRIVES_DIR` stands in for the drives `check.sh`
+# registers in its own text; `DJB_LOCAL_DRIVES_DIR` is where the registry looks
+# for the drives a PRODUCT dropped beside the template. Empty means "this tree's
+# own", which has no drawer — so every case written before this one drives the
+# leg with no product drives at all, exactly as it did.
+LEG_LOCAL_DRIVES=""
+# THE MEASURED TABLE THE PARTITION BALANCES OVER. `DJB_GATE_MEMBER_DURATIONS`
+# is the always-on reader's own seam (`always_on_durations_path`), and the
+# selftest leg's shard plan goes through that one reader rather than a second
+# parser — so pointing it at a planted file is how a case decides what the
+# members cost, and pointing it at a path that does not exist is how a case
+# gets the absent-table arm. Empty means "this tree's committed file", which is
+# every case written before the partition existed.
+LEG_DURATIONS=""
+# THE COLLATION THE LEG IS RUN UNDER. Empty is this shell's own, which is every
+# case written before the drawer's name check had to be ASCII's.
+LEG_LOCALE=""
 run_leg() {
     local dir="$1"
     local uv_rc="${2:-0}"
@@ -390,6 +447,22 @@ run_leg() {
         export DJB_FAKE_INPUTS_RC
         DJB_SELFTEST_DRIVES_DIR="$dir"
         export DJB_SELFTEST_DRIVES_DIR
+        # SET ONLY WHEN A CASE ASKED FOR ONE, so every case written before the
+        # drawer existed drives a leg with no product drives at all — which is
+        # this repository's own shape, and the negative those cases now carry.
+        if [ -n "$LEG_LOCAL_DRIVES" ]; then
+            DJB_LOCAL_DRIVES_DIR="$LEG_LOCAL_DRIVES"
+            export DJB_LOCAL_DRIVES_DIR
+        fi
+        if [ -n "$LEG_DURATIONS" ]; then
+            DJB_GATE_MEMBER_DURATIONS="$LEG_DURATIONS"
+            export DJB_GATE_MEMBER_DURATIONS
+        fi
+        if [ -n "$LEG_LOCALE" ]; then
+            LC_ALL="$LEG_LOCALE"
+            LANG="$LEG_LOCALE"
+            export LC_ALL LANG
+        fi
         DJB_GATE_LEDGER="$LEDGER"
         export DJB_GATE_LEDGER
         # THE MEMO IS CLEARED ON EVERY RUN. `drive_machine_digest` memoises
@@ -409,6 +482,7 @@ run_leg() {
         . scripts/gate_refuse.sh
         . scripts/gate_ledger.sh
         . "$EXTRACT_DUR"
+        . "$EXTRACT_REG"
         . "$EXTRACT"
         # THE RECORDER'S OWN GUARD, honoured rather than bypassed: it records
         # only on a bare full run (`MODE` empty, no unit), because seconds from
@@ -1512,6 +1586,274 @@ case_no_reuse_runs_everything_and_banks() {
     ok "the valve ran both drives AND the engine, said so, and still banked (${before} rows → ${after})"
 }
 
+# --- the duration-balanced partition -----------------------------------------
+#
+# WHAT IS UNDER DRIVE HERE. The shard assignment is an LPT partition over the
+# members' measured walls rather than a round-robin over their INDEX, and the
+# four properties below are the whole of what that claim means: the two
+# heaviest members are separated, the heaviest shard is inside LPT's own bound,
+# every member is taken exactly once across k=1..S and the same twice running,
+# and a tree with no measured table still shards — by the index, saying so,
+# never by refusing.
+#
+# THE TABLE IS PLANTED, AND THAT IS THE POINT. The committed
+# `scripts/gate_member_durations.json` is a measurement that moves; a case
+# asserting arithmetic against it would be a case that reds the day somebody
+# re-measures. `DJB_GATE_MEMBER_DURATIONS` is the reader's own seam, so every
+# number below is one this drive wrote.
+#
+# WHAT THESE CASES DO NOT COVER, declared rather than discovered:
+#
+#   * WHETHER THE COMMITTED TABLE IS ANY GOOD. It is Mac-measured today and the
+#     box's walls differ by an order of magnitude on at least one member
+#     (`sweep`: 395 s here, ~45 s there). The partition is only as balanced as
+#     the table it reads, the leg's own line names the table and the machine so
+#     a reader can tell, and nothing here judges the numbers.
+#   * THE WALL. These are PREDICTIONS summed from a planted table. That the
+#     predicted sum matches what a box actually takes is a bank's measurement,
+#     not a drive's.
+
+#: A PLANTED MEASURED TABLE. `<name>:<seconds>` pairs, written twice: as the
+#: JSON the always-on reader parses, and as a flat `<name> <seconds>` table this
+#: drive adds up. Two spellings of one plant, so a case never types a total.
+plant_durations() {
+    local file="$1" flat="$2" spec name secs first=1
+    shift 2
+    : >"$flat"
+    {
+        printf '{\n'
+        printf '  "measured_at": "tree:planted-by-test-selftest-leg",\n'
+        printf '  "machine": "PlantedMachine",\n'
+        printf '  "members": {\n'
+        for spec in "$@"; do
+            name="${spec%%:*}"
+            secs="${spec##*:}"
+            if [ "$first" = "1" ]; then first=0; else printf ',\n'; fi
+            printf '    "%s": %s' "$name" "$secs"
+            printf '%s %s\n' "$name" "$secs" >>"$flat"
+        done
+        printf '\n  }\n}\n'
+    } >"$file"
+}
+
+#: The members a shard actually took — run or reused. A skipped member prints
+#: `not in shard`, and only these two shapes are membership.
+shard_taken() {
+    sed -n -e 's/^  drive \([^:]*\): exit .*/\1/p' -e 's/^  drive \([^:]*\): REUSED.*/\1/p' "$LEG_OUT"
+}
+
+#: The leg's own plan line for shard k of S, as `<members> <predicted>`. Empty
+#: when the leg printed the round-robin arm instead.
+shard_plan_numbers() {
+    sed -n "s|^  selftest shard $1/$2: \([0-9][0-9]*\) members, predicted \([0-9][0-9]*\) s .*|\1 \2|p" "$LEG_OUT"
+}
+
+#: The planted cost of a set of member names, added up from the flat table. A
+#: name the table does not carry is the median, which no case below plants.
+sum_planted() {
+    local flat="$1"
+    shift
+    printf '%s\n' "$@" | awk -v f="$flat" '
+        BEGIN { while ((getline line < f) > 0) { split(line, p, " "); w[p[1]] = p[2] + 0 } }
+        NF { t += w[$1] }
+        END { print t + 0 }
+    '
+}
+
+LPT_SET="1_alpha:0 2_bravo:0 3_charlie:0 4_delta:0 5_echo:0 6_foxtrot:0 7_golf:0 8_hotel:0"
+LPT_TABLE="1_alpha:100 2_bravo:90 3_charlie:80 4_delta:70 5_echo:60 6_foxtrot:50 7_golf:40 8_hotel:30 house-rules-engine:20"
+
+case_the_partition_balances_by_duration_and_names_the_table_it_read() {
+    CURRENT=case_the_partition_balances_by_duration_and_names_the_table_it_read
+    local dir="${WORK}/set-lpt" tab="${WORK}/lpt-durations.json" flat="${WORK}/lpt-flat"
+    local k S=3 total heaviest nums want got maxlpt=0 maxrr=0
+    local where_alpha="" where_bravo="" members="" pred=""
+    # shellcheck disable=SC2086  # the specs word-split into arguments, by design
+    plant_drive_set "$dir" $LPT_SET
+    # shellcheck disable=SC2086
+    plant_durations "$tab" "$flat" $LPT_TABLE
+    total=$(awk '{ t += $2 } END { print t + 0 }' "$flat")
+    heaviest=$(awk '{ if ($2 + 0 > h) { h = $2 + 0 } } END { print h + 0 }' "$flat")
+
+    new_ledger lpt
+    LEG_DURATIONS="$tab"
+    for k in 0 1 2; do
+        LEG_SHARD="$k $S"
+        run_leg "$dir"
+        if [ "$LEG_RC" != "0" ]; then
+            bad "shard ${k}/${S} was not green: exit ${LEG_RC} — $(tr '\n' '|' <"$LEG_OUT")"
+            LEG_SHARD=""
+            LEG_DURATIONS=""
+            return
+        fi
+        nums=$(shard_plan_numbers "$k" "$S")
+        if [ -z "$nums" ]; then
+            bad "shard ${k}/${S} printed no LPT plan line: $(grep -F 'selftest shard' "$LEG_OUT" | tr '\n' '|')"
+            LEG_SHARD=""
+            LEG_DURATIONS=""
+            return
+        fi
+        members=$(shard_taken | tr '\n' ' ')
+        # THE PREDICTION IS CHECKED AGAINST THE PLANT, not merely printed: a
+        # line that said 190 while the shard ran 230 seconds of drives is a
+        # number nobody can plan a bank with.
+        # shellcheck disable=SC2086
+        want=$(sum_planted "$flat" $members)
+        got=$(printf '%s' "$nums" | awk '{ print $2 }')
+        if [ "$want" != "$got" ]; then
+            bad "shard ${k}/${S} predicted ${got} s but its members cost ${want} s (${members})"
+            LEG_SHARD=""
+            LEG_DURATIONS=""
+            return
+        fi
+        pred=$(printf '%s' "$nums" | awk '{ print $1 }')
+        if [ "$pred" != "$(shard_taken | awk 'END { print NR + 0 }')" ]; then
+            bad "shard ${k}/${S} said ${pred} members and ran $(shard_taken | awk 'END { print NR + 0 }') (${members})"
+            LEG_SHARD=""
+            LEG_DURATIONS=""
+            return
+        fi
+        [ "$got" -le "$maxlpt" ] || maxlpt=$got
+        case " ${members} " in *" 1_alpha "*) where_alpha=$k ;; esac
+        case " ${members} " in *" 2_bravo "*) where_bravo=$k ;; esac
+        if ! grep -qF "LPT over ${tab} measured on PlantedMachine" "$LEG_OUT"; then
+            bad "shard ${k}/${S} did not name the table it read: $(grep -F 'selftest shard' "$LEG_OUT" | tr '\n' '|')"
+            LEG_SHARD=""
+            LEG_DURATIONS=""
+            return
+        fi
+    done
+    LEG_SHARD=""
+    LEG_DURATIONS=""
+
+    if [ -z "$where_alpha" ] || [ -z "$where_bravo" ] || [ "$where_alpha" = "$where_bravo" ]; then
+        bad "the two heaviest members are both in shard ${where_alpha:-none}/${where_bravo:-none} — a partition that stacked them has balanced nothing"
+        return
+    fi
+    if ! awk -v m="$maxlpt" -v t="$total" -v s="$S" -v h="$heaviest" 'BEGIN { exit !(m <= t / s + h) }'; then
+        bad "the heaviest shard predicted ${maxlpt} s, above LPT's bound of ${total}/${S} + ${heaviest}"
+        return
+    fi
+
+    # THE DIFFERENTIAL, AND IT IS THE WHOLE RUNG. The same nine members, the
+    # same weights, the index round-robin (which is what the absent-table arm
+    # runs): its heaviest shard is the wall this partition exists to cut.
+    new_ledger lptrr
+    LEG_DURATIONS="${WORK}/no-such-durations-table.json"
+    for k in 0 1 2; do
+        LEG_SHARD="$k $S"
+        run_leg "$dir"
+        members=$(shard_taken | tr '\n' ' ')
+        # shellcheck disable=SC2086
+        want=$(sum_planted "$flat" $members)
+        [ "$want" -le "$maxrr" ] || maxrr=$want
+    done
+    LEG_SHARD=""
+    LEG_DURATIONS=""
+    if [ "$maxlpt" -ge "$maxrr" ]; then
+        bad "the partition's heaviest shard is ${maxlpt} s and the round-robin's is ${maxrr} s — the balance bought nothing"
+        return
+    fi
+    ok "9 members, total ${total} s over ${S} shards: heaviest shard ${maxlpt} s (round-robin ${maxrr} s), bound ${total}/${S}+${heaviest}, the two heaviest in shards ${where_alpha} and ${where_bravo}, every prediction equal to its members' planted cost"
+}
+
+case_every_member_is_in_exactly_one_shard_and_the_partition_is_deterministic() {
+    CURRENT=case_every_member_is_in_exactly_one_shard_and_the_partition_is_deterministic
+    local dir="${WORK}/set-lpt-part" tab="${WORK}/part-durations.json" flat="${WORK}/part-flat"
+    local k S=4 pass="" first="" second="" pop="" union="" dupes="" missing="" extra=""
+    # shellcheck disable=SC2086
+    plant_drive_set "$dir" $LPT_SET
+    # shellcheck disable=SC2086
+    plant_durations "$tab" "$flat" $LPT_TABLE
+    pop=$(printf '%s\n' house-rules-engine 1_alpha 2_bravo 3_charlie 4_delta 5_echo 6_foxtrot 7_golf 8_hotel | LC_ALL=C sort)
+    LEG_DURATIONS="$tab"
+    for pass in first second; do
+        new_ledger "part-${pass}"
+        union=""
+        for k in 0 1 2 3; do
+            LEG_SHARD="$k $S"
+            run_leg "$dir"
+            if [ "$LEG_RC" != "0" ]; then
+                bad "${pass} pass, shard ${k}/${S}: exit ${LEG_RC}"
+                LEG_SHARD=""
+                LEG_DURATIONS=""
+                return
+            fi
+            union="${union}${k} $(shard_taken | LC_ALL=C sort | tr '\n' ' ')
+"
+        done
+        if [ "$pass" = "first" ]; then first="$union"; else second="$union"; fi
+    done
+    LEG_SHARD=""
+    LEG_DURATIONS=""
+    # EVERY MEMBER, EXACTLY ONCE. A set comparison, never a count: a floor of
+    # "at least one member ran" is satisfied by half a partition going blind.
+    local flatunion
+    flatunion=$(printf '%s\n' "$first" | awk '{ for (i = 2; i <= NF; i++) print $i }' | LC_ALL=C sort)
+    dupes=$(printf '%s\n' "$flatunion" | uniq -d | tr '\n' ' ')
+    missing=$(comm -23 <(printf '%s\n' "$pop") <(printf '%s\n' "$flatunion" | uniq) | tr '\n' ' ')
+    extra=$(comm -13 <(printf '%s\n' "$pop") <(printf '%s\n' "$flatunion" | uniq) | tr '\n' ' ')
+    if [ -n "$dupes" ] || [ -n "$missing" ] || [ -n "$extra" ]; then
+        bad "S=${S}: in two shards '${dupes}' · in no shard '${missing}' · not a member '${extra}'"
+        return
+    fi
+    if [ "$first" != "$second" ]; then
+        bad "the same table and the same S assigned differently twice — the partition is not deterministic
+    first:  $(printf '%s' "$first" | tr '\n' '|')
+    second: $(printf '%s' "$second" | tr '\n' '|')"
+        return
+    fi
+    ok "9 members across k=0..$((S - 1)) of ${S}: disjoint, union == the population, and byte-identical on a second pass"
+}
+
+case_an_absent_durations_table_is_the_round_robin_and_says_so() {
+    CURRENT=case_an_absent_durations_table_is_the_round_robin_and_says_so
+    local dir="${WORK}/set-notable" k S=3 union="" said=0 gone="${WORK}/no-such-durations-table.json"
+    # shellcheck disable=SC2086
+    plant_drive_set "$dir" $LPT_SET
+    rm -f "$gone"
+    new_ledger notable
+    LEG_DURATIONS="$gone"
+    for k in 0 1 2; do
+        LEG_SHARD="$k $S"
+        run_leg "$dir"
+        # NEVER A REFUSAL. The file is a hint; its absence means unmeasured.
+        if [ "$LEG_RC" != "0" ]; then
+            bad "shard ${k}/${S} with no durations table exited ${LEG_RC} — an absent hint must never be a refusal: $(tr '\n' '|' <"$LEG_OUT")"
+            LEG_SHARD=""
+            LEG_DURATIONS=""
+            return
+        fi
+        if grep -qF "the index round-robin (no durations table at ${gone}" "$LEG_OUT"; then
+            said=$((said + 1))
+        fi
+        if [ -n "$(shard_plan_numbers "$k" "$S")" ]; then
+            bad "shard ${k}/${S} printed an LPT prediction with no table to predict from"
+            LEG_SHARD=""
+            LEG_DURATIONS=""
+            return
+        fi
+        union="${union} $(shard_taken | tr '\n' ' ')"
+    done
+    LEG_SHARD=""
+    LEG_DURATIONS=""
+    if [ "$said" != "3" ]; then
+        bad "only ${said} of 3 shards said the table was absent — a silent fallback is a split nobody can add up"
+        return
+    fi
+    local n
+    for n in house-rules-engine 1_alpha 2_bravo 3_charlie 4_delta 5_echo 6_foxtrot 7_golf 8_hotel; do
+        case " $(printf '%s' "$union" | tr -s ' ') " in
+        *" $n "*) ;;
+        *)
+            bad "${n} was in no shard under the round-robin fallback — union:${union}"
+            return
+            ;;
+        esac
+    done
+    ok "no table: three shards, every one of the nine members still taken, each one saying it read no table at ${gone}"
+}
+
 # --- the engine's own verdict ------------------------------------------------
 #
 # WHAT IS UNDER DRIVE HERE, and what is not. These cases prove how the LEG
@@ -1768,6 +2110,7 @@ case_the_engines_declaration_covers_exactly_its_inputs() {
         . scripts/gate_refuse.sh
         . scripts/gate_ledger.sh
         . "$EXTRACT_DUR"
+        . "$EXTRACT_REG"
         . "$EXTRACT"
         selftest_tally_reset
         selftest_drive_listing || exit 3
@@ -1810,6 +2153,96 @@ case_the_engines_declaration_covers_exactly_its_inputs() {
         ;;
     esac
     ok "the declaration collapsed ${collapsible}/ and expands to exactly the paths the engine reads, no more and no fewer"
+}
+
+case_the_engines_inputs_carry_the_products_drawer() {
+    # WHY THIS CASE EXISTS, IN THIS FILE. The engine drive is banked on the
+    # paths `--selftest-inputs` names (the two cases above), and P21's EP2 gave
+    # a product a second file the engine loads — `quality/local/rules.yaml`,
+    # its rules, its fixtures and its runners. If that drawer were outside the
+    # listing, the engine's verdict would be reused across a product's own rule
+    # changing: a rule could be added, reworded or deleted and the leg would
+    # replay the answer it gave before the drawer existed. The other half is
+    # the negative every drawer owes — a tree with NO drawer lists exactly what
+    # it listed before EP2, byte for byte.
+    CURRENT=case_the_engines_inputs_carry_the_products_drawer
+    if [ -e "${ROOT}/quality/local" ]; then
+        bad "quality/local/ already exists in this checkout — this case plants one and will not overwrite yours"
+        return
+    fi
+    local before="${WORK}/drawer-inputs-before.txt"
+    local after="${WORK}/drawer-inputs-after.txt"
+    local rc=0
+    (cd "$ROOT" && uv run python -m quality.gate --selftest-inputs) >"$before" 2>&1 || rc=$?
+    if [ "$rc" != "0" ]; then
+        bad "--selftest-inputs did not answer on a tree with no drawer (exit ${rc}): $(tail -3 "$before" | tr '\n' '|')"
+        return
+    fi
+    mkdir -p "${ROOT}/quality/local/canary/acme-1" "${ROOT}/quality/local/runners"
+    plant_in_checkout "quality/local/rules.yaml" \
+        'rule_id_namespace: acme'
+    plant_in_checkout "quality/local/canary/acme-1/planted.py" \
+        '# a drawer fixture the engine can read'
+    plant_in_checkout "quality/local/runners/acme_probe.py" \
+        '# a drawer runner the engine can read'
+    # THE PLANTS ARE STAGED, AND THAT IS NOT A CONVENIENCE. Population 1 of the
+    # engine's listing is `git ls-files --cached` over `quality/` — the
+    # repository's own answer about what is in there, which is exactly what
+    # keeps the list byte-stable. A real product's drawer is COMMITTED, so the
+    # honest drive stages these three (`add -N`, intent-to-add: no blob is
+    # written) and unstages them again. The reset is registered before the
+    # staging, so a killed drive leaves no index entry for a file it deleted.
+    unstage_drawer_plants() {
+        git -C "$ROOT" reset -q -- quality/local 2>/dev/null || true
+    }
+    drive_at_exit 'unstage_drawer_plants'
+    if ! git -C "$ROOT" add -N -- quality/local >/dev/null 2>&1; then
+        bad "could not stage the planted drawer, so the engine's listing cannot be asked about it"
+        unplant_checkout
+        rm -rf "${ROOT}/quality/local"
+        return
+    fi
+    rc=0
+    (cd "$ROOT" && uv run python -m quality.gate --selftest-inputs) >"$after" 2>&1 || rc=$?
+    unstage_drawer_plants
+    unplant_checkout
+    rmdir "${ROOT}/quality/local/canary/acme-1" "${ROOT}/quality/local/canary" \
+        "${ROOT}/quality/local/runners" "${ROOT}/quality/local" 2>/dev/null || true
+    if [ -e "${ROOT}/quality/local" ]; then
+        bad "the case left quality/local/ behind — a planted drawer is not allowed to outlive its case"
+        return
+    fi
+    if [ "$rc" != "0" ]; then
+        bad "--selftest-inputs refused a tree that has a drawer (exit ${rc}): $(tail -3 "$after" | tr '\n' '|')"
+        return
+    fi
+    local missing=""
+    local path
+    for path in quality/local/rules.yaml quality/local/canary/acme-1/planted.py \
+        quality/local/runners/acme_probe.py; do
+        grep -qxF "$path" "$after" || missing="${missing}${missing:+ }${path}"
+    done
+    if [ -n "$missing" ]; then
+        bad "the engine's declared inputs do not carry the drawer, so a product's own rule could change under a reused verdict: ${missing}"
+        return
+    fi
+    # AND NOTHING ELSE MOVED. The drawer's three paths are the WHOLE delta:
+    # a listing that also gained or lost a template path would mean the drawer
+    # changed what the engine reads about the template, which it must not.
+    local delta
+    delta="$(comm -13 "$before" "$after" | LC_ALL=C sort)"
+    local want
+    want="$(printf '%s\n' quality/local/canary/acme-1/planted.py quality/local/rules.yaml \
+        quality/local/runners/acme_probe.py | LC_ALL=C sort)"
+    if [ "$delta" != "$want" ]; then
+        bad "the drawer moved more than itself in the engine's inputs: $(printf '%s' "$delta" | tr '\n' '|')"
+        return
+    fi
+    if [ -n "$(comm -23 "$before" "$after")" ]; then
+        bad "a path the engine read before the drawer existed dropped out of the listing: $(comm -23 "$before" "$after" | head -5 | tr '\n' '|')"
+        return
+    fi
+    ok "the engine's declared inputs gain the drawer's rules.yaml, fixtures and runners and NOTHING else; with no drawer the listing is what it was before EP2"
 }
 
 # --- run ----------------------------------------------------------------------
@@ -1890,32 +2323,263 @@ JSON
     fi
 }
 
-case_all_green_prints_one_line_per_drive_and_the_summary
-case_two_red_drives_are_both_named_and_the_leg_is_exit_1
-case_a_could_not_look_drive_outranks_a_red_one_and_both_are_named
-case_a_red_engine_selftest_still_runs_every_drive_and_the_leg_is_exit_2
-case_every_exit_in_the_leg_body_is_inside_a_drive_subshell
-case_every_registered_drive_line_and_sentinel_survives_the_function
-case_the_deploy_blind_spot_banner_is_unchanged
-case_the_gate_calls_the_function_and_owns_its_one_exit
-case_a_banked_drive_is_reused_and_named
-case_a_moved_driven_byte_refuses_the_reuse
-case_an_ingested_row_reuses_on_the_same_image
-case_an_unreadable_machine_file_cannot_key
-case_an_unbanked_drive_runs
-case_an_undecidable_key_is_exit_2
-case_the_floor_reaches_every_top_level_the_tree_has
-case_a_declaration_of_the_gate_carries_its_sourced_libraries
-case_two_drives_with_identical_content_do_not_share_a_verdict
-case_a_cited_path_is_subtracted_from_the_floor_and_from_no_key
-case_only_a_green_drive_banks
-case_a_reused_drive_keeps_its_shard_index
-case_no_reuse_runs_everything_and_banks
-case_the_engine_banks_on_its_inputs
-case_a_moved_engine_input_refuses_the_reuse
-case_an_unprintable_engine_scope_is_exit_2
-case_the_engines_declaration_covers_exactly_its_inputs
-case_a_drives_seconds_reach_the_member_durations_reader
+# --- the product's own drive drawer -------------------------------------------
+#
+# WHAT IS BEING DRIVEN. `scripts/local/drives/test_<name>.sh` is the THIRD drive
+# home (`scripts/tests/`, `deploy/tests/test_stage.sh`, and this), and it is the
+# only one that is not in `scripts/check.sh`'s own text — a product grows a
+# drive by dropping a file, the way it grows a leg. Every claim below is a claim
+# about THIS LEG: a drawer member is found through the one registry, run, named
+# `local:<name>` wherever a drive name is printed, composed into the same exit —
+# and, the half that is silent from inside this repository because it ships no
+# drawer, costs exactly nothing when there is none.
+#
+# THE PLANTED DRIVES SOURCE THE REAL PREAMBLE. The registry requires it and the
+# reason is not paperwork: this leg runs inside the pre-push hook, where an
+# absolute `GIT_DIR` is exported into every child. A plant that merely MENTIONED
+# the preamble would satisfy the grep and prove a weaker thing than the
+# contract, so these plants do what a real drawer drive does.
+LOCAL_DRIVES_DIR=""
+LOCAL_DRIVES_DIR_SEQ=0
+plant_local_drives() {
+    LOCAL_DRIVES_DIR_SEQ=$((LOCAL_DRIVES_DIR_SEQ + 1))
+    LOCAL_DRIVES_DIR="${WORK}/drawer-${LOCAL_DRIVES_DIR_SEQ}"
+    rm -rf "$LOCAL_DRIVES_DIR"
+    mkdir -p "$LOCAL_DRIVES_DIR"
+    local spec name rc
+    for spec in "$@"; do
+        name="${spec%%:*}"
+        rc="${spec##*:}"
+        cat >"${LOCAL_DRIVES_DIR}/test_${name}.sh" <<PLANT
+#!/usr/bin/env bash
+. scripts/tests/drive_preamble.sh
+echo "planted PRODUCT drive ${name} speaking"
+exit ${rc}
+PLANT
+        chmod +x "${LOCAL_DRIVES_DIR}/test_${name}.sh"
+    done
+}
+
+# A DRAWER DRIVE WITH NO PREAMBLE — the one shape `plant_local_drives` cannot
+# make, because it always writes one.
+plant_local_drive_without_preamble() {
+    LOCAL_DRIVES_DIR_SEQ=$((LOCAL_DRIVES_DIR_SEQ + 1))
+    LOCAL_DRIVES_DIR="${WORK}/drawer-${LOCAL_DRIVES_DIR_SEQ}"
+    rm -rf "$LOCAL_DRIVES_DIR"
+    mkdir -p "$LOCAL_DRIVES_DIR"
+    printf '#!/usr/bin/env bash\necho "a drive that never heard of the preamble"\nexit 0\n' \
+        >"${LOCAL_DRIVES_DIR}/test_$1.sh"
+    chmod +x "${LOCAL_DRIVES_DIR}/test_$1.sh"
+}
+
+# A DRAWER DRIVE WHOSE ONLY OCCURRENCE OF THE PREAMBLE IS A COMMENT.
+plant_local_drive_mentioning_preamble() {
+    LOCAL_DRIVES_DIR_SEQ=$((LOCAL_DRIVES_DIR_SEQ + 1))
+    LOCAL_DRIVES_DIR="${WORK}/drawer-${LOCAL_DRIVES_DIR_SEQ}"
+    rm -rf "$LOCAL_DRIVES_DIR"
+    mkdir -p "$LOCAL_DRIVES_DIR"
+    printf '#!/usr/bin/env bash\n# this drive does not source drive_preamble.sh and says so\nexit 0\n' \
+        >"${LOCAL_DRIVES_DIR}/test_$1.sh"
+    chmod +x "${LOCAL_DRIVES_DIR}/test_$1.sh"
+}
+
+# The leg's transcript with every measured second replaced, so two runs of the
+# same set compare as the same transcript rather than as two clocks.
+leg_transcript_without_seconds() {
+    sed -E 's/\(([0-9]+)s\)/(Ns)/g' "$1"
+}
+
+case_a_product_drive_in_the_drawer_runs_and_is_named_local() {
+    CURRENT=case_a_product_drive_in_the_drawer_runs_and_is_named_local
+    new_ledger localdrive
+    local dir="${WORK}/set-localdrive"
+    plant_drive_set "$dir" 1_alpha:0
+    plant_local_drives acme:0
+    LEG_LOCAL_DRIVES="$LOCAL_DRIVES_DIR"
+    run_leg "$dir"
+    LEG_LOCAL_DRIVES=""
+    if [ "$LEG_RC" != "0" ]; then
+        bad "a green set with one product drive gave exit ${LEG_RC}: $(tr '\n' '|' <"$LEG_OUT")"
+        return
+    fi
+    if ! grep -qE '^  drive local:acme: exit 0 \([0-9]+s\)$' "$LEG_OUT"; then
+        bad "no \`drive local:acme: exit 0 (Ns)\` line — the drawer's member is not named as a member: $(tr '\n' '|' <"$LEG_OUT")"
+        return
+    fi
+    if ! grep -qF 'planted PRODUCT drive acme speaking' "$LEG_OUT"; then
+        bad "the product drive was named and NOT RUN — its own output is not in the transcript"
+        return
+    fi
+    # AND THE CONSULT SAYS WHY IT BANKED NOTHING. A drawer drive cannot carry
+    # the template's drive key — that key requires a `drive_preamble.sh` beside
+    # the drive file and the drawer has none — so it runs on EVERY gate, and
+    # the one thing a member in that position must not be is silent about it
+    # (it used to fall out of the consult on a composed path that
+    # never existed, printing nothing at all).
+    if ! grep -qF 'drive local:acme: not consulted — a product drive is not keyed or banked; it runs on every gate' "$LEG_OUT"; then
+        bad "the consult passed over the product drive silently: $(grep -F 'local:acme' "$LEG_OUT" | tr '\n' '|')"
+        return
+    fi
+    # Three members: the engine, the planted template drive, the product's.
+    if ! grep -qF 'selftest: 3 drive(s) green · 0 red · 0 could-not-look' "$LEG_OUT"; then
+        bad "the composition did not count the product drive as a member: $(grep -F 'selftest:' "$LEG_OUT" | tr '\n' '|')"
+        return
+    fi
+    ok "a drive in the drawer ran, printed its own output, and is named local:acme in the leg's transcript and its count"
+}
+
+case_a_red_product_drive_is_named_and_the_leg_is_exit_1() {
+    CURRENT=case_a_red_product_drive_is_named_and_the_leg_is_exit_1
+    new_ledger localdrivered
+    local dir="${WORK}/set-localdrive-red"
+    plant_drive_set "$dir" 1_alpha:0
+    plant_local_drives acme:1
+    LEG_LOCAL_DRIVES="$LOCAL_DRIVES_DIR"
+    run_leg "$dir"
+    LEG_LOCAL_DRIVES=""
+    if [ "$LEG_RC" != "1" ]; then
+        bad "a red product drive gave exit ${LEG_RC}, want 1: $(tr '\n' '|' <"$LEG_OUT")"
+        return
+    fi
+    if ! grep -qE '^!! RED: local:acme$' "$LEG_OUT"; then
+        bad "the red list does not name local:acme: $(grep -F 'RED' "$LEG_OUT" | tr '\n' '|')"
+        return
+    fi
+    # AND IT IS THE PRODUCT'S. The leg says what it does and does not vouch
+    # for, because a product reading this transcript is reading about its own
+    # code rather than about the template's.
+    if ! grep -qF 'says nothing about whether it is CORRECT' "$LEG_OUT"; then
+        bad "a red product drive is reported without the sentence saying whose code it is"
+        return
+    fi
+    ok "a red drawer drive composes into the leg's exit 1 and is named local:acme, with the ownership said out loud"
+}
+
+case_a_drawer_drive_without_the_preamble_is_exit_2() {
+    CURRENT=case_a_drawer_drive_without_the_preamble_is_exit_2
+    new_ledger localdrivebad
+    local dir="${WORK}/set-localdrive-bad"
+    plant_drive_set "$dir" 1_alpha:0
+    plant_local_drive_without_preamble acme
+    LEG_LOCAL_DRIVES="$LOCAL_DRIVES_DIR"
+    run_leg "$dir"
+    LEG_LOCAL_DRIVES=""
+    if [ "$LEG_RC" != "2" ]; then
+        bad "a drawer drive with no preamble gave exit ${LEG_RC}, want 2: $(tr '\n' '|' <"$LEG_OUT")"
+        return
+    fi
+    if ! grep -qF "test_acme.sh: it does not source scripts/tests/drive_preamble.sh" "$LEG_OUT"; then
+        bad "the refusal does not name the file and the missing preamble: $(grep -F '!!' "$LEG_OUT" | tr '\n' '|')"
+        return
+    fi
+    if grep -qF 'a drive that never heard of the preamble' "$LEG_OUT"; then
+        bad "the refused drive RAN — the refusal is at the listing, before anything is executed"
+        return
+    fi
+    ok "a drawer drive with no preamble is exit 2 naming the file, and is never run"
+
+    # A MENTION IS NOT A SOURCE LINE. `grep -q 'drive_preamble\.sh'` admitted a
+    # drive whose only occurrence of the name was a comment SAYING it does not
+    # source it — the guard inverted by a sentence.
+    new_ledger localdrivementions
+    plant_local_drive_mentioning_preamble acme
+    LEG_LOCAL_DRIVES="$LOCAL_DRIVES_DIR"
+    run_leg "$dir"
+    LEG_LOCAL_DRIVES=""
+    if [ "$LEG_RC" != "2" ]; then
+        bad "a drawer drive that only MENTIONS the preamble in a comment gave exit ${LEG_RC}, want 2"
+        return
+    fi
+    ok "a comment naming drive_preamble.sh does not count as sourcing it — still exit 2"
+
+    # THE NAME CHECK IS ASCII'S, NOT THE LOCALE'S. Under a UTF-8 collation a
+    # bare `[!a-z0-9_]` range matches case-insensitively, so `test_Probe.sh`
+    # was admitted and resolved to a `local:Probe` nothing else spells that way.
+    new_ledger localdrivecase
+    LOCAL_DRIVES_DIR_SEQ=$((LOCAL_DRIVES_DIR_SEQ + 1))
+    LOCAL_DRIVES_DIR="${WORK}/drawer-${LOCAL_DRIVES_DIR_SEQ}"
+    rm -rf "$LOCAL_DRIVES_DIR"
+    mkdir -p "$LOCAL_DRIVES_DIR"
+    printf '#!/usr/bin/env bash\n. scripts/tests/drive_preamble.sh\nexit 0\n' \
+        >"${LOCAL_DRIVES_DIR}/test_Probe.sh"
+    chmod +x "${LOCAL_DRIVES_DIR}/test_Probe.sh"
+    LEG_LOCAL_DRIVES="$LOCAL_DRIVES_DIR"
+    LEG_LOCALE="en_US.UTF-8"
+    run_leg "$dir"
+    LEG_LOCALE=""
+    LEG_LOCAL_DRIVES=""
+    if [ "$LEG_RC" != "2" ] || ! grep -qF "'Probe' is not a drive name" "$LEG_OUT"; then
+        bad "an upper-case drawer name under en_US.UTF-8 gave exit ${LEG_RC} without naming 'Probe': $(grep -F '!!' "$LEG_OUT" | tr '\n' '|')"
+        return
+    fi
+    ok "test_Probe.sh is refused by name under a UTF-8 collation — the range is LC_ALL=C's"
+}
+
+case_no_drawer_leaves_the_legs_transcript_byte_identical() {
+    CURRENT=case_no_drawer_leaves_the_legs_transcript_byte_identical
+    # THE NEGATIVE, AND IT IS THE DRAWER'S WHOLE PROMISE. Asserted by `cmp` over
+    # two real runs of the same planted set — one with no drawer at all, one
+    # pointed at an empty drawer — and never by reading the code.
+    local dir="${WORK}/set-nodrawer" a b
+    a="${WORK}/leg-nodrawer.out"
+    b="${WORK}/leg-emptydrawer.out"
+    plant_drive_set "$dir" 1_alpha:0 2_bravo:0
+    new_ledger nodrawer
+    LEG_LOCAL_DRIVES=""
+    run_leg "$dir"
+    leg_transcript_without_seconds "$LEG_OUT" >"$a"
+    plant_local_drives
+    new_ledger nodrawer
+    LEG_LOCAL_DRIVES="$LOCAL_DRIVES_DIR"
+    run_leg "$dir"
+    LEG_LOCAL_DRIVES=""
+    leg_transcript_without_seconds "$LEG_OUT" >"$b"
+    if ! cmp -s "$a" "$b"; then
+        bad "an EMPTY drawer changed the leg's transcript: $(diff "$a" "$b" | tr '\n' '|')"
+        return
+    fi
+    if grep -qF 'local:' "$a"; then
+        bad "the no-drawer transcript names a local: member"
+        return
+    fi
+    ok "no drawer and an empty drawer produce the same transcript, and neither mentions the drawer at all"
+}
+
+
+run_case case_all_green_prints_one_line_per_drive_and_the_summary
+run_case case_two_red_drives_are_both_named_and_the_leg_is_exit_1
+run_case case_a_could_not_look_drive_outranks_a_red_one_and_both_are_named
+run_case case_a_red_engine_selftest_still_runs_every_drive_and_the_leg_is_exit_2
+run_case case_every_exit_in_the_leg_body_is_inside_a_drive_subshell
+run_case case_every_registered_drive_line_and_sentinel_survives_the_function
+run_case case_the_deploy_blind_spot_banner_is_unchanged
+run_case case_the_gate_calls_the_function_and_owns_its_one_exit
+run_case case_a_banked_drive_is_reused_and_named
+run_case case_a_moved_driven_byte_refuses_the_reuse
+run_case case_an_ingested_row_reuses_on_the_same_image
+run_case case_an_unreadable_machine_file_cannot_key
+run_case case_an_unbanked_drive_runs
+run_case case_an_undecidable_key_is_exit_2
+run_case case_the_floor_reaches_every_top_level_the_tree_has
+run_case case_a_declaration_of_the_gate_carries_its_sourced_libraries
+run_case case_two_drives_with_identical_content_do_not_share_a_verdict
+run_case case_a_cited_path_is_subtracted_from_the_floor_and_from_no_key
+run_case case_only_a_green_drive_banks
+run_case case_a_reused_drive_keeps_its_shard_index
+run_case case_no_reuse_runs_everything_and_banks
+run_case case_the_partition_balances_by_duration_and_names_the_table_it_read
+run_case case_every_member_is_in_exactly_one_shard_and_the_partition_is_deterministic
+run_case case_an_absent_durations_table_is_the_round_robin_and_says_so
+run_case case_the_engine_banks_on_its_inputs
+run_case case_a_moved_engine_input_refuses_the_reuse
+run_case case_an_unprintable_engine_scope_is_exit_2
+run_case case_the_engines_declaration_covers_exactly_its_inputs
+run_case case_the_engines_inputs_carry_the_products_drawer
+run_case case_a_drives_seconds_reach_the_member_durations_reader
+run_case case_a_product_drive_in_the_drawer_runs_and_is_named_local
+run_case case_a_red_product_drive_is_named_and_the_leg_is_exit_1
+run_case case_a_drawer_drive_without_the_preamble_is_exit_2
+run_case case_no_drawer_leaves_the_legs_transcript_byte_identical
 
 echo "test_selftest_leg: ${PASSED} passed · ${FAILED} failed"
 echo "           leg body: $(wc -l <"$EXTRACT" | tr -d ' ') line(s) between the sentinels into ${EXTRACT}"

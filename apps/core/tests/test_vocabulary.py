@@ -21,15 +21,17 @@ The list may shrink. It may never grow.
 from __future__ import annotations
 
 import importlib.machinery
+import io
 import json
 import logging
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from types import ModuleType
 from typing import Any
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
+from django.core.management import call_command
 from django.db import models
 from django.test.utils import isolate_apps
 
@@ -53,6 +55,10 @@ from apps.core.authz import (
     reset_policies,
     role_declarations,
     vocabulary,
+)
+from apps.core.management.commands.rename_permission import (
+    TABLE_HEADER,
+    declared_renames,
 )
 from apps.core.models import BaseModel
 
@@ -941,3 +947,301 @@ def test_the_reach_grammar_example_names_a_key_that_exists() -> None:
     assert "preference.set" not in source
     assert "recipient.update" in source
     assert "recipient.update" in vocabulary()
+
+
+# --- P1.10 · the release note's rename table is the command's OUTPUT ----------
+
+#: The marker sentence a CHANGELOG table must sit under to be one of the tables
+#: this census reads. It is the release note's own claim about itself — "the
+#: table, derived from `renamed_permissions()`" — and a table nobody makes that
+#: claim about is somebody else's table, not a copy of this one.
+CHANGELOG_TABLE_MARKER = "derived from `renamed_permissions()`"
+
+#: How far above a table's header the marker may sit, in lines, and the window
+#: is JOINED before it is searched — the sentence is prose in a wrapped bullet,
+#: so `derived from` and `` `renamed_permissions()` `` land on different lines
+#: and a per-line search finds neither. Four covers the wrap plus the blank line
+#: markdown needs before a table; wider and an unrelated paragraph further up
+#: starts adopting tables it never mentioned.
+CHANGELOG_MARKER_REACH = 4
+
+
+def _changelog_lines() -> list[str]:
+    from django.conf import settings
+
+    return (settings.BASE_DIR / "CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+
+
+def _changelog_rename_tables() -> list[list[str]]:
+    """Every marker-introduced rename table in the note, dedented, header first.
+
+    Dedented because the tables live INSIDE a markdown list item and therefore
+    carry the list's indent: the release note cannot print the command's output
+    at column zero without breaking out of the bullet it belongs to. The indent
+    is the only difference this census forgives, and it forgives it by removing
+    it rather than by comparing loosely.
+    """
+    lines = _changelog_lines()
+    tables: list[list[str]] = []
+    for index, line in enumerate(lines):
+        if line.strip() != TABLE_HEADER:
+            continue
+        window = " ".join(lines[max(0, index - CHANGELOG_MARKER_REACH) : index])
+        if CHANGELOG_TABLE_MARKER not in " ".join(window.split()):
+            continue
+        block: list[str] = []
+        for candidate in lines[index:]:
+            stripped = candidate.strip()
+            if not stripped.startswith("|"):
+                break
+            block.append(stripped)
+        tables.append(block)
+    return tables
+
+
+def _table_rows(block: Iterable[str]) -> list[tuple[str, str, str]]:
+    """`(app, old, new)` for every data row of a rendered table block."""
+    rows: list[tuple[str, str, str]] = []
+    for line in block:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 3 or cells == ["app", "old key", "new key"] or cells[0].startswith("-"):
+            continue
+        rows.append((cells[0], cells[1].strip("`"), cells[2].strip("`")))
+    return rows
+
+
+def _printed_table() -> str:
+    out = io.StringIO()
+    call_command("rename_permission", "--table", stdout=out)
+    return out.getvalue()
+
+
+def test_the_table_is_the_union() -> None:
+    """`--table` prints `renamed_permissions()` and nothing else, in one order.
+
+    The pair set is asserted against the union itself — the property that makes
+    the command a READER of the table rather than a second copy of it — and the
+    count is pinned only over `platform_apps`, so a product declaring its own
+    rename joins the printed table without reding a platform census (the
+    `platform_only` disposition `apps/exports/tests/test_census.py` records).
+    """
+    from quality.partition import platform_apps
+
+    rows = _table_rows(_printed_table().splitlines())
+
+    assert {(old, new) for _app, old, new in rows} == set(renamed_permissions().items())
+    assert len(rows) == len(renamed_permissions())
+    assert rows == sorted(rows), "the order is deterministic or the note diffs on every run"
+
+    platform = [row for row in rows if row[0] in set(platform_apps())]
+    assert len(platform) == 29, "this tree's platform renames; the list may shrink, never grow"
+
+
+def test_the_table_names_the_app_that_declared_each_pair() -> None:
+    """Column one is the declaring `policies.py`'s label, not a guess off the key.
+
+    `accounts` declares `identity_platform.configure` and `core` does not, and
+    nothing in either key's text says so: the attribution comes from the
+    discovery walk or it is fiction.
+    """
+    declared = dict(((old, app) for app, old, _new in declared_renames()))
+
+    assert declared["identity_platform.configure"] == "accounts"
+    assert declared["organization.rename"] == "core"
+    assert declared["usage.read_report"] == "usage"
+
+
+@pytest.mark.django_db
+def test_declared_is_idempotent() -> None:
+    """`--declared` moves every pair at once; the second run moves nothing, and says so."""
+    from apps.core.models import RolePermission, Tenant
+
+    tenant_ = Tenant.objects.create(name="Rename Co", slug="rename-co")
+    pairs = declared_renames()
+    assert pairs, "the tree declares at least one rename"
+    (_app_a, old_a, new_a), (_app_b, old_b, new_b) = pairs[0], pairs[-1]
+
+    for key in (old_a, old_b):
+        RolePermission.objects.create(
+            tenant=tenant_,
+            role_key="approver",
+            permission=key,
+            effect=RolePermission.Effect.INCLUDE,
+        )
+
+    first = io.StringIO()
+    call_command("rename_permission", "--declared", stdout=first)
+    moved = first.getvalue()
+
+    assert f"{old_a} -> {new_a}" in moved
+    assert f"{old_b} -> {new_b}" in moved
+    assert "2 row(s) rewritten" in moved
+    assert not RolePermission.objects.filter(permission__in=(old_a, old_b)).exists()
+    assert RolePermission.objects.filter(permission__in=(new_a, new_b)).count() == 2
+
+    second = io.StringIO()
+    call_command("rename_permission", "--declared", stdout=second)
+    again = second.getvalue()
+
+    assert "nothing to rewrite" in again
+    assert "row(s) rewritten." not in again
+    assert RolePermission.objects.filter(permission__in=(new_a, new_b)).count() == 2
+
+
+def test_every_declared_rename_is_in_the_changelog_table() -> None:
+    """A pair declared in code and absent from the release note is a silent drift.
+
+    **Why it exists.** The note told a reader the table was
+    "derived from `renamed_permissions()`" while carrying twenty-five of the
+    twenty-nine pairs the code declares: the four `apps/accounts` keys were
+    missing, so an operator following the note moved twenty-five key's rows and
+    left four tenants' `Grant` rows naming words nothing answers.
+
+    **One-way, and scoped to `platform_apps`.** One-way because the note is a
+    HISTORY: a pair swept away in a later release stays in the section that
+    announced it, and a census that demanded the reverse would force a product
+    to delete its own release notes. Scoped because a product's own app
+    declares its own renames in its own note, and a platform test that demanded
+    them here would red on a clone for doing the right thing.
+    """
+    from quality.partition import platform_apps
+
+    tables = _changelog_rename_tables()
+    assert tables, (
+        f"no CHANGELOG table sits under {CHANGELOG_TABLE_MARKER!r} with the header "
+        f"{TABLE_HEADER!r}. The census cannot look, which is not the same as passing."
+    )
+
+    published = {(old, new) for table in tables for _app, old, new in _table_rows(table)}
+    assert published, "the marker was found and every table under it was empty"
+
+    platform = set(platform_apps())
+    declared = [row for row in declared_renames() if row[0] in platform]
+    assert declared, "the platform declares at least one rename, or this cannot fail"
+
+    missing = [(app, old, new) for app, old, new in declared if (old, new) not in published]
+    assert not missing, (
+        "declared in code and absent from the CHANGELOG's rename table:\n"
+        + "\n".join(f"  {app}: {old} -> {new}" for app, old, new in missing)
+        + "\nRegenerate the table with `manage.py rename_permission --table`."
+    )
+
+
+def _platform_rows_of_the_printed_table() -> list[str]:
+    """`--table`'s own lines, keeping only the rows a `platform_apps` app declared.
+
+    **The filter is the whole reason this is a helper.** `--table` prints the
+    UNION, which is correct — a product running the command wants its own
+    renames in the note it writes. This platform test is about THIS
+    repository's note, so it compares the platform rows and nothing else: the
+    unscoped form reds in a clone the day a product declares its first rename,
+    and the only way out would be pasting the template's table plus its own
+    into a file the template owns. Same scoping as the `29` pin above.
+    """
+    from quality.partition import platform_apps
+
+    platform = set(platform_apps())
+    printed = [line for line in _printed_table().splitlines() if line.strip()]
+    head, rows = printed[:2], printed[2:]
+    return head + [
+        line for line in rows if _table_rows([line]) and _table_rows([line])[0][0] in platform
+    ]
+
+
+def test_the_changelog_carries_the_commands_table_verbatim() -> None:
+    """One of the note's tables IS `--table`'s platform rows, byte for byte once dedented.
+
+    The census above is one-way and would be satisfied by a hand-written
+    superset in the right order. This is the other half: the note carries what
+    the command prints, so regenerating it is a copy and never a merge.
+    """
+    printed = _platform_rows_of_the_printed_table()
+    blocks = _changelog_rename_tables()
+
+    assert any(block == printed for block in blocks), (
+        "no CHANGELOG rename table equals `manage.py rename_permission --table`'s "
+        f"platform rows. The command prints {len(printed)} of them; the note carries "
+        f"{[len(block) for block in blocks]}."
+    )
+
+
+class _PlantedConfig:
+    """The shape `authz._declarations` yields: something with a `.label`."""
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+
+def _plant_declarations(
+    monkeypatch: pytest.MonkeyPatch, *extra: tuple[str, dict[str, str]]
+) -> None:
+    """Append `(app label, RENAMED_PERMISSIONS)` pairs to the discovery walk.
+
+    Its own victim: nothing found in the tree is reshaped, and the plants are
+    apps no `apps/` directory holds, which is exactly what a product app looks
+    like from inside a platform test.
+    """
+    from apps.core.management.commands import rename_permission as command
+
+    def planted(module: str, attribute: str) -> list[tuple[Any, dict[Any, Any]]]:
+        # `_declarations` from `apps.core.authz`, which this module already
+        # imports — never reached through the command module, whose copy is an
+        # import and not an export.
+        found: list[tuple[Any, dict[Any, Any]]] = list(_declarations(module, attribute))
+        if (module, attribute) == ("policies", "RENAMED_PERMISSIONS"):
+            found += [(_PlantedConfig(label), dict(declared)) for label, declared in extra]
+        return found
+
+    monkeypatch.setattr(command, "_declarations", planted)
+
+
+def test_a_product_apps_rename_joins_the_table_and_leaves_the_note_green(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clone declaring its own rename must not red a test about OUR note.
+
+    The unscoped form of the check above went red here: the printed table grows
+    by the product's row, the template's `CHANGELOG.md` does not, and the only
+    remedy a product would have is editing a platform test or a platform file.
+    """
+    from apps.core.management.commands import rename_permission as command
+
+    before = len(_platform_rows_of_the_printed_table())
+    real_union = dict(renamed_permissions())
+
+    _plant_declarations(monkeypatch, ("zzz_product", {"gizmo.polish": "gizmo.update"}))
+    monkeypatch.setattr(
+        command, "renamed_permissions", lambda: {**real_union, "gizmo.polish": "gizmo.update"}
+    )
+
+    whole = _table_rows(_printed_table().splitlines())
+    assert ("zzz_product", "gizmo.polish", "gizmo.update") in whole, (
+        "the plant proves nothing if the product's rename never reached the printed table"
+    )
+    assert len(_platform_rows_of_the_printed_table()) == before
+
+    test_the_changelog_carries_the_commands_table_verbatim()
+
+
+def test_two_apps_declaring_one_old_key_are_refused_by_both_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agreeing about the successor is not agreeing about who owns the key.
+
+    `authz._discover_renames` refuses two declarers that DISAGREE about the
+    successor; two that agree pass it, and the table's first column then names
+    whichever app the registry walked last — silently, and wrongly for one of
+    them. This is the refusal for that case, and it names both.
+    """
+    from django.core.management.base import CommandError
+
+    pair = {"gizmo.polish": "gizmo.update"}
+    _plant_declarations(monkeypatch, ("zzz_left", dict(pair)), ("zzz_right", dict(pair)))
+
+    with pytest.raises(CommandError) as caught:
+        declared_renames()
+
+    assert "zzz_left" in str(caught.value)
+    assert "zzz_right" in str(caught.value)
+    assert "gizmo.polish" in str(caught.value)
+    assert caught.value.returncode == 2

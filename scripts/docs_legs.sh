@@ -232,15 +232,260 @@ docs_dangling_docs() {
     fi
 
     DOCS_DANGLING_SITES=$(wc -l <"$refs" | tr -d ' ')
+    local drawers=0
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         ref=${line#*:}
         file=${line%%:*}
         [ -f "$root/$ref" ] && continue
+        # A DRAWER IS A PATH THIS TREE MAY NAME AND MAY NEVER SHIP. `*.local.md`
+        # is a reserved glob (`scripts/divergence_census.sh`'s `DRAWER_GLOBS`,
+        # `scripts/publish.sh` § R0): a product writes it, the template never
+        # does, and R0 exits 2 if a release ever carries one. So the template's
+        # own documentation of the drawer —
+        # `docs/product/instruments.local.md`, named in `build-contract.md`,
+        # `instruments.md`, `CHANGELOG.md` and the reader that opens it — points
+        # at a file that is CORRECTLY absent here, and a census that called
+        # that dangling would make the drawer undocumentable in the one
+        # repository that has to explain it.
+        #
+        # IT IS ONE EXACT PATH AND IT IS COUNTED (found in review). A GLOB would have
+        # exempted every `*.local.md` a product ever writes about, including
+        # the typo'd ones; what the template actually needs is to be able to
+        # name the ONE drawer it documents. A typo in any other pointer is
+        # still a finding, the number is printed, and in a PRODUCT's tree the
+        # drawer exists and is checked like any other file — this exemption
+        # only ever fires where the file is legitimately not there.
+        case "$ref" in
+        docs/product/instruments.local.md)
+            drawers=$((drawers + 1))
+            continue
+            ;;
+        esac
         printf 'dangling-docs: %s does not exist in %s — spelled in %s\n' \
             "$ref" "$DOCS_LEGS_SCOPE_NOUN" "$file"
     done <"$refs"
+    if [ "$drawers" -gt 0 ]; then
+        # TO STDERR, because this body's STDOUT is its findings: every line of
+        # it is printed by the caller with a `VIOLATION` in front. A note that
+        # arrived on stdout would be a clean tree reported as a red one.
+        printf '  %s pointer(s) exempt: docs/product/instruments.local.md is the product-owned drawer this template documents and never ships (publish.sh R0)\n' \
+            "$drawers" >&2
+    fi
     rm -f "$refs"
+    return 0
+}
+
+# docs_changelog_flags <root> <version>
+#
+# THE RELEASE SECTION'S FLAG CLAIMS ARE CHECKED AGAINST THE SCRIPTS THEY NAME.
+# `CHANGELOG.md`'s release section is the one page a consumer reads before
+# merging a tag, and the thing it is mostly made of is `<script> --flag`
+# invocations a reader is expected to type. A flag that was renamed, moved to
+# another script, or never existed reads exactly like one that works — and the
+# reader finds out at a terminal, not here. Closed question over a discoverable
+# population, the shape every leg in this library has: the population is the
+# backticked spans of ONE section, the question is "is this flag a literal in
+# the script this span names".
+#
+# THE UNIT IS THE BACKTICKED SPAN, AND NOTHING WIDER. A span carrying a
+# `--flag` token AND a script name is a CLAIM and is judged. A span carrying a
+# flag and no script name is COUNTED and never judged — the prose around it may
+# make the script obvious to a human, but inferring it is naming a cause this
+# leg has not proven, which is the one thing an instrument here may not do. The
+# count is printed so the size of what is not judged is visible rather than
+# implied.
+#
+# WHICH SECTION. `## [<version>]` and only that section. OLDER SECTIONS ARE
+# HISTORY AND ARE NOT READ: a shipped [2.0.0] entry describes the tree of
+# 2.0.0, and a flag that has since been renamed makes that sentence a true
+# record of a past release, not a defect. Correcting a past section rewrites
+# history; the correction belongs in the section being released. This is why
+# the leg takes the version as an argument rather than scanning the file.
+#
+# WHAT IT DOES NOT COVER, declared rather than discovered:
+#   · IT READS TEXT PRESENCE, NOT AN ARM. A flag spelled anywhere in the named
+#     script — in a usage header, in a comment, inside a string the script
+#     echoes about a DIFFERENT script — satisfies it. The measured instance is
+#     `verifier_box.sh`, which contains the token `--plan` only inside the
+#     string `./deploy/verifier/bake.sh --plan` it prints: a CHANGELOG claim
+#     that `verifier_box.sh bake` takes `--plan` is FALSE and this leg cannot
+#     see it. Proving a flag is parsed needs an arm walk, which is a different
+#     instrument.
+#   · An unscripted span is invisible to the judgment, by the design above.
+#   · One direction only: a flag a script grew and the section never mentioned
+#     is not a finding here.
+#   · `manage.py <cmd>` resolves only against `apps/*/management/commands/`.
+#     A framework command (`manage.py check --deploy`) has no module in this
+#     tree, so it is counted as unresolved rather than judged against a source
+#     this leg cannot read.
+#
+# Sets DOCS_CHANGELOG_CLAIMS and DOCS_CHANGELOG_UNRESOLVED. Prints one
+# `changelog-flags: …` finding per line TO STDOUT, the same output contract the
+# two censuses above have. Returns 0 no finding · 1 findings printed · 2 could
+# not look (no CHANGELOG.md, no such section, unbalanced backticks in it, or a
+# named script under scripts/** or deploy/** that is not in the tree).
+DOCS_CHANGELOG_CLAIMS=0
+DOCS_CHANGELOG_UNRESOLVED=0
+docs_changelog_flags() {
+    local root=$1 version=$2 file sec rows unres kind name flag span path hits found
+    DOCS_CHANGELOG_CLAIMS=0
+    DOCS_CHANGELOG_UNRESOLVED=0
+    found=0
+    file="$root/CHANGELOG.md"
+    if [ ! -r "$file" ]; then
+        gate_refuse "changelog-flags: there is no readable CHANGELOG.md in ${DOCS_LEGS_SCOPE_NOUN}"
+        echo "   — the release's own reading material. Could-not-look, not a violation." >&2
+        return 2
+    fi
+    sec=$(mktemp "${TMPDIR:-/tmp}/djb-docs-clsec.XXXXXX") || return 2
+    # THE HEADER IS MATCHED AS A LITERAL PREFIX, never as a regex: a version is
+    # made of dots, and `## \[2.1.0\]` as a pattern also matches `## [2X1X0]`.
+    awk -v hdr="## [$version]" '
+        index($0, hdr) == 1 { on = 1; next }
+        on && index($0, "## [") == 1 { exit }
+        on { print }
+    ' "$file" >"$sec"
+    if [ ! -s "$sec" ]; then
+        gate_refuse "changelog-flags: ${DOCS_LEGS_SCOPE_NOUN}'s CHANGELOG.md has no \`## [$version]\` section"
+        echo "   to read, so this leg looked at nothing. Could-not-look, not a violation —" >&2
+        echo "   an absent section is the \`changelog\` leg's finding, not this one's." >&2
+        rm -f "$sec"
+        return 2
+    fi
+
+    rows=$(mktemp "${TMPDIR:-/tmp}/djb-docs-clrows.XXXXXX") || {
+        rm -f "$sec"
+        return 2
+    }
+    # THE UNRESOLVED COUNT IS PER SPAN, NOT PER FLAG. The rows below are one
+    # per (span, flag), so a span spelling three alternatives would otherwise
+    # be reported as three unjudged spans — a number a reader would compare
+    # against the section's own prose and find wrong. The spans are collected
+    # and deduplicated at the end instead.
+    unres=$(mktemp "${TMPDIR:-/tmp}/djb-docs-clunres.XXXXXX") || {
+        rm -f "$sec" "$rows"
+        return 2
+    }
+    # ONE AWK, AND IT DECIDES NOTHING — it parses the section into claim rows
+    # and leaves every judgment to the shell below, which is where the file
+    # reads happen. Spans may cross lines (this CHANGELOG wraps at 76 columns
+    # and its command spans wrap with it), so the whole section is accumulated
+    # and split on the backtick: with balanced backticks the even-numbered
+    # fields ARE the spans. An ODD count means the section's own markup is
+    # broken and every span after the break is mis-paired, so it is exit 2
+    # rather than a scan of garbage.
+    awk '
+        { buf = buf $0 "\n" }
+        END {
+            # THE SEPARATOR IS A REGEX CONSTANT, NOT A STRING, and that is a
+            # portability scar rather than a style choice. Measured on this
+            # machine (awk version 20200816, the stock macOS onetrueawk):
+            # handed the separator as a ONE-CHARACTER STRING, split() splits on
+            # that character AND on the newline — a section carrying 1714 of
+            # them came back as 2848 fields, and the balance test below then
+            # reported the section broken. The POSIX regex-constant form,
+            # below, answers 1715.
+            n = split(buf, part, /`/)
+            if (n % 2 == 0) { print "UNBALANCED\t-\t-\t-"; exit }
+            for (i = 2; i <= n; i += 2) {
+                span = part[i]
+                gsub(/[ \t\n]+/, " ", span)
+                sub(/^ /, "", span); sub(/ $/, "", span)
+                rest = span
+                nf = 0
+                while (match(rest, /--[a-z][a-z0-9-]+/)) {
+                    nf++
+                    fl[nf] = substr(rest, RSTART, RLENGTH)
+                    rest = substr(rest, RSTART + RLENGTH)
+                }
+                if (nf == 0) continue
+                kind = "UNRESOLVED"; name = "-"
+                if (match(span, /[A-Za-z0-9_.\/-]*[A-Za-z0-9_-]\.sh/)) {
+                    kind = "SCRIPT"; name = substr(span, RSTART, RLENGTH)
+                } else if (match(span, /manage\.py +[a-z_]+/)) {
+                    kind = "CMD"
+                    name = substr(span, RSTART, RLENGTH)
+                    sub(/^manage\.py +/, "", name)
+                }
+                for (j = 1; j <= nf; j++)
+                    printf "%s\t%s\t%s\t%s\n", kind, name, fl[j], span
+            }
+        }
+    ' "$sec" | LC_ALL=C sort -u >"$rows"
+    rm -f "$sec"
+
+    if grep -q '^UNBALANCED	' "$rows"; then
+        gate_refuse "changelog-flags: \`## [$version]\` in ${DOCS_LEGS_SCOPE_NOUN} has an ODD number of"
+        echo "   backticks, so every code span after the break is mis-paired and this leg" >&2
+        echo "   would be reading prose as commands. Could-not-look, not a violation." >&2
+        rm -f "$rows" "$unres"
+        return 2
+    fi
+
+    while IFS="	" read -r kind name flag span; do
+        [ -n "$kind" ] || continue
+        case "$kind" in
+        SCRIPT)
+            path=${name#./}
+            case "$path" in
+            scripts/* | deploy/*) ;;
+            *)
+                # Outside the two trees this leg is scoped to read. Counted,
+                # never judged — the scoping is E4's own, and widening it
+                # silently would be this leg growing a population nobody
+                # declared.
+                printf '%s\n' "$span" >>"$unres"
+                continue
+                ;;
+            esac
+            if [ ! -f "$root/$path" ]; then
+                gate_refuse "changelog-flags: \`## [$version]\` names $path, which is not in ${DOCS_LEGS_SCOPE_NOUN}"
+                echo "   — the leg cannot read the script the claim is about. Could-not-look," >&2
+                echo "   not a violation." >&2
+                rm -f "$rows" "$unres"
+                return 2
+            fi
+            DOCS_CHANGELOG_CLAIMS=$((DOCS_CHANGELOG_CLAIMS + 1))
+            if ! grep -qF -- "$flag" "$root/$path"; then
+                found=1
+                printf 'changelog-flags: %s is not a literal in %s — claimed in `%s`\n' \
+                    "$flag" "$path" "$span"
+            fi
+            ;;
+        CMD)
+            # A GLOB LOOP AND NOT `ls | head`: under `set -o pipefail` — which
+            # every caller of this library runs with — a pipeline whose first
+            # member found nothing exits nonzero, and a command substitution
+            # in an ASSIGNMENT propagates that straight into `set -e`. The
+            # library would then kill its caller instead of counting an
+            # unresolved span.
+            hits=""
+            for path in "$root"/apps/*/management/commands/"$name".py; do
+                if [ -f "$path" ]; then
+                    hits=$path
+                    break
+                fi
+            done
+            if [ -z "$hits" ]; then
+                printf '%s\n' "$span" >>"$unres"
+                continue
+            fi
+            DOCS_CHANGELOG_CLAIMS=$((DOCS_CHANGELOG_CLAIMS + 1))
+            if ! grep -qF -- "$flag" "$hits"; then
+                found=1
+                printf 'changelog-flags: %s is not a literal in %s — claimed in `%s`\n' \
+                    "$flag" "${hits#"$root"/}" "$span"
+            fi
+            ;;
+        *)
+            printf '%s\n' "$span" >>"$unres"
+            ;;
+        esac
+    done <"$rows"
+    DOCS_CHANGELOG_UNRESOLVED=$(LC_ALL=C sort -u "$unres" | wc -l | tr -d ' ')
+    rm -f "$rows" "$unres"
+    [ "$found" -eq 0 ] || return 1
     return 0
 }
 

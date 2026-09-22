@@ -54,18 +54,61 @@
 # THE SELF-TEST'S OWN BACKLOG. A rule whose EVERY canary form plants into
 # an app declaring `optional = True` keeps running and stops being able to
 # demonstrate a failure the moment a product ships without that app — a rule an
-# environment variable deleted. Eighteen of this tree's rules are in that state
-# today, measured 2026-08-29 at tree 7a2da23: the worked example is where almost
+# environment variable deleted. Eighteen of this tree's rules were in that
+# state when the ratchet was first measured (2026-08-29, tree 7a2da23): the
+# worked example is where almost
 # every fixture has always been planted, because it is the app with one of
 # everything. The number is a RATCHET in the same grammar as `ratchets:` — the
 # members are printed by name on every self-test run, it may shrink and never
 # grow, one over it turns the whole census into exit 2, and a human commits the
 # lower number in a diff somebody reads. The repair per member is one canary
 # form re-homed into an app the product cannot remove; it is deliberately left
-# to a rung of its own, because re-homing eighteen plans is eighteen judgements
+# to a rung of its own, because re-homing the plans is that many judgements
 # about what each rule's subject really is, and doing them in a batch is how a
-# canary comes to prove the fixture rather than the rule.
-selftest_residence_backlog: 18
+# canary comes to prove the fixture rather than the rule. The one exception a
+# hand may make is a member that JOINS: the line below carries why, on the
+# line, and a raise with no reason on it is the thing this grammar exists to
+# make impossible to write quietly.
+selftest_residence_backlog: 19  # 18 -> 19, raised 2026-09-21: rule 59's two
+# plants left `apps/usage` for the worked example, so its whole canary plan now
+# lives in one optional app and it JOINS the census. The number went UP, which
+# a ratchet may not do by itself — this is the hand, and the trade is stated so
+# a reader can disagree with it: the plan it replaced was mixed-residence only
+# because two forms leaned on an INGREDIENT app (`usage`'s `EVENT_KINDS`), which
+# a product removes as freely as it removes the example, and a plan that dies on
+# `DJB_DISABLED_APPS=usage` was never really outside this census — it was
+# outside the number. One re-homing of rule 59's four forms into an app no
+# product can drop is what takes it back to 18, and that is a rung of its own
+# (the same judgement the other eighteen members are waiting on).
+
+# TWO NAMESPACES FOR RULE IDS (ADR gate-5, owner 2026-09-21). Rule ids were ONE
+# integer sequence that the template and a product both appended to, so a
+# product that minted `54` met the template's `54` at the next fold: the ids
+# merged into a duplicate and `quality/canary/54/` merged SILENTLY into one
+# directory holding both plans. Only the template mints integers now.
+#
+# A PRODUCT WRITES THE TWO KEYS BELOW ONCE, at adoption, and renames its own
+# rules to `<ns>-<n>` — in the id, in the fixture directory
+# (`quality/{canary,negative}/<ns>-<n>/`), in the valve (`# rule-<ns>-<n>:`) and
+# in the check tag (`<ns>.Wnnn`, where the template's are `djb.…`). The engine
+# refuses every other shape by name.
+#
+#   rule_id_namespace: acme          # one lowercase word; never `djb`
+#   template_rule_ids_through: 59    # the highest integer the template release
+#                                    # you folded had minted. It is how the
+#                                    # engine tells a template rule from a
+#                                    # product rule that typed an integer, it
+#                                    # is the `partition.yaml` pattern (a record
+#                                    # of the past in a diff a human reads), and
+#                                    # the self-test PRINTS the number to record
+#                                    # on every run of this template.
+#
+# THE TEMPLATE CARRIES NEITHER, and that is what makes a rung that adds a rule
+# free: its own integers are, by definition, all it has minted. Declaring
+# `template_rule_ids_through` here with no namespace is exit 2.
+# `selftest_residence_backlog` above is likewise a TEMPLATE fact a product folds
+# and never retypes: the census counts template ids only, and a product's own
+# rules are counted against zero (D4).
 
 # THE SCOPE KINDS — which language a rule is written about.
 #
@@ -6296,7 +6339,14 @@ rules:
       result-schema attributes this tree re-renders every tool's published
       `outputSchema` through — none of which is a private attribute binding the
       walk above could derive, and every one of which breaks on exactly the
-      upgrade this rule exists to see coming.
+      upgrade this rule exists to see coming. And `django-linear-migrations` is
+      held too, and more weakly still: `linear_migrations_internals_we_hold`
+      names the command class `apps/core/management/commands/fold_migrations.py`
+      subclasses and the five helpers it calls (ADR core-28), and this check
+      reads NONE of that list — the existence half is a pair of tests the list's
+      own comment names, and `does_not_cover` says so in the plainest words it
+      has, because a rule that quietly listed a third library would be read as
+      watching it.
     check: ninja_internals_census
     doc:
       # DEVIATION, RECORDED . Every other rule's doc anchor is in
@@ -6431,6 +6481,89 @@ rules:
             uncorrected schema, silently and in a green tree. It shares a NAME
             with the entry above it and is still its own row, because a census
             entry names a class and the SDK can rename either of the two alone.
+      # THE LINEAR-MIGRATIONS HALF (ADR core-28).
+      # DECLARED ONLY, AND NOT VALIDATED BY THIS CHECK — said first because a
+      # reader who assumed otherwise would read a green as coverage.
+      # `ninja_internals_census` (quality/checks.py) names its two lists in
+      # code: it walks `apps/`/`config/` for PRIVATE attribute rebindings, and
+      # it existence-checks `ninja_internals_we_hold` and
+      # `mcp_internals_we_hold` off the installed packages. A third list is
+      # read by nobody there, and widening the check is a `quality/**` rung
+      # (team D's D1/D1a own those files this cycle), so what this list buys
+      # today is the half a declaration buys anywhere: a reviewer can see what
+      # `apps/core/management/commands/fold_migrations.py` is standing on, and
+      # a rename upstream has one place to be followed.
+      # THE EXISTENCE HALF IS A TEST, and it is named so it cannot be looked
+      # for and not found: `apps/core/tests/test_fold_migrations.py`'s
+      # `test_the_linear_migrations_internals_we_hold_still_exist` reads THIS
+      # LIST and asserts every name off the installed package, and
+      # `test_the_command_really_imports_every_internal_it_declares` asserts
+      # the other direction. Both fail on the machine that ran `uv sync`.
+      # WHY NONE OF THESE IS DERIVABLE BY THE WALK ABOVE: not one is a private
+      # attribute rebound on somebody else's object. They are public names in a
+      # library whose published surface is its management commands — the
+      # `Command` class this tree SUBCLASSES, three module-level helpers it
+      # CALLS, and two names from `apps.py` — so the library is free to rename
+      # any of them in a patch release without calling it a breaking change,
+      # which is exactly the upgrade this rule exists to see coming.
+      # THE TRIGGER TO DERIVE: the first linear-migrations seam that IS a
+      # private attribute binding, at which point the ninja walk's own shape
+      # already covers it and this list becomes its declaration half.
+      linear_migrations_internals_we_hold:
+        - attribute: Command
+          module: django_linear_migrations.management.commands.rebase_migration
+          reason: >
+            `fold_migrations` SUBCLASSES it (principle 2 — generalise the
+            established technology rather than replace it). What the subclass
+            is actually standing on is `requires_system_checks = []`: without
+            it, `django-linear-migrations`' own `dlm.E002` check refuses to let
+            any management command run while `max_migration.txt` holds a
+            conflict — which is every single time this command is wanted. A
+            rename or a move takes the command down at import.
+        - attribute: find_migration_names
+          module: django_linear_migrations.management.commands.rebase_migration
+          reason: >
+            the library's grammar for what a conflict block in
+            `max_migration.txt` looks like, reused verbatim so the two commands
+            cannot come to disagree about which lines are the two leaves. The
+            fold then UNDOES its merge-time swap, because `rebase_migration`
+            moves yours onto theirs and the fold moves theirs onto yours; that
+            inversion is the one place a silent upstream change to this
+            function's return order would be wrong in the most expensive
+            possible way — a fold that renumbers the product's own migrations.
+        - attribute: is_merge_in_progress
+          module: django_linear_migrations.management.commands.rebase_migration
+          reason: >
+            half of the inversion above: the swap only happens mid-merge, so
+            undoing it needs the same predicate the library used to apply it.
+            Held rather than re-implemented for the reason that would bite
+            otherwise — two answers to "are we merging" that disagree in a
+            worktree is a fold that silently grafts the wrong direction.
+        - attribute: migration_applied
+          module: django_linear_migrations.management.commands.rebase_migration
+          reason: >
+            the local recorder read that makes "this migration has already run,
+            so it cannot be renumbered underneath the recorder" a refusal rather
+            than a corrupted history. The fold asks it once per ARRIVING
+            migration where the library asks once, which is the generalisation;
+            the question, and the multi-connection loop that answers it, are the
+            library's.
+        - attribute: MigrationDetails
+          module: django_linear_migrations.apps
+          reason: >
+            resolves an app label to its migrations DIRECTORY and the set of
+            migration names in it, honouring `MIGRATION_MODULES`, without
+            building a migration graph — which matters because the whole
+            subject of this command is a directory Django's own loader refuses
+            to build a graph from. Re-deriving it would mean copying the
+            library's `MigrationLoader.migrations_module` dance into `apps/`.
+        - attribute: is_first_party_app_config
+          module: django_linear_migrations.apps
+          reason: >
+            the same first-party test `rebase_migration` refuses on, held so
+            the two commands refuse the same set of apps. A vendored app's
+            migrations are not a product's to renumber, and a second opinion
+            about which apps those are is a fold that edits site-packages.
     # THREE FLOORS, all pinned AT the measurement, and the reason each is:
     # `census_attributes` is the declared list itself — an entry deleted means
     # the rule has lost the thing it validates, and that is exit 2 rather than
@@ -6498,6 +6631,22 @@ rules:
       the entry — which is the same trade rule 30 declares in the other
       direction, and the trigger to derive is the first MCP seam that IS a
       private binding, at which point the ninja walk's own shape covers it.
+      AND THE LINEAR-MIGRATIONS HALF IS DECLARED AND NOT CHECKED HERE AT ALL —
+      the widest blind spot on this rule, so it is stated in the plainest words
+      available: `linear_migrations_internals_we_hold` is read by NO check.
+      `ninja_internals_census` names its two lists in code and a third is
+      invisible to it, so a name going stale in that list is invisible to this
+      rule and to the whole gate. Its instrument is a pair of tests —
+      `apps/core/tests/test_fold_migrations.py`'s
+      `test_the_linear_migrations_internals_we_hold_still_exist` (every
+      declared name still on the installed package) and
+      `test_the_command_really_imports_every_internal_it_declares` (every
+      declared name still held by the command) — which is the same division of
+      labour the wire tests have above, and is said here so nobody reads this
+      rule's green as covering the fold command. The trigger to fold the list
+      INTO the check is the first `quality/**` rung that widens the entry
+      grammar to a `library:` field, which is the same trigger the ninja half
+      already declares one paragraph up.
     # The recorded self-test population (see the header). Rising floor.
     selftest_floor: { canaries: 3, negatives: 3 }
     canaries:
@@ -8037,6 +8186,11 @@ rules:
       get_/list_ selector over a kind asks for that kind's read, and (e) asks
       for THAT kind's read rather than another's.
     check: authz_vocabulary_shape
+    # `--explain 54` prints clause (d)'s whole population for THIS tree — the
+    # key each read asks, where it resolves, who it 403s and the one line that
+    # opens it — so a product meeting the hard read rule at its own doors
+    # reads the list instead of rebuilding it.
+    census: quality.checks.reads_census
     django_check_ids: [djb.W054]
     doc: { file: docs/product/architecture.md, contains: "The vocabulary is one shape" }
     valve:
@@ -8165,6 +8319,32 @@ rules:
       exports.read: 0
       files.read: 0
       workflows.read-kind: 0
+    # THE FIX FORM, ONE PER FINDING CLASS (ADR gate-6). `--explain 54` prints
+    # these, and every finding this rule raises ends with the pointer to them.
+    # They say what to WRITE INSTEAD — a remedy that restated the statement
+    # would be the 7,000-line yaml the trailer exists to keep a reader out of.
+    remedies:
+      nonconforming: >
+        Do not rename the key in place — the old word stops answering for every
+        caller that already holds it. Add the old spelling to the owning app's
+        RENAMED_PERMISSIONS, which keeps it answering while the derived
+        `<kind>.<verb>` becomes the one the vocabulary holds; clauses (a) and
+        (b) have no valve and want none.
+      role-value: >
+        Ask the question of the DATA, not of the word: replace the role
+        comparison with holds(actor, "<kind>.<verb>", at=<the node this is
+        about>). Where the site genuinely IS about the word — the module that
+        owns the vocabulary — the valve is `# role-value: <reason>` on the
+        flagged line or in the comment block directly above it.
+      read: >
+        A public get_/list_ over a kind asks for THAT kind's read:
+        require(actor, "<kind>.read") inside the selector, with the kind the
+        selector returns (clause (e) is the same fix with the right kind — an
+        owned child asks for its aggregate's). A read that must stay open says
+        so with `# read-open: <reason>` opening a comment line in the
+        selector's own source, and a machine read over a non-model return says
+        `# read-kind: <kind>`; a sentence that merely mentions a marker is
+        prose, and prose is not a valve.
     does_not_cover: >
       WHETHER A CONFORMING KEY IS A GOOD KEY. A declared verb that MEANS
       create, update or delete — `invoice.make`, `export.request` — fits
@@ -8510,6 +8690,20 @@ rules:
       connections: 0  # W55-connections: the writes pass the root; the receiver's valve says system-only
       core: 4
       events: 0
+    # ONE FIX FORM FOR EVERY CLASS (ADR gate-6): this rule's classes are
+    # per-app, and the shape a finding asks for is the same in all of them, so
+    # `*` is the catch-all rather than a per-app line that says one thing
+    # twelve times. `--explain 55` prints it.
+    remedies:
+      "*": >
+        Pass the node the CALLER resolved as the third argument:
+        require(actor, "<kind>.<verb>", at=root_organization(tenant)) for a
+        tenant-wide kind, or a Name bound to one in the enclosing function, a
+        parameter annotated Organization, or an expression ending in
+        `.organization`. Where the acting hat really is the right node — a
+        predicate that measures the root itself — say so on the line with
+        `# hat-scoped: <reason>`; a bare one is its own finding, and every
+        honoured one is counted on this rule's status line.
     does_not_cover: >
       A NODE LAUNDERED THROUGH A LOCAL. The rule reads two bindings —
       `root_organization(...)` and a parameter annotated `Organization` — and a
@@ -8916,6 +9110,22 @@ rules:
     # bypasses the read set for every connection in the tenant — and the
     # `ImproperlyConfigured` text `kind_of_event` raises OFFERS that road while
     # the noun census accepts any `None`.
+    #
+    # AND THE THIRD CLASS (the amendment the owner SIGNED 2026-09-21).
+    # `kind_of_event` refuses a noun no app decided, and that refusal used to
+    # escape `emit()` INTO THE EMITTING SERVICE'S TRANSACTION: the consumer
+    # added an event name, forgot the `EVENT_KINDS` line, and lost the WRITE —
+    # six `apps/usage` service tests red, the doors 500ing, availability spent
+    # on a missing declaration. The amendment bends "it refuses rather than
+    # defaulting" for the UNDECIDED case only, because an undecided noun is a
+    # MISSING DECLARATION (this rule's own subject) and not a proven
+    # disagreement. It stays closed where it matters: the socket still delivers
+    # nothing (`consumers._may_read` catches the same refusal per frame and
+    # drops it), and the tree is still refused — HERE, once per noun, at the
+    # constant's own line. THE FINDING IS THE DRAFT: the walk already resolves
+    # the emit site's payload to an `Out` for class 1, and rule 16 pairs an
+    # `Out` with its model, so the message ends in the `EVENT_KINDS` line to
+    # paste rather than sending the reader to three files to derive it.
     statement: >
       An org-scoped event carries its branch, and an org-less kind names none.
       Every emit(name=<const>, payload=<expr>) site under apps/ whose noun
@@ -8925,8 +9135,16 @@ rules:
       module-local helper whose returns are one of those. And a noun an app maps
       to None in EVENT_KINDS while that app declares a model whose authorization
       kind IS that noun is a violation: a None kind is delivered to every
-      connection in the tenant regardless of the branch on the frame.
+      connection in the tenant regardless of the branch on the frame. And every
+      UPPERCASE <app>.<noun>.<past-verb> constant an app declares in its
+      events.py has a decided noun — one that is itself an authorization kind,
+      or a key of that app's EVENT_KINDS. An undecided noun is refused here,
+      once per noun, with the EVENT_KINDS line to paste; emit() commits the
+      write and the socket drops every frame of it.
     check: org_scoped_events_carry_their_branch
+    # `--explain 59` prints the third class's drafts as the per-app EVENT_KINDS
+    # block to paste, read back out of this rule's OWN findings — one walker.
+    census: quality.checks.undecided_noun_census
     doc: { file: docs/product/architecture.md, contains: "an org-scoped event carries its branch" }
     valve:
       marker: "<comment> rule-59: <reason>"
@@ -8938,11 +9156,23 @@ rules:
     # run it joins theirs. Measured: org_scoped_kinds 12, emit_sites 16,
     # none_mappings 1. The floors sit below the measurements for §I's reason — a
     # recogniser that stops seeing its own subject must trip a floor rather than
-    # report a clean nothing — and `none_mappings` is floored at 1 because the
-    # one declared None (`search.engine`) is the form the F5 class is about: if
-    # nothing in the tree maps a noun to None, this rule's second class is
-    # watching nothing.
-    floors: { org_scoped_kinds: 6, emit_sites: 10, none_mappings: 1 }
+    # report a clean nothing — and `none_mappings` is floored at 0 (lowered
+    # 2026-09-21). It was 1, and the 1 rested on a SINGLE site:
+    # `apps/search/events.py:82`'s `"engine": None`. `apps/search` is an
+    # ingredient app a product may not take, so the floor was a template
+    # measurement pretending to be a law — UNBOUND the moment somebody folds
+    # this template without `search`, which is exit 2 on a tree that has done
+    # nothing wrong. What keeps the F5 class honest is its own canary (3), which
+    # PLANTS a None mapping into the worked example every self-test run and must
+    # fire; a floor over a population one removable app supplies could only ever
+    # have been a second, weaker copy of that proof.
+    # `declared_names` is the third class's population — every
+    # UPPERCASE event-name constant in an app's `events.py`, the same list
+    # `apps.events.events.declared_names` builds at runtime and `introspect`
+    # publishes; measured 37, floored at 12 because a spine that has lost sight
+    # of most apps' `events.py` is a walk that cannot refuse an undecided noun,
+    # and `apps/events/tests/test_emit_undecided.py` pins the two lists equal.
+    floors: { org_scoped_kinds: 6, emit_sites: 10, none_mappings: 0, declared_names: 12 }
     does_not_cover: >
       A NAME THIS WALK CANNOT RESOLVE. `emit(name=name, ...)` — a parameter, an
       f-string, a lookup in a table (`STATUS_EVENTS[slug]`) — is out of the
@@ -8970,15 +9200,35 @@ rules:
       the key (F2.4) rather than by a deeper scan. AND THE SECOND CLASS READS
       DECLARATIONS: a noun with no model of that name is silent here whether or
       not a row is really behind it, which is `kind_of_event`'s refusal and the
-      noun census's job.
+      noun census's job. AND THE THIRD CLASS SEES DECLARED CONSTANTS ONLY: a
+      name built by f-string, assembled in a table, or passed to `emit` as a
+      parameter declares no noun in an `events.py` and is invisible here exactly
+      as it is to class 1 — `emit()`'s ERROR line
+      (`events.emit.kind_undecided`) and the socket's drop are what cover it,
+      which is why the amendment shipped the log line with the class. ITS DRAFT
+      IS A PROPOSAL, NEVER A RULING: the kind is derived from the FIRST emit
+      site whose payload the walk resolves to an `Out`, paired to a model by
+      rule 16's own `<Model>Out` convention, so a payload naming two schemas, a
+      schema pairing with no model (`ThresholdCrossingOut` — a computed shape,
+      not a row) or a noun emitted from two places with different bodies all
+      fall back to the `?` form, which asks for a decision rather than
+      guessing. And the nested clause reads ANNOTATIONS: an uncertified outer
+      `Out` mentioning a certified inner one is named in the draft, but an
+      outer schema that reaches an org-scoped row through a dict, a generic, or
+      a second module reads as absent — the fail-closed direction, and rule 38
+      is the half that keeps the key on the shape.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 3, negatives: 2 }
+    selftest_floor: { canaries: 4, negatives: 4 }
     canaries:
-      # (1) THE LIVE INSTANCE'S CLASS, in the app it was found in — an org-scoped
-      # noun announced with a hand-built body that omits the key.
-      # MOVE-TRIGGER 2026-09-16: `apps/usage` is the plant because the finding
-      # was there; move it the day `usage` stops emitting an org-scoped event.
-      - { fixture: a_hand_dict_with_no_branch.py, plant_at: apps/usage/services.py,
+      # (1) THE LIVE INSTANCE'S CLASS — an org-scoped noun announced with a
+      # hand-built body that omits the key. The finding was in `apps/usage`, and
+      # the form planted there for two cycles; the 2026-09-16 move-trigger is
+      # DISCHARGED 2026-09-21 for the reason the trigger could not see: an
+      # ingredient app is removable, so a plan resting on `usage`'s
+      # `EVENT_KINDS` proves nothing in a product that ships without it — the
+      # whole plan now lives in the worked example, where `WIDGET_CREATED` is an
+      # org-scoped noun this template cannot lose.
+      - { fixture: a_hand_dict_with_no_branch.py, plant_at: apps/example/services.py,
           mode: append, expect: { contains: "organization_id" } }
       # (2) THE LAUNDERING, one hop away. The walk follows a module-local
       # helper's returns because thirteen honest emit sites build their body in
@@ -8989,17 +9239,226 @@ rules:
       # (3) F5's class: a real row declared org-less.
       - { fixture: a_real_row_declared_org_less.py, plant_at: apps/example/events.py,
           mode: append, expect: { contains: "mapped to None" } }
+      # (4) the undecided class: a noun no app decided. `apps/example` per the
+      # cycle's canary-placement ruling — the app with one of everything, and
+      # the one whose `events.py` already carries this rule's other
+      # declaration canary.
+      - { fixture: an_undecided_noun.py, plant_at: apps/example/events.py,
+          mode: append, expect: { contains: "gizmo" } }
     negatives:
       # The demanded shape: the row's own rule-38-certified `Out`.
       - { fixture: the_demanded_shape.py, plant_at: apps/example/services.py, mode: append }
       # The helper hop, honest — the `comms._payload(message)` shape, which is
-      # what thirteen emit sites on this tree really write.
-      # MOVE-TRIGGER 2026-09-16: `apps/usage/services.py` for the canary's own
-      # reason — it is the app the finding was in, and the negative has to sit
-      # beside the canary it is the control for. It moves the day `usage`
-      # stops emitting an org-scoped event.
-      - { fixture: a_certified_body_through_a_helper.py, plant_at: apps/usage/services.py,
+      # what thirteen emit sites on this tree really write. It sits beside the
+      # canary it is the control for, so it moved with it 2026-09-21: the
+      # 2026-09-16 move-trigger is DISCHARGED for canary (1)'s reason.
+      - { fixture: a_certified_body_through_a_helper.py, plant_at: apps/example/services.py,
           mode: append }
+      # The `usage.threshold.crossed` shape: a noun that is not itself a kind,
+      # decided by its own app's EVENT_KINDS. The form class 3 is pushing every
+      # undecided noun towards — a rule that flagged it would refuse its remedy.
+      - { fixture: a_noun_its_app_decides.py, plant_at: apps/example/events.py, mode: append }
+      # The `search.engine.degraded` shape: a noun decided as None because no
+      # row is behind it. `None` is a DECIDED answer, and the case where a None
+      # is WRONG is class `none_mapping`'s — which needs a model of that name.
+      - { fixture: a_noun_decided_as_none.py, plant_at: apps/example/events.py, mode: append }
+
+  - id: "60"
+    name: template-owned-files-carry-no-product-edits
+    enabled: true
+    # THE FIRST CONSUMER'S FOLD IS THIS RULE'S WHOLE ARGUMENT. Merging v2.1.0
+    # cost them 94 merge conflicts, 21 of them inside `scripts/ quality/
+    # .github/`, and twelve commits whose entire content was re-applying local
+    # edits to template-owned files. The worst was silent in the WRONG
+    # direction: an 1800-line template file fast-forwarded byte-identical and
+    # took 1826 product lines with it, with no conflict to read at all.
+    #
+    # EVERY ONE OF THOSE EDITS WAS A LEGITIMATE PRODUCT CONCERN WITH NOWHERE TO
+    # LAND. So the rule has two halves and they are one decision: a
+    # template-owned file carries no product edits, AND every template folder
+    # that runs a list of things ships with the drawer that concern belongs in.
+    # A rule that only said the first half would be telling a product to stop
+    # doing something necessary.
+    statement: >
+      A template-owned file carries no product edits. Every template-owned path
+      whose content is not the declared template base's is a divergence, and a
+      divergence is legal exactly when the product's own architecture.md names
+      it — `divergence: <path> — <reason>`, one greppable line each.
+      And every template folder that runs a list of things ships with its
+      `local/` drawer, discovered, never written, never shipped: a product's
+      own leg, rule, fold step, drive or instrument row lands in the drawer
+      beside the template's list rather than inside it, absent is
+      byte-identical behaviour, and publish.sh's R0 refuses a tracked drawer
+      path at exit 2 so a release can never conflict with one.
+      THE LIST OF DRAWERS IS THIS RULE'S TEXT: the fenced `drawers` block in
+      docs/product/build-contract.md names, for every one of them, the drawer,
+      the ONE reader that opens it and the ONE drive case that plants an item
+      and proves the reader ran it — so a drawer this tree's own code opens
+      with no row, a row whose reader is not here, and a row whose case its
+      drive does not define are each a finding against the seam rather than a
+      gap nobody can see. A row marked `held` reserves a name against a rung
+      that has not landed: it is printed as held, and it becomes a finding the
+      day a template-owned file starts opening it.
+    check: template_owned_files_carry_no_product_edits
+    doc: { file: docs/product/build-contract.md, contains: "Template-owned, product-owned, shared — per path" }
+    # THE VALVE IS NOT A COMMENT, AND THAT IS THE POINT. Every other rule's
+    # valve is a sentence on the flagged line, inside the file. Here the file
+    # is one the template will move underneath the product at the next
+    # release, so a comment in it is a sentence that gets merged away — the
+    # exact failure this rule exists to catch, wearing the valve's clothes.
+    # The excuse belongs in the product's own decision record, which is where
+    # `divergence:` puts it, and the census reads that line as the valve.
+    valve:
+      none: "the valve is the `divergence: <path> — <reason>` line in the product's own architecture.md — a sentence a reviewer can disagree with, in the one file the template never touches, rather than a comment inside a file the next release will move underneath it"
+    scope: {}
+    # DERIVED, never typed: the owned population is every tracked and
+    # untracked-not-ignored path this tree has, classified through the
+    # publication bucket rules in `scripts/archaeology_lib.sh` — one
+    # classifier, shared with `scripts/publish.sh`'s release census. Measured
+    # on this tree: 755 template-owned paths, and 3 reserved drawer members —
+    # two globs and one exact path (`apps/conftest_local.py`, a `conftest.py`
+    # sibling pytest collects by name, which therefore cannot live under an
+    # `apps/local/` glob) — derived from the census's own list rather than
+    # typed beside it.
+    # The floor is deliberately well under the measurement: it binds the
+    # CLASSIFIER, and a classifier that stopped seeing `scripts/` (230 paths)
+    # or `quality/**` would trip it. `drawer_globs` is the second population
+    # and it is a different one: a member deleted from the reserved list
+    # narrows what the drawers protect, and that has to be a floor failure
+    # rather than a quieter census. The floor stays at 2 while the list holds
+    # 3 for the reason every floor here sits under its measurement — it binds
+    # the LIST, not this week's length of it.
+    # `drawer_rows` and `drawer_literals` are class (b)'s two populations and
+    # they are DIFFERENT ones, floored separately for the reason the drive
+    # authoring note gives: one floor over "drawers" would be satisfied by
+    # either side, so the table could empty while the tree still opened ten
+    # drawers, or every reader could vanish while the table still listed them,
+    # and one number would stay green through both. Measured on this tree: 12
+    # rows (10 live, 2 held) and 11 literals the template's own code opens.
+    # The floors sit under the measurement because they bind the SCAN — one
+    # that stopped seeing `scripts/` drops both at once — and not this week's
+    # length of either list.
+    floors: { template_owned_paths: 400, drawer_globs: 2, drawer_rows: 8, drawer_literals: 8 }
+    # THE MEMO IS DECLINED, and for the reason rules 23, 31, 35, 47 and 49
+    # decline it: this check reads `scripts/`, `quality/partition.yaml`, the
+    # whole git index and the product's own architecture.md, and the memo key
+    # is built from scope paths, the kind's walk (apps, config) and quality/**.
+    # A memoised answer here would be a verdict replayed for inputs the key
+    # cannot see.
+    memo: { "no": "the census reads scripts/, quality/partition.yaml, docs/product/architecture.md and the whole git index against a declared base — no scope kind's roots reach any of them, so a memo key built from them would replay a stale verdict" }
+    does_not_cover: >
+      THE DRAWERS THEMSELVES. This rule reads the ownership partition and
+      nothing else: that a template list actually DISCOVERS its `local/`
+      sibling — the gate's legs, the engine's rules, the fold's steps, the
+      lifecycle's classes, the drives and the instrument rows — is each seam's
+      own rung and each seam's own canary, and this rule would be green over a
+      tree in which not one of them did. Its second half is therefore a
+      statement of the contract those rungs are built to, enforced there.
+      THE BASE IS TAKEN ON TRUST: the census can tell that the declared ref
+      resolves, never that it is the release this product actually merged, so
+      a base pointing at the wrong tag makes every row below it wrong and
+      every row looks exactly the same. A RENAME reads as one deletion and one
+      addition, because the census compares paths and not content-similarity.
+      A DIVERGENCE INSIDE A PRODUCT-OWNED FILE is invisible by construction —
+      that is the partition working rather than a hole, and it is why the
+      drawer has to be real. THE REASON IS NOT READ: a `divergence:` line
+      naming a path makes that path silent, and whether the sentence beside it
+      is a good one is a reviewer's question, exactly as instruments.md's own
+      census checks that a citation has the SHAPE of a file:line and never
+      that the line says what the cell says. AND THE TEMPLATE'S OWN TREE IS
+      SKIPPED, with a printed line: it has no template, so it has no base, and
+      every canary below has to declare one before it can fire.
+      AND CLASS (b) DECLARES THREE OF ITS OWN. FIRST, IT IS A TEXT READ: it
+      asks that the reader's file carries the row's symbol and spells the
+      drawer's path, never that the symbol is what opens it — a reader that
+      opened the drawer and threw the members away would satisfy every clause
+      of it. That is what the THIRD class is for, and it lives in
+      quality/gate.py's `drawers_leg`, run by `python -m quality.gate
+      --selftest`, which runs the case each row names and
+      fails naming the drawer and the reader; this rule cannot run those cases
+      itself, because they cost minutes and this check runs on every --fast.
+      SECOND, A READER THAT SPELLS NO DRAWER LITERAL IS INVISIBLE: the
+      population is derived from the `local/` paths the template's own code
+      SPELLS, so a discovery assembled at run time out of pieces
+      (`"$dir/local/$kind"`) is a drawer this census cannot see, and a row for
+      it would be believed rather than checked. Every reader in the tree today
+      spells its drawer, and the drive is the belt.
+      THIRD, WHAT A ROW SAYS IN WORDS IS NOT READ: that the `what a product
+      extends` field describes the drawer, that a `held` row's reason is a
+      good one, and that a case plants into the drawer it is listed against
+      rather than merely passing, are reviewer questions — the same boundary
+      instruments.md's own census draws when it checks that a citation has the
+      SHAPE of a file:line and never that the line says what the cell says.
+    selftest_floor: { canaries: 4, negatives: 4 }
+    canaries:
+      # (1) THE CONSUMER'S OWN SHAPE: an edit inside a template-owned
+      # document. The extra file is what makes it visible at all — the base is
+      # declared in the drawer, which is a path the template can never ship
+      # (publish.sh R0), so planting it cannot collide with anything, and
+      # `HEAD` resolves in every checkout this will ever run in.
+      #
+      # THE PLANT SITE IS A STANDING DOCUMENT NOBODY EDITS WEEKLY, on purpose.
+      # A plant path is a path the self-test refuses to run over while it is
+      # dirty, so choosing `build-contract.md` or `architecture.md` here would
+      # tax every rung that touches a ledger-adjacent document.
+      - { fixture: a_product_edit_in_a_template_owned_file.md,
+          plant_at: docs/product/api-editorial-standard.md, mode: append,
+          expect: { contains: "the local/ drawer beside it" },
+          extra_files: [ { fixture: the_declared_template_base,
+              plant_at: scripts/local/template-base, mode: create } ] }
+      # (2) THE OTHER HALF OF THE POPULATION, and it is a different reader: a
+      # NEW file in a template-owned directory is untracked, so `git diff`
+      # drops it silently and only the census's own untracked arm sees it.
+      # Without this form that arm could be deleted and every canary here
+      # would still fire.
+      - { fixture: a_product_file_in_a_template_owned_directory.sh,
+          plant_at: scripts/a_product_stage_leg.sh, mode: create,
+          expect: { contains: "the local/ drawer beside it" },
+          extra_files: [ { fixture: the_declared_template_base,
+              plant_at: scripts/local/template-base, mode: create } ] }
+      # (3) CLASS (b), FORM 1: A DRAWER NOBODY WROTE DOWN. No base is
+      # declared, deliberately — class (a) is skipped on a tree with no
+      # template and class (b) must still fire, because that is the state this
+      # repository is permanently in and the state every product is in before
+      # its first fold.
+      - { fixture: a_runnable_list_with_no_drawer_row.sh,
+          plant_at: scripts/a_product_stage_runner.sh, mode: create,
+          expect: { contains: "scripts/local/stage.d" } }
+      # (4) CLASS (b), FORM 2: A ROW WITH NO READER — and it plants into the
+      # rule's own TEXT, the one plant site that could not have been anywhere
+      # else. The cost is real and taken deliberately: a plant path is a path
+      # the self-test refuses to run over while it is dirty, so a rung editing
+      # the build contract now commits before it can run one. The alternative
+      # was a canary that cannot reach the table the rule IS, which is the
+      # same as not having one.
+      - { fixture: a_drawer_row_whose_reader_is_not_in_the_tree.md,
+          plant_at: docs/product/build-contract.md, mode: append,
+          expect: { contains: "is not in this tree" } }
+    negatives:
+      # (1) THE CONTROL FOR CANARY 2, byte-for-byte, moved into the drawer.
+      # This is the whole convention in one pair: the same file, one directory
+      # over, is a divergence or it is nothing.
+      - { fixture: a_product_file_in_the_drawer.sh,
+          plant_at: scripts/local/legs/a_product_stage_leg.sh, mode: create,
+          extra_files: [ { fixture: the_declared_template_base,
+              plant_at: scripts/local/template-base, mode: create } ] }
+      # (2) THE CONTROL FOR THE SKIP: canary 1's plant with NO base declared.
+      # A rule that fired here would have invented a base for a tree that has
+      # none, which is the one thing a census must never do — and it is the
+      # state THIS repository is permanently in.
+      - { fixture: a_product_edit_with_no_base_declared.md,
+          plant_at: docs/product/api-editorial-standard.md, mode: append }
+      # (3) THE CONTROL FOR CLASS (b) FORM 1: the same script, one drawer over.
+      # A template-owned file may open a drawer all day — that is the
+      # convention working — and the difference between a finding and nothing
+      # is one row.
+      - { fixture: a_runnable_list_whose_drawer_has_its_row.sh,
+          plant_at: scripts/a_product_stage_runner.sh, mode: create }
+      # (4) THE CONTROL FOR THE `held` STATE. Without it a reserved name and a
+      # broken row are the same thing to this rule, and `held` is decoration
+      # on the two rows the table really carries.
+      - { fixture: a_held_row_reserves_a_name_nothing_opens.md,
+          plant_at: docs/product/build-contract.md, mode: append }
 
 # THE PEER-FORK MIGRATION PATH (rules 51-53, the redemption item for the
 # living-workaround finding of the FEEDBACK-2 survey). That finding recorded

@@ -5,6 +5,17 @@ are settled; do not reopen them. Where a product cloned from this template
 needs to diverge, it records the divergence in *its own* `architecture.md`
 with the reason, so the template's defaults stay legible.
 
+**A template-owned file a product edits is a divergence they record, and the
+grammar is one greppable line:** `divergence: <path> — <reason>`, in the
+product's own copy of this file, one line per path. Which paths are
+template-owned is `docs/product/build-contract.md` § Ownership, per path;
+`scripts/divergence_census.sh` is the reader that holds the two together — it
+lists every template-owned path whose content is not the declared base's, exits
+1 on one this file does not name, and prints the line to add. A divergence is a
+decision, not a defect; an UNRECORDED one is a merge conflict with a countdown
+on it, and the first consumer paid twelve of them in one fold (ADR
+platform-extension-1).
+
 Ruling summary: API layer (ninja) · tenancy on by default, shared
 schema · bring your own front end · day-zero stack (Redis, Channels, ASGI, MCP)
 · Temporal from the start · services + selectors · audit trail on by default ·
@@ -627,7 +638,7 @@ ceremony already in flight — so a half-authenticated session is never left on
 the identity platform for a person who did not finish. `_forget` is the one
 place that closes, and every road leaves through it.
 
-**PROPOSED — awaiting the owner's signature.** *The amendment*: on the Mode A
+**SIGNED by the owner 2026-09-19 ("sign all three", recorded by the PM).** *The amendment*: on the Mode A
 road (design C-10), a ceremony that FINALIZED an OIDC auth request leaves its
 session open to the platform's own lifetime. *Which principle bends*:
 principle 18 (least privilege, minimum necessary lifetime) and this ADR's own
@@ -881,6 +892,49 @@ trains people to override the gate). *Trigger to revisit*: the first
 ephemeral and its declaration should change with them; or the
 unrecognised-shape exit 2 firing, which means a machinery class exists that
 nobody declared.
+
+**ADR platform-extension-1 · a product extends the system layer by DECLARING
+beside it, never by editing it.** *PROPOSED 2026-09-21 — the owner chose this
+shape; the signature lands at CLOSE.* *Context*: the first
+consumer's fold of v2.1.0 cost 94 merge conflicts, 21 of them inside
+`scripts/ quality/ .github/`, and twelve commits whose entire content was
+re-applying local edits to template-owned files; the worst was silent in the
+wrong direction — an 1800-line template file fast-forwarded byte-identical and
+took 1826 product lines with it, with no conflict to read. Every one of those
+edits was a product-owned CONCERN with no seam to land in. *Decision*: every
+extensible template directory has a `local/` sibling the template's own reader
+discovers and the template NEVER ships (`publish.sh` § R0, which refuses a
+tracked `**/local/**` or `*.local.md` at exit 2) —
+`scripts/local/{legs,drives,fold.d,lifecycle.d,hooks}/`, `quality/local/`, and
+a `.local.md` sibling beside a template document that carries a per-product
+list. A declaration carries a versioned header; ABSENT is byte-identical
+behaviour and MALFORMED is exit 2, never a quiet skip. The per-path ownership
+classes land in `docs/product/build-contract.md` § Ownership, and an edit to a
+template-owned path is a divergence `scripts/divergence_census.sh` refuses
+unless the product's own `architecture.md` names it. *Rejected*: a
+`pyproject.toml` registry of legs (a shared file no rung may edit, and the
+declaration would live away from the thing it declares) · fork-and-rebase
+doctrine (it re-pays the conflicts every release, grows with the product's age,
+and git's worst case here was the SILENT one) · a `ci.local.yml` (not a GitHub
+primitive; a second workflow file is already conflict-free) · a sourced
+`check.local.sh` that may redefine functions (a judge, not an instrument —
+check-v1's law) · a `template_sync.sh` now (its trigger, three products, has
+not fired). *Trigger to revisit*: a second product's fold shows a seam these
+six miss, or three products exist.
+*AS BUILT 2026-09-21*: house rule 60 carries the decision in three
+canary classes, and the fenced `drawers` block in
+`docs/product/build-contract.md` is its ONE reader. **(a)** a product edit in a
+template-owned path → `scripts/divergence_census.sh`'s exit-1 finding, by path.
+**(b)** the table against the tree: a drawer the template's own code opens with
+no row, a row whose reader is not here, a row whose case its drive does not
+define — each a finding at every gate, the population of drawers DERIVED from
+the `local/` paths the code spells rather than typed beside the table. **(c)**
+at `--selftest`, one planted item per drawer, run through the drive case the
+row names (`--case`, the seam every drive under `scripts/tests/` now carries),
+so a reader that opens its drawer and ignores what is in it is exit 2 naming
+the drawer and the reader. A `held` row reserves a name for a rung that has not
+landed and is printed as held; it becomes a finding the day a template-owned
+file opens it.
 
 **ADR platform-lifecycle-2 · one mechanism, one rung, two apps.**
 *Context*: the fix changes the `SCHEDULES` seam in `apps/workflows` (which owns the
@@ -1278,8 +1332,7 @@ a different order. `-n auto` is applied in the gate legs and deliberately not
 in `addopts`: every worker creates and migrates its own database, so a default
 would make running one test file pay one database creation per core.
 
-**Amended 2026-09-18 (owner ruling, PROPOSED — awaiting the owner's
-signature).** *Which principle bends:* 7 — the critical synchronous path
+**Amended 2026-09-18 (owner ruling, SIGNED by the owner 2026-09-19 ("sign all three", recorded by the PM)).** *Which principle bends:* 7 — the critical synchronous path
 carries no unnecessary dependency — and gate-1's own "two passes on one
 machine": under `pm_push.sh --bank --on-boxes N` the sharded `pytest-x2` unit
 runs **one** pass (`--passes 1`) and the whole-suite two-pass leak proof runs
@@ -1398,6 +1451,81 @@ sampled canary corpus is a corpus with a hole somebody has to remember).
 Revisit when a dead canary is traced to a merge and the delay to push
 actually cost work, or when the selftest's wall time falls below ~10s.
 
+**ADR gate-5 · PROPOSED · rule ids are two namespaces.** *Proposed 2026-09-21
+(P21, team D, rung D1). The owner chose option A in the rule-id ruling of
+2026-09-21; the signature that turns this line into "Accepted" is the PM's
+ritual at the cycle's CLOSE.* *Context:* house-rule ids were one integer
+sequence the template and a product both appended to; a fold merged duplicate
+ids and fixture dirs (`canary/54` = theirs + ours), exit 2 at the product's
+first gate, renumbered by hand each release. *Decision:* only the
+template mints integers; a product declares `rule_id_namespace: <ns>` once and
+its rules are `<ns>-<n>` in id, fixture dir, valve and check tag; the engine
+refuses any other shape and any fixture file no entry claims. *Rejected:* an
+integer range (unrefusable), allocation at publish (renumbers the product), a
+second file alone (no grammar, a moved rule still collides). *Trigger:* a
+product with two namespaces.
+
+*Amended (rung X3, 2026-09-21): the two keys' HOME is
+`quality/local/rules.yaml`, the product's drawer, and the engine refuses either
+of them in the template-owned `quality/rules.yaml` with the line that names the
+move.* D1 wrote them into `quality/rules.yaml` because the drawer did not exist
+yet; a declaration in a file a fold overwrites is a declaration that disappears
+at the next release, which is the same failure the namespace itself exists to
+end, one file up. Everything else about gate-5 is unchanged — the grammar, the
+four spellings, the refusals and the residence split.
+
+*As built (rung D1), the two places the decision above needed one more
+sentence, both recorded rather than implied:* **(a)** a shape wall alone cannot
+refuse a product that types a bare integer — an integer is the template's legal
+shape and nothing else on the tree says which integers the template minted — so
+the declaration is two keys, `rule_id_namespace: <ns>` beside
+`template_rule_ids_through: <n>` (in `quality/local/rules.yaml`, per the
+amendment above), the second being the highest integer the
+folded template release had minted. It is `quality/partition.yaml`'s and
+`FROZEN_FAMILIES`' pattern (a record of the past, in a diff a human reads), the
+template never carries it, and the template's self-test prints the number a
+product should record on every run. **(b)** the residence census counts TEMPLATE
+ids only (D4), so `selftest_residence_backlog` stays a template fact a product
+folds and never retypes, and a product's own rules are counted against zero.
+
+**ADR gate-6 · PROPOSED · an unmeasured class says how to be recorded.**
+*Proposed 2026-09-21 (P21, team D, the ratchet rung). The owner chose option B in the
+ratchet ruling of 2026-09-21; the signature that turns this line into
+"Accepted" is the PM's ritual at the cycle's CLOSE.* *Context:* per-app ratchet
+classes name only the template's apps; a product's app had no class and the
+hook was unpassable until the product reverse-engineered the grammar.
+*Decision:* an app outside the partition with no recorded class is unmeasured —
+a violation that prints the exact `ratchets:` line, `recorded-at <sha> [fold]`,
+down-only afterwards; partition apps stay zero by absence; ratcheted rules
+carry `remedies:` that `--explain` prints. *Rejected:* self-recording (no
+hand), note-only (green-because-unrecorded), a template-wide zero for products
+(the hook stays unpassable). *Trigger:* F's overlay file.
+
+*Amended (rung X3F, 2026-09-21): the line the unmeasured finding prints is
+pasted into `quality/local/rules.yaml` — the product's drawer (P21 EP2) —
+under its top-level `ratchets:`, keyed `"<rule id>": {<class>: <n>}`, and every
+note that offers a human a number to commit names whichever of the two files
+that class's count actually lives in. The decision's `quality/rules.yaml` is
+template-owned and a fold overwrites it.* *And the decision's "ratcheted rules
+carry `remedies:`" is, as built, rules 54 and 55 only: nine other ratcheted
+rules carry none, `--explain` prints the key where it exists, and widening the
+population is a rung of its own rather than a sentence here.*
+
+*As built (rung D3), the three places the decision above needed one more
+sentence, each recorded rather than implied:* **(a)** a ratchet class is
+app-keyed only when the FINDINGS say so — every finding in the class sits under
+`apps/<label>/` for the label its key opens with — because `nonconforming` and
+`secrets` are class names and a predicate reading the key alone would offer to
+record an app nobody has (`unmeasured_app`, `quality/gate.py`); the plan's own
+blind spot, that 54's `nonconforming` gets no unmeasured form, is this
+derivation's price and is kept. **(b)** an entry recorded at `0` is a
+MEASUREMENT and takes the ordinary path; only an ABSENT key is unmeasured, so
+the engine reads the recorded key set and not `get(klass, 0)`. **(c)** the
+partition is read through `quality/partition.py`, and a lockfile that will not
+read shuts the branch rather than emptying the app list — an empty partition
+would make every app on the tree a product's and turn one missing file into a
+refusal storm; it is exit 2 on its own line instead.
+
 **ADR core-26 · `core` says what happened, through the bridge.** *Accepted
 2026-09-15 (P20, P4).* *Context*: `core` emitted no events at all. It sits
 BELOW `apps/events` in the layer contract (rule 7), so it may not import the app
@@ -1465,6 +1593,52 @@ nothing* — the 288-cell census in `apps/core/tests/flat_product_baseline.json`
 is the proof, and 0 write cells moved when it was re-derived. *Trigger to
 revisit*: the first product that wants per-FAMILY read precision in the token
 echo, or the first family-shaped withhold.
+
+**ADR core-28 · a template migration is grafted onto the product's leaf by a
+command, never by hand.** *PROPOSED 2026-09-21 (P21, team D, decision D2 —
+the owner chose option A; the signature at CLOSE).* *Context*: a product that
+added migrations to `core`/`accounts` met each release's numbered ancestors
+twice — a leaf fork and, after one fold, ancestors it had renamed — and
+reparented by hand under `django-linear-migrations`' refusal.
+`rebase_migration` moves exactly ONE migration and cannot see a chain or a
+renamed ancestor at all. *Decision*: `manage.py fold_migrations <app>` grafts
+the arriving chain from the `max_migration.txt` conflict onto the product's
+leaf, resolving a renamed ancestor by stem suffix, refusing an applied
+migration or an ambiguous stem; template files stay Django-native; stems are
+unique per app by test; a new product is advised to extend template apps from
+its own. It subclasses `rebase_migration`'s `Command` rather than replacing it
+(principle 2), and the library internals that makes it hold are declared in
+house rule 44's `linear_migrations_internals_we_hold`. The direction is the
+INVERSE of the library's: `rebase_migration` moves yours onto theirs, the fold
+moves theirs onto yours, so the markers are read positionally and the library's
+merge-time swap is undone. *Rejected*: named-ancestor spelling in template
+migration files (non-native, regenerated away by `makemigrations`, and no fix
+for the leaf fork); forbidding product migrations in template apps
+(unadoptable by the consumer that exists — it already holds `core` 0018–0023).
+*The cross-app gap, declared rather than closed*: a dependency from ANOTHER
+app onto a migration the fold renumbered — `("accounts", "0008_identity_branding")`
+written in `apps/comms/migrations/…` while the fold made it
+`0010_identity_branding` — is left exactly as written. Stem resolution runs
+only within the app being folded, because a stem is unique per app and nothing
+here is entitled to edit another app's files; Django's own loader then raises
+`NodeNotFoundError` naming both ends at the next `migrate` or `manage.py
+check`. **Loud, and never wrong** — which is why it is a declared gap and not a
+silent one: the operator folds the other app too, or repoints that one
+dependency by hand. Closing it (a tree-wide pass that rewrites cross-app
+tuples) is queued in `queue.md`, not decided here.
+*Reversible*: `git checkout -- <app>/migrations && git clean -f
+<app>/migrations` undoes a run (principle 6) — **both halves**, because a
+rename leaves the new filename as an UNTRACKED file, so a checkout alone
+restores the old chain and leaves the grafted copies beside it — and
+`--dry-run` prints the plan before anything moves.
+*Refused, not attempted*: a stopped `git rebase`. Under one, HEAD is the
+upstream and `MERGE_HEAD` does not exist, so the library's merge-time swap does
+not happen and this command's un-swap does not either; the two inversions
+cancel and the fold would renumber the PRODUCT's chain onto the template's
+leaf, silently. `REBASE_HEAD` is read before the markers are, and the command
+exits 2 saying so. *Trigger to revisit*: a squashed
+template migration (house rule 6's gap), or a product that wants the fold to
+run across every app at once rather than one app at a time.
 
 ### Enforcement design ("fold it in")
 
@@ -2108,6 +2282,66 @@ modules; the **value** rather than the key (a wrong branch is
 `_subject_organization`'s refusal, not a shape); and a nested certified `Out`,
 which is why the crossing is fixed by giving the **outer** schema the key.
 
+**AMENDMENT — an undecided noun is the gate's refusal, not `emit()`'s. SIGNED by
+the owner 2026-09-21.** *What it bends:*
+`kind_of_event`'s "it refuses rather than defaulting", for the UNDECIDED case
+only — a noun that is no authorization kind and that its app's `EVENT_KINDS`
+does not decide. *Why the default was insufficient:* that refusal escaped
+`emit()` into the **emitting service's transaction**, so a product that added an
+event name and forgot one declaration line lost the **write** the event was
+about and its doors answered 500 — availability spent on a missing declaration,
+measured by the consumer on `apps/usage` (six `test_services.py` cases red, every
+one a rolled-back recording). An undecided noun is a *missing declaration* — this
+rule's own subject — and not a *proven disagreement*, and refusing it per emit
+both rolls back the product's writes and duplicates a census the gate already
+runs. *What changed:* the write **commits**, the `Event` row is written with the
+noun undecided, the branch is stamped from the payload's top-level key exactly
+as any other event's is, the dispatch is enqueued, and
+`events.emit.kind_undecided` is logged at ERROR carrying the remedy. *What stays
+closed:* the socket never delivers an undecided frame —
+`consumers._may_read` catches the same `ImproperlyConfigured` per frame and
+drops it (`realtime.frame.kind_undecided` at ERROR) — and **the two proven
+refusals above are untouched**, because those are the two things
+`kind_of_event` can prove. *Where the refusal went:* rule 59's third class,
+`undecided_noun`, which refuses the tree once per undecided noun **at the
+constant's own line and carrying the `EVENT_KINDS` line to paste** (`--explain
+59`); its population is every UPPERCASE `<app>.<noun>.<past-verb>` constant in
+an app's `events.py`, floored at `declared_names: 12` and pinned equal to the
+runtime census by `apps/events/tests/test_emit_undecided.py`. *Rejected:* keeping
+the raise and adding a draft command (the write still rolls back, and it is a
+second walker); defaulting an undecided noun to `None` (that is F5's defect —
+a `None` kind is delivered to every connection in the tenant); a management
+command walking the emit sites (`quality.checks` reached from `apps/`, which
+`apps/core/tests/test_roles_are_keys.py` rules against). *Trigger to revisit:*
+the first product that ships an undecided noun past a red gate — sockets silent
+for it, `events.emit.kind_undecided` in the logs and nobody reading them.
+*Reversible:* restore the raise in
+`_refuse_a_branch_that_disagrees_with_the_name` and disable class 3; the two
+proven refusals and every other behaviour are untouched by either direction.
+
+60. **A template-owned file carries no product edits** (ADR
+platform-extension-1, and `build-contract.md` § Ownership is the per-path
+table). Every template-owned path whose content is not the declared base's is a
+divergence, and a divergence is legal exactly when the product's own
+`architecture.md` names it — `divergence: <path> — <reason>`, one greppable
+line each. **And every template folder that runs a list of things ships with
+its `local/` drawer, discovered, never written, never shipped**: a product's
+own leg, rule, fold step, drive or instrument row lands in the drawer beside
+the template's list rather than inside it, absent is byte-identical behaviour,
+and `publish.sh` § R0 refuses a tracked drawer path at exit 2 so a release can
+never conflict with one. The check is `scripts/divergence_census.sh` against
+the declared base — `DJB_TEMPLATE_BASE`, `scripts/local/template-base`, or the
+`template` remote's `v$(TEMPLATE_VERSION)` tag, in that order — and **a tree
+with no declared base is SKIPPED with a printed line**, which is the template's
+own shape: it has no template. Declared blind spots: the DRAWERS THEMSELVES are
+not read here — that a template list actually discovers its `local/` sibling is
+each seam's own rung and its own canary, and this rule would be green over a
+tree where not one of them did; the base is taken on trust (the census can tell
+that the declared ref resolves, never that it is the release this product
+merged); a rename reads as a deletion plus an addition; and a divergence inside
+a product-owned file is invisible by construction, which is the partition
+working rather than a hole.
+
 
 ## App map — data portability
 
@@ -2611,10 +2845,10 @@ as "ADR gate-4".
   **a second architecture or a second registry** (a product deploying to
   something other than one ECR account) — `DJB_IMAGE_REGISTRY` is one prefix
   today and that is deliberate, not permanent.
-- **ADR deploy-4a — PROPOSED — owner's signature pending.** The text below is
+- **ADR deploy-4a — SIGNED by the owner 2026-09-19 ("sign all three", recorded by the PM).** The text below is
   the amendment as the engineering lead wrote it, copied here unchanged for the
   owner to sign; nothing in it is settled until they do, and the builder who
-  copied it may not flip this line. *"ADR deploy-4a (2026-09-\_\_, owner) — the
+  copied it may not flip this line. *"ADR deploy-4a (2026-09-19, owner) — the
   image is built by the acceptance box of the on-box bank, from the banked
   tree, after the composed verdict row is written and before the boxes go down;
   CI's `images` job keeps `needs: verdict` and skips a tag the registry already

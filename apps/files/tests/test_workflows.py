@@ -46,6 +46,7 @@ from apps.files import activities, services, storage
 from apps.files.meters import STORAGE_BYTES
 from apps.files.models import PENDING_UPLOAD_TTL_HOURS, FileVersion, StoredFile
 from apps.files.types import FinalizeUpload, StoreMeasurement
+from apps.files.workflows import VERIFY_RETRY
 from apps.usage.models import UsageEntry
 from apps.workflows import client as client_module
 from apps.workflows.client import (
@@ -297,6 +298,20 @@ async def test_confirming_an_upload_that_never_happened_fails_loudly_and_meters_
     ticket = await run_db(_filed, tenant, owner, root_org)
     expected = workflow_id(tenant=tenant, app="files", noun="version", key=str(ticket.version.pk))
 
+    # **The attempts are counted, not assumed.** `VERIFY_RETRY` says five, and
+    # until this list existed nothing here could tell five attempts from one:
+    # the version stays `PENDING` and the run reads `failed` either way. The
+    # store still answers for real — this only records that it was asked — which
+    # is what keeps "the verification fails against the real store" true.
+    attempts: list[int] = []
+    real_head = storage.head
+
+    def counted_head(**kwargs: Any) -> Any:
+        attempts.append(1)
+        return real_head(**kwargs)
+
+    monkeypatch.setattr(storage, "head", counted_head)
+
     async with await WorkflowEnvironment.start_time_skipping() as env:
         client = await _local_client(env, monkeypatch)
         async with build_worker(client):
@@ -309,6 +324,10 @@ async def test_confirming_an_upload_that_never_happened_fails_loudly_and_meters_
             )
             with pytest.raises(WorkflowFailureError):
                 await client.get_workflow_handle(expected).result()
+
+    assert len(attempts) == VERIFY_RETRY.maximum_attempts == 5, (
+        f"the object was headed {len(attempts)} times, not the five VERIFY_RETRY declares"
+    )
 
     unchanged = await run_db(lambda: FileVersion.objects.get(pk=ticket.version.pk))
     assert unchanged.status == FileVersion.Status.PENDING

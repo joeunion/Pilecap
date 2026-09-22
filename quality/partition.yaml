@@ -61,6 +61,7 @@ closure_classes:
     members:
       - apps/__init__.py
       - apps/conftest.py
+      - apps/conftest_local.py
       - apps/test_gate_liveness.py
       - apps/test_temporal_guard.py
     why: >-
@@ -69,7 +70,20 @@ closure_classes:
       invalidates the partition, which is correct, because it changed machinery
       the banked verdict ran on. A product extends fixtures in its own app's
       `tests/conftest.py`, which pytest scopes by directory ancestry and the
-      platform tests never load. The two top-level test modules are platform
+      platform tests never load — or, for a fixture every one of its apps
+      needs, in `apps/conftest_local.py`, the drawer `apps/conftest.py`
+      discovers and loads as a plugin. THAT DRAWER IS A MEMBER HERE, and the
+      reason is measured rather than tidy: a plugin is loaded for the WHOLE
+      session, so an `autouse=True` fixture in the drawer runs inside every
+      PLATFORM test too — one was planted and it errored
+      `apps/core/tests/test_refusals.py`. A product's drawer therefore CAN
+      change the platform suite's answer, and a closure that did not see it
+      would go on vouching for a verdict whose suite had just changed. The
+      earlier claim that a drawer "never invalidates a banked verdict" cannot
+      be honoured honestly and is withdrawn. The literal costs nothing while
+      it is absent, which in the template it always is (the manifest's
+      reserved paths keep it from ever shipping); present, it moves the key,
+      which is the correct answer. The two top-level test modules are platform
       tests outside any app directory.
   - id: C3
     what: config/**

@@ -108,6 +108,25 @@ NORTH_STAR = ROOT / "docs/product/north-star.md"
 REGISTER = ROOT / "docs/product/goal-posts.md"
 ENVELOPE = ROOT / "docs/product/scale-envelope.md"
 CENSUS = ROOT / "docs/product/instruments.md"
+# THE PRODUCT'S HALF OF THE CENSUS, AND IT IS A DRAWER (ADR platform-extension-1).
+#
+# The population `--census` derives is every executable in the tree, which on a
+# PRODUCT includes every instrument the product wrote — and the only place to
+# write its row was `instruments.md`, a template-owned file. So a product that
+# grew one seed script owed an edit to a document it does not own, and paid for
+# it at the next release: the first consumer's `instruments.md` was byte-for-byte
+# the template's (R2, measured in the v2.1.0 fold) and their own executables were
+# uncensused, which is exit 2 on every `--fast` they ran.
+#
+# `docs/product/instruments.local.md` is the same table with the same five
+# columns, read beside the template's; a path may have a row in ONE of the two
+# and never in both. Absent, this reader does nothing and the output is
+# byte-identical to a tree that has never heard of it — the negative
+# `test_scripts_census.sh::case_the_product_census_document_is_read_beside_the_templates`
+# asserts it by comparing the two renderings, not by reading this paragraph.
+# The template never ships a `*.local.md` (`publish.sh` § R0), so a release can
+# never conflict with one.
+CENSUS_LOCAL = ROOT / "docs/product/instruments.local.md"
 
 
 class CannotLook(Exception):
@@ -764,24 +783,51 @@ def population() -> list[str]:
     return sorted(found)
 
 
-def census(text: str) -> tuple[int, list[str]]:
-    rows = read_table(text, "Instrument", "instruments.md")
-    listed: dict[str, list[str]] = {}
+def _census_rows(text: str, where: str, into: dict[str, list[str]]) -> int:
+    """Read one census document's `Instrument` table into `into`. Returns its row count.
+
+    A path may be claimed by exactly one document. Two rows for one path is
+    CannotLook naming the path and both files: the two would disagree the day
+    one of them was edited, and nothing downstream could say which was meant.
+    """
+    rows = read_table(text, "Instrument", where)
+    n = 0
     for cells in rows:
         if len(cells) < 5:
             raise CannotLook(
-                f"instruments.md: row `{cells[0] if cells else ''}` has {len(cells)} columns, "
-                f"want 5"
+                f"{where}: row `{cells[0] if cells else ''}` has {len(cells)} columns, want 5"
             )
         m = re.search(r"`([^`]+)`", cells[0])
         if m is None:
-            raise CannotLook(f"instruments.md: row `{cells[0]}` names no `path` in its first cell")
-        listed[m.group(1)] = cells
+            raise CannotLook(f"{where}: row `{cells[0]}` names no `path` in its first cell")
+        path = m.group(1)
+        if path in into:
+            raise CannotLook(
+                f"{where}: `{path}` already has a row in {CENSUS.name} — an instrument is "
+                f"censused in exactly one of the two documents, and a product's own rows "
+                f"belong in {CENSUS_LOCAL.name}"
+            )
+        into[path] = cells
+        n += 1
+    return n
+
+
+def census(text: str, local_text: str | None = None) -> tuple[int, list[str]]:
+    listed: dict[str, list[str]] = {}
+    _census_rows(text, "instruments.md", listed)
+    template_rows = len(listed)
+    local_rows = 0
+    if local_text is not None:
+        local_rows = _census_rows(local_text, CENSUS_LOCAL.name, listed)
 
     derived = population()
     uncensused = [p for p in derived if p not in listed]
     ghost = [p for p in listed if p not in derived]
-    out = [f"census: {len(derived)} instruments derived, {len(listed)} rows in {CENSUS.name}"]
+    out = [f"census: {len(derived)} instruments derived, {template_rows} rows in {CENSUS.name}"]
+    # APPENDED AND NOT FOLDED INTO THE LINE ABOVE, so a tree with no drawer
+    # prints exactly the bytes it printed before this reader existed.
+    if local_text is not None:
+        out.append(f"  and {local_rows} product row(s) in {CENSUS_LOCAL.name}")
     for p in uncensused:
         out.append(f"  uncensused: {p}")
     for p in ghost:
@@ -941,6 +987,41 @@ def _instruments_text_with(row: str) -> str:
     raise CannotLook(
         f"selftest: {CENSUS.name} has no `Instrument` table to plant a row in — the planted "
         f"population cases have nothing to plant into"
+    )
+
+
+#: THE DRAWER CANARY'S VICTIM, and it is its own: a path nothing in this
+#: repository has ever had, under the drawer the template never ships, planted
+#: and deleted inside one case. `+x` because the population's whole test is the
+#: working tree's mode bit.
+CANARY_DRAWER_INSTRUMENT = "scripts/local/drives/test_zzz_drawer_canary.sh"
+
+
+def _plant_drawer_instrument() -> pathlib.Path:
+    target = ROOT / CANARY_DRAWER_INSTRUMENT
+    if target.exists():
+        raise CannotLook(
+            f"selftest: {CANARY_DRAWER_INSTRUMENT} already exists — the drawer canary writes "
+            f"exactly there and restores by DELETING, which would take somebody's file with it"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "#!/usr/bin/env bash\n"
+        "# A planted canary — `--selftest` writes it, judges it and deletes it.\n"
+        ". scripts/tests/drive_preamble.sh\n"
+        "exit 0\n"
+    )
+    target.chmod(0o755)
+    return target
+
+
+def _local_census_fixture(row: str) -> str:
+    """A minimal `instruments.local.md` carrying exactly one row."""
+    return (
+        "# instruments.local.md — this product's own instruments\n\n"
+        "| Instrument | Fails loud? | Says what it saw? | States its blind spots? | Finding |\n"
+        "|---|---|---|---|---|\n"
+        f"{row}\n"
     )
 
 
@@ -1161,7 +1242,7 @@ def selftest() -> int:
     print("")
     print("--- the census re-deriver on this tree ---")
     try:
-        ccode, clines = census(_read(CENSUS))
+        ccode, clines = census(_read(CENSUS), _census_local_text())
     except CannotLook as e:
         ccode, clines = 2, [f"CANNOT LOOK — {e}"]
     for ln in clines:
@@ -1237,6 +1318,81 @@ def selftest() -> int:
             present=f"verdict grammar, name outside the population: {by_grammar}",
         )
 
+    # --- THE PRODUCT'S DRAWER, DRIVEN THE SAME WAY ---------------------------
+    #
+    # The three cases above prove the population sees a planted COMMAND; these
+    # prove the two census DOCUMENTS are read as one. Same shape and the same
+    # rules: a real file planted in the real tree (an untracked executable is in
+    # the population by construction — `tracked_and_new` reads
+    # `git ls-files --others --exclude-standard`), judged, and deleted under
+    # try/finally; the planter refuses a path that already exists rather than
+    # clobber a file it could not restore honestly.
+    print("")
+    print("--- the product's own census document, with an executable planted in its drawer ---")
+
+    def drawer_case(
+        name: str,
+        want: int,
+        local_text: str | None,
+        absent: str = "",
+        present: str = "",
+    ) -> None:
+        planted: pathlib.Path | None = None
+        try:
+            planted = _plant_drawer_instrument()
+            code, lines = census(_read(CENSUS), local_text)
+        except CannotLook as e:
+            code, lines = 2, [f"CANNOT LOOK — {e}"]
+        finally:
+            if planted is not None:
+                planted.unlink(missing_ok=True)
+                for parent in (planted.parent, planted.parent.parent):
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+        judge(name, want, code, lines, absent, present)
+
+    if ccode != 0:
+        print(
+            "SKIP  the drawer cases need a tree whose own census is green, for the same "
+            "reason the planted-population cases above do"
+        )
+    else:
+        drawer_case(
+            "a product executable with NO local document -> exit 2, uncensused",
+            2,
+            None,
+            present=f"uncensused: {CANARY_DRAWER_INSTRUMENT}",
+        )
+        drawer_case(
+            "a product executable WITH its row in the local document -> exit 0, not a ghost",
+            0,
+            _local_census_fixture(_canary_row(CANARY_DRAWER_INSTRUMENT)),
+            absent="censused but not an instrument",
+            present=f"product row(s) in {CENSUS_LOCAL.name}",
+        )
+        drawer_case(
+            "a local row for a path instruments.md already carries -> exit 2 naming it",
+            2,
+            _local_census_fixture(_canary_row("quality/gate.py")),
+            present="already has a row in instruments.md",
+        )
+        # THE NEGATIVE, AND IT IS THE WHOLE PROMISE OF A DRAWER: absent, the
+        # output is the output. Byte-identical is asserted by comparing the two
+        # renderings rather than by reading this comment.
+        try:
+            a_code, a_lines = census(_read(CENSUS))
+            b_code, b_lines = census(_read(CENSUS), None)
+        except CannotLook as e:  # pragma: no cover - the green tree above already ran it
+            a_code, a_lines, b_code, b_lines = 2, [str(e)], 3, [str(e)]
+        names_it = any(CENSUS_LOCAL.name in line for line in a_lines)
+        if a_code == b_code and a_lines == b_lines and not names_it:
+            print("ok    no local document: the census output is byte-identical")
+        else:
+            ok = False
+            print("FAIL  the absent drawer is not free: output differs, or names it")
+
     print("")
     print(
         "selftest: "
@@ -1253,6 +1409,19 @@ def _read(path: pathlib.Path) -> str:
         return path.read_text()
     except OSError as e:
         raise CannotLook(f"{path} cannot be read: {e}") from e
+
+
+def _census_local_text() -> str | None:
+    """The product's own census document, or None when this tree has no drawer.
+
+    `exists()` and not a try/except: a file that is THERE and unreadable is
+    could-not-look (`_read` raises), which is the opposite answer from one that
+    is not there at all, and collapsing the two would let a permission bit read
+    as "this product censuses nothing".
+    """
+    if not CENSUS_LOCAL.exists():
+        return None
+    return _read(CENSUS_LOCAL)
 
 
 def main(argv: list[str]) -> int:
@@ -1285,7 +1454,7 @@ def main(argv: list[str]) -> int:
         if mode == "--selftest":
             return selftest()
         if mode == "--census":
-            code, lines = census(_read(CENSUS))
+            code, lines = census(_read(CENSUS), _census_local_text())
         else:
             code, lines = scan(_read(NORTH_STAR), _read(REGISTER))
     except CannotLook as e:

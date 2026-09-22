@@ -68,6 +68,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -78,12 +79,259 @@ sys.path.insert(0, str(ROOT))
 
 from quality import check_v1  # noqa: E402
 from quality import checks as C  # noqa: E402
+from quality import partition as PART  # noqa: E402
 from quality import worlds as W  # noqa: E402
 from quality.checks import FLOOR_PROXIES, REGISTRY, CheckResult, Finding  # noqa: E402
 
 _DOC: dict = yaml.safe_load((ROOT / "quality" / "rules.yaml").read_text())
-RULES: list[dict] = _DOC["rules"]
+
+# --- THE PRODUCT'S DRAWER (EP2) -------------------------------------------------
+#
+# THE SUBJECT. `quality/rules.yaml` is a TEMPLATE-OWNED file. A product that
+# wants a rule of its own — and every product does — had nowhere to put it but
+# inside that file, so every fold met a conflict in the one file whose conflicts
+# are the most expensive on the tree, and the product's rules were re-applied by
+# hand each release (P21 § 7b EP2; the consumer's own census, boundary 2b).
+#
+# THE DRAWER. `quality/local/rules.yaml` is loaded BESIDE the template's, at
+# this one loader, and the template never writes a byte of it. Its fixtures live
+# under `quality/local/{canary,negative}/<id>/` and its check-v1 runners under
+# `quality/local/runners/`, so a product adds a rule without touching one
+# template-owned path and a fold has nothing to merge.
+#
+# FOUR KEYS AND NO MORE. `rule_id_namespace`, `template_rule_ids_through`,
+# `rules:` and `ratchets:`. Anything else — a local `scope_kinds:`, a local
+# `seam:`, a local `selftest_residence_backlog:` — is exit 2 NAMING THE KEY AND
+# THE FILE, because each of those is a statement about the ENGINE rather than
+# about a rule, and an engine a product can reconfigure in a file the template
+# never reads is an engine the template cannot vouch for.
+#
+# THE TWO NAMESPACE KEYS LIVE HERE AND NOWHERE ELSE. D1 put them in the
+# template-owned file because the drawer did not exist yet; this is the home
+# they were always for. A tree that still carries either of them in
+# `quality/rules.yaml` is refused with the line that names the move — a product
+# mid-adoption is exactly who hits it, and a refusal that says which two lines
+# to cut into which file costs them a minute instead of an afternoon.
+#
+# ABSENT IS BYTE-IDENTICAL. No drawer means `LOCAL_DOC` is `{}`, `LOCAL_RULES`
+# is empty, and every reader, census, digest and self-test number is the number
+# the template printed before the drawer existed. That negative is the drive's
+# assertion, not this comment's claim.
+LOCAL_DIR = ROOT / "quality" / "local"
+LOCAL_RULES_PATH = LOCAL_DIR / "rules.yaml"
+LOCAL_CANARY_DIR = LOCAL_DIR / "canary"
+LOCAL_NEGATIVE_DIR = LOCAL_DIR / "negative"
+LOCAL_RUNNER_DIR = LOCAL_DIR / "runners"
+
+#: The whole vocabulary of the drawer. Closed, and the refusal names the key.
+LOCAL_KEYS: frozenset[str] = frozenset(
+    {"rule_id_namespace", "template_rule_ids_through", "rules", "ratchets"}
+)
+
+#: The keys whose HOME is the drawer — refused in the template-owned file.
+MOVED_KEYS: tuple[str, ...] = ("rule_id_namespace", "template_rule_ids_through")
+
+
+def _read_local() -> tuple[dict, list[dict], list[str]]:
+    """(the drawer's parse, its rules, the problems) — never a traceback.
+
+    Reported through `consistency()` rather than raised, for the reason
+    `_read_namespace` is: a malformed drawer must reach a reader as a named
+    exit 2, and it must not take the three readers (`--explain`, the listing,
+    `--selftest-inputs`) down with it on the way.
+    """
+    problems: list[str] = []
+    for key in MOVED_KEYS:
+        if key in _DOC:
+            problems.append(
+                f"quality/rules.yaml declares `{key}:` — that key's HOME is "
+                f"quality/local/rules.yaml, the product's drawer (P21 EP2, ADR gate-5). "
+                f"quality/rules.yaml is template-owned and a fold overwrites it, so a "
+                f"declaration there is a declaration that disappears. Move the line "
+                f"(with `{[k for k in MOVED_KEYS if k != key][0]}:` beside it) into "
+                f"quality/local/rules.yaml and delete it here"
+            )
+    if not LOCAL_RULES_PATH.is_file():
+        return {}, [], problems
+    try:
+        loaded = yaml.safe_load(LOCAL_RULES_PATH.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        problems.append(
+            f"quality/local/rules.yaml could not be read as YAML — {exc}. The drawer is an "
+            "input to every verdict on this tree, so a drawer nobody can parse is "
+            "could-not-look, never an empty drawer"
+        )
+        return {}, [], problems
+    if loaded is None:
+        loaded = {}
+    if not isinstance(loaded, dict):
+        problems.append(
+            f"quality/local/rules.yaml is a {type(loaded).__name__}, not a mapping — the "
+            f"drawer's top level is keys: {', '.join(sorted(LOCAL_KEYS))}"
+        )
+        return {}, [], problems
+    for key in sorted(loaded):
+        if key in LOCAL_KEYS:
+            continue
+        problems.append(
+            f"quality/local/rules.yaml declares `{key}:`, which is not one of the drawer's "
+            f"keys ({', '.join(sorted(LOCAL_KEYS))}). `{key}` configures the ENGINE rather "
+            "than a rule, and the engine is the template's — a product that could "
+            "reconfigure it in a file the template never reads would be running a gate "
+            "nothing vouches for"
+        )
+    raw_rules = loaded.get("rules")
+    local_rules: list[dict] = []
+    if raw_rules is not None:
+        if not isinstance(raw_rules, list) or not all(isinstance(r, dict) for r in raw_rules):
+            problems.append(
+                "quality/local/rules.yaml: `rules:` is not a list of rule mappings — it is "
+                "the same shape quality/rules.yaml's `rules:` carries"
+            )
+        else:
+            local_rules = raw_rules
+    # THE DECLARATION IS WHAT MAKES THE ID GRAMMAR BIND, AND WITHOUT IT THE
+    # DRAWER MINTS INTEGERS. `id_shape_problem` accepts a plain integer with no
+    # `rule_id_namespace` on the tree, because on a template that is the only
+    # legal shape there is — so a drawer that carries rules and no namespace
+    # loads `60` as a rule of its own and every refusal ADR gate-5 exists for
+    # is off. The key is not optional the moment the drawer holds a rule.
+    if local_rules and not str(loaded.get("rule_id_namespace") or "").strip():
+        problems.append(
+            "quality/local/rules.yaml carries `rules:` and no `rule_id_namespace:` — the "
+            "drawer's rules would be read under the TEMPLATE's grammar, where a plain "
+            "integer is the legal shape, so the drawer could mint an id the next template "
+            f"release also mints. Declare the namespace (and `template_rule_ids_through:` "
+            f"beside it) — {id_grammar(None)}"
+        )
+    if problems:
+        # A drawer with a refused key is a drawer this engine will not merge:
+        # half of a declaration is the one shape that reads as a smaller rule
+        # set rather than as a broken one.
+        return loaded, [], problems
+    return loaded, local_rules, problems
+
+
+LOCAL_DOC, LOCAL_RULES, _LOCAL_PROBLEMS = _read_local()
+
+RULES: list[dict] = [*_DOC["rules"], *LOCAL_RULES]
 RULES_BY_ID: dict[str, dict] = {str(r["id"]): r for r in RULES}
+
+#: The ids the drawer contributed. Read by the fixture-home resolver below, by
+#: the `[local]` tag both readers print, and by the ratchet and plant censuses.
+LOCAL_RULE_IDS: frozenset[str] = frozenset(str(r["id"]) for r in LOCAL_RULES)
+
+
+def is_local_rule(rule_id: str) -> bool:
+    """Did this id come out of the product's drawer?"""
+    return str(rule_id) in LOCAL_RULE_IDS
+
+
+#: THE DRAWER'S RATCHETS, and the key shape they are written in.
+#:
+#:     ratchets:
+#:       "54": { acme_billing: 12, acme_portal: 3 }
+#:       acme-1: { acme_billing: 1 }
+#:
+#: Rule id → class → count, the SAME `{class: count}` mapping a rule's own
+#: `ratchets:` carries, merged into that rule at load. It exists because
+#: rules 54/55/62/63 ratchet PER APP and the only apps their counts can name
+#: today are the template's: a product's app has no class to stand on, so its
+#: first finding is unrecordable and the pre-commit hook is unpassable on the
+#: fold branch — a real adopting product met 162 findings with no class to
+#: record them in. Recording them in the template's `rules.yaml` is the thing
+#: EP2 exists to stop; this is their product-owned home, and the unmeasured
+#: form — a class no tree has ever counted, printing the exact line to paste —
+#: writes that line INTO THIS FILE rather than into the template's.
+#:
+#: A class here may name only an app OUTSIDE `quality/partition.yaml`'s
+#: `platform_apps` (X3.4): the platform's own backlogs are the template's to
+#: record, and a product that could raise one from a file the template never
+#: reads would be quietly widening a template rule.
+def _merge_local_ratchets() -> list[str]:
+    """Fold the drawer's `ratchets:` into their rules. Shape problems, by name."""
+    raw = LOCAL_DOC.get("ratchets")
+    if raw is None:
+        return []
+    where = "quality/local/rules.yaml: `ratchets:`"
+    if not isinstance(raw, dict):
+        return [f"{where} is a {type(raw).__name__}, not a mapping of rule id → class → count"]
+    problems: list[str] = []
+    for rid, classes in raw.items():
+        rid = str(rid)
+        rule = RULES_BY_ID.get(rid)
+        if rule is None:
+            problems.append(
+                f"{where} names rule {rid!r}, which is not a rule on this tree — a backlog "
+                "recorded against nothing is a number nobody will ever shrink"
+            )
+            continue
+        if not isinstance(classes, dict) or not classes:
+            problems.append(
+                f"{where} rule {rid}: expected a non-empty `{{<class>: <count>}}` mapping, "
+                f"got {classes!r}"
+            )
+            continue
+        recorded = dict(rule.get("ratchets") or {})
+        drawer_rule = rid in LOCAL_RULE_IDS
+        merged = dict(recorded)
+        for klass, count in classes.items():
+            name = str(klass)
+            # THE TWO REFUSALS THAT MAKE X3.4 TRUE RATHER THAN POLITE, and they
+            # are HERE rather than in a later census because a census that
+            # prints a note has already let the merge happen: the ceiling is
+            # raised, the finding is a note, and the drawer has quietly widened
+            # a rule the template owns. A refused class is NOT merged.
+            if not drawer_rule:
+                if name in recorded:
+                    problems.append(
+                        f"{where} rule {rid} is a TEMPLATE rule and already records class "
+                        f"{name!r} at {recorded[name]!r}; the drawer names it at {count!r}. "
+                        "The drawer is where a PRODUCT's own backlog lives — it may add a "
+                        "class the template never measured, never restate one it did. A "
+                        "template ceiling moves in quality/rules.yaml, in a diff a reviewer "
+                        "reads, and it moves DOWN"
+                    )
+                    continue
+                app_part = name.split(".", 1)[0]
+                if not (ROOT / "apps" / app_part).is_dir():
+                    problems.append(
+                        f"{where} rule {rid} is a TEMPLATE rule and the drawer adds class "
+                        f"{name!r}, whose app {app_part!r} is not a directory under apps/. "
+                        "A drawer class on a template rule records one of YOUR apps' "
+                        "backlogs; a name that is no app on this tree records nothing and "
+                        "no later run can shrink it"
+                    )
+                    continue
+            try:
+                value = int(count)
+                if value < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                problems.append(f"{where} rule {rid}: class {name!r} is {count!r}, not a count")
+                continue
+            merged[name] = value
+            DRAWER_RATCHET_CLASSES.add((rid, name))
+        rule["ratchets"] = merged
+    return problems
+
+
+#: `(rule id, class)` the DRAWER recorded, so every note that hands a reader a
+#: number to commit names the file that number actually lives in. A product
+#: told to edit `quality/rules.yaml` for a count it wrote in its own drawer is
+#: sent to a template-owned file a fold overwrites — which is the whole thing
+#: EP2 exists to stop, reappearing in the remedy rather than in the rule.
+DRAWER_RATCHET_CLASSES: set[tuple[str, str]] = set()
+
+_LOCAL_PROBLEMS.extend(_merge_local_ratchets())
+
+
+def ratchet_home(rule_id: str, klass: str) -> str:
+    """Which file this class's recorded number is written in."""
+    if (str(rule_id), str(klass)) in DRAWER_RATCHET_CLASSES:
+        return "quality/local/rules.yaml"
+    return "quality/rules.yaml"
+
 
 # --- the scope kinds this engine knows -------------------------------------------
 #
@@ -109,6 +357,33 @@ SEAM: dict = _DOC.get("seam") or {}
 OPTIONAL_APPS: frozenset[str] = W.optional_app_labels(ROOT)
 DISABLED_APPS: frozenset[str] = W.disabled_app_labels()
 
+
+def _read_platform_apps() -> tuple[frozenset[str] | None, str | None]:
+    """The partition's app list, or why this run could not read it (ADR gate-6).
+
+    READ, NEVER DERIVED, and read from the one file that owns it —
+    `quality/partition.yaml`'s `platform_apps`, through the module that already
+    parses it. It is what tells an app the TEMPLATE ships from an app a PRODUCT
+    added, which is the whole of the unmeasured-ratchet question below.
+
+    UNREADABLE IS NOT EMPTY. An empty set would make every app on the tree
+    "outside the partition" and turn every app-keyed ratchet class into an
+    unmeasured finding — a refusal storm caused by a missing lockfile rather
+    than by anything a reader wrote. So a failure returns None, the unmeasured
+    branch stays shut, and `consistency()` says so as exit 2.
+    """
+    try:
+        return frozenset(PART.platform_apps()), None
+    except Exception as error:  # a broken or absent lockfile: named, never guessed around
+        return None, (
+            "the partition lockfile could not be read, so the engine cannot tell a template "
+            "app from a product's and the UNMEASURED ratchet branch (ADR gate-6) is shut for "
+            f"this run: {error}"
+        )
+
+
+PLATFORM_APPS, _PARTITION_PROBLEM = _read_platform_apps()
+
 # THE SELF-TEST'S OWN BACKLOG, and the only thing standing between "a rule that
 # an environment variable can delete" and exit 2. Measured over the whole rule
 # set; the members are printed by name on every self-test run. Same grammar as
@@ -118,7 +393,252 @@ DISABLED_APPS: frozenset[str] = W.disabled_app_labels()
 RESIDENCE_BACKLOG: int = int(_DOC.get("selftest_residence_backlog") or 0)
 CANARY_DIR = ROOT / "quality" / "canary"
 NEGATIVE_DIR = ROOT / "quality" / "negative"
+
+
+def fixture_home(kind: str, rule_id: str) -> Path:
+    """Where THIS rule's fixtures of this kind live. `kind` is canary|negative.
+
+    ONE RESOLVER, read by every site that used to spell `CANARY_DIR / rid`. A
+    template rule's fixtures are under `quality/{canary,negative}/<id>/` and a
+    drawer rule's under `quality/local/{canary,negative}/<id>/` — the SAME
+    protocol, the same plan entries, the same self-test, a different tree. A
+    second spelling anywhere is how a drawer rule's canary ends up planted from
+    a directory nothing censuses.
+    """
+    base = CANARY_DIR if kind.startswith("canar") else NEGATIVE_DIR
+    if is_local_rule(rule_id):
+        base = LOCAL_CANARY_DIR if kind.startswith("canar") else LOCAL_NEGATIVE_DIR
+    return base / str(rule_id)
+
+
+def fixture_bases(rule_id: str) -> tuple[tuple[str, Path], ...]:
+    """`(("canaries", <its canary tree>), ("negatives", <its negative tree>))`."""
+    if is_local_rule(rule_id):
+        return (("canaries", LOCAL_CANARY_DIR), ("negatives", LOCAL_NEGATIVE_DIR))
+    return (("canaries", CANARY_DIR), ("negatives", NEGATIVE_DIR))
+
+
+def fixture_trees() -> tuple[tuple[str, Path], ...]:
+    """Every fixture tree on this checkout, template's first, drawer's after.
+
+    The drawer's two appear only when the drawer has them, so a tree with no
+    `quality/local/` walks exactly the two directories it always walked and
+    every census prints the number it printed before EP2.
+    """
+    trees: list[tuple[str, Path]] = [("canary", CANARY_DIR), ("negative", NEGATIVE_DIR)]
+    for kind, base in (("canary", LOCAL_CANARY_DIR), ("negative", LOCAL_NEGATIVE_DIR)):
+        if base.is_dir():
+            trees.append((kind, base))
+    return tuple(trees)
+
+
+#: THE FIXTURES THE ENGINE ITSELF PLANTS, declared once and read twice.
+#:
+#: Almost every fixture under the two trees is named by an entry in
+#: `quality/rules.yaml`, and the orphan census below reads that plan to decide
+#: whether a file has a claimant. A handful are planted by a leg of this module
+#: BY PATH instead, because their subject is the engine's own walk rather than
+#: any rule's scope — and a path typed inside a function body is a claim the
+#: census cannot see. The census read this and the planter reads it too, so a
+#: file listed here is claimed exactly once, and deleting the entry without the
+#: file (or the file without the entry) is exit 2 rather than a traceback.
+#:
+#: The reason string is printed by the census when the file is missing, so it
+#: has to say which leg would stop working.
+VENDORED_VALVE_FIXTURE = NEGATIVE_DIR / "50" / "vendored_valve.js"
+
+ENGINE_FIXTURES: dict[Path, str] = {
+    VENDORED_VALVE_FIXTURE: (
+        "seam_skip_dir_census plants it inside frontend/node_modules/ to prove a valve in a "
+        "vendored directory stays out of the standing override census (F1, Vra 2026-08-31)"
+    ),
+}
 BUDGETS_PATH = ROOT / "quality" / "budgets.yaml"
+
+# --- TWO NAMESPACES FOR RULE IDS (ADR gate-5) -----------------------------------
+#
+# THE SUBJECT. Rule ids were ONE integer sequence that the template and a
+# product both appended to. A product that minted `54` met the template's own
+# `54` at the next fold: the ids merged into a duplicate (exit 2, and the only
+# thing that ever caught it), and `quality/canary/54/` merged SILENTLY into one
+# directory holding both plans. The repair was renumbering the product's rules
+# by hand, every release.
+#
+# THE GRAMMAR. Only the template mints integers. A product declares
+# `rule_id_namespace: <ns>` ONCE, top-level in `quality/local/rules.yaml` — the
+# product's DRAWER, which no fold overwrites (P21 EP2) — and every
+# rule it writes is `<ns>-<n>` — in the id, in the fixture directory
+# (`quality/{canary,negative}/<ns>-<n>/`), in the valve (`# rule-<ns>-<n>:`) and
+# in the check tag (`<ns>.Wnnn`, where the template's are `djb.…`). Two
+# namespaces cannot collide, so a fold has nothing to merge.
+#
+# WHY A SECOND KEY, AND WHY IT IS A NUMBER. A shape wall alone cannot refuse a
+# product that types `60`: an integer is a legal shape and the engine has no
+# other way to know the template did not mint it. `template_rule_ids_through`
+# is that record — the highest integer the TEMPLATE release this tree folded had
+# minted — and it is exactly `partition.yaml`'s and `FROZEN_FAMILIES`' pattern:
+# a record of the past, written down, in a diff a human reads. The template
+# never carries it (its own ids are, by definition, all it has minted), so a
+# rung adding a template rule pays nothing; a product carries it and moves it at
+# a fold, and forgetting to is a NAMED refusal handing over the line to paste,
+# never a silent pass.
+#
+# WHERE THEY LIVE (P21 EP2, the key-home move). Both keys are read from
+# `quality/local/rules.yaml` and refused in `quality/rules.yaml`. D1 shipped
+# them in the template-owned file because the drawer did not exist yet, and a
+# declaration in a file a fold overwrites is a declaration that disappears at
+# the next release — which is the same failure the namespace itself exists to
+# end, one file up.
+
+#: WHERE THE GRAMMAR IS WRITTEN UP, cited by the CHANGELOG's own ENTRY and not
+#: by the release heading above it. `[Unreleased]` is RENAMED to a version
+#: number at every release, so a refusal that cites the heading sends the next
+#: reader to a section that no longer exists — and the readers of these lines
+#: are on a product tree, holding a fold, with no way to know the heading moved.
+#: The entry's title does not move.
+GATE5_CITE = 'ADR gate-5, CHANGELOG § "Rule ids are two namespaces"'
+
+NAMESPACE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+TEMPLATE_ID_RE = re.compile(r"^\d+$")
+
+#: The template's own check-tag prefix. A product's is its namespace.
+TEMPLATE_CHECK_PREFIX = "djb"
+
+
+def _read_namespace() -> tuple[str | None, int | None, list[str]]:
+    """(namespace, the template high-water, problems) off the two top-level keys.
+
+    THE HOME IS THE DRAWER. Both keys are read from `quality/local/rules.yaml`
+    and from nowhere else: they are a PRODUCT's declaration, and the
+    template-owned `quality/rules.yaml` is a file a fold overwrites. A tree
+    that still carries either of them there is refused by `_read_local` with
+    the line that names the move.
+
+    Read at import because the valve grammar below is compiled from it, and
+    reported through `consistency()` rather than raised: a malformed
+    declaration must reach a reader as a named exit 2, not as a traceback that
+    takes the three readers (`--explain`, the listing, `--selftest-inputs`)
+    down with it.
+    """
+    problems: list[str] = []
+    raw_ns = LOCAL_DOC.get("rule_id_namespace")
+    raw_through = LOCAL_DOC.get("template_rule_ids_through")
+    ns: str | None = None
+    if raw_ns is not None:
+        candidate = str(raw_ns).strip()
+        if not NAMESPACE_RE.match(candidate):
+            problems.append(
+                f"rule_id_namespace: {raw_ns!r} is not a namespace — it is one lowercase word "
+                "matching [a-z][a-z0-9_]*, because it is spelled in a rule id, a directory "
+                "name, a valve marker and a check tag (ADR gate-5)"
+            )
+        elif candidate == TEMPLATE_CHECK_PREFIX:
+            problems.append(
+                f"rule_id_namespace: {TEMPLATE_CHECK_PREFIX!r} is the TEMPLATE's namespace — a "
+                "product that claimed it would be back where the collision started. Pick your "
+                "own word"
+            )
+        else:
+            ns = candidate
+    through: int | None = None
+    if ns is None:
+        if raw_through is not None:
+            problems.append(
+                "template_rule_ids_through is declared with no `rule_id_namespace` — it is a "
+                "PRODUCT's record of the template release it folded, and a template has no use "
+                "for it (its integers are all it has minted). Remove it, or declare the "
+                "namespace it belongs to"
+            )
+    else:
+        try:
+            through = int(raw_through)  # type: ignore[arg-type]
+            if through < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            problems.append(
+                f"rule_id_namespace: {ns!r} is declared without a usable "
+                f"`template_rule_ids_through:` ({raw_through!r}). Record the highest integer "
+                "rule id the template release you folded had minted — the engine cannot "
+                "otherwise tell a template rule from a product rule that typed an integer"
+            )
+    return ns, through, problems
+
+
+RULE_ID_NAMESPACE, TEMPLATE_IDS_THROUGH, _NAMESPACE_PROBLEMS = _read_namespace()
+
+
+def product_id_re(namespace: str) -> re.Pattern[str]:
+    """`<ns>-<n>` — the one shape a product's rule ids may take."""
+    return re.compile(rf"^{re.escape(namespace)}-\d+$")
+
+
+def is_template_id(rule_id: str) -> bool:
+    """A plain integer: an id the TEMPLATE minted."""
+    return bool(TEMPLATE_ID_RE.match(str(rule_id)))
+
+
+def id_grammar(namespace: str | None = ...) -> str:  # type: ignore[assignment]
+    """The one sentence every refusal about an id shape ends with.
+
+    `namespace` defaults to THIS tree's declaration; a caller that was handed
+    one (the fixture-directory census, which a canary drives against a tree it
+    built) passes it, so the sentence and the census can never be about two
+    different trees.
+    """
+    if namespace is ...:
+        namespace = RULE_ID_NAMESPACE
+    if namespace is None:
+        return (
+            "template rule ids are integers; a product declares `rule_id_namespace: <ns>` "
+            "once, top-level in quality/local/rules.yaml — the product's drawer — and "
+            "names its own rules `<ns>-<n>` "
+            f"({GATE5_CITE})"
+        )
+    return (
+        f"product rule ids are {namespace}-<n> — in the id, the fixture directory, "
+        f"the valve (`# rule-{namespace}-<n>:`) and the check tag "
+        f"(`{namespace}.Wnnn`); the integers are the template's to mint "
+        f"({GATE5_CITE})"
+    )
+
+
+def id_shape_problem(rule_id: str) -> str | None:
+    """Why this id is not a legal rule id on this tree, or None."""
+    rid = str(rule_id)
+    if is_template_id(rid):
+        if RULE_ID_NAMESPACE is None or TEMPLATE_IDS_THROUGH is None:
+            return None
+        if int(rid) <= TEMPLATE_IDS_THROUGH:
+            return None
+        return (
+            f"rule {rid}: an integer id above the template release this tree folded "
+            f"(`template_rule_ids_through: {TEMPLATE_IDS_THROUGH}`) — {id_grammar()}. If {rid} "
+            f"ARRIVED in a template fold, record the new high-water: "
+            f"`template_rule_ids_through: {rid}`"
+        )
+    if RULE_ID_NAMESPACE is not None and product_id_re(RULE_ID_NAMESPACE).match(rid):
+        return None
+    return f"rule {rid}: not a legal rule id here — {id_grammar()}"
+
+
+def check_tag_prefix(rule_id: str) -> str:
+    """`djb` for a template rule, the namespace for a product's."""
+    if is_template_id(rule_id) or RULE_ID_NAMESPACE is None:
+        return TEMPLATE_CHECK_PREFIX
+    return RULE_ID_NAMESPACE
+
+
+#: The valve's id half, as ONE string both patterns below are built from. A
+#: template tree accepts `rule-<n>` and nothing else; a product tree accepts its
+#: own `rule-<ns>-<n>` beside it. Built from the declaration rather than a
+#: permissive `[a-z0-9_-]+` so that a valve naming a namespace this tree never
+#: claimed is an unmatched marker a reader can see, not a suppression that
+#: quietly works.
+def _valve_id_pattern() -> str:
+    if RULE_ID_NAMESPACE is None:
+        return r"\d+"
+    return rf"(?:{re.escape(RULE_ID_NAMESPACE)}-)?\d+"
+
 
 PROBE_APP = "zzz_canary"
 PROBE_DIR = ROOT / "apps" / PROBE_APP
@@ -130,7 +650,7 @@ class ZzzCanaryConfig(AppConfig):
     depends_on: tuple[str, ...] = ("core", "accounts")
 """
 
-OVERRIDE_RE = re.compile(r"#\s*rule-(\d+)\b:?\s*(.*)$")
+OVERRIDE_RE = re.compile(rf"#\s*rule-({_valve_id_pattern()})\b:?\s*(.*)$")
 MIN_REASON = 12  # long enough to force a clause; short enough that a real reason clears it
 
 #: F3 (Vra, 2026-08-31): the sentinel `run_rule`'s third return element carries when a
@@ -153,7 +673,7 @@ def override_re(comment: str) -> re.Pattern[str]:
     """The `<comment> rule-<id>: <reason>` pattern for one comment syntax."""
     cached = _OVERRIDE_RES.get(comment)
     if cached is None:
-        cached = re.compile(re.escape(comment) + r"\s*rule-(\d+)\b:?\s*(.*)$")
+        cached = re.compile(re.escape(comment) + rf"\s*rule-({_valve_id_pattern()})\b:?\s*(.*)$")
         _OVERRIDE_RES[comment] = cached
     return cached
 
@@ -292,6 +812,98 @@ def apply_overrides(rule_id: str, findings: list[Finding]) -> tuple[list[Finding
     return kept, suppressed
 
 
+#: The sha the recording line is stamped with, read once per process. A
+#: recording says WHEN a count was true, and the only honest answer is the tree
+#: the count was measured on.
+_RECORDING_SHA: str | None = None
+
+
+def recording_sha() -> str:
+    """This checkout's HEAD, short — the stamp on a `recorded-at` line.
+
+    A literal `<sha>` when git cannot answer (an exported tree, a tarball): the
+    line is still the line to paste, and a reader who has no git has no sha to
+    put in it either.
+    """
+    global _RECORDING_SHA
+    if _RECORDING_SHA is None:
+        _RECORDING_SHA = "<sha>"
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if done.returncode == 0 and done.stdout.strip():
+                _RECORDING_SHA = done.stdout.strip()
+        except Exception:  # no git, no repository, no answer — the literal stands
+            pass
+    return _RECORDING_SHA
+
+
+def unmeasured_app(klass: str, findings: list[Finding]) -> str | None:
+    """The PRODUCT app this ratchet class belongs to, or None (ADR gate-6).
+
+    THE SUBJECT. Per-app ratchet classes are keyed `<app>` or `<app>.<what>`,
+    and every recorded one names an app the TEMPLATE ships. A product's own app
+    has no entry, and an absent entry is a ratchet of zero — which is the right
+    answer for a template app (a clean class stays clean by absence) and an
+    unreadable one for a product's (nothing anywhere says the class exists, what
+    the grammar is, or that recording it is allowed at all).
+
+    THE APP IS CONFIRMED BY THE FINDINGS, never inferred from the key alone.
+    `nonconforming` and `secrets` are class names, not app names, and a
+    predicate that read the key on its own would offer to record an app that
+    does not exist. So a class is app-keyed only when EVERY finding in it sits
+    under `apps/<label>/` for the label the key opens with — fail closed, and no
+    stat of the tree is needed to decide it.
+
+    Three ways this answers None, all deliberate: an app INSIDE the partition
+    (the template's own — absence is the measurement), the plant scaffold
+    (`apps/zzz_canary` exists only between `Plant.put` and `Plant.restore`, and
+    a recording for it would name an app nobody can open), and a run that could
+    not read the partition at all (`_read_platform_apps`).
+    """
+    if PLATFORM_APPS is None:
+        return None
+    label = str(klass).split(".", 1)[0].strip()
+    if not label or label == PROBE_APP or label in PLATFORM_APPS:
+        return None
+    prefix = f"apps/{label}/"
+    if not findings:
+        return None
+    if not all(str(finding.path).replace("\\", "/").startswith(prefix) for finding in findings):
+        return None
+    return label
+
+
+def unmeasured_line(rid: str, klass: str, app: str, count: int) -> str:
+    """The finding an unmeasured class prints — and it IS the line to paste.
+
+    Everything a reader needs is here because everything a reader needs is
+    knowable here: which class, which app, why the engine calls it a product's,
+    the exact text to record, the stamp that says when it was true, and the one
+    direction the number may move afterwards.
+    """
+    return (
+        f"class {klass!r} has NEVER BEEN MEASURED — apps/{app} is outside the partition "
+        f"(quality/partition.yaml `platform_apps`), so it is an app this template did not "
+        f"ship, and no `ratchets:` entry on rule {rid} names this class. An absent entry is "
+        f"a ceiling of zero, which is the right answer for a template app and an unreadable "
+        f"one for yours: green-because-unrecorded is not a pass (quality/budgets.yaml), so "
+        f"this is a violation and not a note. RECORD IT — in quality/local/rules.yaml, YOUR "
+        f'drawer, under its top-level `ratchets:`, under `"{rid}":`, paste:  '
+        f"{klass}: {count}  # recorded-at {recording_sha()} [fold]  — the drawer is where a "
+        f"product's counts live, because quality/rules.yaml is template-owned and a fold "
+        f"overwrites it (P21 EP2); the recording is the "
+        f"ONE time a number here may arrive from nothing, it belongs to the fold that "
+        f"brought the app in, and after it the class moves DOWN only, by a person's hand, "
+        f"in a diff a reviewer reads (ADR gate-6). The whole class follows:"
+    )
+
+
 def apply_ratchets(rule: dict, kept: list[Finding]) -> list[Finding]:
     """Findings within a recorded backlog are notes; one over it, all of them fail.
 
@@ -299,9 +911,20 @@ def apply_ratchets(rule: dict, kept: list[Finding]) -> list[Finding]:
     selectors cannot pay for one badly named model. A class with no recorded
     ratchet is ratcheted at zero — the ordinary case, where the first finding
     is a violation.
+
+    AND WHEN THE CLASS IS A PRODUCT APP'S, the zero says so out loud (ADR
+    gate-6). An app outside `quality/partition.yaml`'s partition with no entry
+    on this rule is UNMEASURED rather than clean: the findings still fail,
+    exactly as before, and the header they arrive under is the `ratchets:` line
+    to paste, stamped with the sha it was true at. See `unmeasured_app` for
+    which classes qualify and `unmeasured_line` for what the header says.
     """
     rid = str(rule["id"])
     recorded = rule.get("ratchets") or {}
+    #: The class names this rule has WRITTEN DOWN, whatever their value. A
+    #: recorded 0 is a measurement; an absent key is the thing ADR gate-6 is
+    #: about, and `recorded.get(klass, 0)` cannot tell the two apart.
+    named = {str(key) for key in recorded}
     by_class: dict[str, list[Finding]] = {}
     for finding in kept:
         by_class.setdefault(finding.klass, []).append(finding)
@@ -322,6 +945,22 @@ def apply_ratchets(rule: dict, kept: list[Finding]) -> list[Finding]:
                         klass,
                     )
                 )
+            elif klass and str(klass) not in named:
+                # UNMEASURED, not zero (ADR gate-6). The verdict is the same
+                # exit 1 it already was — what changes is that the header now
+                # says the class exists, why it has no ceiling, and the exact
+                # line that gives it one. A class the product HAS recorded at
+                # zero is measured and takes the ordinary path above.
+                app = unmeasured_app(str(klass), findings)
+                if app is not None:
+                    out.append(
+                        Finding(
+                            "quality/rules.yaml",
+                            0,
+                            unmeasured_line(rid, str(klass), app, len(findings)),
+                            klass,
+                        )
+                    )
             out.extend(findings)
         else:
             notes.append(
@@ -333,8 +972,8 @@ def apply_ratchets(rule: dict, kept: list[Finding]) -> list[Finding]:
             if len(findings) < allowed:
                 notes.append(
                     f"    rule {rid}: class {label} is now BELOW its ratchet of {allowed} — "
-                    f"a human may commit {len(findings)} to quality/rules.yaml; nothing "
-                    "tightens by itself."
+                    f"a human may commit {len(findings)} to {ratchet_home(rid, label)}; "
+                    "nothing tightens by itself."
                 )
     for klass, allowed in sorted(recorded.items()):
         # A class that has gone all the way to clean is the one worth saying
@@ -342,12 +981,58 @@ def apply_ratchets(rule: dict, kept: list[Finding]) -> list[Finding]:
         if str(klass) not in by_class and int(allowed) > 0:
             notes.append(
                 f"rule {rid} ratchet: class {klass} has NO violations left against a "
-                f"recorded {allowed} — a human may commit 0 to quality/rules.yaml."
+                f"recorded {allowed} — a human may commit 0 to "
+                f"{ratchet_home(rid, str(klass))}."
             )
     return out
 
 
 # --- running one rule ----------------------------------------------------------
+
+
+def local_runner_argv(impl: str) -> list[str] | None:
+    """`check: <name>` as a check-v1 runner in the drawer, or None.
+
+    THE SECOND HALF OF ONE RESOLVER (X3.3). `check:` has always named an entry
+    in `quality.checks.REGISTRY`, and a product may not edit `checks.py` — it
+    is template-owned, and a product's check in it is a conflict in the one
+    file whose conflicts are worst. So a name the registry does not hold is
+    looked for ONCE more, as `quality/local/runners/<name>.py`, and invoked
+    across the check-v1 process boundary exactly as a `runner:` rule is: the
+    runner MEASURES, this engine JUDGES, and a runner that cannot be believed
+    is exit 2 rather than zero findings.
+
+    Neither a registry name nor a file here is a refusal that names both
+    places it looked — `resolve_check_problem` below is that sentence, and it
+    is the ONLY place either reader decides a `check:` is unresolvable.
+    """
+    path = LOCAL_RUNNER_DIR / f"{impl}.py"
+    if not path.is_file():
+        return None
+    # Checkout-relative when it is inside the checkout — which is the only
+    # place a real drawer sits, and what makes the refusal messages readable —
+    # and absolute otherwise, so a probe that points `LOCAL_RUNNER_DIR` at a
+    # tempdir it built gets an answer rather than a traceback.
+    try:
+        where = str(path.relative_to(ROOT))
+    except ValueError:
+        where = str(path)
+    return ["python3", where]
+
+
+def resolve_check_problem(rule_id: str, impl: str) -> str | None:
+    """Why this `check:` resolves to nothing on this tree, or None."""
+    if impl in REGISTRY:
+        return None
+    if local_runner_argv(impl) is not None:
+        return None
+    return (
+        f"rule {rule_id}: check impl {impl!r} resolves to nothing — it is not a name in "
+        f"quality/checks.py's REGISTRY and there is no check-v1 runner at "
+        f"quality/local/runners/{impl}.py. A product never edits checks.py (it is "
+        "template-owned and a fold overwrites it): write the runner in the drawer, or "
+        "re-scope a registry check the template already ships"
+    )
 
 
 def run_runner(rule: dict) -> CheckResult:
@@ -395,12 +1080,35 @@ def run_rule(rule: dict, *, floors: bool = True) -> tuple[list[Finding], dict, s
     absent = verdict == "skip"
     impl = rule.get("check")
     if impl and not absent:
-        # THE ONE CONSULT. `memo_consult` either replays this rule's last
-        # answer for a key nothing has moved, or calls the check and banks it —
-        # and everything below this line runs either way, so no memo can hide
-        # an unbound floor, a ratchet that grew or a valve that lost its
-        # reason. See THE PER-RULE MEMO, below.
-        result: CheckResult = memo_consult(rule, impl)
+        unresolved = resolve_check_problem(rid, impl)
+        if unresolved:
+            broken.append(unresolved)
+            return [], targets, COULD_NOT_LOOK + unresolved
+        if impl in REGISTRY:
+            # THE ONE CONSULT. `memo_consult` either replays this rule's last
+            # answer for a key nothing has moved, or calls the check and banks
+            # it — and everything below this line runs either way, so no memo
+            # can hide an unbound floor, a ratchet that grew or a valve that
+            # lost its reason. See THE PER-RULE MEMO, below.
+            result: CheckResult = memo_consult(rule, impl)
+        else:
+            # THE DRAWER'S RUNNER, across the same process boundary a
+            # `runner:` rule crosses, and refused the same way: a runner that
+            # will not answer is could-not-look, never zero findings.
+            argv = local_runner_argv(str(impl)) or []
+            try:
+                result = check_v1.invoke(
+                    ROOT,
+                    argv=argv,
+                    roots=W.kind_roots(rule, SCOPE_KINDS),
+                    where=f"rule {rid} local runner {' '.join(argv)!r}",
+                    timeout=int(
+                        (rule.get("runner") or {}).get("timeout") or check_v1.DEFAULT_TIMEOUT
+                    ),
+                )
+            except check_v1.RunnerRefused as exc:
+                broken.append(f"rule {rid}: LOCAL RUNNER REFUSED ({exc.klass}) — {exc.detail}")
+                return [], targets, COULD_NOT_LOOK + f"({exc.klass}) {exc.detail}"
         targets.update(result.targets_matched)
         findings.extend(result.findings)
     if rule.get("runner") and not absent:
@@ -822,17 +1530,402 @@ def rule_seam_consistency(rule: dict) -> None:
         )
 
 
-def consistency() -> None:
-    seam_consistency()
-    seen_ids: set[str] = set()
+# --- the declaration's own census: one id per rule, one claimant per fixture -----
+#
+# Two failures of the DECLARATION rather than of the tree, and both arrive by
+# the same route: a product merges a template release and the two rule sets are
+# appended into one file. An id both sequences minted collides; a fixture
+# directory both sequences numbered merges two rules' files into one directory.
+# The first was already exit 2 with three words and no way forward; the second
+# was not seen at all.
+
+
+def _entry_descriptor(rule: dict, position: int) -> str:
+    """How a reader tells two entries with one id apart, without a diff.
+
+    The position in `quality/rules.yaml`'s own `rules:` list and the first
+    words of the statement: enough for a product to say at a glance which of
+    the two colliding entries is the one it wrote.
+    """
+    statement = " ".join(str(rule.get("statement") or "").split())
+    if len(statement) > 70:
+        statement = statement[:67] + "..."
+    if rule.get("check"):
+        mechanism = f"check {rule['check']}"
+    elif rule.get("django_check_ids"):
+        mechanism = "django checks " + ",".join(str(c) for c in rule["django_check_ids"])
+    elif rule.get("runner"):
+        mechanism = "a runner"
+    elif rule.get("diff"):
+        mechanism = "a diff rule"
+    else:
+        mechanism = "no mechanism"
+    return f"entry #{position} in `rules:` ({mechanism}) — {statement or '(no statement)'}"
+
+
+def duplicate_id_findings(rules: list[dict]) -> list[str]:
+    """Two entries declaring one id, and what the holder of the red does next.
+
+    THE REMEDY IS THE POINT. A bare `duplicate id` is true and unactionable:
+    the reader cannot see WHICH two entries collided, does not know that the
+    two also now share one canary directory, one negative directory and one
+    valve number, and has no way to know which of the two is supposed to move.
+    Every one of those is knowable here, so every one of them is said here.
+    """
+    seen: dict[str, tuple[int, dict]] = {}
+    lines: list[str] = []
+    for position, rule in enumerate(rules, start=1):
+        rid = str(rule["id"])
+        first = seen.get(rid)
+        if first is None:
+            seen[rid] = (position, rule)
+            continue
+        lines.append(
+            f"rule {rid}: duplicate id — two entries in quality/rules.yaml declare it. "
+            f"THE COLLISION: {_entry_descriptor(first[1], first[0])} AND "
+            f"{_entry_descriptor(rule, position)}. They share more than the id: one canary "
+            f"directory (quality/canary/{rid}/), one negative directory "
+            f"(quality/negative/{rid}/) and one valve number, so a fold has merged two "
+            f"rules' fixtures as well as their ids. REMEDY: only the template mints integer "
+            f"ids, so the entry that moves is the product's. The namespace grammar is LIVE "
+            f"on this tree ({GATE5_CITE}): declare "
+            f"`rule_id_namespace: <ns>` once, top-level in quality/local/rules.yaml, beside "
+            f"`template_rule_ids_through: <n>`, rename the product's entry to `<ns>-<n>`, "
+            f"`git mv` both of its fixture directories to that id, rewrite its valve "
+            f"comments to `# rule-<ns>-<n>:` and its check tag to `<ns>.Wnnn`. After that a "
+            f"fold cannot collide at all. Do NOT renumber it to another integer: the "
+            f"integers are the template's to mint and the next release takes the one you "
+            f"picked."
+        )
+    return lines
+
+
+def fixture_files_on_disk() -> list[Path]:
+    """Every file under the two fixture trees, in one sorted list.
+
+    `__pycache__` and `.DS_Store` are skipped because neither can be tracked
+    (both are in `.gitignore`), so neither is a file anybody declared or can
+    delete meaningfully — the census is about the tree git carries.
+    """
+    found: list[Path] = []
+    for _kind, base in fixture_trees():
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            if "__pycache__" in path.parts or path.name == ".DS_Store":
+                continue
+            found.append(path)
+    return found
+
+
+def claimed_fixtures(rules: list[dict]) -> set[Path]:
+    """Every fixture path some entry of some rule names, extra files included."""
+    claimed: set[Path] = set(ENGINE_FIXTURES)
+    for rule in rules:
+        rid = str(rule["id"])
+        for kind, base in fixture_bases(rid):
+            for entry in rule.get(kind) or []:
+                for e in [entry, *(entry.get("extra_files") or [])]:
+                    claimed.add(base / rid / str(e["fixture"]))
+    return claimed
+
+
+def orphan_fixture_findings(rules: list[dict], on_disk: list[Path]) -> list[str]:
+    """A fixture file no entry claims — the mirror of the missing-fixture refusal.
+
+    `consistency()` has always refused a fixture a rule NAMES and the tree does
+    not have. This is the other direction, and it is the one a fold produces: a
+    file sitting in `quality/canary/<n>/` or `quality/negative/<n>/` that no
+    entry anywhere names. Nothing plants it, so nothing proves anything with
+    it, and it reads to every later reader as coverage the self-test has — the
+    most expensive kind of wrong, because it is wrong in the direction of
+    confidence. It is exit 2 rather than a violation for the same reason a dead
+    canary is: the failure is in the enforcement's own plan, not in the code
+    under it.
+    """
+    claimed = claimed_fixtures(rules)
+    ids = {str(rule["id"]) for rule in rules}
+    lines: list[str] = []
+    for path in on_disk:
+        if path in claimed:
+            continue
+        base = NEGATIVE_DIR
+        for _tree_kind, tree in fixture_trees():
+            if tree in path.parents:
+                base = tree
+                break
+        # THE DIRECTORY IS NAMED FROM THE TREE IT WAS FOUND IN, never from the
+        # template's spelling: a drawer fixture reported as living under
+        # `quality/canary/` sends its reader to a path that does not exist.
+        here = base.relative_to(ROOT)
+        home = (
+            "quality/local/rules.yaml" if base.is_relative_to(LOCAL_DIR) else "quality/rules.yaml"
+        )
+        parts = path.relative_to(base).parts
+        rid = parts[0] if len(parts) > 1 else None
+        if rid is None:
+            nearest = (
+                f"it sits directly in {here}/, which belongs to no rule at all — "
+                f"every fixture lives under {here}/<rule id>/"
+            )
+        elif rid not in ids:
+            nearest = (
+                f"its directory {here}/{rid}/ is named for rule {rid}, and no rule "
+                f"{rid} exists in {home}"
+            )
+        else:
+            nearest = (
+                f"rule {rid} is the nearest rule — no entry of rule {rid} claims it, in "
+                f"`canaries:`, in `negatives:` or in any `extra_files:`"
+            )
+        lines.append(
+            f"orphan fixture {path.relative_to(ROOT)}: {nearest}. A fixture no entry names "
+            f"is planted by nothing and demonstrates nothing, and it reads as coverage this "
+            f"self-test does not have. Either CLAIM it — add it to that rule's plan and raise "
+            f"the rule's `selftest_floor` in the same diff — or, if a leg of quality/gate.py "
+            f"plants it by path rather than through the plan, declare it in "
+            f"ENGINE_FIXTURES — or DELETE it. After a template "
+            f"fold this is usually two rules' fixtures merged into one directory by a "
+            f"colliding id; fix the id first and the files follow it."
+        )
+    return lines
+
+
+def engine_fixture_findings(engine: dict[Path, str]) -> list[str]:
+    """An engine-planted fixture the tree does not have.
+
+    The mirror of the orphan census, for the claims that live in this module
+    rather than in `quality/rules.yaml`. It is the guard that turns "somebody
+    deleted a fixture nothing in the plan named" from a `FileNotFoundError`
+    halfway through a self-test into a refusal that says which leg breaks and
+    why the file is there.
+    """
+    return [
+        f"engine fixture {path.relative_to(ROOT)} is declared in ENGINE_FIXTURES and is not "
+        f"on this tree: {why}. Restore the file, or delete the declaration in the same diff "
+        "as the leg that reads it"
+        for path, why in engine.items()
+        if not path.is_file()
+    ]
+
+
+def fixture_census() -> None:
+    """The orphan census over the real fixture trees, with its own floor.
+
+    THE FLOOR IS HALF THE CENSUS. A walk that found nothing would report no
+    orphans and read exactly like a clean tree, which is the green-because-empty
+    shape every floor in this engine exists to refuse — so an empty walk, or a
+    plan that claims no fixtures at all, is itself exit 2.
+    """
+    on_disk = fixture_files_on_disk()
+    claimed = claimed_fixtures(RULES)
+    if not on_disk or not claimed:
+        broken.append(
+            f"the orphan-fixture census looked at {len(on_disk)} file(s) under "
+            f"quality/canary and quality/negative against {len(claimed)} claimed by "
+            "quality/rules.yaml — one of the two is empty, so the census would report a "
+            "clean tree whatever the tree held. That is could-not-look, not clean"
+        )
+        return
+    broken.extend(engine_fixture_findings(ENGINE_FIXTURES))
+    broken.extend(orphan_fixture_findings(RULES, on_disk))
+
+
+def fixture_dir_findings(
+    bases: tuple[tuple[str, Path], ...] | None = None,
+    claimed: set[str] | None = None,
+    namespace: str | None = ...,  # type: ignore[assignment]
+) -> list[str]:
+    """Every directory under `quality/{canary,negative}/` is claimed by a rule.
+
+    THE HALF A FILE CENSUS CANNOT SEE. A fold that merged two rules numbered
+    `54` merged their fixture DIRECTORIES too, and the tree that came out had
+    one `quality/canary/54/` holding two plans and no complaint from anything.
+    A directory no rule id claims is therefore exit 2 — could-not-look, not a
+    smaller census — and where its name carries a namespace this tree has not
+    declared, the refusal says so, because that is the shape a half-finished
+    adoption leaves behind (a `git mv` done and the key not written, or the key
+    written and one directory missed).
+
+    IT OVERLAPS `orphan_fixture_findings` DELIBERATELY, and the overlap is one
+    line per unclaimed directory rather than a second census: that one answers
+    "this FILE is planted by nothing", which is a symptom, and this one answers
+    "this DIRECTORY belongs to no rule", which is the cause and the only half
+    that can see an EMPTY unclaimed directory or say which namespace the name
+    is under. Both are exit 2, so the extra line costs a reader nothing and
+    saves them the inference.
+    """
+    if bases is None:
+        bases = fixture_trees()
+    if claimed is None:
+        claimed = {str(rule["id"]) for rule in RULES}
+    if namespace is ...:
+        namespace = RULE_ID_NAMESPACE
+    found: list[str] = []
+    for kind, base in bases:
+        try:
+            here = str(base.relative_to(ROOT))
+        except ValueError:
+            here = f"quality/{kind}"
+        if not base.is_dir():
+            found.append(
+                f"{here}/ is not a directory — the fixture tree the self-test plants "
+                "from is gone, and every plan that reads from it would skip in silence"
+            )
+            continue
+        for entry in sorted(base.iterdir()):
+            name = entry.name
+            if name in claimed:
+                continue
+            if not entry.is_dir():
+                found.append(
+                    f"{here}/{name}: a loose file at the top of the fixture tree — "
+                    f"fixtures live in `{here}/<rule id>/` and nothing plants this"
+                )
+                continue
+            prefix = name.rsplit("-", 1)[0] if "-" in name else None
+            if prefix is not None and prefix != namespace:
+                found.append(
+                    f"{here}/{name}/: a fixture directory under the namespace "
+                    f"{prefix!r}, which this tree has not claimed — {id_grammar(namespace)}"
+                )
+                continue
+            found.append(
+                f"{here}/{name}/: a fixture directory no rule claims — every "
+                "directory here is one rule's id, and an unclaimed one is a plan that "
+                "plants nothing or a rule that was renamed and left its fixtures behind"
+            )
+    return found
+
+
+def local_ratchet_consistency() -> None:
+    """A drawer ratchet names a PRODUCT app, never one inside the partition (X3.4).
+
+    THE DIRECTION IS THE POINT. The drawer exists so a product's own backlog
+    has somewhere to stand; it is not a second dial on the template's. A class
+    naming an app in `quality/partition.yaml`'s `platform_apps` would raise a
+    TEMPLATE rule's ceiling from a file the template never reads and no fold
+    ever shows a reviewer — the quietest way there is to widen a rule.
+    """
+    raw = LOCAL_DOC.get("ratchets")
+    if not isinstance(raw, dict) or not raw:
+        return
+    if PLATFORM_APPS is None:
+        broken.append(
+            _PARTITION_PROBLEM
+            + " — and the drawer's `ratchets:` cannot be judged either: which classes are "
+            "the template's to move is exactly the question that file answers"
+        )
+        return
+    platform = PLATFORM_APPS
+    app_dirs = (
+        {d.name for d in (ROOT / "apps").iterdir() if d.is_dir()}
+        if (ROOT / "apps").is_dir()
+        else set()
+    )
+    for rid, classes in raw.items():
+        if not isinstance(classes, dict):
+            continue
+        for klass in classes:
+            name = str(klass)
+            # A CLASS IS `<app>` OR `<app>.<kind>` — rules 54 and 55 key theirs
+            # the second way (`core.role-value`), so a check that only read the
+            # whole string would let `core.role-value: 12` through and the
+            # drawer would be raising a platform ceiling after all.
+            app_part = name.split(".", 1)[0]
+            if name in platform or app_part in platform:
+                broken.append(
+                    f"quality/local/rules.yaml: `ratchets:` rule {rid} records class {name!r}, "
+                    f"whose app {app_part!r} is inside quality/partition.yaml's "
+                    "`platform_apps`. The "
+                    "drawer records a PRODUCT's backlog; a platform app's ceiling is the "
+                    "template's to move, in a diff a reviewer reads. "
+                    f"Record {name!r} in quality/rules.yaml, or record the class of the "
+                    "product app whose findings these really are"
+                )
+            elif is_local_rule(str(rid)) and app_dirs and app_part not in app_dirs:
+                # DRAWER RULES ONLY. A class on a TEMPLATE rule whose app is not
+                # on the tree is refused outright by `_merge_local_ratchets`; a
+                # drawer rule's own classes need not be apps at all, so the most
+                # this can honestly be is a line in case it is a typo.
+                notes.append(
+                    f"quality/local/rules.yaml ratchet: rule {rid} class {name!r} is not an "
+                    "app on this tree — legal on a rule of your own (a class need not be an "
+                    "app), said out loud in case it is a typo for one"
+                )
+
+
+def local_plant_consistency() -> None:
+    """A drawer rule's fixtures plant into a PRODUCT app, or `apps/example` (X3.6).
+
+    PLANT PORTABILITY. A canary is planted THROUGH THE REAL SCOPE, into
+    the real tree — so a product rule whose canary plants into `apps/core` is a
+    product writing a fixture into a template-owned app, and the next fold
+    either loses it or conflicts on it. `apps/example` is the one platform app
+    a product's plant may use: it is the worked example every clone carries and
+    the template's own canaries already plant there, so a product with no app
+    of its own yet still has somewhere to demonstrate from.
+    """
+    if not LOCAL_RULE_IDS:
+        return
+    if PLATFORM_APPS is None:
+        broken.append(
+            _PARTITION_PROBLEM
+            + " — and a drawer rule's plant sites cannot be judged either: which apps the "
+            "template owns is exactly the question that file answers"
+        )
+        return
+    platform = PLATFORM_APPS
+    allowed_platform = {"example"}
     for rule in RULES:
         rid = str(rule["id"])
-        if rid in seen_ids:
-            broken.append(f"rule {rid}: duplicate id")
-        seen_ids.add(rid)
+        if not is_local_rule(rid):
+            continue
+        for kind in ("canaries", "negatives"):
+            singular = "canary" if kind == "canaries" else "negative"
+            for entry in rule.get(kind) or []:
+                for e in [entry, *(entry.get("extra_files") or [])]:
+                    target = str(e.get("plant_at") or "")
+                    parts = target.split("/")
+                    if len(parts) < 2 or parts[0] != "apps" or "{{" in parts[1]:
+                        continue
+                    app = parts[1]
+                    if app in platform and app not in allowed_platform:
+                        broken.append(
+                            f"rule {rid}: {singular} {e.get('fixture')} plants at {target}, "
+                            f"inside the platform app {app!r} (quality/partition.yaml "
+                            "`platform_apps`). A drawer rule plants into one of YOUR apps, or "
+                            "into apps/example — the template owns the rest, and a fixture a "
+                            "fold overwrites is a canary that stops firing without a diff "
+                            "(plant portability, ADR gate-5's drawer)"
+                        )
+
+
+def consistency() -> None:
+    seam_consistency()
+    for problem in _LOCAL_PROBLEMS:
+        broken.append(problem)
+    for problem in _NAMESPACE_PROBLEMS:
+        broken.append(problem)
+    if _PARTITION_PROBLEM:
+        broken.append(_PARTITION_PROBLEM)
+    local_ratchet_consistency()
+    local_plant_consistency()
+    broken.extend(duplicate_id_findings(RULES))
+    fixture_census()
+    broken.extend(fixture_dir_findings())
+    for rule in RULES:
+        rid = str(rule["id"])
+        shape = id_shape_problem(rid)
+        if shape:
+            broken.append(shape)
         impl = rule.get("check")
-        if impl and impl not in REGISTRY:
-            broken.append(f"rule {rid}: check impl {impl!r} not in registry")
+        if impl:
+            unresolved = resolve_check_problem(rid, str(impl))
+            if unresolved:
+                broken.append(unresolved)
         if (
             not impl
             and not rule.get("django_check_ids")
@@ -931,15 +2024,36 @@ def consistency() -> None:
                     raise ValueError
             except (TypeError, ValueError):
                 broken.append(f"rule {rid}: ratchet {klass!r} is {count!r}, which is not a count")
+        # `remedies:` is a fix form per finding class (ADR gate-6). An empty one
+        # is worse than none: `--explain` prints the key and the reader learns
+        # that somebody meant to write a remedy here.
+        remedies = rule.get("remedies")
+        if remedies is not None:
+            if not isinstance(remedies, dict) or not remedies:
+                broken.append(
+                    f"rule {rid}: `remedies:` is {remedies!r} — it is a mapping of finding "
+                    "class (or `*`) to the fix form for that class, and an empty one is a "
+                    "promise `--explain` cannot keep"
+                )
+            else:
+                for klass, text in remedies.items():
+                    if not str(klass).strip() or len(str(text or "").strip()) < MIN_REASON:
+                        broken.append(
+                            f"rule {rid}: remedy {klass!r} is {text!r} — a fix form says what "
+                            "to WRITE INSTEAD, and a reader cannot act on a blank one"
+                        )
         if not str(rule.get("does_not_cover", "")).strip():
             broken.append(f"rule {rid}: no does_not_cover — an undeclared blind spot")
         registry_floor_consistency(rule)
         rule_seam_consistency(rule)
-        for kind, base in (("canaries", CANARY_DIR), ("negatives", NEGATIVE_DIR)):
+        for kind, base in fixture_bases(rid):
             for entry in rule.get(kind) or []:
                 for e in [entry, *(entry.get("extra_files") or [])]:
                     if not (base / rid / e["fixture"]).is_file():
-                        broken.append(f"rule {rid}: {kind[:-1]} fixture {e['fixture']} missing")
+                        broken.append(
+                            f"rule {rid}: {kind[:-1]} fixture {e['fixture']} missing from "
+                            f"{(base / rid).relative_to(ROOT)}/"
+                        )
                 # A form may DECLARE the world it needs when its plant path
                 # cannot say so, and a declaration naming an app that is not on
                 # this tree is a plan for a world nobody can enter.
@@ -950,11 +2064,30 @@ def consistency() -> None:
                         f"`needs_app: {declared}`, which is not an app under apps/"
                     )
         for cid in rule.get("django_check_ids") or []:
-            checks_src = (ROOT / "apps" / "core" / "checks.py").read_text()
-            if str(cid) not in checks_src:
+            # THE CHECK TAG IS THE ID'S FOURTH SPELLING (ADR gate-5). A
+            # product's system check answers `acme.W001`, never `djb.W001`:
+            # two products and the template all writing `djb.` is the id
+            # collision again, one layer down, where Django's own registry
+            # merges them and nothing here would see it.
+            want = check_tag_prefix(rid)
+            if not str(cid).startswith(f"{want}."):
                 broken.append(
-                    f"rule {rid}: django check id {cid} not present in apps/core/checks.py"
+                    f"rule {rid}: django check id {cid} is not a `{want}.` tag — {id_grammar()}"
                 )
+            if is_template_id(rid):
+                checks_src = (ROOT / "apps" / "core" / "checks.py").read_text()
+                where = "apps/core/checks.py"
+                found = str(cid) in checks_src
+            else:
+                # A product's checks live in the product's own app, so the
+                # presence census reads every `checks.py` under `apps/` rather
+                # than the template's one file.
+                found = any(
+                    str(cid) in p.read_text() for p in sorted(ROOT.glob("apps/*/checks.py"))
+                )
+                where = "any apps/*/checks.py"
+            if not found:
+                broken.append(f"rule {rid}: django check id {cid} not present in {where}")
         # every path a rule's SCOPE names must resolve on this
         # tree. A scope entry is read as a fact about today — "this file may
         # import the engine", "this tree may name the credential" — and rule
@@ -1063,11 +2196,7 @@ def prime_plant_resolution() -> None:
             for entry in rule.get(kind) or []:
                 for e in [entry, *(entry.get("extra_files") or [])]:
                     resolve_plant_text(str(e["plant_at"]))
-                    fixture = (
-                        (CANARY_DIR if kind == "canaries" else NEGATIVE_DIR)
-                        / str(rule["id"])
-                        / e["fixture"]
-                    )
+                    fixture = fixture_home(kind, str(rule["id"])) / e["fixture"]
                     if fixture.is_file():
                         resolve_plant_text(fixture.read_text())
 
@@ -1178,7 +2307,7 @@ def stale_plants() -> list[str]:
         )
     mark = len(broken)
     for rule in RULES:
-        for kind, base in (("canaries", CANARY_DIR), ("negatives", NEGATIVE_DIR)):
+        for kind, base in fixture_bases(str(rule["id"])):
             for entry in rule.get(kind) or []:
                 for e in [entry, *(entry.get("extra_files") or [])]:
                     fixture = base / str(rule["id"]) / e["fixture"]
@@ -1290,22 +2419,37 @@ def residence_findings(rules: list[dict]) -> list[str]:
     NOTES, printed by name every run; one over it and every member is exit 2
     naming the growth. Shrinking never tightens the number by itself.
     """
-    census = W.residence_census(rules, OPTIONAL_APPS)
-    lines = [
-        f"rule {rid}: every canary form this rule has plants in apps/{app}, which declares "
-        f"`optional = True` — a deployment that leaves {app} out leaves this rule unable to "
-        "demonstrate a failure at all. Re-home one form into an app the product cannot "
-        "remove, or say in the rule why the subject only exists there"
-        for rid, app in census
-    ]
-    if len(census) <= RESIDENCE_BACKLOG:
-        return []
-    return [
-        f"selftest residence is at {len(census)} rules, past the recorded backlog of "
-        f"{RESIDENCE_BACKLOG} — a rule whose whole canary plan lives in an optional app may "
-        f"shrink and never grow. The whole census follows:",
-        *lines,
-    ]
+    template, product = W.split_residence_census(W.residence_census(rules, OPTIONAL_APPS))
+
+    def _line(rid: str, app: str) -> str:
+        return (
+            f"rule {rid}: every canary form this rule has plants in apps/{app}, which declares "
+            f"`optional = True` — a deployment that leaves {app} out leaves this rule unable to "
+            "demonstrate a failure at all. Re-home one form into an app the product cannot "
+            "remove, or say in the rule why the subject only exists there"
+        )
+
+    findings: list[str] = []
+    # THE PRODUCT'S OWN CENSUS, AT ZERO (D4, ADR gate-5). The recorded backlog
+    # is a measurement of the TEMPLATE's rules that a product folds and never
+    # retypes, so a namespaced rule is never counted into it and never hidden
+    # by it: the first one is named the moment it is written.
+    if product:
+        findings.append(
+            f"selftest residence: {len(product)} product rule(s) prove nothing without an "
+            "optional app, against a backlog of 0 — `selftest_residence_backlog` records the "
+            "TEMPLATE's members and a product never retypes it (ADR gate-5). The members "
+            "follow:"
+        )
+        findings.extend(_line(rid, app) for rid, app in product)
+    if len(template) > RESIDENCE_BACKLOG:
+        findings.append(
+            f"selftest residence is at {len(template)} template rules, past the recorded "
+            f"backlog of {RESIDENCE_BACKLOG} — a rule whose whole canary plan lives in an "
+            f"optional app may shrink and never grow. The whole census follows:"
+        )
+        findings.extend(_line(rid, app) for rid, app in template)
+    return findings
 
 
 def residence_leg() -> None:
@@ -1317,7 +2461,7 @@ def residence_leg() -> None:
     exercise it — there is no file whose presence makes a rule's canary plan
     live in one app.
     """
-    census = W.residence_census(RULES, OPTIONAL_APPS)
+    census, _product = W.split_residence_census(W.residence_census(RULES, OPTIONAL_APPS))
     for line in residence_findings(RULES):
         broken.append(line)
     if len(census) <= RESIDENCE_BACKLOG:
@@ -1374,6 +2518,676 @@ def residence_leg() -> None:
         broken.append(
             "RESIDENCE FALSE-POSITIVE REGRESSION — a rule with one canary form outside "
             f"apps/{optional_app} was counted into the residence census"
+        )
+
+
+def ratchet_leg() -> None:
+    """The UNMEASURED branch, and proof that it fires for one shape only.
+
+    THE SUBJECT IS `rules.yaml` DATA AND A LIST OF FINDINGS, so the forms are
+    forged and handed to the shipped function directly — the shape
+    `residence_leg` above and `declaration_leg` below already use, and the only
+    honest one here: no file on any tree makes a ratchet class unmeasured. What
+    makes one unmeasured is an app the partition does not name, and the nearest
+    real one does not exist on the template (that is what the template BEING
+    the partition means).
+
+    ONE CANARY AND FOUR NEGATIVES, and the negatives are the whole argument:
+    the branch must stay silent for a template app (absence IS the measurement
+    there), for a class that is not an app at all, for the plant scaffold, and
+    for a class the product has already recorded — including at zero, which is
+    a measurement somebody made and not an absent one.
+    """
+    fired = 0
+    silent = 0
+
+    def _finding(path: str, klass: str) -> Finding:
+        return Finding(path, 12, "a forged finding, planted by the self-test", klass)
+
+    def _rule(ratchets: dict) -> dict:
+        return {"id": "54", "ratchets": dict(ratchets)}
+
+    def _headers(rule: dict, findings: list[Finding]) -> list[str]:
+        return [
+            str(f.msg) for f in apply_ratchets(rule, findings) if f.path == "quality/rules.yaml"
+        ]
+
+    if PLATFORM_APPS is None:
+        broken.append(
+            "RATCHET LEG COULD NOT RUN — the partition lockfile did not read, so nothing "
+            "here can tell a product app from a template one. The line above names it"
+        )
+        return
+
+    # -- THE CANARY: a class keyed on an app the partition does not name ------
+    outsider = "acme"
+    if outsider in PLATFORM_APPS:  # pragma: no cover - the template ships no `acme`
+        broken.append(
+            "RATCHET CANARY COULD NOT RUN — this tree's partition names an app called "
+            f"{outsider!r}, so the canary's outsider is not outside anything"
+        )
+        return
+    hits = [_finding(f"apps/{outsider}/selectors.py", f"{outsider}.read")]
+    lines = _headers(_rule({}), hits)
+    paste = f"{outsider}.read: 1  # recorded-at {recording_sha()} [fold]"
+    wanted = (paste, f"apps/{outsider}", "platform_apps", "NEVER BEEN MEASURED", "ADR gate-6")
+    if not lines:
+        broken.append(
+            "UNMEASURED-RATCHET CANARY DEAD — a finding in a class keyed on "
+            f"apps/{outsider}, which the partition does not name and no ratchet records, "
+            "produced no header at all: the product holding it is back at a zero nothing "
+            "explains"
+        )
+    else:
+        absent = [w for w in wanted if w not in lines[-1]]
+        if absent:
+            broken.append(
+                "UNMEASURED-RATCHET CANARY MUTE — the header fired without the part a "
+                f"reader acts on: {', '.join(absent)} is not in the line. The line IS the "
+                f"remedy, and a header without it is the bare zero it replaced: {lines[-1]}"
+            )
+        else:
+            fired += 1
+    # AND THE FINDINGS THEMSELVES STILL FAIL. The recording is a remedy, never
+    # an amnesty: a header that arrived INSTEAD of the violations would have
+    # turned green-because-unrecorded into green-because-explained.
+    if not [f for f in apply_ratchets(_rule({}), hits) if f.path != "quality/rules.yaml"]:
+        broken.append(
+            "UNMEASURED-RATCHET CANARY SOFTENED — the unmeasured header replaced the "
+            "violations instead of heading them; an unrecorded class is still exit 1 "
+            "(quality/budgets.yaml)"
+        )
+
+    # -- THE NEGATIVES --------------------------------------------------------
+    negatives = (
+        (
+            "a template app",
+            _rule({}),
+            [_finding("apps/core/selectors.py", "core.read")],
+            "apps/core is inside the partition, where an absent entry IS the measurement — "
+            "offering to record one would ask the template to write down its own zeroes",
+        ),
+        (
+            "a class that is not an app",
+            _rule({}),
+            [_finding("apps/core/policies.py", "nonconforming")],
+            "`nonconforming` is a class name, not an app label, and a header naming "
+            "apps/nonconforming would send a reader to a directory nobody has",
+        ),
+        (
+            "the plant scaffold",
+            _rule({}),
+            [_finding(f"apps/{PROBE_APP}/services.py", f"{PROBE_APP}.role-value")],
+            f"apps/{PROBE_APP} exists between `Plant.put` and `Plant.restore` and nowhere "
+            "else; a recording for it names an app nobody can open",
+        ),
+        (
+            "a class the product recorded at zero",
+            _rule({f"{outsider}.read": 0}),
+            [_finding(f"apps/{outsider}/selectors.py", f"{outsider}.read")],
+            "a recorded 0 is a measurement somebody made; only an ABSENT entry is unmeasured",
+        ),
+    )
+    for what, rule, findings, why in negatives:
+        if _headers(rule, findings):
+            broken.append(
+                f"UNMEASURED-RATCHET FALSE POSITIVE — {what} was offered a recording line: {why}"
+            )
+        else:
+            silent += 1
+
+    say(
+        f"ratchet census: {fired} of 1 canary forms fired · {silent} of 4 negatives stayed "
+        "silent (a product app's class with no entry says how to record it; a template app, "
+        "a non-app class, the plant scaffold and a class already recorded at zero say "
+        "nothing)"
+    )
+    if fired != 1 or silent != 4:
+        broken.append(
+            f"RATCHET LEG SHORT — {fired} of 1 canary forms fired and {silent} of 4 "
+            "negatives stayed silent; the lines above name which"
+        )
+
+
+@contextlib.contextmanager
+def _as_product_tree(namespace: str, through: int) -> Iterator[None]:
+    """Hold this process as if `rules.yaml` declared a product namespace.
+
+    The wall's subject is `rules.yaml` DATA — two top-level keys and the id of
+    every rule — so its canaries are rule-shaped and asserted directly, exactly
+    as the residence census's are above. No file anywhere makes this tree a
+    product tree, and a plant that tried would be proving something about a
+    checkout nobody has.
+    """
+    global RULE_ID_NAMESPACE, TEMPLATE_IDS_THROUGH
+    was = (RULE_ID_NAMESPACE, TEMPLATE_IDS_THROUGH)
+    cached = dict(_OVERRIDE_RES)
+    RULE_ID_NAMESPACE, TEMPLATE_IDS_THROUGH = namespace, through
+    # The valve patterns are compiled FROM the declaration and cached per
+    # comment token, so a swapped declaration with a warm cache would test the
+    # template's regex and call it the product's.
+    _OVERRIDE_RES.clear()
+    try:
+        yield
+    finally:
+        RULE_ID_NAMESPACE, TEMPLATE_IDS_THROUGH = was
+        _OVERRIDE_RES.clear()
+        _OVERRIDE_RES.update(cached)
+
+
+def namespace_leg() -> None:
+    """The id-grammar wall, and proof that every half of it can fail (ADR gate-5).
+
+    FOUR CANARIES AND FOUR NEGATIVES, and the split is the point: the wall
+    refuses three shapes and MUST NOT refuse the two that are legal, because a
+    grammar that refused the template's own integers would take the whole rule
+    set down and a grammar that refused nothing is the colliding tree this wall
+    exists to end.
+    """
+    # -- the canaries: each of these must be refused ---------------------------
+    if id_shape_problem("acme-1") is None:
+        broken.append(
+            "NAMESPACE CANARY DEAD — `acme-1` was accepted on a tree that declares no "
+            "`rule_id_namespace`; a product id nothing claims must be refused"
+        )
+    with _as_product_tree("acme", 59):
+        for probe, why in (
+            ("60", "an integer above the template's recorded high-water"),
+            ("other-2", "an id under a namespace this tree did not declare"),
+            ("acme_3", "an id that is not `<ns>-<n>` at all"),
+        ):
+            problem = id_shape_problem(probe)
+            if problem is None:
+                broken.append(
+                    f"NAMESPACE CANARY DEAD — {probe!r} ({why}) was accepted on a tree "
+                    "declaring `rule_id_namespace: acme`"
+                )
+            elif "acme-<n>" not in problem:
+                broken.append(
+                    f"NAMESPACE CANARY MUTE — the refusal of {probe!r} does not name the "
+                    f"grammar a reader has to write instead: {problem}"
+                )
+        # -- the negatives, INSIDE the product world -------------------------
+        for legal in ("59", "1", "acme-1", "acme-204"):
+            if id_shape_problem(legal) is not None:
+                broken.append(
+                    "NAMESPACE FALSE-POSITIVE REGRESSION — the legal id "
+                    f"{legal!r} was refused on a tree declaring `rule_id_namespace: acme`"
+                )
+        if not override_re("#").search("# rule-acme-1: a product's own valve"):
+            broken.append(
+                "NAMESPACE CANARY DEAD — `# rule-acme-1:` is not a valve on a tree "
+                "declaring `rule_id_namespace: acme`, so a product could not excuse its "
+                "own rule anywhere"
+            )
+    if override_re("#").search("# rule-acme-1: a namespace this tree never claimed"):
+        broken.append(
+            "NAMESPACE FALSE-POSITIVE REGRESSION — `# rule-acme-1:` reads as a valve on a "
+            "tree that declares no namespace, so a marker naming nothing would suppress"
+        )
+
+    # -- THE PRODUCT HALF OF THE RESIDENCE CENSUS (D4, and V-D's rider) -------
+    #
+    # `residence_findings` splits its census in two and counts the product's
+    # members against ZERO — the branch that exists so a namespaced rule is
+    # never hidden inside a backlog the template measured. Nothing planted it:
+    # the template has no product rules, so on every real run that branch is
+    # dead code with nobody watching it. The canary is a forged `acme-1` whose
+    # whole canary plan lives in the one optional app, and the negative is the
+    # same rule with one form outside it.
+    optional_app = min(OPTIONAL_APPS) if OPTIONAL_APPS else None
+    if optional_app is None:
+        say(
+            "rule ids: no app declares `optional = True` on this tree, so the product half "
+            "of the residence census has no subject and its canary did not run."
+        )
+    else:
+        whole = {
+            "id": "acme-1",
+            "canaries": [
+                {"fixture": "a.py", "plant_at": f"apps/{optional_app}/models.py", "mode": "append"},
+                {
+                    "fixture": "b.py",
+                    "plant_at": f"apps/{optional_app}/services.py",
+                    "mode": "append",
+                },
+            ],
+        }
+        lines = residence_findings([*RULES, whole])
+        header = [
+            line
+            for line in lines
+            if "1 product rule(s)" in line and "against a backlog of 0" in line
+        ]
+        named = [line for line in lines if "rule acme-1:" in line and optional_app in line]
+        if not header or not named:
+            broken.append(
+                "PRODUCT-RESIDENCE CANARY DEAD — a product rule `acme-1` whose whole canary "
+                f"plan plants into apps/{optional_app} did not produce the product census's "
+                "own line (1 against 0) with the member named. The branch counts a "
+                f"product's rules against zero and nothing else watches it: {lines}"
+            )
+        mixed = {
+            "id": "acme-1",
+            "canaries": [
+                {"fixture": "a.py", "plant_at": f"apps/{optional_app}/models.py", "mode": "append"},
+                {"fixture": "b.py", "plant_at": "apps/core/audit.py", "mode": "append"},
+            ],
+        }
+        if [line for line in residence_findings([*RULES, mixed]) if "product rule(s)" in line]:
+            broken.append(
+                "PRODUCT-RESIDENCE FALSE-POSITIVE REGRESSION — a product rule with one canary "
+                f"form outside apps/{optional_app} was counted into the product census"
+            )
+
+    # -- the fixture-directory census, against a tree it builds itself ---------
+    scratch = Path(tempfile.mkdtemp(prefix="djb-nsdir-"))
+    try:
+        (scratch / "canary" / "1").mkdir(parents=True)
+        (scratch / "canary" / "acme-1").mkdir()
+        (scratch / "canary" / "other-9").mkdir()
+        bases = (("canary", scratch / "canary"),)
+        loud = fixture_dir_findings(bases, claimed={"1", "acme-1"}, namespace="acme")
+        if not any("other-9" in line and "'other'" in line for line in loud):
+            broken.append(
+                "NAMESPACE CANARY DEAD — a fixture directory under a namespace the tree has "
+                f"not claimed did not name it: {loud}"
+            )
+        quiet = fixture_dir_findings(bases, claimed={"1", "acme-1", "other-9"}, namespace="acme")
+        if quiet:
+            broken.append(
+                "NAMESPACE FALSE-POSITIVE REGRESSION — fixture directories every rule claims "
+                f"were reported anyway: {quiet}"
+            )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    if RULE_ID_NAMESPACE is None:
+        highest = max((int(r["id"]) for r in RULES if is_template_id(str(r["id"]))), default=0)
+        say(
+            f"rule ids: template mode — {len(RULES)} rules, integers minted through {highest}. "
+            f"A product folding this release records `rule_id_namespace: <ns>` and "
+            f"`template_rule_ids_through: {highest}` (ADR gate-5)."
+        )
+    else:
+        say(
+            f"rule ids: product mode — namespace {RULE_ID_NAMESPACE!r}, the template's "
+            f"integers recorded through {TEMPLATE_IDS_THROUGH}."
+        )
+
+
+# --- RULE 60's THIRD CLASS: one plant per drawer, through the drawer's own case
+#
+# WHAT CLASSES (a) AND (b) CANNOT SEE. Class (a) asks whether a product edited
+# a template-owned file; class (b) asks whether every drawer this tree opens is
+# written down with its reader and its case. Both are text. Neither can tell a
+# drawer that WORKS from a drawer whose reader opens the directory, reads the
+# members and throws them away — and that failure is silent in the worst
+# direction: the product drops its leg in, the gate says nothing, and the leg
+# never runs.
+#
+# SO THIS ONE RUNS THEM. Per live row of the `drawers` table, the case that row
+# names is invoked — `<drive> --case <case>` for a shell drive, the node id for
+# the one pytest drawer — and the case is the assertion. THAT IS THE WHOLE
+# DESIGN: the case already plants one item and already asserts the reader ran
+# it and named it, so a census that grepped the transcript for `local:<name>`
+# would be a second, weaker opinion about a property the case owns. One reader
+# per drawer, one case per drawer, and this leg is neither.
+#
+# WHY IT IS HERE AND NOT IN THE RULE'S CHECK. The cases cost tens of seconds;
+# rule 60's check runs on every `--fast`, whose whole target is under a minute.
+# The self-test is where the engine already pays for proof, and it is the one
+# place that runs BEFORE the drives it invokes (`scripts/check.sh`'s selftest
+# leg: "the engine's own `--selftest` runs first"), so a case cannot collide
+# with the same drive running as a registered member beside it — two of them
+# would refuse outright if it did (`test_gate_explain` will not overwrite an
+# existing `quality/local/`, `test_sweep`'s scratch identity is derived per
+# checkout).
+#
+# EXIT SEMANTICS, and they are the tree's and not the plan's letter. A case
+# that RAN AND FAILED is a drawer whose reader did not take the plant: it is
+# reported here, and `broken` makes it exit 2, because a drawer nobody can
+# extend means the extension convention is not enforced for it — which is the
+# definition of enforcement broken. A case that could not be RUN at all — no
+# such drive, no such case, the drive itself exit 2 — is the same verdict by a
+# different road and says which road it was.
+#: How long the leg is allowed to take. The plan's ceiling (§ 7b X7.3), printed
+#: against the measurement on every run so a case that grew is visible the run
+#: it grew, rather than the release somebody times the gate.
+DRAWERS_LEG_CEILING_S = 240
+
+
+def drawer_case_problem(row: C.DrawerRow, timeout: int = 300) -> tuple[str, str]:
+    """Run one row's case. `("", transcript)` when the drawer held.
+
+    The victim is the case's own: every one of them builds its plant in a
+    scratch directory or a clone and tears it down, which is the condition of
+    being a registered drive here. This function creates nothing.
+    """
+    drive, _, case = row.case.partition("::")
+    target = ROOT / drive
+    if not case or not target.is_file():
+        return (f"the case {row.case!r} is not a case in this tree", "")
+    if drive.endswith(".py"):
+        argv = ["uv", "run", "pytest", f"{drive}::{case}", "-p", "no:randomly", "-q"]
+        held, held_what = (
+            re.compile(r"^\s*\d+ (passed|subtests? passed)", re.M),
+            "a `N passed` line",
+        )
+    else:
+        argv = ["bash", drive, "--case", case]
+        held, held_what = re.compile(r"^\s*ok\b", re.M), "an `ok` line"
+    # THE OUTPUT GOES TO A FILE, NEVER A PIPE. Every drive here refuses a piped
+    # stdout — the same guard the gate has, for the same reason — so
+    # `capture_output=True` measures the refusal and not the drawer. Paid once,
+    # by `test_divergence_census.sh` answering "this drive refuses pipes".
+    try:
+        with tempfile.NamedTemporaryFile("w+", prefix="djb-drawer-", suffix=".log") as sink:
+            proc = subprocess.run(
+                argv,
+                cwd=ROOT,
+                stdout=sink,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                check=False,
+            )
+            sink.flush()
+            sink.seek(0)
+            transcript = sink.read().rstrip()
+    except subprocess.TimeoutExpired:
+        return (f"the case did not finish inside {timeout}s", "")
+    except OSError as error:  # a toolchain this checkout does not have
+        return (f"the case could not be started — {error}", "")
+    if proc.returncode == 2:
+        return ("the case COULD NOT LOOK (exit 2) — it cleared nothing", transcript)
+    if proc.returncode != 0:
+        return (f"the case did not hold (exit {proc.returncode})", transcript)
+    if not held.search(transcript):
+        # A case that ran, said nothing and exited 0 has asserted nothing, and
+        # is the one shape that reads exactly like a drawer that works.
+        return (f"the case exited 0 and its transcript carries no {held_what}", transcript)
+    return ("", transcript)
+
+
+def drawers_leg() -> None:
+    """Prove every drawer's reader really runs a planted item, and say what it cost."""
+    doc = ROOT / C._DRAWERS_DOC
+    if not doc.is_file():
+        broken.append(
+            f"DRAWERS CENSUS COULD NOT LOOK — {C._DRAWERS_DOC} is not in this tree, so "
+            "there is no table of drawers to run. Rule 60's class (b) says the same "
+            "thing about the same file; this leg proves nothing without it."
+        )
+        return
+    rows, _bad = C.drawer_rows(doc.read_text())
+    live = [row for row in rows if row.state == "live"]
+    held = [row for row in rows if row.state == "held"]
+    if not live:
+        broken.append(
+            "DRAWERS CENSUS HAS NO SUBJECT — the `drawers` table declares no live row, so "
+            "this leg would pass by running nothing. Rule 60's `drawer_rows` floor is the "
+            "other half of this sentence."
+        )
+        return
+
+    started = time.time()
+    ran = 0
+    for row in live:
+        why, transcript = drawer_case_problem(row)
+        if why:
+            broken.append(
+                f"DRAWER BROKEN — `{row.drawer}` (reader `{row.reader}`): {why}. The case "
+                f"`{row.case}` is what proves one planted item reaches that reader; a "
+                "drawer whose reader does not run the plant is a seam a product drops a "
+                "file into and never hears from again. Transcript:\n"
+                + ("\n".join(f"      | {line}" for line in transcript.splitlines()[-12:]))
+            )
+            continue
+        ran += 1
+        say(f"  drawer {row.drawer}: {row.case.rpartition('::')[2]} held")
+
+    # -- THE LEG'S OWN CANARY AND NEGATIVE, each building its own victim ------
+    # The subject is `drawer_case_problem`, so the forms are ROWS handed to it
+    # — the shape `residence_leg` and `namespace_leg` already use — and the
+    # victim is a two-line script this leg writes and removes. A row pointing
+    # at a real drive would be a canary about somebody else's case.
+    canary_fired = 0
+    negative_silent = 0
+    with tempfile.TemporaryDirectory(prefix="djb-drawers-canary-") as scratch:
+        red = Path(scratch) / "test_a_drawer_that_does_not_run_its_plant.sh"
+        red.write_text(
+            "#!/usr/bin/env bash\n"
+            "# Planted by the drawers leg and removed in the same breath: the shape of a\n"
+            "# reader that opened the drawer and did not run what was in it.\n"
+            'echo "  FAILED   the drawer was opened and the plant never ran"\n'
+            "exit 1\n"
+        )
+        green = Path(scratch) / "test_a_drawer_that_runs_its_plant.sh"
+        green.write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "  ok       the planted item reached the reader and was named"\n'
+            "exit 0\n"
+        )
+        forms = (
+            ("a case that did not hold", red, True),
+            ("a case that held", green, False),
+            (
+                "a case this tree does not have",
+                Path(scratch) / "test_nothing_here.sh",
+                True,
+            ),
+        )
+        for label, script, must_fire in forms:
+            try:
+                rel = str(script.relative_to(ROOT))
+            except ValueError:
+                # The scratch is outside the checkout (rung-execution §5), so the
+                # row names it by absolute path — which `drawer_case_problem`
+                # resolves through `ROOT /`, and an absolute path there is itself.
+                rel = str(script)
+            # THE FORGED DRAWER IS DELIBERATELY NOT DRAWER-SHAPED, and that
+            # is the rule working on its own canary harness: class (b) derives
+            # its population from the drawer paths the template's own code
+            # SPELLS, so a realistic one written here — even inside a comment,
+            # which the census reads exactly as it reads code — would be a
+            # drawer this file opens with no row, a finding against the census
+            # by the census. The drawer field is a label in the message; the
+            # subject of these three forms is the case.
+            forged = C.DrawerRow(
+                0, "live", label, "scripts/forged-drawer.d/<n>.sh", "x::y", f"{rel}::case_x"
+            )
+            why, _ = drawer_case_problem(forged, timeout=30)
+            if must_fire and why:
+                canary_fired += 1
+            elif must_fire:
+                broken.append(
+                    f"DRAWERS CANARY DEAD — {label} was handed to the drawer census and it "
+                    "reported nothing. Every verdict this leg prints above is then a "
+                    "verdict from a census that cannot fail."
+                )
+            elif why:
+                broken.append(
+                    f"DRAWERS FALSE-POSITIVE REGRESSION — {label} was reported as a broken "
+                    f"drawer: {why}"
+                )
+            else:
+                negative_silent += 1
+
+    seconds = time.time() - started
+    say(
+        f"  drawers census: {ran} of {len(live)} live drawer(s) ran a planted item through "
+        f"their own case · {len(held)} held (a reserved name, no reader by design) · "
+        f"{canary_fired} of 2 canary forms fired · {negative_silent} of 1 negative stayed "
+        f"silent · {seconds:.0f}s against a recorded ceiling of {DRAWERS_LEG_CEILING_S}s"
+    )
+    if canary_fired != 2 or negative_silent != 1:
+        broken.append(
+            f"DRAWERS LEG SHORT — {canary_fired} of 2 canary forms fired and "
+            f"{negative_silent} of 1 negative stayed silent; the lines above name which"
+        )
+    if seconds > DRAWERS_LEG_CEILING_S:
+        broken.append(
+            f"DRAWERS CENSUS OVER ITS CEILING — {seconds:.0f}s against {DRAWERS_LEG_CEILING_S}s "
+            "(plan P21 § TEAM F § 7b X7.3). A census nobody can afford is a census somebody "
+            "turns off: run the cheapest case that proves discovery for the drawer that "
+            "grew, or commit a higher ceiling in a diff a reviewer reads."
+        )
+
+
+def declaration_leg() -> None:
+    """Prove the declaration's own censuses can fail, and say how many did.
+
+    RULE-SHAPED AND FILE-SHAPED, because the subjects are of different kinds
+    and a canary has to be planted through the mechanism the check really
+    reads. The duplicate-id refusal's subject is `rules.yaml` data and the
+    engine-fixture refusal's is a declaration in this module, so their forms
+    are scratch data handed to the finding function — the shape `residence_leg`
+    above already uses. The orphan census's subject is a FILE ON DISK, so its
+    two forms are real files written into the real fixture trees and removed in
+    a `finally`: a synthetic listing would have proved the arithmetic and left
+    the walk itself able to go blind.
+
+    Four forms, three negatives, each canary building its own victim. A form
+    that does not fire is exit 2, never a pass.
+    """
+    fired = 0
+    silent = 0
+
+    # -- the duplicate id: it must fire, AND it must carry its remedy ----------
+    # A refusal that fires with three words is the state this leg was written
+    # against, so "did it fire" is not the whole question: the canary asserts
+    # the parts of the remedy a reader acts on — both colliding entries, the
+    # shared fixture directories, and which of the two is the one that moves.
+    victim_id = str(RULES[0]["id"])
+    dup = {
+        "id": victim_id,
+        "statement": "a scratch entry planted by the self-test to collide with a real id",
+        "check": "zzz-declaration-canary",
+    }
+    dup_lines = duplicate_id_findings([*RULES, dup])
+    if not dup_lines:
+        broken.append(
+            f"DUPLICATE-ID CANARY DEAD — a second entry declaring id {victim_id} did not "
+            "raise a duplicate-id finding at all"
+        )
+    else:
+        line = dup_lines[-1]
+        wanted = (
+            "THE COLLISION:",
+            "REMEDY:",
+            f"quality/canary/{victim_id}/",
+            f"quality/negative/{victim_id}/",
+            "rule_id_namespace",
+            # THE CITE IS PART OF THE REMEDY, asserted so a later rewrite that
+            # drops it goes red rather than quietly leaving a product to guess
+            # where the grammar is written down (V-D1a rider).
+            "ADR gate-5",
+            "CHANGELOG",
+        )
+        absent = [w for w in wanted if w not in line]
+        if absent:
+            broken.append(
+                f"DUPLICATE-ID CANARY MUTE — the refusal fired for id {victim_id} without "
+                f"the part of its remedy a reader acts on: {', '.join(absent)} is not in the "
+                "line. A duplicate id a product cannot act on is the state this remedy "
+                "replaced"
+            )
+        else:
+            fired += 1
+    # THE NEGATIVE: an entry with an id nothing else holds is not a collision.
+    fresh = dict(dup, id="zzz-declaration-negative")
+    if duplicate_id_findings([*RULES, fresh]):
+        broken.append(
+            "DUPLICATE-ID FALSE-POSITIVE REGRESSION — an entry whose id no other entry "
+            "holds was reported as a duplicate"
+        )
+    else:
+        silent += 1
+
+    # -- the orphan fixture: two forms, each a real file, each removed --------
+    # Form one is the shape a fold produces: a file in a REAL rule's directory
+    # that the rule's plan does not name. Form two is the directory half: a
+    # fixture directory numbered for a rule that does not exist.
+    real_dir = next(
+        (NEGATIVE_DIR / str(r["id"]) for r in RULES if (NEGATIVE_DIR / str(r["id"])).is_dir()),
+        None,
+    )
+    if real_dir is None:
+        broken.append(
+            "ORPHAN-FIXTURE CANARY COULD NOT RUN — no rule on this tree has a negative "
+            "fixture directory, so the census has no real directory to be planted into"
+        )
+    else:
+        forms = (
+            real_dir / "zzz_orphan_canary.py",
+            NEGATIVE_DIR / "zzz-no-such-rule" / "zzz_orphan_canary.py",
+        )
+        for victim in forms:
+            made_dir = not victim.parent.is_dir()
+            if made_dir:
+                victim.parent.mkdir(parents=True)
+            victim.write_text(
+                "# planted by the self-test's declaration leg and removed in the same "
+                "breath; a copy that outlived its run is the census working\n"
+            )
+            try:
+                lines = orphan_fixture_findings(RULES, fixture_files_on_disk())
+            finally:
+                victim.unlink(missing_ok=True)
+                if made_dir:
+                    victim.parent.rmdir()
+            rel = str(victim.relative_to(ROOT))
+            if any(rel in line for line in lines):
+                fired += 1
+            else:
+                broken.append(
+                    f"ORPHAN-FIXTURE CANARY DEAD — {rel} was written into the fixture tree "
+                    "and no entry of any rule claims it, and the census did not name it"
+                )
+    # -- the engine's own claims: a declared fixture the tree does not have --
+    # The form that turned a real deletion into a FileNotFoundError halfway
+    # through a self-test before this guard existed. The victim is a synthetic
+    # declaration, never the real dict: deleting the real file to prove the
+    # point would break the very leg the file exists for.
+    absent = ROOT / "quality" / "negative" / "zzz-no-such-rule" / "zzz_never_written.js"
+    if engine_fixture_findings({absent: "a scratch declaration planted by the self-test"}):
+        fired += 1
+    else:
+        broken.append(
+            f"ENGINE-FIXTURE CANARY DEAD — {absent.relative_to(ROOT)} is declared and is not "
+            "on this tree, and the census did not say so"
+        )
+    if engine_fixture_findings(ENGINE_FIXTURES):
+        broken.append(
+            "ENGINE-FIXTURE REGRESSION — a fixture this module plants by path is missing "
+            "from the tree; the lines from the consistency census above name it"
+        )
+    else:
+        silent += 1
+
+    # THE NEGATIVE, and it is the tree itself: at rest, after both plants were
+    # removed, every file under the two fixture trees is claimed by an entry.
+    # It is the restore-proof as well as the restraint-proof — a plant that
+    # outlived its `finally` would show up here as a finding.
+    at_rest = orphan_fixture_findings(RULES, fixture_files_on_disk())
+    if at_rest:
+        broken.append(
+            "ORPHAN-FIXTURE FALSE-POSITIVE OR UNRESTORED PLANT — the tree at rest is not "
+            "clean under the orphan census: " + " | ".join(at_rest)
+        )
+    else:
+        silent += 1
+
+    say(
+        f"declaration census: {fired} of 4 canary forms fired · {silent} of 3 negatives "
+        "stayed silent (duplicate id with its remedy; an unclaimed file in a real rule's "
+        "directory; a fixture directory no rule is named for; an engine-planted fixture "
+        "the tree does not have)"
+    )
+    if fired != 4 or silent != 3:
+        broken.append(
+            f"DECLARATION LEG SHORT — {fired} of 4 canary forms fired and {silent} of 3 "
+            "negatives stayed silent; the lines above name which"
         )
 
 
@@ -1880,7 +3694,9 @@ def seam_valve_census() -> int:
     entry = entries[0]
     plant = Plant()
     try:
-        plant.put(NEGATIVE_DIR / rid / entry["fixture"], entry["plant_at"], entry["mode"])
+        plant.put(
+            fixture_home("negative", rid) / entry["fixture"], entry["plant_at"], entry["mode"]
+        )
         rows = [row for row in all_overrides() if row[1] == str(entry["plant_at"])]
         if not rows:
             broken.append(
@@ -1916,7 +3732,7 @@ def seam_skip_dir_census() -> int:
     target = "frontend/node_modules/some-pkg/index.js"
     plant = Plant()
     try:
-        plant.put(NEGATIVE_DIR / "50" / "vendored_valve.js", target, "create")
+        plant.put(VENDORED_VALVE_FIXTURE, target, "create")
         rows = [row for row in all_overrides() if row[1] == target]
         if rows:
             broken.append(
@@ -1947,6 +3763,10 @@ def selftest() -> None:
         return
 
     residence_leg()
+    ratchet_leg()
+    namespace_leg()
+    declaration_leg()
+    drawers_leg()
 
     fired = 0
     silent = 0
@@ -2004,9 +3824,10 @@ def selftest() -> None:
                 continue  # batched probe runs below
             plant = Plant()
             try:
-                plant.put(CANARY_DIR / rid / entry["fixture"], entry["plant_at"], entry["mode"])
+                home = fixture_home("canary", rid)
+                plant.put(home / entry["fixture"], entry["plant_at"], entry["mode"])
                 for extra in entry.get("extra_files") or []:
-                    plant.put(CANARY_DIR / rid / extra["fixture"], extra["plant_at"], extra["mode"])
+                    plant.put(home / extra["fixture"], extra["plant_at"], extra["mode"])
                 if via == "diff":
                     result = C.diff_checks(ROOT, "HEAD", RULES_BY_ID).get(rid, CheckResult())
                     kept, _ = apply_overrides(rid, result.findings)
@@ -2038,11 +3859,10 @@ def selftest() -> None:
                 continue
             plant = Plant()
             try:
-                plant.put(NEGATIVE_DIR / rid / entry["fixture"], entry["plant_at"], entry["mode"])
+                home = fixture_home("negative", rid)
+                plant.put(home / entry["fixture"], entry["plant_at"], entry["mode"])
                 for extra in entry.get("extra_files") or []:
-                    plant.put(
-                        NEGATIVE_DIR / rid / extra["fixture"], extra["plant_at"], extra["mode"]
-                    )
+                    plant.put(home / extra["fixture"], extra["plant_at"], extra["mode"])
                 if via == "diff":
                     result = C.diff_checks(ROOT, "HEAD", RULES_BY_ID).get(rid, CheckResult())
                     kept, _ = apply_overrides(rid, result.findings)
@@ -2080,10 +3900,7 @@ def selftest() -> None:
     # still asserted individually (its expected id must fire naming its own
     # subject), and a probe app that fails to import fails EVERY assertion —
     # loudly, as exit 2 — rather than any canary quietly passing.
-    for kind, base, is_canary in (
-        ("canaries", CANARY_DIR, True),
-        ("negatives", NEGATIVE_DIR, False),
-    ):
+    for kind, is_canary in (("canaries", True), ("negatives", False)):
         entries: list[tuple[str, dict]] = []
         for rule in RULES:
             rid = str(rule["id"])
@@ -2104,9 +3921,10 @@ def selftest() -> None:
         try:
             plant.scaffold_probe()
             for rid, entry in entries:
-                plant.put(base / rid / entry["fixture"], entry["plant_at"], entry["mode"])
+                home = fixture_home(kind, rid)
+                plant.put(home / entry["fixture"], entry["plant_at"], entry["mode"])
                 for extra in entry.get("extra_files") or []:
-                    plant.put(base / rid / extra["fixture"], extra["plant_at"], extra["mode"])
+                    plant.put(home / extra["fixture"], extra["plant_at"], extra["mode"])
             env = dict(os.environ)
             env.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.test")
             proc = subprocess.run(
@@ -2288,9 +4106,24 @@ TRAILER_KEYS: tuple[str, ...] = ("doc:", "valve:", "blind:", "next:")
 BUDGET_TRAILER: list[str] = ["    doc:    — (a budget, not a rule; see quality/budgets.yaml)"]
 
 
+def remedy_pointer(rid: str) -> str:
+    """The tail a finding carries when its rule declares `remedies:` (ADR gate-6).
+
+    A ratcheted rule's classes are the shapes it refuses, and each one has a
+    FIX FORM — the spelling that makes the finding go away honestly. Those live
+    in the rule's `remedies:` block, which `--explain` prints, and the finding
+    itself carries the one-word route to them: a red that names its own reader
+    is a red a builder can act on without going to look for the rule.
+    """
+    rule = RULES_BY_ID.get(rid) or {}
+    if not rule.get("remedies"):
+        return ""
+    return f" · fix form: --explain {rid}"
+
+
 def record_violation(rid: str, finding: object, *, path: str = "") -> None:
     """Append a finding AND remember whose it is, so the trailer can group."""
-    text = f"rule {rid}: {finding}"
+    text = f"rule {rid}: {finding}{remedy_pointer(rid)}"
     violations.append(text)
     violation_rule[text] = rid
     if path:
@@ -2412,7 +4245,14 @@ def rules_listing() -> int:
     for rule in RULES:
         rid = str(rule["id"])
         name = str(rule.get("name", ""))
-        mark = "" if rule.get("enabled", True) else "  [DISABLED]"
+        # `[local]` is the drawer's tag and it is printed by BOTH readers: a
+        # reader holding a red has to be able to tell whose rule refused them,
+        # because the remedy differs (a template rule is the template's to
+        # argue with; a drawer rule is the product's own). On a tree with no
+        # drawer no line carries it, which is what makes the absent-drawer
+        # negative a byte-identical `cmp`.
+        mark = "  [local]" if is_local_rule(rid) else ""
+        mark += "" if rule.get("enabled", True) else "  [DISABLED]"
         say(f"{rid:>3}  {name:<44}  {_first_sentence(rule.get('statement'))}{mark}")
     return 0
 
@@ -2427,7 +4267,13 @@ def explain(rid: str) -> int:
         )
         return 2
     enabled = "enabled" if rule.get("enabled", True) else "DISABLED"
-    say(f"rule {rid} · {rule.get('name', '')} · {enabled}")
+    home = " · [local]" if is_local_rule(rid) else ""
+    say(f"rule {rid} · {rule.get('name', '')} · {enabled}{home}")
+    if home:
+        say(
+            "  home: quality/local/rules.yaml — this product's drawer; its fixtures are "
+            f"under quality/local/{{canary,negative}}/{rid}/"
+        )
     if not rule.get("enabled", True):
         say(f"  disabled_reason: {rule.get('disabled_reason', 'no reason recorded')}")
     say("")
@@ -2447,6 +4293,11 @@ def explain(rid: str) -> int:
     say(f"floors: {rule.get('floors') or {}}")
     if rule.get("ratchets"):
         say(f"ratchets: {rule['ratchets']}")
+    # ONE LINE PER FINDING CLASS, and each one is a fix form rather than a
+    # restatement of the rule (ADR gate-6). `*` is the catch-all a rule whose
+    # classes are per-app declares: one remedy, every class.
+    for klass, text in (rule.get("remedies") or {}).items():
+        say(f"remedies: {klass} — {' '.join(str(text).split())}")
     say("")
     say("does_not_cover:")
     say(f"  {' '.join(str(rule.get('does_not_cover', '')).split())}")
@@ -2457,6 +4308,65 @@ def explain(rid: str) -> int:
     say("negatives:")
     for entry in rule.get("negatives") or []:
         say(f"  {entry.get('fixture')} → {entry.get('plant_at')} ({entry.get('via', 'ast')})")
+    # --- THE CENSUS (C0's seam) -------------------------------------------
+    #
+    # Everything above this line is the rule's DECLARATION: what it says, where
+    # it is written down, how an exception is recorded, what it cannot see. All
+    # of it is true of an empty checkout. A rule may also declare `census:` — a
+    # dotted path to a callable this reader runs over THIS TREE — so that
+    # `--explain <id>` can answer "and what does that mean here, right now?"
+    # without a second reader, a second walker or a management command. Rule
+    # 59's census is the worked example: its third class prints one draft
+    # `EVENT_KINDS` line per undecided noun, scattered through a gate's output;
+    # the census is the block each `events.py` actually needs, grouped by app.
+    #
+    # THREE FAILURES, THREE DIFFERENT ANSWERS, none of them a crash:
+    #   no `census:` key      nothing printed at all — every rule that came
+    #                         before this seam explains byte-identically
+    #   unresolvable          EXIT 2, naming the dotted path. A declaration
+    #                         pointing at a callable that is not there is
+    #                         broken enforcement, and 2 outranks a pass.
+    #   the callable RAISES   a `could not look:` line naming the exception,
+    #                         and the rest of the explanation still prints. A
+    #                         reader that dies on a tree its census stumbled on
+    #                         takes the declaration down with it, and the
+    #                         declaration is the part that is always true.
+    census = rule.get("census")
+    if census:
+        import importlib
+
+        dotted = str(census)
+        module_name, _, attr = dotted.rpartition(".")
+        problem = ""
+        fn = None
+        if not module_name or not attr:
+            problem = "it is not a dotted path to a callable (want `package.module.name`)"
+        else:
+            try:
+                module = importlib.import_module(module_name)
+            except Exception as exc:  # noqa: BLE001 — any import failure is the same verdict
+                problem = f"{module_name} would not import: {type(exc).__name__}: {exc}"
+            else:
+                fn = getattr(module, attr, None)
+                if fn is None:
+                    problem = f"{module_name} has no attribute {attr!r}"
+                elif not callable(fn):
+                    problem = f"{module_name}.{attr} is a {type(fn).__name__}, not a callable"
+        if problem:
+            say("")
+            say(f"‼ rule {rid}: census {dotted!r} does not resolve — {problem}")
+            return 2
+        say("")
+        say("census (this tree):")
+        try:
+            lines = list(fn(ROOT, rule))
+        except Exception as exc:  # noqa: BLE001 — a stumbling census reports, never crashes
+            say(f"  could not look: {dotted} raised {type(exc).__name__}: {exc}")
+        else:
+            for line in lines:
+                say(f"  {line}")
+            if not lines:
+                say("  nothing to report on this tree")
     say("")
     say(f"selftest_floor: {rule.get('selftest_floor') or {}}")
     return 0
@@ -2516,6 +4426,15 @@ HARDCODED_READS: tuple[tuple[str, str], ...] = (
     ("apps/*/schemas.py", "_measure_budgets_detailed: the Out-schema field budget"),
     ("apps/core/checks.py", "consistency: every rule's django_check_ids must be present"),
     ("quality/budgets.yaml", "BUDGETS_PATH: the recorded ceilings"),
+    # THE DRAWERS LEG RUNS THE CASE EVERY `drawers` ROW NAMES, so the drives
+    # holding those cases are inputs to this engine's verdict exactly as a
+    # rule's scope is. Declared as the two DIRECTORIES rather than as the ten
+    # files, because the rows move: a row repointed at another drive in
+    # `scripts/tests/` would otherwise key the verdict on bytes nobody
+    # measured, and the collapse is honest here because the leg really can run
+    # any member of them.
+    ("scripts/tests", "drawers_leg: the shell case each `drawers` row names"),
+    ("apps/core/tests/test_conftest_local.py", "drawers_leg: the fixtures drawer's case"),
 )
 
 _GLOB_META = "*?["
@@ -3035,12 +4954,26 @@ def _engine_digest(blobs: dict[str, str]) -> str:
     """
     global _ENGINE_DIGEST
     if _ENGINE_DIGEST is None:
-        under = [p for p in blobs if p.startswith("quality/") and p != "quality/rules.yaml"]
+        skip = {"quality/rules.yaml", "quality/local/rules.yaml"}
+        under = [p for p in blobs if p.startswith("quality/") and p not in skip]
         rest = {k: v for k, v in _DOC.items() if k != "rules"}
+        # THE DRAWER IS THE SAME SHAPE, for the same reason (X3.5). Its blob is
+        # subtracted so that rewording ONE product rule does not re-scan the
+        # other fifty-seven — the per-rule `rule` component already carries
+        # that rule's own text — and its NON-rule keys are folded in here,
+        # because the namespace, the high-water and the drawer's ratchets
+        # change what every rule scans or how every finding is judged. A key
+        # added to the drawer therefore moves the engine digest, and a
+        # no-op edit to it moves nothing.
+        rest_local = {k: v for k, v in LOCAL_DOC.items() if k != "rules"}
         digest = hashlib.sha256()
         digest.update(_paths_digest(under, blobs).encode("utf-8"))
         digest.update(b"\n")
         digest.update(yaml.safe_dump(rest, sort_keys=True, allow_unicode=True).encode("utf-8"))
+        digest.update(b"\n")
+        digest.update(
+            yaml.safe_dump(rest_local, sort_keys=True, allow_unicode=True).encode("utf-8")
+        )
         _ENGINE_DIGEST = digest.hexdigest()
     return _ENGINE_DIGEST
 

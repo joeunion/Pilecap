@@ -31,7 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: apps/ config/ perf/conftest.py quality/ scripts/check.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/queue_cited.sh scripts/secrets_scan.sh scripts/sweep.sh scripts/tests
+# drives: apps/ config/ deploy/tests/test_stage.sh perf/conftest.py quality/ scripts/check.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/queue_cited.sh scripts/secrets_scan.sh scripts/sweep.sh scripts/tests
 # The drive for the `--loop` pytest TIER — the derived slow tier in
 # `apps/conftest.py` and the own-app mapping in `scripts/loop_tier.sh`.
 #
@@ -1617,38 +1617,291 @@ case_the_measurement_writes_a_file_its_own_reader_can_read() {
 }
 
 case_the_measurement_flag_belongs_to_the_full_mode_alone() {
-    # A MISTYPED FLAG IS NEVER A SILENTLY DIFFERENT RUN. `--store-durations`
-    # has two senses — the suite's own timing under `--leg`, and the whole
-    # gate's member clock at the full mode — and at `--fast` or `--loop` it
-    # would be a measurement of a SUBSET written into the file the whole set
-    # derives from. Read as text: running the gate from inside a drive is a
-    # nested gate the per-checkout lock refuses (rung-execution §2), so the
-    # arm and its refusal are asserted where they live.
-    CURRENT="the --store-durations arm"
+    # A MISTYPED FLAG IS NEVER A SILENTLY DIFFERENT RUN, AND THIS CASE NOW
+    # WALKS THE ROAD IT USED TO PHOTOGRAPH. `--store-durations` has two senses
+    # — the suite's own timing under `--leg`, and the whole gate's member clock
+    # at the full mode — and at `--fast` or `--loop` it would be a measurement
+    # of a SUBSET written into the file the whole set derives from.
+    #
+    # IT USED TO READ `scripts/check.sh` AS TEXT: `grep` for a `^--store-durations)`
+    # arm, `grep` for `GATE_STORE_MEMBERS=1`, `grep` for the refusal's wording.
+    # Every one of those was green on f800ab5b, and on f800ab5b the documented
+    # invocation — `./scripts/check.sh --store-durations` — exited 2 with
+    # `unknown argument '--store-durations'`, because the arm the grep found
+    # was in the SECOND `case`, reachable only with something else in front of
+    # it. A drive that greps a script vouches for a road nobody
+    # walked, so this case EXECUTES the parser instead.
+    #
+    # WHAT IS EXECUTED, and it is a section of the real file rather than a copy:
+    # `scripts/check.sh` from `MODE=${1:-}` down to the extra-arguments refusal
+    # — the same boundaries `scripts/tests/test_gate_lease.sh`'s
+    # `case_the_usage_header_and_the_parser_agree` derives — sourced in a
+    # subshell with the positional parameters set. Sourcing it RUNS it, and its
+    # `exit 2` ends the subshell, which is the behaviour under test with
+    # nothing transcribed here to drift. A nested `./scripts/check.sh` is not
+    # an option: the per-checkout gate lock refuses one (rung-execution §2).
+    CURRENT="the --store-durations parser, executed"
     OUT=""
-    local file="${ROOT}/scripts/check.sh" arm
-    arm=$(grep -n '^--store-durations)$' "$file" | sed -n '1p' | cut -d: -f1)
-    if [ -z "$arm" ]; then
-        bad "check.sh has no top-level --store-durations arm — the full mode cannot be asked to measure"
+    local file="${ROOT}/scripts/check.sh" start endif fin
+
+    start=$(awk -v want='MODE=${1:-}' '$0 == want { print NR; exit }' "$file")
+    endif=$(awk -v want='if [ "$#" -gt 0 ]; then' '$0 == want { print NR; exit }' "$file")
+    if [ -z "$start" ] || [ -z "$endif" ]; then
+        bad "the parser section (starts '${start:-<none>}', extra-args check '${endif:-<none>}') is not in check.sh — this case has lost its subject"
         return
     fi
-    ok "the arm is at check.sh:${arm}"
-    if grep -q 'GATE_STORE_MEMBERS=1' "$file"; then
-        ok "it sets its own flag rather than reusing the suite's"
-    else
-        bad "no GATE_STORE_MEMBERS — the two senses of the flag are not told apart"
+    fin=$(awk -v s="$endif" 'NR >= s && $0 == "fi" { print NR; exit }' "$file")
+    if [ -z "$fin" ] || [ "$fin" -le "$start" ]; then
+        bad "the extra-arguments refusal at :${endif} has no closing 'fi' at column 1 — the extraction cannot be trusted"
+        return
     fi
-    if grep -q -- '--store-durations without --leg measures the WHOLE gate' "$file"; then
-        ok "at any other mode it refuses and names both senses"
-    else
-        bad "no refusal for --store-durations at --fast or --loop: a subset would be written into the whole set's file"
+    PARSER_BODY="${WORK}/parser.sh"
+    sed -n "${start},${fin}p" "$file" >"$PARSER_BODY"
+    if ! grep -q '^case "\$MODE" in$' "$PARSER_BODY"; then
+        bad "the extracted section (check.sh:${start}-${fin}) holds no mode case — nothing to drive"
+        return
     fi
+    ok "the parser is check.sh:${start}-${fin}, $(awk 'END { print NR }' "$PARSER_BODY") lines, extracted and run (never read)"
+
+    # parser_run <label> <arg...> — source the section with those arguments and
+    # print the variables the rest of the gate branches on. RC is the section's
+    # own exit status, which for a refusal is the `exit 2` inside it.
+    parser_run() {
+        local label=$1
+        shift
+        OUT="${WORK}/parser-${label}.out"
+        RC=0
+        (
+            set -uo pipefail
+            cd "$ROOT" || exit 2
+            set -- "$@"
+            # shellcheck disable=SC1090  # the extracted section, by design
+            . "$PARSER_BODY"
+            printf 'MODE=[%s]\n' "$MODE"
+            printf 'GATE_STORE_MEMBERS=[%s]\n' "$GATE_STORE_MEMBERS"
+            printf 'GATE_STORE_DURATIONS=[%s]\n' "$GATE_STORE_DURATIONS"
+            printf 'GATE_BANK=[%s]\n' "$GATE_BANK"
+            printf 'GATE_LEG_UNIT=[%s]\n' "$GATE_LEG_UNIT"
+        ) >"$OUT" 2>&1 || RC=$?
+    }
+
+    CURRENT="./scripts/check.sh --store-durations (the documented form)"
+    parser_run store-alone --store-durations
+    exits 0
+    says "MODE=[]"
+    says "GATE_STORE_MEMBERS=[1]"
+    # AND IT NORMALISES RATHER THAN BECOMING A MODE: the suite's own timing
+    # flag must stay clear, or one word would ask for two different
+    # measurements.
+    says "GATE_STORE_DURATIONS=[]"
+
+    CURRENT="--fast --store-durations still refuses"
+    parser_run fast-store --fast --store-durations
+    exits 2
+    says "--store-durations without --leg measures the WHOLE gate"
+
+    CURRENT="--loop --store-durations still refuses"
+    parser_run loop-store --loop --store-durations
+    exits 2
+    says "--store-durations without --leg measures the WHOLE gate"
+
+    CURRENT="the other sense survives: --leg pytest-x2 --store-durations"
+    parser_run leg-store --leg pytest-x2 --store-durations
+    exits 0
+    says "MODE=[--leg]"
+    says "GATE_LEG_UNIT=[pytest-x2]"
+    says "GATE_STORE_DURATIONS=[1]"
+    says "GATE_STORE_MEMBERS=[]"
+
+    CURRENT="the negative: --bank is untouched by the new arm"
+    parser_run bank --bank
+    exits 0
+    says "MODE=[]"
+    says "GATE_BANK=[1]"
+    says "GATE_STORE_MEMBERS=[]"
+
+    CURRENT="the negative: an actually unknown flag is still exit 2"
+    parser_run bogus --store-duration
+    exits 2
+    says "unknown argument '--store-duration'"
+
+    # THE PLANT, AND IT IS WHAT MAKES THE GREEN ABOVE WORTH ANYTHING. Cut the
+    # new mode arm out of the extracted section and the documented invocation
+    # must go back to the refusal it printed on f800ab5b. Its own victim: a
+    # copy of the section, never the file.
+    CURRENT="and with the mode arm removed the documented form reds again"
+    local plant="${WORK}/parser-narrowed.sh"
+    python3 - "$PARSER_BODY" "$plant" <<'PY_CUT'
+import sys
+
+body = open(sys.argv[1]).read().split("\n")
+out, i, cut = [], 0, 0
+# The FIRST `--store-durations)` arm is the mode case's. Drop it and its
+# arm body, up to and including the `    ;;` that ends it, and leave the
+# second (the full-mode arm in the later `case`) alone.
+while i < len(body):
+    if cut == 0 and body[i] == "--store-durations)":
+        cut = 1
+        i += 1
+        while i < len(body) and body[i] != "    ;;":
+            i += 1
+        i += 1
+        continue
+    out.append(body[i])
+    i += 1
+if cut == 0:
+    raise SystemExit("no mode arm to cut — the plant would prove nothing")
+open(sys.argv[2], "w").write("\n".join(out))
+PY_CUT
+    if [ ! -s "$plant" ]; then
+        bad "the narrowed parser is empty — the plant cut everything"
+    else
+        local saved="$PARSER_BODY"
+        PARSER_BODY="$plant"
+        parser_run narrowed --store-durations
+        PARSER_BODY="$saved"
+        if [ "$RC" = "2" ] && grep -qF -- "unknown argument '--store-durations'" "$OUT"; then
+            ok "exit 2, \"unknown argument '--store-durations'\" — the arm is load-bearing and this case can fail"
+        else
+            bad "the narrowed parser exited ${RC} and did not refuse — this case is green over an arm that is not what makes the flag work: $(tr '\n' '|' <"$OUT")"
+        fi
+    fi
+
+    CURRENT="the --store-durations arm"
+    # The usage refusal still names the flag, so a reader who mistypes is sent
+    # somewhere. Read as text on purpose: this is a claim about a SENTENCE, and
+    # the executed run above is the claim about the behaviour.
     if grep -q -- '--store-durations, --bank' "$file"; then
         ok "the unknown-argument refusal lists it, so it is not a flag only the source knows about"
     else
         bad "the usage refusal does not name --store-durations"
     fi
 }
+
+case_every_registered_drive_member_resolves_to_a_file() {
+    # ONE READER OF BOTH DRIVE HOMES. The always-on leg runs a member
+    # by NAME and has to turn that name into a file; `selftest_registered_drives`
+    # is the one place that knows where a drive lives, and it registers two
+    # homes — every `scripts/tests/test_*.sh` plus the named
+    # `deploy/tests/test_stage.sh`. `always_on__drive_file` used to compose
+    # `scripts/tests/test_<name>.sh` for all of them, so on f800ab5b:
+    #
+    #   MISS stage  -> scripts/tests/test_stage.sh (No such file)
+    #
+    # and that member could only ever report `could not look`, naming a path
+    # that has never existed. It was LATENT because the unreachable
+    # `--store-durations` mode arm kept the durations
+    # file from naming `stage`; the same rung fixes the flag, so the two land
+    # together.
+    CURRENT="every registered drive resolves to a file"
+    OUT=""
+    local file="${ROOT}/scripts/check.sh" reg="${WORK}/registry.sh" fn
+
+    # BOTH FUNCTIONS ARE EXTRACTED BY NAME AND RUN — the way test_list_legs.sh
+    # reads the registry — so the population and the composition are the
+    # gate's own and there is no copy here to drift. Not the whole always-on
+    # fence: this case drives two functions and must be able to drive them in
+    # a scratch tree that has none of the fence's ledger libraries.
+    : >"$reg"
+    for fn in selftest_registered_drives always_on__drive_file; do
+        awk -v want="${fn}() {" '
+            index($0, want) == 1 { on = 1 }
+            on { print }
+            on && $0 == "}" { exit }
+        ' "$file" >>"$reg"
+        if ! grep -q "^${fn}() {" "$reg"; then
+            bad "scripts/check.sh no longer defines ${fn}() at column 1 — this case has lost its subject"
+            return
+        fi
+    done
+    if [ "$(grep -c '^}$' "$reg")" != "2" ]; then
+        bad "one of the two extracted functions has no column-1 closing brace — the extraction cannot be trusted"
+        return
+    fi
+
+    # walk <dir> — every registered name, its composed path, and whether that
+    # path is a file. Printed as `<name> <path> <ok|MISSING>` so both the
+    # assertion and the failure message read off one transcript.
+    walk() {
+        local dir=$1 label=$2
+        OUT="${WORK}/registry-walk-${label}.out"
+        RC=0
+        (
+            set +e
+            cd "$dir" || exit 2
+            unset DJB_SELFTEST_DRIVES_DIR
+            # shellcheck disable=SC1090  # the extracted registry and composer, by design
+            . "$reg"
+            selftest_registered_drives | while IFS= read -r name; do
+                [ -n "$name" ] || continue
+                path=$(always_on__drive_file "$name")
+                if [ -f "$path" ]; then
+                    printf '%s %s ok\n' "$name" "$path"
+                else
+                    printf '%s %s MISSING\n' "$name" "$path"
+                fi
+            done
+        ) >"$OUT" 2>&1 || RC=$?
+    }
+
+    walk "$ROOT" tree
+    local total missing
+    total=$(awk 'END { print NR + 0 }' "$OUT")
+    missing=$(awk '$3 == "MISSING" { print $1 }' "$OUT" | tr '\n' ' ')
+    # A FLOOR THAT NAMES ITS POPULATION, not a reach kind: this tree registers
+    # drives in TWO homes, and a walk that found only one home's members would
+    # be green by arithmetic. Both are asserted below by name.
+    if [ "$total" -lt 2 ]; then
+        bad "the registry named ${total} drive(s) — every assertion below would be green over nothing"
+        return
+    fi
+    if [ -z "$missing" ]; then
+        ok "${total} registered drive(s), every one of them a file on this tree"
+    else
+        bad "${total} registered, and these resolve to nothing: ${missing}— the leg can only report could-not-look for them"
+    fi
+
+    CURRENT="and the second home is one of them"
+    local stage_path
+    stage_path=$(awk '$1 == "stage" { print $2; exit }' "$OUT")
+    if [ "$stage_path" = "deploy/tests/test_stage.sh" ]; then
+        ok "stage -> ${stage_path} (the deploy home, not scripts/tests/)"
+    elif [ -z "$stage_path" ]; then
+        bad "the registry names no 'stage' member — the deploy-home widening is gone and this case is green over one home"
+    else
+        bad "stage -> ${stage_path}; wanted deploy/tests/test_stage.sh"
+    fi
+
+    CURRENT="and a registered member with no file is SEEN (the plant)"
+    # ITS OWN VICTIM: a scratch tree whose `scripts/check.sh` is nothing but
+    # three column-zero registration lines. The registry reads `scripts/check.sh`
+    # relative to the cwd, so this drives the real functions over a planted
+    # population — one member in each home that exists, and one that does not.
+    local plant="${WORK}/registry-plant"
+    rm -rf "$plant"
+    mkdir -p "${plant}/scripts/tests" "${plant}/deploy/tests"
+    {
+        printf './scripts/tests/test_real.sh\n'
+        printf './scripts/tests/test_ghost.sh\n'
+        printf './deploy/tests/test_stage.sh\n'
+    } >"${plant}/scripts/check.sh"
+    : >"${plant}/scripts/tests/test_real.sh"
+    : >"${plant}/deploy/tests/test_stage.sh"
+    walk "$plant" plant
+    local want_ghost want_real want_stage
+    want_ghost=$(awk '$1 == "ghost" { print $2, $3; exit }' "$OUT")
+    want_real=$(awk '$1 == "real" { print $3; exit }' "$OUT")
+    want_stage=$(awk '$1 == "stage" { print $2, $3; exit }' "$OUT")
+    if [ "$want_ghost" = "scripts/tests/test_ghost.sh MISSING" ] &&
+        [ "$want_real" = "ok" ] &&
+        [ "$want_stage" = "deploy/tests/test_stage.sh ok" ]; then
+        ok "the plant's ghost is MISSING, its two real members resolve — this case can fail, and it reads both homes"
+    else
+        bad "the plant read back ghost=[${want_ghost}] real=[${want_real}] stage=[${want_stage}]: $(tr '\n' '|' <"$OUT")"
+    fi
+    rm -rf "$plant"
+}
+
 
 # --- the cases: the per-rung gate runs on a box -------------------------------
 #
@@ -1838,6 +2091,7 @@ case_the_canonical_scope_carries_the_always_on_inputs
 case_the_always_on_leg_is_wired_into_the_loop
 case_the_measurement_writes_a_file_its_own_reader_can_read
 case_the_measurement_flag_belongs_to_the_full_mode_alone
+case_every_registered_drive_member_resolves_to_a_file
 case_a_loop_that_is_not_on_a_box_refuses_and_prints_the_recipe
 case_the_box_guard_is_wired_above_everything_it_would_cost
 

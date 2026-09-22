@@ -143,6 +143,7 @@
         "ec2:DescribeSecurityGroups",
         "ec2:DescribeAvailabilityZones",
         "ec2:DescribeSpotPriceHistory",
+        "ec2:DescribeSpotInstanceRequests",
         "ec2:DescribeTags",
         "ssm:DescribeInstanceInformation"
       ],

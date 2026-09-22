@@ -255,6 +255,9 @@ test can find one.
   "cd /home/verifier/src && bash scripts/tests/test_x.sh"` — ONE quoted
   string; the wrapper joins its arguments with spaces and the box's shell
   re-parses them, so no `$VAR`, no `\n`, no unquoted pipes.
+  `./scripts/verifier_box.sh pool --want N` exists and `up` claims a warm box
+  when there is one; measured worth is ≤ 3 min a rung, so it is the PM's choice
+  for a wave, never a builder's step.
 - **`./scripts/check.sh --loop` is your per-rung gate.** The full gate runs
   once at the PM's push; do not run it by hand — with two exceptions where it
   uniquely binds: rungs touching `quality/**` (the canary self-test is their
@@ -436,7 +439,20 @@ test can find one.
   `DJB_GATE_SLOT_MAX_WAIT` refuses (exit 2, could-not-look — a re-run, never a
   red tree) a loop that queued past the ceiling. `--loop --mine` and targeted
   `pytest` between boundaries are how a builder keeps moving while a bank holds
-  the box.
+  the box. **Unless the push is documentation only** — when every path changed
+  since the last MEASURED tree is on the declared list
+  (`GATE_DOCS_ONLY_PATHS`, `docs/**`, `README.md`, `CLAUDE.md`,
+  `.claude/skills/**`, `scripts/test_impact.json`; `CHANGELOG.md` and
+  `TEMPLATE_VERSION` are deliberately OUT because pytest reads them), the bank
+  runs only the readers those paths have, takes no slot and no box, and banks
+  an ordinary row in seconds; anything else, including a docs path a module
+  under `apps/` really opens, is the full bank as before and says so
+  (`docs/product/build-contract.md` § "The docs-only push path"). **The
+  refusal names `file:line`, so it is a thing you can go and look at** — today
+  a commit touching the build contract itself pays a full bank, because a test
+  asserts that file's name in an assert's quoted string, and the road says which test
+  rather than leaving you to guess why your documentation push cost 25
+  minutes.
 - `./scripts/test.sh` exits with pytest's own status and is never piped
   either. A red order replays with `--randomly-seed=<the printed seed>`.
 

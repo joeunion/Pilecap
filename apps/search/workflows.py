@@ -30,6 +30,33 @@ from temporalio.common import RetryPolicy
 
 from apps.search.types import ReconcileOutcome
 
+# --- The one setting a workflow module reads, and the seam it is read through -
+#
+# `workflow.unsafe.imports_passed_through()` is Temporal's own escape. The
+# replay sandbox RE-IMPORTS every module a workflow touches, and an unguarded
+# `from django.conf import settings` dies inside it on
+# `gettext.GNUTranslations.__mro_entries__` (measured). Passed through,
+# the module object the worker process already imported is reused and nothing
+# Django owns is re-executed in the sandbox.
+#
+# What is read is ONE number, ONCE, at import: the interval the first retry of
+# a failed activity waits. It is a constant exactly as the timeouts below are
+# constants — no clock, no ORM, no I/O, and the same value for every run this
+# worker serves — and it lives in settings so that `test` can turn a
+# fifteen-second production backoff curve into a tenth of a second without
+# touching one assertion. The argument in full, including why one knob and not
+# one per policy: `config/settings/base.py` § "The retry backoff every activity
+# policy starts at".
+with workflow.unsafe.imports_passed_through():
+    # rule-9: one deployment constant, read once at import through Temporal's
+    # own passthrough seam; the paragraph above is the whole argument.
+    from django.conf import settings
+
+#: How long the first retry of every policy below waits, doubling from there.
+#: The SDK's own default in a deployment; milliseconds under `test`, where the
+#: time-skipping server skips workflow timers and does NOT skip this.
+RETRY_INITIAL_INTERVAL = timedelta(seconds=settings.TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS)
+
 #: The two activities, **named as strings** and not imported (house rule 9).
 #: Importing `apps.search.activities` here would pull the Meilisearch client and
 #: the ORM into the workflow sandbox — the exact non-determinism the rule
@@ -104,23 +131,31 @@ RECONCILE_ATTEMPTS = 3
 
 #: The retry behind each kind — bounded, per the constant above.
 #:
-#: **`initial_interval` is one second and not five, and that was measured.** The
-#: time-skipping test server does NOT skip activity retry backoff: it skips
-#: *workflow* timers, and a retry interval is the server's own scheduling. So
-#: every second of backoff here is a second on every full gate run, and at
-#: 5s → 10s the machinery test took 17.6s where at 1s → 2s it takes 5.8s (same
-#: tree, same assertion, one constant changed). One second is also the better
-#: production value for what these retries are now FOR: a container that is
-#: coming back is back in about that long, and anything slower than three
-#: seconds is an outage the hourly tick is the honest answer to.
+#: **`initial_interval` is one second in a deployment and not five, and that was
+#: measured.** The time-skipping test server does NOT skip activity retry
+#: backoff: it skips *workflow* timers, and a retry interval is the server's own
+#: scheduling. So every second of backoff here is a second on every full gate
+#: run, and at 5s → 10s the machinery test took 17.6s where at 1s → 2s it takes
+#: 5.8s (same tree, same assertion, one constant changed). One second is also
+#: the better production value for what these retries are now FOR: a container
+#: that is coming back is back in about that long, and anything slower than
+#: three seconds is an outage the hourly tick is the honest answer to.
+#:
+#: **That one second is now `RETRY_INITIAL_INTERVAL` above rather than a literal
+#: here**, which is the same argument carried one step further: `test` sets the
+#: knob to milliseconds, so the seconds this paragraph counts are spent in a
+#: deployment and nowhere else, and the assertions that ride on the policy —
+#: how many attempts, and which way the run ended — never read a clock.
 #:
 #: `maximum_interval` does not bind at three attempts — it exists so that
 #: raising `RECONCILE_ATTEMPTS` later cannot silently produce an hour-long wait
-#: inside one run, which is the failure this whole block is undoing.
+#: inside one run, which is the failure this whole block is undoing. It is a
+#: ceiling, so it is held at or above the interval it caps rather than able to
+#: sink below it when the knob is turned down.
 RECONCILE_RETRY = RetryPolicy(
-    initial_interval=timedelta(seconds=1),
+    initial_interval=RETRY_INITIAL_INTERVAL,
     backoff_coefficient=2.0,
-    maximum_interval=timedelta(minutes=5),
+    maximum_interval=max(timedelta(minutes=5), RETRY_INITIAL_INTERVAL),
     maximum_attempts=RECONCILE_ATTEMPTS,
 )
 

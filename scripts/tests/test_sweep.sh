@@ -145,6 +145,18 @@ cannot_look() {
     exit 2
 }
 
+# >>> one case, by name >>>
+# `--case <name>` runs exactly that case and nothing else. The seam exists so
+# rule 60's drawer census can prove ONE PLANT PER DRAWER through the drive that
+# already owns the property, rather than re-implementing the drawer's reader —
+# a second implementation of a reader is a second opinion about it. A name this
+# file does not define is exit 2, never a silent run of nothing.
+ONLY_CASE=""
+run_case() {
+    [ -z "$ONLY_CASE" ] || [ "$1" = "$ONLY_CASE" ] || return 0
+    "$@"
+}
+# <<< one case, by name <<<
 case "${1:-}" in
 "") ;;
 --list)
@@ -155,9 +167,20 @@ case "${1:-}" in
     grep -n '^case_[A-Za-z0-9_]*() {' "$0" | sed 's/() {.*//; s/^/  /'
     exit 0
     ;;
+--case)
+    [ -n "${2:-}" ] || {
+        echo "!! --case needs a case name; --list names them" >&2
+        exit 2
+    }
+    grep -q "^${2}() {" "$0" || {
+        echo "!! --case: test_sweep.sh defines no case named '${2}'; --list names them" >&2
+        exit 2
+    }
+    ONLY_CASE="$2"
+    ;;
 *)
     # A mistyped flag is never a silently different run.
-    echo "!! unknown argument '$1': test_sweep.sh takes nothing or --list" >&2
+    echo "!! unknown argument '$1': test_sweep.sh takes nothing, --list or --case <name>" >&2
     exit 2
     ;;
 esac
@@ -213,6 +236,10 @@ SCRATCH_FAKE_DB="djb_zzz_${SCRATCH_HASH}_lc2fake"
 # made it, and the hex are this checkout's so a peer's run cannot drop it
 # mid-assertion.
 SCRATCH_FOREIGN_DB="djb_zzz_${SCRATCH_HASH}"
+# The database the PRODUCT DRAWER's class claims (EP4). Derived from this
+# checkout like every other name here, and dropped in the teardown whether or
+# not its case reached its own drop.
+SCRATCH_LOCAL_DB="${SCRATCH_BASE}_lc2acme"
 SCRATCH_SCHEDULE="lc2scratch-probe:${SCRATCH_QUEUE}"
 SCRATCH_SCHEDULE_WORKFLOW="lc2scratch:probe:noun:${SCRATCH_HASH}"
 SCRATCH_EXECUTION="lc2scratch:probe:open:${SCRATCH_HASH}"
@@ -330,6 +357,7 @@ teardown() {
     db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_HP_DB" >/dev/null 2>&1
     db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_FAKE_DB" >/dev/null 2>&1
     db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_FOREIGN_DB" >/dev/null 2>&1
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_LOCAL_DB" >/dev/null 2>&1
     teardown_scratch_temporal
     lc_temporal workflow terminate --workflow-id "$OWN_LIVE_PROBE" \
         --reason "test_sweep teardown" >/dev/null 2>&1
@@ -816,6 +844,207 @@ case_registry_claims_every_planted_shape() {
     # And the shape NO class claims — the whole point of the refusal below.
     holds "claim: a derived-shaped name with an undeclared suffix is claimed by nobody" \
         "" "$(lc_class_of database "$SCRATCH_FAKE_DB" || true)"
+}
+
+
+# --- THE PRODUCT'S DRAWER: scripts/local/lifecycle.d/ (EP4) -------------------
+#
+# THE DRAWER IS POINTED SOMEWHERE ELSE, and that is the whole reason these cases
+# are cheap and safe. `DJB_LIFECYCLE_LOCAL_DIR` moves the drawer the frame reads
+# to a directory under this run's own `$WORK`, exactly as `DJB_FOLD_PIN_CLIENT`
+# moves the fold's generator — so nothing is planted inside the checkout, the
+# goalpost census never sees an untracked executable under `scripts/`, and a
+# killed run leaves a temp directory rather than a file the next gate reds on.
+#
+# A CLASS DECLARED HERE IS A REAL CLASS. It is registered, claimed, censused by
+# `sweep.sh`'s database scan and given a verdict, because the census walks the
+# REGISTRY (`lc_classes_of_kind`) and no longer a hand list beside it.
+LOCAL_DRAWER="${WORK}/lifecycle.d"
+
+# in_drawer <files...> — a drawer holding exactly the named fixtures, built
+# fresh. A case that added to a drawer the previous case left behind would be
+# asserting about a population it did not write.
+drawer_with() {
+    rm -rf "$LOCAL_DRAWER"
+    mkdir -p "$LOCAL_DRAWER"
+}
+
+drawer_good_class() {
+    cat >"${LOCAL_DRAWER}/40-scratch-world.sh" <<CLASS
+#!/usr/bin/env bash
+# A product's own machinery class. Declaration only.
+lc_class "lc2-local-world" "database" \\
+    "the derived base + _lc2acme (a product's seeded world)" \\
+    "pg_catalog: datname LIKE djb\\\\_%\\\\_lc2acme" \\
+    "pg_stat_activity sessions on it" \\
+    "scripts/db_sweep.sh --sweep --name <n>" \\
+    "no" \\
+    "yes: the product's own seeder rebuilds it" \\
+    "glob:djb_*_lc2acme"
+CLASS
+}
+
+# in_drawer <command...> — the command, with the frame pointed at the scratch
+# drawer. Run through `env` rather than exported once, so no later case in this
+# file can inherit a drawer it did not ask for.
+in_drawer() {
+    env DJB_LIFECYCLE_LOCAL_DIR="$LOCAL_DRAWER" "$@"
+}
+
+case_a_local_lifecycle_class_is_censused_and_verdicted_like_a_built_in() {
+    local got
+    drawer_with
+    drawer_good_class
+
+    CURRENT="drawer: a declared class joins the registry"
+    got="$(in_drawer ./scripts/sweep.sh --list-classes | tr '\n' ' ' | sed 's/ *$//')"
+    case " $got " in
+    *" lc2-local-world "*)
+        echo "  ok       ${CURRENT} — ./scripts/sweep.sh --list-classes names it"
+        PASSED=$((PASSED + 1))
+        ;;
+    *)
+        echo "  FAILED   ${CURRENT} — --list-classes printed: ${got}"
+        FAILED=$((FAILED + 1))
+        ;;
+    esac
+
+    # THE CLAIM, through the registry's own attributor. A `glob:` pattern is the
+    # form a declaration-only drawer can carry, and it must behave exactly as a
+    # built-in's claim FUNCTION does — including losing to a more specific class
+    # that was declared earlier.
+    CURRENT="drawer: a glob claim attributes its own shape"
+    holds "the local class claims its own suffix" "lc2-local-world" \
+        "$(in_drawer bash -c '. scripts/lifecycle.sh; lc_class_of database "'"${SCRATCH_LOCAL_DB}"'"')"
+    CURRENT="drawer: and claims nothing else"
+    holds "the bare derived base is still a checkout-database" "checkout-database" \
+        "$(in_drawer bash -c '. scripts/lifecycle.sh; lc_class_of database "'"${SCRATCH_BASE}"'"')"
+
+    # THE VERDICT, END TO END, over a database this case plants. Without the
+    # census walking the registry this is the silent failure the registry's own
+    # header names: the class is CLAIMED, so the UNRECOGNIZED pass skips it, and
+    # a hand list that does not hold it prints it nowhere — machinery that is
+    # invisible and exempt at the same time.
+    db_query 'CREATE DATABASE :"name"' -v name="$SCRATCH_LOCAL_DB" >/dev/null 2>&1 ||
+        cannot_look "could not plant ${SCRATCH_LOCAL_DB}; the verdict half of this case cannot be asked"
+    drive "drawer: sweep censuses the local class" 0 -- \
+        env DJB_LIFECYCLE_LOCAL_DIR="$LOCAL_DRAWER" ./scripts/sweep.sh --class lc2-local-world
+    says "class: lc2-local-world"
+    says "$SCRATCH_LOCAL_DB"
+    says "FOREIGN"
+    # And it is NOT reported as machinery no class claims, which is the other
+    # half of "censused like a built-in".
+    says_not "UNRECOGNIZED"
+    db_query 'DROP DATABASE IF EXISTS :"name"' -v name="$SCRATCH_LOCAL_DB" >/dev/null 2>&1
+}
+
+case_a_local_class_with_an_empty_field_is_refused_naming_its_file() {
+    drawer_with
+    cat >"${LOCAL_DRAWER}/41-no-destroy.sh" <<'CLASS'
+lc_class "lc2-no-destroy" "database" "an identity" "a scan" "a liveness" "" "no" "yes" "glob:djb_*_lc2nod"
+CLASS
+    # `sweep.sh` turns a false from `lc_registry_check` into its own
+    # could-not-look, which is the exit status a caller branches on.
+    drive "drawer: a class with an empty column is exit 2" 2 -- \
+        env DJB_LIFECYCLE_LOCAL_DIR="$LOCAL_DRAWER" ./scripts/sweep.sh --list-classes
+    says "declares nothing in column 6"
+    # NAMING THE FILE is the half that matters here: the class was declared by
+    # somebody who is not in this repository, and a refusal that named only the
+    # class would send a reader hunting through a template they cannot fix.
+    says "${LOCAL_DRAWER}/41-no-destroy.sh"
+}
+
+case_the_lifecycle_drawer_is_declaration_only() {
+    drawer_with
+    drawer_good_class
+    cat >>"${LOCAL_DRAWER}/40-scratch-world.sh" <<'CLASS'
+lc_verdict() { printf 'REFUSED'; }
+CLASS
+    drive "drawer: a function beside a declaration is exit 2" 2 -- \
+        env DJB_LIFECYCLE_LOCAL_DIR="$LOCAL_DRAWER" ./scripts/sweep.sh --list-classes
+    says "is not declaration-only"
+    says "lc_verdict()"
+
+    # READ, NOT MERELY SOURCED — the property the refusal is FOR. The file was
+    # never sourced, so the override never happened and the class it also
+    # declared is not registered either: a drawer file is all or nothing.
+    #
+    # `lc_load_live_bases` FIRST, in the subshell, and it is not ceremony: the
+    # verdict grammar reads liveness off the enumerator this file's top level
+    # loads once, and a subshell that skipped it calls every identity FOREIGN —
+    # which is also what a planted override would look like. A discriminator
+    # that gives the same answer either way discriminates nothing.
+    CURRENT="drawer: the refused file was never sourced"
+    holds "lc_verdict is still the frame's own" "live" \
+        "$(in_drawer bash -c '. scripts/lifecycle.sh; lc_load_live_bases; lc_verdict "'"${OUR_BASE}"'" 0')"
+    holds "and the class it also declared is not registered" "" \
+        "$(in_drawer bash -c '. scripts/lifecycle.sh; lc_field lc2-local-world 1 || true')"
+}
+
+case_an_absent_lifecycle_drawer_is_byte_identical() {
+    local absent empty populated
+    rm -rf "$LOCAL_DRAWER"
+    absent="$(in_drawer ./scripts/sweep.sh --list-classes)"
+    mkdir -p "$LOCAL_DRAWER"
+    empty="$(in_drawer ./scripts/sweep.sh --list-classes)"
+    populated="$(./scripts/sweep.sh --list-classes)"
+    CURRENT="drawer: absent is byte-identical to this checkout's own registry"
+    holds "the class list with the drawer pointed at nothing" "$populated" "$absent"
+    CURRENT="drawer: an EMPTY drawer is byte-identical too"
+    holds "the class list with an empty drawer" "$populated" "$empty"
+    rm -rf "$LOCAL_DRAWER"
+}
+
+# THE THREE ONE-LINERS THAT WALKED THROUGH THE FIRST READER, each planted with
+# a VICTIM OF ITS OWN — a file under this run's scratch that only the injected
+# command can create. The exit status is half the assertion; the victim NOT
+# existing is the other half, and it is the half that says the file was never
+# sourced rather than sourced and then complained about.
+case_the_lifecycle_drawer_refuses_what_could_still_run() {
+    local shape body victim
+    for shape in semicolon command-substitution and-list; do
+        drawer_with
+        victim="${LOCAL_DRAWER}/pwned-${shape}"
+        case "$shape" in
+        semicolon)
+            # A continuation, then a second command: the override every broom
+            # would then read its verdicts out of.
+            body='lc_class "lc2-inj" "database" "i" "e" "l" "d" "no" "yes" "glob:djb_*_lc2inj"; lc_verdict() { printf OVERRIDDEN; }'
+            ;;
+        command-substitution)
+            body="lc_class \"lc2-inj\" \"database\" \"\$(touch ${victim})\" \"e\" \"l\" \"d\" \"no\" \"yes\" \"glob:djb_*_lc2inj\""
+            ;;
+        and-list)
+            body="lc_class \"lc2-inj\" \"database\" \"i\" \"e\" \"l\" \"d\" \"no\" \"yes\" \"glob:djb_*_lc2inj\" && touch ${victim}"
+            ;;
+        esac
+        printf '#!/usr/bin/env bash\n%s\n' "$body" >"${LOCAL_DRAWER}/42-injected.sh"
+        drive "drawer: a ${shape} that could run is exit 2" 2 -- \
+            env DJB_LIFECYCLE_LOCAL_DIR="$LOCAL_DRAWER" ./scripts/sweep.sh --list-classes
+        says "is not declaration-only"
+        CURRENT="drawer: the ${shape} never ran"
+        if [ -e "$victim" ]; then
+            echo "  FAILED   ${CURRENT} — ${victim} exists, so the file WAS sourced"
+            FAILED=$((FAILED + 1))
+            rm -f "$victim"
+        else
+            echo "  ok       ${CURRENT} — its victim was never created"
+            PASSED=$((PASSED + 1))
+        fi
+        CURRENT="drawer: and the class it also declared is not registered"
+        holds "lc_field on the injected class" "" \
+            "$(in_drawer bash -c '. scripts/lifecycle.sh; lc_field lc2-inj 1 || true')"
+    done
+    # AND THE WELL-FORMED ONE IS STILL LEGAL. The refusal walks the statement
+    # with the shell's own quoting rules rather than searching the text, which
+    # is what keeps a declaration's PROSE — the built-ins' is full of
+    # parentheses, `%`, `|` and backslashes — from reading as an injection.
+    drawer_with
+    drawer_good_class
+    CURRENT="drawer: a declaration whose quoted prose holds metacharacters is still legal"
+    holds "the class it declares" "lc2-local-world" \
+        "$(in_drawer bash -c '. scripts/lifecycle.sh; lc_field lc2-local-world 1')"
+    rm -rf "$LOCAL_DRAWER"
 }
 
 # --- CRITERION 2: four verdicts, one enumerator -------------------------------
@@ -2732,67 +2961,74 @@ if [ -n "${DJB_SWEEP_DRIVE_CHILD:-}" ]; then
         "$case_fn"
     done
 else
-    case_an_empty_capture_is_could_not_look
-    case_registry_is_the_declared_population
-    case_registry_declares_all_seven_columns
-    case_registry_claims_every_planted_shape
-    case_verdict_grammar_answers_all_four
-    case_one_enumerator_two_consumers
-    case_sweep_refuses_an_unknown_flag
-    case_sweep_refuses_force_foreign_without_sweep
-    case_sweep_refuses_an_empty_only
-    case_sweep_refuses_a_root_that_is_not_there
-    case_sweep_refuses_an_unknown_class
+    run_case case_an_empty_capture_is_could_not_look
+    run_case case_registry_is_the_declared_population
+    run_case case_registry_declares_all_seven_columns
+    run_case case_registry_claims_every_planted_shape
+    # EP4 — the product's drawer, before the first destructive plant: these four
+    # point the frame at a drawer under $WORK and plant one database of their own.
+    run_case case_a_local_lifecycle_class_is_censused_and_verdicted_like_a_built_in
+    run_case case_a_local_class_with_an_empty_field_is_refused_naming_its_file
+    run_case case_the_lifecycle_drawer_is_declaration_only
+    run_case case_the_lifecycle_drawer_refuses_what_could_still_run
+    run_case case_an_absent_lifecycle_drawer_is_byte_identical
+    run_case case_verdict_grammar_answers_all_four
+    run_case case_one_enumerator_two_consumers
+    run_case case_sweep_refuses_an_unknown_flag
+    run_case case_sweep_refuses_force_foreign_without_sweep
+    run_case case_sweep_refuses_an_empty_only
+    run_case case_sweep_refuses_a_root_that_is_not_there
+    run_case case_sweep_refuses_an_unknown_class
     # BEFORE the first plant, because it plants the scratch database itself and
     # drops it again: a child of this file must meet residue and nothing else.
-    case_a_leftover_plant_from_a_killed_run_is_a_refusal_naming_the_broom
+    run_case case_a_leftover_plant_from_a_killed_run_is_a_refusal_naming_the_broom
     # BEFORE the first plant: the sibling this file proves every dead-queue property
     # on is REQUIRED pollerless and empty, not assumed to be (that third pattern).
-    case_the_dead_queue_sibling_is_required_empty_before_anything_is_planted
-    case_new_classes_are_censused_as_foreign
-    case_sweep_alone_leaves_foreign_alone
+    run_case case_the_dead_queue_sibling_is_required_empty_before_anything_is_planted
+    run_case case_new_classes_are_censused_as_foreign
+    run_case case_sweep_alone_leaves_foreign_alone
     # The two refusals, run while the decoy is still planted: they have to be
     # asked with something in scope to lose, or "nothing was destroyed" is a sentence
     # about an empty world.
-    case_force_foreign_without_roots_is_refused_and_drops_nothing
-    case_only_does_not_license_force_foreign_without_roots
-    case_db_sweep_force_foreign_without_roots_is_refused
-    case_force_foreign_prints_then_acts
-    case_the_scratch_machinery_is_actually_gone
-    case_a_refused_shape_survives_force_foreign
-    case_a_rooted_clones_linked_worktree_database_reads_live
-    case_two_roots_are_both_scanned_and_printed
-    case_an_unrecognized_shape_is_exit_2
-    case_a_declared_shape_is_not_unrecognized
-    case_a_dot_env_pin_does_not_decide_who_owns_what
-    case_an_exported_pin_does_not_move_this_checkouts_identity
-    case_owning_is_not_a_licence_to_destroy
-    case_this_checkouts_running_work_survives_force_foreign
-    case_assert_none_is_silent_on_an_empty_scope
-    case_assert_none_fails_on_a_populated_scope
-    case_assert_none_refuses_to_be_a_broom
-    case_the_gate_census_asserts_open_executions_too
-    case_the_gate_census_remedy_actually_clears_a_strand
+    run_case case_force_foreign_without_roots_is_refused_and_drops_nothing
+    run_case case_only_does_not_license_force_foreign_without_roots
+    run_case case_db_sweep_force_foreign_without_roots_is_refused
+    run_case case_force_foreign_prints_then_acts
+    run_case case_the_scratch_machinery_is_actually_gone
+    run_case case_a_refused_shape_survives_force_foreign
+    run_case case_a_rooted_clones_linked_worktree_database_reads_live
+    run_case case_two_roots_are_both_scanned_and_printed
+    run_case case_an_unrecognized_shape_is_exit_2
+    run_case case_a_declared_shape_is_not_unrecognized
+    run_case case_a_dot_env_pin_does_not_decide_who_owns_what
+    run_case case_an_exported_pin_does_not_move_this_checkouts_identity
+    run_case case_owning_is_not_a_licence_to_destroy
+    run_case case_this_checkouts_running_work_survives_force_foreign
+    run_case case_assert_none_is_silent_on_an_empty_scope
+    run_case case_assert_none_fails_on_a_populated_scope
+    run_case case_assert_none_refuses_to_be_a_broom
+    run_case case_the_gate_census_asserts_open_executions_too
+    run_case case_the_gate_census_remedy_actually_clears_a_strand
     # AFTER the remedy case, on purpose: this one plants a run on this checkout's own
     # queue, and the remedy case's re-green assertion is over exactly that scope.
-    case_assert_none_exempts_this_checkouts_own_working_set_in_use
-    case_assert_none_keeps_its_teeth_on_an_owned_instance_nothing_is_using
-    case_assert_none_still_fails_on_a_stray_run_this_checkout_owns
-    case_the_redis_answer_is_recorded
-    case_the_parser_reads_both_of_temporals_time_formats
-    case_a_stamp_the_parser_cannot_read_is_unknown_and_never_zero
-    case_a_backlog_is_evidence_of_harm_and_never_of_liveness
-    case_the_parser_refuses_what_it_cannot_read
-    case_a_presence_probe_survives_a_long_scan
-    case_the_frame_has_exactly_one_temporal_parser
-    case_the_census_says_what_a_schedule_is_doing
-    case_the_graveyard_rollup_counts_what_nothing_polls
-    case_the_rollup_is_silent_about_what_it_did_not_look_at
-    case_the_ownership_of_the_machine_state_layer_is_argued
+    run_case case_assert_none_exempts_this_checkouts_own_working_set_in_use
+    run_case case_assert_none_keeps_its_teeth_on_an_owned_instance_nothing_is_using
+    run_case case_assert_none_still_fails_on_a_stray_run_this_checkout_owns
+    run_case case_the_redis_answer_is_recorded
+    run_case case_the_parser_reads_both_of_temporals_time_formats
+    run_case case_a_stamp_the_parser_cannot_read_is_unknown_and_never_zero
+    run_case case_a_backlog_is_evidence_of_harm_and_never_of_liveness
+    run_case case_the_parser_refuses_what_it_cannot_read
+    run_case case_a_presence_probe_survives_a_long_scan
+    run_case case_the_frame_has_exactly_one_temporal_parser
+    run_case case_the_census_says_what_a_schedule_is_doing
+    run_case case_the_graveyard_rollup_counts_what_nothing_polls
+    run_case case_the_rollup_is_silent_about_what_it_did_not_look_at
+    run_case case_the_ownership_of_the_machine_state_layer_is_argued
     # LAST, and the most expensive: it runs this whole file twice more, from two
     # clones, at once. Everything above has torn its own plants down by now, so the
     # two children meet a machine in the state a hand-run would leave it in.
-    case_two_checkouts_run_the_sweep_drive_concurrently_and_both_stay_green
+    run_case case_two_checkouts_run_the_sweep_drive_concurrently_and_both_stay_green
 fi
 
 echo "test_sweep: ${PASSED} passed · ${FAILED} failed · ${SKIPPED} skipped"

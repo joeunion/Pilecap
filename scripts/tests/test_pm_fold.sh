@@ -15,7 +15,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: .gitignore .secrets.baseline apps/example/api.py apps/example/models.py frontend/openapi.json frontend/scripts/pin_client.sh frontend/src/api/generated/schema.d.ts manage.py quality/budgets.yaml quality/gate.py scripts/backup.sh scripts/budget_notes.sh scripts/fe_gate.sh scripts/gate_ledger.sh scripts/pm_fold.sh scripts/pm_merge.sh scripts/pm_push.sh scripts/rung_start.sh scripts/rung_tidy.sh scripts/sweep.sh scripts/tests/test_gate_lease.sh
+# drives: .gitignore .secrets.baseline apps/example/api.py apps/example/models.py frontend/openapi.json frontend/scripts/pin_client.sh frontend/src/api/generated/schema.d.ts manage.py quality/budgets.yaml quality/gate.py scripts/backup.sh scripts/budget_notes.sh scripts/fe_gate.sh scripts/gate_ledger.sh scripts/pm_fold.sh scripts/pm_merge.sh scripts/pm_push.sh scripts/rung_start.sh scripts/rung_tidy.sh scripts/sweep.sh scripts/test_impact.json scripts/test_impact.py scripts/tests/test_gate_lease.sh scripts/tests/test_pm_push.sh
 # THE FOLD'S REFUSAL DRIVE. `scripts/pm_fold.sh` COMMITS, UNATTENDED, from
 # inside `pm_push.sh --bank` and `pm_merge.sh --bank`, into the tree the gate's
 # verdict is about to vouch for. Every one of its teeth was proven once, by
@@ -187,6 +187,17 @@ make_repo() {
     # It is the same class `test_gate_lease.sh::case_every_fixture_that_copies_a
     # _seam_library_copies_the_seam` censuses one seam over.
     cp "$NOTES_SRC" "$REPO/scripts/budget_notes.sh"
+    # THE DECLARATION READER, AND ITS OWN SEAM. `pm_fold.sh` reads this tree's
+    # `derived-tree-paths` declarations by CALLING `gate_ledger.sh`'s reader in
+    # a subshell rather than carrying a second parser, and it refuses at exit 2
+    # when that library is not in the checkout — so a fixture without it would
+    # red every case in this drive for the harness's reason, exactly as a
+    # fixture without `budget_notes.sh` did. `gate_refuse.sh` comes with it
+    # because the library sources it on its first lines (the population is
+    # pinned by `case_every_fixture_that_copies_a_seam_library_copies_the_seam`
+    # in `scripts/tests/test_gate_lease.sh`).
+    cp "$LEDGER_SRC" "$REPO/scripts/gate_ledger.sh"
+    cp "$REFUSE_SRC" "$REPO/scripts/gate_refuse.sh"
 
     # The non-derived victim. A destructive demonstration creates its own
     # victim; this is the fold's.
@@ -640,6 +651,13 @@ _two_lane_fold_merge() {
     cp "$FOLD_SRC" "$R/scripts/pm_fold.sh"
     chmod +x "$R/scripts/pm_fold.sh"
     cp "$NOTES_SRC" "$R/scripts/budget_notes.sh"
+    # The declaration reader and its seam, for the reason `make_repo` states:
+    # `pm_fold.sh` refuses at exit 2 without them, and a fixture missing one
+    # reds for the harness's reason. Measured the day the drawer landed — this
+    # helper was the one fixture that did not carry them, and the case it feeds
+    # failed with both lanes' results missing from a baseline no fold wrote.
+    cp "$LEDGER_SRC" "$R/scripts/gate_ledger.sh"
+    cp "$REFUSE_SRC" "$R/scripts/gate_refuse.sh"
 
     # The stub scanner: detect-secrets' own output shape, with REAL line
     # numbers read off the tracked files, because the whole subject of this case
@@ -1554,9 +1572,505 @@ scripts/tests/test_pm_fold.sh — the fold's refusal drive.
 
   ./scripts/tests/test_pm_fold.sh          run every case
   ./scripts/tests/test_pm_fold.sh --list   name the cases and stop
+  ./scripts/tests/test_pm_fold.sh --case <name>   run exactly that case
 
 Exit: 0 every case held · 1 a case did not hold · 2 could not look.
 USAGE
+}
+
+# ---------------------------------------------------------------------------
+# EP4 — THE PRODUCT'S DRAWER: scripts/local/fold.d/<step>.sh
+#
+# THE DEFECT THESE ANSWER, measured on a real consumer rather than imagined:
+# their `pm_fold.diff` is 23 lines and every one of them is a DECLARATION they
+# had nowhere else to put — their generated client is `api.d.ts` + `events.ts`,
+# so they rewrote `DERIVED_PATHS` and step (a)'s precondition INSIDE this
+# template's file. A template release then either conflicts with that edit or
+# fast-forwards over it with the edit silently gone. The drawer, and the
+# reading of the declarations the tree already carries, are what make that
+# diff unnecessary: nothing below edits `pm_fold.sh`.
+# ---------------------------------------------------------------------------
+
+# plant_local_step <name> <body...> — an executable step in the fixture's
+# drawer, committed. The declared artefact is committed too, in its OLD bytes,
+# because that is what a derived file is: a tracked path whose content the
+# generator rewrites.
+plant_local_step() {
+    local name="$1"
+    shift
+    mkdir -p "$REPO/scripts/local/fold.d" "$REPO/product"
+    printf 'the OLD product artefact\n' >"$REPO/product/catalog.json"
+    {
+        echo "#!/usr/bin/env bash"
+        echo "set -euo pipefail"
+        while [ "$#" -gt 0 ]; do
+            echo "$1"
+            shift
+        done
+    } >"$REPO/scripts/local/fold.d/${name}.sh"
+    chmod +x "$REPO/scripts/local/fold.d/${name}.sh"
+    git -C "$REPO" add -A
+    git -C "$REPO" commit -q -m "the product's drawer and its derived file"
+}
+
+# The declaration a well-formed step carries. Written as arguments rather than
+# spelled in this file's own comments: the sentinel is censused wherever it
+# appears, and a comment here that spelled it would open a declaration IN THIS
+# DRIVE. (Measured on `pm_fold.sh` itself the day the drawer landed: one
+# explanatory paragraph made the fold declare eight lines of its own prose and
+# refuse.)
+LOCAL_DECL_OPEN='# >>> fold-writes >>>'
+LOCAL_DECL_ENTRY='# product/catalog.json — the product'"'"'s own generated catalogue'
+LOCAL_DECL_CLOSE='# <<< fold-writes <<<'
+# THE GATE'S GRAMMAR, for the one case that plants it where it may not go. The
+# two populations are disjoint BY SPELLING - the gate's is subtracted from the
+# verdict key and the fold's is committed and measured - so a step reaching for
+# the wrong one is a step asking for its own output to stop being measured.
+GATE_DECL_OPEN='# >>> derived-tree-paths >>>'
+GATE_DECL_CLOSE='# <<< derived-tree-paths <<<'
+
+# ---------------------------------------------------------------------------
+# THE ABSORBED PATH — the acceptance map the bank's own box leaves behind.
+#
+# WHAT IS UNDER TEST. `scripts/test_impact.json` is the one derived file no
+# step of this fold can regenerate: `scripts/test_impact.py` inverts ONE
+# acceptance run's coverage contexts, which is the whole suite twice on a
+# verifier box. So the bank's acceptance box writes it into the working tree
+# and leaves it there, and until this list entry existed the PM committed it by
+# hand, with the ledger, on the docs-only road — which made
+# `scripts/tests/test_pm_push.sh` (116 s, it declares the map) a reader of
+# EVERY docs-only push. Row 12: 274 s, of which 244 s was readers.
+#
+# THREE CASES: the fold absorbs and commits it under its own list; a DELETED
+# map is still a dirty tree (an absorption is not a licence); and the delta a
+# docs-only ledger commit leaves behind no longer names it.
+# ---------------------------------------------------------------------------
+map_repo() { # map_repo <name> — a fixture carrying a COMMITTED acceptance map
+    make_repo "$1"
+    # THE COMMITTED SHAPE, not the writer's. `scripts/test_impact.py`'s output
+    # carries a `tree` label and a per-test map; this fixture needs only enough
+    # of it for a rewrite to be a real byte change.
+    printf '{\n  "tree": "%s",\n  "tests": {}\n}\n' \
+        "0000000000000000000000000000000000000000" >"$REPO/scripts/test_impact.json"
+    git -C "$REPO" add scripts/test_impact.json
+    git -C "$REPO" commit -q -m "the acceptance map, as the last bank left it"
+    BEFORE_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+    BEFORE_TREE="$(git -C "$REPO" rev-parse "HEAD^{tree}")"
+}
+
+map_rewrite() { # map_rewrite — what the acceptance box does at the end of a bank
+    # THE LABELS ARE PLANT NAMES, and no app that exists in this tree is
+    # spelled here — not even in this comment, which is where the first draft
+    # spelled one and reddened the drive floor. The floor counts every checkout
+    # path a body spells, docstrings and comments included: a real app's
+    # directory in a fixture string would make this drive a declared reader of
+    # that app, a re-key on every rung that touches it, for nothing.
+    printf '{\n  "tree": "%s",\n  "tests": {"apps/widgets/models.py": ["apps/widgets/tests/test_thing.py::test_it"]}\n}\n' \
+        "1111111111111111111111111111111111111111" >"$REPO/scripts/test_impact.json"
+}
+
+case_a_rewritten_acceptance_map_is_absorbed_and_committed() {
+    CURRENT="a rewritten acceptance map is absorbed by the fold and committed under its own list"
+    map_repo map
+    map_rewrite
+    # ON MAIN THIS IS WHERE IT ENDED: clause 1 read a dirty tree, refused at
+    # exit 2, and the map was still sitting there afterwards.
+    run_fold
+    holds "exit 0" 0 "$RC"
+    says "the run says the map was already in the tree" \
+        "absorbed       scripts/test_impact.json" "$OUT"
+    says "and says where it came from" "written from outside this checkout" "$OUT"
+    says "the subject names the map with the right verb" "acceptance map absorbed" "$OUT"
+    says_not "the subject does not claim the fold regenerated it" \
+        "1 declared path(s) regenerated" "$OUT"
+    # THE COMMIT'S FOOTPRINT NAMES IT, and names nothing else. `--name-only`
+    # over the commit itself, not the working tree: the claim is about what
+    # landed in history.
+    holds "the commit's footprint is the map and nothing else" "scripts/test_impact.json" \
+        "$(git -C "$REPO" show --format= --name-only HEAD | tr '\n' ' ' | sed 's/ *$//')"
+    holds "HEAD moved" "1" \
+        "$([ "$BEFORE_HEAD" != "$(git -C "$REPO" rev-parse HEAD)" ] && echo 1 || echo 0)"
+    holds "the committed bytes are the rewritten ones" "1" \
+        "$(git -C "$REPO" show "HEAD:scripts/test_impact.json" | grep -c '1111111111111111111111111111111111111111')"
+    holds "the tree is clean afterwards" "" "$(git -C "$REPO" status --porcelain)"
+    # AND THE NON-DERIVED VICTIM WAS NOT TOUCHED. An exemption that widened to
+    # "any dirty file" would sweep this one up, which is the whole of what
+    # clause 1 is for.
+    holds "src/oops.txt was not committed" "0" \
+        "$(git -C "$REPO" show --format= --name-only HEAD | grep -c 'src/oops.txt' || true)"
+}
+
+case_a_dirty_tree_beside_the_map_is_still_refused() {
+    CURRENT="an absorbed path does not excuse the work beside it"
+    map_repo mapdirty
+    map_rewrite
+    echo "somebody's unsaved work" >>"$REPO/src/oops.txt"
+    run_fold
+    holds "exit 2" 2 "$RC"
+    says "names the checkout's uncommitted changes" "has uncommitted changes" "$OUT"
+    says "names the work" "src/oops.txt" "$OUT"
+    says_not "does not name the absorbed path as work" \
+        " M scripts/test_impact.json" "$OUT"
+    holds "HEAD did not move" "$BEFORE_HEAD" "$(git -C "$REPO" rev-parse HEAD)"
+}
+
+case_a_deleted_acceptance_map_is_still_a_dirty_tree() {
+    # AN ABSORPTION IS NOT A LICENCE. A declared path that VANISHED is a human
+    # diff — step (e) makes the same refusal about a local step that deletes
+    # what it declares — and committing the deletion under "acceptance map
+    # absorbed" would put a removal into the one history nobody reads by hand.
+    CURRENT="a DELETED acceptance map is still a dirty tree"
+    map_repo mapgone
+    rm -f "$REPO/scripts/test_impact.json"
+    run_fold
+    holds "exit 2" 2 "$RC"
+    says "names the checkout's uncommitted changes" "has uncommitted changes" "$OUT"
+    says "names the map" "scripts/test_impact.json" "$OUT"
+    holds "HEAD did not move" "$BEFORE_HEAD" "$(git -C "$REPO" rev-parse HEAD)"
+}
+
+case_the_docs_only_delta_no_longer_carries_the_map() {
+    # THE POINT OF THE LIST ENTRY, MEASURED IN TWO PLACES.
+    #
+    # (1) IN THE FIXTURE: the fold commits the map, a docs-only ledger commit
+    #     lands on top, and the delta `gate_docs_only_plan` would take — from
+    #     the measured tree the bank banked to the tree the push carries — does
+    #     not name the map.
+    #
+    # (2) AGAINST THIS TREE'S REAL DRIVES: `gate_docs_only_drives` is the
+    #     derivation that turns that delta into the readers a docs-only push
+    #     RUNS, so it is the function that charges the 116 s. Driven at the
+    #     body, in this checkout, read-only, with the two deltas side by side —
+    #     because a case that asserted only (1) would be green on a tree where
+    #     nothing read the map at all.
+    CURRENT="a docs-only ledger commit's delta no longer carries the map"
+    map_repo mapdelta
+    map_rewrite
+    run_fold
+    holds "exit 0" 0 "$RC"
+    # THE LEDGER FILE'S PATH IS ASSEMBLED, NEVER SPELLED, and that is this
+    # tree's own idiom — `archaeology_lib.sh`'s R8S arm gives the reason at its
+    # own hand list. A literal `docs/<something>.md` in a drive is counted by
+    # the `dangling-docs` leg wherever it appears, and a literal checkout path
+    # is counted by the drive floor — which would make THIS drive a declared
+    # reader of every ledger push, the exact 116 s the rung is removing.
+    local dp="docs" banked delta ledger
+    ledger="${dp}/product/in-flight.md"
+    banked="$(git -C "$REPO" rev-parse "HEAD^{tree}")"
+    mkdir -p "$REPO/${dp}/product"
+    printf 'the cycle ledger, as a docs-only push carries it\n' >"$REPO/$ledger"
+    git -C "$REPO" add -- "$ledger"
+    git -C "$REPO" commit -q -m "ledger [docs-only]"
+    delta="$(git -C "$REPO" diff-tree -r --name-only "$banked" "HEAD^{tree}" | tr '\n' ' ' | sed 's/ *$//')"
+    # THE DISCRIMINATOR, and without it this case passes by coincidence. On a
+    # tree where the fold REFUSED, the map was never committed at all — so the
+    # delta is clean for the wrong reason and every assertion below is green.
+    # What separates the two roads is that the BANKED tree already carries the
+    # rewritten bytes.
+    holds "the banked tree already carries the rewritten map" "1" \
+        "$(git -C "$REPO" show "${banked}:scripts/test_impact.json" 2>/dev/null |
+            grep -c '1111111111111111111111111111111111111111' || true)"
+    holds "the delta is the ledger and nothing else" "$ledger" "$delta"
+    holds "the delta does not name the map" "0" \
+        "$(printf '%s\n' "$delta" | grep -c 'test_impact' || true)"
+
+    # (2) — THE READER DERIVATION, in this checkout, over this checkout's own
+    # drives. `gate_docs_only_drives` globs `scripts/tests/test_*.sh` relative
+    # to the working directory, so it runs from $ROOT and reads nothing else.
+    [ -r "$LEDGER_SRC" ] || {
+        bad "no readable ${LEDGER_SRC} — cannot ask what a docs-only push would run"
+        return 0
+    }
+    local with without
+    with="$(cd "$ROOT" && . "$LEDGER_SRC" >/dev/null 2>&1 &&
+        gate_docs_only_drives "$ledger" scripts/test_impact.json)"
+    without="$(cd "$ROOT" && . "$LEDGER_SRC" >/dev/null 2>&1 &&
+        gate_docs_only_drives "$ledger")"
+    holds "with the map in the delta, test_pm_push is a reader" "1" \
+        "$(printf '%s\n' "$with" | grep -c 'scripts/tests/test_pm_push.sh' || true)"
+    holds "without it, test_pm_push is not" "0" \
+        "$(printf '%s\n' "$without" | grep -c 'scripts/tests/test_pm_push.sh' || true)"
+    holds "the map is what made the difference" "1" \
+        "$([ "$with" != "$without" ] && echo 1 || echo 0)"
+}
+
+case_a_local_fold_step_runs_and_commits_only_what_it_declared() {
+    CURRENT="a local fold step runs after the template's four"
+    make_repo localstep
+    plant_local_step 50-catalog \
+        "$LOCAL_DECL_OPEN" "$LOCAL_DECL_ENTRY" "$LOCAL_DECL_CLOSE" \
+        'printf "the REGENERATED product artefact\n" > product/catalog.json' \
+        'echo "local step: regenerated product/catalog.json"'
+    run_fold
+    holds "the fold's exit status" "0" "$RC"
+    says "the step is announced as its own step" "== (local) 50-catalog" "$OUT"
+    says "the step actually ran" "local step: regenerated product/catalog.json" "$OUT"
+    says "its declared path is in the footprint" "changed  product/catalog.json" "$OUT"
+    says "and the subject names what it did" "declared path(s) regenerated" "$OUT"
+
+    # ONLY WHAT IT DECLARED, and the two halves of that are a commit that holds
+    # the declared path and a tree that is clean afterwards.
+    CURRENT="a local fold step commits only what it declared"
+    holds "the commit's file list" "product/catalog.json" \
+        "$(git -C "$REPO" show --name-only --format= HEAD | tr '\n' ' ' | sed 's/ *$//')"
+    holds "the tree after the fold" "" "$(git -C "$REPO" status --porcelain -uall)"
+    holds "the regenerated bytes are what was committed" "the REGENERATED product artefact" \
+        "$(git -C "$REPO" show HEAD:product/catalog.json)"
+}
+
+case_a_local_steps_undeclared_write_is_refused_by_name() {
+    CURRENT="a local step's undeclared write is refused NAMING THE STEP"
+    make_repo localstray
+    plant_local_step 50-catalog \
+        "$LOCAL_DECL_OPEN" "$LOCAL_DECL_ENTRY" "$LOCAL_DECL_CLOSE" \
+        'printf "new\n" > product/catalog.json' \
+        'printf "nobody wrote this down\n" > product/sneaky.json'
+    local before
+    before="$(git -C "$REPO" rev-parse HEAD)"
+    run_fold
+    holds "the fold's exit status" "2" "$RC"
+    # NAMING THE STEP is the whole point. Clause 2's own census at the foot of
+    # the fold can name the PATH and never the writer, because by then four
+    # template steps and N local ones have run over one tree.
+    says "it names the step" "the local step '50-catalog' wrote a path it did not declare" "$OUT"
+    says "it names the path" "product/sneaky.json" "$OUT"
+    says "and prints what the step DID declare" "product/catalog.json" "$OUT"
+    holds "nothing was committed" "$before" "$(git -C "$REPO" rev-parse HEAD)"
+    holds "and the evidence is left in the tree" "1" \
+        "$(git -C "$REPO" status --porcelain -uall | grep -c 'product/sneaky.json')"
+}
+
+case_an_absent_fold_drawer_is_byte_identical() {
+    # THE NEGATIVE, AND IT IS THE CONTRACT: a template that ships no `local/`
+    # path cannot conflict with a product's, and a checkout without one must
+    # fold exactly as it did before the drawer existed. Both shapes are asked —
+    # no directory at all, and a directory holding nothing — because an empty
+    # glob and a missing one are different code paths in the shell.
+    local absent empty
+    CURRENT="an absent drawer changes nothing"
+    make_repo drawerabsent
+    run_fold
+    holds "the fold's exit status" "0" "$RC"
+    says_not "no local step is announced" "== (local)" "$OUT"
+    absent="$(sed "s#${REPO}#<REPO>#g" "$OUT")"
+
+    mkdir -p "$REPO/scripts/local/fold.d"
+    run_fold
+    empty="$(sed "s#${REPO}#<REPO>#g" "$OUT")"
+    CURRENT="an EMPTY drawer changes nothing either"
+    holds "the transcript with an empty drawer" "$absent" "$empty"
+}
+
+case_only_addresses_a_local_step_by_name() {
+    CURRENT="--only names a local step"
+    make_repo onlylocal
+    plant_local_step 50-catalog \
+        "$LOCAL_DECL_OPEN" "$LOCAL_DECL_ENTRY" "$LOCAL_DECL_CLOSE" \
+        'printf "the REGENERATED product artefact\n" > product/catalog.json'
+    run_fold --only 50-catalog
+    holds "the fold's exit status" "0" "$RC"
+    says "the template's own steps are skipped" "skipped — --only 50-catalog does not name this step" "$OUT"
+    says "and the local one ran" "changed  product/catalog.json" "$OUT"
+
+    CURRENT="--only names a step nothing declares"
+    run_fold --only nosuchstep
+    holds "the fold's exit status" "2" "$RC"
+    says "it refuses" "--only names 'nosuchstep', which is not a step of this fold" "$OUT"
+    # BOTH HALVES OF THE CLOSED LIST are printed, because with a drawer live the
+    # list is no longer something a reader can recite from the header.
+    says "it names the template's four" "contract schema secrets budgets" "$OUT"
+    says "and what the drawer added" "scripts/local/fold.d/ adds: 50-catalog" "$OUT"
+}
+
+case_a_malformed_local_step_is_exit_2_by_name() {
+    # FOUR SHAPES, EACH ITS OWN REFUSAL. Every one of them is a step that would
+    # otherwise be silent: three never run at all and the fourth runs and
+    # commits whatever it likes.
+    CURRENT="a local step with no +x bit"
+    make_repo drawerchmod
+    mkdir -p "$REPO/scripts/local/fold.d"
+    {
+        echo "#!/usr/bin/env bash"
+        echo "$LOCAL_DECL_OPEN"
+        echo "$LOCAL_DECL_ENTRY"
+        echo "$LOCAL_DECL_CLOSE"
+    } >"$REPO/scripts/local/fold.d/50-catalog.sh"
+    git -C "$REPO" add -A
+    git -C "$REPO" commit -q -m "a step nobody made executable"
+    run_fold
+    holds "the fold's exit status" "2" "$RC"
+    says "it names the file" "scripts/local/fold.d/50-catalog.sh is not executable" "$OUT"
+
+    CURRENT="a local step that declares nothing"
+    make_repo drawernodecl
+    plant_local_step 50-catalog 'printf "new\n" > product/catalog.json'
+    run_fold
+    holds "the fold's exit status" "2" "$RC"
+    says "it names the file" "scripts/local/fold.d/50-catalog.sh declares no written paths" "$OUT"
+
+    CURRENT="a local step whose block holds prose"
+    make_repo drawerprose
+    plant_local_step 50-catalog \
+        "$LOCAL_DECL_OPEN" \
+        '# this block holds a sentence instead of an entry' \
+        "$LOCAL_DECL_CLOSE"
+    run_fold
+    holds "the fold's exit status" "2" "$RC"
+    says "the reader's own note is printed" "is not \`<path> — <reason>\`" "$OUT"
+    says "and the fold says whose declaration it was" \
+        "the declaration in scripts/local/fold.d/50-catalog.sh could not be read" "$OUT"
+
+    CURRENT="a local step that takes a template step's name"
+    make_repo drawercollide
+    plant_local_step secrets \
+        "$LOCAL_DECL_OPEN" "$LOCAL_DECL_ENTRY" "$LOCAL_DECL_CLOSE"
+    run_fold
+    holds "the fold's exit status" "2" "$RC"
+    says "it refuses the shadowing" \
+        "scripts/local/fold.d/secrets.sh takes the name of one of this fold's own steps" "$OUT"
+}
+
+case_a_declared_path_in_a_product_file_needs_no_edit_to_the_fold() {
+    # THE CONSUMER'S OWN 23 LINES, as a case. Their client generator writes a
+    # file this template has never heard of; on main that write is a STRAY and
+    # the fold refuses, which is why they edited `DERIVED_PATHS`. Here the
+    # generator DECLARES the path beside its own write, in the grammar the tree
+    # already speaks, and `pm_fold.sh` is untouched.
+    CURRENT="a product file's own declaration is read by the fold"
+    make_repo productdecl
+    mkdir -p "$REPO/frontend/src/api/generated"
+    printf 'export const events = [];\n' >"$REPO/frontend/src/api/generated/events.ts"
+    {
+        echo "#!/usr/bin/env bash"
+        echo "set -euo pipefail"
+        echo "# The product's client generator, declaring its own extra output."
+        echo "$LOCAL_DECL_OPEN"
+        echo "# frontend/src/api/generated/events.ts — this product's generated event client"
+        echo "$LOCAL_DECL_CLOSE"
+        echo 'printf "export const events = [\"thing.created\"];\n" > frontend/src/api/generated/events.ts'
+        echo 'echo "stub pin_client: regenerated the product'"'"'s client"'
+    } >"$REPO/frontend/scripts/pin_client.sh"
+    chmod +x "$REPO/frontend/scripts/pin_client.sh"
+    git -C "$REPO" add -A
+    git -C "$REPO" commit -q -m "the product's extra generated client, declared by its generator"
+    run_fold
+    holds "the fold's exit status" "0" "$RC"
+    says "the declared path is committed" "changed  frontend/src/api/generated/events.ts" "$OUT"
+    says_not "and it is not a stray" "modified a file OUTSIDE the derived list" "$OUT"
+    holds "the commit's file list" "frontend/src/api/generated/events.ts" \
+        "$(git -C "$REPO" show --name-only --format= HEAD | tr '\n' ' ' | sed 's/ *$//')"
+    # AND THE FOLD ITSELF IS UNTOUCHED, which is the claim the whole drawer
+    # exists to make. Byte-identical to the file this drive is driving.
+    CURRENT="and pm_fold.sh was not edited to make that work"
+    if cmp -s "$FOLD_SRC" "$REPO/scripts/pm_fold.sh"; then
+        ok "the fixture's fold is byte-identical to this checkout's"
+    else
+        bad "the fixture's fold differs from this checkout's — the case proved nothing"
+    fi
+
+    # AND THE FILE IS STILL IN THE VERDICT KEY. This is the half the ruling is
+    # about and the half a single grammar would have lost: `events.ts` is
+    # fold-committed AND compiled by the gate, so it must NOT be subtracted
+    # from the measured tree. The GATE's reader is asked, in its own grammar,
+    # about the very tree the fold just wrote.
+    CURRENT="a fold-written path is not subtracted from the verdict key"
+    local keyed
+    keyed="$(cd "$REPO" && bash -c '
+        set -uo pipefail
+        . scripts/gate_ledger.sh >/dev/null 2>&1
+        gate__derived_tree_paths . 2>/dev/null' | tr '\n' ' ' | sed 's/ *$//')"
+    holds "what the GATE's reader excludes from this tree" "" "$keyed"
+}
+
+case_a_local_step_reaching_for_the_gates_grammar_is_refused() {
+    CURRENT="a local step declaring in the GATE's grammar is refused by line"
+    make_repo drawerwronggrammar
+    plant_local_step 50-catalog \
+        "$GATE_DECL_OPEN" "$LOCAL_DECL_ENTRY" "$GATE_DECL_CLOSE" \
+        'printf "new\n" > product/catalog.json'
+    run_fold
+    holds "the fold's exit status" "2" "$RC"
+    # The line NUMBER is asserted as a number this drive reads out of the
+    # fixture rather than typed: a hard-coded 2 makes the case a test of how
+    # many lines `plant_local_step` happens to write above the block.
+    local wrongline
+    wrongline="$(grep -n 'derived-''tree-paths' "$REPO/scripts/local/fold.d/50-catalog.sh" | sed -n '1s/:.*//p')"
+    says "it names the file and the line" \
+        "scripts/local/fold.d/50-catalog.sh:${wrongline} spells the GATE's declaration sentinel" "$OUT"
+    says "and says what that grammar would have done" \
+        "subtracts a path from the verdict key" "$OUT"
+    says "and prints the grammar a step should have used" "fold-writes" "$OUT"
+}
+
+case_an_untracked_local_step_does_not_run() {
+    # A STEP IS CODE A REVIEWER AND A RELEASE CAN BOTH SEE. Untracked, it runs
+    # and commits exactly like a reviewed one — which makes the drawer a way to
+    # put an unreviewed writer inside the one unattended committing script here.
+    CURRENT="an untracked local step is refused"
+    make_repo drawernottracked
+    mkdir -p "$REPO/scripts/local/fold.d" "$REPO/product"
+    printf 'the OLD product artefact\n' >"$REPO/product/catalog.json"
+    git -C "$REPO" add -- product/catalog.json
+    git -C "$REPO" commit -q -m "the derived file, tracked; the step is not"
+    {
+        echo "#!/usr/bin/env bash"
+        echo "$LOCAL_DECL_OPEN"
+        echo "$LOCAL_DECL_ENTRY"
+        echo "$LOCAL_DECL_CLOSE"
+        echo 'printf "the REGENERATED product artefact\n" > product/catalog.json'
+    } >"$REPO/scripts/local/fold.d/50-catalog.sh"
+    chmod +x "$REPO/scripts/local/fold.d/50-catalog.sh"
+    run_fold
+    holds "the fold's exit status" "2" "$RC"
+    says "it names the file" "scripts/local/fold.d/50-catalog.sh is not tracked by git" "$OUT"
+    holds "and the step never ran" "the OLD product artefact" \
+        "$(cat "$REPO/product/catalog.json")"
+}
+
+case_a_local_step_that_deletes_its_declared_path_is_refused() {
+    # A DELETION LOOKS EXACTLY LIKE A REWRITE to a census that reads paths and
+    # not statuses: declared, dirty, committed, and the subject says
+    # "regenerated" about a file that is gone. The next fold then reds on a
+    # generator whose input vanished one commit earlier.
+    CURRENT="a local step that DELETES its declared path is refused"
+    make_repo drawerdeletes
+    plant_local_step 50-catalog \
+        "$LOCAL_DECL_OPEN" "$LOCAL_DECL_ENTRY" "$LOCAL_DECL_CLOSE" \
+        'rm -f product/catalog.json'
+    local before
+    before="$(git -C "$REPO" rev-parse HEAD)"
+    run_fold
+    holds "the fold's exit status" "2" "$RC"
+    says "it names the step and the act" \
+        "the local step '50-catalog' DELETED a path it declares" "$OUT"
+    says "it names the path" "product/catalog.json" "$OUT"
+    # The refusal itself QUOTES the subject it is refusing to write, so the
+    # honest negative is about the commit and not about the word.
+    says_not "and no commit was attempted" "pm_fold: committing" "$OUT"
+    holds "nothing was committed" "$before" "$(git -C "$REPO" rev-parse HEAD)"
+}
+
+case_two_local_steps_declaring_one_path_are_refused_by_both_names() {
+    CURRENT="two local steps declaring one path are refused, naming both"
+    make_repo drawerduplicate
+    plant_local_step 50-catalog \
+        "$LOCAL_DECL_OPEN" "$LOCAL_DECL_ENTRY" "$LOCAL_DECL_CLOSE" \
+        'printf "a\n" > product/catalog.json'
+    {
+        echo "#!/usr/bin/env bash"
+        echo "$LOCAL_DECL_OPEN"
+        echo "$LOCAL_DECL_ENTRY"
+        echo "$LOCAL_DECL_CLOSE"
+        echo 'printf "b\n" > product/catalog.json'
+    } >"$REPO/scripts/local/fold.d/60-also-catalog.sh"
+    chmod +x "$REPO/scripts/local/fold.d/60-also-catalog.sh"
+    git -C "$REPO" add -A
+    git -C "$REPO" commit -q -m "a second step with a claim on the same path"
+    run_fold
+    holds "the fold's exit status" "2" "$RC"
+    says "it says what is wrong" "two local fold steps declare 'product/catalog.json'" "$OUT"
+    says "it names the first" "scripts/local/fold.d/50-catalog.sh" "$OUT"
+    says "and it names the second" "scripts/local/fold.d/60-also-catalog.sh" "$OUT"
 }
 
 CASES="
@@ -1587,14 +2101,40 @@ case_a_moved_sentence_is_refused_not_read_as_nothing
 case_a_missing_summary_line_is_refused
 case_the_combined_subject_joins_with_the_separator
 case_the_folded_tree_is_the_tree_a_verdict_keys_on
+case_a_rewritten_acceptance_map_is_absorbed_and_committed
+case_a_dirty_tree_beside_the_map_is_still_refused
+case_a_deleted_acceptance_map_is_still_a_dirty_tree
+case_the_docs_only_delta_no_longer_carries_the_map
 case_a_stale_client_cannot_bank_green_through_pm_push
 case_a_checkout_with_nothing_to_fold_at_all_is_could_not_look
 case_the_exit_guard_is_the_real_scripts_own
 case_no_fold_outside_bank_is_refused_by_both_scripts
 case_the_fold_sits_where_the_ordering_requires
 case_the_fe_leg_names_a_client_suspect
+case_a_local_fold_step_runs_and_commits_only_what_it_declared
+case_a_local_steps_undeclared_write_is_refused_by_name
+case_an_absent_fold_drawer_is_byte_identical
+case_only_addresses_a_local_step_by_name
+case_a_malformed_local_step_is_exit_2_by_name
+case_a_declared_path_in_a_product_file_needs_no_edit_to_the_fold
+case_a_local_step_reaching_for_the_gates_grammar_is_refused
+case_an_untracked_local_step_does_not_run
+case_a_local_step_that_deletes_its_declared_path_is_refused
+case_two_local_steps_declaring_one_path_are_refused_by_both_names
 "
 
+# >>> one case, by name >>>
+# `--case <name>` runs exactly that case and nothing else. The seam exists so
+# rule 60's drawer census can prove ONE PLANT PER DRAWER through the drive that
+# already owns the property, rather than re-implementing the drawer's reader —
+# a second implementation of a reader is a second opinion about it. A name this
+# file does not define is exit 2, never a silent run of nothing.
+ONLY_CASE=""
+run_case() {
+    [ -z "$ONLY_CASE" ] || [ "$1" = "$ONLY_CASE" ] || return 0
+    "$@"
+}
+# <<< one case, by name <<<
 case "${1:-}" in
 "") ;;
 --list)
@@ -1608,6 +2148,17 @@ case "${1:-}" in
     usage
     exit 0
     ;;
+--case)
+    [ -n "${2:-}" ] || {
+        echo "!! test_pm_fold: --case needs a case name; --list names them" >&2
+        exit 2
+    }
+    grep -q "^${2}() {" "$0" || {
+        echo "!! test_pm_fold: no case named '${2}'; --list names them" >&2
+        exit 2
+    }
+    ONLY_CASE="$2"
+    ;;
 *)
     echo "!! test_pm_fold: unknown argument '${1}'. Try --help." >&2
     exit 2
@@ -1618,7 +2169,7 @@ echo "test_pm_fold: driving ${FOLD_SRC} and its two wirings"
 echo ""
 while IFS= read -r c; do
     [ -n "$c" ] || continue
-    "$c"
+    run_case "$c"
 done <<EOF
 $CASES
 EOF

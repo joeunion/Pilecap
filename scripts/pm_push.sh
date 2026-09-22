@@ -128,6 +128,29 @@ ON_BOXES_FLOOR=5
 #: is longer than that gap has been measured to be and short enough that a box
 #: which is genuinely unreachable is still said so in one breath.
 BANK_DETACH_RETRY_SECONDS="${DJB_BANK_DETACH_RETRY_SECONDS:-15}"
+#: THE LIFETIME EVERY BANK BOX CARRIES, and it is the belt under a SIGKILL.
+#: The teardown is a trap and no shell covers a SIGKILL: a measured killed bank
+#: (`boxbank-17-killed.log`) shows the trap firing and dying with the Mac, and
+#: what was left underneath it was the image's own 4 h ceiling and 30 m idle
+#: reaper — enough for the bill, not for promptness. One hour is comfortably
+#: above the longest leg measured (~21 min).
+#:
+#: AND THE IDLE MINUTES ARE THE IMAGE'S OWN THIRTY, NOT SOMETHING SHORTER. The
+#: box's idle clock starts when its LEG EXITS — `idle_reaper.sh` watches for a
+#: running gate and finds none — and a finished shard then sits there while the
+#: bank waits on the slowest one. So the idle ceiling is not "above the longest
+#: gap between processes"; it has to be above the WHOLE REMAINING WALL OF THE
+#: BANK, because everything after a shard's leg (its fetch, the harvest, the
+#: image, the `down`) happens on a box that has been idle since. Ten minutes
+#: reaped a two-minute pytest shard out from under a twenty-minute selftest and
+#: cost the bank a log it could not re-fetch.
+BANK_BOX_TTL_HOURS="${DJB_BANK_BOX_TTL_HOURS:-1}"
+BANK_BOX_IDLE_MINUTES="${DJB_BANK_BOX_IDLE_MINUTES:-30}"
+#: THE WORKER COUNT THE ACCEPTANCE BOX'S TWO PASSES RUN UNDER, spelled once
+#: because it is spelled twice in the remote command and a third time in the
+#: replay line a red pass prints. A replay that named a different `-n` would
+#: be a command that does not reproduce what was measured.
+BANK_PROOF_WORKERS="${DJB_BANK_PROOF_WORKERS:-16}"
 _pm_push_total=$#
 _pm_push_i=0
 while [ "$_pm_push_i" -lt "$_pm_push_total" ]; do
@@ -333,6 +356,21 @@ BANK_BOXES_WORKERS=""
 # `boxes.tsv` so the teardown reaps it, and in nothing else.
 BANK_BOXES_ACCEPT_ID=""
 BANK_BOXES_ACCEPT_NOTE=""
+# THE ZONE RING, READ ONCE FROM THE WRAPPER AND NEVER TYPED. Spot capacity is
+# a per-availability-zone fact, so a bank whose boxes all land in one zone
+# loses all of them to one capacity event — the measured shape of a reclaimed
+# wave. It is a global because the retry below reaches for it from outside the
+# function that read it, and because two reads are two answers.
+BANK_BOXES_ZONES=""
+# THE PLAN FILE AND THE ACCEPTANCE RUN'S COORDINATES, for the same reason: the
+# reclaim sweep re-launches, re-detaches and re-fetches, and it needs the same
+# arguments the first attempt was given rather than a second composition of
+# them.
+BANK_BOXES_PLAN=""
+BANK_BOXES_TREE8=""
+BANK_BOXES_ARUNG=""
+BANK_BOXES_ACMD=""
+BANK_BOXES_ACCEPT_AZ=""
 
 # bank_boxes_kill_workers — the bank's OWN children, by pid and nothing else.
 # An `up` still in flight after the teardown has read `boxes.tsv` would land a
@@ -416,6 +454,73 @@ bank_boxes_teardown() {
     exit "$rc"
 }
 
+# =============================================================================
+# THE ZONE RING — read from the wrapper, spread over, and stepped on a reclaim
+# =============================================================================
+#
+# WHY THE BANK CARES ABOUT ZONES AT ALL. A Spot reclaim is AWS taking capacity
+# back in ONE availability zone, so N boxes in one zone is N boxes with one
+# shared failure and a whole bank's work lost to it (the consumer lost five
+# shards of nine to a single event). Spreading costs nothing — the boxes are
+# in one VPC either way — and it turns a wave into at most a shard.
+#
+# AND THE RING IS THE WRAPPER'S, NEVER A LIST HERE. `verifier_box.sh zones`
+# owns the question (it reads the security group's VPC and the subnets in it);
+# a list typed in this file would be a second answer that goes stale the first
+# time the account gains or loses a zone.
+
+# bank_boxes_zones_read <wrapper> — the ring on stdout, one zone per line, or
+# exit 2 having said why. An EMPTY answer is the same answer as a refusal: a
+# ring of nothing is not a ring, and a bank that carried on would launch every
+# box into whatever the subnet default happens to be — the single-zone shape
+# this exists to end, silently.
+bank_boxes_zones_read() {
+    local vb="$1" out="$2" zrc=0
+    # STDOUT ONLY. The ring is what is on stdout and the refusal is on stderr;
+    # `2>&1` here would fold a wrapper's explanation into the zone list and
+    # this bank would round-robin its boxes over an error message.
+    "$vb" zones >"$out" 2>"${out}.err" </dev/null || zrc=$?
+    if [ "$zrc" != "0" ]; then
+        return 2
+    fi
+    grep -q . "$out" || return 2
+    return 0
+}
+
+# bank_boxes_zone_at <zones> <index> — the index'th zone, wrapping. The whole
+# of the round-robin, in one place, so the plan and every reader agree.
+bank_boxes_zone_at() {
+    local zones="$1" idx="$2" n=0 i=0 z
+    for z in $zones; do n=$((n + 1)); done
+    [ "$n" != "0" ] || return 0
+    idx=$((idx % n))
+    for z in $zones; do
+        if [ "$i" = "$idx" ]; then
+            printf '%s\n' "$z"
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    return 0
+}
+
+# bank_boxes_zone_after <az> — the NEXT zone in the ring, wrapping. It is what
+# a reclaimed shard is retried into: the zone that just took a box back is the
+# one place a second box should not go.
+bank_boxes_zone_after() {
+    local want="$1" first="" take=0 z
+    for z in $BANK_BOXES_ZONES; do
+        [ -n "$first" ] || first="$z"
+        if [ "$take" = "1" ]; then
+            printf '%s\n' "$z"
+            return 0
+        fi
+        if [ "$z" = "$want" ]; then take=1; fi
+    done
+    printf '%s\n' "$first"
+    return 0
+}
+
 #: THE ONE LEG NAME THIS FILE SPELLS, and it is spelled because ADR gate-1's
 #: amendment bends the two-pass rule for THAT leg and for nothing else. The
 #: same name is spelled for the same reason in `scripts/gate_ledger.sh`'s
@@ -425,8 +530,21 @@ bank_boxes_teardown() {
 #: the listing's own legs column, never out of a unit name.
 BANK_SUITE_LEG="pytest-x2"
 
-# bank_boxes_plan <listing file> <N> <passes> — one line per shard on stdout:
-#   <label>\t<unit>\t<k/P or empty>\t<passes, on suite shards only>
+# bank_boxes_plan <listing file> <N> <passes> <zones> — one line per shard:
+#   <label>\t<unit>\t<az>\t<k/P or empty>\t<passes, on suite shards only>
+#
+# THE ZONE SITS AHEAD OF THE TWO COLUMNS THAT CAN BE EMPTY, and that is not
+# taste: TAB is an IFS WHITESPACE character, so `IFS=<tab> read` COLLAPSES a
+# run of them and a column behind two empty ones is read into the first of
+# them. Every optional column therefore trails, where an empty one costs
+# nothing. (`awk -F'\t'` does not collapse, which is why the pass-count reader
+# below can still address a trailing column by number.)
+#
+# THE ZONE IS ROUND-ROBIN OVER THE RING, in the
+# plan's own row order: shard i goes to `zones[i mod n]`, and the acceptance
+# box — which is not in the plan — takes the next place after the last shard.
+# One composer, so the argv a shard is launched with and the zone the table
+# prints are the same fact read twice rather than two arithmetics.
 #
 # THE PASS COUNT IS DECIDED HERE, BEFORE ANY BOX IS LAUNCHED, and it is one
 # decision for the whole bank rather than one per shard: `<passes>` is 1 on
@@ -442,9 +560,15 @@ BANK_SUITE_LEG="pytest-x2"
 #
 # Exit 2 having said why when N cannot cover the units the listing declares.
 bank_boxes_plan() {
-    local listing=$1 n=$2 passes=$3
+    local listing=$1 n=$2 passes=$3 zones=$4
     local unit needs shards legs
+    local zcount=0 zslot=0 az
     local indiv="" capable="" ci=0 ii=0 suite="" rowpasses
+    for az in $zones; do zcount=$((zcount + 1)); done
+    if [ "$zcount" = "0" ]; then
+        echo "!! pm_push --bank --on-boxes: the zone ring is empty — there is nowhere to spread to." >&2
+        return 2
+    fi
     while IFS='	' read -r unit needs shards legs; do
         [ -n "$unit" ] || continue
         case ",${legs}," in
@@ -483,7 +607,8 @@ bank_boxes_plan() {
     fi
     remaining=$((rest - ci))
     for unit in $indiv; do
-        printf '%s\t%s\t\t\n' "$unit" "$unit"
+        printf '%s\t%s\t%s\t\t\n' "$unit" "$unit" "$(bank_boxes_zone_at "$zones" "$zslot")"
+        zslot=$((zslot + 1))
     done
     for unit in $capable; do
         rowpasses=""
@@ -503,7 +628,9 @@ bank_boxes_plan() {
         k=0
         while [ "$k" -lt "$take" ]; do
             k=$((k + 1))
-            printf '%s-%sof%s\t%s\t%s/%s\t%s\n' "$unit" "$k" "$take" "$unit" "$k" "$take" "$rowpasses"
+            printf '%s-%sof%s\t%s\t%s\t%s/%s\t%s\n' "$unit" "$k" "$take" "$unit" \
+                "$(bank_boxes_zone_at "$zones" "$zslot")" "$k" "$take" "$rowpasses"
+            zslot=$((zslot + 1))
         done
     done
     return 0
@@ -632,7 +759,7 @@ SEED=\$((\$RANDOM * 32768 + \$RANDOM)); \
 T0=\$(date +%s); \
 ./scripts/test.sh --collect-only -q -p no:randomly > ${v}/collected.txt 2>&1; \
 set +e; \
-COVERAGE_FILE=${v}/impact.coverage ./scripts/test.sh -n 16 --randomly-seed=\${SEED} \
+COVERAGE_FILE=${v}/impact.coverage ./scripts/test.sh -n ${BANK_PROOF_WORKERS} --randomly-seed=\${SEED} \
 --cov=apps --cov=config --cov-context=test --cov-report= > ${v}/pass1.log 2>&1; P1=\$?; \
 T1=\$(date +%s); \
 MAP=2; \
@@ -641,8 +768,8 @@ if [ \"\${P1}\" = 0 ]; then \
 --collected ${v}/collected.txt --root . --out ${v}/test_impact.json > ${v}/map.log 2>&1; \
 MAP=\$?; \
 fi; \
-./scripts/test.sh -n 16 --randomly-seed=\${SEED} > ${v}/pass2.log 2>&1; P2=\$?; T2=\$(date +%s); \
-printf 'seed=%s workers=16 pass1=%s pass2=%s map=%s\\n' \"\${SEED}\" \"\${P1}\" \"\${P2}\" \"\${MAP}\" > ${v}/proof.txt; \
+./scripts/test.sh -n ${BANK_PROOF_WORKERS} --randomly-seed=\${SEED} > ${v}/pass2.log 2>&1; P2=\$?; T2=\$(date +%s); \
+printf 'seed=%s workers=${BANK_PROOF_WORKERS} pass1=%s pass2=%s map=%s\\n' \"\${SEED}\" \"\${P1}\" \"\${P2}\" \"\${MAP}\" > ${v}/proof.txt; \
 echo \"acceptance: pass1 (contexts) \$((T1-T0))s · pass2 (plain) \$((T2-T1))s rc1=\${P1} rc2=\${P2} map=\${MAP}\"; \
 cat ${v}/proof.txt; cat ${v}/map.log; exit 0"
 }
@@ -764,15 +891,397 @@ bank_boxes_proof_field() {
     ' "$1" 2>/dev/null || true
 }
 
+# =============================================================================
+# ONE LAUNCH BLOCK, ONE DETACH, ONE FETCH OF THE NINTH BOX
+# =============================================================================
+#
+# WHY THEY ARE FUNCTIONS AND NOT THREE COPIES. A reclaimed shard is brought up
+# again, detached again and fetched again, and a second spelling of any of the
+# three is a second thing to keep in step with the first — the `legargv` array
+# in phase 2 exists for exactly that reason one retry earlier. House rule 13's
+# shape: one launch block and one row writer.
+
+# bank_boxes_up_one <label> <rung> <az> <log> <is-shard> — bring ONE box up and
+# record everything the rest of this file reads about it.
+#
+# THE LAUNCHED ID REACHES THE TEARDOWN LIST BEFORE THE STATUS IS READ, and that
+# ordering is the whole of the defect. `up` launches the instance, waits for the SSM
+# agent, and THEN probes the tunnel — and the probe's `die` fires BEFORE the
+# `instance` line is printed. A bank that read the id out of that line alone
+# therefore lost the id of every box whose probe failed: launched, billing, and
+# nameable by nothing this script keeps. So the `launched <id> az <az>` line —
+# printed the moment the instance exists — is read FIRST and appended to
+# `boxes.tsv` FIRST, and only then is the status consulted.
+#
+# AND THE SECOND APPEND IS GUARDED. An `up` that went all the way prints both
+# lines about the same box; two rows would be two `down`s of one instance, and
+# the teardown's "each box exactly once" would stop being true.
+bank_boxes_up_one() {
+    local label="$1" rung="$2" az="$3" log="$4" isshard="$5"
+    local urc=0 lid uid
+    if [ "$isshard" = "1" ]; then
+        # DJB_VERIFIER_BANK_SHARD IS WHAT MAKES THIS A SHARD'S `up` AND NOT AN
+        # OPERATOR'S. The wrapper's Spot→on-demand fallback is right for one box
+        # somebody is standing in front of and wrong for a bank: N shards each
+        # answering a Spot refusal with an on-demand box is N on-demand boxes
+        # against a quota an order of magnitude smaller than the Spot one,
+        # bought without anybody deciding to. With this set the shard is `could
+        # not launch` instead. `DJB_VERIFIER_ON_DEMAND_OK` is the valve, and it
+        # is inherited from the operator's own environment so that one typed
+        # sentence covers the whole bank.
+        DJB_VERIFIER_BANK_SHARD=1 "$BANK_BOXES_VB" up --for "$rung" --az "$az" \
+            --ttl "$BANK_BOX_TTL_HOURS" --idle "$BANK_BOX_IDLE_MINUTES" \
+            >"$log" 2>&1 </dev/null || urc=$?
+    else
+        "$BANK_BOXES_VB" up --for "$rung" --az "$az" \
+            --ttl "$BANK_BOX_TTL_HOURS" --idle "$BANK_BOX_IDLE_MINUTES" \
+            >"$log" 2>&1 </dev/null || urc=$?
+    fi
+    lid="$(awk '$1 == "launched" { print $2; exit }' "$log" 2>/dev/null || true)"
+    [ -z "$lid" ] || printf '%s\t%s\n' "$label" "$lid" >>"$BANK_BOXES_TSV"
+    printf '%s\n' "$urc" >"${BANK_BOXES_SINK}/${label}.up.rc"
+    [ "$urc" = "0" ] || return 0
+    uid="$(awk '$1 == "instance" { print $2; exit }' "$log" 2>/dev/null || true)"
+    if [ -z "$uid" ]; then
+        printf '2\n' >"${BANK_BOXES_SINK}/${label}.up.rc"
+        return 0
+    fi
+    printf '%s\n' "$uid" >"${BANK_BOXES_SINK}/${label}.id"
+    awk '$1 == "market" { print $2; exit }' "$log" >"${BANK_BOXES_SINK}/${label}.market" 2>/dev/null || true
+    [ "$uid" = "$lid" ] || printf '%s\t%s\n' "$label" "$uid" >>"$BANK_BOXES_TSV"
+    return 0
+}
+
+# bank_boxes_detach <label> <id> <unit> <shard> <passes> <log> — one unit of
+# the gate on one box, with the ONE retry that 255 gets.
+#
+# 255 IS SSH'S OWN STATUS AND IT GETS ONE MORE GO. `up` returns when SSM
+# reports the agent Online, and the agent answers before the SSH tunnel does —
+# so a detach fired in that window comes back 255 with an EMPTY log: no gate
+# ran, nothing was measured, and a whole bank refused with every box up and
+# paid for while the socket was answering seconds later. ONE retry, after a
+# short printed wait, and ONLY for 255: any other status is the wrapper or the
+# box saying something real, and retrying it would risk a second copy of a leg
+# that is already running.
+#
+# THE SEAM'S ARGV IS COMPOSED ONCE AND HANDED TO BOTH TRIES — an array rather
+# than three nested `if`s, because two spellings of one command are two
+# commands to keep in step. `--passes 1` is appended only where the plan said
+# one: `--passes 2` is the default `check.sh` normalises away, so a two-pass
+# bank's argv is byte-for-byte the one it was before the amendment.
+bank_boxes_detach() {
+    local label="$1" lid="$2" unit="$3" shard="$4" passes="$5" log="$6"
+    local legargv drc try
+    legargv=(leg "$lid" --unit "$unit")
+    [ -z "$shard" ] || legargv+=(--shard "$shard")
+    [ "$passes" != "1" ] || legargv+=(--passes 1)
+    legargv+=(--log leg)
+    drc=0
+    for try in 1 2; do
+        drc=0
+        "$BANK_BOXES_VB" "${legargv[@]}" >"$log" 2>&1 </dev/null || drc=$?
+        if [ "$drc" = "255" ] && [ "$try" = "1" ]; then
+            echo "pm_push --bank --on-boxes: ${label}: the detach exited 255 — that is ssh, not the gate, and the tunnel is usually a few seconds behind the agent. Waiting ${BANK_DETACH_RETRY_SECONDS}s and retrying the detach, once."
+            sleep "$BANK_DETACH_RETRY_SECONDS"
+            continue
+        fi
+        break
+    done
+    printf '%s\n' "$drc" >"${BANK_BOXES_SINK}/${label}.leg.rc"
+    return 0
+}
+
+# bank_boxes_fetch_shard <label> <id> — one shard's log and its exit status,
+# fetched BY THE WORKER THAT JUST WAITED ON IT and never in a later phase.
+#
+# WHY THE FETCH CANNOT WAIT FOR THE OTHER SHARDS. A box's idle reaper starts
+# counting when its LEG EXITS, and the bank's phases join: a pytest shard that
+# finished in two and a half minutes used to sit untouched until the slowest
+# unit (selftest, ~20 min on a tree where `quality/rules.yaml` moved) came
+# home, and the box was shut down under it — `box gone (terminated)`, no log,
+# and a leak proof this bank composes as LOST with no retry, because a reclaim
+# is not what happened. Fetching here puts the work on the Mac while the box
+# is unambiguously alive, and no idle ceiling can be short enough to matter.
+bank_boxes_fetch_shard() {
+    local label="$1" fid="$2"
+    [ -n "$fid" ] || return 0
+    "$BANK_BOXES_VB" fetch "$fid" "~/verify/bank-${BANK_BOXES_TREE8}-${label}/leg.log" \
+        "${BANK_BOXES_SINK}/${label}.log" \
+        >"${BANK_BOXES_SINK}/fetch-${label}.log" 2>&1 </dev/null || true
+    "$BANK_BOXES_VB" fetch "$fid" "~/verify/bank-${BANK_BOXES_TREE8}-${label}/leg.rc" \
+        "${BANK_BOXES_SINK}/${label}.rc" \
+        >>"${BANK_BOXES_SINK}/fetch-${label}.log" 2>&1 </dev/null || true
+    return 0
+}
+
+# bank_boxes_fetch_acceptance_files <acceptance rc> — the ninth box's four
+# files, asked for in ONE place so phase 4 and the reclaim retry cannot drift.
+#
+# THE MAP IS CONDITIONAL AND THE OTHER THREE ARE NOT, and the difference is the
+# two roles. A map fetched from a box that wrote nothing would bring home the
+# PREVIOUS wave's file or nothing at all, and either would be a projection
+# claiming to be this tree's. The PROOF is the thing the row rests on and its
+# absence has to be READ rather than assumed. The two PASS LOGS are the last of
+# them, and they are the newest reason this function exists: the
+# one moment they exist anywhere this Mac can reach is before the teardown, and
+# a red bank that did not bring them home is a refusal nobody can act on
+# without re-running the whole bank — so they come home on a green too.
+bank_boxes_fetch_acceptance_files() {
+    local arc="$1" id="$BANK_BOXES_ACCEPT_ID" v p rc
+    [ -n "$id" ] || return 0
+    v="~/verify/${BANK_BOXES_ARUNG}"
+    if [ "${arc:-1}" = "0" ]; then
+        rc=0
+        "$BANK_BOXES_VB" fetch "$id" "${v}/test_impact.json" \
+            "${BANK_BOXES_SINK}/test_impact.json" \
+            >"${BANK_BOXES_SINK}/fetch-acceptance.log" 2>&1 </dev/null || rc=$?
+        printf '%s\n' "$rc" >"${BANK_BOXES_SINK}/acceptance.fetch.rc"
+    fi
+    rc=0
+    "$BANK_BOXES_VB" fetch "$id" "${v}/proof.txt" \
+        "${BANK_BOXES_SINK}/acceptance.proof" \
+        >"${BANK_BOXES_SINK}/fetch-proof.log" 2>&1 </dev/null || rc=$?
+    printf '%s\n' "$rc" >"${BANK_BOXES_SINK}/acceptance.proof.fetch.rc"
+    for p in pass1 pass2; do
+        "$BANK_BOXES_VB" fetch "$id" "${v}/${p}.log" \
+            "${BANK_BOXES_SINK}/${p}.log" \
+            >"${BANK_BOXES_SINK}/fetch-${p}.log" 2>&1 </dev/null || true
+    done
+    return 0
+}
+
+# =============================================================================
+# A RECLAIM IS ONE MORE BOX, IN THE NEXT ZONE, ONCE
+# =============================================================================
+#
+# WHY A RETRY AT ALL. A Spot reclaim is AWS taking the machine back, and before
+# this the whole bank was exit 2 over it: one box of nine vanishing cost the
+# other eight's work and a full re-run. ONE more box, in the NEXT zone, is the
+# cheapest thing that can be true — capacity is a per-zone fact, so the zone
+# that just took a box back is the one place not to go again.
+#
+# AND ONLY ONCE. Two reclaims of one shard is capacity that is gone, and the
+# honest answer is the one this bank always gave: LOST, never red. The marker
+# is a file in the sink and it is written BEFORE the retry, so no path can
+# reach a third box.
+
+# bank_boxes_saw_reclaim <file>... — 0 iff one of them carries the wrapper's
+# own `box reclaimed` line. Every subcommand goes through `refuse_if_reclaimed`,
+# so the news arrives at whichever of the wait, the run or the fetch came first.
+bank_boxes_saw_reclaim() {
+    local f
+    for f in "$@"; do
+        [ -f "$f" ] || continue
+        if grep -qF 'box reclaimed' "$f"; then return 0; fi
+    done
+    return 1
+}
+
+# bank_boxes_reclaim_status <file>... — the spot status code the wrapper named
+# on that line, or `status unread`. It is the one thing a reclaim leaves behind
+# that says WHY, and it is what the table prints beside the retried shard.
+bank_boxes_reclaim_status() {
+    local f s=""
+    for f in "$@"; do
+        [ -f "$f" ] || continue
+        s="$(bank_boxes_first_match "$f" '
+            /box reclaimed/ {
+                for (i = 1; i <= NF; i++) {
+                    if ($i == "status") {
+                        out = $(i + 1)
+                        for (j = i + 2; j <= NF; j++) { out = out " " $j }
+                        print out
+                        exit
+                    }
+                }
+            }')"
+        [ -z "$s" ] || break
+    done
+    printf '%s\n' "${s:-status unread}"
+}
+
+# bank_boxes_retry_reclaimed — the sweep, run ONCE after every log is home and
+# before anything is composed. A shard whose box was reclaimed gets one more
+# box in the next zone, its leg detached again, its wait and its two fetches
+# redone; the old id STAYS on the teardown list (a reclaimed instance is
+# `already gone` to the wrapper's `down`, which is exit 0 and not a refusal —
+# trusting AWS to have finished what it started is not a saving) and the new
+# one joins it.
+#
+# EVERYTHING IT REWRITES IS WHAT THE COMPOSITION READS: the wait log, the
+# fetched leg log and the fetched status. So a second reclaim leaves the words
+# `box reclaimed` in the wait log exactly where the composition has always
+# looked for them, and the shard is LOST by the branch that was already there.
+bank_boxes_retry_reclaimed() {
+    local label unit shard passes az oldid status nextaz
+    local retried=0
+
+    # THE DETECTION IS SERIAL AND CHEAP — it reads files this Mac already has
+    # — AND THE RETRIES ARE PARALLEL, one worker per reclaimed box, exactly
+    # the shape phases 1 to 3 have. Serially, two reclaimed selftest shards
+    # would cost two whole legs end to end (+46 min on a measured tree) for
+    # work that runs on two different machines.
+    BANK_BOXES_WORKERS=""
+    while IFS='	' read -r label unit az shard passes; do
+        [ -n "$label" ] || continue
+        [ ! -f "${BANK_BOXES_SINK}/${label}.retried" ] || continue
+        bank_boxes_saw_reclaim "${BANK_BOXES_SINK}/wait-${label}.log" \
+            "${BANK_BOXES_SINK}/fetch-${label}.log" || continue
+        oldid="$(cat "${BANK_BOXES_SINK}/${label}.id" 2>/dev/null || echo '<unnamed>')"
+        status="$(bank_boxes_reclaim_status "${BANK_BOXES_SINK}/wait-${label}.log" \
+            "${BANK_BOXES_SINK}/fetch-${label}.log")"
+        nextaz="$(bank_boxes_zone_after "$az")"
+        printf '%s\t%s\n' "$oldid" "$status" >"${BANK_BOXES_SINK}/${label}.retried"
+        retried=$((retried + 1))
+        echo "pm_push --bank --on-boxes: ${label}: the box was RECLAIMED (${status})."
+        echo "    One more box, in ${nextaz} — capacity is a per-zone fact and ${az} has just"
+        echo "    said no. ${oldid} stays on the teardown list; a reclaimed instance is"
+        echo "    'already gone' to a down, never a refusal."
+        (
+            set +e
+            bank_boxes_up_one "$label" "bank-${BANK_BOXES_TREE8}-${label}" "$nextaz" \
+                "${BANK_BOXES_SINK}/up-${label}-retry.log" 1
+            if [ "$(cat "${BANK_BOXES_SINK}/${label}.up.rc" 2>/dev/null || echo 2)" != "0" ]; then
+                echo "pm_push --bank --on-boxes: ${label}: the second box did not come up either (${BANK_BOXES_SINK}/up-${label}-retry.log); the shard stays LOST and this bank will refuse."
+                exit 0
+            fi
+            newid="$(cat "${BANK_BOXES_SINK}/${label}.id")"
+            bank_boxes_detach "$label" "$newid" "$unit" "$shard" "$passes" \
+                "${BANK_BOXES_SINK}/leg-${label}-retry.log"
+            if [ "$(cat "${BANK_BOXES_SINK}/${label}.leg.rc" 2>/dev/null || echo 2)" != "0" ]; then
+                echo "pm_push --bank --on-boxes: ${label}: the unit could not be detached on ${newid}; the shard stays LOST."
+                exit 0
+            fi
+            printf '%s\n' "$(date +%s)" >"${BANK_BOXES_SINK}/${label}.began"
+            "$BANK_BOXES_VB" wait "$newid" leg \
+                >"${BANK_BOXES_SINK}/wait-${label}.log" 2>&1 </dev/null
+            printf '%s\n' "$(($(date +%s) - $(cat "${BANK_BOXES_SINK}/${label}.began")))" \
+                >"${BANK_BOXES_SINK}/${label}.wall"
+            # THE SAME WORKER FETCHES, for the same reason phase 3's does:
+            # the second box's idle clock starts the moment its leg exits too.
+            bank_boxes_fetch_shard "$label" "$newid"
+        ) &
+        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
+    done <"$BANK_BOXES_PLAN"
+
+    # THE NINTH BOX GETS THE SAME ONE MORE BOX, in the same shape and beside
+    # the shards' retries rather than after them. It needs it more than any
+    # shard does: since ADR gate-1's amendment every pytest shard runs ONE
+    # pass, so a reclaimed acceptance box is a bank with no leak proof at all
+    # — exit 2 over eight green shards. Its reclaim shows up wherever the
+    # first subcommand met it: the run, or either of the fetches.
+    if [ -n "$BANK_BOXES_ACCEPT_ID" ] && [ ! -f "${BANK_BOXES_SINK}/acceptance.retried" ] &&
+        bank_boxes_saw_reclaim "${BANK_BOXES_SINK}/acceptance.log" \
+            "${BANK_BOXES_SINK}/fetch-proof.log" \
+            "${BANK_BOXES_SINK}/fetch-acceptance.log"; then
+        oldid="$BANK_BOXES_ACCEPT_ID"
+        status="$(bank_boxes_reclaim_status "${BANK_BOXES_SINK}/acceptance.log" \
+            "${BANK_BOXES_SINK}/fetch-proof.log" "${BANK_BOXES_SINK}/fetch-acceptance.log")"
+        nextaz="$(bank_boxes_zone_after "$BANK_BOXES_ACCEPT_AZ")"
+        printf '%s\t%s\n' "$oldid" "$status" >"${BANK_BOXES_SINK}/acceptance.retried"
+        retried=$((retried + 1))
+        echo "pm_push --bank --on-boxes: acceptance: the box was RECLAIMED (${status})."
+        echo "    One more box, in ${nextaz}. Every pytest shard ran ONE pass, so this box"
+        echo "    IS the leak proof and a bank without it refuses over eight green shards."
+        (
+            set +e
+            bank_boxes_up_one acceptance "$BANK_BOXES_ARUNG" "$nextaz" \
+                "${BANK_BOXES_SINK}/up-acceptance-retry.log" 0
+            if [ "$(cat "${BANK_BOXES_SINK}/acceptance.up.rc" 2>/dev/null || echo 2)" != "0" ]; then
+                echo "pm_push --bank --on-boxes: acceptance: the second box did not come up either; the leak proof stays unread."
+                exit 0
+            fi
+            # THE WORKER READS THE NEW ID OUT OF THE FILE `bank_boxes_up_one`
+            # wrote, and the PARENT re-reads the same file after the join: a
+            # subshell cannot hand a variable back, and the id is what every
+            # later step (the proof's box, the image, the teardown) names.
+            aid="$(cat "${BANK_BOXES_SINK}/acceptance.id")"
+            arrc=0
+            "$BANK_BOXES_VB" run "$aid" -- "$BANK_BOXES_ACMD" \
+                >"${BANK_BOXES_SINK}/acceptance.log" 2>&1 </dev/null || arrc=$?
+            printf '%s\n' "$arrc" >"${BANK_BOXES_SINK}/acceptance.rc"
+            BANK_BOXES_ACCEPT_ID="$aid"
+            bank_boxes_fetch_acceptance_files "$arrc"
+        ) &
+        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
+    fi
+
+    if [ "$retried" != "0" ]; then
+        # `set +e` AROUND THE JOIN, every other phase's rule: `wait` carries
+        # the last worker's status and a retry worker that ended non-zero
+        # would take errexit — and the bank — with it, instead of leaving the
+        # shard LOST for the composition to refuse over.
+        set +e
+        wait
+        set -e
+        BANK_BOXES_WORKERS=""
+        # THE NINTH BOX'S ID, RE-READ. Its retry ran in a subshell, so the
+        # variable it set died with it; the file did not.
+        if [ -f "${BANK_BOXES_SINK}/acceptance.retried" ]; then
+            BANK_BOXES_ACCEPT_ID="$(cat "${BANK_BOXES_SINK}/acceptance.id" 2>/dev/null || true)"
+            [ -z "$BANK_BOXES_ACCEPT_ID" ] || BANK_BOXES_ACCEPT_NOTE=""
+        fi
+        echo ""
+    fi
+    BANK_BOXES_WORKERS=""
+    return 0
+}
+
+# =============================================================================
+# WHICH TEST FAILED, AND THE COMMAND THAT REPLAYS IT
+# =============================================================================
+#
+# WHY IT IS COMPOSED AND NOT LINKED. A red bank's boxes are terminated four
+# lines later, so `pass2.log` is readable exactly once — before the teardown —
+# and a refusal that pointed at a path on a machine that no longer exists cost
+# the reader a whole second bank to learn one nodeid. The line is PRINTED
+# beside the table and composed into NO row: a red bank writes no row at all,
+# and `gate_ledger_record`'s grammar gains nothing.
+
+# bank_boxes_first_failing <log> <what> <seed> — one line naming the first
+# failing test and the command that reproduces it, or `none named`.
+#
+# `FAILED <nodeid>` IS PYTEST'S OWN SHORT SUMMARY (its default `-r fE`), and
+# the FIRST such line is the first failure in the order that ran — which is
+# the one worth replaying, because the ones after it may be its consequences.
+# A log with no such line is a pass that died without a summary (a collection
+# error, an OOM, a box that went away): the status is red and there is no
+# nodeid in it, and a composer that invented one would be worse than one that
+# says so.
+bank_boxes_first_failing() {
+    local log="$1" what="$2" seed="$3" node n
+    node="$(bank_boxes_first_match "$log" '/^FAILED / { print $2; exit }')"
+    if [ -z "$node" ]; then
+        printf 'first failing: none named - no FAILED line in %s\n' "$log"
+        return 0
+    fi
+    n="$(bank_boxes_first_match "$log" '/^FAILED / { n++ } END { print n + 0 }')"
+    printf 'first failing: %s (%s; %s FAILED) - replay: ./scripts/test.sh -n %s --randomly-seed=%s %s\n' \
+        "$node" "$what" "${n:-?}" "$BANK_PROOF_WORKERS" "${seed:-<seed unread>}" "$node"
+}
+
+# bank_boxes_log_seed <log> — the seed pytest-randomly printed at the top of
+# that run, so a shard's replay names the order it reddened in. The acceptance
+# box's seed comes from its `proof.txt` instead, which is the authority there.
+bank_boxes_log_seed() {
+    bank_boxes_first_match "$1" '
+        /--randomly-seed=/ {
+            i = index($0, "--randomly-seed=")
+            s = substr($0, i + 16)
+            sub(/[^0-9].*$/, "", s)
+            if (s != "") { print s; exit }
+        }'
+}
+
 # bank_boxes_table — the per-shard table, printed on EVERY exit path, green or
 # not. A composition that refused and said only "a shard was red" is a
 # composition nobody can act on.
 bank_boxes_table() {
-    local label unit shard passes id rc wall tree market
+    local label unit shard passes az id rc wall tree market retried
     echo ""
-    printf '  %-26s %-21s %-9s %-6s %-3s %-7s %s\n' \
-        "shard" "box" "market" "passes" "rc" "wall" "tree"
-    while IFS='	' read -r label unit shard passes; do
+    printf '  %-26s %-21s %-9s %-14s %-6s %-3s %-7s %s\n' \
+        "shard" "box" "market" "az" "passes" "rc" "wall" "tree"
+    while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
         id="$(cat "${BANK_BOXES_SINK}/${label}.id" 2>/dev/null || echo '-')"
         rc="$(cat "${BANK_BOXES_SINK}/${label}.rc" 2>/dev/null || echo '?')"
@@ -789,9 +1298,28 @@ bank_boxes_table() {
         # "this unit runs no suite", never "two" — a column that guessed a
         # default would read as a claim about a shard that made none.
         case "$passes" in '') passes="-" ;; esac
-        printf '  %-26s %-21s %-9s %-6s %-3s %-7s %s\n' \
-            "$label" "$id" "$market" "$passes" "$rc" "${wall}s" "$tree"
+        # THE ZONE THE PLAN SENT IT TO. After a reclaim retry the box in the
+        # `box` column is the SECOND one, so its zone is the one it was
+        # retried into and the `retried-from` line below says which box and
+        # which capacity code it replaced.
+        case "$az" in '') az="-" ;; esac
+        printf '  %-26s %-21s %-9s %-14s %-6s %-3s %-7s %s\n' \
+            "$label" "$id" "$market" "$az" "$passes" "$rc" "${wall}s" "$tree"
+        if [ -f "${BANK_BOXES_SINK}/${label}.retried" ]; then
+            retried="$(bank_boxes_first_match "${BANK_BOXES_SINK}/${label}.retried" \
+                '{ printf "retried-from %s (%s)", $1, substr($0, index($0, "\t") + 1); exit }')"
+            printf '    %s\n' "$retried"
+        fi
     done <"${BANK_BOXES_SINK}/plan.tsv"
+    # AND THE NINTH BOX, WHEN IT WAS RETRIED TOO. It is not in the plan and
+    # never has been (it takes no unit), so it has no row above — but a reader
+    # costing this bank needs to know a tenth box existed.
+    if [ -f "${BANK_BOXES_SINK}/acceptance.retried" ]; then
+        retried="$(bank_boxes_first_match "${BANK_BOXES_SINK}/acceptance.retried" \
+            '{ printf "retried-from %s (%s)", $1, substr($0, index($0, "\t") + 1); exit }')"
+        printf '  %-26s %-21s %s\n' "acceptance" "${BANK_BOXES_ACCEPT_ID:--}" ""
+        printf '    %s\n' "$retried"
+    fi
     # THE VALVE, PRINTED WHEREVER THE TABLE IS. An on-demand row in the column
     # above is only readable beside the reason somebody typed for it, and a
     # bank with no valve set is the ordinary case that should say so once.
@@ -986,7 +1514,8 @@ bank_on_boxes() {
     local tree tree8 declared listing lrc plan prc planned
     local label unit shard log rc treev composed wallv legwall
     local lost red foreign union pytest_wall failed
-    local kbad needsv shardsv legsv lunit lshard kk pp seen kmax
+    local kbad needsv shardsv legsv lunit lshard lpasses laz kk pp seen kmax
+    local az zonesfile ffwhat fflog
     local shard_legs listing_legs declared_legs missing extra uncovered labels drc
     local acheckout arung acmd arc hid passes planpasses onepass
     local proof_file pseed pworkers ppass1 ppass2 pmap member sawpasses
@@ -1046,10 +1575,18 @@ bank_on_boxes() {
     planpasses=2
     [ -z "$acheckout" ] || planpasses=1
 
+    BANK_BOXES_TREE8="$tree8"
+    BANK_BOXES_ARUNG="$arung"
+
     echo "pm_push --bank --on-boxes ${n}: the full gate, one unit per verifier box."
     echo "  tree          ${tree}"
     echo "  sink          ${BANK_BOXES_SINK}"
     echo "  wrapper       ${vb}"
+    # THE RIDER, SAID WHERE THE OPERATOR READS IT. The teardown is a trap and
+    # no shell covers a SIGKILL, so every box this bank launches carries its
+    # own ceiling and its own idle reaper — and the header is where somebody
+    # who has just killed a bank looks to find out what is still running.
+    echo "  box lifetime: ${BANK_BOX_TTL_HOURS}h hard, ${BANK_BOX_IDLE_MINUTES}m idle - the box reaps itself if the Mac dies"
     echo "  This Mac MEASURES NOTHING: it takes no machine lease and no pytest slot,"
     echo "  so every builder's --loop on this box keeps its own slot throughout."
     echo ""
@@ -1070,10 +1607,33 @@ bank_on_boxes() {
    Nothing was launched, nothing was banked and nothing was pushed."
     fi
 
+    # --- the zone ring, read ONCE, before a box exists ----------------------
+    #
+    # BEFORE THE PLAN, because the plan is what spreads over it, and before
+    # anything is launched, because a bank that could not read the ring would
+    # otherwise launch every box into the subnet default — the single-zone
+    # shape this exists to end, silently.
+    zonesfile="${BANK_BOXES_SINK}/zones.txt"
+    if ! bank_boxes_zones_read "$vb" "$zonesfile"; then
+        cat "${zonesfile}.err" >&2 2>/dev/null || true
+        die "could not read the zones — ${vb} zones answered nothing this bank can spread
+   over. Spot capacity is a per-availability-zone fact and a bank in one zone is a
+   bank that loses every box to one capacity event; rather than launch blind, this
+   one refuses. Nothing was launched, nothing was banked and nothing was pushed."
+    fi
+    BANK_BOXES_ZONES="$(tr '\n' ' ' <"$zonesfile")"
+    BANK_BOXES_ZONES="${BANK_BOXES_ZONES% }"
+    echo "pm_push --bank --on-boxes: zones ${BANK_BOXES_ZONES}"
+    echo "    read from the wrapper, never typed here: one box per zone in turn, so a"
+    echo "    capacity event in one zone costs a shard and not a wave."
+    echo ""
+
     plan="${BANK_BOXES_SINK}/plan.tsv"
+    BANK_BOXES_PLAN="$plan"
     prc=0
     set +e
-    bank_boxes_plan "$listing" "$n" "$planpasses" >"$plan" 2>"${BANK_BOXES_SINK}/plan.err"
+    bank_boxes_plan "$listing" "$n" "$planpasses" "$BANK_BOXES_ZONES" \
+        >"$plan" 2>"${BANK_BOXES_SINK}/plan.err"
     prc=$?
     set -e
     if [ "$prc" != "0" ]; then
@@ -1091,7 +1651,7 @@ bank_on_boxes() {
     # the ones they were before the amendment; `--passes 1` is the departure
     # and it says so, beside the `--shard` it is only legal next to.
     echo "pm_push --bank --on-boxes: the plan, derived from that listing —"
-    while IFS='	' read -r label unit shard passes; do
+    while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
         if [ "$passes" = "1" ]; then
             echo "    ${label}	--leg ${unit}${shard:+ --shard ${shard}} --passes 1"
@@ -1121,8 +1681,14 @@ bank_on_boxes() {
         echo "    not be rewritten by this bank; nothing else changes."
         echo ""
     else
+        # THE NINTH BOX TAKES THE NEXT PLACE IN THE RING, after the last
+        # shard: it is not in the plan (it carries no unit) but it is a box on
+        # the same Spot market, and leaving it in zone one would put the box
+        # the row now rests on in the most crowded place in the bank.
+        BANK_BOXES_ACCEPT_AZ="$(bank_boxes_zone_at "$BANK_BOXES_ZONES" "$n")"
         echo "pm_push --bank --on-boxes: and ONE more box, outside the verdict —"
         echo "    ${arung}	the whole suite twice (contexts, then plain) -> scripts/test_impact.json"
+        echo "    in ${BANK_BOXES_ACCEPT_AZ}"
         echo "    Its status is PRINTED and composed nowhere: a measurement may not refuse"
         echo "    a claim every shard passed."
         echo ""
@@ -1137,54 +1703,27 @@ bank_on_boxes() {
     # --- phase 1: N boxes, each carrying the fold commit's tree -------------
     echo "pm_push --bank --on-boxes: bringing ${n} boxes up, concurrently."
     BANK_BOXES_WORKERS=""
-    while IFS='	' read -r label unit shard passes; do
+    while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
         (
             set +e
-            # DJB_VERIFIER_BANK_SHARD IS WHAT MAKES THIS A SHARD'S `up` AND NOT
-            # AN OPERATOR'S. The wrapper's Spot→on-demand fallback is right for
-            # one box somebody is standing in front of and wrong for a bank:
-            # N shards each answering a Spot refusal with an on-demand box is N
-            # on-demand boxes against a quota an order of magnitude smaller
-            # than the Spot one, bought without anybody deciding to. With this
-            # set the shard is `could not launch` instead, and the refusal
-            # below is the one that fires. `DJB_VERIFIER_ON_DEMAND_OK` is the
-            # valve, and it is inherited from the operator's own environment so
-            # that one typed sentence covers the whole bank.
-            DJB_VERIFIER_BANK_SHARD=1 "$vb" up --for "bank-${tree8}-${label}" \
-                >"${BANK_BOXES_SINK}/up-${label}.log" 2>&1 </dev/null
-            urc=$?
-            printf '%s\n' "$urc" >"${BANK_BOXES_SINK}/${label}.up.rc"
-            [ "$urc" = "0" ] || exit 0
-            uid="$(awk '$1 == "instance" { print $2; exit }' "${BANK_BOXES_SINK}/up-${label}.log")"
-            if [ -z "$uid" ]; then
-                printf '2\n' >"${BANK_BOXES_SINK}/${label}.up.rc"
-                exit 0
-            fi
-            printf '%s\n' "$uid" >"${BANK_BOXES_SINK}/${label}.id"
-            awk '$1 == "market" { print $2; exit }' \
-                "${BANK_BOXES_SINK}/up-${label}.log" >"${BANK_BOXES_SINK}/${label}.market"
-            # One short line, appended: the teardown's whole census, and the
-            # only thing standing between a signal and a box nobody names.
-            printf '%s\t%s\n' "$label" "$uid" >>"$BANK_BOXES_TSV"
+            # ONE LAUNCH BLOCK — `bank_boxes_up_one`, which is also what the
+            # reclaim retry calls. It records the LAUNCHED id on the teardown
+            # list before it reads the status, which is the only thing
+            # standing between a probe that died and a box nobody can name.
+            bank_boxes_up_one "$label" "bank-${tree8}-${label}" "$az" \
+                "${BANK_BOXES_SINK}/up-${label}.log" 1
         ) &
         BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
     done <"$plan"
     if [ -n "$acheckout" ]; then
         (
             set +e
-            "$vb" up --for "$arung" \
-                >"${BANK_BOXES_SINK}/up-acceptance.log" 2>&1 </dev/null
-            urc=$?
-            printf '%s\n' "$urc" >"${BANK_BOXES_SINK}/acceptance.up.rc"
-            [ "$urc" = "0" ] || exit 0
-            uid="$(awk '$1 == "instance" { print $2; exit }' "${BANK_BOXES_SINK}/up-acceptance.log")"
-            if [ -z "$uid" ]; then
-                printf '2\n' >"${BANK_BOXES_SINK}/acceptance.up.rc"
-                exit 0
-            fi
-            printf '%s\n' "$uid" >"${BANK_BOXES_SINK}/acceptance.id"
-            printf '%s\t%s\n' acceptance "$uid" >>"$BANK_BOXES_TSV"
+            # THE SAME LAUNCH BLOCK, and NOT as a shard: this box is outside
+            # the composed verdict, so the Spot→on-demand refusal that protects
+            # the shards' quota is not its rule.
+            bank_boxes_up_one acceptance "$arung" "$BANK_BOXES_ACCEPT_AZ" \
+                "${BANK_BOXES_SINK}/up-acceptance.log" 0
         ) &
         BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
     fi
@@ -1221,7 +1760,7 @@ bank_on_boxes() {
     fi
 
     failed=""
-    while IFS='	' read -r label unit shard passes; do
+    while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
         if [ "$(cat "${BANK_BOXES_SINK}/${label}.up.rc" 2>/dev/null || echo 2)" != "0" ]; then
             failed="${failed}${failed:+ }${label}"
@@ -1245,42 +1784,17 @@ bank_on_boxes() {
     # --- phase 2: one leg per box, the seam's exact argv --------------------
     echo "pm_push --bank --on-boxes: detaching one unit of the gate on each box."
     BANK_BOXES_WORKERS=""
-    while IFS='	' read -r label unit shard passes; do
+    while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
         (
             set +e
             lid="$(cat "${BANK_BOXES_SINK}/${label}.id")"
             printf '%s\n' "$(date +%s)" >"${BANK_BOXES_SINK}/${label}.began"
-            # 255 IS SSH'S OWN STATUS AND IT GETS ONE MORE GO. `up` returns
-            # when SSM reports the agent Online, and the agent answers before
-            # the SSH tunnel does — so a detach fired in that window comes back
-            # 255 with an EMPTY log: no gate ran, nothing was measured, and a
-            # whole bank refused with every box up and paid for while the
-            # socket was answering seconds later. ONE retry, after a short
-            # printed wait, and ONLY for 255: any other status is the wrapper
-            # or the box saying something real, and retrying it would risk a
-            # second copy of a leg that is already running.
-            # THE SEAM'S ARGV, COMPOSED ONCE AND HANDED TO BOTH TRIES. An
-            # array rather than three nested `if`s, because the retry below
-            # runs the same argv a second time and two spellings of one
-            # command are two commands to keep in step. `--passes 1` is
-            # appended only where the plan said one: `--passes 2` is the
-            # default `check.sh` normalises away, so a two-pass bank's argv is
-            # byte-for-byte the one it was before the amendment.
-            legargv=(leg "$lid" --unit "$unit")
-            [ -z "$shard" ] || legargv+=(--shard "$shard")
-            [ "$passes" != "1" ] || legargv+=(--passes 1)
-            legargv+=(--log leg)
-            drc=0
-            for try in 1 2; do
-                "$vb" "${legargv[@]}" \
-                    >"${BANK_BOXES_SINK}/leg-${label}.log" 2>&1 </dev/null
-                drc=$?
-                [ "$drc" = "255" ] && [ "$try" = "1" ] || break
-                echo "pm_push --bank --on-boxes: ${label}: the detach exited 255 — that is ssh, not the gate, and the tunnel is usually a few seconds behind the agent. Waiting ${BANK_DETACH_RETRY_SECONDS}s and retrying the detach, once."
-                sleep "$BANK_DETACH_RETRY_SECONDS"
-            done
-            printf '%s\n' "$drc" >"${BANK_BOXES_SINK}/${label}.leg.rc"
+            # ONE DETACH, AND THE 255 RETRY LIVES INSIDE IT —
+            # `bank_boxes_detach`, which the reclaim retry calls too, so the
+            # seam's argv and the transport rule have one spelling.
+            bank_boxes_detach "$label" "$lid" "$unit" "$shard" "$passes" \
+                "${BANK_BOXES_SINK}/leg-${label}.log"
         ) &
         BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
     done <"$plan"
@@ -1290,7 +1804,7 @@ bank_on_boxes() {
     BANK_BOXES_WORKERS=""
 
     failed=""
-    while IFS='	' read -r label unit shard passes; do
+    while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
         if [ "$(cat "${BANK_BOXES_SINK}/${label}.leg.rc" 2>/dev/null || echo 2)" != "0" ]; then
             failed="${failed}${failed:+ }${label}"
@@ -1320,6 +1834,7 @@ bank_on_boxes() {
     # only if this box outlasts the slowest shard.
     if [ -n "$BANK_BOXES_ACCEPT_ID" ]; then
         acmd="$(bank_boxes_acceptance_remote "$acheckout" "$arung")"
+        BANK_BOXES_ACMD="$acmd"
         (
             set +e
             began="$(date +%s)"
@@ -1327,10 +1842,16 @@ bank_on_boxes() {
                 >"${BANK_BOXES_SINK}/acceptance.log" 2>&1 </dev/null
             printf '%s\n' "$?" >"${BANK_BOXES_SINK}/acceptance.rc"
             printf '%s\n' "$(($(date +%s) - began))" >"${BANK_BOXES_SINK}/acceptance.wall"
+            # AND ITS FOUR FILES, HERE, while this box is unambiguously alive.
+            # It finishes around six minutes and the slowest shard can be
+            # twenty: a fetch joined to the others is a fetch from a box its
+            # own idle reaper has already shut down.
+            bank_boxes_fetch_acceptance_files \
+                "$(tr -d ' \r\n' <"${BANK_BOXES_SINK}/acceptance.rc" 2>/dev/null || true)"
         ) &
         BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
     fi
-    while IFS='	' read -r label unit shard passes; do
+    while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
         (
             set +e
@@ -1339,6 +1860,7 @@ bank_on_boxes() {
             printf '%s\n' "$?" >"${BANK_BOXES_SINK}/${label}.wait.rc"
             began="$(cat "${BANK_BOXES_SINK}/${label}.began" 2>/dev/null || echo 0)"
             printf '%s\n' "$(($(date +%s) - began))" >"${BANK_BOXES_SINK}/${label}.wall"
+            bank_boxes_fetch_shard "$label" "$wid"
         ) &
         BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
     done <"$plan"
@@ -1347,58 +1869,29 @@ bank_on_boxes() {
     set -e
     BANK_BOXES_WORKERS=""
 
-    # --- phase 4: fetch every shard's log and its status --------------------
-    echo "pm_push --bank --on-boxes: fetching every shard's log and exit status."
-    BANK_BOXES_WORKERS=""
-    # AND THE MAP, IF THERE IS ONE. Only when the acceptance box said 0: a fetch
-    # from a box that wrote nothing would bring home the PREVIOUS wave's file or
-    # nothing at all, and either would be a map claiming to be this tree's.
+    # --- everything is already home ----------------------------------------
+    #
+    # THERE IS NO FETCH PHASE, AND THAT IS THE POINT. Each phase-3 worker
+    # fetched its own box's log the moment its own `wait` returned, and the
+    # acceptance worker fetched its four files the moment its `run` did. A
+    # phase that joined every shard first and fetched afterwards asked a box
+    # that had been idle since minute two for a file, and the box's own idle
+    # reaper had shut it down: `box gone (terminated)`, no log, and a leak
+    # proof composed as LOST over a tree every shard passed.
     arc="$(tr -d ' \r\n' <"${BANK_BOXES_SINK}/acceptance.rc" 2>/dev/null || true)"
-    if [ -n "$BANK_BOXES_ACCEPT_ID" ] && [ "${arc:-1}" = "0" ]; then
-        (
-            set +e
-            "$vb" fetch "$BANK_BOXES_ACCEPT_ID" "~/verify/${arung}/test_impact.json" \
-                "${BANK_BOXES_SINK}/test_impact.json" \
-                >"${BANK_BOXES_SINK}/fetch-acceptance.log" 2>&1 </dev/null
-            printf '%s\n' "$?" >"${BANK_BOXES_SINK}/acceptance.fetch.rc"
-        ) &
-        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
-    fi
-    # AND THE LEAK PROOF, WHENEVER THERE IS A BOX TO ASK. It is fetched
-    # SEPARATELY from the map and on a laxer condition, and the difference is
-    # the two roles: the map is skipped when the box said anything but 0
-    # because a stale file would be a projection claiming to be this tree's,
-    # while the proof is the thing the row rests on and its ABSENCE has to be
-    # read rather than assumed. A proof that does not come back is `lost`
-    # below, never a quietly missing field.
-    if [ -n "$BANK_BOXES_ACCEPT_ID" ]; then
-        (
-            set +e
-            "$vb" fetch "$BANK_BOXES_ACCEPT_ID" "~/verify/${arung}/proof.txt" \
-                "${BANK_BOXES_SINK}/acceptance.proof" \
-                >"${BANK_BOXES_SINK}/fetch-proof.log" 2>&1 </dev/null
-            printf '%s\n' "$?" >"${BANK_BOXES_SINK}/acceptance.proof.fetch.rc"
-        ) &
-        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
-    fi
-    while IFS='	' read -r label unit shard passes; do
-        [ -n "$label" ] || continue
-        (
-            set +e
-            fid="$(cat "${BANK_BOXES_SINK}/${label}.id")"
-            "$vb" fetch "$fid" "~/verify/bank-${tree8}-${label}/leg.log" \
-                "${BANK_BOXES_SINK}/${label}.log" \
-                >"${BANK_BOXES_SINK}/fetch-${label}.log" 2>&1 </dev/null
-            "$vb" fetch "$fid" "~/verify/bank-${tree8}-${label}/leg.rc" \
-                "${BANK_BOXES_SINK}/${label}.rc" \
-                >>"${BANK_BOXES_SINK}/fetch-${label}.log" 2>&1 </dev/null
-        ) &
-        BANK_BOXES_WORKERS="${BANK_BOXES_WORKERS}${BANK_BOXES_WORKERS:+ }$!"
-    done <"$plan"
-    set +e
-    wait
-    set -e
-    BANK_BOXES_WORKERS=""
+
+    # --- a reclaimed box is one more box, in the next zone, once ------------
+    #
+    # HERE, AFTER EVERY LOG IS HOME AND BEFORE ANYTHING IS COMPOSED. A reclaim
+    # reaches this Mac at whichever subcommand met it first — the wait, the
+    # acceptance run, or a fetch — so the sweep can only be honest once all
+    # three have happened, and it must be over before the composition reads
+    # the files it rewrites.
+    bank_boxes_retry_reclaimed
+    # THE NINTH BOX'S STATUS IS RE-READ, because a retry ran the whole
+    # acceptance command again and `arc` is what decides whether its map is
+    # reported as written.
+    arc="$(tr -d ' \r\n' <"${BANK_BOXES_SINK}/acceptance.rc" 2>/dev/null || true)"
 
     # --- the map, reported BEFORE the composition ---------------------------
     #
@@ -1424,12 +1917,14 @@ bank_on_boxes() {
     # ONE PASS WAS PLANNED IFF THE PLAN SAYS SO, read back out of the plan file
     # rather than carried in a variable the launch set: the plan is what the
     # boxes were actually handed, and it is the only thing entitled to decide
-    # whether this row may name a one-pass leg.
+    # whether this row may name a one-pass leg. Column FIVE, and `awk -F'\t'`
+    # rather than `read`, because awk does not collapse a run of tabs and a
+    # trailing empty column here is an ordinary empty field.
     onepass=0
-    if awk -F'\t' '$4 == "1" { found = 1 } END { exit !found }' "$plan"; then
+    if awk -F'\t' '$5 == "1" { found = 1 } END { exit !found }' "$plan"; then
         onepass=1
     fi
-    while IFS='	' read -r label unit shard passes; do
+    while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
         log="${BANK_BOXES_SINK}/${label}.log"
         if [ ! -s "$log" ]; then
@@ -1520,6 +2015,16 @@ bank_on_boxes() {
         if [ "$rc" = "1" ]; then
             red="${red}
      ${label}: --leg ${unit}${shard:+ --shard ${shard}} on $(cat "${BANK_BOXES_SINK}/${label}.id" 2>/dev/null) exited 1"
+            # AND WHICH TEST, WHEN THE LEG WAS ONE THAT HAS TESTS. The
+            # condition is the LOG and not the unit's name: a `static` leg
+            # that reddened has no failing test to name, and a line saying
+            # `none named` under it would be noise claiming to be evidence.
+            # A pytest leg's log carries pytest's own short summary, so the
+            # question "is there a nodeid here" answers itself.
+            if grep -q '^FAILED ' "$log"; then
+                red="${red}
+              $(bank_boxes_first_failing "$log" "$label" "$(bank_boxes_log_seed "$log")")"
+            fi
         fi
         case ",${unit}," in
         *,pytest-x2,*)
@@ -1539,7 +2044,7 @@ bank_on_boxes() {
         [ -n "$unit" ] || continue
         seen=0
         kmax=0
-        while IFS='	' read -r label lunit lshard lpasses; do
+        while IFS='	' read -r label lunit laz lshard lpasses; do
             [ "$lunit" = "$unit" ] || continue
             seen=$((seen + 1))
             case "$shardsv" in
@@ -1653,11 +2158,23 @@ bank_on_boxes() {
             echo "  from ${BANK_BOXES_ACCEPT_ID}, the whole suite twice under one seed. pass1= and"
             echo "  pass2= are the CLAIM this row rests on; map= is a measurement and decides nothing."
             if [ "$ppass1" != "0" ] || [ "$ppass2" != "0" ]; then
+                # WHICH PASS, AND THEREFORE WHICH LOG. A red pass 2 beside a
+                # green pass 1 is the leak the belt exists to catch, so that
+                # is the log to name; a red pass 1 is an ordinary failure and
+                # its own log is the one that holds it.
+                if [ "$ppass2" != "0" ]; then
+                    ffwhat="pass 2"
+                    fflog="${BANK_BOXES_SINK}/pass2.log"
+                else
+                    ffwhat="pass 1"
+                    fflog="${BANK_BOXES_SINK}/pass1.log"
+                fi
                 red="${red}
      acceptance: the leak proof is RED on ${BANK_BOXES_ACCEPT_ID} — pass1=${ppass1} pass2=${ppass2}
               under seed ${pseed}. Both passes ran the whole suite in the same order
               with the same worker assignment, so a red pass 2 is state pass 1 left
-              behind and nothing else. Its whole log is ${BANK_BOXES_SINK}/acceptance.log."
+              behind and nothing else. Its whole log is ${BANK_BOXES_SINK}/acceptance.log.
+              $(bank_boxes_first_failing "$fflog" "$ffwhat" "$pseed")"
             fi
         fi
     fi
@@ -1707,7 +2224,7 @@ bank_on_boxes() {
 
     # --- ONE row, written by the one writer ---------------------------------
     labels=""
-    while IFS='	' read -r label unit shard passes; do
+    while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
         labels="${labels}${labels:+,}${label}"
     done <"$plan"
@@ -1774,7 +2291,7 @@ bank_on_boxes() {
     # not read costs a re-drive, never a verdict — so its status is not
     # consulted and the bank's own green stands whatever it says.
     echo "pm_push --bank --on-boxes: bringing the shards' drive rows home."
-    while IFS='	' read -r label unit shard passes; do
+    while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
         hid="$(cat "${BANK_BOXES_SINK}/${label}.id" 2>/dev/null || true)"
         [ -n "$hid" ] || continue
@@ -1896,13 +2413,143 @@ if [ "$BANK" = "1" ]; then
         echo "   Nothing was banked, nothing was pinned and nothing was pushed." >&2
         exit 2
     fi
+    # --- THE DOCS-ONLY ROAD, BEFORE EITHER ARM ------------------------------
+    #
+    # WHERE IT SITS, AND WHY IT CANNOT SIT ANYWHERE ELSE. After the fold (so the
+    # delta is the one the push carries) and after the clean-tree refusal (so
+    # "the tree" is a thing that exists in history); BEFORE the arms split, and
+    # therefore before a lease, a pytest slot or a single `verifier_box.sh up`.
+    # That ordering IS the saving: a docs-only push that decided this after
+    # launching five boxes would have spent the money it exists to save.
+    #
+    # WHAT IT IS. When every path changed since the nearest MEASURED ancestor
+    # tree is on the declared list (`GATE_DOCS_ONLY_PATHS`, argued in
+    # `scripts/gate_ledger.sh`), the readers those bytes really have are run
+    # HERE, on this Mac, and an ORDINARY full row is written for the tree about
+    # to be pushed. Seconds, not the ~25 minutes a bank costs, for a tree whose
+    # measured surface did not move.
+    #
+    # EVERY OTHER OUTCOME IS THE FULL BANK, AND EVERY ONE OF THEM SAYS SO. A
+    # path off the list, a docs path a module under `apps/` or `config/` really
+    # opens, a source row that is not honoured, a reader that could not look:
+    # each prints its cause and ends in "full bank", and the arm below runs
+    # exactly as it did. A reader that went RED is the one outcome that is not a
+    # full bank — it is a red tree, exit 1, no row and no push.
+    DOCS_ONLY_BANKED=0
+    if [ -n "${DJB_BANK_MEASURE:-}" ] && [ "${DJB_BANK_MEASURE}" != "0" ]; then
+        # THE MEASURING VALVE. The reuse's whole claim is that the readers it
+        # runs are the ones that could have said anything about these bytes, and
+        # the only way to check that claim is to measure the tree in full and
+        # compare. One typed variable turns the road off for one run, and it
+        # says so in the transcript rather than in somebody's memory.
+        echo "pm_push --bank: docs-only reuse SKIPPED by DJB_BANK_MEASURE — measuring."
+        echo ""
+    else
+        [ -r "$ROOT/scripts/gate_ledger.sh" ] ||
+            die "no ${ROOT}/scripts/gate_ledger.sh — the docs-only road has no reader without it"
+        # shellcheck source=scripts/gate_ledger.sh
+        . "$ROOT/scripts/gate_ledger.sh"
+        DOCS_T0="$(date +%s)"
+        DOCS_READERS_TOOK=0
+        DOCS_PLAN_RC=0
+        # THE PLAN READS THIS CHECKOUT, so it is run STANDING IN IT. Every
+        # line after this block addresses git with `-C`, so moving the working
+        # directory here changes nothing downstream.
+        cd "$ROOT" || die "could not stand in ${ROOT}"
+        # CALLED PLAINLY, NEVER IN `$(...)`: its whole answer is six globals,
+        # and a substitution's copy of a global dies with the subshell.
+        gate_docs_only_plan "$SHA" || DOCS_PLAN_RC=$?
+        if [ "$DOCS_PLAN_RC" != "0" ]; then
+            echo "pm_push --bank: ${GATE_DOCS_ONLY_WHY}"
+            echo ""
+        else
+            echo "pm_push --bank: docs-only? yes — ${GATE_DOCS_ONLY_N} path(s) changed since the"
+            echo "  measured tree ${GATE_DOCS_ONLY_SOURCE}, every one of them on the declared list."
+            echo "  readers, DERIVED from what those paths are read by:"
+            printf '    %s\n' ${GATE_DOCS_ONLY_READERS//,/ }
+            DOCS_RED=""
+            DOCS_CANNOT=""
+            for DOCS_READER in ${GATE_DOCS_ONLY_READERS//,/ }; do
+                DOCS_R0="$(date +%s)"
+                DOCS_RC=0
+                case "$DOCS_READER" in
+                */*)
+                    # A DRIVE IS RUN THE WAY THE SELFTEST LEG RUNS IT — from the
+                    # checkout root, by its own path, under its own shebang.
+                    "./${DOCS_READER}" || DOCS_RC=$?
+                    ;;
+                *)
+                    "$GATE" --leg "$DOCS_READER" || DOCS_RC=$?
+                    ;;
+                esac
+                DOCS_R1="$(date +%s)"
+                DOCS_READERS_TOOK=$((DOCS_READERS_TOOK + DOCS_R1 - DOCS_R0))
+                echo "  reader ${DOCS_READER}: $((DOCS_R1 - DOCS_R0))s (exit ${DOCS_RC})"
+                if [ "$DOCS_RC" = "1" ]; then
+                    DOCS_RED="$DOCS_READER"
+                    break
+                fi
+                if [ "$DOCS_RC" != "0" ]; then
+                    DOCS_CANNOT="$DOCS_READER exited ${DOCS_RC}"
+                    break
+                fi
+            done
+            if [ -n "$DOCS_RED" ]; then
+                echo "!! pm_push --bank: docs-only readers RED: ${DOCS_RED}." >&2
+                echo "   That is a red tree and not a cheaper road: NO ROW was written, nothing" >&2
+                echo "   was pinned and nothing was pushed. Fix it and run the bank again." >&2
+                exit 1
+            fi
+            if [ -n "$DOCS_CANNOT" ]; then
+                echo "pm_push --bank: could not look — ${DOCS_CANNOT} — full bank."
+                echo "  2 is enforcement broken, and a reuse resting on a reader that could not"
+                echo "  look would be a green nobody measured."
+                echo ""
+            else
+                # --- ONE row, written by the one writer -------------------------
+                #
+                # AN ORDINARY FULL ROW. The legs field and `leak-proof=` are
+                # COPIED FROM THE SOURCE ROW rather than re-derived: this run
+                # measured no leg, so the claim it carries forward is the source
+                # row's claim and nothing stronger. `gate_ledger_lookup` then
+                # covers it exactly as it covers the row it came from, and the
+                # pre-push hook honours it unedited.
+                DOCS_TREE="$(cd "$ROOT" && gate_measured_tree)" ||
+                    die "could not read the measured tree for the docs-only row"
+                DJB_GATE_CALLER=pm-bank
+                GATE_RUN_SANCTION="docs-only from=${GATE_DOCS_ONLY_SOURCE} paths=${GATE_DOCS_ONLY_N} readers=${GATE_DOCS_ONLY_READERS}"
+                GATE_RUN_LEAK_PROOF="$GATE_DOCS_ONLY_PROOF"
+                if ! (cd "$ROOT" && gate_ledger_record "$DOCS_TREE" "$GATE_DOCS_ONLY_LEGS"); then
+                    die "the verdict ledger could not be written. Every reader was green and
+   nothing was pushed: a green nobody can read is not a verdict."
+                fi
+                DOCS_T1="$(date +%s)"
+                echo "pm_push --bank: docs-only reuse of ${GATE_DOCS_ONLY_SOURCE} — readers ${DOCS_READERS_TOOK} s, total $((DOCS_T1 - DOCS_T0)) s"
+                echo "  source + delta + row: $((DOCS_T1 - DOCS_T0 - DOCS_READERS_TOOK)) s"
+                echo "  verdict banked for tree ${DOCS_TREE}"
+                echo "  caller=pm-bank sanction=${GATE_RUN_SANCTION}"
+                echo "  legs=${GATE_DOCS_ONLY_LEGS}"
+                [ -z "$GATE_DOCS_ONLY_PROOF" ] || echo "  leak-proof=${GATE_DOCS_ONLY_PROOF}"
+                echo "  The pre-push hook will honour it and cost seconds."
+                echo ""
+                DOCS_ONLY_BANKED=1
+            fi
+        fi
+    fi
+
     # WHERE THE BANK RUNS, AND IT IS ONE BRANCH RATHER THAN TWO RITUALS. Both
     # arms earn the SAME verdict for the SAME post-fold tree through the SAME
     # writer; what differs is the machine the legs run on. Everything above this
     # line — the fold, the re-read SHA, the clean-tree refusal — is shared by
     # construction, which is the reason `--on-boxes` is a flag on this script
     # rather than a second one beside it.
-    if [ -n "$ON_BOXES" ]; then
+    if [ "$DOCS_ONLY_BANKED" = "1" ]; then
+        # NEITHER ARM RUNS. The row above is the verdict for this tree and it
+        # was written by the one writer; there is nothing left for a bank to
+        # earn, and launching one would measure bytes a measured row already
+        # covers.
+        :
+    elif [ -n "$ON_BOXES" ]; then
         BANK_RC=0
         bank_on_boxes "$ON_BOXES" || BANK_RC=$?
         if [ "$BANK_RC" != "0" ]; then

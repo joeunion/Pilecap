@@ -49,9 +49,11 @@ esac
 # with the two flags below and the one line stays where it is, under this
 # script's exit guard, its dirty-path rule and its census.
 #
-#   --only <steps>   a comma-joined subset of the four step names, which are a
-#                    CLOSED list: contract|schema|secrets|budgets (steps a-d).
-#                    An unknown name is exit 2, never a silently smaller fold.
+#   --only <steps>   a comma-joined subset of the step names, which are a
+#                    CLOSED list: contract|schema|secrets|budgets (steps a-d),
+#                    plus whatever `scripts/local/fold.d/` declares (see THE
+#                    PRODUCT'S DRAWER below). An unknown name is exit 2, never a
+#                    silently smaller fold.
 #   --no-commit      regenerate and leave the result in the WORKING TREE. The
 #                    census still runs — a stray is still exit 2 — and nothing
 #                    is staged and nothing is committed. Legal only WITH
@@ -95,10 +97,13 @@ esac
 # THE FOUR CLAUSES, which are what make an unattended committing script safe to
 # have in the ritual at all:
 #
-#   1. A DIRTY TREE IS REFUSED. A fold folds a COMMITTED tree. With work
-#      already in the checkout there is no way to say which of the changes the
-#      fold made, and the commit this script writes would carry whatever it
-#      swept up.
+#   1. A DIRTY TREE IS REFUSED, EXCEPT AN ABSORBED PATH. A fold folds a
+#      COMMITTED tree. With work already in the checkout there is no way to say
+#      which of the changes the fold made, and the commit this script writes
+#      would carry whatever it swept up. The one exception is the typed
+#      ABSORBED list — a derived path written from OUTSIDE this checkout, which
+#      no step here can regenerate and which is therefore never somebody's
+#      work: today `scripts/test_impact.json`, argued at the list itself.
 #   2. IT MAY TOUCH ONLY THE DERIVED LIST. After the generators run, the whole
 #      of `git status --porcelain -uall` is partitioned against the typed list
 #      below; a single path outside it is exit 2, with NOTHING committed and
@@ -127,12 +132,30 @@ esac
 #     anybody wanted is the gate's question and the reviewer's, not this
 #     script's.
 #   * WHETHER THE TREE SHOULD BE PUSHED OR MERGED. That is the caller's.
-#   * A FIFTH DERIVED FILE. `DERIVED_PATHS` below is TYPED, never computed, and
-#     that is deliberate: a computed list is a list that grows whenever a
-#     generator misbehaves, which is the one thing clause 2 exists to catch. A
-#     new derived file is a human edit to this file — until then a new
-#     generator's output is a STRAY and stops the fold, which is clause 2
-#     working rather than failing.
+#   * A FIFTH DERIVED FILE OF THE TEMPLATE'S OWN. `DERIVED_PATHS` below is
+#     TYPED, never computed, and that is deliberate on two counts: a computed
+#     list is a list that grows whenever a generator misbehaves, which is the
+#     one thing clause 2 exists to catch — and every one of those paths is READ
+#     BACK BY THE GATE, which is precisely what a `derived-tree-paths`
+#     declaration promises they are not (the reason is written out at the list
+#     itself). A fifth TEMPLATE derived file is a human edit to this file.
+#     A PRODUCT'S derived file is not: it declares itself, in the grammar this
+#     tree already speaks, and the union is computed from the declarations —
+#     which is what stops a product having to edit this file at all.
+#   * WHETHER A DECLARED PATH IS HONEST. A fold-writes declaration says "I
+#     write this". This fold believes it — that is what it partitions against
+#     — and never checks that the step actually wrote it, only that nothing
+#     ELSE appeared. A declared path a step quietly stopped regenerating is a
+#     stale derived file this script cannot see.
+#   * ANYTHING A LOCAL STEP DOES OUTSIDE THIS TREE. The census is
+#     `git status --porcelain -uall` over this checkout, so a step that writes
+#     into `/tmp`, into a sibling checkout, into a gitignored path, into a
+#     database or over the network leaves NOTHING for clause 2 to partition
+#     and is invisible here from start to finish. The drawer requires a step
+#     to be TRACKED for exactly this reason — what it does is a reviewer's
+#     question, and the tracking is what gives the reviewer the file — but
+#     being reviewable is not being checked, and nothing in this script is a
+#     sandbox.
 #   * A NUMBER THAT IS LOWER BUT WRONG. Clause 3's comparison is arithmetic: a
 #     note whose number is lower than the ceiling but is NOT the engine's
 #     measurement is invisible here — the fold cannot know what was measured,
@@ -209,9 +232,11 @@ ROOT="$(pwd -P)"
 FOLD_REACHED_THE_END=""
 FOLD_REFUSED=""
 FOLD_WORK=""
+FOLD_DECL_ERR=""
 
 fold_cleanup() {
     [ -z "${FOLD_WORK:-}" ] || rm -rf "$FOLD_WORK"
+    [ -z "${FOLD_DECL_ERR:-}" ] || rm -f "$FOLD_DECL_ERR"
 }
 
 fold_on_exit() {
@@ -274,8 +299,10 @@ THE FOLD. Regenerate this checkout's derived files and commit exactly those.
                                               working tree, staging nothing
   ./scripts/pm_fold.sh --help
 
-<steps> is a comma-joined subset of a CLOSED list, the four steps in order:
-contract, schema, secrets, budgets. An unknown name is exit 2.
+<steps> is a comma-joined subset of a CLOSED list: the four template steps, in
+order — contract, schema, secrets, budgets — plus every step this checkout's
+scripts/local/fold.d/ declares, which run after them in name order. An unknown
+name is exit 2, and the refusal prints both halves.
 
 `--no-commit` is legal only WITH `--only`: a whole fold that commits nothing is
 a bank that vouches for a tree nobody wrote down. `scripts/rung_tidy.sh
@@ -289,7 +316,8 @@ scripts/pm_merge.sh), never this script's.
 
 Exit: 0 folded, or nothing to fold · 1 never · 2 refused, or could not look.
 
-The four clauses: a dirty tree is refused; only the typed derived list may be
+The four clauses: a dirty tree is refused (except a typed ABSORBED path, which
+is a derived file written from outside this checkout); only the typed derived list may be
 touched; a ceiling is never raised; a pipe and an unknown flag are refused.
 None of them is lifted by the flags above. Read the header of this file for
 what each one is made of.
@@ -326,17 +354,243 @@ USAGE
     esac
 done
 
+# --- THE PRODUCT'S DRAWER: scripts/local/fold.d/<step>.sh --------------------
+#
+# A PRODUCT HAS DERIVED FILES THIS TEMPLATE HAS NEVER HEARD OF, and before this
+# drawer the only way to fold one was to EDIT THIS FILE — which is what the one
+# consumer did (their `pm_fold.diff`: `DERIVED_PATHS` rewritten and step (a)'s
+# precondition re-spelled, in a file a template release then conflicts with, or
+# worse fast-forwards over byte-identically with the edit silently dropped).
+# The convention is the one every extension point here uses: a `local/` SIBLING
+# of the template directory it extends, discovered by path, and NEVER shipped by
+# a release — so absent is byte-identical and present is the product's own.
+#
+# THE CONTRACT, and each half of it is a refusal rather than a convention:
+#
+#   executable      a step is EXECUTED, from the checkout root. A `-x` bit that
+#                   is not there is a step that silently never runs, which is
+#                   the failure mode a drawer makes easy and nothing else here
+#                   would catch.
+#   declared        it names every path it writes, in the `derived-tree-paths`
+#                   sentinel block the gate's own tree reader already reads
+#                   (`scripts/tests/test_loop_ledger.sh`'s planted-declaration
+#                   cases are the shape). The declaration is what clause 2
+#                   partitions against: a step's declared paths are derived, and
+#                   ANYTHING ELSE IT WROTE IS THE FOLD'S EXIT 2, naming the step.
+#   named           the step's name is its basename without `.sh`, and it joins
+#                   `--only`'s closed list. A name that collides with one of the
+#                   template's four is exit 2 — a product shadowing `secrets`
+#                   would be a product silently replacing the tree's one legal
+#                   baseline writer.
+#
+# WHAT THE DRAWER DOES NOT LIFT. Clause 2 is not relaxed, it is WIDENED BY
+# DECLARATION: the union is the typed list plus what each step declared about
+# itself, and a step that declares nothing is refused rather than trusted. And
+# the blind spot is the product's own and is declared here: whether a local
+# step is IDEMPOTENT, and whether what it regenerated is RIGHT, is exactly as
+# far outside this script's reach as the same question about `pin_client.sh`.
+FOLD_LOCAL_DIR="$ROOT/scripts/local/fold.d"
+FOLD_LOCAL_STEPS=""
+FOLD_LOCAL_STEP_NAMES=""
+FOLD_LOCAL_PATHS=""
+FOLD_LOCAL_OWNERS=""
+FOLD_DECL_READER="$ROOT/scripts/gate_ledger.sh"
+
+# --- ONE READER, TWO GRAMMARS, AND THEY MUST NOT BE THE SAME ONE ------------
+#
+# `scripts/gate_ledger.sh::gate__derived_tree_paths` owns the PARSER: sentinels
+# honoured only on a COMMENT line; the `<path> — <reason>` entry form with the
+# em dash load-bearing (without it a paragraph inside a block declares whatever
+# its first word is); the one-repository-relative-subtree validation; the
+# tracked-path check; and the refuse-and-say-so answer to anything it cannot
+# read. This file CALLS it and copies none of it — a second parser would be a
+# second answer to "what did this tree declare", and the second one is the one
+# nobody reads.
+#
+# BUT IT DOES NOT SHARE THE GATE'S SENTINEL, AND THAT IS A RULING RATHER THAN A
+# STYLE. A `derived-tree-paths` declaration is SUBTRACTED FROM THE VERDICT KEY,
+# and that library states the precondition in its own words: "NOTHING MEASURED
+# READS THIS PATH BACK. Declare a path any check reads and the ledger will
+# lie." A path THIS script commits is the opposite by construction — it is
+# regenerated from the checkout and then read back by something that measures
+# it. The consumer's own case is the proof: their generated `events.ts` is
+# fold-committed AND compiled by `tsc` inside the gate, so a single grammar
+# would have made every verdict key blind to the file the fold had just
+# rewritten. So the fold has its OWN sentinel pair, read by this file and by
+# nothing else, and the two populations stay disjoint by spelling.
+#
+#     the gate's:  derived-tree-paths   written after the measurement, never
+#                                       read back, subtracted from the key
+#     the fold's:  fold-writes          regenerated by the fold, committed,
+#                                       and MEASURED like every other file
+#
+# The two sentinel strings are assembled below rather than written out, for the
+# reason that cost this file a red run on its first day: a marker counts
+# wherever it appears, so a comment spelling the opening sentinel would open a
+# declaration IN THE FILE EXPLAINING IT.
+FOLD_WRITES_BEGIN=">>> fold""-writes >>>"
+FOLD_WRITES_END="<<< fold""-writes <<<"
+
+# fold_declared_paths [<glob override>] — the paths declared in THE FOLD'S
+# grammar, on stdout; the reader's notes on stderr. 0 read cleanly (zero paths
+# is a clean read) · 1 the reader REFUSED · 2 the reader could not be reached.
+#
+# The three globals it overrides are the reader's whole configuration surface,
+# which is what makes "one parser, two grammars" a call rather than a fork.
+# With no glob override it reads the library's own source list — the places a
+# generator lives — so a product's generator declares beside its own write and
+# `pm_fold.sh` is never edited.
+fold_declared_paths() {
+    bash -c '
+        set -uo pipefail
+        . "$1" >/dev/null 2>&1 || exit 2
+        declare -F gate__derived_tree_paths >/dev/null 2>&1 || exit 2
+        GATE_TREE_DECL_BEGIN="$3"
+        GATE_TREE_DECL_END="$4"
+        [ -z "${5:-}" ] || GATE_TREE_DECL_SOURCES="$5"
+        gate__derived_tree_paths "$2"
+    ' _ "$FOLD_DECL_READER" "$ROOT" "$FOLD_WRITES_BEGIN" "$FOLD_WRITES_END" "${1:-}"
+}
+
+[ -r "$FOLD_DECL_READER" ] ||
+    refuse "scripts/gate_ledger.sh is not in this checkout." \
+        "The fold reads this tree's fold-writes declarations through that library's own" \
+        "reader rather than through a second parser, so without it this run cannot say" \
+        "what this checkout declares the fold regenerates — could-not-look." \
+        "Nothing was regenerated and nothing was committed."
+
+FOLD_DECL_ERR="$(mktemp "${TMPDIR:-/tmp}/djb-pm-fold-decl.XXXXXX")" ||
+    refuse "could not make a scratch file for the declaration reader's notes." \
+        "Nothing was regenerated and nothing was committed."
+
+if [ -d "$FOLD_LOCAL_DIR" ]; then
+    for _fold_local in "$FOLD_LOCAL_DIR"/*.sh; do
+        # The glob is literal when the directory holds no `.sh` — an empty
+        # drawer is byte-identical to no drawer, and neither is a refusal.
+        [ -e "$_fold_local" ] || continue
+        _fold_local_name="$(basename "$_fold_local" .sh)"
+        _fold_local_rel="scripts/local/fold.d/${_fold_local_name}.sh"
+        case " ${FOLD_STEP_NAMES} " in
+        *" ${_fold_local_name} "*)
+            refuse "${_fold_local_rel} takes the name of one of this fold's own steps." \
+                "The template's four are ${FOLD_STEP_NAMES}, and a local step that shadowed" \
+                "one would make --only ambiguous and could silently replace a step this" \
+                "file's header calls the tree's only legal writer. Rename the local step." \
+                "Nothing was regenerated and nothing was committed."
+            ;;
+        esac
+        # TRACKED, AND ASKED BEFORE ANYTHING ELSE. An untracked or ignored file
+        # in this drawer runs and commits exactly like a reviewed one, which
+        # makes the drawer a way to put an unreviewed writer inside the one
+        # unattended committing script in this repository. A step is code a
+        # release and a reviewer can both see, or it does not run.
+        if ! git ls-files --error-unmatch -- "$_fold_local_rel" >/dev/null 2>&1; then
+            refuse "${_fold_local_rel} is not tracked by git." \
+                "A step in this drawer is EXECUTED by the one script here that commits" \
+                "unattended, so it is code a reviewer and a release can both see, or it does" \
+                "not run. An untracked or ignored step is neither — and it would look" \
+                "identical in the transcript to one somebody wrote on purpose." \
+                "git add it, or take it out of the drawer." \
+                "Nothing was regenerated and nothing was committed."
+        fi
+        [ -x "$_fold_local" ] ||
+            refuse "${_fold_local_rel} is not executable." \
+                "A step in this drawer is EXECUTED. A missing +x bit is a step that never" \
+                "runs and says nothing about it — the one failure a drawer makes easy." \
+                "Nothing was regenerated and nothing was committed."
+        # THE GATE'S GRAMMAR IS NOT THE FOLD'S, and a step reaching for it is
+        # stopped by name rather than quietly read as nothing. A fold.d step
+        # declaring in the gate's sentinel would be asking for its own output
+        # to be subtracted from the verdict key — the one thing the ruling
+        # above says a fold-written path must never be.
+        _fold_local_wrong="$(grep -n -e 'derived-''tree-paths' -- "$_fold_local" | sed -n '1p')" || _fold_local_wrong=""
+        [ -z "$_fold_local_wrong" ] ||
+            refuse "${_fold_local_rel}:${_fold_local_wrong%%:*} spells the GATE's declaration sentinel." \
+                "    ${_fold_local_wrong#*:}" \
+                "That grammar subtracts a path from the verdict key, and a path this fold" \
+                "COMMITS is read back by the gate by construction — the consumer's generated" \
+                "client is compiled inside it. A step declares in the fold's own grammar:" \
+                "    # ${FOLD_WRITES_BEGIN}" \
+                "    # path/to/the/file — why this step regenerates it" \
+                "    # ${FOLD_WRITES_END}" \
+                "Nothing was regenerated and nothing was committed."
+        _fold_local_rc=0
+        _fold_local_decl="$(fold_declared_paths "$_fold_local_rel" 2>"$FOLD_DECL_ERR")" ||
+            _fold_local_rc=$?
+        if [ "$_fold_local_rc" != "0" ]; then
+            cat "$FOLD_DECL_ERR" >&2
+            refuse "the declaration in ${_fold_local_rel} could not be read (notes above)." \
+                "It is read by scripts/gate_ledger.sh's own reader, in that reader's entry" \
+                "grammar, and a block it refuses is a block whose paths this fold cannot" \
+                "partition against. Exit 2 from the reader means it could not be reached." \
+                "Nothing was regenerated and nothing was committed."
+        fi
+        [ -n "$_fold_local_decl" ] ||
+            refuse "${_fold_local_rel} declares no written paths." \
+                "A step owes a sentinel block naming every path it writes — the em dash and" \
+                "the reason are part of the entry form, because without them a paragraph" \
+                "inside the block declares whatever its first word is:" \
+                "    # ${FOLD_WRITES_BEGIN}" \
+                "    # path/to/the/file — why this step regenerates it" \
+                "    # ${FOLD_WRITES_END}" \
+                "A block that is empty, one the reader could not read, and a path nothing" \
+                "tracks are all this same refusal: the declaration is what clause 2" \
+                "partitions against, and a step whose output nobody can partition is a step" \
+                "that may commit anything." \
+                "Nothing was regenerated and nothing was committed."
+        # ONE PATH, ONE OWNER. Two steps declaring one path is two steps with a
+        # claim on the same bytes and no order anybody wrote down: whichever
+        # ran last wins, silently, and the census can attribute the write to
+        # neither. The refusal names BOTH, because naming one is a bug report
+        # the reader has to go and finish.
+        while IFS= read -r _fold_local_p; do
+            [ -n "$_fold_local_p" ] || continue
+            _fold_local_owner=""
+            while IFS="$(printf '\t')" read -r _o_path _o_step; do
+                [ -n "$_o_path" ] || continue
+                [ "$_o_path" = "$_fold_local_p" ] || continue
+                _fold_local_owner="$_o_step"
+            done <<EOF
+$FOLD_LOCAL_OWNERS
+EOF
+            [ -z "$_fold_local_owner" ] ||
+                refuse "two local fold steps declare '${_fold_local_p}'." \
+                    "    scripts/local/fold.d/${_fold_local_owner}.sh" \
+                    "    ${_fold_local_rel}" \
+                    "Two steps with a claim on one path have no order anybody wrote down:" \
+                    "whichever ran last would win, silently, and this run could attribute the" \
+                    "write to neither of them." \
+                    "Nothing was regenerated and nothing was committed."
+            FOLD_LOCAL_OWNERS="${FOLD_LOCAL_OWNERS}${_fold_local_p}	${_fold_local_name}
+"
+        done <<EOF
+$_fold_local_decl
+EOF
+        FOLD_LOCAL_PATHS="${FOLD_LOCAL_PATHS}${_fold_local_decl}
+"
+        FOLD_LOCAL_STEP_NAMES="${FOLD_LOCAL_STEP_NAMES}${FOLD_LOCAL_STEP_NAMES:+ }${_fold_local_name}"
+        FOLD_LOCAL_STEPS="${FOLD_LOCAL_STEPS}${_fold_local_name}	${_fold_local}
+"
+    done
+    unset _fold_local _fold_local_name _fold_local_rel _fold_local_decl _fold_local_p
+    unset _fold_local_owner _fold_local_wrong _o_path _o_step
+fi
+
 # THE STEP LIST IS CLOSED, AND A NAME OUTSIDE IT IS EXIT 2. A typo that fell
 # through to "select nothing" would be a fold that ran no step and said so in
-# the voice of a clean tree.
+# the voice of a clean tree. The closed list is the template's four PLUS
+# whatever the drawer above declared — discovered, never typed, because the
+# whole point of the drawer is that a product adds a step without editing this
+# file; the refusal below names both halves so a typo is legible either way.
 if [ -n "$FOLD_ONLY" ]; then
     IFS=',' read -r -a _fold_wanted <<<"$FOLD_ONLY"
     for _fold_step in "${_fold_wanted[@]}"; do
-        case " ${FOLD_STEP_NAMES} " in
+        case " ${FOLD_STEP_NAMES} ${FOLD_LOCAL_STEP_NAMES} " in
         *" ${_fold_step} "*) ;;
         *)
             refuse "--only names '${_fold_step}', which is not a step of this fold." \
                 "The steps are a closed list, in the order they run: ${FOLD_STEP_NAMES}." \
+                "This checkout's scripts/local/fold.d/ adds: ${FOLD_LOCAL_STEP_NAMES:-(nothing)}." \
                 "Nothing was regenerated and nothing was committed."
             ;;
         esac
@@ -375,6 +629,34 @@ fi
 #                                            reached from live_scan on every
 #                                            ordinary engine run, and by
 #                                            quality/hotpath_probe.py.
+#   scripts/test_impact.json                 the acceptance map. Read by
+#                                            scripts/loop_tier.sh
+#                                            (LOOP_SCOPE_MAP_PATH) for the
+#                                            loop's closure scope, and by
+#                                            scripts/publish.sh's R12 row.
+#
+# THE MAP IS THE ONE ENTRY NO FOLD STEP REGENERATES, and that is not a gap —
+# it is the whole reason it is here. `scripts/test_impact.py` inverts ONE
+# acceptance run's coverage contexts, which is a two-pass run of the entire
+# suite on a verifier box; nothing on this Mac can produce it. So the bank's
+# acceptance box writes it into the working tree and LEAVES IT THERE
+# (`bank_boxes_acceptance_report` in scripts/pm_push.sh: "a bank takes no
+# commit"), and until this line existed the PM committed it by hand, with the
+# ledger, on the docs-only road.
+#
+# WHY THAT WAS WORTH A LINE. `scripts/test_impact.json` IS on
+# `GATE_DOCS_ONLY_PATHS`, so the road admitted it — and then derived its
+# READERS from it, and `scripts/tests/test_pm_push.sh` declares it. One
+# hand-committed map therefore added 116 s of drive to EVERY docs-only push
+# (Row 12: 274 s, of which 244 s was readers). Committed HERE instead, the map
+# rides the next bank's fold commit — a tree that is measured in full anyway —
+# and a ledger push's delta never names it.
+#
+# IT IS THEREFORE ALSO THE ONE ENTRY CLAUSE 1 TOLERATES ALREADY DIRTY, and
+# that exemption is its own typed list below rather than a widening of this
+# one: the other four are regenerated by a step of this fold, so a human's
+# uncommitted edit to one of them is WORK, and sweeping work into an
+# unattended commit is precisely what clause 1 exists to prevent.
 #
 # DROPPED, with the reason, because a fold that commits a file nobody consumes
 # is the failure this derivation exists to prevent:
@@ -389,15 +671,70 @@ fi
 #                                            regenerates it and it is invisible to
 #                                            the census by construction.
 #
-# IT IS A FIXED LITERAL AND NOT A COMPUTED SET. See the header's third blind
-# spot: a computed list grows whenever a generator misbehaves, which is the one
-# thing clause 2 exists to catch.
+# THESE FIVE ARE A FIXED LITERAL, and the header's third blind spot is why: a
+# computed list grows whenever a generator misbehaves, which is the one thing
+# clause 2 exists to catch. They are the TEMPLATE's five, and a sixth one of
+# the template's own is a human edit here.
+#
+# AND THEY STAY TYPED FOR THE SECOND REASON TOO, the map included: a
+# `derived-tree-paths` declaration SUBTRACTS a path from the verdict key, and
+# `scripts/loop_tier.sh` reads `scripts/test_impact.json` back on every
+# `--loop` to decide the closure scope. A path a measurement reads is a path
+# the key must carry.
+#
+# WHAT IS COMPUTED INSTEAD, so a PRODUCT never edits this file: the union
+# below. A product's own generator declares beside its own write, and a
+# product's own fold step declares what it regenerates, both in THE FOLD'S
+# grammar — never the gate's, for the reason argued at `FOLD_WRITES_BEGIN`
+# above: the gate's grammar subtracts a path from the verdict key, and every
+# path in this union is read back by something that measures it.
 DERIVED_PATHS='frontend/openapi.json
 frontend/src/api/generated/schema.d.ts
 .secrets.baseline
-quality/budgets.yaml'
+quality/budgets.yaml
+scripts/test_impact.json'
 
+# --- THE ABSORBED LIST, TYPED, AND A STRICT SUBSET OF THE ONE ABOVE ----------
+#
+# A path this fold may find ALREADY DIRTY at clause 1 and commit anyway. The
+# argument is at `scripts/test_impact.json`'s entry above and is not repeated;
+# the shape is: a derived file WRITTEN FROM OUTSIDE THIS CHECKOUT, which no
+# step here can regenerate and which therefore cannot arrive any other way.
+#
+# THE SUBSET IS CHECKED, NOT TRUSTED. An absorbed path that fell off
+# `DERIVED_PATHS` would be tolerated at clause 1 and then convicted as a STRAY
+# at clause 2 — a fold that refuses every bank, for a reason two lists apart.
+# The self-check below is four lines and turns that into a refusal that names
+# itself.
+FOLD_ABSORBED_PATHS='scripts/test_impact.json'
+
+# THE UNION: the typed list, PLUS what each local step declared about itself.
+# The two halves are read separately and stay separately readable — the typed
+# list is a human edit to this file and the local half is a product's
+# declaration this file has never seen — but clause 2 partitions against both,
+# because a path a step declared is a path somebody wrote down before it was
+# written.
 fold_is_derived() {
+    fold_is_template_derived "$1" || fold_is_declared "$1"
+}
+
+# The two declared halves, read as one list: what the TREE declares (a product's
+# own deriver, beside its own write) and what a LOCAL FOLD STEP declares. They
+# are one grammar and one reader; they are two variables only because the second
+# is discovered before `$FOLD_WORK` exists and the first is read after.
+fold_is_declared() {
+    local want="$1" p
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        [ "$p" != "$want" ] || return 0
+    done <<EOF
+${FOLD_TREE_PATHS}
+${FOLD_LOCAL_PATHS}
+EOF
+    return 1
+}
+
+fold_is_template_derived() {
     local want="$1" p
     while IFS= read -r p; do
         [ -n "$p" ] || continue
@@ -407,6 +744,21 @@ $DERIVED_PATHS
 EOF
     return 1
 }
+
+# fold_is_absorbed <path> — on the typed absorbed list. ONE READER, so "what
+# may arrive already dirty" has one answer, exactly as `fold_is_derived` is the
+# one answer to "what may this fold commit".
+fold_is_absorbed() {
+    local want="$1" p
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        [ "$p" != "$want" ] || return 0
+    done <<EOF
+$FOLD_ABSORBED_PATHS
+EOF
+    return 1
+}
+
 
 # `-uall` IS LOAD-BEARING. Without it git collapses a wholly-untracked
 # directory to its name, so a generator's stray output inside one is hidden
@@ -427,13 +779,88 @@ git rev-parse --show-toplevel >/dev/null 2>&1 ||
     refuse "${ROOT} is not inside a git checkout." \
         "Nothing was regenerated and nothing was committed."
 
+# --- THE TREE'S OWN FOLD DECLARATIONS, READ ONCE ----------------------------
+# Everything a generator in this checkout says THE FOLD regenerates, in the
+# fold's own grammar, read out of the same source globs the gate's reader uses
+# (`scripts/*.sh quality/*.py frontend/scripts/*.sh` — where a generator
+# lives). This is the half that retires a product's edit to this file: their
+# client generator writes `events.ts`, so their client generator declares
+# `events.ts`, and `DERIVED_PATHS` below never grows a line. Zero is the
+# template's own answer today and is a clean read. A refusal is this run's
+# refusal too: a declaration nobody can parse is a path this fold can neither
+# commit nor call a stray, and guessing between those two is exactly what
+# clause 2 exists to stop.
+FOLD_TREE_PATHS=""
+FOLD_TREE_RC=0
+FOLD_TREE_PATHS="$(fold_declared_paths 2>"$FOLD_DECL_ERR")" || FOLD_TREE_RC=$?
+if [ "$FOLD_TREE_RC" != "0" ]; then
+    cat "$FOLD_DECL_ERR" >&2
+    refuse "this checkout's fold-writes declarations could not be read (notes above)." \
+        "They are read through scripts/gate_ledger.sh's own reader, and a block it" \
+        "refuses is a block whose paths this fold can neither commit nor call a stray." \
+        "Exit 2 from the reader means it could not be reached at all." \
+        "Nothing was regenerated and nothing was committed."
+fi
+
+
+# --- THE ABSORBED LIST IS A SUBSET, AND IT IS CHECKED HERE -------------------
+# Before clause 1 reads it. See the list's own header for what a drift would
+# cost: a path tolerated here and convicted as a stray at clause 2.
+while IFS= read -r _abs; do
+    [ -n "$_abs" ] || continue
+    fold_is_template_derived "$_abs" ||
+        refuse "the absorbed path ${_abs} is not on DERIVED_PATHS." \
+            "An absorbed path is a DERIVED path this fold may find already dirty. Off the" \
+            "derived list it would be tolerated by clause 1 and convicted as a stray by" \
+            "clause 2, so every fold in this checkout would refuse for a reason two lists" \
+            "apart. Put it on both lists or neither." \
+            "Nothing was regenerated and nothing was committed."
+done <<EOF
+$FOLD_ABSORBED_PATHS
+EOF
+unset _abs
+
 # --- CLAUSE 1: a dirty tree is refused ---------------------------------------
-# Inline rather than through `refuse()`, because the refusal wants
-# `git status --short` interleaved with its own sentences.
-if [ -n "$(git status --porcelain)" ]; then
+# Inline rather than through `refuse()`, because the refusal wants the status
+# entries interleaved with its own sentences — and it PARTITIONS them first, so
+# it prints what it kept rather than shelling out to `git status --short` a
+# second time and printing the absorbed path as work.
+#
+# EXCEPT AN ABSORBED PATH, and the exception is as narrow as the list is. The
+# clause's argument — "there is no way to say which of the changes the fold
+# made" — is an argument about WORK, and an absorbed path is not work: nothing
+# in this checkout can produce it, it is on the derived list, and the commit
+# below carries it under its own subject whether it arrived before this run or
+# during it. A DELETION is still work: a declared path that vanished is a human
+# diff (the same sentence step (e) makes about a local step that deletes what
+# it declares), so the status characters are read and only a modification or an
+# addition is absorbed.
+FOLD_ABSORBED_PRE=""
+FOLD_UNSAVED=""
+while IFS= read -r _entry; do
+    [ -n "$_entry" ] || continue
+    _p="${_entry:3}"
+    if fold_is_absorbed "$_p"; then
+        case "${_entry:0:2}" in
+        *D* | *d*) ;;
+        *)
+            FOLD_ABSORBED_PRE="${FOLD_ABSORBED_PRE}${_p}
+"
+            continue
+            ;;
+        esac
+    fi
+    FOLD_UNSAVED="${FOLD_UNSAVED}${_entry}
+"
+done <<EOF
+$(git status --porcelain -uall)
+EOF
+unset _entry _p
+
+if [ -n "$FOLD_UNSAVED" ]; then
     FOLD_REFUSED=1
     echo "!! pm_fold: ${ROOT} has uncommitted changes." >&2
-    git status --short >&2
+    printf '%s' "$FOLD_UNSAVED" >&2
     echo "   A fold folds a COMMITTED tree. With work already in the checkout there is" >&2
     echo "   no way to say which of the changes below the fold made, and the commit this" >&2
     echo "   script would write would carry whatever it swept up. Commit or stash first;" >&2
@@ -450,6 +877,15 @@ PRE_TREE="$(git rev-parse --verify "HEAD^{tree}")" ||
 echo "pm_fold: folding ${ROOT}"
 echo "  Pre-fold HEAD  $(git rev-parse --short "$PRE_HEAD")  $(git log -1 --format=%s "$PRE_HEAD")"
 echo "  Pre-fold tree  ${PRE_TREE}"
+if [ -n "$FOLD_ABSORBED_PRE" ]; then
+    # SAID OUT LOUD, because it is the one thing in this run that was already
+    # in the tree when the run started. A reader of the fold commit should not
+    # have to infer which of its paths a generator here wrote.
+    printf '%s' "$FOLD_ABSORBED_PRE" | while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        echo "  absorbed       ${_p} — already in the working tree; written from outside this checkout"
+    done
+fi
 echo ""
 
 FOLD_WORK="$(mktemp -d "${TMPDIR:-/tmp}/djb-pm-fold.XXXXXX")" ||
@@ -953,6 +1389,125 @@ else
 fi
 echo ""
 
+# --- (local) the product's own steps, in name order --------------------------
+#
+# AFTER THE TEMPLATE'S FOUR, and the order is a contract rather than an
+# accident: a product's step regenerates from THIS checkout, and the contract
+# and the schema dump are part of this checkout by the time it runs. Within the
+# drawer the order is the shell's glob order, which is byte order on the
+# basename — hence the `<nn>-<name>.sh` convention, which is the product's to
+# use and this file's only to honour.
+#
+# THE CENSUS IS PER STEP, AND THAT IS THE WHOLE REASON IT IS HERE RATHER THAN
+# ONLY AT THE END. Clause 2's footprint census at the foot of this file names a
+# stray PATH; it cannot name who wrote it, because by then four template steps
+# and N local ones have run over one tree. A drawer makes "who wrote it" the
+# question a reader actually has, so each local step is censused against the
+# tree AS THE PREVIOUS STEP LEFT IT: a path that is new since then and is in
+# nobody's declaration is that step's, by name, with nothing committed. A stray
+# a TEMPLATE step wrote is not in the delta and is left to clause 2, which is
+# the only reader that can honestly claim it.
+if [ -n "$FOLD_LOCAL_STEPS" ]; then
+    fold_dirty_paths >"$FOLD_WORK/local.before"
+    while IFS="$(printf '\t')" read -r _lname _lpath; do
+        [ -n "$_lname" ] || continue
+        echo "== (local) ${_lname} · scripts/local/fold.d/${_lname}.sh"
+        if ! fold_step_selected "$_lname"; then
+            step_skipped "--only ${FOLD_ONLY} does not name this step"
+            echo ""
+            continue
+        fi
+        STEPS_RUN=$((STEPS_RUN + 1))
+        # `</dev/null` IS LOAD-BEARING: this loop's stdin is the here-doc
+        # carrying the remaining steps, and a step that read one line off it
+        # would silently eat the next step out of the run.
+        LOCAL_RC=0
+        (cd "$ROOT" && "$_lpath") </dev/null || LOCAL_RC=$?
+        [ "$LOCAL_RC" = "0" ] ||
+            refuse "the local step '${_lname}' exited ${LOCAL_RC} (its output is above)." \
+                "A step that failed did not regenerate what it declares, and this run cannot" \
+                "say the declared paths came from this checkout — could-not-look, never a" \
+                "clean fold." \
+                "Nothing was committed."
+
+        # A STEP THAT DELETED ITS OWN DECLARED PATH IS REFUSED, and it is not
+        # the same finding as a stray. `fold_dirty_paths` strips the status
+        # characters, so a deletion looks exactly like a rewrite to the census
+        # below: the path is dirty, it is declared, it is committed, and the
+        # subject says `1 declared path(s) regenerated` about a file that is
+        # GONE. The next fold then reds on a generator whose input vanished,
+        # one commit downstream of the run that did it. A fold regenerates; a
+        # deletion is a human diff.
+        git status --porcelain -uall >"$FOLD_WORK/local.porcelain"
+        LOCAL_GONE=""
+        while IFS= read -r _lentry; do
+            [ -n "$_lentry" ] || continue
+            case "${_lentry:0:2}" in
+            *D* | *d*) ;;
+            *) continue ;;
+            esac
+            _lp="${_lentry:3}"
+            if fold_is_declared "$_lp"; then
+                LOCAL_GONE="${LOCAL_GONE}${_lp}
+"
+            fi
+        done <"$FOLD_WORK/local.porcelain"
+        if [ -n "$LOCAL_GONE" ]; then
+            FOLD_REFUSED=1
+            echo "!! pm_fold: the local step '${_lname}' DELETED a path it declares." >&2
+            printf '%s' "$LOCAL_GONE" | while IFS= read -r _lp; do
+                [ -n "$_lp" ] || continue
+                echo "     ${_lp}" >&2
+            done
+            echo "   A declaration says the step REGENERATES that path. Committing the" >&2
+            echo "   deletion under \"declared path(s) regenerated\" would put a removal into" >&2
+            echo "   the one history nobody reads by hand, and the next fold would red on a" >&2
+            echo "   generator whose input had vanished a commit earlier." >&2
+            echo "   NOTHING WAS COMMITTED. Removing a derived file is a human diff: take the" >&2
+            echo "   path out of the step's declaration in the same change." >&2
+            exit 2
+        fi
+
+        fold_dirty_paths >"$FOLD_WORK/local.after"
+        LOCAL_STRAY=""
+        while IFS= read -r _lp; do
+            [ -n "$_lp" ] || continue
+            # `if`, NEVER `<test> && continue`: a failing left-hand side makes
+            # the whole `&&` list the loop body's last status, and under
+            # `set -e` that kills the run — silently, in the one loop whose job
+            # is to refuse loudly.
+            if grep -qxF -- "$_lp" "$FOLD_WORK/local.before"; then continue; fi
+            if fold_is_derived "$_lp"; then continue; fi
+            LOCAL_STRAY="${LOCAL_STRAY}${_lp}
+"
+        done <"$FOLD_WORK/local.after"
+        if [ -n "$LOCAL_STRAY" ]; then
+            FOLD_REFUSED=1
+            echo "!! pm_fold: the local step '${_lname}' wrote a path it did not declare." >&2
+            printf '%s' "$LOCAL_STRAY" | while IFS= read -r _lp; do
+                [ -n "$_lp" ] || continue
+                echo "     ${_lp}" >&2
+            done
+            echo "   scripts/local/fold.d/${_lname}.sh declares:" >&2
+            fold_declared_paths "scripts/local/fold.d/${_lname}.sh" 2>/dev/null | while IFS= read -r _lp; do
+                [ -n "$_lp" ] || continue
+                echo "     ${_lp}" >&2
+            done
+            echo "   A step's declaration is what this fold partitions its output against, and" >&2
+            echo "   the declaration is the product's own — so a write outside it is not a" >&2
+            echo "   smaller commit, it is a step that did something nobody wrote down." >&2
+            echo "   NOTHING WAS COMMITTED. The tree is left exactly as the run left it, so the" >&2
+            echo "   evidence is still there: read \`git status\`." >&2
+            exit 2
+        fi
+        cp "$FOLD_WORK/local.after" "$FOLD_WORK/local.before"
+        echo ""
+    done <<EOF
+$FOLD_LOCAL_STEPS
+EOF
+    unset _lname _lpath _lp _lentry
+fi
+
 if [ "$STEPS_RUN" -eq 0 ]; then
     if [ -n "$FOLD_ONLY" ]; then
         refuse "--only ${FOLD_ONLY} selected no step this checkout can run." \
@@ -1040,6 +1595,8 @@ fi
 CONTRACT_CHANGED=0
 BASELINE_CHANGED=0
 BUDGETS_CHANGED=0
+MAP_CHANGED=0
+DECLARED_CHANGED=0
 while IFS= read -r p; do
     [ -n "$p" ] || continue
     echo "  changed  ${p}"
@@ -1047,6 +1604,20 @@ while IFS= read -r p; do
     frontend/openapi.json | frontend/src/api/generated/*) CONTRACT_CHANGED=1 ;;
     .secrets.baseline) BASELINE_CHANGED=1 ;;
     quality/budgets.yaml) BUDGETS_CHANGED=1 ;;
+    # ITS OWN ARM AND ITS OWN WORD. Falling through to `*)` would subject the
+    # map "1 declared path(s) regenerated" — and this fold regenerated nothing:
+    # a verifier box did, and this run absorbed it. A commit subject that says
+    # the wrong verb about the one path nobody can reproduce locally is worse
+    # than a bare one.
+    scripts/test_impact.json) MAP_CHANGED=1 ;;
+    *)
+        # A DECLARED PATH, and the subject must say so. Without this arm a fold
+        # whose only change came from a declaration commits under the bare
+        # subject `fold:` — a commit that names nothing, in the one history
+        # where the subject is how a reviewer knows what an unattended script
+        # did.
+        DECLARED_CHANGED=$((DECLARED_CHANGED + 1))
+        ;;
     esac
     git add -- "$p" ||
         refuse "could not stage ${p}." "Nothing was committed."
@@ -1066,6 +1637,14 @@ if [ "$BASELINE_CHANGED" = "1" ]; then
 fi
 if [ "$BUDGETS_CHANGED" = "1" ]; then
     SUBJECT="${SUBJECT}${SEP}${BUDGETS_LOWERED} budgets lowered"
+    SEP=" · "
+fi
+if [ "$MAP_CHANGED" = "1" ]; then
+    SUBJECT="${SUBJECT}${SEP}acceptance map absorbed"
+    SEP=" · "
+fi
+if [ "$DECLARED_CHANGED" != "0" ]; then
+    SUBJECT="${SUBJECT}${SEP}${DECLARED_CHANGED} declared path(s) regenerated"
     SEP=" · "
 fi
 

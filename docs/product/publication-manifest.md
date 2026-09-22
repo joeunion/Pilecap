@@ -36,6 +36,48 @@ Two invariants outrank any per-file preference:
    citing file named. The same holds for ordinary pointers: a **path or
    link** that resolves into a trimmed location is a violation.
 
+## R0 · the reserved paths (checked BEFORE any bucket is assigned)
+
+**The drawers are the product's, and the template ships none.** A product
+extends the system layer by declaring beside it rather than by editing it: an
+extensible template directory has a `local/` sibling the template's own reader
+discovers, and a per-product list has a `.local.md` sibling beside the template
+document it extends. The whole value of that convention is that a release
+CANNOT conflict with one — absent is byte-identical behaviour — and that value
+holds for exactly as long as no release claims the name.
+
+| reserved | who owns it | at a merge |
+|---|---|---|
+| `**/local/**` — a `local/` directory segment anywhere | the product, always | no conflict by construction: the template has no such path to conflict with |
+| `*.local.md` — a per-product list beside its template original | the product, always | the same |
+| `apps/conftest_local.py` — the product's pytest fixtures drawer | the product, always | the same |
+
+**A tracked path matching either is exit 2, named, before the bucket census
+runs.** Not exit 1: a reserved name claimed by the template makes the census's
+own ground false, and every leg after it is then reasoning about a partition
+that no longer holds. It runs first because a reserved path would otherwise
+bucket, ship and verify perfectly well — `scripts/local/legs/x.sh` is bucket
+SHIP under R3's glob and published CLEAN before this rule existed. The bucket
+rules are not wrong; the path is, and nothing was reading the path.
+
+**THE THIRD ROW IS AN EXACT PATH, NOT A GLOB, AND THE EXCEPTION IS THE
+POINT.** A `conftest.py` sibling is collected by pytest BY NAME inside the
+package it belongs to, so the fixtures drawer cannot be spelled `apps/local/…`
+without leaving the directory pytest looks in — the convention bends to the
+tool rather than the tool to the convention. It is kept in the same list as
+the two globs because that list is the ONE reader of "what is reserved"
+(`reserved_paths` in `scripts/publish.sh`), and a reserved path recorded
+anywhere else is a second list that agrees today. It was found by a reviewer
+rather than by this census: R3 and R1 ship `scripts/**` and `apps/**` whole,
+so before R0 named them a tracked drawer of either shape shipped in silence.
+
+**It reads TRACKED paths only.** The export is `git archive HEAD`, so an
+untracked drawer in a maintainer's own checkout ships nothing and is nobody's
+business. The other half of the promise — that a product's edit to a
+template-OWNED path is a divergence it records rather than a surprise at the
+merge — is `scripts/divergence_census.sh`, and the per-path ownership table
+both of them read is `docs/product/build-contract.md` § Ownership.
+
 ## Bucket rules (every tracked path matches exactly one)
 
 | rule | paths | bucket | why |
@@ -43,7 +85,7 @@ Two invariants outrank any per-file preference:
 | R1 | `apps/**` · `config/**` · `manage.py` | SHIP | the system-and-project layers a product grows in; the platform partition's app set is read from THIS rule's export census **once, at the freeze build**, into `quality/partition.yaml` — one census read twice, because a LIVE derivation from R1 is impossible (`partition-closure.md` §2 carries the argument) |
 | R2 | `quality/**` · `docs/product/instruments.md` | SHIP (byte-identical clause) | invariant 1 — the learning layer and the gate's own inputs |
 | R3 | `scripts/**` · `deploy/**` · `perf/**` · `compose.yaml` · `compose/**` · `Dockerfile` · `.dockerignore` · `.devcontainer/**` · `.github/**` | SHIP | instruments and posture-as-code; every executable already owes its `instruments.md` row |
-| R4 | `pyproject.toml` · `uv.lock` · `.python-version` · `.env.example` · `.gitignore` · `.editorconfig` · `.secrets.baseline` · `vendor/**` · `templates/**` | SHIP | the pinned environment and vendored assets (the Scalar manifest's checksum posture rides along) |
+| R4 | `pyproject.toml` · `uv.lock` · `.python-version` · `.env.example` · `.gitignore` · `.editorconfig` · `.gitattributes` · `.secrets.baseline` · `vendor/**` · `templates/**` | SHIP | the pinned environment and vendored assets (the Scalar manifest's checksum posture rides along). `.gitattributes` is here rather than with R3's instruments because it is checkout POSTURE the way `.gitignore` is — git reads it, nothing in this tree executes it — and it ships for the same reason: a consumer whose lanes append to `CHANGELOG.md` has the same seven hand resolutions per cycle without it |
 | R5 | `.claude/skills/**` · `CLAUDE.md` · `README.md` · `docs/runbooks/**` · `docs/standards.md` | SHIP | the method, the map, the operator procedures — and, at the last path, the portable account of the method written FOR OTHER TEAMS, which is guidance of the same class and belongs where a browsing stranger lands rather than under `docs/product/` (those are the decisions THIS repository is built on) or `docs/runbooks/` (operations). **The path, not a glob:** R5 gains this one file, so the next guidance-class file at `docs/*.md` still fails unplaced and is decided rather than absorbed |
 | R6 | `TEMPLATE_VERSION` · `CHANGELOG.md` | SHIP | the template-updates mechanism: `TEMPLATE_VERSION` names the release a checkout is on and the release TAG is derived from it; `CHANGELOG.md` is what a consumer reads before merging that tag, and release mode refuses to publish a version the file has no section for (§ Release mode) |
 | R7 | `docs/product/<ledger>.md` for the nine ledgers below | SKELETON | ships as a committed skeleton + one marked worked example each |
@@ -52,6 +94,20 @@ Two invariants outrank any per-file preference:
 | R9 | the remaining `docs/product/*.md` (dispositions table below) | per-file | the one genuinely mixed directory |
 | R10 | `docs/product/skeletons/**` | SKELETON-SOURCE | the directory holding the committed skeletons; consumed at export and never shipped at its own path, and a skeleton naming no ledger is exit 2 — the export would otherwise ignore it in silence |
 | R11 | `frontend/**` | SHIP | the client layer: the one-journey worked example, its lockfile, the committed OpenAPI document and the generated client the byte-pin compares. It ships for the same reason `apps/example` does — a rule that never fired anywhere is decoration by the engine's own doctrine, and the standing subjects of every frontend rule (the byte-pin, `SurfaceState` in anger, the rendered census's live scan) need a tree to be proven against. **One glob, because the directory is one artefact**; `.gitignore` decides which of its files are build output and the census then never sees them |
+| R12 | `scripts/test_impact.json` · `scripts/pytest_durations.json` · `scripts/gate_member_durations.json` | TRIM | the three MEASURED files — a test-impact map keyed on a tree that exists only here, and two timing files measured on this platform's own boxes over this platform's own suite. They are measurements, not instruments: in a product's tree they are a claim the product never made, cannot check and would have to resolve as a conflict at every fold. **Every reader already treats absence as "measure it yourself", and says so on its own line.** Each is cited by its own SENTENCE with today's line beside it, never by the line alone — these three files move every cycle, and a bare line number is the citation form this repository has already watched go stale: (a) `loop_scope__impact` in `scripts/loop_tier.sh` sets `LOOP_SCOPE_IMPACT_FALLBACK` to `<map> is absent or unreadable — closure scope. A tree whose acceptance box has never written a map is a tree, not a broken read.` (`scripts/loop_tier.sh:1108` today); (b) the always-on leg in `scripts/check.sh` opens its reader with `A MISSING OR UNPARSABLE FILE IS NOT A REFUSAL, and this is the one place in this gate where that is the right answer` and prints `always-on (measured): no durations file — the first --store-durations writes it` (`scripts/check.sh:1343` and `:1675` today); (c) `gate_pytest_split_args` in `scripts/check.sh` resolves the pytest durations path ONLY under `--shard` or `--store-durations`, so an ordinary run never opens it, and a shard run without one prints `durations: none — unbalanced split` (`scripts/check.sh:4974` and `:4985` today). So trimming costs a consumer one measured run of their own and buys them a clean modify/delete at every future merge. Shipping them EMPTY was rejected: an empty durations file is still a claim about a suite, and it still conflicts with the product's copy |
+
+**R12 is an arm of R3, not a rule beside it**, for R8S's reason exactly: the
+two live in ONE `case` in `archaeology_lib.sh` with R12's arm first, so
+first-match partitions them by construction and the census's double-match
+refusal still proves it. Two blocks would make every R12 path match twice and
+exit 2.
+
+**R12 is the one HAND LIST in the bucket rules, and it names what re-derives
+it.** `case_r12_equals_the_readers_defaults` in `scripts/tests/test_publish.sh`
+greps the three readers' own defaults — `DJB_GATE_DURATIONS_PATH:-` and
+`DJB_GATE_MEMBER_DURATIONS:-` in `scripts/check.sh`, `LOOP_SCOPE_MAP_PATH=` in
+`scripts/loop_tier.sh` — and reds when that set and this row's set differ. A
+fourth measured file is therefore a red at the drive, never a silent ship.
 
 **R8S is an arm of R8, not a rule beside it.** It and R8's glob live in ONE
 `case` in `publish.sh`, so first-match separates them and the census's

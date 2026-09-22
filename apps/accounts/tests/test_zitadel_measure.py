@@ -1,7 +1,7 @@
 """The measurement kit has to be able to fail.
 
 `manage.py zitadel_measure` is the only thing in this repository that re-asks
-the nineteen facts `apps/accounts/zitadel.py` took off somebody else's product,
+the twenty facts `apps/accounts/zitadel.py` took off somebody else's product,
 and the suite cannot run it for real (ADR ident-5(a): the tests never dial). So
 the one property nobody else can check is the one this module checks: **that a
 build which stopped answering what the tree says would be REPORTED, by name,
@@ -74,13 +74,13 @@ def line_for(printed: str, item_id: str) -> str:
 # --- I5.1: the population is closed, and printed whole -----------------------
 
 
-def test_the_report_is_nineteen_lines_and_every_one_carries_a_closed_verdict(
+def test_the_report_is_twenty_lines_and_every_one_carries_a_closed_verdict(
     measured_instance: FakeMeasuredZitadel,
 ) -> None:
     """The criterion, asserted as arithmetic rather than as a count in prose.
 
-    Nineteen is not a magic number typed here: it is `len(ITEMS)`, so a rung
-    that adds a twentieth fact moves both sides together — and a rung that
+    Twenty is not a magic number typed here: it is `len(ITEMS)`, so a rung
+    that adds a twenty-first fact moves both sides together — and a rung that
     DROPS one moves neither, which is the failure this is really for. What is
     pinned as a literal is the population itself, below.
     """
@@ -88,14 +88,14 @@ def test_the_report_is_nineteen_lines_and_every_one_carries_a_closed_verdict(
 
     assert code == 0, printed
     lines = verdict_lines(printed)
-    assert len(lines) == len(zitadel_measure.ITEMS) == 19, printed
+    assert len(lines) == len(zitadel_measure.ITEMS) == 20, printed
     for line, item in zip(lines, zitadel_measure.ITEMS, strict=True):
         assert f" {item.id} — " in line, line
         first = line.split()[0]
         assert first in zitadel_measure.VERDICTS, line
 
 
-def test_the_population_is_the_eight_constants_and_the_designs_eleven() -> None:
+def test_the_population_is_the_eight_constants_and_the_designs_twelve() -> None:
     """The closed set, spelled out once so a silent deletion is a red.
 
     `ITEMS` is the only place the population lives, and a list that can be
@@ -123,6 +123,7 @@ def test_the_population_is_the_eight_constants_and_the_designs_eleven() -> None:
         "M9 webauthn-no-passkey-is-a-500",
         "M10 invite-ignores-org-default-redirect",
         "M11 org-password-complexity",
+        "M12 subject-is-session-user-id",
     ]
 
 
@@ -240,11 +241,11 @@ def test_an_unreachable_instance_is_exit_two(
 
     assert code == 2, printed
     lines = verdict_lines(printed)
-    assert len(lines) == 19, printed
+    assert len(lines) == 20, printed
     blind = [line for line in lines if line.startswith(zitadel_measure.COULD_NOT)]
-    assert len(blind) == 19, printed
+    assert len(blind) == 20, printed
     assert all("Connection refused" in line for line in blind), blind
-    assert "Nothing is asserted about the 19" in printed, printed
+    assert "Nothing is asserted about the 20" in printed, printed
     # And not one of them is dressed as a disagreement. Asserted over the
     # verdict LINES rather than over the whole output, because the tally itself
     # always names the word ("0 DIFFERS") — a substring test over `printed`
@@ -384,6 +385,15 @@ def test_the_only_write_outside_its_own_org_is_the_no_op_the_refusal_is_measured
     #
     # M6 adds nothing here: its reset is a write on the throwaway HUMAN, which
     # `names_my_org` excuses as inside the victim, and its landing is a GET.
+    #
+    # **And five more for M12, which is a THIRD throwaway client and one act.**
+    # It cannot borrow either of the two above — both are
+    # deactivated inside their own `finally`, and a deactivated client cannot
+    # start a login — so it makes its own, declares login v2 on it, finalizes
+    # ONE auth request against the ONE session both halves of M12 are read
+    # off, spends that code for an id_token, and deactivates. Its session is
+    # not on this list because it is opened with the throwaway org's header,
+    # which `names_my_org` reads as inside the victim.
     assert [(method, shape(path)) for method, path in outside] == [
         ("POST", "/management/v1/orgs"),
         ("PUT", "/admin/v1/policies/login"),
@@ -398,6 +408,11 @@ def test_the_only_write_outside_its_own_org_is_the_no_op_the_refusal_is_measured
         ("POST", "/v2/oidc/auth_requests/{id}"),
         ("POST", "/v2/oidc/auth_requests/{id}"),
         ("POST", "/v2/oidc/auth_requests/{id}"),
+        ("POST", "/management/v1/projects/{id}/apps/{id}/_deactivate"),
+        ("POST", "/management/v1/projects/{id}/apps/oidc"),
+        ("PUT", "/management/v1/projects/{id}/apps/{id}/oidc_config"),
+        ("POST", "/v2/oidc/auth_requests/{id}"),
+        ("POST", "/oauth/v2/token"),
         ("POST", "/management/v1/projects/{id}/apps/{id}/_deactivate"),
     ], outside
     empty_creates = [
@@ -442,12 +457,12 @@ def test_an_unmeasured_item_is_not_an_agreement(
 ) -> None:
     """The tally separates them, and the blind spots say how many were looked at.
 
-    A nineteen-line report whose verdict line said "19 ok" would be the exact
+    A twenty-line report whose verdict line said "20 ok" would be the exact
     dishonesty the `unmeasured` word exists to prevent — the remainder are
     facts nobody has looked at.
     """
     _, printed = run()
-    assert "19 item(s): 19 ok, 0 DIFFERS, 0 could not, 0 unmeasured." in printed
+    assert "20 item(s): 20 ok, 0 DIFFERS, 0 could not, 0 unmeasured." in printed
     # The sentence wraps inside the blind-spot block, so what is asserted is
     # the half that carries the claim rather than a reflowed line. It no
     # longer spells a NUMBER: a count in prose goes stale the rung after an
@@ -662,6 +677,120 @@ def test_a_webauthn_challenge_that_succeeds_for_a_person_with_no_passkey_is_a_di
     assert line.startswith(zitadel_measure.DIFFERS), line
     assert "no longer how to read it" in line, line
     assert code == 1, printed
+
+
+def test_the_two_doors_naming_one_person_differently_is_a_differs(
+    measured_instance: FakeMeasuredZitadel,
+) -> None:
+    """**M12's defect, and it is the one the identity join cannot survive.**
+
+    A build whose id_token `sub` stopped being the session's own
+    `factors.user.id` would leave `record_zitadel_identity` holding two
+    strings for one person: whoever used the hosted page first would meet
+    *That identity is already linked to a different account* at this
+    deployment's own form, and every test in the suite would stay green —
+    both fakes would go on agreeing with each other. This is the line that
+    would not.
+    """
+    real = measured_instance._measured_token
+
+    def a_stranger() -> Any:
+        answer = real()
+        body = dict(answer.json())
+        import json as _json
+        from base64 import urlsafe_b64decode, urlsafe_b64encode
+
+        head, payload, signature = str(body["id_token"]).split(".")
+        claims = _json.loads(urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        claims["sub"] = "a-subject-this-session-never-had"
+        moved = urlsafe_b64encode(_json.dumps(claims).encode()).decode().rstrip("=")
+        body["id_token"] = f"{head}.{moved}.{signature}"
+        import httpx
+
+        return httpx.Response(200, json=body)
+
+    measured_instance._measured_token = a_stranger  # type: ignore[method-assign]
+
+    code, printed = run()
+
+    line = line_for(printed, "M12 subject-is-session-user-id")
+    assert line.startswith(zitadel_measure.DIFFERS), line
+    assert "a-subject-this-session-never-had" in line, line
+    assert "no longer name one person with one string" in line, line
+    assert code == 1, printed
+
+
+def test_a_round_trip_that_mints_no_id_token_is_could_not_and_never_an_ok(
+    measured_instance: FakeMeasuredZitadel,
+) -> None:
+    """M12's honesty half: no token, nothing asserted — and it outranks a pass.
+
+    The verdict a journey that did not reach a token owes is `could not`, not
+    `ok` and not `DIFFERS`: an instrument that read "no token" as agreement
+    would report the join as measured on every deployment whose credential
+    cannot finalize an auth request at all (M2's 403).
+    """
+    real = measured_instance._measured_token
+
+    def tokenless() -> Any:
+        answer = real()
+        body = {key: value for key, value in dict(answer.json()).items() if key != "id_token"}
+        import httpx
+
+        return httpx.Response(200, json=body)
+
+    measured_instance._measured_token = tokenless  # type: ignore[method-assign]
+
+    code, printed = run()
+
+    line = line_for(printed, "M12 subject-is-session-user-id")
+    assert line.startswith(zitadel_measure.COULD_NOT), line
+    assert "no `id_token`" in line, line
+    assert code == 2, printed
+
+
+def test_m12_reads_one_session_through_both_doors_and_deactivates_its_client(
+    measured_instance: FakeMeasuredZitadel,
+) -> None:
+    """The victim rule and the ONE-session rule, both asserted on the calls.
+
+    One session rather than two is the whole property: two sessions would
+    measure two people who happen to share an id. And the throwaway OIDC
+    client M12 makes is deactivated before the run returns — `blind_spots()`
+    says one is left behind per run, deactivated, and this is what makes that
+    sentence true rather than hopeful.
+    """
+    code, printed = run()
+
+    assert code == 0, printed
+    line = line_for(printed, "M12 subject-is-session-user-id")
+    assert line.startswith(zitadel_measure.OK), line
+    assert "ONE identity fact" in line, line
+
+    made = [
+        body["name"]
+        for method, path, _org, body in measured_instance.whole_calls
+        if method == "POST" and path.endswith("/apps/oidc")
+    ]
+    mine = [name for name in made if name.startswith(zitadel_measure.SUBJECT_CHECK_PREFIX)]
+    assert len(mine) == 1, made
+    deactivated = [
+        path
+        for method, path, _org, _body in measured_instance.whole_calls
+        if method == "POST" and path.endswith("/_deactivate")
+    ]
+    # One per throwaway client: M1's, mode A's, and M12's.
+    assert len(deactivated) == 3, deactivated
+    # ONE session, read twice. The last finalize of the run is M12's, it named
+    # a session this run opened, and the `factors.user.id` on THAT session is
+    # the string the line reports on both sides — which is what "one session,
+    # both doors" means and what two sessions could not show.
+    last = measured_instance.finalized_sessions[-1]
+    session = measured_instance.sessions[last]
+    ours = str((dict(session.get("factors") or {}).get("user") or {}).get("id", ""))
+    assert ours, session
+    assert f"factors.user.id={ours!r}" in line, line
+    assert f"sub={ours!r}" in line, line
 
 
 def test_a_teardown_that_fails_names_what_is_left_on_the_instance(

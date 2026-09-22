@@ -726,6 +726,33 @@ TEMPORAL_TASK_QUEUE: str = (
     or f"djb-{_database_name_in_use.removeprefix('djb_')}"
 )
 
+# --- The retry backoff every activity policy starts at ------------------------
+# `RetryPolicy(initial_interval=...)`: how long the FIRST retry of a failed
+# activity waits, doubling from there. The value below is the Temporal SDK's own
+# default, restated here rather than left implicit for one measured reason.
+#
+# **The time-skipping test server does not skip activity retry backoff.** It
+# skips *workflow* timers; a retry interval is the server's own scheduling, so
+# every second of it is a second of real wall clock on every test run. Five
+# attempts at one second doubling is 1 + 2 + 4 + 8 = 15 REAL seconds inside one
+# test, and three tests in this tree were paying exactly that: the two export
+# workflow tests at 17.4 s and 15.9 s and the files one at 16.6 s, measured.
+#
+# So it is ONE knob, read once at import where each policy is built, and
+# `config/settings/test.py` turns it down to milliseconds. What a test asserts —
+# five attempts, and which way the run ended — is unchanged; what it no longer
+# does is wait out a production backoff curve to prove it. Nothing derives a
+# duration from this at runtime and nothing reads a clock: it is a constant a
+# module reads at import, exactly as `BUILD_TIMEOUT` and its neighbours are
+# constants written in the module.
+#
+# What it deliberately is NOT: a per-policy knob. Every policy that opts in
+# shares this one number, because a deployment tuning its retry floor means all
+# of them and a policy that needed its own would be saying something about that
+# activity, not about the deployment.
+
+TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS: float = 1.0
+
 # --- The machinery lifetime class (ADR platform-lifecycle-1) ------------------
 # A Temporal Schedule is infinitely durable by construction. The queue above is
 # derived from the CHECKOUT and is therefore ephemeral by construction. Durable

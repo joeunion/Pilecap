@@ -19,6 +19,18 @@
 # `apps/conftest.py` asserts BEFORE anything is deselected. Roughly fifty
 # items, all of them this directory's.
 #
+# THE FLOORS ARE THE TREE'S AND THE MEMBERSHIP IS THIS DIRECTORY'S, WHICH IS A
+# COUPLING THIS FILE PAYS FOR. Every collection the drive runs is narrowed by
+# path to this world, so `apps/conftest.py`'s named-population floors are
+# asserted over THESE modules and not over the tree's. Raise a floor there and
+# this world must grow a member, or the drive's own `--collect-only` refuses
+# with a pytest UsageError (exit 4) and the drive reports a could-not-look it
+# did not cause. Measured, not reasoned: BOXBANK-22 red on exactly that, the
+# day `apps_root_modules` was re-derived 4 -> 5 and this directory still
+# shipped `apps_root/test_world_root_{one..four}.py` — so a FIFTH landed here.
+# The count is never typed twice: `world_install` copies the glob and the
+# drive's `WORLD_TARGET` loops the same directory, so a sixth is one file.
+#
 # WHAT THIS BUYS, and it is not the drives' own wall clock: it is the `apps/`
 # in their `# drives:` lines. A drive that does not read `apps/` is not
 # re-driven by a rung that only touched an app.

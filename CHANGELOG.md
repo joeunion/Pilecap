@@ -39,11 +39,747 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html), where a
 **major** is a change a product cannot take without editing its own code, a
 **minor** adds something a product can ignore, and a **patch** fixes something
-that was already meant to work.
+that was already meant to work. Where that reading and the owner disagree the
+owner names the number, and did here: 2.1.1 is a patch by the owner's word —
+the drawers below are additive and a product that wants none of them may merge
+and ignore every one, but the release exists because the first real fold of
+2.1.0 was not the thing it was meant to be, and the number says that rather
+than advertising the drawers.
 
 ## [Unreleased]
 
 Nothing yet.
+
+## [2.1.1] — A product folds the template without a hand-patch
+
+**A patch, and what it patches is the fold itself.** 2.1.0 shipped correctly
+and then met its first real consumer, who merged it and came back having edited
+template-owned files in order to do so: gate legs added to `scripts/check.sh`,
+house rules to `quality/rules.yaml`, fixtures to `apps/conftest.py`, derived
+paths to `scripts/pm_fold.sh`, environment names to
+`scripts/tests/drive_preamble.sh`, lifecycle classes to `scripts/lifecycle.sh`,
+deploy jobs to `.github/workflows/ci.yml`. Not one of those was the product
+doing something wrong. Each was a template folder that runs a LIST of things
+and had no way to be handed one more item — so the only way to add one was to
+edit our file, which the next release then conflicts with, or fast-forwards
+over with the product's work silently gone.
+
+**Every such folder now has a drawer.** A drawer is a `local/` sibling of the
+template directory it extends — `scripts/local/legs/`, `quality/local/`,
+`scripts/local/fold.d/`, `scripts/local/lifecycle.d/`,
+`scripts/local/drives/`, `scripts/local/env_keys`, `scripts/local/ci/`,
+`docs/product/instruments.local.md`, `apps/conftest_local.py` — discovered by
+path by the one reader that already owns that list, never written by the
+template and never shipped by a release. They obey three laws, and the laws are
+the same for every one of them. **Absent is byte-identical**: the leg listing,
+the self-test transcript, the instrument census, the collected test set and the
+workflow are the bytes they were on a tree that has never heard of a drawer,
+and that is asserted by `cmp` and by `diff` rather than by this paragraph.
+**Present is discovered**: no registry to edit, no import to add, no template
+file to touch — the reader finds the path. **Malformed is exit 2, naming the
+file**: a leg with no executable bit, a drive with no preamble, a fold step
+that wrote a path it did not declare, a lifecycle file carrying a function, a
+name one of ours already has — never a silently smaller gate.
+
+The rest of the release is the other half of the same fold. Which files are
+ours is a table now rather than a convention, and a read-only census tells you
+which of them you have edited. An arriving migration chain grafts onto your own
+leaf with one command instead of by hand. An event noun nobody classified costs
+you a gate finding carrying the line to paste, instead of a rolled-back write
+and a 500. And the corrections are here too: a rename table that was missing
+four of its rows, two release-note claims that named flags the tree does not
+have, and a house rule that was proving itself through an ingredient app a
+product is allowed to delete.
+
+### What a product does at the merge
+
+Items 1 and 2 are for every product. Items 3 to 8 are the things a merge, a
+gate run or your own apps raise — each says what you see if you skip it, which
+is how you tell whether it is yours. Items 9 to 12 are the drawers: nothing to
+do unless you have the edit one of them replaces. Items 13 to 16 are a line
+each.
+
+1. **Before you merge: `./scripts/divergence_census.sh`.** Give it a base —
+   `DJB_TEMPLATE_BASE=<ref>`, one line in `scripts/local/template-base`, or a
+   git remote named `template` — and it lists every template-owned path whose
+   content is not the base's, with its ±lines and the commit that last touched
+   it. It writes nothing, fetches nothing and moves no ref. Exit 1 on a
+   divergence your own `architecture.md` does not name, printing the
+   `divergence: <path> — <reason>` line to paste; exit 0 once every one is
+   named. Skip it and the merge tells you the same thing one conflict at a
+   time, while you are in the middle of resolving them. House rule 60 is the
+   gate's reading of the same census, and it SKIPS with a printed line only
+   where no base is declared — declare one and a template-owned file you have
+   edited is a gate finding on your own tree, not a surprise at the next
+   release. The same rule also reads the `drawers` table, so a drawer whose
+   reader or whose drive case you removed is a finding too.
+   (X01 24f2975c, X7 591c461a.)
+
+2. **`./scripts/setup.sh`, then `./scripts/check.sh --fast`.** Three measured
+   files no longer arrive at all: `scripts/test_impact.json`,
+   `scripts/pytest_durations.json` and `scripts/gate_member_durations.json` are
+   trimmed from the release, so there is no conflict in them and no
+   `git checkout --ours` to remember — yours stay yours, untouched. A tree
+   holding none of them measures instead of guessing, and says so in its own
+   banner: `scripts/test_impact.json is absent … closure scope` is
+   measure-not-stale, not a warning to clear. (E14 23abf726.)
+
+3. **A `max_migration.txt` conflict in a template app → `uv run python
+   manage.py fold_migrations <app> --dry-run`, then the same command without
+   it.** Once per conflicted app. It renumbers the whole ARRIVING chain past
+   your leaf, rewrites its in-app dependencies, and leaves cross-app and
+   `swappable_dependency(...)` entries alone. Merge the tag, never rebase onto
+   it — under a stopped rebase HEAD is the upstream, so the top of the conflict
+   block is our leaf and a fold would renumber YOUR chain; the command refuses
+   that case by name. Skipped, you are renumbering by hand against `dlm.E005`
+   and two leaves. One declared gap: a dependency from ANOTHER app onto a
+   migration the fold renumbered is left as written and raises
+   `NodeNotFoundError` naming both ends at the next `migrate` — fold that app
+   too, or repoint the one dependency. (D2 a93d302f, D2F f52170ff.)
+
+4. **`uv run python manage.py rename_permission --table`** prints the table of
+   every rename the tree declares, one row per pair with the declaring app in
+   the first column; **`--declared`** moves every one of them across every
+   tenant in a single pass and is idempotent — a second run rewrites nothing
+   and says so. Skipped, a grant stored under an old key is inert: it names a
+   word no door answers, and nothing at all tells you. (E3 408a5e35, E3F
+   817d0a83.)
+
+5. **`uv run python -m quality.gate --explain 59`** prints one paste line per
+   undecided event noun, per app. Skipped, you get one gate finding per noun
+   instead — and at runtime the socket stays closed to that noun while the
+   write it announces still COMMITS. (C1 30b7cbb1, C0 365ec134.)
+
+6. **`uv run python -m quality.gate --explain 54`** lists every read this tree
+   asks for: the selector, the key it asks, where that key resolves, who is
+   refused, the one line that opens it, and every door that reaches it. The
+   hat-less caller at `GET /api/v1/memberships/mine/` is one row.
+   (C3 f05f031b.)
+
+7. **Rule ids: write `rule_id_namespace: <ns>` and
+   `template_rule_ids_through: <n>` into `quality/local/rules.yaml`**, and
+   rename your own rules to `<ns>-<n>` in four places — the id, the fixture
+   directory, the valve and the check tag — `git mv`-ing the fixture
+   directories as you go. Skipped, the engine exits 2 with `duplicate id`, or
+   with `product rule ids are <ns>-<n>`; and either key written into the
+   template-owned `quality/rules.yaml` is refused by name, with the line that
+   says where to move it. (D1 0d0e7fdf, X3 11c583c4.)
+
+8. **A ratchet red on one of YOUR apps now prints the line that records it —
+   `<app>.<class>: <n>  # recorded-at <sha> [fold]` — and it goes under
+   `ratchets:` in `quality/local/rules.yaml`**, never in ours, which a fold
+   overwrites. Skipped, exit 1 stands and nothing anywhere says the grammar,
+   the stamp, or that recording it was allowed. (D3 62600447, X3 11c583c4.)
+
+9. **Gate legs: `scripts/local/legs/<name>.sh`**, executable, carrying the
+   `# >>> leg v1 >>>` header block. The listing emits a unit called `local`;
+   CI, the bank and the per-rung gate take it with no other edit. Malformed is
+   exit 2 at the listing, naming the file and the field. (X2 8bc83a01.)
+
+10. **Fold steps: `scripts/local/fold.d/<step>.sh`** — executable, declaring
+    every path it writes in the `derived-tree-paths` sentinel block; a path it
+    wrote and did not declare is the fold's exit 2, naming the step, with
+    nothing committed. **Lifecycle classes:
+    `scripts/local/lifecycle.d/<class>.sh`** — declaration-only; a function
+    definition or a bare command in one is exit 2, because this drawer is
+    sourced by every broom and by the gate itself. (X4 34411469.)
+
+11. **Fixtures: `apps/conftest_local.py`** — loaded iff the module exists. A
+    drawer that raises on import is a loud error naming the file, never a
+    silent absence that reads as `fixture not found` in every test you have;
+    and a drawer fixture whose name ours already carries loses, silently.
+    (X8 78b6fe1c.)
+
+12. **Drives, instrument rows, drive environment and CI steps:
+    `scripts/local/drives/`, `docs/product/instruments.local.md`,
+    `scripts/local/env_keys` and `scripts/local/ci/`.** The 2.1.0 instruction
+    to edit `scripts/tests/drive_preamble.sh`'s two lists is RETIRED: move your
+    names into the env-keys drawer and take our file whole at the fold. A
+    drawer drive is not keyed and not banked — it runs on every gate, and both
+    consults print that rather than passing over it. (X5 71852d82.)
+
+13. **Keep `if user.zitadel_sub == cleaned: return user`** if the merge offers
+    that line as a conflict. Resolved away, every person in the deployment is
+    locked out at their SECOND sign-in; eight tests red by name if you do.
+    (C2 1e5f95e9.)
+
+14. **Regenerate the API client against your own tree, and look at your CI
+    cache key.** Both are under **Migrating** below: `frontend/openapi.json`
+    ships correct for the release and is stale for you the moment your apps are
+    in the schema, and a `cache: pnpm` on `setup-node` under the sharded matrix
+    has every shard writing one entry.
+
+15. **The ops policy version, and it is the owner's own hand:
+    `./deploy/iam/verifier_bootstrap.sh --confirm`** publishes
+    `ec2:DescribeSpotInstanceRequests`. Until it is run, a reclaimed verifier
+    box prints `status unreadable (…)` rather than naming the reclaim.
+    (B-R1 3077615d, B-R2 be49d4b8.)
+
+16. **Nothing to do — delete the divergence, if you were carrying one.** The
+    measured-tree push comparison (A1 03f2fe6e); the documented full-gate
+    durations mode, the frontend leg's change-aware skip under `--leg`, and the
+    drive registry (A3 d39a2f90); the wrapper's footprint case, its base-ref
+    reader and the tag fetch (A2 36fc5c30, A2F2 f67ba14a).
+
+### Changed
+
+- **`scripts/test_impact.json` is committed by the FOLD, not by hand.** The
+  acceptance box writes the test-impact map into the working tree at the end of
+  a bank and no fold step can regenerate it, so it joins `scripts/pm_fold.sh`'s
+  typed derived list as the one entry clause 1 tolerates ALREADY DIRTY — an
+  `absorbed` line at the top of the run, `fold: acceptance map absorbed` as the
+  subject. The exemption is its own typed literal and a checked subset of the
+  derived list: a DELETED map is still a dirty tree, and work beside an
+  absorbed path is still refused. **What it buys**: a hand commit put the map
+  in the next docs-only push's delta, which made `scripts/tests/test_pm_push.sh`
+  (116 s) a derived reader of every ledger push.
+
+- **The `selftest` unit's shards are balanced by DURATION, not by index.**
+  `./scripts/check.sh --leg selftest --shard k/N` used to give drive *i* to
+  shard *i % N*, which balances the count of drives and says nothing about
+  their price — and the drives differ by two orders of magnitude (one bank:
+  one shard 1457 s while the other five units were done by minute 9, the
+  arithmetic sum of its drives run one at a time). The assignment is now an
+  **LPT partition** — heaviest member first, into whichever shard is lightest
+  — over the walls recorded in `scripts/gate_member_durations.json`, read
+  through the always-on leg's own reader, with a member the table does not
+  name taking the median of the rows that do. It is deterministic for a table
+  and an N (every box computes the whole partition and reads its own row out
+  of it), every member still lands in exactly one shard, and the
+  house-rules engine's own self-test is now a member like any other rather
+  than a stated shard 0. **Each shard prints what it holds**: member count,
+  predicted seconds, the table it read and that table's machine — which
+  matters, because a table measured on one machine can be an order of
+  magnitude out on another. **With no durations table the split falls back to
+  the index round-robin and says so**: the file is a hint, and its absence
+  means unmeasured, never a refusal. Nothing about a verdict changes — the
+  same drives run, in a different partition — and `--list-legs` is
+  byte-identical.
+
+- **Rule ids are two namespaces, so a product's house rules stop colliding with
+  the template's at every fold** (ADR gate-5). Only the template mints
+  plain integers. A product declares `rule_id_namespace: <ns>` once, top-level
+  in `quality/local/rules.yaml` — its own drawer, below — beside
+  `template_rule_ids_through: <n>` — the highest
+  integer the template release it folded had minted, which is how the engine
+  tells a template rule from a product rule that typed an integer — and names
+  its own rules `<ns>-<n>` in **four** places: the id, the fixture directory
+  (`quality/{canary,negative}/<ns>-<n>/`), the valve (`# rule-<ns>-<n>: <reason>`)
+  and the check tag (`<ns>.Wnnn`, where the template's are `djb.…`). The engine
+  refuses every other shape by name, refuses a fixture directory no rule claims
+  — including one under a namespace the tree never declared — and counts the
+  self-test residence census over TEMPLATE ids only, so
+  `selftest_residence_backlog` is a template fact a product folds and never
+  retypes and a product's own rules are counted against zero. **A template tree
+  carries neither key and nothing about it changes**: the self-test prints the
+  number a product should record, and adding a template rule still costs one
+  rule body. Adopting it is once, by hand: rename the ids, `git mv` the fixture
+  directories, write the two keys into `quality/local/rules.yaml`. (Declaring
+  either key in the template-owned `quality/rules.yaml` is refused by name,
+  with the line that says where to move it.)
+
+- **A product's own house rules live in `quality/local/`, so `quality/rules.yaml`
+  stops being a file two people own.** The engine loads
+  `quality/local/rules.yaml` BESIDE the template's at the one loader, with the
+  fixtures under `quality/local/{canary,negative}/<id>/` and check-v1 runners
+  under `quality/local/runners/`. Four top-level keys and no more —
+  `rule_id_namespace`, `template_rule_ids_through` (both of which now live HERE
+  rather than in the template's file), `rules:` and `ratchets:` — and anything
+  else is exit 2 naming the key and the file, because every other key
+  configures the engine rather than a rule. A drawer rule is a rule end to end:
+  it passes `consistency()`, plants its canary through the REAL scope and must
+  fire, keeps its negative silent, binds its floors, is suppressed and COUNTED
+  by `# rule-<ns>-<n>:`, and both readers tag it `[local]`. Its `check:`
+  resolves through ONE resolver — a name in the template's registry, re-scoped,
+  or `quality/local/runners/<name>.py` speaking check-v1 — so a product never
+  edits `quality/checks.py`; neither is exit 2 naming both places it looked,
+  and a runner that answers with nothing is REFUSED rather than read as a clean
+  tree. `ratchets:` is `rule id → class → count`, the product-owned home for
+  per-app backlogs a product's apps had nowhere to record, and a class naming
+  an app inside `quality/partition.yaml`'s `platform_apps` (as `<app>` or
+  `<app>.<kind>`) is refused — the drawer records a product's backlog, never
+  raises the template's ceiling. A drawer canary may plant only into a product
+  app or `apps/example`. The drawer's non-rule keys fold into the engine digest
+  and each drawer rule keys its own memo, so an edit re-keys exactly what it
+  changed. **A tree with no drawer is byte-identical** — the listing, the
+  self-test's numbers and `--selftest-inputs` are the bytes they were.
+
+- **A house-rule ratchet class for one of YOUR apps now says how to record
+  itself** (ADR gate-6). Per-app ratchet classes (`quality/rules.yaml`
+  `ratchets:`) name only the apps this template ships, and a class with no
+  entry is a ceiling of zero — the right answer for a template app, and an
+  unreadable one for yours: the hook refused and nothing anywhere said the
+  grammar, the stamp, or that recording it was allowed at all. A class keyed on
+  an app OUTSIDE `quality/partition.yaml`'s `platform_apps` with no entry is
+  now **unmeasured**: still a violation (green-because-unrecorded is not a
+  pass), and the header the findings arrive under is the exact line to paste —
+  `acme.read: 1  # recorded-at <sha> [fold]`, into `quality/local/rules.yaml`'s
+  `ratchets:` under `"<rule id>":` — with the sha of the tree it was true at. Recording is the one time a number here may arrive from nothing and
+  it belongs to the fold; after it the class moves DOWN only, by a person's
+  hand, exactly as every other ratchet does. A class you recorded at `0` is a
+  measurement and is untouched, template apps stay zero by absence, and the
+  plant scaffold is never offered a recording. Rules 54 and 55 also gained a
+  `remedies:` block — one fix form per finding class, printed by
+  `python -m quality.gate --explain 54`, and every finding of a rule that has
+  one now ends `fix form: --explain <id>`.
+
+- **Two speed changes a product inherits and can override.** The test
+  database now runs with `synchronous_commit` off on its own connections —
+  a test's COMMIT stops waiting for the disk, which is legitimate for a
+  database that is dropped at the end of the run and is nothing a product
+  configures. And Temporal's retry backoff starts from one declared place,
+  `TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS` in `config/settings/base.py`,
+  rather than from a number repeated in each workflow — the test settings
+  lower it, a floor test refuses a policy that would retry faster than the
+  setting allows, and a product that wants a different interval changes one
+  line instead of hunting for the literals.
+
+- **A documentation-only push no longer costs a whole bank.** When every path
+  changed since the last MEASURED tree is on one declared list — `docs/**`,
+  `README.md`, `CLAUDE.md`, `.claude/skills/**`, `scripts/test_impact.json`
+  (`CHANGELOG.md` and `TEMPLATE_VERSION` are deliberately OUT: pytest reads
+  them, so a release still pays one bank) — `pm_push.sh --bank` runs only the
+  readers those paths are DECLARED to have — a drive that reads a doc without
+  naming it on its own declaration line is not run, and the next non-docs push
+  is the belt — on the machine you are sitting at, and
+  banks the same row a bank banks. Before either arm, so no lease, no pytest
+  slot and no verifier box. Anything else is the full bank exactly as before
+  and prints why, ending in "full bank"; a reader that goes red is a red tree
+  and no row. Nothing a product wrote changes: the pre-push hook, the row
+  grammar and the ledger's lookup are untouched.
+
+### Added
+
+- **Which files are the template's, and which are yours — per path, and now in
+  the tree rather than in your head.** `docs/product/build-contract.md`
+  § Ownership is the table: **template-owned** (a product edit is a
+  divergence), **product-owned** (no conflict by construction) and **shared**
+  (one file each, adjudicated by hand at a merge). Template-owned today:
+  `scripts/**` less `scripts/local/**`, `quality/**` less `quality/local/**`,
+  `.github/workflows/ci.yml`, `.claude/skills/**`, `config/**`, `manage.py`,
+  the platform apps named in `quality/partition.yaml` less
+  `apps/core/roles.py`, `CLAUDE.md`, `docs/runbooks/**`, `docs/standards.md`,
+  and six standing documents under `docs/product/`. The row ENUMERATES, so
+  anything it does not name — your apps, your ledgers, your `README.md`, your
+  own `architecture.md`, a second workflow beside `ci.yml` — is yours. The
+  decision behind it is ADR platform-extension-1, PROPOSED in
+  `docs/product/architecture.md`.
+
+- **`scripts/divergence_census.sh` — which template-owned files has this
+  product edited?** Read-only: it writes nothing, fetches nothing and moves no
+  ref. Give it a base — `DJB_TEMPLATE_BASE=<ref>`, a line in
+  `scripts/local/template-base`, or a git remote named `template` (then the
+  tag `v$(cat TEMPLATE_VERSION)` is derived for you) — and it lists every
+  template-owned path whose content is not the base's, with its ±lines and the
+  commit that last touched it. **Exit 0** when nothing diverged, or when every
+  divergence is named in your own `architecture.md` as
+  `divergence: <path> — <reason>`; **exit 1** on one that is not, printing the
+  line to add; **exit 2** when it could not look. Run it at every fold, before
+  the merge rather than during it. House rule 60 is the gate's reading of the
+  same census, and it SKIPS with a printed line where no base is declared.
+
+- **The drawers are reserved, so a release can never conflict with one.**
+  `publish.sh`'s census now exits 2, naming the path, on any tracked file
+  matching `**/local/**` or `*.local.md`. The template ships no drawer, which
+  is what makes a `local/` sibling of a template directory a safe place to put
+  your own legs, rules, fold steps, drives and instrument rows. The readers
+  that discover those drawers are in this release, above and below; the
+  reservation came first, because a name a release claims cannot be taken back.
+
+- **Gate legs have a home: `scripts/local/legs/<name>.sh`.** A product's own
+  checks — a typecheck, a licence scan, a visual baseline, a census over its own
+  files — used to be added by editing `scripts/check.sh`, which is the file a
+  release changes most. A drawer leg is an executable script carrying one header
+  block, opened by `# >>> leg v1 >>>` and closed by `# <<< leg <<<`, whose
+  fields are the whole contract: `unit:` (the runner it is handed — `local` is
+  the drawer's own, any other name MAKES a unit, and a name this gate already
+  declares is refused rather than silently joined), `needs:` (the organs it
+  assumes, a declaration nothing acts on), `tier:` (`fast`, `loop` or `full` —
+  the cheapest mode that runs it, and every mode above runs it too),
+  `two-means:` (`broken` or `finding`, because a tool that exits 2 for
+  diagnostics present and one that exits 2 for broken plumbing cannot share a
+  reading), and optionally `touches:`, `inputs:` and `env:` — path prefixes that
+  narrow it under the scoped modes and content and variable names that join its
+  reuse key, so a product leg's verdict is reused on exactly the terms ours are.
+  The listing names the unit; CI, the bank and the per-rung gate take it with no
+  other edit anywhere. Every malformation is exit 2 AT THE LISTING, naming the
+  file and the field — no `-x` bit, an unknown field, an unparsable value, a
+  name colliding with a leg or a drive this gate already has — never a silently
+  smaller gate. What it does not cover is declared: a check that must run INSIDE
+  the pytest process is a fixture, not a leg, and its drawer is
+  `apps/conftest_local.py` below.
+
+- **Fold steps and lifecycle classes have homes:
+  `scripts/local/fold.d/<step>.sh` and `scripts/local/lifecycle.d/<class>.sh`.**
+  Both were files a product could only extend by editing ours. **A fold step**
+  is executable and is run from the checkout root at the bank, and it DECLARES
+  every path it writes in the same `derived-tree-paths` sentinel block the
+  gate's own tree reader already parses. That declaration is load-bearing rather
+  than decorative: the fold partitions the whole of the working tree against the
+  typed list plus what each step declared about itself, so a step that wrote a
+  path it did not name is the fold's exit 2, naming the step, with nothing
+  committed. Its name is its basename, it joins the closed list `--only` takes,
+  and a name colliding with one of the template's own steps is refused — a
+  product shadowing the secrets step would be a product silently replacing the
+  tree's one legal baseline writer. **A lifecycle class** is
+  declaration-only: comments, blank lines and `lc_class` calls, and nothing
+  else, read BEFORE it is sourced and sourced only if it is what it claims to
+  be. That is not tidiness — this drawer is sourced by every broom, by the
+  gate's own census and by the pre-push hook, so a function definition in it
+  would silently override a built-in everywhere at once and a bare command would
+  simply run inside all three. The claim column is a `glob:` pattern for the
+  same reason. What the drawer does NOT give a product is a new lifecycle KIND:
+  a kind nothing scans has no enumerator, an enumerator is code, and a product
+  that needs one needs a platform rung rather than a silent empty census.
+
+- **A product's drives, instrument rows, drive environment and CI steps have
+  homes: `scripts/local/drives/`, `docs/product/instruments.local.md`,
+  `scripts/local/env_keys` and `scripts/local/ci/`.** Four more drawers on the
+  convention `scripts/local/legs/` already runs on: declare beside the template
+  rather than editing it, and a release can never conflict with a path the
+  template does not ship. **A drive** is `scripts/local/drives/test_<name>.sh`,
+  `+x` and sourcing `scripts/tests/drive_preamble.sh` — it joins the selftest
+  leg through the same one reader as the template's own two drive homes, runs
+  in the same shard walk, and is named
+  `local:<name>` on the verdict row, in `--list-legs`'s `composed-of` and in
+  the leg's transcript, so you can tell your members from ours. **It is not
+  banked and not reused: a drawer drive RUNS ON EVERY GATE**, and both consults
+  print that rather than passing over it — the template's drive key is built
+  from a `drive_preamble.sh` sitting BESIDE the drive, which `scripts/tests/`
+  and `deploy/tests/` have and a drawer does not. **An instrument
+  row** goes in `instruments.local.md`, the same five-column table read beside
+  `instruments.md`, so your own executables stop owing rows in a file you do
+  not own (a path may be in exactly one of the two). **`scripts/local/env_keys`**
+  is one variable NAME per line and is the inverse of the preamble's own strip:
+  a name there is KEPT when a drive scrubs its environment, and it joins the
+  declared-inherited list the workflow-environment census reads — so **the
+  v2.1.0 instruction to edit `drive_preamble.sh`'s two lists is retired**; move
+  your names into the drawer and take the template's file whole at the fold.
+  **`scripts/local/ci/*.sh`** run in name order in ONE optional `ci.yml` job
+  (`local`, `needs: verdict`), which is where your deploy and publish steps go;
+  there is deliberately no `ci.local.yml`, because GitHub composes nothing and
+  a second workflow is a second copy of the whole setup. Absent, all four cost
+  nothing — the listing, the leg's transcript, the instrument census and the
+  workflow are byte-identical to a tree that has never heard of a drawer, which
+  is asserted by `cmp` and by `diff` rather than by this paragraph. Malformed,
+  each is exit 2 naming the file: a drawer drive with no preamble or no `+x`, a
+  name a template drive or one of your legs already carries, an `env_keys` line
+  that is not an identifier, a path with a row in both instrument documents, a
+  CI step with no `+x`. `docs/product/build-contract.md`'s fenced `drawers`
+  block is the list of every drawer and the one reader that opens it.
+
+- **A product's pytest fixtures have a home: `apps/conftest_local.py`.**
+  `apps/conftest.py` is template-owned, and it used to be the only place a
+  fixture every app's tests need could live — so the first product built on
+  this template put 609 lines of its own into it. Now the root conftest
+  declares `pytest_plugins = ["apps.conftest_local"]` **iff** that module
+  exists. Write one and its fixtures are available to every test in the tree;
+  write none and nothing changes — no module, no declaration, the collected set
+  identical to the byte. Two things to know before you fill it. A plugin is
+  loaded for the whole session, so an `autouse=True` fixture in your drawer
+  runs inside the PLATFORM's tests as well as your own — which is why the
+  drawer is a member of the platform partition's boundary class and writing
+  one does invalidate a banked verdict, the same as editing the template's
+  conftest would. And on a name clash the template's conftest wins silently:
+  a drawer fixture sharing a name with one of ours is ignored with no warning.
+  The template never ships a drawer. The guard is
+  `importlib.util.find_spec`, not a `try: import … except ImportError`,
+  deliberately: a drawer that exists and raises on import is a loud error
+  naming `apps/conftest_local.py`, never a silent absence that reads as
+  `fixture not found` in every test you have.
+
+- **House rule 60 now ENFORCES the drawers instead of describing them, and
+  `docs/product/build-contract.md`'s fenced `drawers` block is what it
+  reads.** The block grew from a list into the rule's text: five
+  ` | `-separated fields a row — `live`/`held`, what a product extends, the
+  drawer, **the one reader** that opens it, and **the one drive case** that
+  plants a single item and proves the reader ran it — with every drawer this
+  template ships in it (legs, drives, house rules, fold steps, lifecycle
+  classes, drive environment, CI steps, the instrument census, pytest fixtures
+  and the divergence census's own template base), plus two `held` rows that
+  reserve `scripts/local/hooks/` and `deploy/verifier/local/bake.d/` against
+  the rungs that will build them. Three things are now findings rather than
+  gaps nobody could see: **a drawer this tree's own code opens with no row**
+  (the population is derived from the `local/` paths the template's code
+  spells — never typed beside the table), **a row whose reader is not in the
+  tree**, and **a row whose case its drive does not define**. And at
+  `--selftest` the engine RUNS every one of those cases — one plant per
+  drawer, through the drive that already owns the property — so a reader that
+  opens its drawer and throws the members away is exit 2 naming the drawer and
+  the reader, printed with the census's measured seconds against its recorded
+  ceiling. Adding a drawer now means adding a reader AND a case AND the row,
+  and deleting any one of the three is a red.
+
+- **The eight drives the `drawers` table names take `--case <name>`,** running
+  exactly that case and nothing else (`--list` still names them; an unknown
+  name is exit 2, never a silent run of nothing). They are
+  `test_local_legs.sh`, `test_selftest_leg.sh`, `test_gate_explain.sh`,
+  `test_pm_fold.sh`, `test_sweep.sh`, `test_drive_preamble.sh`,
+  `test_scripts_census.sh` and `test_divergence_census.sh` — the drawer
+  readers' own drives, and no others. It is the seam rule 60's drawer census
+  runs the drawers through, and it is how anyone re-runs one property of a
+  nine-minute drive while holding it in their head.
+
+- **`manage.py fold_migrations <app>` grafts an arriving template migration
+  chain onto your own leaf.** A product that added migrations to `core` or
+  `accounts` used to reparent each release's chain by hand, because
+  `rebase_migration` moves exactly ONE migration and cannot see an ancestor a
+  previous fold renumbered (ADR core-28). The command reads the conflict in
+  `max_migration.txt`, renumbers the whole ARRIVING chain past your leaf,
+  rewrites its in-app dependencies (a renamed ancestor resolved by the stem
+  after `NNNN_` — `0008_identity_branding` → your `0010_identity_branding`),
+  leaves cross-app and `swappable_dependency(...)` entries alone, and rewrites
+  `max_migration.txt`. `--dry-run` prints the plan and moves nothing. It exits
+  2, naming the migration, on an arriving migration already applied locally, a
+  stem that resolves to nothing or to two, a `max_migration.txt` with no
+  conflict in it, or **a stopped `git rebase`** — under a rebase HEAD is the
+  upstream, so the top of the conflict block is the template's leaf and a fold
+  would renumber your own chain. Template migration files stay Django-native —
+  this is the product's tool, run at the fold, and
+  `git checkout -- <app>/migrations && git clean -f <app>/migrations` undoes a
+  run (both halves: a rename leaves the new filename untracked, so a checkout
+  alone gives you the old chain and the grafted copies side by side).
+  **One declared gap:** a dependency from ANOTHER app onto a migration the fold
+  renumbered is left as written, and Django's loader raises `NodeNotFoundError`
+  naming both ends at the next `migrate` — loud, never wrong; fold that app too,
+  or repoint the one dependency by hand.
+
+- **The release census reads the release note it is about to ship.** Two legs,
+  both release-mode only, both over the exported artifact rather than the source
+  tree. **`changelog`** asserts the artifact's `CHANGELOG.md` carries a
+  `## [<version>]` section for the version the tag is derived from — a tag with
+  nothing to read behind it asks a consumer to merge a tree on trust.
+  **`changelog-flags`** then reads that section and nothing else: every
+  backticked span carrying both a `--flag` token and a script name is a CLAIM,
+  and the flag must be a literal in the script the span names. A span with a
+  flag and no script is COUNTED and printed rather than judged — inferring the
+  script from the surrounding prose would be naming a cause the instrument has
+  not proven — and older sections are never read, because a flag renamed since
+  2.0.0 makes that entry a true record of 2.0.0 and correcting it would be
+  rewriting history to please an instrument. Its blind spot is declared on the
+  body: it reads text presence, not an arm, so a flag spelled only inside a
+  string the script prints about a DIFFERENT script satisfies it. Three measured
+  files also left the release in the same pass — `scripts/test_impact.json`,
+  `scripts/pytest_durations.json` and `scripts/gate_member_durations.json` are
+  trimmed rather than shipped, because a measurement of our suite on our machine
+  is not a fact about your tree, and every reader of all three already treats
+  absence as *measure*.
+
+- **`.gitattributes`, carrying one line: `CHANGELOG.md merge=union`.** This
+  file is append-only under `## [Unreleased]`, so two lanes that both append
+  change one region and git's default is a conflict somebody resolves by
+  typing both sides back in — seven of them in one cycle here. Union is git's
+  own built-in driver and needs no definition: two appends merge clean and both
+  survive. It is a merge driver and **not a judge** — it can interleave two
+  halves of one wrapped bullet — and the thing that still refuses that is the
+  release leg `changelog-flags`, at exit 2, before a tag. Both directions are
+  driven by `scripts/tests/test_pm_merge.sh`. A product inherits the line; a
+  code file never gets one, because union over code is two halves of a function
+  silently concatenated.
+
+
+### Fixed
+
+- **Two release-note claims that named something the tree does not have.**
+  Both were found by reading the scripts rather than the prose, and both are
+  corrected here rather than in the section that carried them — a shipped
+  section is the record of the tree it shipped, and an instrument is never the
+  reason one is rewritten.
+  - **`--plan` belongs to `deploy/verifier/bake.sh`, not to the box wrapper's
+    `bake` subcommand.** `./scripts/verifier_box.sh bake` takes `--prune` and
+    `--keep` (its usage header is the authority); the recipe-only run is
+    `deploy/verifier/bake.sh --plan`, and the wrapper's own refusal prints that
+    command for you when the image build needs looking at. Typing the flag at
+    the wrapper is an unknown argument, not a dry run.
+  - **A product that declared `login_page=own` does NOT skip the entrance-frame
+    tests.** Skipping is the `template_shape` mark's doing, the mark is legal
+    only in the modules `apps/core/tests/template_shape.py` declares, and
+    `apps/accounts/tests/test_entrance_frames.py` is not one of them and
+    carries no mark. The frame census runs for every product; a product that
+    replaced the login page still owns the frames it kept, and extends that
+    census in the same commit when it adds one.
+
+- **An event noun nobody declared no longer costs you the write — it costs you
+  one gate finding with the line to paste.** This supersedes the second half of
+  v2.1.0's Migrating item 8. Before: `emit()` asked which authorization kind an
+  event is about, and a noun that is no kind and has no `EVENT_KINDS` entry
+  raised **inside your service's transaction** — so the write the event was
+  about rolled back and the door answered 500. A product folding v2.1.0 met
+  this as a wall of unrelated red (six service tests on one app, all of them
+  rolled-back writes rather than dropped frames). Now: the write **commits**,
+  the event row is written, the dispatch is enqueued, and
+  `events.emit.kind_undecided` is logged at ERROR. The refusal moved to the two
+  places that cost nothing at runtime — the **socket** drops every frame of an
+  undecided noun (it already did), and the **gate** refuses the tree once per
+  undecided noun, at the constant's own line in your `events.py`, ending in the
+  `EVENT_KINDS` line to paste:
+
+  ```
+  "<noun>": "<kind>",  # draft: apps/<x>/services.py:<n>'s payload <Model>Out names <Model>
+  ```
+
+  — or, where the walk cannot resolve the emit site's payload to a schema with
+  a model behind it:
+
+  ```
+  "<noun>": ?,  # no payload names an Out: a kind, or None with the reason
+  ```
+
+  **What to do with it:** paste the line into that app's `EVENT_KINDS`, confirm
+  the kind is the one whose `<kind>.read` should govern who hears the event
+  (the draft is a proposal derived from the emit site's payload, never a
+  ruling — a `?` means the walk could not resolve one and you must decide), and
+  run `./scripts/check.sh --fast`. `uv run python -m quality.gate --explain 59`
+  prints the rule, its floors and its declared blind spots. The two refusals
+  `emit()` still makes are unchanged: an org-scoped noun whose payload names no
+  branch, and an org-less noun whose payload names one. The amendment, its
+  rejected alternatives and its reversal are in
+  `docs/product/architecture.md` § rule 59, signed 2026-09-21.
+
+- **Rule 59 no longer proves itself through the metering ingredient.** Two of
+  its self-test forms — the hand-built body that omits the branch, and the
+  honest helper hop that is its control — were planted into
+  `apps/usage/services.py` and leaned on `apps/usage/events.py`'s `EVENT_KINDS`
+  for the noun they announce. A product that ships without the metering
+  ingredient therefore got a **dead canary and a vacuous negative** out of a
+  rule that was working perfectly: exit 2, on a tree that had done nothing
+  wrong. Both forms now plant into `apps/example/services.py` on
+  `WIDGET_CREATED` / `WidgetOut`, the same org-scoped shape in the app whose
+  whole job is to hold one of everything. Two consequences a product sees in
+  its own diff: the self-test's residence backlog is **19**, because rule 59's
+  whole canary plan now lives in one optional app and it joins that census
+  (the number and its reason are on the line in `quality/rules.yaml`); and the
+  rule's `none_mappings` floor is **0**, because the 1 it carried rested on a
+  single site in `apps/search` — another ingredient — and a floor one removable
+  app supplies is unbound rather than binding. The class it was guarding keeps
+  its own canary, which plants a `None` mapping every run and must fire.
+
+- **§ [2.1.0]'s Migrating rename table gained the four `apps/accounts` rows it
+  was missing, and it is now a command's output.** The section told a reader
+  the table was derived from `renamed_permissions()` and it was not: it carried
+  twenty-five of the twenty-nine pairs the tree declares, so an operator who
+  followed it left every stored row under `accounts.user.deactivate`,
+  `accounts.user.erase`, `identity_platform.configure` and
+  `sso_identity.provision` naming a word nothing answers. The table is
+  corrected where it stands and the section's prose is untouched — a shipped
+  section is the record of the tree it shipped. It is now the output of
+  `manage.py rename_permission --table`, which prints the union of every app's
+  `RENAMED_PERMISSIONS` with the declaring app in the first column, and
+  `apps/core/tests/test_vocabulary.py` refuses a pair declared by an app inside
+  `quality/partition.yaml`'s `platform_apps` and absent from the note. The
+  command also gained `--declared`, which moves every declared pair in one pass
+  across every tenant and is idempotent — a second run rewrites nothing and
+  says so.
+
+### Migrating
+
+- **A `max_migration.txt` conflict in a template app → run
+  `uv run python manage.py fold_migrations <app>`** (add `--dry-run` first to
+  read the plan), once per conflicted app, instead of renumbering by hand. Merge
+  the tag, never rebase onto it — the command refuses a stopped rebase, because
+  HEAD is the upstream there. To undo a run:
+  `git checkout -- <app>/migrations && git clean -f <app>/migrations`.
+
+- **A red naming a ratchet class of one of your own apps → paste the line the
+  red prints.** The finding carries `<app>.<class>: <n>  # recorded-at <sha>
+  [fold]`; put it in **`quality/local/rules.yaml`, your own drawer**, under its
+  top-level `ratchets:`, under `"<rule id>":` — the rule the red names.
+  `quality/rules.yaml` is template-owned and a fold overwrites it, so a count
+  recorded there is a count that disappears at the next release. Do it at the fold
+  that brought the app in, and shrink the number from there — it may not go up
+  again without a person's diff. Nothing changes for a class you have already
+  recorded, at zero or above.
+
+- **Take `docs/product/architecture.md`'s house-rules section whole at the
+  fold.** That file is PRODUCT-owned — your decisions, your divergence notes —
+  and it is also where every house rule's `doc:` anchor points: a file and a
+  phrase the engine's own consistency check requires to be present. Two rules
+  changed their text in this release (the read rule grew a census, the event
+  rule's refusal moved out of your service's transaction), so their anchors
+  moved with them. Resolve that section to your older copy and the engine
+  reports `rule <n>: doc docs/product/architecture.md no longer states the rule
+  (anchor '…' missing)` — exit 2, enforcement broken, which outranks a pass and
+  is not something a valve can quiet. Take our section, keep your own sections
+  around it.
+
+- **`--explain 54` now lists every read this tree asks for, the door that
+  reaches it and the one line that opens it.** v2.1.0's Migrating item on rule
+  54 (d)/(e) said a product's own `get_`/`list_` selectors are fixed by "one
+  keyword-only `actor` plus `require(actor, "<kind>.read", …)`, or one
+  `# read-open:` / `# read-kind:` marker" — and named no selector and no door,
+  so the first product to meet the hard read rule at its own door
+  (`GET /api/v1/memberships/mine/` answering *You may not read this
+  membership.* to a hat-less caller) had to rebuild the list by reading
+  `apps/core/authz.py` and then every `selectors.py` in the tree. Run
+  `uv run python -m quality.gate --explain 54` and the `census (this tree):`
+  block is that list: one line per selector in clause (d)'s population, each
+  naming the file and line, the model and kind it hands back, the key it asks
+  and **where that key resolves** (the row's own node, the acting hat, or the
+  tenant-wide union when the caller has no hat — which is the case that 403s),
+  who gets refused, the exact opening, and every door that reaches it. A
+  selector that asks NOTHING is listed too and says so: it refuses nobody
+  today, and it is the row that surprises you the day you grant somebody a
+  narrow role. The census READS — it is rule 54's own walker, rule 55's
+  third-argument classifier and rule 42's door walk, printed, with no fourth
+  derivation to disagree with `allows()` — and it prints its own blind spots
+  on its last line (a predicate, a grant written at runtime, which hat a given
+  request resolves, and a selector a door reaches through a helper).
+  (`quality/checks.py::reads_census`, `quality/rules.yaml` rule 54.)
+
+- **Nothing signs in twice, and now eight tests say so — one of them across
+  the two doors.** `accounts.services.record_zitadel_identity` returns early
+  when the subject it is handed is the one the account already holds
+  (`if user.zitadel_sub == cleaned: return user`). That line is what makes
+  every login after the first a no-op instead of a `Conflict`, and a merge
+  that resolved it away would lock every person in the deployment out at
+  their SECOND sign-in — the account is theirs, the subject is theirs, and
+  the door answers *That identity is already linked to a different account*.
+  **Take the early return.** The instrument, if the merge is resolved wrong,
+  is eight reds by name: `test_rp_login::test_a_second_login_reuses_the_user`,
+  `::test_a_second_sign_in_does_not_double_join`,
+  `::test_a_known_subject_signs_in_even_when_its_address_moved`,
+  `test_signin_door::test_ours_records_the_subject_once`,
+  `::test_a_later_next_cannot_repoint_a_proven_password`,
+  `test_identity_join::test_the_same_subject_is_a_no_op_and_still_audited`,
+  `test_identity_ledger::test_the_row_count_tracks_the_call_count_including_the_no_op`,
+  and the new
+  `test_signin_door::test_a_person_signs_in_again_through_the_other_door`,
+  which is the one none of the other seven could see: they each drive ONE
+  door twice, and this one drives a person through the hosted page and then
+  through the deployment's own form, both orders. That the two doors name one
+  person with one string is no longer assumed either — `manage.py
+  zitadel_measure`'s new `M12 subject-is-session-user-id` opens one session
+  and reads both halves off it (`factors.user.id` and an id_token's `sub`),
+  and no id_token is `could not` rather than a pass.
+
+- **If your verifier boxes are capped below the account's real limit, write
+  the ceiling once: `./scripts/verifier_box.sh ceiling <n>`.** The cap now
+  lives in a file outside every checkout and is shared by every lane on the
+  machine, instead of being an environment variable each agent exports for
+  itself — so a raise is typed once and everybody gets it. With no argument the
+  command prints what is in force and where it came from; a value that is not a
+  positive whole number is refused and the file is not written. Nothing to do
+  if you never hit the cap: absent, the wrapper behaves exactly as it did.
+
+- **Regenerate the API client against YOUR tree: `./scripts/gen_client.sh`, then
+  `frontend/scripts/pin_client.sh --write`.** `frontend/openapi.json` and the
+  TypeScript client under it are DERIVED from the schema a tree exports, and the
+  copy a release ships is derived from ours. It is exactly right for the release
+  and wrong for you the moment one of your own apps is in the schema — and the
+  staleness is silent, because a generated client two schema changes old still
+  compiles. There is deliberately no release leg for it: on the tag the file and
+  the export agree to the byte, so a leg would be green on every tree we can
+  measure and red only on yours. Our own bank regenerates it at the fold, which
+  is why it stays true here and cannot stay true for you by itself.
+
+- **If your CI's `setup-node` step carries `cache: pnpm`, give it a per-shard
+  key or move the install into the `derive` job.** 2.1.0's workflow stopped
+  running one gate: it asks the gate for its units, runs one `--leg <unit>` per
+  runner with the suite split `k/N`, and composes a verdict. A single cache key
+  under that matrix is written by every shard of the same run at once. Our own
+  `ci.yml` has no `cache:` on that step, which is why nothing here reds, and
+  there is no instrument for it: the file the problem lives in is yours, and an
+  instrument over a product's own workflow is one this template may not write.
 
 ## [2.1.0] — The loop runs where it is fast, and a read is a permission
 
@@ -160,6 +896,16 @@ they were at 2.0.0; take them together or take none of them.
    reds when a credential the settings read is missing there), and declare
    any `DJB_*` key you add to the workflow in
    `scripts/tests/drive_preamble.sh`'s two lists or the preamble drive reds.
+   **SUPERSEDED by [Unreleased], and left standing above rather than rewritten
+   because it is what the 2.1.0 tag actually shipped.** Both halves of that
+   last sentence instruct an edit to a TEMPLATE-OWNED file — the workflow's
+   `env:` block and `drive_preamble.sh`'s lists — which the ownership table
+   now makes a divergence you record rather than a step you take. Until the
+   drawers those two grow in land (2.2.0: `scripts/local/env_keys`, and one
+   optional CI step that runs `scripts/local/ci_env.sh` when it exists), do the
+   edit AND write the line — `divergence: .github/workflows/ci.yml — our AWS
+   keys, until the env-keys drawer lands` — in your own `architecture.md`, so
+   `scripts/divergence_census.sh` reads it as the deliberate thing it is.
 5. **If you have a hierarchy, read the permission changes as a product
    change, not a gate change.** A custom role reads nothing until its
    collection names reads (add `"*.read"` or the kinds you mean); a fourth
@@ -975,13 +1721,17 @@ Add as item 10, after the stage item:
 
   | app | old key | new key |
   |---|---|---|
-  | core | `membership.revoke` | `membership.delete` |
-  | core | `organization.rename` | `organization.update` |
-  | core | `tenant.configure` | `tenant.update` |
+  | accounts | `accounts.user.deactivate` | `user.deactivate` |
+  | accounts | `accounts.user.erase` | `user.erase` |
+  | accounts | `identity_platform.configure` | `deployment.configure` |
+  | accounts | `sso_identity.provision` | `sso_identity.create` |
   | comms | `device.register` | `device.create` |
   | comms | `message_engagement.record` | `message_engagement.create` |
   | comms | `preference.set` | `channel_preference.update` |
   | comms | `suppression_surge.record` | `suppression_surge.create` |
+  | core | `membership.revoke` | `membership.delete` |
+  | core | `organization.rename` | `organization.update` |
+  | core | `tenant.configure` | `tenant.update` |
   | events | `webhook_endpoint.create` | `endpoint.create` |
   | events | `webhook_endpoint.delete` | `endpoint.delete` |
   | events | `webhook_endpoint.read` | `endpoint.read` |
@@ -1816,7 +2566,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.1.0...HEAD
+[Unreleased]: ../../compare/v2.1.1...HEAD
+[2.1.1]: ../../compare/v2.1.0...v2.1.1
 [2.1.0]: ../../compare/v2.0.0...v2.1.0
 [2.0.0]: ../../compare/v1.1.0...v2.0.0
 [1.1.0]: ../../compare/v1.0.0...v1.1.0

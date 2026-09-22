@@ -14,10 +14,12 @@ esac
 # THE VERIFIER BOX WRAPPER — one throwaway EC2 machine per verification, brought
 # up, pushed to, run on, and taken down, from this laptop.
 #
-#   verifier_box.sh up --for <rung> [--ttl <h>] [--idle <min>] [--type <t>] [--on-demand] [--no-push] [--image-id <ami>]
+#   verifier_box.sh up --for <rung> [--az <az>] [--ttl <h>] [--idle <min>] [--type <t>] [--on-demand] [--no-push] [--image-id <ami>]
 #   verifier_box.sh down <id> | --all-mine
 #   verifier_box.sh pool --want <N> [--idle <min>]
 #   verifier_box.sh census
+#   verifier_box.sh ceiling [<n>]
+#   verifier_box.sh zones
 #   verifier_box.sh run <id> -- <cmd...>
 #   verifier_box.sh loop <id> --log <name>
 #   verifier_box.sh leg <id> --unit <unit> [--shard k/N] [--passes 1|2] --log <name>
@@ -228,8 +230,23 @@ say() { echo "verifier_box: [$(now_stamp)] $*"; }
 #:                             anything is launched.
 #:   DJB_VERIFIER_IDLE_MINUTES the idle threshold the box's reaper honours.
 #:                             Default 30.
-#:   DJB_VERIFIER_MAX_BOXES    how many of ours may run at once. Default 2 —
-#:                             two 16-vCPU boxes is the 32-vCPU Spot quota.
+#:   DJB_VERIFIER_MAX_BOXES    how many of ours may run at once. It is the TOP
+#:                             of a three-step precedence — this variable, then
+#:                             the file `<DJB_VERIFIER_HOME>/ceiling`, then the
+#:                             default 2 (two 16-vCPU boxes is the 32-vCPU Spot
+#:                             quota a fresh account has). `ceiling` reads and
+#:                             writes that file and prints all three with the
+#:                             one that binds; every ceiling refusal prints the
+#:                             same three, so "why two" is never a guess.
+#:                             WHY THE FILE EXISTS: the variable is per-shell,
+#:                             and a wave of fifteen agents is fifteen shells —
+#:                             so the number that governs the whole machine
+#:                             lived nowhere, and every one of them either hit
+#:                             the default or spent a turn on the env-prefix
+#:                             form its permission classifier refuses. The file
+#:                             is one operator-written integer under
+#:                             DJB_VERIFIER_HOME, which every session on this
+#:                             machine already shares.
 #:   DJB_VERIFIER_HOME         where the per-box keypairs and state live.
 #:                             Default `~/.<namespace>/verifier`. OUTSIDE every
 #:                             checkout, deliberately: a private key inside the
@@ -266,6 +283,17 @@ say() { echo "verifier_box: [$(now_stamp)] $*"; }
 #:   DJB_VERIFIER_MIN_KBPS     the floor that probe enforces, in KB/s. Default
 #:                             50. Under it the push REFUSES, by name, instead
 #:                             of stalling for an hour.
+#:   DJB_VERIFIER_TUNNEL_WAIT_SECONDS  how long that probe will wait for the
+#:                             SESSION CHANNEL after the SSM agent has already
+#:                             said `Online`. Default 60, polled every 5. The
+#:                             two are not the same readiness: `up` waits for
+#:                             the agent's ping and the ssh-over-SSM channel is
+#:                             a few seconds behind it, so the first probe comes
+#:                             back `TargetNotConnected` with ssh's own 255 and
+#:                             the wrapper used to die there — inside `cmd_push`,
+#:                             BEFORE `up` had printed the instance line, so the
+#:                             box was running, billing and unnamed. Past the
+#:                             ceiling it is the same refusal it always was.
 #:   DJB_VERIFIER_BANK_SHARD   set by a bank around each shard's `up`. It turns
 #:                             the Spot→on-demand fallback below into a
 #:                             REFUSAL: eight shards each answering a Spot
@@ -308,8 +336,84 @@ BAKE_TYPE="${DJB_VERIFIER_BAKE_TYPE:-c7g.2xlarge}"
 TTL_HOURS="${DJB_VERIFIER_TTL_HOURS:-4}"
 TTL_CAP=12
 IDLE_MINUTES="${DJB_VERIFIER_IDLE_MINUTES:-30}"
-MAX_BOXES="${DJB_VERIFIER_MAX_BOXES:-2}"
 VERIFIER_HOME="${DJB_VERIFIER_HOME:-${HOME}/.${NAMESPACE}/verifier}"
+
+# --- THE CEILING, AND THE THREE PLACES IT CAN COME FROM ----------------------
+#
+# ENV, THEN FILE, THEN DEFAULT — and the SOURCE is carried beside the number,
+# because every refusal this ceiling produces has to answer "why that number"
+# and a bare `2` cannot. The file is `<DJB_VERIFIER_HOME>/ceiling`: one integer,
+# written by the operator or by `ceiling <n>`, outside every checkout and shared
+# by every session on this machine — which is the property the variable does not
+# have. Fifteen builders in one cycle each got the default 2 and waited 20-45
+# minutes at it; the variable could have raised it for exactly one shell each,
+# and the inline `DJB_VERIFIER_MAX_BOXES=… ./scripts/verifier_box.sh` form costs
+# an agent a permission-classifier turn on top.
+#
+# A MALFORMED VALUE IS EXIT 2, NOT A SILENT DEFAULT, in either place. A ceiling
+# is the wall between this loop and an unbounded Spot bill: a file somebody
+# fat-fingered into `1O` must stop the wrapper, never quietly become 2 (too low,
+# and the wave waits for nothing) or be read as ten.
+CEILING_DEFAULT=2
+CEILING_FILE="${VERIFIER_HOME}/ceiling"
+CEILING_FILE_VALUE=""
+if [ -f "$CEILING_FILE" ]; then
+    [ -r "$CEILING_FILE" ] || die "the ceiling file ${CEILING_FILE} exists and cannot be read.
+   Nothing was launched. Fix its permissions, or remove it and the default
+   ${CEILING_DEFAULT} applies again."
+    # THE FIRST LINE, READ WITHOUT A PIPE. `… | head -c 32` is the obvious
+    # spelling and this file forbids it by census: an early-exit reader after a
+    # producer is a SIGPIPE 141 under the `set -o pipefail` above. `read`
+    # returns 1 on a file with no trailing newline while still having filled
+    # the variable, so the status is discarded and the VALUE is what is judged.
+    IFS= read -r CEILING_FILE_VALUE <"$CEILING_FILE" || true
+    CEILING_FILE_VALUE="$(printf '%s' "$CEILING_FILE_VALUE" | LC_ALL=C tr -d '[:space:]')"
+    case "$CEILING_FILE_VALUE" in
+    '' | *[!0-9]* | 0)
+        die "the ceiling file ${CEILING_FILE} does not hold a positive whole number of boxes:
+   '${CEILING_FILE_VALUE}'
+   Nothing was launched. A ceiling that cannot be read is not a ceiling of 2 —
+   it is a number nobody typed. Write one with
+   \`./scripts/verifier_box.sh ceiling <n>\`, or remove the file."
+        ;;
+    esac
+fi
+if [ -n "${DJB_VERIFIER_MAX_BOXES:-}" ]; then
+    case "$DJB_VERIFIER_MAX_BOXES" in
+    *[!0-9]* | 0)
+        die "DJB_VERIFIER_MAX_BOXES is not a positive whole number of boxes:
+   '${DJB_VERIFIER_MAX_BOXES}'
+   Nothing was launched. Unset it to fall through to ${CEILING_FILE} or the
+   default ${CEILING_DEFAULT}."
+        ;;
+    esac
+    MAX_BOXES="$DJB_VERIFIER_MAX_BOXES"
+    MAX_BOXES_SOURCE="env"
+elif [ -n "$CEILING_FILE_VALUE" ]; then
+    MAX_BOXES="$CEILING_FILE_VALUE"
+    MAX_BOXES_SOURCE="file"
+else
+    MAX_BOXES="$CEILING_DEFAULT"
+    MAX_BOXES_SOURCE="default"
+fi
+
+# The three sources, one per line, with the binding one marked — printed by
+# `ceiling` and by every refusal the ceiling produces, so the two can never
+# describe the machine differently.
+ceiling_sources() {
+    local mark_env="  " mark_file="  " mark_default="  "
+    case "$MAX_BOXES_SOURCE" in
+    env) mark_env="->" ;;
+    file) mark_file="->" ;;
+    default) mark_default="->" ;;
+    esac
+    printf '   %s env      DJB_VERIFIER_MAX_BOXES  %s\n' \
+        "$mark_env" "${DJB_VERIFIER_MAX_BOXES:-unset}"
+    printf '   %s file     %s  %s\n' \
+        "$mark_file" "$CEILING_FILE" \
+        "$([ -n "$CEILING_FILE_VALUE" ] && printf '%s' "$CEILING_FILE_VALUE" || printf 'absent')"
+    printf '   %s default  %s\n' "$mark_default" "$CEILING_DEFAULT"
+}
 
 INSTANCE_PROFILE="${NAMESPACE}-verifier-box"
 GROUP_NAME="${NAMESPACE}-verifier"
@@ -318,6 +422,8 @@ AL2023_PARAM="/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm
 AL2023_PINNED="${DJB_VERIFIER_AL2023_AMI:-}"
 PROBE_MB="${DJB_VERIFIER_PROBE_MB:-1}"
 MIN_KBPS="${DJB_VERIFIER_MIN_KBPS:-50}"
+TUNNEL_WAIT_SECONDS="${DJB_VERIFIER_TUNNEL_WAIT_SECONDS:-60}"
+TUNNEL_POLL_SECONDS=5
 MAX_SCOPE_DEPTH="${DJB_VERIFIER_MAX_SCOPE_DEPTH:-200}"
 SPOT_QUOTA_CODE="L-34B43A08"
 BANK_SHARD="${DJB_VERIFIER_BANK_SHARD:-}"
@@ -788,7 +894,17 @@ refuse_if_reclaimed() {
         --query 'Reservations[0].Instances[0].StateReason.Code' --output text 2>/dev/null || true)"
     case "$reason" in
     *SpotInstanceTermination*)
-        echo "box reclaimed (spot) ${id}"
+        # THE SPOT SERVICE'S OWN STATUS CODE, ON THE SAME LINE. `StateReason`
+        # says SOMETHING took the box back; only the request's status says
+        # WHICH thing, and the difference decides what the caller does next —
+        # `instance-terminated-no-capacity` is the market and the answer is
+        # another zone, `instance-terminated-by-price` is the bid, and
+        # `instance-terminated-by-user` is a hand and not a reclaim at all. A
+        # bank that retried every reclaim identically would re-launch into the
+        # zone that has just said no. It is APPENDED to the line that already
+        # existed, never inserted, so every reader that parsed
+        # `box reclaimed (spot) <id>` parses this one.
+        echo "box reclaimed (spot) ${id} status $(spot_status_of "$id")"
         die "the box was reclaimed by AWS mid-flight. Nothing on it is retrievable.
    The verdict is LOST, never red: report 'stuck on: box reclaimed' and let the
    PM bring another one up."
@@ -805,6 +921,165 @@ tag_of() {
     aws_q ec2 describe-instances --instance-ids "$1" \
         --query "Reservations[0].Instances[0].Tags[?Key=='$2'].Value | [0]" \
         --output text 2>/dev/null || true
+}
+
+# api_line <captured output> — the first line of it that says anything.
+#
+# THE AWS CLI WRITES ITS ERRORS WITH A LEADING BLANK LINE, and that was not a
+# guess: measured on v2 in this account on 2026-09-21, a refused
+# `describe-instances` answers `\naws: [ERROR]: An error occurred
+# (InvalidInstanceID.Malformed) …`. Every refusal here that promised to quote
+# the API's own words took `${out%%$'\n'*}` — the FIRST line — and printed
+# `could not look at i-…: ` with nothing after the colon. A refusal whose whole
+# value is the API's sentence, printing no sentence, is worse than the silence
+# it replaced: it looks like the API said nothing.
+#
+# A LINE OF ONLY WHITESPACE IS NOT A LINE, and an INDENTED one is: the CLI
+# wraps long messages, and skipping every indented line would skip the message
+# on the day the first word moves.
+api_line() {
+    local l
+    while IFS= read -r l; do
+        [ -n "$(printf '%s' "$l" | tr -d '[:space:]')" ] || continue
+        printf '%s' "$l"
+        return 0
+    done <<<"$1"
+    printf ''
+}
+
+# --- the zones, and the subnets that reach them -----------------------------
+#
+# WHY THERE IS A ZONE AXIS AT ALL. `run-instances` with no `--subnet-id` lets
+# EC2 pick the Availability Zone, and EC2 picks the same one for eight shards
+# fired within a second of each other — so a bank meets ONE zone's Spot
+# capacity and a capacity refusal there is a capacity refusal for the whole
+# bank. Spreading the shards is the cheapest thing that exists between a bank
+# and `InsufficientInstanceCapacity` (EC2 Fleet's `capacity-optimized` is the
+# expensive one, rejected in the P21 team-B plan § 5), and `--subnet-id` is how
+# a zone is asked for: there is no `--availability-zone` on `run-instances`.
+#
+# THE VPC IS THE SECURITY GROUP'S, NEVER THE ACCOUNT'S DEFAULT. Everything this
+# wrapper launches carries `${GROUP_NAME}`, and a security group belongs to
+# exactly one VPC; a subnet in another VPC is a launch EC2 refuses. So the one
+# question underneath all three readers below is "what VPC is our group in",
+# asked once per call site and never guessed.
+#
+# AND THEY ARE THREE FUNCTIONS OVER ONE QUESTION rather than three filters that
+# can disagree: `zones` prints what `zones_of_vpc` answers, the launch picks
+# out of the same list, and the ring's next zone is an index into it. A bank
+# that spread shards across a list one reader computed and another checked
+# would be a bank whose two answers drift the day a subnet is added.
+
+# vpc_of_group — the VpcId of the security group every box carries, on stdout.
+# Empty when it could not be read; the caller decides whether that is fatal.
+vpc_of_group() {
+    local vpc
+    vpc="$(aws_q ec2 describe-security-groups \
+        --filters "Name=group-name,Values=${GROUP_NAME}" \
+        --query 'SecurityGroups[0].VpcId' --output text 2>/dev/null || true)"
+    vpc="${vpc%%$'\n'*}"
+    case "$vpc" in "" | None | null) printf '' ;; *) printf '%s' "$vpc" ;; esac
+}
+
+# zones_of_vpc <vpc> — one Availability Zone per line, sorted, each of which
+# this account has a subnet in. SORTED AND DE-DUPLICATED HERE, so "the next
+# zone" is a well-defined thing and two runs of a bank spread the same way.
+#
+# A ZONE WITH NO SUBNET IS NOT A ZONE WE CAN LAUNCH IN, which is why the
+# subject is `describe-subnets` and not `describe-availability-zones`: the
+# latter answers what the REGION has and would hand the ring a zone the launch
+# then cannot reach.
+zones_of_vpc() {
+    local raw
+    raw="$(aws_q ec2 describe-subnets --filters "Name=vpc-id,Values=$1" \
+        --query 'Subnets[].AvailabilityZone' --output text 2>/dev/null || true)"
+    [ -n "$(printf '%s' "$raw" | tr -d '[:space:]')" ] || return 0
+    printf '%s' "$raw" | tr '[:space:]' '\n' | grep -v '^$' | sort -u
+}
+
+# subnet_in_zone <vpc> <az> — one subnet id in that zone, or empty.
+subnet_in_zone() {
+    local s
+    s="$(aws_q ec2 describe-subnets \
+        --filters "Name=vpc-id,Values=$1" "Name=availability-zone,Values=$2" \
+        --query 'Subnets[0].SubnetId' --output text 2>/dev/null || true)"
+    s="${s%%$'\n'*}"
+    case "$s" in "" | None | null) printf '' ;; *) printf '%s' "$s" ;; esac
+}
+
+# next_zone_after <vpc> <az> — the zone after <az> in the sorted list, wrapping
+# to the first. Empty when the list has fewer than two members, or when <az> is
+# not in it at all: a ring with one zone has no "next", and refusing to invent
+# one is what keeps the retry below honest about having tried somewhere else.
+next_zone_after() {
+    local vpc="$1" az="$2" z first="" prev_matched="" n=0
+    while IFS= read -r z; do
+        [ -n "$z" ] || continue
+        n=$((n + 1))
+        [ -n "$first" ] || first="$z"
+        if [ -n "$prev_matched" ]; then
+            printf '%s' "$z"
+            return 0
+        fi
+        [ "$z" = "$az" ] && prev_matched=1
+    done <<<"$(zones_of_vpc "$vpc")"
+    [ "$n" -gt 1 ] || return 0
+    [ -n "$prev_matched" ] || return 0
+    printf '%s' "$first"
+}
+
+# spot_status_of <id> — what the Spot service says about the request that
+# bought this box, as `<code>: <message>`, on stdout.
+#
+# IT NEVER REFUSES AND IT NEVER GUESSES. Its one caller is a refusal that is
+# already deciding something else, so a `die` here would replace a reclaim's
+# own sentence with a sentence about reading a status. Three answers it can
+# give instead, and each of them is a different fact: a CODE, which is the
+# thing worth reading (`instance-terminated-no-capacity` is a market event and
+# `instance-terminated-by-user` is somebody's hand); `unrecorded`, when the
+# launch wrote no request id — every on-demand box, and every box launched by
+# a wrapper older than this line; and `unreadable`, when the call itself was
+# refused, which today is the ordinary answer because
+# `ec2:DescribeSpotInstanceRequests` reaches the ops policy only when the OWNER
+# publishes a new default version by hand (deploy/iam/verifier-ops-policy.json).
+spot_status_of() {
+    local id="$1" sir out rc=0 code msg
+    sir="$(cat "$(box_dir "$id")/spot-request" 2>/dev/null || true)"
+    sir="${sir%%$'\n'*}"
+    case "$sir" in
+    "" | None | null)
+        printf 'unrecorded (no spot request id was written for this box at launch)'
+        return 0
+        ;;
+    esac
+    set +e
+    out="$(aws_q ec2 describe-spot-instance-requests --spot-instance-request-ids "$sir" \
+        --query 'SpotInstanceRequests[0].Status.[Code,Message]' --output text 2>&1)"
+    rc=$?
+    set -e
+    if [ "$rc" != "0" ]; then
+        case "$out" in
+        *UnauthorizedOperation* | *AccessDenied*)
+            printf 'unreadable (ec2:DescribeSpotInstanceRequests not in the ops policy'"'"'s LIVE version)'
+            ;;
+        *) printf 'unreadable (%s)' "$(api_line "$out")" ;;
+        esac
+        return 0
+    fi
+    out="${out%%$'\n'*}"
+    code="${out%%	*}"
+    msg="${out#*	}"
+    [ "$msg" != "$out" ] || msg=""
+    case "$code" in
+    "" | None | null)
+        printf 'unreadable (the API named no status code for %s)' "$sir"
+        return 0
+        ;;
+    esac
+    case "$msg" in
+    "" | None | null) printf '%s' "$code" ;;
+    *) printf '%s: %s' "$code" "$msg" ;;
+    esac
 }
 
 # THE SYNOPSIS IS DERIVED, NEVER A LINE RANGE. `sed -n '15,25p'` had already
@@ -942,6 +1217,78 @@ claim_warm_box() {
     return 0
 }
 
+# =============================================================================
+# the ceiling, read and written
+# =============================================================================
+#
+# `ceiling` with no argument PRINTS; `ceiling <n>` WRITES the file and then
+# prints. One subcommand for both because the two questions are the same
+# question — "what is the ceiling here, and where does it come from" — and a
+# write that did not show its result is a write the operator has to verify with
+# a second command.
+#
+# IT NEVER BLOCKS ON AWS. The quota is a courtesy line: it is the wall the
+# ceiling is an estimate of, so it belongs beside the number, but an expired
+# credential, a missing profile or a policy that does not grant
+# `service-quotas:GetServiceQuota` must not stop an operator reading or setting
+# a local integer. Could-not-look prints `unknown` and says nothing else.
+cmd_ceiling() {
+    local want=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        -h | --help) usage ;;
+        -*) die "unknown argument '$1' to ceiling: it takes a whole number of boxes, or nothing" ;;
+        *)
+            [ -z "$want" ] || die "ceiling takes at most one number, got '${want}' and '$1'"
+            want="$1"
+            shift
+            ;;
+        esac
+    done
+
+    if [ -n "$want" ]; then
+        case "$want" in
+        *[!0-9]* | 0)
+            die "ceiling takes a positive whole number of boxes, got '${want}'.
+   ${CEILING_FILE} was not written."
+            ;;
+        esac
+        mkdir -p "$VERIFIER_HOME" ||
+            die "could not make ${VERIFIER_HOME} to hold the ceiling file"
+        printf '%s\n' "$want" >"$CEILING_FILE" ||
+            die "could not write ${CEILING_FILE}"
+        echo "wrote ${CEILING_FILE} = ${want}"
+        # The in-process state follows the file, so the print below is the
+        # machine as it now is rather than as it was when this process started.
+        CEILING_FILE_VALUE="$want"
+        if [ "$MAX_BOXES_SOURCE" != "env" ]; then
+            MAX_BOXES="$want"
+            MAX_BOXES_SOURCE="file"
+        fi
+    fi
+
+    echo "ceiling ${MAX_BOXES} (${MAX_BOXES_SOURCE})"
+    ceiling_sources
+
+    local quota="unknown" q="" rc=0
+    set +e
+    q="$(aws_q service-quotas get-service-quota --service-code ec2 \
+        --quota-code "$SPOT_QUOTA_CODE" --query 'Quota.Value' --output text 2>/dev/null)"
+    rc=$?
+    set -e
+    if [ "$rc" = "0" ]; then
+        case "$q" in
+        '' | None | null) ;;
+        *[0-9]*) quota="$q" ;;
+        esac
+    fi
+    printf '      quota    %s  %s  (Spot vCPU in %s; this type is %s)\n' \
+        "$SPOT_QUOTA_CODE" "$quota" "$REGION" "$INSTANCE_TYPE"
+    if [ "$quota" = "unknown" ]; then
+        echo "               could not look — the local ceiling above still stands"
+    fi
+}
+
 cmd_pool() {
     local want="" idle="$IDLE_MINUTES"
     while [ "$#" -gt 0 ]; do
@@ -967,10 +1314,15 @@ cmd_pool() {
     # one is arithmetic against a knob, so it can go before the credential is
     # even resolved.
     [ "$want" -le "$MAX_BOXES" ] ||
-        die "pool --want ${want} is above DJB_VERIFIER_MAX_BOXES (${MAX_BOXES}). Nothing was
-   asked of AWS and nothing was launched. The ceiling stands for the Spot vCPU
-   quota (${SPOT_QUOTA_CODE}) divided by this instance type; raise the knob only
-   after the quota is raised."
+        die "pool --want ${want} is above the ceiling of ${MAX_BOXES} (${MAX_BOXES_SOURCE}). Nothing was
+   asked of AWS and nothing was launched. Where the ${MAX_BOXES} came from,
+   '->' the one that bound:
+$(ceiling_sources)
+   The ceiling stands for the Spot vCPU quota (${SPOT_QUOTA_CODE}) divided by this
+   instance type; raise it only after the quota is raised —
+   \`./scripts/verifier_box.sh ceiling <n>\` writes the file, DJB_VERIFIER_MAX_BOXES
+   raises it for this shell alone. Nothing here asked AWS for the quota: this
+   refusal is arithmetic and stays free."
 
     require_profile
     require_plugin
@@ -1049,9 +1401,13 @@ cmd_pool() {
 # =============================================================================
 cmd_up() {
     local rung="" ttl="$TTL_HOURS" idle="$IDLE_MINUTES" type="$INSTANCE_TYPE"
-    local on_demand="" no_push="" named_image="" ttl_typed="" idle_typed=""
+    local on_demand="" no_push="" named_image="" ttl_typed="" idle_typed="" want_az=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
+        --az)
+            want_az="${2:-}"
+            shift 2 || die "--az takes an availability zone (e.g. ${REGION}a); 'zones' lists them"
+            ;;
         --image-id)
             named_image="${2:-}"
             shift 2 || die "--image-id takes an ami id"
@@ -1115,6 +1471,7 @@ cmd_up() {
     # the launch ends, at a box id with a key beside it, and the push, the
     # vouch and the tree agreement below are the same code either way.
     local id="" market_note="" expires=""
+    local launched_az="" launched_lifecycle="" launch_answered=""
     claim_warm_box "$image" "$rung"
     if [ -n "$CLAIMED_ID" ]; then
         id="$CLAIMED_ID"
@@ -1131,15 +1488,32 @@ cmd_up() {
             say "           NOTE: this box was CLAIMED warm, so it keeps the lifetime and idle" >&2
             say "           threshold it was launched with; the${ttl_typed:+ --ttl}${idle_typed:+ --idle} you typed applied to nothing." >&2
         fi
+        # AND THE ZONE IS THE SAME KIND OF FACT, SAID THE SAME WAY. A warm box
+        # is already somewhere; a claim cannot move it. Silence here is how a
+        # bank spreads eight shards across three zones, claims six of them out
+        # of a pool that is all in one, and reads its own plan back as though
+        # it had worked — the `launched … az` line is honest either way, so
+        # nothing else would ever say the zone was not honoured.
+        if [ -n "$want_az" ]; then
+            say "           NOTE: this box was CLAIMED warm, so it is in the zone it was launched in;" >&2
+            say "           the --az ${want_az} you typed applied to nothing. The 'launched' line below" >&2
+            say "           says where it actually is." >&2
+        fi
     else
         require_headroom
-        launch_one_box "$image" "$type" "$idle" "$ttl" "$rung" "$on_demand" ""
+        launch_one_box "$image" "$type" "$idle" "$ttl" "$rung" "$on_demand" "" "$want_az"
         id="$LAUNCHED_ID"
         market_note="$LAUNCHED_MARKET"
         expires="$LAUNCHED_EXPIRES"
+        launched_az="$LAUNCHED_AZ"
+        launched_lifecycle="$LAUNCHED_LIFECYCLE"
+        # THE ZONE IS THE SIGNAL, never the lifecycle: `Placement` is on every
+        # `run-instances` answer and `InstanceLifecycle` is absent on an
+        # on-demand one, so an empty lifecycle beside a zone MEANS on-demand
+        # and an empty zone means the answer did not carry the columns at all
+        # — and then the describe below is the only way to know.
+        [ -z "$LAUNCHED_AZ" ] || launch_answered=1
     fi
-
-    wait_for_ssm "$id"
 
     # THE AZ AND THE MARKET, OUT OF ONE DESCRIBE. The market is EC2's own
     # `InstanceLifecycle` and not this wrapper's memory of what it asked for —
@@ -1148,15 +1522,50 @@ cmd_up() {
     # the question has a slug of its own: `Placement.AvailabilityZone` alone
     # and the pair truncate to the same forty characters, and a fixture that
     # cannot tell two questions apart is a fixture that answers the wrong one.
+    #
+    # AND ON THE LAUNCH PATH IT IS NOT A DESCRIBE AT ALL. `run-instances` has
+    # just answered about the instance it made, and that answer cannot be
+    # behind the instance; a `describe-instances` on an id seconds old is
+    # INSIDE EC2's eventual-consistency window and can say
+    # `InvalidInstanceID.NotFound` about a box that is running. The call below
+    # swallows its own error, so the transient arrives as an empty answer and
+    # `market_of_lifecycle ""` reads `on-demand` — a Spot box labelled at five
+    # times its price, in the one record that outlives the box. The describe
+    # survives for the WARM CLAIM, which is the path with no launch response
+    # and a box minutes old, long out of that window.
     local az market lifecycle placement
-    placement="$(aws_q ec2 describe-instances --instance-ids "$id" \
-        --query 'Reservations[0].Instances[0].[InstanceLifecycle,Placement.AvailabilityZone]' \
-        --output text 2>/dev/null || true)"
-    placement="${placement%%$'\n'*}"
-    lifecycle="${placement%%	*}"
-    az="${placement#*	}"
-    [ "$az" != "$placement" ] || az=""
+    if [ -n "$launch_answered" ]; then
+        az="$launched_az"
+        lifecycle="$launched_lifecycle"
+    else
+        placement="$(aws_q ec2 describe-instances --instance-ids "$id" \
+            --query 'Reservations[0].Instances[0].[InstanceLifecycle,Placement.AvailabilityZone]' \
+            --output text 2>/dev/null || true)"
+        placement="${placement%%$'\n'*}"
+        lifecycle="${placement%%	*}"
+        az="${placement#*	}"
+        [ "$az" != "$placement" ] || az=""
+    fi
     market="$(market_of_lifecycle "$lifecycle")"
+
+    # THE BOX IS NAMED BEFORE ANYTHING AFTER THE LAUNCH CAN FAIL, and that is
+    # the whole of this line. Everything below it — the SSM wait, the vouch,
+    # the probe, the pack — can refuse, and until this line every one of those
+    # refusals exited with the instance line UNPRINTED: the box was running,
+    # billing, and its id was nowhere on the operator's screen or in a bank's
+    # `boxes.tsv`, so nothing took it down and the census found it later. The
+    # probe's `TargetNotConnected` die was the measured instance; the ceiling
+    # above it is a second belt and this is the first.
+    #
+    # ITS GRAMMAR IS A SEAM. `pm_push.sh`'s bank reads `launched <id> az <az>`
+    # off a shard's `up` to record the box before it reads `up`'s own status,
+    # so the words and their order are a contract with that reader and not a
+    # narration. `az unknown` when the describe could not say: a field that is
+    # sometimes absent is a field a parser handles once, and a line that
+    # silently loses a column is a parser that shifts.
+    echo "launched   ${id}   az ${az:-unknown}"
+
+    wait_for_ssm "$id"
 
     local tree_line="tree       (not pushed — --no-push)"
     if [ -z "$no_push" ]; then
@@ -1224,11 +1633,18 @@ cmd_up() {
 LAUNCHED_ID=""
 LAUNCHED_MARKET=""
 LAUNCHED_EXPIRES=""
+LAUNCHED_SPOT_REQUEST=""
+LAUNCHED_AZ=""
+LAUNCHED_LIFECYCLE=""
 launch_one_box() {
     local image="$1" type="$2" idle="$3" ttl="$4" rung="$5" on_demand="$6" extra_tags="$7"
+    local want_az="${8:-}"
     LAUNCHED_ID=""
     LAUNCHED_MARKET=""
     LAUNCHED_EXPIRES=""
+    LAUNCHED_SPOT_REQUEST=""
+    LAUNCHED_AZ=""
+    LAUNCHED_LIFECYCLE=""
 
     local group
     group="$(aws_q ec2 describe-security-groups \
@@ -1241,6 +1657,26 @@ launch_one_box() {
         exit 2
         ;;
     esac
+
+    # --- the zone, and the subnet that is how one is asked for --------------
+    #
+    # NOTHING IS RESOLVED WHEN NO ZONE WAS ASKED FOR, and that is a claim about
+    # the ARGV as much as about the calls: an `up` with no `--az` makes exactly
+    # the calls it made before this existed and its `run-instances` carries no
+    # `--subnet-id`, so EC2 picks the zone exactly as it always did. A default
+    # zone chosen here would be this wrapper quietly deciding where every box
+    # in the account lands.
+    local vpc_id="" subnet="" az="$want_az"
+    if [ -n "$az" ]; then
+        vpc_id="$(vpc_of_group)"
+        [ -n "$vpc_id" ] || die "could not read the VPC of security group '${GROUP_NAME}' in ${REGION};
+   --az ${az} cannot be honoured and nothing was launched. 'zones' asks the same
+   question on its own."
+        subnet="$(subnet_in_zone "$vpc_id" "$az")"
+        [ -n "$subnet" ] || die "no subnet of ${vpc_id} is in availability zone '${az}', so there is no way to
+   ask for that zone and nothing was launched. The zones this VPC can reach:
+$(zones_of_vpc "$vpc_id" | sed 's/^/     /')"
+    fi
 
     # --- the per-box key, generated here and never leaving ------------------
     local pending keyfile pubkey
@@ -1264,16 +1700,55 @@ launch_one_box() {
     local market_note="" id=""
     if [ -n "$on_demand" ]; then
         market_note="on-demand (asked for)"
-        id="$(run_instances_common "$image" "$type" "$group" "$user_data" \
-            "verifier" "$expires" "$name" "" "$extra_tags")" || true
+        launch_attempt "$image" "$type" "$group" "$user_data" \
+            "$expires" "$name" "" "$extra_tags" "$subnet" ""
+        id="$LAUNCH_ID"
     else
-        local spot_err=""
-        set +e
-        id="$(run_instances_common "$image" "$type" "$group" "$user_data" \
-            "verifier" "$expires" "$name" "spot" "$extra_tags" 2>"${pending}/spot.err")"
-        local rc=$?
-        set -e
-        if [ "$rc" != "0" ] || [ -z "$id" ] || [ "$id" = "None" ]; then
+        local spot_err="" az_retried="" rc=0
+        launch_attempt "$image" "$type" "$group" "$user_data" \
+            "$expires" "$name" "spot" "$extra_tags" "$subnet" "${pending}/spot.err"
+        id="$LAUNCH_ID"
+        rc="$LAUNCH_RC"
+        # --- THE ZONE RING, ONCE, AND BEFORE THE MARKET RULE ---------------
+        #
+        # IT SITS ABOVE THE ON-DEMAND BRANCH DELIBERATELY. The three market
+        # codes below answer "Spot said no" with on-demand money, and
+        # `InsufficientInstanceCapacity` is the one of them that another ZONE
+        # very often answers for free — so trying the next zone first is a
+        # refusal avoided at no cost, and the branch below is what happens when
+        # the ring has also run out. Reversing the two would buy an on-demand
+        # box (or, for a bank shard, refuse the whole bank) while the zone next
+        # door had capacity all along.
+        #
+        # AND ONCE. A ring that walked every zone would turn one capacity
+        # refusal into N calls and N latencies, and the honest reading of two
+        # zones refusing in a row is that the market is short of this type
+        # right now — which is a thing to SAY, not a thing to keep asking.
+        # `Unsupported` joins it because a type that is not offered in one zone
+        # very often is in another, and on-demand cannot fix that one at all.
+        if launch_failed; then
+            spot_err="$(spot_error_code "${pending}/spot.err")"
+            case "$spot_err" in
+            InsufficientInstanceCapacity | Unsupported)
+                local next_az="" next_subnet=""
+                if [ -n "$az" ] && [ -z "$az_retried" ]; then
+                    next_az="$(next_zone_after "$vpc_id" "$az")"
+                    [ -z "$next_az" ] || next_subnet="$(subnet_in_zone "$vpc_id" "$next_az")"
+                fi
+                if [ -n "$next_az" ] && [ -n "$next_subnet" ]; then
+                    echo "az ${az} refused (${spot_err}); trying ${next_az}" >&2
+                    az_retried=1
+                    az="$next_az"
+                    subnet="$next_subnet"
+                    launch_attempt "$image" "$type" "$group" "$user_data" \
+                        "$expires" "$name" "spot" "$extra_tags" "$subnet" "${pending}/spot.err"
+                    id="$LAUNCH_ID"
+                    rc="$LAUNCH_RC"
+                fi
+                ;;
+            esac
+        fi
+        if launch_failed; then
             spot_err="$(spot_error_code "${pending}/spot.err")"
             case "$spot_err" in
             InsufficientInstanceCapacity | SpotMaxPriceTooLow | MaxSpotInstanceCountExceeded)
@@ -1317,8 +1792,9 @@ launch_one_box() {
                 else
                     market_note="on-demand (spot refused: ${spot_err})"
                 fi
-                id="$(run_instances_common "$image" "$type" "$group" "$user_data" \
-                    "verifier" "$expires" "$name" "" "$extra_tags")"
+                launch_attempt "$image" "$type" "$group" "$user_data" \
+                    "$expires" "$name" "" "$extra_tags" "$subnet" ""
+                id="$LAUNCH_ID"
                 ;;
             AuthFailure.ServiceLinkedRoleCreationNotPermitted)
                 # NOT A CREDENTIAL FAULT, AND THAT IS THE WHOLE POINT OF THE
@@ -1379,12 +1855,97 @@ launch_one_box() {
     mv "${keyfile}.pub" "$(box_key "$id").pub"
     chmod 0600 "$(box_key "$id")"
     printf '%s\n' "$rung" >"$(box_dir "$id")/rung"
+    # THE SPOT REQUEST ID LANDS BESIDE THE KEY, and only when there is one. An
+    # on-demand box has no Spot request and the file's ABSENCE is the honest
+    # record of that; a file holding `None` would be a request id nobody can
+    # look up. `refuse_if_reclaimed` reads it and says `unrecorded` when it is
+    # not there, which is also every box launched before this line existed.
+    [ -z "$LAUNCH_SIR" ] || printf '%s\n' "$LAUNCH_SIR" >"$(box_dir "$id")/spot-request"
     rm -rf "$pending"
 
     LAUNCHED_ID="$id"
+    LAUNCHED_SPOT_REQUEST="$LAUNCH_SIR"
+    # THE ZONE AND THE MARKET THE LAUNCH ITSELF REPORTED. Not a later
+    # describe: see the projection's own paragraph — a describe on a
+    # seconds-old id can answer NotFound, and the swallowed transient turns a
+    # Spot box into an `on-demand` line in the bank's table.
+    LAUNCHED_AZ="$LAUNCH_AZ"
+    LAUNCHED_LIFECYCLE="$LAUNCH_LIFECYCLE"
     LAUNCHED_MARKET="$market_note"
     LAUNCHED_EXPIRES="$expires"
 }
+
+# ONE ATTEMPT AT A LAUNCH, AND IT NEVER DECIDES ANYTHING. It exists because
+# the launch is tried up to three times now — Spot, the next zone, on-demand —
+# and each of those used to be its own `set +e` / capture / status dance
+# written out in full; three copies of a five-line ritual is three places for
+# the capture and the status to drift apart, and the middle one is new.
+#
+# IT ALWAYS RETURNS 0, deliberately. A failed Spot request is the ORDINARY
+# input to the branches below it, so a non-zero return here would abort the
+# whole wrapper under `set -e` before the branch that knows what to do with the
+# error code ever ran. The status and the id are read back through
+# `LAUNCH_RC`/`LAUNCH_ID`, and `launch_failed` is the one place that decides
+# what "failed" means — a non-zero status, an empty id, or the `None` the CLI
+# prints for a query that matched nothing, which are three different shapes of
+# the same outcome and were compared in three places.
+#
+# THE ERROR FILE IS OPTIONAL AND THE ABSENCE IS A CHOICE. A Spot attempt's
+# stderr is captured because `spot_error_code` has to read it; an on-demand
+# attempt's is NOT, so the API's own words reach the operator's terminal
+# exactly as they did before this function existed.
+LAUNCH_ID=""
+LAUNCH_SIR=""
+LAUNCH_AZ=""
+LAUNCH_LIFECYCLE=""
+LAUNCH_RC=0
+launch_attempt() {
+    local image="$1" type="$2" group="$3" user_data="$4" expires="$5" name="$6" \
+        market="$7" extra_tags="$8" subnet="$9" errfile="${10:-}"
+    local out=""
+    LAUNCH_ID=""
+    LAUNCH_SIR=""
+    LAUNCH_AZ=""
+    LAUNCH_LIFECYCLE=""
+    LAUNCH_RC=0
+    set +e
+    if [ -n "$errfile" ]; then
+        out="$(run_instances_common "$image" "$type" "$group" "$user_data" \
+            "verifier" "$expires" "$name" "$market" "$extra_tags" "$subnet" 2>"$errfile")"
+    else
+        out="$(run_instances_common "$image" "$type" "$group" "$user_data" \
+            "verifier" "$expires" "$name" "$market" "$extra_tags" "$subnet")"
+    fi
+    LAUNCH_RC=$?
+    set -e
+    out="${out%%$'\n'*}"
+    # FOUR FIELDS, AND EVERY ONE OF THEM MAY BE ABSENT. `--output text` gives a
+    # tab-separated row; a fixture or an older answer with fewer columns must
+    # degrade to empty rather than shifting the fields left, so the row is
+    # split positionally and each field is read only if the split reached it.
+    local rest="$out"
+    LAUNCH_ID="${rest%%	*}"
+    if [ "$rest" != "$LAUNCH_ID" ]; then
+        rest="${rest#*	}"
+        LAUNCH_SIR="${rest%%	*}"
+        if [ "$rest" != "$LAUNCH_SIR" ]; then
+            rest="${rest#*	}"
+            LAUNCH_AZ="${rest%%	*}"
+            if [ "$rest" != "$LAUNCH_AZ" ]; then
+                LAUNCH_LIFECYCLE="${rest#*	}"
+                LAUNCH_LIFECYCLE="${LAUNCH_LIFECYCLE%%	*}"
+            fi
+        fi
+    fi
+    # `--output text` spells an absent field `None`, and `SpotInstanceRequestId`
+    # and `InstanceLifecycle` are both absent on an on-demand launch.
+    case "$LAUNCH_SIR" in None | null) LAUNCH_SIR="" ;; esac
+    case "$LAUNCH_AZ" in None | null) LAUNCH_AZ="" ;; esac
+    case "$LAUNCH_LIFECYCLE" in None | null) LAUNCH_LIFECYCLE="" ;; esac
+    return 0
+}
+
+launch_failed() { [ "$LAUNCH_RC" != "0" ] || [ -z "$LAUNCH_ID" ] || [ "$LAUNCH_ID" = "None" ]; }
 
 # The launch itself, spelled out rather than hidden in a launch template: one
 # resource to keep in step instead of two, and `deploy/provision.sh` spells its
@@ -1397,15 +1958,23 @@ run_instances_common() {
     # (`djb:for=pool`, `djb:price`) and adds nothing else. An empty ninth
     # argument is the ordinary launch, byte-for-byte as it was.
     local extra_tags="${9:-}"
-    local -a market_args=()
+    # THE SUBNET IS APPENDED THE SAME WAY AND FOR THE SAME REASON. An empty
+    # tenth argument is the ordinary launch, byte-for-byte as it was: EC2 picks
+    # the zone, `--subnet-id` is nowhere on the argv, and the drive's launch
+    # case reads exactly the command line it always did. A zone is asked for by
+    # naming a subnet in it — `run-instances` has no `--availability-zone`.
+    local subnet="${10:-}"
+    local -a market_args=() subnet_args=()
     if [ -n "$market" ]; then
         market_args=(--instance-market-options
             "MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}")
     fi
+    [ -z "$subnet" ] || subnet_args=(--subnet-id "$subnet")
     aws_q ec2 run-instances \
         --image-id "$image" \
         --instance-type "$type" \
         --security-group-ids "$group" \
+        "${subnet_args[@]+"${subnet_args[@]}"}" \
         --iam-instance-profile "Name=${INSTANCE_PROFILE}" \
         --instance-initiated-shutdown-behavior terminate \
         --metadata-options "HttpTokens=required,HttpEndpoint=enabled" \
@@ -1413,8 +1982,30 @@ run_instances_common() {
         --user-data "$user_data" \
         "${market_args[@]+"${market_args[@]}"}" \
         --tag-specifications "ResourceType=instance,Tags=[{Key=djb:role,Value=${role}},{Key=djb:owner,Value=${OWNER}},{Key=djb:expires,Value=${expires}},{Key=djb:namespace,Value=${NAMESPACE}},{Key=Name,Value=${name}},{Key=Project,Value=${NAMESPACE}}${extra_tags}]" \
-        --query 'Instances[0].InstanceId' --output text
+        --query 'Instances[0].[InstanceId,SpotInstanceRequestId,Placement.AvailabilityZone,InstanceLifecycle]' --output text
 }
+# AND THE PLACEMENT AND THE MARKET COME OUT OF THE SAME ANSWER, for a reason
+# that is not tidiness. `up` used to read them from a `describe-instances` on
+# an instance id that was SECONDS old — inside EC2's eventual-consistency
+# window, where a describe can answer `InvalidInstanceID.NotFound` for an
+# instance that certainly exists. That call swallows its own error
+# (`2>/dev/null || true`), so the transient arrives as an EMPTY answer: the AZ
+# degrades to `unknown`, which is honest, but `market_of_lifecycle ""` returns
+# `on-demand` — so a Spot box prints `market     on-demand` and the bank's
+# table, which is the only record of what a wave cost once the boxes are gone,
+# records the wrong market at five times the price. The launch's own response
+# is authoritative about the instance it just made and cannot be behind it.
+# THE SPOT REQUEST ID COMES OUT OF THE LAUNCH, NOT OUT OF A LATER SEARCH. It is
+# the only handle on `describe-spot-instance-requests`, which is the only thing
+# that can say WHY a box was reclaimed (`spot_status_of`); asking for it
+# afterwards means filtering the account's Spot requests by instance id at the
+# exact moment the instance has stopped existing, which is the moment the
+# question arises. `run-instances` already returns it on the instance it just
+# made, so the projection above takes two fields instead of one and the second
+# is `None` on an on-demand launch — `--output text` renders that absence as
+# the word, and the reader treats `None` and an absent column identically, so a
+# box launched by a wrapper older than this line writes no file and the status
+# reads `unrecorded` rather than lying.
 
 # WHAT AN ON-DEMAND HOUR COSTS, SO A FALLBACK CAN PRINT THE MONEY IT IS ABOUT
 # TO SPEND. `describe-spot-price-history` answers for Spot and there is no EC2
@@ -1490,7 +2081,13 @@ spot_error_code() {
     # second reason it cannot go wrong here — `(AuthFailure)` needs a close
     # paren where the dotted string has a dot. The ordering stays because it
     # reads most-specific-first, not because anything depends on it.
-    matches="$(grep -oE '\((AuthFailure\.ServiceLinkedRoleCreationNotPermitted|InsufficientInstanceCapacity|SpotMaxPriceTooLow|MaxSpotInstanceCountExceeded|UnauthorizedOperation|ExpiredToken|AuthFailure|InvalidClientTokenId)\)' "$1" || true)"
+    #
+    # `Unsupported` IS IN THE ALTERNATION NOW, and it was the widest of the
+    # holes: EC2 answers it when the instance TYPE is not offered in the zone
+    # the launch landed in, which is the other half of the reason the zone ring
+    # above exists — and before it was listed, that arrived as
+    # `run-instances failed (no error code)` with nothing to branch on.
+    matches="$(grep -oE '\((AuthFailure\.ServiceLinkedRoleCreationNotPermitted|InsufficientInstanceCapacity|SpotMaxPriceTooLow|MaxSpotInstanceCountExceeded|UnauthorizedOperation|ExpiredToken|AuthFailure|InvalidClientTokenId|Unsupported)\)' "$1" || true)"
     first="${matches%%$'\n'*}"
     printf '%s\n' "${first//[()]/}"
 }
@@ -1554,11 +2151,19 @@ require_headroom() {
     [ "$count" -lt "$MAX_BOXES" ] || {
         quota="$(aws_q service-quotas get-service-quota --service-code ec2 \
             --quota-code "$SPOT_QUOTA_CODE" --query 'Quota.Value' --output text 2>/dev/null || echo "?")"
-        die "${count} verifier box(es) already running and DJB_VERIFIER_MAX_BOXES is ${MAX_BOXES}:
+        # ALL THREE SOURCES, AND THE ONE THAT BOUND. A refusal that named only
+        # DJB_VERIFIER_MAX_BOXES sent every reader to a variable that was very
+        # often not where the number came from, and left the one place a whole
+        # machine's ceiling can be set — the file — undiscoverable.
+        die "${count} verifier box(es) already running and the ceiling is ${MAX_BOXES} (${MAX_BOXES_SOURCE}):
      $(printf '%s' "$running" | tr '\t' ' ')
-   Nothing was launched. The ceiling is the Spot vCPU quota (${SPOT_QUOTA_CODE} = ${quota})
-   divided by this instance type; raise DJB_VERIFIER_MAX_BOXES only after the
-   quota is raised, or 'down' one of the boxes above."
+   Nothing was launched. Where the ${MAX_BOXES} came from, '->' the one that bound:
+$(ceiling_sources)
+   The ceiling stands for the Spot vCPU quota (${SPOT_QUOTA_CODE} = ${quota})
+   divided by this instance type (${INSTANCE_TYPE}); raise it only after the quota
+   is raised — \`./scripts/verifier_box.sh ceiling <n>\` writes the file for every
+   session on this machine, DJB_VERIFIER_MAX_BOXES raises it for this shell alone
+   — or 'down' one of the boxes above."
     }
 }
 
@@ -1883,12 +2488,51 @@ throughput_probe() {
         die "could not write a ${PROBE_MB} MB probe file under ${VERIFIER_HOME}"
     }
     kb=$((PROBE_MB * 1024))
-    started="$(now_epoch)"
-    if ! ssh_to "$id" "cat >/dev/null" <"$tmp"; then
-        rm -f "$tmp"
+    # THE AGENT'S `Online` AND THE SESSION CHANNEL ARE NOT THE SAME READINESS,
+    # and the gap between them was a whole class of lost box. `up` waits for
+    # `PingStatus=Online` — the SSM agent reporting in — and the ssh-over-SSM
+    # channel comes up a few seconds behind it, so the first probe comes back
+    # with ssh's own 255 and `TargetNotConnected` on stderr. That `die` ran
+    # INSIDE `cmd_push`, which runs inside `up` BEFORE `up` prints its instance
+    # line, so the box was running, billing and its id was on nobody's screen —
+    # measured on a bank whose shard had no `boxes.tsv` row to take down.
+    #
+    # SO IT WAITS, AND IT WAITS OUT LOUD AND WITH A CEILING. Every wait prints
+    # what it has spent, `DJB_VERIFIER_TUNNEL_WAIT_SECONDS` bounds it, and past
+    # the ceiling the refusal is the one that was always here — a transport
+    # that is still not up after a minute is not a race, and a silent retry
+    # loop is how a wrapper hangs instead of refusing.
+    #
+    # ONLY `TargetNotConnected`, AND ONLY WITH 255. A refused key, a dead
+    # tunnel and a box that answers with an error are all instant refusals as
+    # before; retrying those would spend a minute proving something the first
+    # attempt already said. The stderr is CAPTURED to read that one word and
+    # then re-emitted, so the operator loses nothing.
+    local errfile waited=0 arc=0
+    errfile="${VERIFIER_HOME}/.probe-$$.err"
+    while :; do
+        started="$(now_epoch)"
+        arc=0
+        ssh_to "$id" "cat >/dev/null" <"$tmp" 2>"$errfile" || arc=$?
+        [ "$arc" != "0" ] || break
+        if [ "$arc" = "255" ] && grep -F -- "TargetNotConnected" "$errfile" >/dev/null 2>&1 &&
+            [ "$waited" -lt "$TUNNEL_WAIT_SECONDS" ]; then
+            sleep "$TUNNEL_POLL_SECONDS"
+            waited=$((waited + TUNNEL_POLL_SECONDS))
+            say "tunnel     not yet connected; waited ${waited}s (ceiling ${TUNNEL_WAIT_SECONDS}s, DJB_VERIFIER_TUNNEL_WAIT_SECONDS)" >&2
+            continue
+        fi
+        cat "$errfile" >&2 || true
+        rm -f "$tmp" "$errfile"
+        local waited_line=""
+        [ "$waited" = "0" ] ||
+            waited_line="
+   The session channel was waited on for ${waited}s and never connected."
         die "the throughput probe could not reach ${id} through the tunnel at all. Nothing was
-   pushed. The box is up as far as this wrapper knows; the transport is not."
-    fi
+   pushed. The box is up as far as this wrapper knows; the transport is not.${waited_line}"
+    done
+    cat "$errfile" >&2 || true
+    rm -f "$errfile"
     rm -f "$tmp"
     elapsed=$(($(now_epoch) - started))
     [ "$elapsed" -ge 1 ] || elapsed=1
@@ -2401,7 +3045,34 @@ cmd_loop() {
     # than at push time: `cmd_push` only lands the file. See `box_ledger_ingest`.
     local ingest
     ingest="$(box_ledger_ingest "$checkout" "$rung")"
-    remote="mkdir -p ~/verify/${rung} && cd ${checkout} && ${ingest} && setsid nohup sh -c 'DJB_LOOP_SCOPE_BASE=refs/djb/base ./scripts/check.sh --loop > ~/verify/${rung}/${name}.log 2>&1; echo \$? > ~/verify/${rung}/${name}.rc' >/dev/null 2>&1 & echo \$!"
+    # THE WHOLE LIST IS GROUPED AND THE REDIRECTS ARE ON THE GROUP, and that
+    # is the difference between a detach and a forty-minute hang.
+    #
+    # `A && B && C && setsid … >/dev/null 2>&1 & echo $!` reads as if the
+    # redirects covered the background job. They do not: `&` binds to the
+    # ENTIRE `&&` list, bash runs that list in a SUBSHELL, and the
+    # `>/dev/null 2>&1` is attached to `setsid` alone — so the subshell keeps
+    # the ssh channel's stdout and stderr open for as long as the gate runs.
+    # sshd will not close a channel a process still holds, so `ssh` does not
+    # return, so the command substitution below does not return, and a command
+    # whose whole purpose is to detach blocks its caller for the length of the
+    # thing it detached.
+    #
+    # MEASURED ON A REAL BOX (2026-09-21, c7g.4xlarge, us-east-1d), three
+    # shapes, one payload:
+    #     setsid nohup sh -c 'sleep 45' >/dev/null 2>&1 & echo $!      ->  8 s
+    #     mkdir … && cd … && setsid … >/dev/null 2>&1 & echo $!        -> 46 s
+    #     { mkdir … && cd … && setsid …; } </dev/null >/dev/null 2>&1 & echo $!
+    #                                                                  ->  7 s
+    # and `loop` itself, before this line, returned after 400 s — printing
+    # `gate detached … as pid` at the END of a 386 s gate. Four builders
+    # reported it as a hang; it is the shell's operator precedence.
+    #
+    # STDIN IS CLOSED TOO. It is not what was holding the channel here — the
+    # first shape above inherits it and still returns in 8 s — but a detached
+    # gate that can read the caller's stdin is a gate that can eat the
+    # operator's next keystroke, and the group is where to say so once.
+    remote="{ mkdir -p ~/verify/${rung} && cd ${checkout} && ${ingest} && setsid nohup sh -c 'DJB_LOOP_SCOPE_BASE=refs/djb/base ./scripts/check.sh --loop > ~/verify/${rung}/${name}.log 2>&1; echo \$? > ~/verify/${rung}/${name}.rc'; } </dev/null >/dev/null 2>&1 & echo \$!"
     pid="$(ssh_to "$id" "$remote" | tr -d '\r' | tail -n 1)"
     case "$pid" in '' | *[!0-9]*) die "the box did not return a pid for the detached gate" ;; esac
     printf '%s\n' "$pid" >"$(box_dir "$id")/${name}.pid"
@@ -2561,7 +3232,11 @@ cmd_leg() {
     # because the gate sets its "a count was typed" flag the moment it SEES
     # the word and either would make a run that asked for nothing different
     # from the run it has always been.
-    remote="mkdir -p ~/verify/${rung} && cd ${checkout} && ${ingest} && setsid nohup sh -c './scripts/check.sh --leg ${unit}${shard:+ --shard ${shard}}${passes:+ --passes ${passes}} > ~/verify/${rung}/${name}.log 2>&1; echo \$? > ~/verify/${rung}/${name}.rc' >/dev/null 2>&1 & echo \$!"
+    # GROUPED AND REDIRECTED, for the reason spelled out in full at `cmd_loop`'s
+    # own detach: `&` binds to the whole `&&` list and the redirects would
+    # otherwise cover only `setsid`, so the list's subshell holds the ssh
+    # channel for the length of the leg and the detach blocks its caller.
+    remote="{ mkdir -p ~/verify/${rung} && cd ${checkout} && ${ingest} && setsid nohup sh -c './scripts/check.sh --leg ${unit}${shard:+ --shard ${shard}}${passes:+ --passes ${passes}} > ~/verify/${rung}/${name}.log 2>&1; echo \$? > ~/verify/${rung}/${name}.rc'; } </dev/null >/dev/null 2>&1 & echo \$!"
     pid="$(ssh_to "$id" "$remote" | tr -d '\r' | tail -n 1)"
     case "$pid" in '' | *[!0-9]*) die "the box did not return a pid for the detached unit" ;; esac
     printf '%s\n' "$pid" >"$(box_dir "$id")/${name}.pid"
@@ -2887,10 +3562,69 @@ cmd_down() {
 # THE SCRIPT IS THE FIRST WALL AND THE POLICY IS THE SECOND. The ops policy
 # refuses a terminate on anything not tagged as ours; this refuses it one step
 # earlier, where the message can say why.
+#
+# AND IT ASKS ONCE, FOR ALL FOUR FIELDS. Two `tag_of` calls answered `None` for
+# an instance that had VANISHED and `None` for a call the API refused, and the
+# refusal printed for both was `is not a verifier box (djb:role=none)` — which
+# is a sentence about somebody else's machine, said about our own box, at the
+# exact moment a Spot reclaim had taken it. A bank then read that as a foreign
+# box and left the rest of its fleet alone. So the state and the tags come out
+# of ONE describe, and the three outcomes are three different sentences:
+#
+#   * the call FAILED  -> exit 2, `could not look at <id>: <the API's line>`,
+#     and NOTHING is terminated. A credential that expired mid-teardown must
+#     not read as a box that was never ours.
+#   * the box is gone  -> `already gone <id> (<StateReason.Code>)`, exit 0.
+#     A `down` on a reclaimed box is the bank's ordinary path, not a refusal:
+#     the box is already not billing and the only thing left to do is drop the
+#     key, which is what the caller wanted.
+#   * the tags say it is somebody else's -> today's refusal, unchanged.
 terminate_one() {
-    local id="$1" role ns trc=0
-    role="$(tag_of "$id" "djb:role")"
-    ns="$(tag_of "$id" "djb:namespace")"
+    local id="$1" role ns state reason trc=0 look rc=0
+    set +e
+    look="$(aws_q ec2 describe-instances --instance-ids "$id" \
+        --query 'Reservations[0].Instances[0].[State.Name,StateReason.Code,Tags[?Key==`djb:role`].Value|[0],Tags[?Key==`djb:namespace`].Value|[0]]' \
+        --output text 2>&1)"
+    rc=$?
+    set -e
+    if [ "$rc" != "0" ]; then
+        # A VANISHED INSTANCE IS NOT A BLIND CALL. EC2 answers
+        # `InvalidInstanceID.NotFound` for an id it has finished forgetting,
+        # which is where a reclaimed box ends up about an hour later — that is
+        # `already gone` and not `could not look`, and reading them as one was
+        # the other half of the `djb:role=none` sentence.
+        # AND `Malformed` IS NOT `NotFound`. An id EC2 cannot even parse is a
+        # CALLER's mistake, not a box that went away, and answering it `already
+        # gone` at exit 0 would make a typo look like a successful teardown.
+        case "$look" in
+        *InvalidInstanceID.NotFound*)
+            rm -rf "$(box_dir "$id")"
+            echo "already gone ${id} (not-found — EC2 no longer holds this instance)"
+            return 0
+            ;;
+        esac
+        echo "!! verifier_box: could not look at ${id}: $(api_line "$look")" >&2
+        echo "   NOTHING was terminated, and this is not a claim that the box is not ours —" >&2
+        echo "   it is the API refusing the question. Fix the credential or the throttle and" >&2
+        echo "   run it again; 'census' reads the same fleet." >&2
+        exit 2
+    fi
+    look="${look%%$'\n'*}"
+    IFS=$'\t' read -r state reason role ns <<<"$look"
+    # `--output text` spells an absent field `None`, and a tag that says `None`
+    # is a tag that is not there. Normalised once, here, so the three branches
+    # below compare against emptiness and not against a word.
+    case "$state" in None | null) state="" ;; esac
+    case "$reason" in None | null) reason="" ;; esac
+    case "$role" in None | null) role="" ;; esac
+    case "$ns" in None | null) ns="" ;; esac
+    case "$state" in
+    terminated | shutting-down)
+        rm -rf "$(box_dir "$id")"
+        echo "already gone ${id} (${reason:-no reason given})"
+        return 0
+        ;;
+    esac
     case "$role" in
     verifier | verifier-bake) ;;
     *) die "${id} is not a verifier box (djb:role=${role:-none}); nothing terminated." ;;
@@ -2955,12 +3689,12 @@ cmd_census() {
     raw="$(aws_q ec2 describe-instances \
         --filters "Name=tag:djb:namespace,Values=${NAMESPACE}" \
         "Name=instance-state-name,Values=pending,running" \
-        --query 'Reservations[].Instances[].[InstanceId,InstanceType,Tags[?Key==`djb:role`].Value|[0],Tags[?Key==`djb:owner`].Value|[0],Tags[?Key==`djb:expires`].Value|[0],LaunchTime,ImageId,InstanceLifecycle]' \
+        --query 'Reservations[].Instances[].[InstanceId,InstanceType,Tags[?Key==`djb:role`].Value|[0],Tags[?Key==`djb:owner`].Value|[0],Tags[?Key==`djb:expires`].Value|[0],LaunchTime,ImageId,InstanceLifecycle,Placement.AvailabilityZone]' \
         --output text 2>&1)"
     rc=$?
     set -e
     if [ "$rc" != "0" ]; then
-        echo "!! verifier_box: could not look — ${raw%%$'\n'*}" >&2
+        echo "!! verifier_box: could not look — $(api_line "$raw")" >&2
         print_owner_commands
         exit 2
     fi
@@ -2981,9 +3715,15 @@ cmd_census() {
     # difference between a bank that cost cents and one that cost dollars.
     # Read from `InstanceLifecycle` — EC2's own word — never inferred from a
     # tag this wrapper wrote at launch.
-    local findings=0 id type role owner expires launched ami lifecycle market now age exp_epoch
+    # AND THE ZONE EACH ONE IS IN, for the third time the same argument is
+    # made on this line: it is a variable nobody can name after the box is
+    # gone, and it is now one a bank CHOOSES — `pm_push.sh` spreads its shards
+    # across the zones and the census is the only thing that can say whether
+    # they actually landed apart. A row written by an older wrapper has no
+    # ninth column and reads `az unknown`, never a shifted line.
+    local findings=0 id type role owner expires launched ami lifecycle az market now age exp_epoch
     now="$(now_epoch)"
-    while IFS=$'\t' read -r id type role owner expires launched ami lifecycle; do
+    while IFS=$'\t' read -r id type role owner expires launched ami lifecycle az; do
         [ -n "$id" ] || continue
         market="$(market_of_lifecycle "$lifecycle")"
         age="$(age_minutes "$launched" "$now")"
@@ -2996,7 +3736,8 @@ cmd_census() {
             note="   STALE BAKE ${age}m — a bake box that outlived its bake is a bill"
             findings=$((findings + 1))
         fi
-        echo "${id}   ${type}   ${role}   market ${market}   ami ${ami:-unknown}   owner ${owner}   expires ${expires}   age $(hm $((age * 60))) ${note}"
+        case "$az" in "" | None | null) az="unknown" ;; esac
+        echo "${id}   ${type}   ${role}   market ${market}   az ${az}   ami ${ami:-unknown}   owner ${owner}   expires ${expires}   age $(hm $((age * 60))) ${note}"
     done <<<"$raw"
     # THE POOL SECTION COMES AFTER THE BOX LINES AND BEFORE THE VERDICT, and it
     # prints on the finding path too: a census that went quiet about the pool
@@ -3004,6 +3745,41 @@ cmd_census() {
     # somebody was reading the output for cost.
     census_pool_section
     [ "$findings" = "0" ] || finding "${findings} box(es) above need a hand. 'down <id>' takes one."
+}
+
+# =============================================================================
+# zones — the list a bank spreads its shards across
+# =============================================================================
+#
+# A READ AND NOTHING ELSE. It launches nothing, tags nothing and terminates
+# nothing; its whole job is to be the ONE answer to "which zones can this
+# account launch a verifier box in", so the bank that spreads shards and the
+# `up --az` that honours one are reading the same list. A bank that computed
+# its own would drift from the wrapper's the day a subnet is added.
+#
+# AND IT FAILS LOUD WHEN IT CANNOT LOOK. An empty answer and a refused call are
+# the same silence at a terminal and opposite facts to a bank: no zones means
+# "do not plan a spread", a refused call means "the plan you just made is
+# guesswork". Both are exit 2 here, each with its own sentence, because a bank
+# that read zero zones as "one zone, then" would put every shard in the same
+# place and call it a decision.
+cmd_zones() {
+    require_profile
+    local vpc rows
+    vpc="$(vpc_of_group)"
+    [ -n "$vpc" ] || {
+        echo "!! verifier_box: could not look — no VPC for security group '${GROUP_NAME}' in ${REGION}." >&2
+        print_owner_commands
+        exit 2
+    }
+    rows="$(zones_of_vpc "$vpc")"
+    [ -n "$(printf '%s' "$rows" | tr -d '[:space:]')" ] || {
+        echo "!! verifier_box: could not look — ${vpc} has no subnets this credential can see in ${REGION}," >&2
+        echo "   so there is no zone to launch into and no spread to plan. Nothing was asked for." >&2
+        print_owner_commands
+        exit 2
+    }
+    printf '%s\n' "$rows"
 }
 
 # THE POOL, AND WHAT IT COSTS AN HOUR. A REPORT, NEVER A VERDICT — the census's
@@ -3019,8 +3795,13 @@ census_pool_section() {
     local rows id launched ami type price now age n=0 unknown=0
     local -a prices=()
     rows="$(warm_pool_rows)"
+    # THE CEILING RIDES ON THE POOL LINE, because the two numbers are one
+    # question: "can I have a box right now" is `ceiling - running`, and a
+    # census that printed the running boxes and the warm ones but not the wall
+    # they are measured against left the reader to guess the wall — and the
+    # guess was 2, because that is the default nobody could see.
     if [ -z "$(printf '%s' "$rows" | tr -d '[:space:]')" ]; then
-        echo "pool: empty"
+        echo "ceiling ${MAX_BOXES} (${MAX_BOXES_SOURCE}) · pool: empty"
         return 0
     fi
     now="$(now_epoch)"
@@ -3038,7 +3819,8 @@ census_pool_section() {
         prices+=("$price")
         n=$((n + 1))
     done <<<"$rows"
-    printf 'pool: %d warm · $%s/h%s\n' "$n" \
+    printf 'ceiling %d (%s) · pool: %d warm · $%s/h%s\n' \
+        "$MAX_BOXES" "$MAX_BOXES_SOURCE" "$n" \
         "$(pool_price_sum ${prices[@]+"${prices[@]}"})" \
         "$([ "$unknown" = "0" ] || printf ' (%d price(s) unknown)' "$unknown")"
 }
@@ -3306,8 +4088,13 @@ cmd_bake() {
     # half-written, and twenty minutes of provisioning is worth more than the
     # few cents Spot would save.
     say "baking on-demand (a bake interrupted is an image half-written)"
+    # THE FIRST FIELD, because `run_instances_common`'s projection is now
+    # `[InstanceId,SpotInstanceRequestId]` for every caller. A bake is always
+    # on-demand, so the second field is always `None` and the slice is the id.
     id="$(run_instances_common "$base" "$BAKE_TYPE" "$group" "$user_data" \
         "verifier-bake" "$expires" "${NAMESPACE}-verifier-bake-${OWNER}" "")"
+    id="${id%%$'\n'*}"
+    id="${id%%	*}"
     { [ -n "$id" ] && [ "$id" != "None" ]; } || {
         rm -rf "$pending"
         die "run-instances returned no instance id for the bake box"
@@ -3583,6 +4370,8 @@ up) cmd_up "$@" ;;
 down) cmd_down "$@" ;;
 pool) cmd_pool "$@" ;;
 census) cmd_census "$@" ;;
+ceiling) cmd_ceiling "$@" ;;
+zones) cmd_zones "$@" ;;
 run) cmd_run "$@" ;;
 loop) cmd_loop "$@" ;;
 leg) cmd_leg "$@" ;;
@@ -3593,5 +4382,5 @@ harvest-drives) cmd_harvest_drives "$@" ;;
 push) cmd_push "$@" ;;
 bake) cmd_bake "$@" ;;
 "" | -h | --help) usage ;;
-*) die "unknown subcommand '${SUB}': up down pool census run loop leg wait fetch harvest harvest-drives push bake" ;;
+*) die "unknown subcommand '${SUB}': up down pool census ceiling zones run loop leg wait fetch harvest harvest-drives push bake" ;;
 esac

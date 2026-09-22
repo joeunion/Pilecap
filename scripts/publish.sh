@@ -260,6 +260,66 @@ LEDGERS="north-star queue queue-detail readouts misses in-flight goal-posts desi
 MARKER='<!-- worked example — replace with your product'"'"'s first real entry -->'
 
 # ---------------------------------------------------------------------------
+# R0 · THE RESERVED PATHS — THE DRAWERS ARE THE PRODUCT'S AND THE TEMPLATE
+# NEVER SHIPS ONE (manifest § R0; the extension-point decision in
+# `architecture.md`, named rather than cited by id for this file's own
+# standing reason — see the archaeology allow-list below).
+#
+# A product extends the system layer by DECLARING BESIDE IT rather than by
+# editing it: an extensible template directory has a `local/` sibling the
+# template's own reader discovers, and a per-product list that would otherwise
+# live in a template-owned document has a `.local.md` sibling beside it. The
+# whole value of that convention is that a release CANNOT conflict with one —
+# absent is byte-identical behaviour — and that value survives exactly as long
+# as the template ships no such path itself. One tracked `local/` file in a
+# release is a merge conflict in every consumer's drawer, on the one path the
+# convention promised would never have one, and a release cannot be re-cut.
+#
+# EXIT 2, NOT 1, and the classification is deliberate: this is not "the
+# artifact was built and found wanting". It is a reserved name claimed by the
+# template, which makes the census's own ground false — every other leg below
+# is reasoning about a partition that no longer holds. Could-not-look outranks
+# a pass here the way it does everywhere else in this file.
+#
+# IT RUNS FIRST, BEFORE ANY BUCKET IS ASSIGNED. A reserved path would otherwise
+# be classified, shipped and verified perfectly well by every leg after it —
+# `scripts/local/legs/x.sh` is bucket SHIP under R3's `scripts/*` glob and
+# publishes CLEAN today. The bucket rules are not wrong; the path is.
+#
+# THE GLOBS ARE WRITTEN AS PATTERNS, NEVER AS AN INSTANCE. A literal path under
+# a reserved glob spelled in this file would be a pointer in every artifact
+# this script publishes, into a directory the artifact by construction does not
+# have — the `dangling-docs` hazard `rules_for`'s own R8S arm is written
+# around, one door over.
+# ---------------------------------------------------------------------------
+RESERVED_DESC='**/local/**, *.local.md, or apps/conftest_local.py'
+reserved_paths() {
+    # Echoes every TRACKED path claiming a reserved name, one per line. Tracked
+    # is the whole population: the export is `git archive HEAD`, so an
+    # untracked drawer in a maintainer's own checkout ships nothing and is
+    # nobody's business.
+    local p
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        case "$p" in
+        local/* | */local/* | *.local.md) printf '%s\n' "$p" ;;
+        # THE ONE EXACT PATH, AND IT IS HERE RATHER THAN IN A GLOB. The
+        # fixtures drawer is a `conftest.py` sibling pytest collects by name,
+        # so it cannot be spelled `apps/local/…` without leaving the package
+        # pytest looks in. It is beside the two globs deliberately: this list
+        # is the ONE reader of "what is reserved", and a path kept somewhere
+        # else is a second list that agrees today. Found by the gate's own
+        # reviewer, not by this census: `archaeology_lib.sh`'s R1 ships
+        # `apps/*` whole, so a tracked one shipped SILENTLY — every glob above
+        # said nothing about it and every leg after them was happy.
+        apps/conftest_local.py) printf '%s\n' "$p" ;;
+        esac
+    done <<EOF
+$(git ls-files)
+EOF
+}
+
+# ---------------------------------------------------------------------------
 # THE BUCKET RULES (manifest § Bucket rules): `rules_for`, `bucket_for_rule`
 # and `archaeology_rule_ids` now live in `scripts/archaeology_lib.sh`, sourced
 # above, so this script and `scripts/check.sh`'s `archaeology` leg read the
@@ -424,6 +484,25 @@ fi
 # ---------------------------------------------------------------------------
 step "step 1/$STEPS · the census — every tracked path in exactly one bucket"
 # ---------------------------------------------------------------------------
+# R0 FIRST (see `reserved_paths` above): the reserved names are checked before
+# any bucket is assigned, because a reserved path buckets, ships and verifies
+# perfectly well and is still wrong.
+RESERVED_HITS=$(reserved_paths)
+if [ -n "$RESERVED_HITS" ]; then
+    say "   R0   RESERVED         refused"
+    say ""
+    echo "!! R0 · A RESERVED PATH IS TRACKED IN THIS TREE. The drawers belong to the" >&2
+    echo "   PRODUCT and the template never ships one — that is what lets a product" >&2
+    echo "   extend the system layer without a merge conflict, and it holds only for" >&2
+    echo "   as long as no release claims the name. Reserved: $RESERVED_DESC." >&2
+    printf '%s\n' "$RESERVED_HITS" | sed 's/^/     /' >&2
+    echo "   Move it to a path the template owns, or stop tracking it. A release" >&2
+    echo "   cannot be re-cut, so a drawer that ships once is in every consumer's" >&2
+    echo "   history. Enforcement broken, not a violation." >&2
+    exit 2
+fi
+say "   R0   reserved        none tracked ($RESERVED_DESC)"
+
 SHIP_LIST=$(mktemp "${TMPDIR:-/tmp}/djb-publish-ship.XXXXXX")
 TRIM_LIST=$(mktemp "${TMPDIR:-/tmp}/djb-publish-trim.XXXXXX")
 SKEL_LIST=$(mktemp "${TMPDIR:-/tmp}/djb-publish-skel.XXXXXX")
@@ -1030,8 +1109,52 @@ if [ "$MODE" = release ]; then
     fi
     if grep -qE "^## \[$TEMPLATE_VERSION_VALUE\]" "$TARGET/CHANGELOG.md" 2>/dev/null; then
         say "   ok — ## [$TEMPLATE_VERSION_VALUE] is in the published CHANGELOG.md"
+        CHANGELOG_SECTION_PRESENT=1
     else
         violation "changelog: the artifact's CHANGELOG.md has no \`## [$TEMPLATE_VERSION_VALUE]\` section — $REL_TAG would ship with nothing to read"
+    fi
+fi
+
+# --- leg changelog-flags (release mode only) --------------------------------
+# WHAT THE RELEASE SECTION TELLS A CONSUMER TO TYPE MUST EXIST IN WHAT IT
+# SHIPS. The leg above proves the section is there; this one reads it. Its
+# population is that section's backticked spans, its question is whether each
+# `<script> --flag` span's flag is a literal in the script the span names, and
+# its blind spots are declared on the body itself (`docs_changelog_flags` in
+# scripts/docs_legs.sh) rather than here.
+#
+# IT READS THE SECTION BEING RELEASED AND NO OTHER. Older sections are the
+# record of older trees: a flag renamed since 2.0.0 makes that entry a true
+# account of 2.0.0, and correcting it would be rewriting history to please an
+# instrument. A correction belongs in the section going out.
+#
+# IT RUNS ONLY WHEN THE SECTION IS THERE, and that is a partition rather than
+# a courtesy: an absent section is already the leg above's VIOLATION, and this
+# leg refusing exit 2 for the same absence would promote one content finding
+# into a could-not-look and hide the release's real verdict behind it.
+if [ "$MODE" = release ]; then
+    say ""
+    say "-- changelog-flags: every <script> --flag the release section names exists"
+    if [ "${CHANGELOG_SECTION_PRESENT:-0}" != 1 ]; then
+        say "   SKIPPED — there is no section to read, and the leg above is that finding."
+    else
+        CLF_OUT=$(mktemp "${TMPDIR:-/tmp}/djb-publish-clflags.XXXXXX")
+        set +e
+        docs_changelog_flags "$TARGET" "$TEMPLATE_VERSION_VALUE" >"$CLF_OUT"
+        clf_rc=$?
+        set -e
+        if [ "$clf_rc" = "2" ]; then
+            rm -f "$CLF_OUT"
+            exit 2
+        fi
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            violation "$line"
+        done <"$CLF_OUT"
+        rm -f "$CLF_OUT"
+        say "   $DOCS_CHANGELOG_CLAIMS claim(s) checked · $DOCS_CHANGELOG_UNRESOLVED unresolved flag spans"
+        [ "$clf_rc" = "0" ] &&
+            say "   ok — every flag the section names is a literal in the script it names"
     fi
 fi
 

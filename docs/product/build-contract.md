@@ -123,7 +123,7 @@ Pilecap/
 │   │                           #   compared against. The prediction reads the TREE half of the key only; the
 │   │                           #   environment and scope halves are measured when the loop runs.
 │   ├── verifier_box.sh         # a throwaway EC2 box per verification:
-│   │                           #   up/down/pool/census/run/loop/leg/wait/fetch/harvest/push/bake.
+│   │                           #   up/down/pool/census/zones/run/loop/leg/wait/fetch/harvest/push/bake.
 │   │                           #   Every name it mints derives from DJB_DEPLOY_NAMESPACE and carries djb:namespace,
 │   │                           #   so one deployment's census never lists another's boxes. The transport is SSH over
 │   │                           #   Session Manager — no key pair, no ingress rule; the image it launches and the
@@ -141,6 +141,30 @@ Pilecap/
 │   │                           #   a box-banked `--loop` row home — the row VERBATIM + ` box=<id>`, appended through
 │   │                           #   gate_ledger.sh's own `loop_ledger_path`, twice is one row, a log with no `banked:`
 │   │                           #   line is exit 2. No interpreter: its date arithmetic is idle_reaper.sh's shape.
+│   │                           #   THE ZONE AXIS: `zones` prints the security group's VPC's availability zones,
+│   │                           #   sorted and de-duplicated from its subnets, one per line — a read, exit 2 when it
+│   │                           #   cannot look, and the ONE list a bank spreads across. `up --az Z` resolves that
+│   │                           #   zone's subnet and launches into it (`run-instances` has no --availability-zone);
+│   │                           #   with no --az the argv is byte-for-byte what it was and no subnet is looked up.
+│   │                           #   A Spot `InsufficientInstanceCapacity`/`Unsupported` in the typed zone tries the
+│   │                           #   NEXT zone ONCE — printed, still Spot, BEFORE the on-demand market rule — and a
+│   │                           #   second refusal reaches that rule unchanged (for a bank shard, the refusal).
+│   │                           #   `census` carries each box's `az` so a spread can be read back.
+│   │                           #   THE RECLAIM'S OWN WORDS: the launch records the Spot request id beside the key
+│   │                           #   (`<box>/spot-request`, absent on on-demand), and a reclaim prints
+│   │                           #   `box reclaimed (spot) <id> status <code>: <message>` — `unrecorded` with no id,
+│   │                           #   `unreadable` naming ec2:DescribeSpotInstanceRequests when the ops policy's LIVE
+│   │                           #   version has not been published yet (the document in deploy/iam/ carries it; the
+│   │                           #   publish is the OWNER's hand, and verifier_bootstrap.sh prints the command).
+│   │                           #   `down` reads state + StateReason + both tags out of ONE describe: a terminated
+│   │                           #   box is `already gone <id> (<reason>)` at exit 0, a refused describe is exit 2
+│   │                           #   `could not look at <id>: <the API's line>` with nothing terminated, and only a
+│   │                           #   tag that really disagrees is `is not a verifier box`.
+│   │                           #   `up` prints `launched <id> az <az>` right after the launch or the warm claim and
+│   │                           #   BEFORE the push, so a box that dies at the probe still has a name; the probe
+│   │                           #   itself waits out a `TargetNotConnected` session channel to
+│   │                           #   DJB_VERIFIER_TUNNEL_WAIT_SECONDS (60, polled 5), printing each wait, and refuses
+│   │                           #   past the ceiling exactly as before.
 │   ├── test.sh                 # pytest wrapper; owns its exit code; never piped
 │   ├── setup.sh                # fresh clone → running: uv sync, hooks, compose up, DB, migrate
 │   ├── db.sh                   # per-worktree database name + create/drop helpers (template-clone fast path)
@@ -198,6 +222,91 @@ Pilecap/
 > naming the row and the field, and COUNTS and NAMES every row that carries no
 > stamps at all instead of taking a median over the stamped half.
 
+> **Template-owned, product-owned, shared — per path.** The paragraph above is
+> the ownership map *inside one product*; this table is the ownership map
+> *between the template and the product built on it*, and the two are different
+> questions. A product that edits a template-owned file pays for it at every
+> release, forever: the first consumer's fold of v2.1.0 cost 94 merge
+> conflicts, 21 of them in `scripts/ quality/ .github/`, twelve commits whose
+> whole content was re-applying local edits — and one 1800-line file that
+> fast-forwarded byte-identical and took their edits with it, silently, in the
+> wrong direction.
+
+| class | paths | at a merge |
+|---|---|---|
+| **template-owned** — a product edit is a DIVERGENCE, recorded in the product's own `architecture.md` as `divergence: <path> — <reason>` | `scripts/**` less `scripts/local/**` · `quality/**` less `quality/local/**` · `.github/workflows/ci.yml` · `.claude/skills/**` · `config/**` · `manage.py` · the platform apps in `quality/partition.yaml` less `apps/core/roles.py` · `CLAUDE.md` · `docs/runbooks/**` · `docs/standards.md` · `docs/product/{build-contract,instruments,partition-closure,publication-manifest,api-editorial-standard,scale-envelope}.md` | fast-forwards; a conflict is the census's business |
+| **product-owned, never shipped** — no conflict by construction | `**/local/**` · `*.local.md` · `apps/conftest_local.py` (an exact path, not a glob: a `conftest.py` sibling is collected by pytest BY NAME, so the fixtures drawer cannot leave the package pytest looks in) · `.github/workflows/<not ci.yml>` · the product's own `apps/<x>/**` · the nine ledgers · `north-star.md` · the product's own `architecture.md` · `README.md` · `frontend/**` past the example | untouched |
+| **shared, per-file conflict by design** — adjudicated, never a divergence | `apps/core/roles.py` · `apps/core/api/frozen_families.py` · `pyproject.toml` · `uv.lock` · `compose.yaml` · `.env.example` · `quality/budgets.yaml` · `deploy/tests/**` · the three measured files (`scripts/test_impact.json`, `pytest_durations.json`, `gate_member_durations.json`) | one file each, by hand |
+
+> **The default leans toward the PRODUCT, and the table is what the instrument
+> reads.** The template-owned row ENUMERATES; anything it does not name is the
+> product's. `scripts/divergence_census.sh` is the executable copy of this
+> table — it derives the glob classes through the publication bucket rules in
+> `scripts/archaeology_lib.sh`, so a new file under an owned glob is classified
+> the day it lands with no edit anywhere — and if the two ever disagree, **this
+> table wins and the disagreement is a finding**. The drawers in row two are
+> the other half of the same decision: a product extends a template directory
+> by declaring in its `local/` sibling, which the template never ships
+> (`publish.sh` § R0), so there is nothing there to conflict with. House rule
+> 60 is the gate's reading of this table, and it is SKIPPED with a printed line
+> in the template's own tree, which has no base to compare against because it
+> has no template.
+
+> **Every drawer, and the ONE reader that opens it.** A drawer with no reader
+> is a promise; a reader with no row here is a seam nobody can find. The fenced
+> block below is the list — *what a product wants to extend* → *the drawer* →
+> *the reader that discovers it* — and it is fenced because it is meant to be
+> read by a rule and not only by a person. Absent, every drawer costs nothing:
+> the listing, the transcripts, the censuses and the verdict row are
+> byte-identical to a tree that has never heard of one. Malformed, every one of
+> them is exit 2 naming the file.
+
+**The table is § "The drawers", below, and it is fenced ```` ```drawers ````
+because house rule 60 READS it** — one table, in one place, because a rule
+with two texts is a rule that can disagree with itself.
+
+- **`scripts/local/drives/test_<name>.sh`** joins the selftest leg's registered
+  drives as a THIRD home beside `scripts/tests/` and
+  `deploy/tests/test_stage.sh`, through the one reader all three go through
+  (`selftest_registered_drives`; `--with-path` for the callers that must OPEN
+  the file rather than name it). A drawer drive is named `local:<name>`
+  wherever a drive name is printed — the `composed-of` column, the leg's
+  transcript, the shard's own line, the verdict row — so a reader can tell the
+  product's members from the template's. **It is not keyed and not banked: a
+  drawer drive runs on every gate**, and both consults print that reason rather
+  than passing over it silently. The template's drive key is built from a
+  `drive_preamble.sh` sitting BESIDE the drive file (`scripts/gate_ledger.sh`),
+  which `scripts/tests/` and `deploy/tests/` have and the drawer does not;
+  giving a drawer drive a banked verdict is a change to that key, and a rung of
+  its own. It must be `+x` and must source
+  `scripts/tests/drive_preamble.sh`, which is the same condition the
+  `deploy/tests/` gap is declared on and for the same reason: this leg runs
+  inside the pre-push hook, where an absolute `GIT_DIR` is exported into every
+  child. A name a template drive or a product LEG already carries is exit 2 —
+  one label on the verdict row may not mean two members.
+- **`scripts/local/env_keys`** is one variable NAME per line (blank lines and
+  whole-line `#` comments skipped), and a name there is KEPT when the drive
+  preamble scrubs — the inverse of `DRIVE_GATE_VARS`, which is the template
+  stripping its own. The kept names also join `DRIVE_INHERITED_VARS`, so the
+  workflow-environment census accounts for a product's own CI knobs instead of
+  reading each one as "nobody has thought about this yet". A line that is not a
+  shell identifier is exit 2 naming the file and the line number; a VALUE never
+  appears there, and the shape check is what keeps it out.
+- **`docs/product/instruments.local.md`** is the same five-column `Instrument`
+  table as `instruments.md`, read beside it by the same census, so a product's
+  own executables owe their rows in the product's own file and `instruments.md`
+  never needs a product row. A path may be claimed by exactly one of the two,
+  and a path in both is exit 2 naming it.
+- **`scripts/local/ci/*.sh`** are run, in name order, by ONE optional job in
+  `.github/workflows/ci.yml` (`local`, `needs: verdict`) — a product's CI work
+  is downstream of the gate's verdict exactly as the image build is, every step
+  runs even after a red one, and the first non-zero is the job's. There is no
+  `ci.local.yml`: GitHub composes nothing, so a second workflow file would be a
+  second copy of the whole setup that nothing keeps in step with this one.
+  Absent, the job prints why it did nothing. Work a product wants INSIDE the
+  gate is a leg (`scripts/local/legs/`), never a CI step.
+
+
 
 ## Discovery conventions (what A2 lays; what every later app relies on)
 
@@ -208,7 +317,89 @@ Pilecap/
 - **Workflows:** `apps/<x>/workflows.py` exposes `WORKFLOWS: list[type]`, `apps/<x>/activities.py` exposes `ACTIVITIES: list[callable]`; `config/temporal.py` assembles one worker on task queue `settings.TEMPORAL_TASK_QUEUE` (default `djb-main`, per-worktree suffix from `db.sh`'s branch sanitiser so two worktrees' workers never steal each other's tasks). `workflows.py` imports only stdlib dataclasses/`timedelta`, `temporalio.workflow` and the app's `types.py`; activities are invoked **by name**. A service starts a run with `apps.workflows.services.start_workflow_on_commit(*, workflow, arg, tenant, user=None, org=None, id, task_queue=None)` — `id` required and deterministic, built by the keyword-only `workflow_id(*, tenant, app, noun, key)`; the async `start_workflow(..., client=)` is for callers already on the loop. **`org` is the acting hat the run is started under**: omit it and every activity in the run acts for the whole tenant rather than for the branch that asked. Tenant, user **and org** travel as workflow **headers** (repeated in the memo) via `TenantContextInterceptor` and are restored in activities by `current_tenant()` / `current_org()` / `current_user_id()` / `workflow_context() -> tuple[Tenant | None, str | None, Organization | None]` — **three** values. Activities are plain `def` and run in the worker's `activity_executor=ThreadPoolExecutor`; each calls `close_old_connections()` at both ends.
 - **Events:** `apps.events.services.emit(*, name: str, tenant, payload: dict, actor=None)` — **keyword-only, the name included**, because it is a `@service` and house rule 13 refuses a positional parameter at import time. It writes `Event` + `Outbox` atomically with the caller's transaction (`transaction.on_commit` starts the dispatch workflow). Subscribers are data (`WebhookEndpoint` rows per tenant) and the realtime bridge; nothing imports `events` except to `emit`.
 - **Permissions and roles:** `apps/<x>/policies.py` exposes `POLICIES` (predicates), `ACTION_PROSE` (the declared verb and the sentence a refused caller reads), optionally `DEFAULT_ROLES` and `RENAMED_PERMISSIONS`; `apps/<x>/roles.py` exposes `ROLES: dict[str, DeclaredRole]`. `core.authz` discovers both walks, derives `<kind>.create/read/update/delete` for every first-party model, and answers `vocabulary()` — computed at import, never stored. **`apps/core/roles.py` is the one PRODUCT-EDITABLE file in `core`**, the way `docs/product/north-star.md` is product-editable: edit it, add roles, delete `admin` if your product has no such person, and a template merge brings it back as an ordinary per-file conflict you adjudicate. Every other file under `apps/core/` is the platform's. Two apps declaring one role key is an `ImproperlyConfigured` at discovery, and `roles` is in `CANONICAL_MODULES`, so a product's own `apps/<x>/roles.py` needs no `quality/rules.yaml` edit.
+- **Product gate legs:** a product grows a leg of its own by DROPPING A FILE, never by editing the gate. `scripts/local/legs/<name>.sh` is executable and carries a versioned header block — `# >>> leg v1 >>>` … `# <<< leg <<<` — whose required fields are `unit:` (`local`, or a new name of the product's own; a unit this gate already declares is exit 2), `needs:` (organs, comma-joined, or `none`; the unit's field is the union of its legs'), `tier:` (`fast`, `loop` or `full` — the cheapest mode that runs it, and every mode above runs it too) and `two-means:` (`broken` or `finding` — what this leg's exit 2 means to the verdict), with `touches:`, `inputs:` and `env:` optional. `check.sh --list-legs` DISCOVERS the drawer and prints one unit row per `unit:`, so **the bank's plan and CI's matrix take a product's legs with no other edit anywhere** (`pm_push.sh` reads the listing; `ci.yml` reads the listing's columns and names no unit); the verdict row names each one as `local:<name>`, because `gate_full_legs` reads the leg set from the LISTING as soon as the drawer holds a leg (with no drawer it reads `check.sh`'s own `FULL_LEGS=` line as it always has, runs no listing at all, and the row is byte-identical — the pre-push hook's consult must cost a lookup and not a gate). One `_provision-<unit>.sh` per unit runs once before that unit's legs. **Absent, the drawer costs nothing** — the listing, the transcripts and the row are byte-identical to a tree that has never heard of it — and **malformed, it is exit 2 at the listing naming the file and the field**, never a silently smaller gate. The template never ships a `scripts/local/` path, so a release can never conflict with one (`scripts/tests/test_local_legs.sh`).
 - **Introspect** carries a section per door: `routes`, `tools`, `consumers`, `workflows`, `activities` — each read from the real discovered registry, never from a list — plus `policies` (the whole vocabulary, one row per key with its kind, verb, `decided_by`, `conforms`, sentence, default roles, predicate and any old names) and `roles` (the declared roles and the size of the collection each resolves to).
+
+## The drawers (a product extends by declaring, never by editing)
+
+A template-owned file carries no product edits. Every runnable list the
+template ships therefore has a **drawer** beside it — a directory a product
+owns outright, read by exactly one function in the template — so a product adds
+a leg, a rule, a fold step or a drive without touching a byte the next fold
+overwrites. **This block is house rule 60's one reader, and the rule is the block**
+(ADR platform-extension-1, as built). Five fields, ` | `-separated:
+
+| field | what it is |
+|---|---|
+| `live` / `held` | whether the drawer has a reader today, or is a name reserved against a rung that has not landed |
+| what a product extends | the concern, in words — and for a `held` row, why it is held |
+| the drawer | the product-owned path the reader opens. The template never ships one (`publish.sh` § R0) |
+| the reader | `<file>::<symbol>` — **the one** function, constant or job that discovers the drawer |
+| the case | `<drive>::<case>` — the case that plants ONE item and proves the reader ran it. `quality/gate.py::drawers_leg` runs exactly these, at `python -m quality.gate --selftest` |
+
+Rule 60 refuses, at exit 2, a drawer literal a template-owned file opens with
+no row here, a row whose reader is not in the tree, and a row whose case is not
+in its drive — so **adding a drawer means adding a reader AND a case AND this
+row**, and deleting any one of the three is a red rather than a quiet hole. A
+`held` row writes `—` for both machine fields: the name is reserved (so no
+release can ship it and no future rung can take it for something else) and the
+rule prints it as held rather than firing on it.
+
+```drawers
+live | gate legs | scripts/local/legs/<name>.sh | scripts/check.sh::local_legs_scan | scripts/tests/test_local_legs.sh::case_a_declared_leg_joins_the_listing_as_its_own_unit
+live | gate drives | scripts/local/drives/test_<name>.sh | scripts/check.sh::selftest_registered_drives | scripts/tests/test_selftest_leg.sh::case_a_product_drive_in_the_drawer_runs_and_is_named_local
+live | house rules | quality/local/<rules.yaml, canary/, negative/, runners/> | quality/gate.py::_read_local | scripts/tests/test_gate_explain.sh::case_a_drawer_rule_is_a_rule_end_to_end
+live | fold steps | scripts/local/fold.d/<nn>-<name>.sh | scripts/pm_fold.sh::fold_step_selected | scripts/tests/test_pm_fold.sh::case_a_local_fold_step_runs_and_commits_only_what_it_declared
+live | lifecycle classes | scripts/local/lifecycle.d/<name>.sh | scripts/lifecycle.sh::lc_load_local_classes | scripts/tests/test_sweep.sh::case_a_local_lifecycle_class_is_censused_and_verdicted_like_a_built_in
+live | drive environment | scripts/local/env_keys | scripts/tests/drive_preamble.sh::DRIVE_LOCAL_ENV_KEYS_FILE | scripts/tests/test_drive_preamble.sh::case_the_product_env_keys_drawer_declares_product_keys_only
+live | CI steps | scripts/local/ci/<name>.sh | .github/workflows/ci.yml::local-ci | scripts/tests/test_drive_preamble.sh::case_the_workflows_optional_local_job_runs_the_products_ci_steps
+live | instrument census | docs/product/instruments.local.md | scripts/goalpost_scan.py::CENSUS_LOCAL | scripts/tests/test_scripts_census.sh::case_the_product_census_document_is_read_beside_the_templates
+live | the template base — the ref a product's divergence census compares against | scripts/local/template-base | scripts/divergence_census.sh::BASE_FROM | scripts/tests/test_divergence_census.sh::case_the_declared_base_is_read_from_the_product_drawer
+live | pytest fixtures | apps/conftest_local.py | apps/conftest.py::pytest_plugins | apps/core/tests/test_conftest_local.py::test_the_fixture_drawer
+held | wrapper hooks — the contract stands on the rule alone; the first consumer's diffs hold no hook, so the name is reserved under principle 11 rather than built | scripts/local/hooks/<wrapper>.<phase>.sh | — | —
+held | verifier bake steps — one consumer's headless-Chromium bake, diff unread; a real walk comes before a codified seam | deploy/verifier/local/bake.d/<name>.sh | — | —
+```
+
+**`quality/local/`** holds `rules.yaml` (top-level keys `rule_id_namespace`,
+`template_rule_ids_through`, `rules:`, `ratchets:` — anything else is exit 2
+naming the key and the file), the fixtures its rules plant from
+(`quality/local/{canary,negative}/<ns>-<n>/`) and its check-v1 runners
+(`quality/local/runners/<name>.py`, reached from a rule's `check:` when the
+template's registry does not hold the name). A drawer rule goes through the
+whole protocol — consistency, canary, negative, floor, valve, memo — and both
+readers tag it `[local]`. `ratchets:` is `rule id → class → count`, the
+product-owned home for per-app backlogs, and a class naming an app inside
+`quality/partition.yaml`'s `platform_apps` is refused. **An absent drawer
+costs nothing: every number and every listing is byte-identical.**
+
+**`scripts/local/fold.d/<nn>-<name>.sh`** runs after the template's own fold
+steps, in name order, and DECLARES the paths it regenerates with the
+`derived-tree-paths` sentinel; `fold_is_derived` reads the union of the
+template's and the drawer's, so a product's generated file stops reading as
+dirty, and a step that writes a path it did not declare is the fold's exit 2
+naming the step. **`scripts/local/lifecycle.d/<name>.sh`** is
+DECLARATION-ONLY — one `lc_class` call with all its fields, sourced after the
+built-ins, so the product's own machinery is censused, verdicted and swept by
+the same broom; a command outside the `lc_class` call is exit 2, because a
+registry file that can run things is a registry that runs on every census.
+**`apps/conftest_local.py`** is the fixtures drawer, and it is an exact path
+rather than a glob: pytest collects a `conftest.py` sibling BY NAME, so the
+drawer cannot leave the package pytest looks in. `apps/conftest.py` declares
+`pytest_plugins` for it iff the module exists (`find_spec`, so a broken drawer
+is a loud `ImportError` naming the file, never a silent absence), and a
+template fixture of the same name wins.
+
+**The two `held` rows are reserved names, not built drawers.** A held row
+costs a product nothing and buys the template two things: `publish.sh` § R0
+already refuses to ship the path, and rule 60 prints the row as held instead
+of firing on a reader that is not there. `scripts/local/hooks/` is the
+wrapper pre/post contract — the first consumer's wrapper diffs turned out to
+hold no hook at all (a `set -u` fix, a declaration, a bug fix), so the seam
+stands on the rule and not on evidence, and principle 11 says one consumer is
+not a shared concept. `deploy/verifier/local/bake.d/` is the same
+consumer's headless-Chromium bake step, and that diff is unread too. Each becomes `live` in the
+rung that gives it a reader and a case, in one diff with this row.
+
 
 ## Interfaces
 
@@ -231,17 +422,28 @@ refuses a unit whose organ is missing, at the leg, and nothing reads this field
 to decide whether to bring a stack up. `shards` is `0` (indivisible) or
 `N-capable` (the unit's body takes a `k/N`). A unit that shards by a registered
 population names that population in `composed-of` after its legs — `selftest`
-names its leg and then every drive the leg walks, in the order it walks them,
-so a reader can see what one shard holds; that order is derived from
-`scripts/check.sh`'s own `./scripts/tests/test_<name>.sh` invocation lines and
-is never typed.
+names its leg and then every drive the leg walks, in the order it walks them;
+that order is derived from `scripts/check.sh`'s own
+`./scripts/tests/test_<name>.sh` invocation lines and is never typed. **Which
+shard holds which member is not that order**: the `selftest` unit's `k/N` is a
+**duration-balanced partition** (LPT — longest first into the lightest shard)
+over the walls recorded in `scripts/gate_member_durations.json`, read through
+the always-on leg's own reader, with a member the file does not name taking the
+median of the rows that do. It is deterministic for a table and an N, so every
+box computes the same assignment; each shard prints its member count, its
+predicted seconds, the table it read and that table's machine; and with **no
+table at all the split falls back to the index round-robin and says so** — the
+file is a hint and its absence means unmeasured, never a refusal. The reason it
+is not a round-robin: the drives' walls differ by two orders of magnitude, so
+balancing the COUNT balanced nothing (BOXBANK-20's shard 0 drew the engine's own
+self-test and every index ≡ 0 member, and the split got WORSE past ten boxes).
 
 | unit | needs | shards | composed-of |
 |---|---|---|---|
 | `static` | db | 0 | ruff,mypy,import-linter,djb-checks,house-rules,migrations,goalpost-census,queue-index,db-pin,archaeology,adr-census,dangling-docs,loop-names,ci-env,deploy-check,fe,collectstatic |
 | `supply-chain` | network | 0 | supply-chain |
 | `pytest-x2` | db,redis,temporal,minio,meilisearch | N-capable | temporal-census,partition,pytest-x2,own-tree-census |
-| `selftest` | db,docker,temporal | N-capable | selftest,backup_restore,sweep,pm_merge,pm_fold,rung_tidy,pm_push,secrets_scan,secrets_baseline_guard,setup_env,scripts_census,archaeology_loop,fe_leg,db_pin,loop_tier,loop_scope,fast_censuses,loop_ledger,rung_start,db_template,serve_port,runbook_recipes,gate_lease,verify_start,db_zsh,publish,queue_index,test_impact,loop_metrics,gate_explain,drive_preamble,pipefail_readers,list_legs,shard_census,verifier_image,verifier_box,selftest_leg,stage |
+| `selftest` | db,docker,temporal | N-capable | selftest,backup_restore,sweep,pm_merge,pm_fold,rung_tidy,pm_push,secrets_scan,secrets_baseline_guard,setup_env,scripts_census,archaeology_loop,fe_leg,db_pin,loop_tier,loop_scope,fast_censuses,loop_ledger,rung_start,db_template,serve_port,runbook_recipes,gate_lease,verify_start,db_zsh,publish,divergence_census,queue_index,test_impact,loop_metrics,gate_explain,drive_preamble,pipefail_readers,list_legs,shard_census,verifier_image,verifier_box,local_legs,selftest_leg,stage |
 | `full-house-rules` | none | 0 | full-house-rules |
 
 `secrets`, `always-on` and `pytest` are **not** in the table: all three are
@@ -352,17 +554,19 @@ nothing image-keyed to send out. Driven by
 
 **What the SHARDED shape costs, declared.** CI hands each runner one unit, and the `pytest-x2` unit is split `k/N` (`--leg pytest-x2 --shard k/N`). Each shard still runs **two passes over its own group under one seed**, so the idempotency claim the second pass earns — *pass 1 left nothing behind* — narrows to **WITHIN a shard**: a test that leaks state which only a test in a *different* group would trip on is invisible to that run. It is not invisible for long. Group membership is a function of the seed, and CI mints a fresh seed per run (`DJB_GATE_PYTEST_SEED`, derived once and handed to every row), so a cross-shard leak co-shards with probability ≈ 1/N per run and surfaces as a red pass 2 within a few runs rather than never. The **unsharded whole-suite two-pass belt is the local `pm_push.sh --bank` with no `--on-boxes`**, which is unchanged and runs both passes over the whole collection on one machine. `--bank --on-boxes N` splits `pytest-x2` across boxes by the same `k/N`, so it **INHERITS this narrowing rather than closing it** — and the row it composes says so in its own `shards=` field, which is the only place a reader afterwards can tell a sharded bank from an unsharded one. **The bank closes it since ADR gate-1's 2026-09-18 amendment**: the pytest shards run one pass and the acceptance box's whole-suite two passes under one seed are the leak proof, composed into the row's `leak-proof=` field, and a row that ran one pass without it is not honoured. A nightly unsharded CI run is priced out (a fourth run kind on a private repository's billed minutes); the trigger to buy it is a red on main's bank that a sharded CI run had passed.
 
-**The bank on boxes, and the ONE row it composes.** `./scripts/pm_push.sh --bank --on-boxes N` is the third wired ritual form beside `pm_merge.sh --bank` and `pm_push.sh --bank`: it folds, reads `./scripts/check.sh --list-legs`, and runs **one `--leg` per verifier box** — the indivisible units one box each, `pytest-x2` split P ways and the last shardable unit S ways, N = 3 + P + S over today's five units, **derived from that listing and never typed** (`N < 5` is refused, and so is any N short of the units the listing actually declares). **This Mac measures nothing**: it takes no machine-wide lease and no pytest slot, so a builder's `--loop` keeps its slot throughout a bank. Every shard's log and exit status are fetched and **composed here**, and the composition refuses rather than judges — exit **2** with NO row for a shard that exited 2, a shard whose status or log never came back, a box reclaimed mid-flight, a shard whose printed tree is not the key, or a union of `composed-of:` that does not equal the listing's own leg set and cover `FULL_LEGS`; exit **1** naming each red shard, also with no row. **The row has one writer** — `gate_ledger_record` — and one grammar, the ordinary full row with the sanction saying how it was earned:
+**The bank on boxes, and the ONE row it composes.** `./scripts/pm_push.sh --bank --on-boxes N` is the third wired ritual form beside `pm_merge.sh --bank` and `pm_push.sh --bank`: it folds, reads `./scripts/check.sh --list-legs`, and runs **one `--leg` per verifier box** — the indivisible units one box each, `pytest-x2` split P ways and the last shardable unit S ways, N = 3 + P + S over today's five units, **derived from that listing and never typed** (`N < 5` is refused, and so is any N short of the units the listing actually declares). **This Mac measures nothing**: it takes no machine-wide lease and no pytest slot, so a builder's `--loop` keeps its slot throughout a bank. Every shard's log and exit status are fetched by that shard's own worker and **composed here**, and the composition refuses rather than judges — exit **2** with NO row for a shard that exited 2, a shard whose status or log never came back, a box reclaimed mid-flight, a shard whose printed tree is not the key, or a union of `composed-of:` that does not equal the listing's own leg set and cover `FULL_LEGS`; exit **1** naming each red shard, also with no row. **The row has one writer** — `gate_ledger_record` — and one grammar, the ordinary full row with the sanction saying how it was earned:
 
 ```
 v1 <post-fold tree> full <utc> <FULL_LEGS, with pytest-x2 as pytest-x2/1 on a one-pass bank> caller=pm-bank sanction=push-wall boxes=<N> shards=<label,…> waited=0 took=<slowest pytest shard> leak-proof=acceptance:<box id> rc=0
 ```
 
-so `scripts/githooks/pre-push` honours it through exactly the lookup it already does, `waited=0` is the honest answer (this bank queued for nothing), and a row whose legs field is short of `FULL_LEGS` is still not honoured. **The member grammar is `<leg>[/<passes>]` and the `leak-proof=` field is appended last**, both since ADR gate-1's amendment: a shard planned at `--passes 1` names `pytest-x2/1` in its own `composed-of:` and in the row, the field names the acceptance box that ran the whole-suite two-pass proof and the status it exited, and `gate_ledger_lookup` covers `pytest-x2/1` only where that field is present and green — for that unit alone, because the proof is a pytest run and vouches for pytest. An absent suffix still means two passes and every row written before the field existed parses exactly as it did; the composition compares the union of `composed-of:` against the listing with the pass count taken OFF, because the count is a property of the run and never of the unit. The plan decides it before any box is launched — one pass per suite shard exactly when an acceptance checkout could be read, two for every one of them when it could not, and never a mixture — and a shard whose banner disagrees with its plan line is exit **2** with no row, beside the other ways the plan and the shards can disagree. **A detach that exited 255 is the transport and gets ONE more go**: `up` returns on the SSM agent's `Online` and the SSH tunnel is a few seconds behind it, so a `leg` fired in that window comes back with ssh's own 255 and an EMPTY log — no gate ran — and a whole bank refused with every box up and paid for. The bank waits (`DJB_BANK_DETACH_RETRY_SECONDS`, default 15), prints the wait and the retry, and detaches once more; **any other non-zero is not retried**, because it is the wrapper or the box saying something real and a second detach would risk a second copy of a leg already running. **A shard NEVER falls back to on-demand on its own**: the bank sets `DJB_VERIFIER_BANK_SHARD` around each shard's `up`, which turns `scripts/verifier_box.sh`'s Spot→on-demand fallback into a refusal that prints the Spot code it saw and the on-demand hour it declined to buy — N shards each answering a capacity refusal with an on-demand box is N boxes against a quota an order of magnitude smaller than the Spot one, bought without anybody deciding to; the valve is `DJB_VERIFIER_ON_DEMAND_OK="<reason>"`, the reason prints in the bank's table, and a SINGLE `up` keeps the fallback (printed, with the price) because one box is a decision an operator is standing in front of. The price comes from the Price List API through `DJB_VERIFIER_PRICING_REGION`, which has no default and prints as unknown when unset. **The market each box is actually on is EC2's `InstanceLifecycle`, never the market the launch asked for** — `up` prints it as its own `market` line, `census` carries it as a column, and the bank's shard table keeps it, because afterwards the boxes are gone and the table is all there is to cost the bank from. Every launched box is taken down on green, on red, on exit 2 and on a signal; a `down` that fails names the hand and the bank's own status stands. Driven by `scripts/tests/test_pm_push.sh` (every refusal, the plan against a planted listing, the seven composition plants, the composed row's grammar, the hook honouring it, and the teardown on all three exits) — which stubs the wrapper and asserts the SEAM's argv, `scripts/verifier_box.sh leg <id> --unit U [--shard k/N] [--passes 1] --log leg`, and nothing past it.
+so `scripts/githooks/pre-push` honours it through exactly the lookup it already does, `waited=0` is the honest answer (this bank queued for nothing), and a row whose legs field is short of `FULL_LEGS` is still not honoured. **The member grammar is `<leg>[/<passes>]` and the `leak-proof=` field is appended last**, both since ADR gate-1's amendment: a shard planned at `--passes 1` names `pytest-x2/1` in its own `composed-of:` and in the row, the field names the acceptance box that ran the whole-suite two-pass proof and the status it exited, and `gate_ledger_lookup` covers `pytest-x2/1` only where that field is present and green — for that unit alone, because the proof is a pytest run and vouches for pytest. An absent suffix still means two passes and every row written before the field existed parses exactly as it did; the composition compares the union of `composed-of:` against the listing with the pass count taken OFF, because the count is a property of the run and never of the unit. The plan decides it before any box is launched — one pass per suite shard exactly when an acceptance checkout could be read, two for every one of them when it could not, and never a mixture — and a shard whose banner disagrees with its plan line is exit **2** with no row, beside the other ways the plan and the shards can disagree. **A detach that exited 255 is the transport and gets ONE more go**: `up` returns on the SSM agent's `Online` and the SSH tunnel is a few seconds behind it, so a `leg` fired in that window comes back with ssh's own 255 and an EMPTY log — no gate ran — and a whole bank refused with every box up and paid for. The bank waits (`DJB_BANK_DETACH_RETRY_SECONDS`, default 15), prints the wait and the retry, and detaches once more; **any other non-zero is not retried**, because it is the wrapper or the box saying something real and a second detach would risk a second copy of a leg already running. **The boxes are spread over the zones the WRAPPER lists**: `verifier_box.sh zones` is read ONCE per bank and the plan's fifth column is `zones[i mod n]` in plan order, the acceptance box taking the next place after the last shard; a ring that cannot be read or comes back empty is exit **2 before a single `up`**, because Spot capacity is a per-availability-zone fact and a bank in one zone is a bank that loses every box to one event. **A RECLAIMED shard is one more box, in the NEXT zone, ONCE** — the old id stays on the teardown list (a reclaimed instance is `already gone` to a `down`, exit 0 and not a refusal) and the new one joins it, the leg is detached again under the same 255 rule, the wait and both fetches are redone, and the table prints `retried-from <old id> (<spot status>)` under that shard's row; the composed ROW gains nothing. A shard reclaimed TWICE is the answer this bank always gave — **LOST, never red** — and so is a retry whose own box would not come up. The acceptance box gets the same one retry, and needs it more than any shard: since ADR gate-1's amendment every pytest shard runs one pass, so a reclaimed ninth box is a bank with no leak proof at all. **A box that LAUNCHED and whose `up` then failed is still taken down**: the launch worker reads the wrapper's `launched <id> az <az>` line and appends it to the teardown list BEFORE it reads `up`'s exit status, because `up`'s tunnel probe dies before the `instance` line is printed and a box named by nothing this script keeps is a box that bills until its own tag expires. **Every bank `up` carries `--ttl 1 --idle 30`** and the header says so (`box lifetime: 1h hard, 30m idle`): the teardown is a trap and no shell covers a SIGKILL, so the box's own ceiling and idle reaper are what a killed bank rests on, and one hour is comfortably above the longest measured leg. **The idle half stays the image's own thirty minutes, and a shorter one is a defect rather than a tighter belt** — the box's idle clock starts when its LEG EXITS, so a pytest shard done at two and a half minutes is idle for as long as the selftest unit keeps running (twenty minutes on a tree where `quality/rules.yaml` moved); at ten it was reaped out from under the bank, and what came back was `box gone (terminated)`: no log, no status, and a leak proof composed as LOST over a tree every shard passed. **Each shard's log and status are fetched BY THE WORKER THAT WAITED ON IT**, the moment its own `wait` returns, and the acceptance box's four files by the worker that ran it — there is no join-then-fetch phase, so nothing is ever asked of a box that has been idle since another unit started. **A red bank NAMES the first failing test and the command that replays it** — the acceptance box's `pass1.log` and `pass2.log` are fetched with the shards' logs, before the teardown, and a red leak proof or a red pytest shard prints `first failing: <nodeid> (<pass 2 | the shard>; <n> FAILED) - replay: ./scripts/test.sh -n 16 --randomly-seed=<seed> <nodeid>` beside the table (`none named` when the log carries no `FAILED` line, which is a pass that died without a summary). The line is printed and composed NOWHERE: a red bank writes no row, and `gate_ledger_record`'s grammar is untouched. **A shard NEVER falls back to on-demand on its own**: the bank sets `DJB_VERIFIER_BANK_SHARD` around each shard's `up`, which turns `scripts/verifier_box.sh`'s Spot→on-demand fallback into a refusal that prints the Spot code it saw and the on-demand hour it declined to buy — N shards each answering a capacity refusal with an on-demand box is N boxes against a quota an order of magnitude smaller than the Spot one, bought without anybody deciding to; the valve is `DJB_VERIFIER_ON_DEMAND_OK="<reason>"`, the reason prints in the bank's table, and a SINGLE `up` keeps the fallback (printed, with the price) because one box is a decision an operator is standing in front of. The price comes from the Price List API through `DJB_VERIFIER_PRICING_REGION`, which has no default and prints as unknown when unset. **The market each box is actually on is EC2's `InstanceLifecycle`, never the market the launch asked for** — `up` prints it as its own `market` line, `census` carries it as a column, and the bank's shard table keeps it, because afterwards the boxes are gone and the table is all there is to cost the bank from. Every launched box is taken down on green, on red, on exit 2 and on a signal; a `down` that fails names the hand and the bank's own status stands. Driven by `scripts/tests/test_pm_push.sh` (every refusal, the plan against a planted listing, the seven composition plants, the composed row's grammar, the hook honouring it, and the teardown on all three exits) — which stubs the wrapper and asserts the SEAM's argv, `scripts/verifier_box.sh leg <id> --unit U [--shard k/N] [--passes 1] --log leg`, and nothing past it.
+
+**The docs-only push path.** A ledger, readouts, queue or ADR-signature commit moves the tree the verdict is keyed on and moved nothing any leg of the gate executes, and it paid a whole bank for that — three sequential banks in the v2.1 tail, 28 minutes for eight of them in one wave. So `pm_push.sh --bank`, **both arms, before a lease, a pytest slot or a single `up`**, asks one question: is every path changed since the nearest ancestor tree carrying an HONOURED full row on the DECLARED LIST? The list is `GATE_DOCS_ONLY_PATHS` in `scripts/gate_ledger.sh` and it is the rule's whole text — `docs/**`, `README.md`, `CLAUDE.md`, `.claude/skills/**`, `scripts/test_impact.json`; **`CHANGELOG.md` and `TEMPLATE_VERSION` are OUT by measurement** (pytest reads both, so a release still pays one bank). **The map is admitted and no longer ARRIVES**: it stays on the list, but since it rides the next bank's fold commit rather than the PM's ledger commit (the map row below) a ledger push's delta does not name it, so the reader derivation stops selecting `scripts/tests/test_pm_push.sh` — 116 s of the 244 s of readers Row 12 measured. The source is followed through a reuse row's `from=`, so the delta is always taken against a tree a gate MEASURED and never against one that inherited. The **readers are derived per path and run on this Mac**, each printed with its seconds: `--leg static` always (adr-census, dangling-docs, goalpost-census, queue-index, archaeology and the house-rules engine all read `docs/`), `--leg full-house-rules` when a path is read literally under `quality/**`, and every drive whose own declaration covers the path — a *literal read* being a quoted value or a YAML `file:` entry, never a backtick or a comment, which is the measured difference between refusing the two commits this exists for and admitting them. A literal read under `apps/**` or `config/**` is a **refusal naming `file:line`**. The row is the ORDINARY full row, written by the one writer, with the legs field and `leak-proof=` **copied from the source row** and the sanction saying how it was earned — `sanction=docs-only from=<M> paths=<n> readers=<csv>` — so `pre-push` honours it through the lookup it already does and nothing in the hook or in `gate_ledger_lookup` changed. **Every other outcome is the full bank and says so**, ending in "full bank": a path off the list, a source row that is not honoured (with the lookup's own note beside it), a reader that exited 2, the typed valve `DJB_BANK_MEASURE=1`. A reader that goes **RED is exit 1** — a red tree, no row, nothing pushed. The declared blind spot is a docs path a module reaches by directory walk, glob or computed name: invisible to all three derivations, and belted by the next push that is not docs-only. Driven by `scripts/tests/test_loop_ledger.sh` (the source chain, the list, the readers) and `scripts/tests/test_pm_push.sh` (both arms, the row's grammar, every refusal, the hook). **What it costs is not written here, because the road prints it**: every run ends in `docs-only reuse of <M> — readers <s> s, total <s> s` with a line per reader above it and the source-walk overhead on its own line, so the cost is measured at each push rather than recorded in a file that cannot notice it changing.
 
 **The image, built once, by the bank (ADR deploy-4a, PROPOSED).** After the row is written and before the boxes go down, ONE box — the acceptance box, the one box outside the composed verdict — asserts its own `deploy/provision.sh image-tag` against the tag the row was keyed on, mints a registry token under ITS OWN instance role (`deploy/iam/verifier_bootstrap.sh` prints the `put-role-policy` that grants it, scoped to this namespace's two repositories and carrying no delete), builds `--target web` and `--target worker` and pushes both under `tree-<12hex>`; the bank prints the seconds and the registry's own digests, and `.github/workflows/ci.yml`'s `images` job skips a tag the registry already holds. **Every failure here is printed and the row stands** — no registry coordinate, a tag that is not this tree's, a build or push that failed: an image is downstream of a verdict and never part of one, and CI's job is the fallback that builds what the registry lacks. What the bank pushes is what the box builds natively (`linux/arm64`), which narrows deploy-4 (a)'s two-architecture manifest for a bank-built tag — the owner's to sign with the amendment.
 
-**The test-impact map, and it is a PROJECTION and never truth (principle 9).** `scripts/test_impact.json` is tracked, regenerated per wave the way `scripts/pytest_durations.json` is, and says for every collected test which checkout-relative source files that test EXECUTED. **Its owner is the acceptance run**: `pm_push.sh --bank --on-boxes N` brings up ONE extra box labelled `acceptance`, outside `bank_boxes_plan` and outside the composition, which runs the whole suite twice — pass 1 under `--cov=apps --cov=config --cov-context=test` so every measured line carries the nodeid that executed it, pass 2 plain — and then runs `scripts/test_impact.py write` on the box to invert pass 1's coverage database into the map. The bank **fetches** the file into the working tree, prints `git add scripts/test_impact.json`, and **commits nothing** (a bank takes no commit); the PM commits it as it commits the durations file, and the next bank in that checkout refuses a dirty tree until that has happened, which is the same rule every other derived file lives by. **Its status is printed and composed NOWHERE** — not in `lost`, `red`, `foreign` or `kbad`: a measurement may not refuse a claim every shard passed, so a coverage run that died or a writer that could not look each cost one wave of the map and nothing else, and the loop keeps the closure scope it has today. **The LEAK PROOF beside it is the opposite kind of thing, on the same box and in the same file.** Since ADR gate-1's amendment that box's two whole passes run under ONE seed minted on the box, `-n 16` on both, each under `set +e` writing its own status into `~/verify/<rung>/proof.txt` as `seed=<n> workers=<n> pass1=<rc> pass2=<rc> map=<rc>` — and the bank fetches that file to `<sink>/acceptance.proof` and reads it exactly like a shard's: no box, no file, nothing parsable or no seed is **`lost`** (exit 2, no row, saying that one pass was measured and nothing proved what it left behind), a non-zero `pass1=` or `pass2=` is **`red`** (exit 1, no row, naming the box and its log), and only a green pair reaches the row as `leak-proof=`. **`map=` is the measurement half of that same file and decides nothing** — the two roles separate at the `rc` each one wrote, so a bank whose passes are green and whose map writer died writes the row and prints that the map was not written. Where there can be no acceptance box at all (its checkout path is unreadable) the shards run two passes each and the bank is byte-for-byte the one it was before the amendment. **The census is the map's whole contract**: every collected nodeid is in `tests` or in `unmapped` with a reason in words, never neither, never both, and never an empty list — an empty list reads downstream as "this test touches nothing" and is never selected again, for any change, ever — and a nodeid the collection has and the coverage database has no context for is exit 2 with no file written. **What the map cannot see, declared** (`scripts/test_impact.py`'s header): what a test reaches through a subprocess, and everything that is not Python — templates, fixtures, `.env`, assets read by path — so a reader that SELECTS from the map owes a fallback for a changed file the map has never recorded. Driven by `scripts/tests/test_test_impact.sh` (the census, the two could-not-looks, determinism) and, for the box and the composition, `scripts/tests/test_pm_push.sh`.
+**The test-impact map, and it is a PROJECTION and never truth (principle 9).** `scripts/test_impact.json` is tracked, regenerated per wave the way `scripts/pytest_durations.json` is, and says for every collected test which checkout-relative source files that test EXECUTED. **Its owner is the acceptance run**: `pm_push.sh --bank --on-boxes N` brings up ONE extra box labelled `acceptance`, outside `bank_boxes_plan` and outside the composition, which runs the whole suite twice — pass 1 under `--cov=apps --cov=config --cov-context=test` so every measured line carries the nodeid that executed it, pass 2 plain — and then runs `scripts/test_impact.py write` on the box to invert pass 1's coverage database into the map. The bank **fetches** the file into the working tree and **commits nothing** (a bank takes no commit); **the NEXT bank's FOLD commits it**, because `scripts/test_impact.json` is on `scripts/pm_fold.sh`'s typed derived list and is the one entry there that clause 1 tolerates ALREADY DIRTY — no step of a fold can regenerate a map only a two-pass acceptance run can write, so the fold ABSORBS it rather than regenerating it and says so in its own subject (`fold: acceptance map absorbed`) and on an `absorbed` line at the top of the run. **It left the PM's hands because a hand commit put the map in the next ledger push's delta**, which made `scripts/tests/test_pm_push.sh` (116 s, it declares the map) a derived reader of every docs-only push; a deleted map is still a dirty tree, and the work beside an absorbed path is still refused (`scripts/tests/test_pm_fold.sh`). **Its status is printed and composed NOWHERE** — not in `lost`, `red`, `foreign` or `kbad`: a measurement may not refuse a claim every shard passed, so a coverage run that died or a writer that could not look each cost one wave of the map and nothing else, and the loop keeps the closure scope it has today. **The LEAK PROOF beside it is the opposite kind of thing, on the same box and in the same file.** Since ADR gate-1's amendment that box's two whole passes run under ONE seed minted on the box, `-n 16` on both, each under `set +e` writing its own status into `~/verify/<rung>/proof.txt` as `seed=<n> workers=<n> pass1=<rc> pass2=<rc> map=<rc>` — and the bank fetches that file to `<sink>/acceptance.proof` and reads it exactly like a shard's: no box, no file, nothing parsable or no seed is **`lost`** (exit 2, no row, saying that one pass was measured and nothing proved what it left behind), a non-zero `pass1=` or `pass2=` is **`red`** (exit 1, no row, naming the box and its log), and only a green pair reaches the row as `leak-proof=`. **`map=` is the measurement half of that same file and decides nothing** — the two roles separate at the `rc` each one wrote, so a bank whose passes are green and whose map writer died writes the row and prints that the map was not written. Where there can be no acceptance box at all (its checkout path is unreadable) the shards run two passes each and the bank is byte-for-byte the one it was before the amendment. **The census is the map's whole contract**: every collected nodeid is in `tests` or in `unmapped` with a reason in words, never neither, never both, and never an empty list — an empty list reads downstream as "this test touches nothing" and is never selected again, for any change, ever — and a nodeid the collection has and the coverage database has no context for is exit 2 with no file written. **What the map cannot see, declared** (`scripts/test_impact.py`'s header): what a test reaches through a subprocess, and everything that is not Python — templates, fixtures, `.env`, assets read by path — so a reader that SELECTS from the map owes a fallback for a changed file the map has never recorded. Driven by `scripts/tests/test_test_impact.sh` (the census, the two could-not-looks, determinism) and, for the box and the composition, `scripts/tests/test_pm_push.sh`.
 
 **Database** — `scripts/db.sh` derives `DATABASE_NAME` as `djb_<branch>_<8-hex path hash>`, so every checkout — clone or worktree, same branch or not — gets its own database on the one compose Postgres; a `DATABASE_NAME` already in the environment wins over the derivation, and `setup.sh` persists the derived name into `.env` so a bare `manage.py` resolves the same database the scripts do — reconciling a stale pin on every run unless a `# pinned` comment line sits directly above the bare `DATABASE_NAME=<name>` line (the deliberate-pin marker — its own line, never inline, because `environ.read_env` and docker `--env-file` read an inline comment INTO the value; `db.sh` refuses the inline form and prints the disagreement either way). Test DB is `test_` + that name (Django default).
 

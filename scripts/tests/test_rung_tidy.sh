@@ -79,6 +79,10 @@ ROOT="$(pwd -P)"
 TIDY_SRC="$ROOT/scripts/rung_tidy.sh"
 NOTES_SRC="$ROOT/scripts/budget_notes.sh"
 FOLD_SRC="$ROOT/scripts/pm_fold.sh"
+# The declaration reader `pm_fold.sh` calls, and the refusal seam that library
+# sources on its first lines. Both are copied into every fixture below.
+LEDGER_SRC="$ROOT/scripts/gate_ledger.sh"
+REFUSE_SRC="$ROOT/scripts/gate_refuse.sh"
 CHECK_SRC="$ROOT/scripts/check.sh"
 FE_SRC="$ROOT/scripts/fe_gate.sh"
 
@@ -179,6 +183,14 @@ fixture_repo() {
     cp "$NOTES_SRC" "$REPO/scripts/budget_notes.sh"
     cp "$FOLD_SRC" "$REPO/scripts/pm_fold.sh"
     chmod +x "$REPO/scripts/pm_fold.sh"
+    # `pm_fold.sh` reads this checkout's `derived-tree-paths` declarations by
+    # CALLING `gate_ledger.sh`'s reader rather than carrying a second parser,
+    # and it refuses at exit 2 without it; `gate_refuse.sh` is the seam that
+    # library sources on its first lines. A fixture missing either reds every
+    # case that reaches the fold, for the harness's reason and not the
+    # subject's.
+    cp "$LEDGER_SRC" "$REPO/scripts/gate_ledger.sh"
+    cp "$REFUSE_SRC" "$REPO/scripts/gate_refuse.sh"
 
     # Two sections, and one key carrying `::` — every `out_schema_fields` key in
     # the real file does, and the reader's "find the LAST `: N`" rule is the

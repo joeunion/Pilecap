@@ -49,6 +49,7 @@ fall while the verdict does not — and it is at the foot of this file under
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 # The plant-path shape every fixture entry uses: `apps/<label>/<file>`.
@@ -171,6 +172,33 @@ def residence_census(rules: list[dict], optional: frozenset[str]) -> list[tuple[
         if app is not None:
             found.append((str(rule["id"]), app))
     return found
+
+
+#: An id the TEMPLATE minted: a plain integer (ADR gate-5). Spelled here as
+#: well as in `quality/gate.py` because this module is the one that partitions
+#: the census, and a partition that asked the engine for the predicate would
+#: import the engine.
+_TEMPLATE_ID_RE = re.compile(r"^\d+$")
+
+
+def split_residence_census(
+    census: list[tuple[str, str]],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """(the template's members, the product's) — D4, ADR gate-5.
+
+    THE NUMBER IS A TEMPLATE FACT. `selftest_residence_backlog` was measured
+    over the template's own rules and is folded into every product unchanged; a
+    product that added namespaced rules and found the census one over would
+    have had to RETYPE a number it never measured, which is how a backlog stops
+    meaning anything. So the recorded backlog holds the template's members and
+    nothing else, and a product's own rules are counted against zero: the first
+    namespaced rule that plants its whole canary plan into an optional app is
+    exit 2, named, at the moment it is written — which is the only moment its
+    author can cheaply re-home a form.
+    """
+    template = [row for row in census if _TEMPLATE_ID_RE.match(row[0])]
+    product = [row for row in census if not _TEMPLATE_ID_RE.match(row[0])]
+    return template, product
 
 
 # --- registry-fed floors ---------------------------------------------------------

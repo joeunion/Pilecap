@@ -38,6 +38,8 @@ those arrows are where a rename goes unnoticed until a customer notices first.
 from __future__ import annotations
 
 import importlib
+import json
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -48,7 +50,7 @@ from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.accounts.services import create_user
-from apps.core import bridge
+from apps.core import authz, bridge
 from apps.core.actor import actor_for, system_actor
 from apps.core.asyncdb import run_db
 from apps.core.models import Grant, Membership, Organization, Role, RolePermission, Tenant
@@ -64,6 +66,7 @@ from apps.realtime.tests.test_hierarchy import (
     in_branch,
 )
 from apps.realtime.tests.websocket import Socket
+from apps.usage.events import THRESHOLD_CROSSED
 
 pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.asyncio]
 
@@ -380,6 +383,14 @@ def test_every_event_noun_maps_to_a_kind_or_a_declared_none() -> None:
     prints — so the census walks the published list and not a second derivation
     of it.
 
+    **The failure NAMES THE GATE, because the gate carries the fix.** Since the
+    rule-59 amendment (SIGNED by the owner 2026-09-21) an undecided noun
+    no longer raises out of `emit()` — the write commits and the socket drops
+    the frame — so this census is the runtime half of a refusal whose STATIC
+    half prints the `EVENT_KINDS` line to paste. A reader who gets here is one
+    `--explain 59` away from that line, and the refusal below says so rather
+    than leaving them to find out that the two are the same subject.
+
     **Absent:** before ADR core-27 reached this door there was no mapping at all
     and `kind_of_event` did not exist; the six nouns that are not kinds had no
     answer.
@@ -389,7 +400,23 @@ def test_every_event_noun_maps_to_a_kind_or_a_declared_none() -> None:
     names = sorted({str(entry["name"]) for entry in _events_payload()})
     assert len(names) >= 30, names
 
-    resolved = {name: kind_of_event(name) for name in names}
+    resolved: dict[str, str | None] = {}
+    undecided: dict[str, str] = {}
+    for name in names:
+        try:
+            resolved[name] = kind_of_event(name)
+        except ImproperlyConfigured as refusal:
+            undecided[name] = str(refusal)
+    assert not undecided, (
+        "these declared event names have no authorization kind and no EVENT_KINDS "
+        f"entry: {sorted(undecided)}. Since the rule-59 amendment `emit()` commits "
+        "the write and logs `events.emit.kind_undecided`, and the socket drops every "
+        "frame of them (`consumers._may_read`) — so nobody is told these happened. "
+        "The gate refuses the tree once per noun and PRINTS THE LINE TO PASTE: run "
+        "`uv run python -m quality.gate --explain 59`, or read rule 59's "
+        "`undecided_noun` findings in the gate output.\n"
+        + "\n".join(f"  {name}: {detail}" for name, detail in sorted(undecided.items()))
+    )
     assert set(resolved) == set(names)
 
     # Non-vacuity, both ways: at least one noun answers with a kind and at least
@@ -428,6 +455,66 @@ def test_a_declared_none_is_not_the_same_answer_as_an_unmapped_noun() -> None:
     assert kind_of_event("connections.webhook.received") == "inbound_webhook"
     with pytest.raises(ImproperlyConfigured):
         kind_of_event("search.gizmo.polished")
+
+
+def test_a_frame_whose_noun_is_undecided_is_dropped(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The socket's half of the undecided noun: one frame lost, never a connection.
+
+    `apps/events/tests/test_emit_undecided.py` cites this test by name as the
+    proof of the other half of C1's amendment — `emit()` no longer raises on a
+    noun nobody decided about, and what makes that safe is that the SOCKET goes
+    on refusing to deliver it. The citation was written and the test was not,
+    which is a claim wearing a status; this is the artifact it named.
+
+    **Why a drop and not a raise.** `kind_of_event` refuses an undecided noun,
+    and a raise inside a channel-layer handler takes the CONNECTION down — one
+    undecided noun, emitted once, would disconnect every socket in the tenant.
+    `_may_read` catches it, answers False, and says `realtime.frame.kind_undecided`
+    at ERROR: the failure stays on the frame and an operator finds the line.
+
+    **Non-vacuous by construction.** The same consumer, the same read set and
+    the same noun are driven twice — once with `apps/usage`'s real
+    `EVENT_KINDS`, where `threshold` resolves to `usage_entry` and the frame IS
+    heard, and once with nobody deciding it, where it is not. A test that only
+    ever saw the second half could not tell "dropped because undecided" from
+    "dropped because this hat holds nothing".
+    """
+    from apps.realtime.consumers import TenantEventsConsumer
+
+    decider = TenantEventsConsumer()
+    decider.reads = frozenset({"usage_entry"})
+
+    # The control: the declaration is there, the noun resolves, the frame lands.
+    assert kind_of_event(THRESHOLD_CROSSED) == "usage_entry"
+    assert decider._may_read(THRESHOLD_CROSSED) is True
+    assert decider.may_hear(THRESHOLD_CROSSED) is True
+
+    # And with nobody deciding the noun — the shape `emit()` now COMMITS under.
+    # Patched at `core.authz`, where `kind_of_event` looks the function up, for
+    # the reason `test_emit_undecided.py`'s own fixture gives: deleting the real
+    # declaration would also change the tree the gate measures.
+    monkeypatch.setattr(authz, "event_kinds_of", lambda app_label: {})
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        assert decider._may_read(THRESHOLD_CROSSED) is False
+        assert decider.may_hear(THRESHOLD_CROSSED) is False
+
+    lines = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith("{")
+    ]
+    dropped = [line for line in lines if line.get("event") == "realtime.frame.kind_undecided"]
+    # Two calls above, two lines: the refusal is per FRAME and says so every
+    # time, rather than once per connection where nobody would ever see it.
+    assert len(dropped) == 2, lines
+    assert dropped[0]["event_name"] == THRESHOLD_CROSSED
+    # The detail is `kind_of_event`'s own refusal, so the log line names the
+    # noun and the file that must decide about it and is actionable alone.
+    assert "threshold" in dropped[0]["detail"]
+    assert "EVENT_KINDS" in dropped[0]["detail"]
 
 
 # --- PR3.3 · the kick, and what the reconnect computes ------------------------------

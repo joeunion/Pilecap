@@ -5,6 +5,7 @@ Fast password hashing and no HTTPS. The test database is Django's default
 """
 
 import os
+from typing import Any
 
 from .base import *  # noqa: F403
 from .base import (
@@ -72,6 +73,79 @@ PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 # `scripts/tests/test_db_template.sh`.
 _TEST_DB_TEMPLATE = os.environ.get("DJB_TEST_DB_TEMPLATE", "").strip()
 
+# --- THE TEST DATABASE DOES NOT PAY FOR DURABILITY -------------------
+#
+# WHAT IT IS FOR. A scout pass over the whole suite (SCOUT-TESTS, 2026-09-21)
+# found 1124 tests in the 26 files that mark `transaction=True` module-wide
+# costing 1030 of the suite's 1733 serial seconds, and 529 s of that in the
+# per-test TRUNCATE flush alone (median teardown 0.68 s). That flush is
+# pytest-django's `sql_flush()` — one `TRUNCATE … RESTART IDENTITY CASCADE`
+# over every table, then a COMMIT — and with `synchronous_commit` on, every
+# one of those commits blocks until the WAL record is on the disk.
+#
+# WHAT IT ACTUALLY BUYS, AND THE NUMBER IS SMALLER THAN THE ONE ABOVE. Measured
+# on one c7g.4xlarge verifier box, `-n 16`, the same 4429 tests in every run,
+# alternating arms after a discarded warm-up so that neither arm gets the cold
+# one (2026-09-21):
+#
+#   synchronous_commit=on   101.39 s · 111.15 s · 103.84 s   median 103.84 s
+#   synchronous_commit=off   99.16 s ·  97.09 s ·  98.74 s   median  98.74 s
+#
+# Every off run beat every on run, so the effect is real and it is about 5 s of
+# a ~104 s wall — roughly 5 %, not the halving of the 529 s the serial figure
+# invites you to expect. Two reasons, both worth knowing before anybody spends
+# another rung here: at `-n 16` the flush is overlapped across sixteen workers
+# rather than summed, and `synchronous_commit` removes only the COMMIT'S WAIT —
+# the relation-file work a TRUNCATE does is still there and only `fsync=off`
+# would take it (which is the paragraph below, and it is not taken). ONE PAIR
+# CANNOT SEE THIS: the first attempt ran off-then-on once and read 116 s vs
+# 105 s, i.e. the change looking 11 s SLOWER, because the second run of a pair
+# gets the warm page cache. Interleave, or measure nothing.
+#
+# A test database is a throwaway. It is created at the start of the run and
+# dropped at the end; if the machine loses power mid-suite the run is gone
+# either way, and a torn test database is re-created by the next `pytest`
+# rather than restored. Paying a real disk flush per test to protect it is
+# buying durability for data nobody will ever read again.
+#
+# `synchronous_commit = off` keeps CRASH SAFETY — the database still comes back
+# consistent, the WAL is still written, the only thing given up is the *wait*
+# and, in a crash, the last few hundred milliseconds of transactions. That
+# trade is wrong for the dev database and correct here.
+#
+# WHY IT IS A CONNECTION OPTION AND NOT `ALTER DATABASE … SET`. Per-database
+# settings live in `pg_db_role_setting`, keyed on the database's oid, and
+# **`CREATE DATABASE … TEMPLATE …` does not copy them** — so an ALTER on the
+# base `test_<db>` would be invisible to every `test_<db>_gwN` an xdist worker
+# creates for itself (and to the ones cloned from `DJB_TEST_DB_TEMPLATE`
+# above), which is where nearly all of the 529 s is actually spent. A libpq
+# `options` string travels on EVERY connection this settings module opens and
+# nothing else's, which is exactly the population that wants it, and it also
+# needs no live server at import — the constraint `scripts/test.sh` states in
+# its own "WHY NOT IN config/settings/test.py".
+#
+# WHAT IS *NOT* TAKEN, AND WHY. `fsync` and `full_page_writes` are the other
+# two halves of this trade and both are `sighup`-context GUCs: server-level,
+# settable only in `postgresql.conf` or on the postmaster's command line, never
+# per database and never per connection (`SELECT name, context FROM pg_settings
+# WHERE name IN ('fsync','full_page_writes')` on this tree's own Postgres 18
+# says `sighup` for both). The one compose Postgres (`compose.yaml`, service
+# `db`) holds this checkout's dev database, every other checkout's dev
+# database, Zitadel's identity database AND the test clones, so turning fsync
+# off there would take the durability guarantee away from real data to speed up
+# throwaway data. It is therefore deliberately NOT taken, and this comment is
+# the record of the decision rather than a TODO: a product that wants it runs a
+# SECOND Postgres for tests, which is a compose-shape change and a different
+# rung.
+_TEST_DURABILITY_OFF = "synchronous_commit=off"
+
+# Appended rather than assigned: a checkout that spelled its own `options` into
+# DATABASE_URL keeps it, for the same reason `pool` above is dropped by name.
+_test_options: dict[str, Any] = {
+    key: value for key, value in DATABASES["default"].get("OPTIONS", {}).items() if key != "pool"
+}
+_test_options["options"] = f"{_test_options.get('options', '')} -c {_TEST_DURABILITY_OFF}".strip()
+
 DATABASES = {
     "default": {
         **DATABASES["default"],
@@ -80,11 +154,7 @@ DATABASES = {
         # so an option a checkout spelled into DATABASE_URL still reaches the
         # suite. An empty-or-absent OPTIONS is fine here: `base` always writes
         # the key.
-        "OPTIONS": {
-            key: value
-            for key, value in DATABASES["default"].get("OPTIONS", {}).items()
-            if key != "pool"
-        },
+        "OPTIONS": _test_options,
     }
 }
 if _TEST_DB_TEMPLATE:
@@ -152,6 +222,25 @@ TEMPORAL_ADDRESS = "127.0.0.1:1"
 # And its own queue name, so that even a leak that got past both layers could
 # not be picked up by the worktree's running worker.
 TEMPORAL_TASK_QUEUE = "djb-tests-must-not-dial"
+
+# --- The retry backoff, in milliseconds --------------------------------------
+# The one thing the time-skipping `WorkflowEnvironment` does NOT skip is
+# activity retry backoff: it skips workflow timers, and a retry interval is the
+# server's own scheduling. So a policy at the production default of one second
+# doubling makes a five-attempt test wait 1 + 2 + 4 + 8 = 15 real seconds to
+# prove a number of attempts it already knows.
+#
+# Ten milliseconds keeps the curve — five attempts still back off, still double,
+# still hit the same ceiling arithmetic — and costs 0.15 s instead. The
+# assertions are untouched by it: what a retry test asserts is how many attempts
+# the activity got and how the run ended, and neither reads a wall clock. A test
+# that genuinely measures an interval sets its own policy rather than reading
+# this.
+#
+# The base declaration, and why one knob rather than one per policy:
+# `config/settings/base.py` § "The retry backoff every activity policy starts
+# at".
+TEMPORAL_RETRY_INITIAL_INTERVAL_SECONDS = 0.01
 
 # --- Zitadel: nothing under pytest may reach an instance --------------------
 # The same posture as Temporal above, for the same reason (ADR ident-5): the
