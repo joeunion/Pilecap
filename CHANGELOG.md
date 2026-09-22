@@ -50,6 +50,91 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.1.2] — The fold's instruments, from the first consumer's fold
+
+**A patch, and everything in it was measured on the first product to fold
+2.1.1.** Nothing here changes what the template does at run time; every item
+is a place where the fold told a product the wrong thing, or nothing, and the
+product found out by hand. The divergence census now runs on the tree you are
+folding FROM and refuses honestly when it cannot; the three places that named
+a product's fixture home named the template's tree instead; and there was no
+instrument for the one question item 7 of 2.1.1 hinges on — which of your
+rules are actually yours.
+
+### What a product does at the merge
+
+1. **On the tree you are on, before the merge:** take BOTH census files from
+   the tag you are folding, then run the census — `git show v2.1.2:scripts/divergence_census.sh > scripts/divergence_census.sh`
+   and the same for `scripts/archaeology_lib.sh`; the census refuses, exit 2,
+   naming both if only one was taken.
+2. **Before renaming any rule:** `python -m quality.gate --fold-map <your pre-merge quality/rules.yaml>`
+   (`git show <your pre-merge sha>:quality/rules.yaml > /tmp/before.yaml`).
+   It decides by NAME which rules are the template's (renumber to its number)
+   and which are yours (`<ns>-<n>`, into the drawer), names all five places an
+   id lives, and lists every fixture file the template ships that sits under
+   one of your ids — DELETE those, never `git mv` a template fixture directory.
+3. Then 2.1.1's items 3–16 as written, with its items 1, 2 and 7 corrected
+   below.
+
+### Fixed
+
+- **The divergence census runs on the tree you are folding FROM, and a run that
+  died no longer reads as a clean one.** Three defects the first consumer's
+  pre-merge run found, all in `scripts/divergence_census.sh`. (1) The census
+  reads `$RULES_FOR`, the no-fork idiom `scripts/archaeology_lib.sh` gained in
+  the same release — so run against the PREVIOUS release's library, which only
+  echoes, it died `RULES_FOR: unbound variable` mid-classification. It now
+  probes the pairing with one call before it classifies anything and refuses,
+  exit 2, naming BOTH files to take and saying that the tag is the release you
+  are merging. It names no version: this refusal only ever fires on a tree that
+  has not merged yet, so the checkout's own `TEMPLATE_VERSION` there is the
+  release you are already on — the one whose library is the problem — and a
+  derivation that hands you the wrong tag with total confidence is worse than a
+  blank you can fill in. (2) That death
+  EXITED 0: on GNU bash 3.2 a `set -u` death reaches `trap … EXIT` with
+  `$? = 0`, so a census that had classified nothing reported a clean tree. The
+  census now carries the authorship exit guard `scripts/pm_fold.sh` already
+  had — every end it authors goes through one function, and an end nobody
+  authored is exit 2 whatever the status says, naming what it means. (3) The
+  reserved-drawer count was derived with `set --`, which GLOBS: on any tree
+  that actually has the drawers, the three patterns expanded against the
+  filesystem and the count read 6 instead of 3 — and house rule 60's
+  `drawer_globs` floor reads that number, so the floor was being satisfied by
+  the tree rather than by the list, silently and in the passing direction. The
+  count is now taken with pathname expansion off.
+
+- **A product's own house-rule fixtures live in the DRAWER, and the three
+  places that teach the shape said otherwise.** `quality/gate.py::fixture_home`
+  plants a drawer rule's fixtures from `quality/local/{canary,negative}/<id>/`;
+  the engine's header, `quality/rules.yaml`'s header and 2.1.1's own release
+  note all named the same two kind directories with the `local/` segment left
+  out — which is the TEMPLATE's own fixture tree, and it holds integer ids
+  only. (The wrong string is not spelled here on purpose: the census below
+  reads prose, and a release note quoting the defect would be the defect.) A product that believed the prose planted
+  its canaries where the engine never looks — and a canary that is never
+  planted never fires, which is a dead canary reading as a pass. The sentences
+  now name the drawer, and `apps/core/tests/test_drawer_fixture_home.py`
+  derives the path from `LOCAL_CANARY_DIR` and reds if any of them drifts
+  again.
+### Added
+
+- **`python -m quality.gate --fold-map <previous rules.yaml>`** — the fourth
+  reader, and the instrument a product folding a release runs BEFORE it renames
+  a rule. It reads the product's pre-merge `quality/rules.yaml` and the
+  template's current one, matches every rule **by NAME** (never by number — the
+  number is what drifted), and prints one paste block per rule: `TEMPLATE
+  <old n> → <new n>` or `PRODUCT <old n> → <ns>-<old n>`, naming all five
+  places an id is written, the fifth being the `djb.Wnnn` registration in
+  `apps/core/checks.py`, and whose fixtures are given back by DELETE rather
+  than by a `git mv` that would nest two rules' directories. Its FIXTURES
+  section is keyed on CONTENT rather than on the id — exact bytes, then
+  whitespace-normalised bytes, then the basename as a `NAME MATCH — read it:` —
+  over everything the template's plans name, `extra_files:` included, so a
+  template fixture that rode into a drawer under a DIFFERENT number is found
+  even after a reformatter has been through it. Exit 0 with the map · exit 2 if
+  either file cannot be read or a rule carries no `name:`. Driven by `apps/core/tests/test_fold_map.py`
+  and by four cases in `scripts/tests/test_gate_explain.sh`. (HOTFIX-RULEMAP-1.)
+
 ## [2.1.1] — A product folds the template without a hand-patch
 
 **A patch, and what it patches is the fold itself.** 2.1.0 shipped correctly
@@ -106,7 +191,14 @@ each.
    it. It writes nothing, fetches nothing and moves no ref. Exit 1 on a
    divergence your own `architecture.md` does not name, printing the
    `divergence: <path> — <reason>` line to paste; exit 0 once every one is
-   named. Skip it and the merge tells you the same thing one conflict at a
+   named. **On the previous release's tree, take the census AND its classifier
+   from the tag you are folding — not the one you are on — before you run
+   either**: `git show <tag>:scripts/divergence_census.sh >
+   scripts/divergence_census.sh` and `git show
+   <tag>:scripts/archaeology_lib.sh > scripts/archaeology_lib.sh`. The two ship
+   together and the census reads an idiom the older library does not set;
+   taking one of them refuses, exit 2, naming the other.
+   Skip it and the merge tells you the same thing one conflict at a
    time, while you are in the middle of resolving them. House rule 60 is the
    gate's reading of the same census, and it SKIPS with a printed line only
    where no base is declared — declare one and a template-owned file you have
@@ -122,7 +214,14 @@ each.
    `git checkout --ours` to remember — yours stay yours, untouched. A tree
    holding none of them measures instead of guessing, and says so in its own
    banner: `scripts/test_impact.json is absent … closure scope` is
-   measure-not-stale, not a warning to clear. (E14 23abf726.)
+   measure-not-stale, not a warning to clear. **Correction, measured at the
+   first real fold: a product that has ever banked DOES get a conflict in two
+   of them** — 2.1.0 shipped `scripts/pytest_durations.json` and
+   `scripts/gate_member_durations.json`, 2.1.1 trims them, and the product had
+   edited both, so they arrive as modify/delete (`UD`); resolve by `git add`-ing
+   both, because your own measurements stand and they are your inputs now.
+   `scripts/test_impact.json` is silent only if you had already deleted it.
+   (E14 23abf726.)
 
 3. **A `max_migration.txt` conflict in a template app → `uv run python
    manage.py fold_migrations <app> --dry-run`, then the same command without
@@ -160,10 +259,69 @@ each.
    `template_rule_ids_through: <n>` into `quality/local/rules.yaml`**, and
    rename your own rules to `<ns>-<n>` in four places — the id, the fixture
    directory, the valve and the check tag — `git mv`-ing the fixture
-   directories as you go. Skipped, the engine exits 2 with `duplicate id`, or
+   directories as you go — into `quality/local/{canary,negative}/<ns>-<n>/`,
+   the drawer, which is where the engine plants a drawer rule's fixtures from.
+   **Do the `git mv` LAST, and check what it carried.** The merge lands this
+   release's own new fixtures into `quality/{canary,negative}/<n>/` as clean
+   adds before you move anything, so a `git mv` of a directory you also own
+   takes the template's files into your drawer with it: after moving, run
+   `git checkout v<version> -- quality/canary/<n> quality/negative/<n>` for
+   every template id you moved through, and read the drawer for files the tag
+   also ships. The first consumer moved thirteen template files that way —
+   house rule 60's whole plan among them — and found them only because ruff
+   complained. Skipped, the engine exits 2 with `duplicate id`, or
    with `product rule ids are <ns>-<n>`; and either key written into the
    template-owned `quality/rules.yaml` is refused by name, with the line that
    says where to move it. (D1 0d0e7fdf, X3 11c583c4.)
+
+   **Before you rename anything, run
+   `uv run python -m quality.gate --fold-map <your pre-merge quality/rules.yaml>`**
+   — `git show <your pre-merge sha>:quality/rules.yaml > /tmp/previous-rules.yaml`
+   produces the file. It decides which rules are yours **by NAME**, never by
+   number, because the number is the thing that drifted: it matches every rule
+   in your previous file against the template's current one and prints one
+   paste block per rule — `TEMPLATE <old n> → <new n>` for a rule of ours you
+   were carrying at another number, `PRODUCT <old n> → <ns>-<old n>` for one of
+   your own. Both directions of the mistake are silent without it: a TEMPLATE
+   rule parked under your namespace stops being folded — the next release
+   improves our copy and you keep the old one forever — and a PRODUCT rule left
+   on a template integer collides again at the next release. The first consumer
+   moved four of our browser rules into their drawer as `<ns>-58..61` before
+   noticing.
+
+   **There is a FIFTH place a rule id is written, and item 7's four do not name
+   it.** A rule declaring `django_check_ids:` has that id REGISTERED in
+   `apps/core/checks.py` (rule 54 → `djb.W054`), and `consistency()` refuses a
+   declared id the file does not carry — `django check id … not present in
+   apps/core/checks.py`. So a renumber that stops at the id, the fixture
+   directory, the valve and the check tag reds there. The map prints that place
+   per rule, out of the rule's own declaration, keeping the letter and the width
+   it was written with (an `E` re-spelled as a `W` is a registration nothing
+   carries).
+
+   **And the fixtures move between DIFFERENT numbers, which no id-keyed census
+   can see** — the class, widened. The map's FIXTURES section is keyed on
+   CONTENT, in **three keys**, each file reported under the first that hits:
+   the exact sha; then the same bytes with **whitespace normalised**, because a
+   reformatter between two folds is the commonest single edit there is (of the
+   thirteen template fixtures that reached the first consumer's drawer, the
+   ones a formatter had touched were invisible to an exact sha); then the
+   **basename**, which survives any edit and therefore prints `NAME MATCH —
+   read it:` rather than a verdict. The population is every file under your
+   `quality/{canary,negative}/<n>/` and `quality/local/{canary,negative}/<ns>-<n>/`,
+   against everything the template's own plans name — `extra_files:` included,
+   which is where 52 of this tree's 469 fixture files live, house rule 60's own
+   plan among them. `quality/negative/50/vendored_valve.js` rode into the first
+   consumer's drawer as `…/<ns>-58/vendored_valve.js` exactly this way.
+   **And the remedy for a template rule's fixtures is DELETE, not `git mv`**:
+   after the fold `quality/canary/<old>/` also holds the template's own rule
+   `<old>` plan and `quality/canary/<new>/` already exists, so a move nests one
+   directory in the other or carries another rule's files into its home. The
+   block names the files the template ships at the new id so you can see what
+   you are deleting against. The reader exits 0 with the map and 2 if either file cannot be
+   read or a rule carries no `name:`; it never guesses. On this template,
+   mapped against its own `rules.yaml`, it prints one unchanged line per rule
+   and no fixture at all. (HOTFIX-RULEMAP-1.)
 
 8. **A ratchet red on one of YOUR apps now prints the line that records it —
    `<app>.<class>: <n>  # recorded-at <sha> [fold]` — and it goes under
@@ -264,8 +422,10 @@ each.
   integer the template release it folded had minted, which is how the engine
   tells a template rule from a product rule that typed an integer — and names
   its own rules `<ns>-<n>` in **four** places: the id, the fixture directory
-  (`quality/{canary,negative}/<ns>-<n>/`), the valve (`# rule-<ns>-<n>: <reason>`)
-  and the check tag (`<ns>.Wnnn`, where the template's are `djb.…`). The engine
+  (`quality/local/{canary,negative}/<ns>-<n>/` — in the drawer, which is where
+  the engine plants a drawer rule's fixtures from; the template's own tree
+  `quality/{canary,negative}/<n>/` holds integer ids only), the valve
+  (`# rule-<ns>-<n>: <reason>`) and the check tag (`<ns>.Wnnn`, where the template's are `djb.…`). The engine
   refuses every other shape by name, refuses a fixture directory no rule claims
   — including one under a namespace the tree never declared — and counts the
   self-test residence census over TEMPLATE ids only, so
@@ -2566,7 +2726,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.1.1...HEAD
+[Unreleased]: ../../compare/v2.1.2...HEAD
+[2.1.2]: ../../compare/v2.1.1...v2.1.2
 [2.1.1]: ../../compare/v2.1.0...v2.1.1
 [2.1.0]: ../../compare/v2.0.0...v2.1.0
 [2.0.0]: ../../compare/v1.1.0...v2.0.0

@@ -109,10 +109,85 @@ fi
 cd "$(dirname "$0")/.."
 ROOT=$(pwd -P)
 
-# The bucket rules, shared with `scripts/publish.sh`'s release census. See the
-# header: one reader for "what class is this path", not two.
+# The bucket rules AND the reserved set, shared with `scripts/publish.sh`'s
+# release census. See the header: one reader for "what class is this path", and
+# one home for "which paths are the drawers", not two of either.
 # shellcheck source=scripts/archaeology_lib.sh
 . "$ROOT/scripts/archaeology_lib.sh"
+
+# >>> exit-guard >>>
+# A CENSUS THAT DIED IS NOT A CENSUS THAT PASSED, and on the bash this repository
+# actually runs (GNU bash 3.2.57, macOS) it reads as one: when `set -u` kills the
+# shell on an unbound variable, THE EXIT TRAP SEES `$? = 0`. The repro is three
+# lines and it is written out in `scripts/tests/drive_preamble.sh` §5;
+# `scripts/pm_fold.sh` carries this same guard for the same reason. MEASURED
+# here: the first consumer's pre-merge run died on `RULES_FOR: unbound variable`
+# and EXITED 0, so the fold read a census that had classified nothing as a tree
+# with nothing to declare.
+#
+# The predicate is therefore NOT the status. It is whether an end this script
+# AUTHORED was reached — every one of them goes through `census_exit`, which is
+# the only place `exit` is spelled below this line. Neither set, and the shell
+# ended the run rather than this script.
+CENSUS_END=""
+cleanup() { :; }
+census_exit() {
+    CENSUS_END=1
+    exit "$1"
+}
+census_on_exit() {
+    local status=$1
+    cleanup
+    [ -n "${CENSUS_END:-}" ] && return 0
+    echo "" >&2
+    echo "!! divergence_census: DIED part-way (the shell ended it, status ${status})." >&2
+    echo "   The shell exited before any end this census authors. NOTHING THIS RUN" >&2
+    echo "   PRINTED IS A VERDICT — the diagnostic bash printed above this line names" >&2
+    echo "   the cause. Could-not-look, never a clean census." >&2
+    exit 2
+}
+trap 'census_on_exit $?' EXIT
+# <<< exit-guard <<<
+
+# ---------------------------------------------------------------------------
+# THE LIBRARY AND THIS SCRIPT SHIP TOGETHER, AND THIS IS WHERE THAT IS CHECKED.
+#
+# `ownership_of` below calls `rules_for "$p" >/dev/null` and reads `$RULES_FOR`
+# — the no-fork idiom `scripts/archaeology_lib.sh` gained in the same release
+# this census did, for the reason the note beside `RULES_FOR` gives. An OLDER
+# library's `rules_for` only echoes, so the read is an unbound variable, `set
+# -u` kills the shell mid-classification, and (see the guard above) the death
+# used to exit 0.
+#
+# That is not a hypothetical pairing. Item 1 of the release notes tells a
+# product to run this census BEFORE it merges — which is precisely the tree
+# where the new script sits beside the old library. So the pairing is probed
+# once, here, with one call, and a mismatch is a could-not-look that names BOTH
+# files to take rather than a `line NNN: RULES_FOR: unbound variable` blamed on
+# the tree.
+# ---------------------------------------------------------------------------
+# THE TAG IS A PLACEHOLDER, AND NOTHING HERE DERIVES IT. The version file in the
+# checkout is the obvious reader and it is the WRONG one, measured: this refusal
+# only ever fires on a tree that has NOT merged yet — running the census before
+# the fold is the whole supported order — so that file names the release the
+# product is already ON, which is exactly the release whose library lacks the
+# idiom. It would hand somebody the wrong tag with total confidence. A blank is
+# worse-looking and better: it is a blank they can fill in, because it is the
+# tag they came here to merge.
+RELEASE_REF='v<the release you are folding>'
+rules_for scripts/check.sh >/dev/null 2>&1 || true
+if [ -z "${RULES_FOR+set}" ]; then
+    echo "!! THIS CENSUS AND scripts/archaeology_lib.sh DID NOT SHIP TOGETHER." >&2
+    echo "   \`rules_for\` in scripts/archaeology_lib.sh did not set \$RULES_FOR, which is" >&2
+    echo "   the idiom this census classifies every path with. That library is older" >&2
+    echo "   than this script; the two are one release and were taken apart." >&2
+    echo "   TAKE BOTH FILES FROM THE TAG, never one — the tag is the release you are" >&2
+    echo "   MERGING, not the one this checkout is on:" >&2
+    echo "     git show ${RELEASE_REF}:scripts/divergence_census.sh > scripts/divergence_census.sh" >&2
+    echo "     git show ${RELEASE_REF}:scripts/archaeology_lib.sh   > scripts/archaeology_lib.sh" >&2
+    echo "   Could-not-look, never a clean census." >&2
+    census_exit 2
+fi
 
 IF_DECLARED=0
 while [ "$#" -gt 0 ]; do
@@ -123,7 +198,7 @@ while [ "$#" -gt 0 ]; do
         ;;
     *)
         echo "!! unknown argument '$1': divergence_census.sh takes nothing or --if-declared" >&2
-        exit 2
+        census_exit 2
         ;;
     esac
 done
@@ -132,7 +207,7 @@ say() { printf '%s\n' "$*"; }
 
 git rev-parse --git-dir >/dev/null 2>&1 || {
     echo "!! not a git checkout — this census reads git and nothing else" >&2
-    exit 2
+    census_exit 2
 }
 
 # ---------------------------------------------------------------------------
@@ -148,9 +223,22 @@ DRAWER_GLOBS='**/local/** *.local.md apps/conftest_local.py'
 # binds this number, so a member deleted from the line above has to trip the
 # floor rather than quietly narrow the reserved set. Three today: two globs
 # and one exact path.
+#
+# `set -f` AROUND IT, AND THAT IS NOT TIDINESS. `set --` splits AND GLOBS its
+# arguments, and every member of this list is a pathname pattern that the
+# shell will happily expand against the tree it is standing in. MEASURED on
+# the first consumer's checkout: with `quality/local/` and `scripts/local/`
+# present, `**/local/**` and `*.local.md` expanded to their own directories'
+# contents and the count read 6 instead of 3. Rule 60's `drawer_globs`
+# floor reads that number, so the floor was being satisfied by THE FILESYSTEM
+# rather than by the list — silent, and silent in the passing direction: a
+# member deleted from the line above could be covered by a drawer that happened
+# to hold three files. The list is a list of PATTERNS; it is counted as text.
+set -f
 set -- $DRAWER_GLOBS
 DRAWER_GLOB_COUNT=$#
 set --
+set +f
 
 # ---------------------------------------------------------------------------
 # THE SHARED SET — one file each, adjudicated BY HAND at a merge, and never a
@@ -323,7 +411,7 @@ declare_base() {
             echo "!! scripts/local/template-base is empty — a declaration that names no" >&2
             echo "   ref is not a declaration. Write the release ref you merged, or delete" >&2
             echo "   the file and let the remote derive it." >&2
-            exit 2
+            census_exit 2
         }
         return 0
     fi
@@ -349,7 +437,7 @@ template
             echo "!! a 'template' remote is configured and TEMPLATE_VERSION does not read" >&2
             echo "   as <major>.<minor>.<patch>: \"$version\". The base tag is derived from" >&2
             echo "   it, and a derivation that cannot be read is a could-not-look." >&2
-            exit 2
+            census_exit 2
             ;;
         esac
         BASE="v$version"
@@ -381,10 +469,9 @@ if ! declare_base; then
 fi
 
 # --- the owned set, derived over the whole tree -----------------------------
-OWNED=$(mktemp "${TMPDIR:-/tmp}/djb-divergence-owned.XXXXXX") || exit 2
-SEEN=$(mktemp "${TMPDIR:-/tmp}/djb-divergence-seen.XXXXXX") || exit 2
+OWNED=$(mktemp "${TMPDIR:-/tmp}/djb-divergence-owned.XXXXXX") || census_exit 2
+SEEN=$(mktemp "${TMPDIR:-/tmp}/djb-divergence-seen.XXXXXX") || census_exit 2
 cleanup() { rm -f "$OWNED" "$SEEN"; }
-trap cleanup EXIT
 
 # TRACKED PLUS UNTRACKED-AND-NOT-IGNORED, which is the set the gate itself
 # measures (`git add -A`, scripts/gate_ledger.sh). A product's new leg dropped
@@ -396,12 +483,12 @@ trap cleanup EXIT
     git ls-files --others --exclude-standard
 } | LC_ALL=C sort -u >"$SEEN" || {
     echo "!! git could not list this tree — could-not-look, never an empty census" >&2
-    exit 2
+    census_exit 2
 }
 [ -s "$SEEN" ] || {
     echo "!! the census saw no paths at all — this reader is looking at the wrong" >&2
     echo "   tree, and that is a could-not-look, never an empty owned set." >&2
-    exit 2
+    census_exit 2
 }
 
 # THE REDIRECT IS ON THE LOOP, NOT ON THE `printf`. A `>>` inside the body
@@ -427,7 +514,7 @@ if [ "$n_owned" -eq 0 ]; then
     echo "   something that is not a checkout of this template — could-not-look," >&2
     echo "   never a clean census." >&2
     printf 'census: owned=0 drawers=%s base=none diverged=0 unnamed=0\n' "$DRAWER_GLOB_COUNT"
-    exit 2
+    census_exit 2
 fi
 
 if [ -z "$BASE" ]; then
@@ -435,9 +522,9 @@ if [ -z "$BASE" ]; then
         "$n_owned" "$DRAWER_GLOB_COUNT"
     if [ "$IF_DECLARED" = 1 ]; then
         say "== SKIPPED · no base declared · $n_owned template-owned paths were classified"
-        exit 0
+        census_exit 0
     fi
-    exit 2
+    census_exit 2
 fi
 
 say "   base       $BASE  (from $BASE_FROM)"
@@ -449,7 +536,7 @@ if ! git rev-parse -q --verify "$BASE^{commit}" >/dev/null 2>&1; then
     echo "   This census writes nothing, so it will not fetch for you." >&2
     printf 'census: owned=%s drawers=%s base=unresolved diverged=0 unnamed=0\n' \
         "$n_owned" "$DRAWER_GLOB_COUNT"
-    exit 2
+    census_exit 2
 fi
 
 # --- the named divergences, out of the product's own architecture.md --------
@@ -492,10 +579,9 @@ $1
 # rather than a silent similarity score.
 say ""
 say "-- divergences: a template-owned path whose content is not the base's"
-DIFF_OUT=$(mktemp "${TMPDIR:-/tmp}/djb-divergence-diff.XXXXXX") || exit 2
-FOUND=$(mktemp "${TMPDIR:-/tmp}/djb-divergence-found.XXXXXX") || exit 2
+DIFF_OUT=$(mktemp "${TMPDIR:-/tmp}/djb-divergence-diff.XXXXXX") || census_exit 2
+FOUND=$(mktemp "${TMPDIR:-/tmp}/djb-divergence-found.XXXXXX") || census_exit 2
 cleanup() { rm -f "$OWNED" "$SEEN" "$DIFF_OUT" "$FOUND"; }
-trap cleanup EXIT
 
 set +e
 git diff --numstat --no-renames "$BASE" >"$DIFF_OUT" 2>/dev/null
@@ -506,7 +592,7 @@ if [ "$diff_rc" -ne 0 ]; then
     echo "   clean census." >&2
     printf 'census: owned=%s drawers=%s base=%s diverged=0 unnamed=0\n' \
         "$n_owned" "$DRAWER_GLOB_COUNT" "$BASE"
-    exit 2
+    census_exit 2
 fi
 while IFS=$'\t' read -r added removed path; do
     [ -n "$path" ] || continue
@@ -568,7 +654,7 @@ if [ "$n_unnamed" -gt 0 ]; then
         [ -n "$path" ] || continue
         is_named "$path" || say "     divergence: $path — <why this product needs it>"
     done <"$FOUND"
-    exit 1
+    census_exit 1
 fi
 say ""
 if [ "$n_div" -gt 0 ]; then
@@ -576,4 +662,4 @@ if [ "$n_div" -gt 0 ]; then
 else
     say "== CLEAN · no template-owned file in this tree differs from $BASE"
 fi
-exit 0
+census_exit 0

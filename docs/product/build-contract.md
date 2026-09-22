@@ -591,9 +591,10 @@ by a marker anyone can forget — an item whose nodeid names no app can never be
 inside any scope, so `--loop`, `--loop --mine` and `--pr` all leave it selected
 (`apps/conftest.py`, `_is_always_on` and the `apps_root_modules` floor beside
 it), and the floor notices if one of those modules is moved aside. `apps/test_*.py`
-is the platform's own mechanism, not a product concept: this repository ships
-three such modules, and a product adds its own beside them without touching
-`config/`, `pyproject.toml` or the scope derivation.
+is the platform's own mechanism, not a product concept: the count is never
+typed here — `apps/conftest.py`'s `apps_root_modules` floor names it and the
+directory is the census — and a product adds its own beside them without
+touching `config/`, `pyproject.toml` or the scope derivation.
 
 **`deploy/tests/` is the wrong home for one, and silently so.** pytest collects
 only `testpaths = ["apps"]` (`pyproject.toml`), so a Python census under

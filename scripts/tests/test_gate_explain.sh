@@ -42,8 +42,10 @@ esac
 #                 form is exit 2, and so is a `none:` with no sentence
 #   the TRAILER — a real red carries four ASCII-keyed lines, once per rule,
 #                 with the comment token of the file the finding is IN
-#   the READERS — `--explain <id>`, the listing under both names, exit 2 on an
-#                 unknown id and on an unknown flag
+#   the READERS — `--explain <id>`, the listing under both names, `--fold-map`
+#                 (the fold instrument item 7 of the 2.1.1 release sends a
+#                 product to), exit 2 on an unknown id and on an unknown flag,
+#                 and the grammar sentence naming every argument that exists
 #   the FLAG    — `--terse` drops exactly the `ok` rows and the standing-
 #                 override rows, and NEVER the ENFORCEMENT BROKEN block
 #   the CENSUS  — the trailer and CLI censuses SAY they ran, so deleting the
@@ -453,7 +455,7 @@ forge() {
 }
 
 # THE READERS, CAPTURED ONCE, IN ONE PROCESS. `--explain <id>`, `--explain`,
-# `--rules` and an unknown flag all return from `main` BEFORE anything
+# `--rules`, `--fold-map` and an unknown flag all return from `main` BEFORE anything
 # measures — they read the parsed yaml and nothing else — so five separate
 # `uv run python -m quality.gate` invocations were five interpreter starts and
 # five imports of the engine to answer five questions about one parse. The
@@ -494,6 +496,12 @@ probes = [
     ("listing-explain", ["--explain"]),
     ("listing-rules", ["--rules"]),
     ("unknown-flag", ["--tesre"]),
+    # THE FOURTH READER. `--fold-map` is the instrument item 7 of the 2.1.1
+    # release sends a product to before it renames anything, so its refusals
+    # are part of the same grammar every case below is about.
+    ("fold-map-bare", ["--fold-map"]),
+    ("fold-map-flag-next", ["--fold-map", "--rules"]),
+    ("fold-map-self", ["--fold-map", "quality/rules.yaml"]),
 ]
 for name, argv in probes:
     rc, text = gate._captured(list(argv))
@@ -1412,10 +1420,19 @@ from quality import gate
 
 rule = copy.deepcopy(gate.RULES_BY_ID["1"])
 rule["id"] = "acme-1"
+# THE HOME IS ASKED FOR, NEVER SPELLED. `fixture_home` is the ONE resolver
+# — a rule loaded from the product drawer lives under the drawer, a rule in
+# the template document under the template tree — and a drive that typed
+# either would be one more place teaching a product where its fixtures go.
+# This forged rule is appended to the list the TEMPLATE document declares,
+# rather than loaded from the drawer, so the resolver answers the template
+# tree for it;
+# a real product rule comes out of the drawer, and the case that plants one
+# there is case_a_drawer_rule_is_a_rule_end_to_end.
 made = []
-for base in (gate.CANARY_DIR, gate.NEGATIVE_DIR):
-    dst = base / "acme-1"
-    shutil.copytree(base / "1", dst)
+for kind in ("canary", "negative"):
+    dst = gate.fixture_home(kind, "acme-1")
+    shutil.copytree(gate.fixture_home(kind, "1"), dst)
     made.append(dst)
 through = max(int(r["id"]) for r in gate.RULES if gate.is_template_id(str(r["id"])))
 entry = rule["canaries"][0]
@@ -1425,7 +1442,7 @@ try:
         plant = gate.Plant()
         try:
             plant.put(
-                gate.CANARY_DIR / "acme-1" / entry["fixture"],
+                gate.fixture_home("canary", "acme-1") / entry["fixture"],
                 entry["plant_at"],
                 entry["mode"],
             )
@@ -1468,6 +1485,67 @@ case_an_unknown_flag_is_still_exit_2() {
         ok "a mistyped flag is never a silently different run"
     else
         bad "--tesre exited ${RC} — a typo has become a smaller gate"
+    fi
+}
+
+# THE GRAMMAR SENTENCE IS THE ONLY PLACE A READER LEARNS WHAT EXISTS. An
+# argument the engine accepts and the refusal does not name is an argument
+# nobody finds by mistyping one, which is how every one of these is found.
+case_the_refusal_names_every_argument_the_engine_takes() {
+    reader_probe unknown-flag
+    CURRENT="case_the_refusal_names_every_argument_the_engine_takes"
+    local missing="" arg
+    for arg in --selftest --selftest-inputs --diff --fold-map --terse --explain --rules; do
+        grep -q -- "$arg" "$OUT" || missing="${missing} ${arg}"
+    done
+    if [ -z "$missing" ]; then
+        ok "the unknown-argument sentence names all seven arguments, --fold-map among them"
+    else
+        bad "the grammar sentence does not name:${missing} — an argument no refusal mentions"
+    fi
+}
+
+case_fold_map_with_no_argument_refuses_with_the_grammar() {
+    reader_probe fold-map-bare
+    CURRENT="case_fold_map_with_no_argument_refuses_with_the_grammar"
+    if [ "$RC" = "2" ] &&
+        grep -q 'PREVIOUS quality/rules.yaml' "$OUT" &&
+        grep -q 'git show <your pre-merge sha>:quality/rules.yaml' "$OUT" &&
+        grep -q -- '--fold-map <previous rules.yaml>' "$OUT"; then
+        ok "a bare --fold-map is exit 2 carrying the command that produces the file it needs"
+    else
+        bad "--fold-map with no argument exited ${RC} without the grammar sentence (see ${OUT})"
+    fi
+}
+
+# THE SHAPE THAT WOULD BE WORST: `--fold-map --rules` reading the next FLAG as
+# a path. It would map the tree against a file that is not a rules.yaml and
+# print a rename list of nonsense, at exit 0.
+case_fold_map_does_not_eat_the_next_flag_as_a_path() {
+    reader_probe fold-map-flag-next
+    CURRENT="case_fold_map_does_not_eat_the_next_flag_as_a_path"
+    if [ "$RC" = "2" ] && grep -q 'PREVIOUS quality/rules.yaml' "$OUT"; then
+        ok "--fold-map refuses a following flag rather than reading it as a path"
+    else
+        bad "--fold-map --rules exited ${RC} — a flag became a filename (see ${OUT})"
+    fi
+}
+
+# THE STEADY STATE, END TO END. This template mapped against its own
+# rules.yaml has nothing to rename and no fixture out of place; a run that
+# printed either would be a reader firing on the shipped tree.
+case_fold_map_of_this_tree_against_itself_has_nothing_to_do() {
+    reader_probe fold-map-self
+    CURRENT="case_fold_map_of_this_tree_against_itself_has_nothing_to_do"
+    local moved
+    moved="$(grep -c ' → ' "$OUT" || true)"
+    if [ "$RC" = "0" ] &&
+        [ "$moved" = "0" ] &&
+        grep -q 'unchanged; nothing to renumber' "$OUT" &&
+        grep -q 'every template fixture on this tree is at the path it ships at' "$OUT"; then
+        ok "the template maps onto itself: ${RULE_COUNT} rules unchanged, no fixture out of place"
+    else
+        bad "--fold-map of this tree against itself exited ${RC} with ${moved} renames (see ${OUT})"
     fi
 }
 
@@ -1817,21 +1895,22 @@ sys.exit(0 if by_scope and by_git else 1)
     fi
 }
 
-case_the_three_readers_ignore_the_memo() {
+case_the_readers_ignore_the_memo() {
     local home
     home="$(memo_home_dir)"
-    DJB_RULES_MEMO_DIR="$home" forge "case_the_three_readers_ignore_the_memo" '
+    DJB_RULES_MEMO_DIR="$home" forge "case_the_readers_ignore_the_memo" '
 import pathlib
 import sys
 sys.argv = ["gate"]
 from quality import gate
 
-# The three readers return before anything measures, so a warm memo must not
+# The four readers return before anything measures, so a warm memo must not
 # change one byte of what they print — and must not grow by one file either.
 cold = {name: gate._captured(argv) for name, argv in (
     ("explain", ["--explain", "13"]),
     ("rules", ["--rules"]),
     ("inputs", ["--selftest-inputs"]),
+    ("fold-map", ["--fold-map", "quality/rules.yaml"]),
 )}
 home = pathlib.Path(gate.memo_home()[0])
 from quality.checks import CheckResult
@@ -1845,6 +1924,7 @@ warm = {name: gate._captured(argv) for name, argv in (
     ("explain", ["--explain", "13"]),
     ("rules", ["--rules"]),
     ("inputs", ["--selftest-inputs"]),
+    ("fold-map", ["--fold-map", "quality/rules.yaml"]),
 )}
 banked = len(list(home.rglob("*.json")))
 for name in cold:
@@ -1853,7 +1933,7 @@ print("entries banked before the warm read: %d" % banked)
 sys.exit(0 if cold == warm and all(rc == 0 for rc, _ in warm.values()) and banked else 1)
 '
     if [ "$RC" = "0" ]; then
-        ok "--explain, --rules and --selftest-inputs print the same bytes over a warm memo as over a cold one"
+        ok "--explain, --rules, --selftest-inputs and --fold-map print the same bytes over a warm memo as over a cold one"
     else
         bad "a reader's output moved when the memo was warmed, or a reader stopped answering (see ${OUT})"
     fi
@@ -1879,10 +1959,19 @@ from quality import gate
 
 rule = copy.deepcopy(gate.RULES_BY_ID["1"])
 rule["id"] = "acme-1"
+# THE HOME IS ASKED FOR, NEVER SPELLED. `fixture_home` is the ONE resolver
+# — a rule loaded from the product drawer lives under the drawer, a rule in
+# the template document under the template tree — and a drive that typed
+# either would be one more place teaching a product where its fixtures go.
+# This forged rule is appended to the list the TEMPLATE document declares,
+# rather than loaded from the drawer, so the resolver answers the template
+# tree for it;
+# a real product rule comes out of the drawer, and the case that plants one
+# there is case_a_drawer_rule_is_a_rule_end_to_end.
 made = []
-for base in (gate.CANARY_DIR, gate.NEGATIVE_DIR):
-    dst = base / "acme-1"
-    shutil.copytree(base / "1", dst)
+for kind in ("canary", "negative"):
+    dst = gate.fixture_home(kind, "acme-1")
+    shutil.copytree(gate.fixture_home(kind, "1"), dst)
     made.append(dst)
 gate.RULE_ID_NAMESPACE = "acme"
 gate.TEMPLATE_IDS_THROUGH = max(
@@ -1898,7 +1987,11 @@ try:
     entry = rule["canaries"][0]
     plant = gate.Plant()
     try:
-        plant.put(gate.CANARY_DIR / "acme-1" / entry["fixture"], entry["plant_at"], entry["mode"])
+        plant.put(
+            gate.fixture_home("canary", "acme-1") / entry["fixture"],
+            entry["plant_at"],
+            entry["mode"],
+        )
         findings, _floors, why = gate.run_rule(rule, floors=False)
     finally:
         plant.restore()
@@ -1912,7 +2005,7 @@ finally:
 sys.exit(rc)
 '
     if [ "$RC" = "0" ]; then
-        ok "acme-1 loaded under rule_id_namespace: acme, planted from quality/canary/acme-1/ and fired through the real scope"
+        ok "acme-1 loaded under rule_id_namespace: acme, planted from the home fixture_home() resolves for it, and fired through the real scope"
     else
         bad "a product rule under a declared namespace did not load, or its canary did not fire through the real scope"
     fi
@@ -2941,6 +3034,10 @@ run_case case_explain_prints_the_rules_own_declaration
 run_case case_explain_of_an_unknown_id_is_exit_2_naming_the_listing
 run_case case_the_listing_is_the_same_under_both_names
 run_case case_an_unknown_flag_is_still_exit_2
+run_case case_the_refusal_names_every_argument_the_engine_takes
+run_case case_fold_map_with_no_argument_refuses_with_the_grammar
+run_case case_fold_map_does_not_eat_the_next_flag_as_a_path
+run_case case_fold_map_of_this_tree_against_itself_has_nothing_to_do
 run_case case_explain_prints_a_remedy_per_finding_class
 run_case case_a_finding_of_a_remedied_rule_names_its_fix_form
 run_case case_an_unmeasured_class_prints_the_line_to_paste
@@ -2953,7 +3050,7 @@ run_case case_a_hit_replays_the_red
 run_case case_the_selftest_bypasses_the_memo_and_its_canaries_still_fire
 run_case case_memo_no_scans_always_and_needs_a_reason
 run_case case_an_undecidable_key_scans
-run_case case_the_three_readers_ignore_the_memo
+run_case case_the_readers_ignore_the_memo
 run_case case_an_empty_capture_is_could_not_look
 run_case case_the_exit_census_never_lowers_the_drives_own_status
 run_case case_a_declared_census_prints_its_lines_under_explain

@@ -89,9 +89,11 @@ selftest_residence_backlog: 19  # 18 -> 19, raised 2026-09-21: rule 59's two
 #
 # A PRODUCT WRITES THE TWO KEYS BELOW ONCE, at adoption, and renames its own
 # rules to `<ns>-<n>` — in the id, in the fixture directory
-# (`quality/{canary,negative}/<ns>-<n>/`), in the valve (`# rule-<ns>-<n>:`) and
-# in the check tag (`<ns>.Wnnn`, where the template's are `djb.…`). The engine
-# refuses every other shape by name.
+# (`quality/local/{canary,negative}/<ns>-<n>/` — THE DRAWER, which is where
+# `quality/gate.py::fixture_home` plants a drawer rule's fixtures from, and
+# NOT the template's own `quality/{canary,negative}/<n>/` tree), in the valve
+# (`# rule-<ns>-<n>:`) and in the check tag (`<ns>.Wnnn`, where the template's
+# are `djb.…`). The engine refuses every other shape by name.
 #
 #   rule_id_namespace: acme          # one lowercase word; never `djb`
 #   template_rule_ids_through: 59    # the highest integer the template release

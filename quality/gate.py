@@ -137,8 +137,8 @@ def _read_local() -> tuple[dict, list[dict], list[str]]:
 
     Reported through `consistency()` rather than raised, for the reason
     `_read_namespace` is: a malformed drawer must reach a reader as a named
-    exit 2, and it must not take the three readers (`--explain`, the listing,
-    `--selftest-inputs`) down with it on the way.
+    exit 2, and it must not take the four readers (`--explain`, the listing,
+    `--selftest-inputs`, `--fold-map`) down with it on the way.
     """
     problems: list[str] = []
     for key in MOVED_KEYS:
@@ -468,7 +468,9 @@ BUDGETS_PATH = ROOT / "quality" / "budgets.yaml"
 # `rule_id_namespace: <ns>` ONCE, top-level in `quality/local/rules.yaml` — the
 # product's DRAWER, which no fold overwrites (P21 EP2) — and every
 # rule it writes is `<ns>-<n>` — in the id, in the fixture directory
-# (`quality/{canary,negative}/<ns>-<n>/`), in the valve (`# rule-<ns>-<n>:`) and
+# (`quality/local/{canary,negative}/<ns>-<n>/` — the DRAWER, which is what
+# `fixture_home` below resolves for a namespaced id, and not the template's own
+# `quality/{canary,negative}/<n>/`), in the valve (`# rule-<ns>-<n>:`) and
 # in the check tag (`<ns>.Wnnn`, where the template's are `djb.…`). Two
 # namespaces cannot collide, so a fold has nothing to merge.
 #
@@ -517,8 +519,8 @@ def _read_namespace() -> tuple[str | None, int | None, list[str]]:
     Read at import because the valve grammar below is compiled from it, and
     reported through `consistency()` rather than raised: a malformed
     declaration must reach a reader as a named exit 2, not as a traceback that
-    takes the three readers (`--explain`, the listing, `--selftest-inputs`)
-    down with it.
+    takes the four readers (`--explain`, the listing, `--selftest-inputs`,
+    `--fold-map`) down with it.
     """
     problems: list[str] = []
     raw_ns = LOCAL_DOC.get("rule_id_namespace")
@@ -4640,6 +4642,459 @@ def selftest_inputs() -> int:
     return 0
 
 
+# --- the fourth reader: --fold-map ----------------------------------------------
+#
+# THE SUBJECT (HOTFIX-RULEMAP-1, the first consumer's fold of 2.1.1). Item 7 of
+# that release tells a product to "rename YOUR OWN rules to `<ns>-<n>`" and
+# hands it no instrument for deciding WHICH rules are its own. The first
+# consumer's ids had drifted across two adoptions: four TEMPLATE rules were
+# being carried at numbers the template gives four other rules, and they went
+# into the product's drawer as `<ns>-58..61` before anybody noticed. Both
+# directions of that mistake are silent:
+#
+#   a TEMPLATE rule parked under a product namespace STOPS BEING FOLDED — the
+#   next release improves the template's copy and the product keeps the old
+#   one, under a name nothing will ever reconcile;
+#   a PRODUCT rule left on a template integer COLLIDES AGAIN at the next
+#   release, which is the whole defect ADR gate-5 exists to end.
+#
+# THE MATCHING KEY IS THE NAME, NEVER THE NUMBER. The number is precisely the
+# thing that drifted, so a map built on it would agree with the mistake. Every
+# rule carries an `id`-adjacent `name:` (`quality/rules.yaml` § the schema), and
+# a rule with no name is exit 2 rather than a rule this reader silently skips.
+#
+# WHAT IT READS. Two files: the product's PREVIOUS `quality/rules.yaml` — the
+# one before the merge, which a product gets with
+# `git show <their pre-merge sha>:quality/rules.yaml` — and the TEMPLATE's
+# current one on this tree. The drawer (`quality/local/rules.yaml`) contributes
+# the namespace a product block is spelled with, and nothing else.
+#
+# THE FIFTH PLACE. Item 7 names four places a rule id is written: the id, the
+# fixture directory, the valve and the check tag. There is a FIFTH, and it is
+# the one a renumber reds on: a rule declaring `django_check_ids:` has that id
+# REGISTERED in `apps/core/checks.py`, and `consistency()` refuses a declared id
+# the file does not carry ("django check id … not present in …"). So the map
+# prints it as a place, per rule, out of the rule's own declaration rather than
+# out of a guess about the letter or the width.
+#
+# THE FIXTURE CLASS IS WIDER THAN "THE SAME ID". `quality/negative/50/vendored_valve.js`
+# rode into the first consumer's drawer as `…/<ns>-58/vendored_valve.js`: the
+# file moved between DIFFERENT numbers, so an id-keyed census cannot see it. The
+# FIXTURES section is therefore keyed on CONTENT — every fixture file on this
+# tree whose bytes the template ships anywhere under
+# `quality/{canary,negative}/`, at any id, printed with the template path it
+# belongs at.
+
+
+def _fold_map_rules(path: Path) -> tuple[list[dict], str]:
+    """The `rules:` list in a rules.yaml, or the reason nobody can read it.
+
+    Could-not-look is a STRING here rather than an exception for the same
+    reason every other reader refuses rather than raises: a traceback out of a
+    reader takes the reader down with it, and this one runs on a tree in the
+    middle of a merge — the most broken state any of them ever sees.
+    """
+    try:
+        doc = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return [], f"{path} could not be read as YAML — {exc}"
+    if doc is None:
+        doc = {}
+    if not isinstance(doc, dict):
+        return [], f"{path} is a {type(doc).__name__}, not a mapping carrying a `rules:` key"
+    raw = doc.get("rules")
+    if raw is None:
+        return [], f"{path} carries no `rules:` key — it is not a quality/rules.yaml"
+    if not isinstance(raw, list) or not all(isinstance(r, dict) for r in raw):
+        return [], f"{path}: `rules:` is not a list of rule mappings"
+    return raw, ""
+
+
+def _fold_map_fixture_paths(rules: list[dict], root: Path) -> set[Path]:
+    """Every fixture path the given rule set NAMES, under `root`.
+
+    Declared rather than walked, so the template's inventory is the set of
+    files the template's own plans claim — a stray file somebody left under
+    `quality/canary/` is not evidence about where anything belongs.
+
+    `extra_files:` IS PART OF THE PLAN, and reading only each entry's own
+    `fixture:` left 52 of this tree's 469 fixture files outside the inventory —
+    among them `quality/canary/60/the_declared_template_base`, house rule 60's
+    own plan, which is exactly the kind of file a product carries across a fold.
+    A file the inventory cannot see is a file the FIXTURES census below cannot
+    give back, silently. `claimed_fixtures()` walks the same two levels for the
+    orphan census; this one does it against an arbitrary root, which is what a
+    drive needs and what `fixture_bases()` cannot give it.
+    """
+    out: set[Path] = set()
+    for rule in rules:
+        rid = str(rule.get("id", "")).strip()
+        if not rid:
+            continue
+        for key, kind in (("canaries", "canary"), ("negatives", "negative")):
+            for entry in rule.get(key) or []:
+                if not isinstance(entry, dict):
+                    continue
+                extra = entry.get("extra_files") or []
+                for e in [entry, *(extra if isinstance(extra, list) else [])]:
+                    if not isinstance(e, dict):
+                        continue
+                    fixture = str(e.get("fixture") or "").strip()
+                    if fixture:
+                        out.add(root / "quality" / kind / rid / fixture)
+    return out
+
+
+def _fold_map_template_files(rules: list[dict], root: Path) -> dict[tuple[str, str], list[str]]:
+    """(kind, rule id) -> the file names the TEMPLATE's own plan ships there.
+
+    Read by the TEMPLATE block so its remedy can NAME the files rather than
+    move a directory. The distinction is the whole of F3 below.
+    """
+    out: dict[tuple[str, str], list[str]] = {}
+    for path in _fold_map_fixture_paths(rules, root):
+        rel = path.relative_to(root).parts  # quality/<kind>/<id>/<name>
+        if len(rel) >= 4:
+            out.setdefault((rel[1], rel[2]), []).append(rel[-1])
+    return {k: sorted(set(v)) for k, v in out.items()}
+
+
+def _sha256_of(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _shape_hash_of(path: Path) -> str | None:
+    """A hash of the file's SHAPE: no trailing whitespace, no runs, no blank lines.
+
+    THE EXACT SHA IS NOT ENOUGH, and the first consumer paid for the gap: of
+    the thirteen template fixtures that had ridden into their drawer, the byte-
+    identical ones were found and a `.tsx` whose indentation a formatter had
+    changed and a `.py` carrying one extra trailing newline were not. A
+    reformatter is the single likeliest thing to happen to a file between one
+    fold and the next, so a census that only sees untouched bytes is a census
+    that stops working on exactly the trees that need it.
+
+    It is a SECOND key and not a replacement: a normalised match is still
+    reported as "this is the template's", because collapsing whitespace cannot
+    turn one fixture into another — every fixture here is a distinct plant with
+    distinct identifiers, and two of them that agree after normalisation are
+    the same file.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return hashlib.sha256("\n".join(line for line in lines if line).encode()).hexdigest()
+
+
+def _fold_map_fixture_findings(
+    template_rules: list[dict], *, tree: Path, template_root: Path
+) -> list[str]:
+    """`<product path> — this is the template's; put it back at <template path>`.
+
+    KEYED ON CONTENT, NOT ON THE ID. The whole class is a file that
+    moved between two DIFFERENT numbers, so the only witness is the bytes. A
+    file sitting at the path the template ships it at is silent — that is the
+    steady state, and it is why a template tree's own run prints nothing here.
+
+    THREE KEYS, IN DESCENDING CONFIDENCE, AND EACH FILE IS REPORTED UNDER THE
+    FIRST THAT HITS. The exact sha is the certain one. The shape hash
+    (`_shape_hash_of`) is the one a reformatter cannot break, and it says the
+    same sentence because a whitespace difference does not make a file somebody
+    else's. The BASENAME is the last resort and says something weaker — READ
+    IT — because a name survives any edit at all, including edits that really
+    did make the file the product's. One certain finding and two suspicions
+    beat one certain finding, as long as the reader is told which is which.
+    """
+    by_hash: dict[str, set[str]] = {}
+    by_shape: dict[str, set[str]] = {}
+    by_name: dict[str, set[str]] = {}
+    # ENGINE_FIXTURES is declared as absolute paths under ROOT and is RE-ROOTED
+    # here: a drive hands this function a template root of its own, and an
+    # absolute ROOT path inside that walk is a file from another tree whose
+    # `relative_to` would raise inside a reader.
+    engine = {template_root / p.relative_to(ROOT) for p in ENGINE_FIXTURES}
+    for path in _fold_map_fixture_paths(template_rules, template_root) | engine:
+        rel = str(path.relative_to(template_root))
+        digest = _sha256_of(path)
+        if digest is None:
+            # A path the template's plan NAMES and this root does not have is
+            # not this reader's finding (`consistency()` owns that refusal),
+            # but its NAME is still evidence, so it stays in the name index.
+            by_name.setdefault(path.name, set()).add(rel)
+            continue
+        by_hash.setdefault(digest, set()).add(rel)
+        shape = _shape_hash_of(path)
+        if shape is not None:
+            by_shape.setdefault(shape, set()).add(rel)
+        by_name.setdefault(path.name, set()).add(rel)
+    findings: list[str] = []
+    for base in (
+        tree / "quality" / "canary",
+        tree / "quality" / "negative",
+        tree / "quality" / "local" / "canary",
+        tree / "quality" / "local" / "negative",
+    ):
+        if not base.is_dir():
+            continue
+        for path in sorted(p for p in base.rglob("*") if p.is_file()):
+            here = str(path.relative_to(tree))
+            homes: set[str] = set()
+            for index, key in (
+                (by_hash, _sha256_of(path)),
+                (by_shape, _shape_hash_of(path)),
+            ):
+                if key is not None and key in index:
+                    homes = index[key]
+                    break
+            if homes:
+                if here in homes:
+                    continue
+                for home in sorted(homes):
+                    findings.append(f"{here} — this is the template's; put it back at {home}")
+                continue
+            named = by_name.get(path.name) or set()
+            if named and here not in named:
+                for home in sorted(named):
+                    findings.append(f"{here} — NAME MATCH — read it: {home}")
+    return findings
+
+
+def _renumbered_check_ids(rule: dict, new_prefix: str, new_number: str) -> list[str]:
+    """A rule's declared django check ids, re-spelled at the new id.
+
+    The LETTER and the WIDTH come from what the rule actually declares
+    (`djb.E013`, `djb.W054`), never from a guess: an `E` rewritten as a `W` is
+    a registration `apps/core/checks.py` does not carry, which is the same
+    exit 2 this line exists to prevent.
+    """
+    out: list[str] = []
+    for raw in rule.get("django_check_ids") or []:
+        tag = str(raw)
+        match = re.match(r"^(?P<ns>[A-Za-z0-9_]+)\.(?P<letter>[A-Za-z])(?P<digits>\d+)$", tag)
+        if match is None:
+            out.append(f"{tag} — unreadable as `<ns>.<letter><digits>`; re-spell it by hand")
+            continue
+        width = len(match.group("digits"))
+        out.append(f"{tag} → {new_prefix}.{match.group('letter')}{new_number.zfill(width)}")
+    return out
+
+
+def fold_map_lines(
+    previous_path: Path,
+    *,
+    template_path: Path | None = None,
+    template_rules: list[dict] | None = None,
+    namespace: str | None = ...,  # type: ignore[assignment]
+    tree: Path = ROOT,
+    template_root: Path | None = None,
+) -> tuple[int, list[str]]:
+    """(exit code, the map). The whole reader, as a function a test can call.
+
+    Every input is an argument with a live-tree default, because the three
+    cases this instrument exists for — a template rule at a drifted number, a
+    product rule, a template fixture under a product id — are states no
+    template checkout is ever in. A drive that could only run against ROOT
+    could only ever prove the steady state.
+    """
+    if namespace is ...:
+        namespace = RULE_ID_NAMESPACE
+    if template_path is None:
+        template_path = tree / "quality" / "rules.yaml"
+    if template_root is None:
+        template_root = tree
+    lines: list[str] = []
+    previous, problem = _fold_map_rules(previous_path)
+    problems = [problem] if problem else []
+    if template_rules is None:
+        template_rules, template_problem = _fold_map_rules(template_path)
+        if template_problem:
+            problems.append(template_problem)
+    if problems:
+        lines.append(
+            "‼ --fold-map COULD NOT LOOK (exit 2). A map built from half its inputs is a "
+            "rename list somebody would paste, so nothing is printed:"
+        )
+        lines.extend(f"  !! {p}" for p in problems)
+        return 2, lines
+
+    nameless = [str(r.get("id", "?")) for r in previous if not str(r.get("name") or "").strip()]
+    if nameless:
+        lines.append(
+            "‼ --fold-map COULD NOT LOOK (exit 2). The NAME is the matching key — the number "
+            "is the thing that drifted — so a rule with no name cannot be placed on either "
+            "side of the map, and guessing from its number would agree with the mistake:"
+        )
+        for rid in nameless:
+            lines.append(f"  !! {previous_path}: rule {rid} declares no `name:`")
+        return 2, lines
+
+    template_by_name: dict[str, str] = {}
+    for rule in template_rules:
+        name = str(rule.get("name") or "").strip()
+        if name:
+            template_by_name.setdefault(name, str(rule.get("id", "")))
+
+    ships = _fold_map_template_files(template_rules, template_root)
+    lines.append(f"fold map · previous {previous_path} · template {template_path}")
+    lines.append(
+        f"matched BY NAME, never by number · {len(previous)} rule(s) in the previous file · "
+        f"{len(template_rules)} in the template's"
+    )
+    lines.append("")
+
+    unmatched: list[tuple[str, str]] = []
+    for rule in previous:
+        old = str(rule.get("id", "")).strip()
+        name = str(rule.get("name")).strip()
+        new = template_by_name.get(name)
+        if new is not None:
+            # A RULE THAT DID NOT MOVE IS ONE LINE. The map's whole subject is
+            # the drift, and a block of five "places" that all say the number
+            # they already say is the noise a reader skims past — which is how
+            # the four that HAD moved went unnoticed in the first place.
+            if old == new:
+                lines.append(f"TEMPLATE  {old}  {name} — unchanged; nothing to renumber")
+                continue
+            lines.extend(
+                _fold_map_template_block(
+                    rule, old=old, new=new, name=name, ships=ships, ns=namespace
+                )
+            )
+            lines.append("")
+            continue
+        if namespace:
+            lines.extend(_fold_map_product_block(rule, old=old, ns=namespace, name=name))
+            lines.append("")
+            continue
+        unmatched.append((old, name))
+
+    if unmatched:
+        lines.append("UNMATCHED — this reader will not guess:")
+        for old, name in unmatched:
+            lines.append(f"  {old}  {name}")
+        lines.append(
+            "  No rule of this name is in the template's current rules.yaml, and this tree "
+            "declares no `rule_id_namespace:` — so there is no `<ns>-<n>` to write. Declare "
+            "the namespace in quality/local/rules.yaml (with `template_rule_ids_through:` "
+            f"beside it) and run --fold-map again — {GATE5_CITE}."
+        )
+        lines.append("")
+
+    findings = _fold_map_fixture_findings(template_rules, tree=tree, template_root=template_root)
+    if lines and lines[-1] != "":
+        lines.append("")
+    lines.append("FIXTURES — bytes the template ships, found at another path on this tree:")
+    if findings:
+        for finding in findings:
+            lines.append(f"  {finding}")
+        lines.append(
+            "  Three keys, at ANY id: exact bytes, then the same bytes with whitespace "
+            "normalised (a reformatter between two folds is the commonest single edit), "
+            "then the BASENAME — which survives any edit and is therefore a READ IT rather "
+            "than a verdict. The class is a fixture that moved between two DIFFERENT "
+            "numbers, which an id-keyed census cannot see."
+        )
+    else:
+        lines.append("  none — every template fixture on this tree is at the path it ships at.")
+    return 0, lines
+
+
+def _fold_map_template_block(
+    rule: dict,
+    *,
+    old: str,
+    new: str,
+    name: str,
+    ships: dict[tuple[str, str], list[str]],
+    ns: str | None,
+) -> list[str]:
+    """The five places a TEMPLATE rule carried at the wrong number is renumbered.
+
+    F3, AND IT IS NOT A WORDING NIT. The first form of this block said
+    `git mv quality/canary/<old> quality/canary/<new>`, and AFTER THE FOLD that
+    is wrong twice over: `quality/canary/<old>/` now also holds the template's
+    OWN rule-<old> plan, and `quality/canary/<new>/` already exists — so the
+    move either nests one directory inside the other or carries another rule's
+    fixtures into its home. That is the exact class the FIXTURES census below
+    warns about, printed as the remedy for it. The remedy is therefore DELETE
+    YOUR COPIES, with the template's own file list for the new id beside it, so
+    the reader can see what they are deleting against.
+    """
+    out = [
+        f"TEMPLATE  {old} → {new}  {name}",
+        "  This rule is the TEMPLATE's. It is not yours to namespace: a template rule parked "
+        "under a product namespace stops being folded, silently.",
+        f"    id          quality/rules.yaml already carries it as `{new}` — delete your copy",
+    ]
+    for kind in ("canary", "negative"):
+        files = ships.get((kind, new)) or []
+        shipped = (
+            f"the template ships this rule's at quality/{kind}/{new}/: {', '.join(files)}"
+            if files
+            else f"the template ships none at quality/{kind}/{new}/ — anything there is another "
+            "rule's or is yours"
+        )
+        out.append(
+            f"    fixtures    DELETE your copies under quality/{kind}/{old}/ — do NOT git mv it: "
+            f"after the fold that directory also holds the template's own rule {old} plan and "
+            f"quality/{kind}/{new}/ already exists, so a move nests or carries the wrong files. "
+            f"{shipped}"
+        )
+        if ns:
+            out.append(
+                f"    fixtures    and the same under quality/local/{kind}/{ns}-{old}/ if they "
+                "went into the drawer"
+            )
+    out.append(f"    valve       `# rule-{old}:` → `# rule-{new}:`")
+    tags = _renumbered_check_ids(rule, TEMPLATE_CHECK_PREFIX, new)
+    if tags:
+        out.append(f"    check tag   {', '.join(tags)}   (quality/rules.yaml django_check_ids)")
+        out.append(
+            f"    django check  apps/core/checks.py registers {', '.join(tags)} — the FIFTH "
+            "place, and the one a renumber reds on (`django check id … not present in …`)"
+        )
+    else:
+        out.append("    check tag   none declared")
+    return out
+
+
+def _fold_map_product_block(rule: dict, *, old: str, ns: str, name: str) -> list[str]:
+    """The same five places, into the drawer, for a rule that is the PRODUCT's."""
+    new = f"{ns}-{old}"
+    out = [
+        f"PRODUCT   {old} → {new}  {name}",
+        "  No rule of this name is in the template's current rules.yaml, so it is yours: a "
+        "product rule left on a template integer collides again at the next release.",
+        f'    id          quality/local/rules.yaml — `id: "{new}"`',
+    ]
+    for kind in ("canary", "negative"):
+        out.append(f"    fixtures    git mv quality/{kind}/{old} quality/local/{kind}/{new}")
+    out.append(f"    valve       `# rule-{old}:` → `# rule-{new}:`")
+    tags = _renumbered_check_ids(rule, ns, old)
+    if tags:
+        out.append(f"    check tag   {', '.join(tags)}   (quality/local/rules.yaml)")
+        out.append(
+            f"    django check  your own apps/<app>/checks.py registers {', '.join(tags)} — "
+            "the FIFTH place, and the one a renumber reds on"
+        )
+    else:
+        out.append("    check tag   none declared")
+    return out
+
+
+def fold_map(previous: str) -> int:
+    """`--fold-map <previous rules.yaml>`, printed. 0 with the map · 2 could-not-look."""
+    rc, lines = fold_map_lines(Path(previous))
+    for line in lines:
+        say(line)
+    return rc
+
+
 # --- THE PER-RULE MEMO -----------------------------------------------------------
 #
 # WHAT IT ANSWERS. "Did anything this rule reads move since the last time it
@@ -5768,8 +6223,18 @@ def live_scan(diff_ref: str | None, *, terse: bool = False) -> None:
         say(f"  {note}")
 
 
+#: THE ARGUMENT GRAMMAR, IN ONE STRING. Two refusals print it — an unknown
+#: argument and a `--fold-map` with nothing after it — and two spellings of one
+#: list is exactly how a flag comes to exist that no refusal mentions.
+GRAMMAR = (
+    "quality.gate takes --selftest, --selftest-inputs, --diff <ref>, "
+    "--fold-map <previous rules.yaml>, --terse, --explain [<id>] or --rules"
+)
+
+
 def main(argv: list[str]) -> int:
     diff_ref: str | None = None
+    fold_map_previous: str | None = None
     mode = "scan"
     terse = False
     explain_id: str | None = None
@@ -5797,17 +6262,28 @@ def main(argv: list[str]) -> int:
                 say("‼ --diff needs a ref")
                 return 2
             diff_ref = args.pop(0)
+        elif arg == "--fold-map":
+            # THE ARGUMENT IS NOT OPTIONAL, and the refusal carries the command
+            # that produces it. The reader runs on a tree in the middle of a
+            # merge, where the file it needs is not on disk at all: a bare
+            # `--fold-map` that fell back to anything would map the tree
+            # against itself and print a rename list of no renames.
+            if not args or args[0].startswith("-"):
+                say(
+                    "‼ --fold-map needs the path to your PREVIOUS quality/rules.yaml — the one "
+                    "before the merge: `git show <your pre-merge sha>:quality/rules.yaml > "
+                    "/tmp/previous-rules.yaml`. " + GRAMMAR
+                )
+                return 2
+            mode, fold_map_previous = "fold-map", args.pop(0)
         else:
             # A mistyped flag must never be a silently different run.
-            say(
-                f"‼ unknown argument {arg!r}: quality.gate takes --selftest, "
-                "--selftest-inputs, --diff <ref>, --terse, --explain [<id>] or --rules"
-            )
+            say(f"‼ unknown argument {arg!r}: " + GRAMMAR)
             return 2
 
-    # THE THREE READERS RETURN BEFORE ANYTHING MEASURES. `--explain`, the
-    # listing and `--selftest-inputs` read the parsed yaml and the tree's own
-    # file names, and nothing else: the first two are how a builder holding a
+    # THE FOUR READERS RETURN BEFORE ANYTHING MEASURES. `--explain`, the
+    # listing, `--selftest-inputs` and `--fold-map` read the parsed yaml and the
+    # tree's own file names, and nothing else: the first two are how a builder holding a
     # red finds out what to do about it, and the third is what a banked verdict
     # is keyed on — so all three must answer on a tree whose plants are dirty or
     # whose consistency is broken, the states in which a reader most needs them.
@@ -5819,6 +6295,12 @@ def main(argv: list[str]) -> int:
         return explain(str(explain_id))
     if mode == "inputs":
         return selftest_inputs()
+    if mode == "fold-map":
+        # The loudest case of all: a tree mid-merge, whose plants may be dirty
+        # and whose consistency may be broken precisely BECAUSE the ids
+        # collided. A reader that refused to answer there would be a reader
+        # nobody could use on the only day they need it.
+        return fold_map(str(fold_map_previous))
 
     # BEFORE ANYTHING MEASURES ANYTHING. A tree carrying a dead run's fixtures
     # is a tree every leg below would read wrongly, and the failure is silent in

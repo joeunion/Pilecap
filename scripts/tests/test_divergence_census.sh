@@ -22,7 +22,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: quality/partition.yaml scripts/archaeology_lib.sh scripts/divergence_census.sh scripts/gate_refuse.sh
-# cites: docs/product/build-contract.md scripts/queue_cited.sh scripts/kill_mine.sh scripts/sweep.sh scripts/check.sh scripts/publish.sh scripts/tests/test_gate_lease.sh scripts/tests/test_publish.sh scripts/tests/drive_preamble.sh TEMPLATE_VERSION docs/product/instruments.md docs/product/architecture.md apps/core/roles.py apps/core/api/frozen_families.py pyproject.toml docs/product/queue.md apps/core/services.py quality/gate.py
+# cites: scripts/pm_fold.sh docs/product/build-contract.md scripts/queue_cited.sh scripts/kill_mine.sh scripts/sweep.sh scripts/check.sh scripts/publish.sh scripts/tests/test_gate_lease.sh scripts/tests/test_publish.sh scripts/tests/drive_preamble.sh TEMPLATE_VERSION docs/product/instruments.md docs/product/architecture.md apps/core/roles.py apps/core/api/frozen_families.py pyproject.toml docs/product/queue.md apps/core/services.py quality/gate.py
 # The refusal-and-property drive for `scripts/divergence_census.sh`.
 #
 # Exit: 0 every case held · 1 a case did not hold · 2 COULD NOT LOOK (no git, a
@@ -235,6 +235,167 @@ case_the_declared_base_is_read_from_the_product_drawer() {
     rm -rf "$REPO/scripts/local"
 }
 
+# --- (a) THE DRAWER COUNT IS THE LIST, NOT THE FILESYSTEM ------------------
+# `DRAWER_GLOBS` is a list of PATTERNS and its length is derived from it with
+# `set --`, which splits AND GLOBS. Every member is a pathname pattern, so on
+# any tree that actually HAS the drawers — which is every product, and none of
+# the template's own checkouts — the shell expanded them against the tree and
+# the count read the number of files it found. MEASURED on the first
+# consumer's: 6 instead of 3. Rule 60's `drawer_globs` floor reads that
+# number, so the floor was being met by the filesystem rather than by the list,
+# and it failed SILENT IN THE PASSING DIRECTION: a member deleted from the list
+# would still clear a floor that three files in one drawer could satisfy on
+# their own. The victim is this case's own — drawers planted into the fixture
+# product, which is the state the count has to be right in.
+case_the_drawer_count_is_the_list_and_not_the_filesystem() {
+    export DJB_TEMPLATE_BASE="$BASE"
+    run "$REPO"
+    local bare
+    bare=$(sed -n 's/^census:.*drawers=\([0-9]*\).*/\1/p' "$OUT")
+
+    # THE DRAWERS, PLANTED — one per pattern, which is what makes the
+    # expansion reachable at all.
+    mkdir -p "$REPO/quality/local/canary/x-1" "$REPO/scripts/local/legs"
+    printf 'rule_id_namespace: acme\n' >"$REPO/quality/local/rules.yaml"
+    printf 'rule: x-1 — a drawer rule fixture\n' >"$REPO/quality/local/canary/x-1/plan.md"
+    printf '# a product leg\n' >"$REPO/scripts/local/legs/a.sh"
+    run "$REPO"
+    local withdrawers
+    withdrawers=$(sed -n 's/^census:.*drawers=\([0-9]*\).*/\1/p' "$OUT")
+    if [ "$RC" = 0 ] && [ "$withdrawers" = "$bare" ] && [ "$withdrawers" = 3 ]; then
+        ok "the reserved count is 3 with drawers on the tree and 3 without — the list is counted as text, not expanded against the tree"
+    else
+        bad "drawer count: exit $RC, $bare without drawers and $withdrawers with, want 3 and 3"
+        sed 's/^/         /' "$OUT"
+    fi
+    # AND THE PATTERNS ARE STILL PATTERNS IN THE PRINTED LINE. The count and
+    # the text come from the same variable, so a line that had expanded would
+    # name four directories where it should name two globs and a path.
+    if grep -q 'reserved paths are the product' "$OUT" &&
+        grep -q '(\*\*/local/\*\* \*\.local\.md apps/conftest_local\.py)' "$OUT"; then
+        ok "and the line prints the three patterns themselves, not what they happened to match"
+    else
+        bad "the drawers line does not print the literal patterns"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$REPO/quality/local" "$REPO/scripts/local"
+    unset DJB_TEMPLATE_BASE
+}
+
+# --- (b) THE SCRIPT AND THE LIBRARY SHIP TOGETHER ---------------------------
+# Item 1 of the release notes tells a product to run this census BEFORE it
+# merges — which is the one tree where the new script sits beside the OLD
+# library. The first consumer did exactly that and the census died
+# `RULES_FOR: unbound variable`, mid-classification, blaming nothing. The
+# victim here is this case's own: a repository built from nothing, whose
+# library is rewritten into the shape the previous release's really had —
+# `rules_for` echoing and setting no variable.
+case_a_library_that_sets_no_rules_for_is_exit_2_naming_both_files_to_take() {
+    local old="$WORK/oldlib"
+    build_repo "$old" || {
+        bad "the old-library fixture would not build"
+        return 0
+    }
+    # The previous release's `rules_for`: it printed the answer and kept none.
+    # Rewritten out of the real library rather than hand-written, so the case
+    # is driving the actual idiom and not a guess at it.
+    awk '
+        /^    RULES_FOR=\$\{hit# \}$/ { next }
+        /^    printf .%s. "\$RULES_FOR"$/ { print "    printf \"%s\" \"${hit# }\""; next }
+        { print }
+    ' "$old/scripts/archaeology_lib.sh" >"$old/scripts/archaeology_lib.new" &&
+        mv "$old/scripts/archaeology_lib.new" "$old/scripts/archaeology_lib.sh"
+    if grep -q 'RULES_FOR=' "$old/scripts/archaeology_lib.sh"; then
+        bad "the old-library fixture still sets RULES_FOR — the rewrite did not take"
+        return 0
+    fi
+    # THE TAG IS A PLACEHOLDER AND THAT IS THE ASSERTION. The first version of
+    # this refusal DERIVED it from the checkout's own version file, which reads
+    # well and is wrong every time it fires: the refusal only happens on a tree
+    # that has not merged yet, so that file names the release the product is
+    # already ON — the one whose library is the problem. The fixture below is
+    # v0.1.0 and the refusal must NOT say so.
+    local want='v<the release you are folding>'
+    run "$old" --if-declared
+    if [ "$RC" = 2 ] &&
+        grep -q "git show ${want}:scripts/divergence_census.sh" "$OUT" &&
+        grep -q "git show ${want}:scripts/archaeology_lib.sh" "$OUT"; then
+        ok "a library that sets no \$RULES_FOR is exit 2, naming BOTH files to take at '${want}'"
+    else
+        bad "old library: exit $RC, want 2 naming both files at '${want}'"
+        sed 's/^/         /' "$OUT"
+    fi
+    if grep -q "v$(tr -d '[:space:]' <"$old/TEMPLATE_VERSION"):scripts/" "$OUT"; then
+        bad "the refusal named this checkout's OWN version — on a pre-merge tree that is the release whose library is the problem"
+        sed 's/^/         /' "$OUT"
+    else
+        ok "and it does NOT name this checkout's own version, which on a pre-merge tree is the wrong tag by construction"
+    fi
+    # AND IT IS A REFUSAL, NOT A DEATH: the shell never ran the classifier, so
+    # the census must not also print the exit guard's banner over it.
+    if grep -q "DIED part-way" "$OUT"; then
+        bad "the pairing refusal reached the exit guard — an authored end must not read as a death"
+    else
+        ok "the pairing refusal is an authored end, not the guard's banner"
+    fi
+    rm -rf "$old"
+}
+
+# --- (c) AN UNMARKED END IS EXIT 2, WHATEVER THE TRAP SAW -------------------
+# MEASURED, and it is why this guard exists: on GNU bash 3.2.57 (macOS, and
+# what `/bin/bash` is there) a `set -u` death reaches the EXIT trap with
+# `$? = 0`. The consumer's pre-merge run therefore DIED and exited 0, and the
+# fold read it as a census with nothing to say. The repro is three lines and it
+# is written out in `scripts/tests/drive_preamble.sh` §5; `scripts/pm_fold.sh`
+# carries the same guard for the same reason.
+case_a_death_part_way_is_exit_2_on_every_bash() {
+    local dead="$WORK/deadcensus"
+    build_repo "$dead" || {
+        bad "the planted-death fixture would not build"
+        return 0
+    }
+    # The victim is this case's own copy, and the plant goes in AFTER the trap
+    # is armed and BEFORE any end the script authors — which is the whole
+    # window the guard is a guard over.
+    awk '
+        { print }
+        /^trap .census_on_exit \$\?. EXIT$/ { print ": \"$A_VARIABLE_NOTHING_EVER_SETS\"" }
+    ' "$dead/scripts/divergence_census.sh" >"$dead/scripts/divergence_census.new" &&
+        mv "$dead/scripts/divergence_census.new" "$dead/scripts/divergence_census.sh" &&
+        chmod +x "$dead/scripts/divergence_census.sh"
+    if ! grep -q 'A_VARIABLE_NOTHING_EVER_SETS' "$dead/scripts/divergence_census.sh"; then
+        bad "the death plant did not take"
+        rm -rf "$dead"
+        return 0
+    fi
+    run "$dead"
+    if [ "$RC" = 2 ] && grep -q "DIED part-way" "$OUT"; then
+        ok "a death part-way is exit 2 and says nothing it printed is a verdict ($(bash --version | head -1))"
+    else
+        bad "planted death: exit $RC, want 2 with the guard's banner"
+        sed 's/^/         /' "$OUT"
+    fi
+    # THE BASH THE MEASUREMENT WAS MADE ON, named explicitly. `/bin/bash` is
+    # 3.2.57 on macOS and that is the regime where the trap reads 0; a box
+    # whose /bin/bash is 5.x runs the same assertion and passes it for the
+    # other reason (wordless non-zero), which is exactly the point of a
+    # predicate that is not the status.
+    if [ -x /bin/bash ]; then
+        OUT="$WORK/out.slashbin"
+        set +e
+        (cd "$dead" && /bin/bash scripts/divergence_census.sh) >"$OUT" 2>&1
+        RC=$?
+        set -e
+        if [ "$RC" = 2 ] && grep -q "DIED part-way" "$OUT"; then
+            ok "and on /bin/bash ($(/bin/bash --version | head -1)) — the regime where the trap reads \$? = 0"
+        else
+            bad "/bin/bash planted death: exit $RC, want 2"
+            sed 's/^/         /' "$OUT"
+        fi
+    fi
+    rm -rf "$dead"
+}
+
 build_repo "$REPO" || {
     echo "!! the fixture would not build" >&2
     exit 2
@@ -420,6 +581,9 @@ else
 fi
 
 run_case case_the_declared_base_is_read_from_the_product_drawer
+run_case case_the_drawer_count_is_the_list_and_not_the_filesystem
+run_case case_a_library_that_sets_no_rules_for_is_exit_2_naming_both_files_to_take
+run_case case_a_death_part_way_is_exit_2_on_every_bash
 
 # --- the derived reader: a 'template' remote and TEMPLATE_VERSION -----------
 UPSTREAM="$WORK/upstream"
