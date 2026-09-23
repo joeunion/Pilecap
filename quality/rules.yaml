@@ -7937,15 +7937,26 @@ rules:
     # NEGATIVES 4 -> 5 (P16 merge window): the allow-list's own negative, which
     # could not be registered until the module it plants into existed.
     selftest_floor: { canaries: 5, negatives: 5 }
+    # WHERE THE NINE `create` FORMS PLANT: under a `zzz_canary` directory
+    # DIRECTLY beneath the layer each form is about — the reserved segment the
+    # probe app (`apps/zzz_canary`) and rule 52 (`frontend/src/zzz_canary/`)
+    # already use, so no product's own file can be standing at the path. The
+    # segment sits UNDER the layer and not above it because the runner keys a
+    # file's layer on the path part straight after `frontend/src/`: the plant
+    # stays in the layer it proves and the runner is not taught a second
+    # grammar. Every Next product has `frontend/src/app/page.tsx`, which is
+    # where the `app` negative used to plant — a `create` over it is refused, so
+    # the form stopped being judged on every product that folded it. The three
+    # `welcome/` forms keep their depth under the segment (the walk DESCENDS).
     canaries:
       # (1) THE UPWARD IMPORT: primitives (rank 2) reaching components (rank 3).
       - { fixture: upward_primitives_to_components.tsx,
-          plant_at: frontend/src/primitives/button.tsx, mode: create,
+          plant_at: frontend/src/primitives/zzz_canary/button.tsx, mode: create,
           expect: { contains: "the import contract runs the other way" } }
       # (2) THE API-REACH VIOLATION: a layer other than app/journeys resolving
       # its own fetch — fe-conventions Law 2 and Law 4 in one shape.
       - { fixture: components_reach_api.tsx,
-          plant_at: frontend/src/components/deal-card.tsx, mode: create,
+          plant_at: frontend/src/components/zzz_canary/deal-card.tsx, mode: create,
           expect: { contains: "only `app` (routes) and `journeys` may" } }
       # (3) A SCREEN REACHING `api` DIRECTLY, PLANTED WHERE SCREENS LIVE —
       # nested one directory down (`screens/<feature>/`), which is where every
@@ -7969,7 +7980,7 @@ rules:
       # fence would have no edges. An allow-list nobody can prove is narrow is
       # an exemption wearing a chokepoint's clothes.
       - { fixture: second_screen_reaches_api.tsx,
-          plant_at: frontend/src/screens/welcome/welcome-twin.tsx, mode: create,
+          plant_at: frontend/src/screens/zzz_canary/welcome/welcome-twin.tsx, mode: create,
           expect: { contains: "only `app` (routes) and `journeys` may" } }
       # (4) THE GENERATED-TYPES CLAUSE, ERASURE HALF. A RUNTIME import from the
       # generated client module, in a screen, still fires. Same module and same
@@ -7978,7 +7989,7 @@ rules:
       # wearing a clause's clothes. A value binding survives the bundle, and a
       # screen holding one has resolved its own fetch (Laws 2 and 4).
       - { fixture: screen_runtime_reaches_generated_client.tsx,
-          plant_at: frontend/src/screens/welcome/welcome-runtime-reach.tsx, mode: create,
+          plant_at: frontend/src/screens/zzz_canary/welcome/welcome-runtime-reach.tsx, mode: create,
           expect: { contains: "only `app` (routes) and `journeys` may" } }
       # (5) THE GENERATED-TYPES CLAUSE, SOURCE HALF — the exclusion, proven. A
       # type-only import of the REFUSAL vocabulary direct from api still fires:
@@ -7988,16 +7999,16 @@ rules:
       # lines cannot say which edge it caught — if the exclusion broke and only
       # the runtime line fired, a combined plant would stay green.
       - { fixture: refusal_type_only_direct_from_api.tsx,
-          plant_at: frontend/src/screens/welcome/welcome-refusal-direct.tsx, mode: create,
+          plant_at: frontend/src/screens/zzz_canary/welcome/welcome-refusal-direct.tsx, mode: create,
           expect: { contains: "only `app` (routes) and `journeys` may" } }
     negatives:
       # A LEGAL DOWNWARD IMPORT, resolved through a RELATIVE specifier (the
       # canaries above both used the `@/` alias; this proves the other
       # resolution path is equally silent when the direction is legal).
       - { fixture: screens_import_components.tsx,
-          plant_at: frontend/src/screens/deal-screen.tsx, mode: create }
+          plant_at: frontend/src/screens/zzz_canary/deal-screen.tsx, mode: create }
       # `app` REACHING `api` DIRECTLY — the one legal door.
-      - { fixture: app_imports_api.tsx, plant_at: frontend/src/app/page.tsx,
+      - { fixture: app_imports_api.tsx, plant_at: frontend/src/app/zzz_canary/page.tsx,
           mode: create }
       # `api` REACHING ITS OWN LAYER — a self-import, which this rule's first
       # clause permits and which the runner flagged anyway until RDF-1 (six
@@ -8005,7 +8016,7 @@ rules:
       # fixture carries a type-only AND a runtime edge, because the defect
       # flagged both; being off the ranked chain bounds what reaches IN to
       # `api`, never the layer's internal cohesion.
-      - { fixture: api_self_import.ts, plant_at: frontend/src/api/twin.ts,
+      - { fixture: api_self_import.ts, plant_at: frontend/src/api/zzz_canary/twin.ts,
           mode: create }
       # THE SHAPE THE GENERATED-TYPES CLAUSE EXISTS FOR — the two live
       # welcome-screen sites, verbatim in form: document shapes taken from the
@@ -8016,7 +8027,7 @@ rules:
       # breeds the hand-typed shadow interface rule 16's transfer exists to
       # prevent.
       - { fixture: screen_imports_generated_document_types.tsx,
-          plant_at: frontend/src/screens/welcome/welcome-doc-types.tsx, mode: create }
+          plant_at: frontend/src/screens/zzz_canary/welcome/welcome-doc-types.tsx, mode: create }
       # THE ALLOW-LISTED IMPORT's negative — "an allow-list that fires is
       # decoration" (rules 33 and 48's own words). It plants into the seam
       # module itself, so it could not be registered until that module was in
@@ -9518,9 +9529,14 @@ rules:
       # whole subject, and `absent` is what makes it reproducible on a tree
       # that has a base. A base typed in DJB_TEMPLATE_BASE or derived from a
       # `template` remote is out of this form's reach (does_not_cover-shaped:
-      # the plant can remove a file, not an environment or a remote).
+      # the plant can remove a file, not an environment or a remote) — so the
+      # form DECLARES the shape it needs (`needs_shape: template`), and on a
+      # tree that still declares a base under the plant it is printed as not
+      # producible on this shape, subtracted from the floor and counted at the
+      # foot, never fired and never lowered in silence.
       - { fixture: a_product_edit_with_no_base_declared.md,
           plant_at: docs/product/api-editorial-standard.md, mode: append,
+          needs_shape: template,
           extra_files: [ { fixture: the_declared_template_base,
               plant_at: scripts/local/template-base, mode: absent } ] }
       # (3) THE CONTROL FOR CLASS (b) FORM 1: the same script, one drawer over.

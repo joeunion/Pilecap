@@ -441,7 +441,7 @@ template
             ;;
         esac
         BASE="v$version"
-        BASE_FROM="the 'template' remote's v\$(TEMPLATE_VERSION)"
+        BASE_FROM="the 'template' remote, derived from TEMPLATE_VERSION"
         return 0
         ;;
     esac
@@ -463,7 +463,7 @@ if ! declare_base; then
         echo "     DJB_TEMPLATE_BASE=<ref> $0" >&2
         echo "     echo <ref> > scripts/local/template-base" >&2
         echo "     git remote add template <url> && git fetch template --tags" >&2
-        echo "       (then the tag v\$(cat TEMPLATE_VERSION) is the base)" >&2
+        echo "       (then the tag v<TEMPLATE_VERSION> is the base)" >&2
         echo "   Could-not-look, not a clean tree." >&2
     fi
 fi

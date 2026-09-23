@@ -8,6 +8,11 @@
                                          scope and demand it fires for ITS rule;
                                          plant every negative and demand silence;
                                          restore everything, whatever happens
+    python -m quality.gate --selftest --rule ID [--rule ID]...
+                                         the same, for the named rules' forms
+                                         only — no legs, no seam, no budget
+                                         canary, no censuses; it says so, and it
+                                         is never the gate's verdict
     python -m quality.gate --selftest-inputs
                                          every path on this tree that can change
                                          the verdict above, derived and sorted,
@@ -2263,7 +2268,10 @@ def plant_mode_findings(rules: list[dict]) -> list[str]:
 
     An unknown mode is exit 2 here, before anything is planted, naming the rule,
     the fixture and the word — rather than a form that quietly behaved as
-    whichever branch of `Plant.put` its misspelling fell into.
+    whichever branch of `Plant.put` its misspelling fell into. The same for a
+    form's `needs_shape:` against `NEEDS_SHAPES`: an unknown shape, one written
+    on an extra file, or one on a `via: django` form (judged in a batch, where
+    no single form's shape can be asked) is refused here, never ignored.
     """
     out: list[str] = []
     for rule in rules:
@@ -2278,6 +2286,28 @@ def plant_mode_findings(rules: list[dict]) -> list[str]:
                             f"{e.get('fixture')} at {e.get('plant_at')} declares mode: {mode!r}, "
                             f"which is not one of {', '.join(PLANT_MODES)} — the plant vocabulary "
                             "is closed, and a word this engine cannot read is a plan it cannot run"
+                        )
+                noun = "canary" if kind == "canaries" else "negative"
+                if "needs_shape" in entry and entry.get("needs_shape") not in NEEDS_SHAPES:
+                    out.append(
+                        f"rule {rid}: {noun} {entry.get('fixture')} declares needs_shape: "
+                        f"{entry.get('needs_shape')!r}, which is not one of "
+                        f"{', '.join(NEEDS_SHAPES)} — the shape vocabulary is closed, and a "
+                        "shape this engine cannot judge is a form it cannot run"
+                    )
+                if "needs_shape" in entry and entry.get("via") == "django":
+                    out.append(
+                        f"rule {rid}: {noun} {entry.get('fixture')} declares needs_shape on a "
+                        "`via: django` form — those are planted and judged in one batch, so no "
+                        "single form's shape can be asked; the key would be read by nothing"
+                    )
+                for extra in entry.get("extra_files") or []:
+                    if "needs_shape" in extra:
+                        out.append(
+                            f"rule {rid}: {noun} {entry.get('fixture')}'s extra file "
+                            f"{extra.get('fixture')} declares needs_shape — the shape is a "
+                            "property of the FORM, declared on the form, and a key an extra "
+                            "file carries is read by nothing"
                         )
     return out
 
@@ -2604,6 +2634,25 @@ def prime_plant_resolution() -> None:
 #: Anything else is exit 2 at `consistency()` and a refusal at `Plant.put` —
 #: an unknown mode is a plan nobody can read, never a silent `create`.
 PLANT_MODES: tuple[str, ...] = ("create", "append", "replace", "default", "absent")
+
+#: THE SHAPE A FORM NEEDS, declared on the form itself (`needs_shape:`), and a
+#: closed vocabulary like `mode:`. A plant can add, replace or remove a FILE; it
+#: cannot remove an environment variable or a git remote, so a form whose
+#: subject is a tree with NO template base declared cannot be produced on a
+#: tree that declares one through the `template` remote or `DJB_TEMPLATE_BASE`.
+#: Such a form says so here, and the self-test asks the census's own judged
+#: shape — under the plant — whether this tree IS that shape:
+#:
+#:   template  no template base declared (the census's `base none declared`):
+#:             the template's own tree, and a product's only if every base
+#:             reader it has is one a plant can take away.
+#:
+#: On a tree that is not the shape, the form is NOT PRODUCIBLE ON THIS SHAPE:
+#: printed on the rule's line, subtracted from the floor exactly as a form
+#: whose app this world lacks is, counted at the foot — never judged fired or
+#: silent, and never a could-not-look. A judged shape the census could not give
+#: is could-not-look (exit 2). An unknown word is exit 2 at `consistency()`.
+NEEDS_SHAPES: tuple[str, ...] = ("template",)
 
 
 class Plant:
@@ -4318,7 +4367,54 @@ def judged_shape() -> str:
     return f"could not be read (the census printed no base line; exit {proc.returncode})"
 
 
-def selftest() -> None:
+#: What each `needs_shape` word means, as the rule line spells it.
+NEEDS_SHAPE_MEANS: dict[str, str] = {
+    "template": "the template's own shape — no base declared —",
+}
+
+
+def shape_verdict(need: str) -> tuple[str, str]:
+    """Is the tree, as it stands under a plant, the shape `need` names?
+
+    ('judged', '') — it is; judge the form. ('not producible', <what this tree
+    declares>) — it is not, and the census said what it is instead.
+    ('could not look', <cause>) — the census gave no shape at all, or gave one
+    while saying it could not look (exit 2).
+
+    The answer is `judged_shape()`'s, re-read and never re-derived: the census
+    owns the three base readers and their precedence, and a second reader here
+    would be the thing principle 9 forbids.
+    """
+    shape = judged_shape()
+    if shape.startswith("could not be read"):
+        return "could not look", f"judged shape {shape}"
+    if "; the census could not look (exit 2)" in shape:
+        return "could not look", f"judged shape {shape}"
+    declares_none = shape.startswith("none declared")
+    if need == "template":
+        if declares_none:
+            return "judged", ""
+        return "not producible", shape.split("; the census could not look")[0]
+    return "could not look", f"needs_shape {need!r} is not one this engine can judge"
+
+
+def narrowed_ids(only: list[str]) -> list[str]:
+    """The ids a narrowed self-test judges — once each, in the plan's own order."""
+    wanted = set(only)
+    return [str(r["id"]) for r in RULES if str(r["id"]) in wanted]
+
+
+def selftest(only: list[str] | None = None) -> None:
+    """The engine's self-test — every rule's forms, or only the rules `only` names.
+
+    A NARROWED RUN (`--selftest --rule <id>`) judges the named rules' forms
+    exactly as the full run does — the same plants, the same delta, the same
+    rule line — and runs nothing else: not the five legs, not the seam, not the
+    budget canary, not the trailer or cli censuses. It says so on its own line
+    before the first plant, because a narrowed green is a claim about the named
+    rules and is never the gate's verdict. The selftest leg runs the engine with
+    no arguments, so the gate never takes this arm.
+    """
     # Read the tree's migration leaves BEFORE anything is planted into it, and
     # stop if any placeholder could not be resolved: a self-test that guessed a
     # parent would be proving something about a graph it invented.
@@ -4337,35 +4433,48 @@ def selftest() -> None:
     # controls read differently on a tree that declares a template base.
     say(f"selftest: template base — {judged_shape()}")
 
-    residence_leg()
-    ratchet_leg()
-    namespace_leg()
-    declaration_leg()
-    drawers_leg()
+    narrowed = narrowed_ids(only) if only else []
+    if narrowed:
+        say(
+            f"selftest: narrowed to rule(s) {', '.join(narrowed)} — the legs, the seam, the "
+            "budget canary and the censuses were not run; this is not the gate's verdict"
+        )
+
+    def in_scope(rid: str) -> bool:
+        return not narrowed or rid in narrowed
+
+    if not narrowed:
+        residence_leg()
+        ratchet_leg()
+        namespace_leg()
+        declaration_leg()
+        drawers_leg()
 
     fired = 0
     silent = 0
-    seam_fired, seam_silent = seam_leg()
+    seam_fired, seam_silent = seam_leg() if not narrowed else (0, 0)
     seam_floor = {
         "canaries": int((SEAM.get("selftest_floor") or {}).get("canaries", 0)),
         "negatives": int((SEAM.get("selftest_floor") or {}).get("negatives", 0)),
     }
-    for kind, got in (("canaries", seam_fired), ("negatives", seam_silent)):
-        want = seam_floor[kind]
-        if got < want:
-            broken.append(
-                f"seam: SELFTEST POPULATION SHORT — {got} of {want} recorded {kind}. Either a "
-                "form stopped proving what it claims (the line above names it) or the plan "
-                "lost one: the number lives in `seam.selftest_floor` and not in the length of "
-                "the list, so a form deleted from the list cannot take its own expectation "
-                "with it. Restore the form, or commit the lower number in a diff a reviewer "
-                "reads"
-            )
-        elif got > want:
-            say(
-                f"  seam selftest: {kind} at {got} against a recorded {want} — a human may "
-                "commit the higher number to quality/rules.yaml; nothing tightens by itself."
-            )
+    # A narrowed run did not run the seam, so it asserts no seam floor.
+    if not narrowed:
+        for kind, got in (("canaries", seam_fired), ("negatives", seam_silent)):
+            want = seam_floor[kind]
+            if got < want:
+                broken.append(
+                    f"seam: SELFTEST POPULATION SHORT — {got} of {want} recorded {kind}. Either a "
+                    "form stopped proving what it claims (the line above names it) or the plan "
+                    "lost one: the number lives in `seam.selftest_floor` and not in the length of "
+                    "the list, so a form deleted from the list cannot take its own expectation "
+                    "with it. Restore the form, or commit the lower number in a diff a reviewer "
+                    "reads"
+                )
+            elif got > want:
+                say(
+                    f"  seam selftest: {kind} at {got} against a recorded {want} — a human may "
+                    "commit the higher number to quality/rules.yaml; nothing tightens by itself."
+                )
     fired += seam_fired
     silent += seam_silent
     # : Per rule id: how many canary forms fired for IT, and how many of its
@@ -4396,6 +4505,41 @@ def selftest() -> None:
         if cause not in unjudged_why[rid]:
             unjudged_why[rid].append(cause)
 
+    # : The forms this run did NOT judge because the tree under the plant is
+    # : not the shape the form declares it needs (`needs_shape:`). The THIRD
+    # : lowering, beside a form whose app this world lacks: printed on the
+    # : rule's line with what the tree declares instead, subtracted from the
+    # : floor, counted at the foot — never fired, never silent, never unjudged.
+    unproducible: dict[str, dict[str, int]] = {
+        rid: {"canaries": 0, "negatives": 0} for rid in per_rule
+    }
+    unproducible_why: dict[str, list[str]] = {rid: [] for rid in per_rule}
+
+    def producible_here(rid: str, kind: str, entry: dict) -> bool:
+        """Ask a form's declared shape of the tree under its plant. False: not judged."""
+        need = entry.get("needs_shape")
+        if not need:
+            return True
+        verdict, detail = shape_verdict(str(need))
+        if verdict == "judged":
+            return True
+        if verdict == "not producible":
+            unproducible[rid][kind] += 1
+            why = (
+                f"{entry['fixture']} needs {NEEDS_SHAPE_MEANS.get(str(need), need)} and this "
+                f"tree declares {detail}"
+            )
+            if why not in unproducible_why[rid]:
+                unproducible_why[rid].append(why)
+            return False
+        broken.append(
+            f"rule {rid}: COULD NOT LOOK — {entry['fixture']} declares needs_shape: {need} and "
+            f"the shape of this tree could not be judged ({detail}); a form whose shape "
+            "nobody could read is neither judged nor lowered"
+        )
+        not_judged(rid, kind, detail)
+        return False
+
     # : Per (rule, via): the rule's raw findings on the UNPLANTED tree, read
     # : once, before its first form. Every form is judged against it.
     baselines: dict[tuple[str, str], tuple[list[Finding], str]] = {}
@@ -4416,7 +4560,7 @@ def selftest() -> None:
     # -- AST + diff canaries and negatives, one fixture at a time ---------------
     for rule in RULES:
         rid = str(rule["id"])
-        if not rule.get("enabled", True):
+        if not rule.get("enabled", True) or not in_scope(rid):
             continue
         for entry in rule.get("canaries") or []:
             via = entry.get("via", "ast")
@@ -4436,6 +4580,8 @@ def selftest() -> None:
                 refused = plant_form(plant, rid, fixture_home("canary", rid), entry)
                 if refused:
                     not_judged(rid, "canaries", refused)
+                    continue
+                if not producible_here(rid, "canaries", entry):
                     continue
                 planted, cause = raw_form_findings(rule, via)
                 if cause:
@@ -4476,6 +4622,8 @@ def selftest() -> None:
                 if refused:
                     not_judged(rid, "negatives", refused)
                     continue
+                if not producible_here(rid, "negatives", entry):
+                    continue
                 planted, cause = raw_form_findings(rule, via)
                 if cause:
                     not_judged(rid, "negatives", cause)
@@ -4509,7 +4657,7 @@ def selftest() -> None:
         entries: list[tuple[str, dict]] = []
         for rule in RULES:
             rid = str(rule["id"])
-            if not rule.get("enabled", True):
+            if not rule.get("enabled", True) or not in_scope(rid):
                 continue
             for entry in rule.get(kind) or []:
                 if entry.get("via") != "django":
@@ -4595,7 +4743,7 @@ def selftest() -> None:
             plant.restore()
 
     # -- the budget mechanism's own canary: a ceiling below reality must fire ----
-    measured = measure_budgets()
+    measured = measure_budgets() if not narrowed else {"service_function_length": {}}
     section = "service_function_length"
     budget_canary = 0
     if measured[section]:
@@ -4629,6 +4777,8 @@ def selftest() -> None:
     for rule in RULES:
         rid = str(rule["id"])
         name = rule.get("name", "")
+        if not in_scope(rid):
+            continue
         if not rule.get("enabled", True):
             say(f"  rule {rid} {name}: DISABLED — not planted")
             continue
@@ -4640,7 +4790,12 @@ def selftest() -> None:
         # expected falls by exactly the forms whose world this deployment does
         # not hold, with the app that took them printed on the same line. A
         # shrink nothing absent paid for is still POPULATION SHORT.
-        floor = {k: max(0, recorded[k] - skipped[rid][k]) for k in ("canaries", "negatives")}
+        # THE THIRD LOWERING is paid for by a NAMED SHAPE the same way: a form
+        # that declared the shape it needs and found this tree is another one.
+        floor = {
+            k: max(0, recorded[k] - skipped[rid][k] - unproducible[rid][k])
+            for k in ("canaries", "negatives")
+        }
         status = (
             "ok"
             if got["canaries"] >= floor["canaries"] and got["negatives"] >= floor["negatives"]
@@ -4659,9 +4814,18 @@ def selftest() -> None:
                 f"{recorded['canaries']}/{recorded['negatives']})"
             )
         )
+        not_here = (
+            ""
+            if not unproducible_why[rid]
+            else (
+                f" · {unproducible[rid]['canaries']}c/{unproducible[rid]['negatives']}n not "
+                f"producible on this shape ({'; '.join(unproducible_why[rid])}; recorded "
+                f"{recorded['canaries']}/{recorded['negatives']})"
+            )
+        )
         say(
             f"  rule {rid} {name}: canaries {got['canaries']}/{floor['canaries']} · "
-            f"negatives {got['negatives']}/{floor['negatives']} — {status}{elsewhere}"
+            f"negatives {got['negatives']}/{floor['negatives']} — {status}{elsewhere}{not_here}"
         )
         for kind in ("canaries", "negatives"):
             if got[kind] + unjudged[rid][kind] < floor[kind]:
@@ -4679,7 +4843,8 @@ def selftest() -> None:
                     f"{floor[kind]} — a human may commit the higher number to "
                     "quality/rules.yaml; nothing tightens by itself."
                 )
-    say(f"  budgets: canary {budget_canary}/1 — the mechanism's own, outside any rule")
+    if not narrowed:
+        say(f"  budgets: canary {budget_canary}/1 — the mechanism's own, outside any rule")
     for note in grown:
         say(f"  {note}")
     # CANARY B.5-1, GENERALISED. A canary firing proves the rule can find its
@@ -4687,8 +4852,9 @@ def selftest() -> None:
     # Run over the rules whose canaries actually fired on THIS tree, so a rule
     # skipped for an absent world is not asked to explain a red it cannot
     # produce here.
-    trailer_census([rid for rid, got in per_rule.items() if got["canaries"] > 0])
-    cli_census()
+    if not narrowed:
+        trailer_census([rid for rid, got in per_rule.items() if got["canaries"] > 0])
+        cli_census()
     not_judged_total = sum(u["canaries"] + u["negatives"] for u in unjudged.values())
     not_judged_rules = [rid for rid, u in unjudged.items() if u["canaries"] or u["negatives"]]
     foot = (
@@ -4698,6 +4864,13 @@ def selftest() -> None:
         foot += (
             f" · {not_judged_total} forms could not be judged "
             f"(rules: {', '.join(not_judged_rules)})"
+        )
+    unproducible_total = sum(u["canaries"] + u["negatives"] for u in unproducible.values())
+    unproducible_rules = [rid for rid, u in unproducible.items() if u["canaries"] or u["negatives"]]
+    if unproducible_total:
+        foot += (
+            f" · {unproducible_total} forms not producible on this shape "
+            f"(rules: {', '.join(unproducible_rules)})"
         )
     say(foot)
 
@@ -7157,7 +7330,7 @@ def live_scan(diff_ref: str | None, *, terse: bool = False) -> None:
 #: argument and a `--fold-map` with nothing after it — and two spellings of one
 #: list is exactly how a flag comes to exist that no refusal mentions.
 GRAMMAR = (
-    "quality.gate takes --selftest, --selftest-inputs, --diff <ref>, "
+    "quality.gate takes --selftest [--rule <id>]..., --selftest-inputs, --diff <ref>, "
     "--fold-map <previous rules.yaml> [<template rules.yaml>] [--template-tree <dir>], "
     "--terse, --explain [<id>] or --rules"
 )
@@ -7171,6 +7344,7 @@ def main(argv: list[str]) -> int:
     mode = "scan"
     terse = False
     explain_id: str | None = None
+    only_rules: list[str] = []
     args = list(argv)
     while args:
         arg = args.pop(0)
@@ -7220,6 +7394,14 @@ def main(argv: list[str]) -> int:
                 say("‼ --template-tree needs a directory. " + GRAMMAR)
                 return 2
             fold_map_template_tree = args.pop(0)
+        elif arg == "--rule":
+            # THE NARROWED SELF-TEST, one rule id per flag, repeatable. An id
+            # that names no rule is refused here, before anything is planted: a
+            # narrowed run over a typo would judge nothing and print a foot.
+            if not args or args[0].startswith("-"):
+                say("‼ --rule needs a rule id. " + GRAMMAR)
+                return 2
+            only_rules.append(args.pop(0))
         else:
             # A mistyped flag must never be a silently different run.
             say(f"‼ unknown argument {arg!r}: " + GRAMMAR)
@@ -7235,6 +7417,18 @@ def main(argv: list[str]) -> int:
         # and never `main` cannot see, which is why the case that pins it is an
         # sh probe through `main`s own argv dispatch.
         say("‼ --template-tree is only meaningful with --fold-map. " + GRAMMAR)
+        return 2
+    if only_rules and mode != "selftest":
+        # The same law, for the same reason: `--rule` narrows a self-test and
+        # means nothing to any other mode, so it is refused rather than ignored.
+        say("‼ --rule is only meaningful with --selftest. " + GRAMMAR)
+        return 2
+    unknown_rules = [rid for rid in only_rules if rid not in RULES_BY_ID]
+    if unknown_rules:
+        say(
+            f"‼ --rule {', '.join(unknown_rules)}: no rule with that id in this tree's plan "
+            "(`python -m quality.gate --rules` lists them). " + GRAMMAR
+        )
         return 2
 
     # THE FOUR READERS RETURN BEFORE ANYTHING MEASURES. `--explain`, the
@@ -7281,7 +7475,7 @@ def main(argv: list[str]) -> int:
         memo_state["bypass"] = True
         say("memo: bypassed (selftest) — every rule scans; the memo is neither read nor written")
         if not broken:
-            selftest()
+            selftest(only_rules)
     elif not broken:
         live_scan(diff_ref, terse=terse)
 
@@ -7312,7 +7506,12 @@ def main(argv: list[str]) -> int:
             for line in trailer_for(rid):
                 say(line)
     if not broken and not deduped:
-        if mode == "selftest":
+        if mode == "selftest" and only_rules:
+            say(
+                f"selftest clean for rule(s) {', '.join(narrowed_ids(only_rules))} only — "
+                "not the gate's verdict."
+            )
+        elif mode == "selftest":
             say("selftest clean: every canary fired, every negative stayed silent.")
         else:
             say(f"House rules: {len(RULES)} rules · all scopes bound · clean.")

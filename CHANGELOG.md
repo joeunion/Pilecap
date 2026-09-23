@@ -50,6 +50,45 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.1.7] — A form declares the shape it needs, and the bank judges the consumer's shape
+
+**A product whose base is declared through the `template` remote, or whose
+frontend has its own root page, still had a self-test that exited 2 on its
+own tree after 2.1.6.** Rule 51 planted a form onto `frontend/src/app/page.tsx`,
+which every Next product has, and rule 60's no-base control fired on a base the
+remote declares. This patch moves the one and has the other say it cannot be
+produced on that shape.
+
+### What a product does at the merge
+
+1. If a plan in your drawer (`quality/local/rules.yaml`) spells a plant
+   `mode:` outside `create · append · replace · default · absent`, change it —
+   2.1.6 refuses any other word at exit 2 before anything is planted. `write`,
+   the word a product's plan was found carrying, maps to `create` on a path
+   your tree does not have and to `replace` on a path it has.
+2. Nothing else to type. `python -m quality.gate --selftest` on your tree now
+   exits 0 where 2.1.6 exited 2 on rule 51's plant and rule 60's no-base
+   control, and its second line names a remote-declared base as
+   `v<version> (from the 'template' remote, derived from TEMPLATE_VERSION)`.
+
+### Fixed
+
+- **The engine's self-test plants rule 51's forms where no product's own file
+  can be, reads a template base declared through the `template` remote as the
+  shape it is and spells that base on its second line, takes `--rule <id>` for
+  a narrowed run, and a drive at the bank now judges rules 51 and 60 on a
+  consumer-shaped tree.** Rule 51's `create` forms plant under a `zzz_canary`
+  directory beneath the layer each proves, so a product's own
+  `frontend/src/app/page.tsx` is never refused as a plant site. A form may
+  declare the shape it needs (`needs_shape: template` — no base declared);
+  on a tree that declares a base anyway, through the `template` remote or
+  `DJB_TEMPLATE_BASE`, which a plant cannot take away, the form is printed on
+  its rule's line as `not producible on this shape`, with what the tree
+  declares, and counted at the foot — never read as a control that fired.
+  `python -m quality.gate --selftest --rule <id>` (repeatable) judges only the
+  named rules' forms and says it is not the gate's verdict; the gate's own
+  selftest leg never takes it.
+
 ## [2.1.6] — The engine's self-test judges every form on a consumer's shape
 
 **A product that folded the template had a self-test that could not pass on
@@ -66,6 +105,13 @@ reports a refused instrument as what it is.
    reads your declared base, says which shape it judged on its second line,
    and exits 0 where 2.1.5 exited 2 on the two dead canaries and the three
    firing controls.
+   **Corrected 2026-09-22:** not true on every product. A drawer plan that
+   spells a plant `mode:` outside the vocabulary is refused at exit 2 — map
+   it as item 1 of the next release says (`write` is `create` on a new path
+   and `replace` on a path the tree has); and on a tree whose base is declared
+   through the `template` remote, or which has its own
+   `frontend/src/app/page.tsx`, this release's self-test still exits 2 —
+   fixed in the release after this one.
 2. The twelve template-only drive cases named at 2.1.5 still skip as named
    divergences, and one more joins them: the loop-scope case that moves an
    `apps/test_*.py` aside expects the template's typed count of those
@@ -3003,7 +3049,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.1.6...HEAD
+[Unreleased]: ../../compare/v2.1.7...HEAD
+[2.1.7]: ../../compare/v2.1.6...v2.1.7
 [2.1.6]: ../../compare/v2.1.5...v2.1.6
 [2.1.5]: ../../compare/v2.1.4...v2.1.5
 [2.1.4]: ../../compare/v2.1.3...v2.1.4

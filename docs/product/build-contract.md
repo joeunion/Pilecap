@@ -456,7 +456,7 @@ self-test and every index ≡ 0 member, and the split got WORSE past ten boxes).
 | `static` | db | 0 | ruff,mypy,import-linter,djb-checks,house-rules,migrations,goalpost-census,queue-index,db-pin,archaeology,adr-census,dangling-docs,loop-names,ci-env,deploy-check,fe,collectstatic |
 | `supply-chain` | network | 0 | supply-chain |
 | `pytest-x2` | db,redis,temporal,minio,meilisearch | N-capable | temporal-census,partition,pytest-x2,own-tree-census |
-| `selftest` | db,docker,temporal | N-capable | selftest,backup_restore,sweep,pm_merge,pm_fold,rung_tidy,pm_push,secrets_scan,secrets_baseline_guard,setup_env,scripts_census,archaeology_loop,fe_leg,db_pin,loop_tier,loop_scope,fast_censuses,loop_ledger,rung_start,db_template,serve_port,runbook_recipes,gate_lease,verify_start,db_zsh,publish,divergence_census,queue_index,test_impact,loop_metrics,gate_explain,drive_preamble,pipefail_readers,list_legs,shard_census,verifier_image,verifier_box,local_legs,selftest_leg,stage |
+| `selftest` | db,docker,temporal | N-capable | selftest,backup_restore,sweep,pm_merge,pm_fold,rung_tidy,pm_push,secrets_scan,secrets_baseline_guard,setup_env,scripts_census,archaeology_loop,fe_leg,db_pin,loop_tier,loop_scope,fast_censuses,loop_ledger,rung_start,db_template,serve_port,runbook_recipes,gate_lease,verify_start,db_zsh,publish,divergence_census,queue_index,test_impact,loop_metrics,gate_explain,drive_preamble,pipefail_readers,list_legs,shard_census,verifier_image,verifier_box,local_legs,selftest_shapes,selftest_leg,stage |
 | `full-house-rules` | none | 0 | full-house-rules |
 
 `secrets`, `always-on` and `pytest` are **not** in the table: all three are

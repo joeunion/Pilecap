@@ -607,6 +607,16 @@ else
     bad "derived base: exit $RC, want 0 naming v0.1.0 and the remote"
     sed 's/^/         /' "$OUT"
 fi
+# THE DERIVATION IS NAMED, NEVER SPELLED AS SHELL. The base line used to read
+# `the 'template' remote's v$(TEMPLATE_VERSION)` — an escaped `$` that printed
+# as notation, which the engine's self-test then re-spelled verbatim onto its
+# own second line in a product's transcript.
+if grep -qF '$(' "$OUT"; then
+    bad "derived base: the census prints a literal \$( — a derivation is named, never spelled as shell"
+    sed 's/^/         /' "$OUT"
+else
+    ok "the derived base's line carries no literal \$( — the derivation is named in words"
+fi
 printf 'not-a-version\n' >"$REPO/TEMPLATE_VERSION"
 run "$REPO"
 if [ "$RC" = 2 ] && grep -q "TEMPLATE_VERSION does not read" "$OUT"; then

@@ -8768,6 +8768,43 @@ fi
 selftest_member_end "$SELFTEST_BLOCK_RC"
 fi
 
+if selftest_member_begin selftest_shapes; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: selftest_shapes >>>
+# THE ENGINE'S SELF-TEST ON A CONSUMER'S SHAPE. The engine block at the top of
+# this leg plants every form into THIS tree, which is the template's own — a
+# world too small to falsify "this canary is live on a product", and twice a
+# consumer found the next layer at their own bank. This drive clones this
+# checkout at HEAD, declares the base the way the consumer does (a `template`
+# remote carrying v<TEMPLATE_VERSION>, then scripts/local/template-base on top),
+# adds a real frontend/src/app/page.tsx, and runs the NARROWED self-test for
+# rules 51 and 60 in each world. It judges HEAD, not the working tree, and two
+# rules, not every rule — both said in its own header.
+#
+# It plants into one `git clone` under `mktemp -d`, never into the checkout
+# itself. No docker, no database, no network beyond `uv`'s own cache; git, bash
+# and the engine.
+set +e
+./scripts/tests/test_selftest_shapes.sh
+SELFTEST_SHAPES_DRIVE_RC=$?
+set -e
+if [ "$SELFTEST_SHAPES_DRIVE_RC" = "2" ]; then
+    echo "!! the selftest-shapes drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$SELFTEST_SHAPES_DRIVE_RC" != "0" ]; then
+    echo "!! the engine's self-test does not hold on a consumer-shaped tree: a form" >&2
+    echo "   collides with a file a product has, or a control fires on a declared" >&2
+    echo "   base. Silent from inside this green gate — the template's own tree is the" >&2
+    echo "   one shape where neither can happen — and exit 2 at every product's bank." >&2
+    exit "$SELFTEST_SHAPES_DRIVE_RC"
+fi
+# <<< drive: selftest_shapes <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
 if selftest_member_begin selftest_leg; then
 SELFTEST_BLOCK_RC=0
 (
