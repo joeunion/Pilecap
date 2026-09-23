@@ -80,7 +80,9 @@ EXEMPT_APPS = {"zzz_canary", "example"}
 #: have and one reserving a name as `held`. The rule's subject is which files
 #: the TEMPLATE owns and where the seams beside them are written down, so a
 #: form inside an app would be a canary about somewhere the rule does not look.
-OUTSIDE_APPS_PLANTS = 49
+#: 49 -> 52 (2026-09-22, HOTFIX-CANARY-1): rule 60's three extra files; see
+#: `TOTAL_PLANTS`.
+OUTSIDE_APPS_PLANTS = 52
 
 #: Measured once, then re-measured every time a rule arrived. Rule 43 added
 #: five product-app plants across three entries. Rule 44 added six — four in the
@@ -301,7 +303,15 @@ OUTSIDE_APPS_PLANTS = 49
 #: each of them needs — a tree with no declared base is the state THIS
 #: repository is permanently in, which is why three of the seven are that
 #: declaration.
-TOTAL_PLANTS = 515
+#: 515 -> 518 (2026-09-22, HOTFIX-CANARY-1, cycle plan § 8b): THREE more, every
+#: one OUTSIDE `apps/` (49 -> 52) and none into the scaffold, the worked example
+#: or a product app. Rule 60's controls hold on a tree that declares a template
+#: base: negative 2 removes the base for its plant (`scripts/local/template-base`,
+#: `mode: absent`), and negatives 3 and 4 each name their own plant as a
+#: divergence in the product's decision record (`docs/product/architecture.md`,
+#: `mode: append`) — rule 60's own valve, so both stay class (b) controls on a
+#: product's tree.
+TOTAL_PLANTS = 518
 SCAFFOLD_PLANTS = 172
 EXAMPLE_PLANTS = 223
 

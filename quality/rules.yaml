@@ -858,7 +858,7 @@ rules:
     canaries:
       - { fixture: second_leaf.py, plant_at: apps/example/migrations/0009_canary_second_leaf.py, mode: create }
       - { fixture: merge_migration.py, plant_at: apps/example/migrations/0009_canary_merge.py, mode: create }
-      - { fixture: stale_max_migration.txt, plant_at: apps/example/migrations/max_migration.txt, mode: create }
+      - { fixture: stale_max_migration.txt, plant_at: apps/example/migrations/max_migration.txt, mode: replace }
     negatives:
       # DERIVED FROM example's CURRENT LEAF, and it has to be: the negative's
       # whole claim is "one honest new leaf on top of the real one", which is a
@@ -883,7 +883,7 @@ rules:
         plant_at: "apps/example/migrations/{{after:example:neg_leaf}}.py"
         mode: create
         extra_files:
-          - { fixture: proper_leaf_max.txt, plant_at: apps/example/migrations/max_migration.txt, mode: create }
+          - { fixture: proper_leaf_max.txt, plant_at: apps/example/migrations/max_migration.txt, mode: replace }
 
   - id: "7"
     name: depends-on-honest
@@ -2090,7 +2090,7 @@ rules:
           via: django, expect: { id: djb.E017, contains: thing-detail } }
       - { fixture: unpaired_verb_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
           via: django, expect: { id: djb.E017, contains: thing-void } }
-      - { fixture: diff_breaking_out.py, plant_at: apps/example/schemas.py, mode: create,
+      - { fixture: diff_breaking_out.py, plant_at: apps/example/schemas.py, mode: replace,
           via: diff, expect: { contains: WidgetOut } }
       # The split-move clause's live half: a class that LEAVES one module and ARRIVES in
       # another with a field re-typed. A name-only move test would go silent
@@ -2108,7 +2108,7 @@ rules:
       # that planted them.
       - fixture: diff_moved_out_source.py
         plant_at: apps/workflows/schemas.py
-        mode: create
+        mode: replace
         via: diff
         expect: { contains: "different fields" }
         extra_files:
@@ -2124,7 +2124,7 @@ rules:
           - { fixture: paired_tool.py, plant_at: apps/zzz_canary/mcp.py, mode: create }
       - fixture: diff_breaking_out_with_v2.py
         plant_at: apps/example/schemas.py
-        mode: create
+        mode: replace
         via: diff
         expect: { contains: WidgetOut }
         extra_files:
@@ -2140,7 +2140,7 @@ rules:
       # canary's negative.
       - fixture: diff_moved_out_source.py
         plant_at: apps/workflows/schemas.py
-        mode: create
+        mode: replace
         via: diff
         expect: { contains: WorkflowRunOut }
         extra_files:
@@ -6268,12 +6268,12 @@ rules:
       # rule tolerates the present, which is not what it was written for.
       - fixture: contraction_signer.py
         plant_at: apps/events/activities.py
-        mode: create
+        mode: replace
         expect: { contains: "house rule 43" }
         extra_files:
           - { fixture: contraction_receiver.py,
-              plant_at: apps/events/tests/test_signed_delivery.py, mode: create }
-          - { fixture: contraction_prose.py, plant_at: apps/events/api.py, mode: create }
+              plant_at: apps/events/tests/test_signed_delivery.py, mode: replace }
+          - { fixture: contraction_prose.py, plant_at: apps/events/api.py, mode: replace }
 
   - id: "44"
     name: the-library-internals-we-hold
@@ -6853,7 +6853,7 @@ rules:
       # module that calls `install_ceiling_gate`; the day that call moves, this
       # plant follows it.
       - { fixture: the_tools_guard_stripped.py, plant_at: apps/core/mcp.py,
-          mode: create, expect: { contains: "tools/call" } }
+          mode: replace, expect: { contains: "tools/call" } }
     negatives:
       # A new app contributing a tool — the ordinary act, on the surface that IS
       # walled. Firing here would make the rule refuse registration rather than
@@ -8086,22 +8086,28 @@ rules:
       framework names collides with it.
     # The recorded self-test population (see the header). Rising floor.
     selftest_floor: { canaries: 2, negatives: 2 }
+    # EVERY FORM PLANTS UNDER `frontend/src/zzz_canary/`, the probe namespace
+    # (`PROBE_APP` in quality/gate.py) — a directory no product has. The forms
+    # used to plant at `frontend/src/components/index.ts`, which is exactly
+    # where a product that has a barrel keeps it: the plant overwrote the
+    # product's own file, and on a product whose ratchet recorded that barrel
+    # the canary's two lines landed under the ceiling and it read as dead.
     canaries:
-      # (1) THE DEFECT ITSELF: a components/ barrel re-exporting two siblings.
-      - { fixture: components_barrel.ts, plant_at: frontend/src/components/index.ts,
+      # (1) THE DEFECT ITSELF: a barrel re-exporting two siblings.
+      - { fixture: components_barrel.ts, plant_at: frontend/src/zzz_canary/index.ts,
           mode: create, expect: { contains: "one shared file every parallel rung must edit" } }
       # (2) THE SAME DEFECT one layer down, so the rule is not one folder's
       # habit and the walk is proved to descend — rule 50's own precedent.
-      - { fixture: primitives_barrel.ts, plant_at: frontend/src/primitives/index.ts,
+      - { fixture: primitives_barrel.ts, plant_at: frontend/src/zzz_canary/primitives/index.ts,
           mode: create, expect: { contains: "one shared file every parallel rung must edit" } }
     negatives:
       # AN INDEX FILE THAT IS NOT A BARREL — it exports its own local
       # declarations, never a `from` clause.
-      - { fixture: non_barrel_index.ts, plant_at: frontend/src/tokens/index.ts,
+      - { fixture: non_barrel_index.ts, plant_at: frontend/src/zzz_canary/tokens/index.ts,
           mode: create }
       # THE DECLARED BLIND SPOT, PROVEN RATHER THAN ASSERTED: the identical
       # re-export shape under a NON-index filename leaves this rule silent.
-      - { fixture: reexport_under_other_name.ts, plant_at: frontend/src/components/all.ts,
+      - { fixture: reexport_under_other_name.ts, plant_at: frontend/src/zzz_canary/all.ts,
           mode: create }
 
   - id: "53"
@@ -9449,11 +9455,16 @@ rules:
       # A plant path is a path the self-test refuses to run over while it is
       # dirty, so choosing `build-contract.md` or `architecture.md` here would
       # tax every rung that touches a ledger-adjacent document.
+      #
+      # THE BASE IS `mode: default`, on all three forms that declare one: the
+      # template's tree has none and the plant supplies `HEAD`; a product's
+      # tree has its own and KEEPS it, so the form is judged against the base
+      # that product really merged rather than an overwrite of it.
       - { fixture: a_product_edit_in_a_template_owned_file.md,
           plant_at: docs/product/api-editorial-standard.md, mode: append,
           expect: { contains: "the local/ drawer beside it" },
           extra_files: [ { fixture: the_declared_template_base,
-              plant_at: scripts/local/template-base, mode: create } ] }
+              plant_at: scripts/local/template-base, mode: default } ] }
       # (2) THE OTHER HALF OF THE POPULATION, and it is a different reader: a
       # NEW file in a template-owned directory is untracked, so `git diff`
       # drops it silently and only the census's own untracked arm sees it.
@@ -9463,7 +9474,7 @@ rules:
           plant_at: scripts/a_product_stage_leg.sh, mode: create,
           expect: { contains: "the local/ drawer beside it" },
           extra_files: [ { fixture: the_declared_template_base,
-              plant_at: scripts/local/template-base, mode: create } ] }
+              plant_at: scripts/local/template-base, mode: default } ] }
       # (3) CLASS (b), FORM 1: A DRAWER NOBODY WROTE DOWN. No base is
       # declared, deliberately — class (a) is skipped on a tree with no
       # template and class (b) must still fire, because that is the state this
@@ -9486,27 +9497,57 @@ rules:
       # (1) THE CONTROL FOR CANARY 2, byte-for-byte, moved into the drawer.
       # This is the whole convention in one pair: the same file, one directory
       # over, is a divergence or it is nothing.
+      #
+      # COMMIT BEFORE THE SELF-TEST ON THE TEMPLATE'S OWN TREE: there the
+      # `default` base plants `HEAD` and class (a) runs against the working
+      # tree, so an uncommitted edit to any template-owned file reds this
+      # negative as a FALSE-POSITIVE REGRESSION naming that file — true, and
+      # about your edit rather than this form. On a product's tree the base is
+      # already declared, the unplanted baseline already holds that finding,
+      # and the delta subtracts it.
       - { fixture: a_product_file_in_the_drawer.sh,
           plant_at: scripts/local/legs/a_product_stage_leg.sh, mode: create,
           extra_files: [ { fixture: the_declared_template_base,
-              plant_at: scripts/local/template-base, mode: create } ] }
+              plant_at: scripts/local/template-base, mode: default } ] }
       # (2) THE CONTROL FOR THE SKIP: canary 1's plant with NO base declared.
       # A rule that fired here would have invented a base for a tree that has
       # none, which is the one thing a census must never do — and it is the
-      # state THIS repository is permanently in.
+      # state THIS repository is permanently in. On a PRODUCT's tree the base
+      # is declared, so the form takes it away for the duration (`mode:
+      # absent`, the fixture's bytes unread): the skip clause is this form's
+      # whole subject, and `absent` is what makes it reproducible on a tree
+      # that has a base. A base typed in DJB_TEMPLATE_BASE or derived from a
+      # `template` remote is out of this form's reach (does_not_cover-shaped:
+      # the plant can remove a file, not an environment or a remote).
       - { fixture: a_product_edit_with_no_base_declared.md,
-          plant_at: docs/product/api-editorial-standard.md, mode: append }
+          plant_at: docs/product/api-editorial-standard.md, mode: append,
+          extra_files: [ { fixture: the_declared_template_base,
+              plant_at: scripts/local/template-base, mode: absent } ] }
       # (3) THE CONTROL FOR CLASS (b) FORM 1: the same script, one drawer over.
       # A template-owned file may open a drawer all day — that is the
       # convention working — and the difference between a finding and nothing
       # is one row.
+      #
+      # AND IT NAMES ITS OWN PLANT AS A DIVERGENCE, through rule 60's own
+      # valve: on a product's tree class (a) runs, and a new file under
+      # `scripts/` is a divergence the moment it exists. The appended line in
+      # the product's architecture.md turns it into a named one, which the
+      # census reports and the check does not read as a finding — so the form
+      # stays a control for class (b) on both shapes. On the template's tree
+      # (no base) the line is read by nothing.
       - { fixture: a_runnable_list_whose_drawer_has_its_row.sh,
-          plant_at: scripts/a_product_stage_runner.sh, mode: create }
+          plant_at: scripts/a_product_stage_runner.sh, mode: create,
+          extra_files: [ { fixture: names_the_stage_runner_as_a_divergence.md,
+              plant_at: docs/product/architecture.md, mode: append } ] }
       # (4) THE CONTROL FOR THE `held` STATE. Without it a reserved name and a
       # broken row are the same thing to this rule, and `held` is decoration
-      # on the two rows the table really carries.
+      # on the two rows the table really carries. Named as a divergence for
+      # the reason (3) is: the build contract is template-owned, and on a
+      # product's tree an append to it is otherwise a class (a) finding.
       - { fixture: a_held_row_reserves_a_name_nothing_opens.md,
-          plant_at: docs/product/build-contract.md, mode: append }
+          plant_at: docs/product/build-contract.md, mode: append,
+          extra_files: [ { fixture: names_the_build_contract_as_a_divergence.md,
+              plant_at: docs/product/architecture.md, mode: append } ] }
 
 # THE PEER-FORK MIGRATION PATH (rules 51-53, the redemption item for the
 # living-workaround finding of the FEEDBACK-2 survey). That finding recorded

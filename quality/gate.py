@@ -1374,8 +1374,17 @@ def run_runner(rule: dict) -> CheckResult:
     )
 
 
-def run_rule(rule: dict, *, floors: bool = True) -> tuple[list[Finding], dict, str]:
+def run_rule(
+    rule: dict, *, floors: bool = True, ratchets: bool = True
+) -> tuple[list[Finding], dict, str]:
     """The rule's check + override + ratchet pipeline. (violations, targets, skip).
+
+    `ratchets=False` is the self-test's read: check + `apply_overrides` and NO
+    ratchet, because a planted form is judged by the findings it ADDS to the
+    tree (`form_delta`), and a verdict read through the ratchet makes a form's
+    liveness a function of the tree's backlog — dead on a product that paid a
+    debt, alive on one that did not. The ratchet has its own proof
+    (`ratchet_leg`) and is not consulted here.
 
     `skip` is empty for a rule that ran; a SKIPPED sentence for a rule about a
     tree this checkout does not have; and a `COULD_NOT_LOOK`-prefixed sentence
@@ -1444,7 +1453,8 @@ def run_rule(rule: dict, *, floors: bool = True) -> tuple[list[Finding], dict, s
     if proxy and not absent:
         targets.update(FLOOR_PROXIES[proxy](ROOT, rule).targets_matched)
     kept, _suppressed = apply_overrides(rid, findings)
-    kept = apply_ratchets(rule, kept)
+    if ratchets:
+        kept = apply_ratchets(rule, kept)
     if floors:
         for key, floor in (rule.get("floors") or {}).items():
             matched = targets.get(key, 0)
@@ -2248,6 +2258,30 @@ def local_plant_consistency() -> None:
                         )
 
 
+def plant_mode_findings(rules: list[dict]) -> list[str]:
+    """Every plant in the plan speaks the closed `PLANT_MODES` vocabulary.
+
+    An unknown mode is exit 2 here, before anything is planted, naming the rule,
+    the fixture and the word — rather than a form that quietly behaved as
+    whichever branch of `Plant.put` its misspelling fell into.
+    """
+    out: list[str] = []
+    for rule in rules:
+        rid = str(rule.get("id", "?"))
+        for kind in ("canaries", "negatives"):
+            for entry in rule.get(kind) or []:
+                for e in [entry, *(entry.get("extra_files") or [])]:
+                    mode = e.get("mode")
+                    if mode not in PLANT_MODES:
+                        out.append(
+                            f"rule {rid}: {'canary' if kind == 'canaries' else 'negative'} "
+                            f"{e.get('fixture')} at {e.get('plant_at')} declares mode: {mode!r}, "
+                            f"which is not one of {', '.join(PLANT_MODES)} — the plant vocabulary "
+                            "is closed, and a word this engine cannot read is a plan it cannot run"
+                        )
+    return out
+
+
 def consistency() -> None:
     seam_consistency()
     for problem in _LOCAL_PROBLEMS:
@@ -2258,6 +2292,7 @@ def consistency() -> None:
         broken.append(_PARTITION_PROBLEM)
     local_ratchet_consistency()
     local_plant_consistency()
+    broken.extend(plant_mode_findings(RULES))
     broken.extend(duplicate_id_findings(RULES))
     fixture_census()
     broken.extend(fixture_dir_findings())
@@ -2546,6 +2581,31 @@ def prime_plant_resolution() -> None:
                         resolve_plant_text(fixture.read_text())
 
 
+#: THE PLANT VOCABULARY, CLOSED. What each `mode:` means, and the one question
+#: each asks of the tree before it writes a byte:
+#:
+#:   create   a NEW file. The path must not exist — a plant is a creation, and
+#:            a path the tree already holds is could-not-look, never an
+#:            overwrite. On a product's tree the file standing there is the
+#:            product's own (its barrel, its declared base), and writing over it
+#:            both destroys what the form was about and silently changes what
+#:            the form measures.
+#:   append   the fixture on the end of the file (created empty if absent).
+#:   replace  a DELIBERATE overwrite of a file the tree must already have; an
+#:            absent path is could-not-look, never a creation.
+#:   default  create only if absent — the tree's own file, when it has one,
+#:            stands and is what the form is judged on (rule 60's declared base:
+#:            the template's tree has none and the plant supplies `HEAD`; a
+#:            product's tree has its own and keeps it).
+#:   absent   the path is REMOVED for the duration of the plant (the fixture's
+#:            bytes are not read); `restore()` writes the original back. The one
+#:            form whose subject is a file NOT being there, on a tree that has it.
+#:
+#: Anything else is exit 2 at `consistency()` and a refusal at `Plant.put` —
+#: an unknown mode is a plan nobody can read, never a silent `create`.
+PLANT_MODES: tuple[str, ...] = ("create", "append", "replace", "default", "absent")
+
+
 class Plant:
     """Plant fixture files into the real tree; restore exactly, whatever happens."""
 
@@ -2557,10 +2617,52 @@ class Plant:
         if target not in self.saved:
             self.saved[target] = target.read_bytes() if target.exists() else None
 
-    def put(self, fixture: Path, plant_at: str, mode: str) -> None:
+    def put(self, fixture: Path, plant_at: str, mode: str, *, rid: str | None = None) -> bool:
+        """Plant one fixture. True when the plant is held; False when it was REFUSED.
+
+        A refusal writes nothing, appends one `PLANT REFUSED` line to `broken`
+        (could-not-look, exit 2) and leaves the caller to count the form as not
+        judged — never as dead and never as silent. `rid` defaults to the
+        fixture's own directory name, which is the rule id for every fixture
+        home this engine has (`quality/{canary,negative}/<id>/`,
+        `quality/local/{canary,negative}/<ns>-<n>/`).
+        """
+        rid = rid or fixture.parent.name
         plant_at = resolve_plant_text(plant_at)
         target = ROOT / plant_at
+        if mode not in PLANT_MODES:
+            broken.append(
+                f"rule {rid}: PLANT REFUSED — {fixture.name} at {plant_at} is declared "
+                f"mode: {mode!r}, which is not one of {', '.join(PLANT_MODES)}; a plan "
+                "nobody can read is could-not-look, never a silent create"
+            )
+            return False
+        exists = target.exists()
+        if mode == "create" and exists:
+            broken.append(
+                f"rule {rid}: PLANT REFUSED — {plant_at} already exists on this tree and "
+                f"{fixture.name} is declared mode: create; a plant is a creation and an "
+                "existing path is could-not-look, never an overwrite (mode: replace is the "
+                "form that means to replace it)"
+            )
+            return False
+        if mode == "replace" and not exists:
+            broken.append(
+                f"rule {rid}: PLANT REFUSED — {plant_at} does not exist on this tree and "
+                f"{fixture.name} is declared mode: replace; a replace means a file this tree "
+                "has, and an absent path is could-not-look, never a creation (mode: create is "
+                "the form that means to create it)"
+            )
+            return False
+        if mode == "default" and exists:
+            # The tree's own file stands, untouched and unremembered: there is
+            # nothing to restore because nothing was written.
+            return True
         self._remember(target)
+        if mode == "absent":
+            if exists:
+                target.unlink()
+            return True
         parent = target.parent
         missing: list[Path] = []
         while not parent.exists():
@@ -2575,6 +2677,7 @@ class Plant:
             target.write_text(base + content)
         else:
             target.write_text(content)
+        return True
 
     def scaffold_probe(self) -> None:
         self._remember(PROBE_DIR / "__init__.py")
@@ -2655,6 +2758,10 @@ def stale_plants() -> list[str]:
         for kind, base in fixture_bases(str(rule["id"])):
             for entry in rule.get(kind) or []:
                 for e in [entry, *(entry.get("extra_files") or [])]:
+                    if e["mode"] == "absent":
+                        # An `absent` plant writes nothing, so it can leave no
+                        # fixture standing; the fixture's bytes are never read.
+                        continue
                     fixture = base / str(rule["id"]) / e["fixture"]
                     if not fixture.is_file():
                         continue
@@ -4092,6 +4199,125 @@ def seam_skip_dir_census() -> int:
         plant.restore()
 
 
+#: A finding's identity for the self-test's delta: everything a reader sees.
+FindingKey = tuple[str, int, str, str]
+
+
+def _finding_key(f: Finding) -> FindingKey:
+    return (f.path, f.line, f.msg, f.klass)
+
+
+def form_delta(planted: list[Finding], baseline: list[Finding]) -> list[Finding]:
+    """The findings a plant ADDED: `planted` minus `baseline`, as an exact multiset.
+
+    THE WHOLE VERDICT OF A FORM IS THIS DIFFERENCE. A canary fires when the
+    difference holds a finding naming its plant; a negative is silent when it
+    holds none. Both sides are raw (check + `apply_overrides`, never
+    `apply_ratchets`), so a backlog on the tree — recorded, paid, or bigger
+    than the number — cannot absorb a canary or hide a negative that fired:
+    what the form is judged on is what the form did, on this tree, whatever
+    this tree already carried.
+
+    **does_not_cover:** a planted finding identical in path, line, message and
+    class to one the tree already had is subtracted with it — a `replace` plant
+    reproducing its target's own finding exactly would read as silent on that
+    finding. No form in the plan does that today.
+    """
+    left: dict[FindingKey, int] = {}
+    for f in baseline:
+        key = _finding_key(f)
+        left[key] = left.get(key, 0) + 1
+    added: list[Finding] = []
+    for f in planted:
+        key = _finding_key(f)
+        if left.get(key, 0) > 0:
+            left[key] -= 1
+        else:
+            added.append(f)
+    return added
+
+
+def could_not_look_cause(rule: dict, skip: str) -> str:
+    """The short cause a rule's line prints when a form could not be judged.
+
+    Taken from the sentence `run_rule` returned, never composed from a guess: a
+    runner's refusal carries its class in parentheses, and whether it was the
+    rule's `runner:` or a drawer's local runner is read off the rule the same
+    way `run_rule` chose between them.
+    """
+    body = skip[len(COULD_NOT_LOOK) :] if skip.startswith(COULD_NOT_LOOK) else skip
+    m = re.match(r"\(([^)]+)\)", body)
+    if m:
+        impl = rule.get("check")
+        local = bool(impl) and impl not in REGISTRY
+        return f"{'local runner' if local else 'runner'} refused: {m.group(1)}"
+    return body.split(" — ")[0].strip()[:120] or "could not look"
+
+
+def raw_form_findings(rule: dict, via: str) -> tuple[list[Finding], str]:
+    """One rule's RAW findings on the tree as it stands. (findings, could-not-look cause).
+
+    The cause is empty for a rule that ran; for one that could not look, it is
+    the short cause the rule's own self-test line prints.
+    """
+    rid = str(rule["id"])
+    if via == "diff":
+        result = C.diff_checks(ROOT, "HEAD", RULES_BY_ID).get(rid, CheckResult())
+        kept, _ = apply_overrides(rid, result.findings)
+        return kept, ""
+    kept, _, skip = run_rule(rule, floors=False, ratchets=False)
+    if skip.startswith(COULD_NOT_LOOK):
+        return [], could_not_look_cause(rule, skip)
+    return kept, ""
+
+
+#: The census whose own `base` line is the judged-shape sentence.
+JUDGED_SHAPE_CENSUS = "scripts/divergence_census.sh"
+
+
+def judged_shape() -> str:
+    """Which shape this self-test judges on — the TEMPLATE's or a PRODUCT's.
+
+    ONE READER OF THE BASE, AND IT IS NOT THIS FUNCTION. Rule 60's controls are
+    judged differently on a tree that declares a template base (a product) and
+    on one that does not (the template itself), so a transcript that does not
+    say which it judged cannot be compared with another. The answer is taken
+    from `scripts/divergence_census.sh --if-declared`'s own `base` line — the
+    census owns the three readers and their precedence — and is only
+    re-spelled here. Stdout to a file, never a pipe: the census refuses a pipe.
+    """
+    script = ROOT / JUDGED_SHAPE_CENSUS
+    if not script.is_file():
+        return f"could not be read ({JUDGED_SHAPE_CENSUS} is not in this tree)"
+    with tempfile.NamedTemporaryFile("w+", prefix="djb-judged-shape-", suffix=".log") as sink:
+        proc = subprocess.run(
+            ["bash", str(script), "--if-declared"],
+            cwd=ROOT,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        sink.flush()
+        sink.seek(0)
+        report = sink.read()
+    for line in report.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("base "):
+            continue
+        value = stripped[len("base") :].strip()
+        if value.startswith("none declared"):
+            return "none declared (the template's own shape)"
+        m = re.match(r"(\S+)\s+\(from (.+)\)$", value)
+        if m:
+            tail = (
+                ""
+                if proc.returncode == 0
+                else f"; the census could not look (exit {proc.returncode})"
+            )
+            return f"{m.group(1)} (from {m.group(2)}){tail}"
+    return f"could not be read (the census printed no base line; exit {proc.returncode})"
+
+
 def selftest() -> None:
     # Read the tree's migration leaves BEFORE anything is planted into it, and
     # stop if any placeholder could not be resolved: a self-test that guessed a
@@ -4106,6 +4332,10 @@ def selftest() -> None:
             "its plants from your work, or restore honestly:\n  " + "\n  ".join(dirty)
         )
         return
+
+    # WHICH SHAPE THIS RUN JUDGES, said before the first plant: rule 60's
+    # controls read differently on a tree that declares a template base.
+    say(f"selftest: template base — {judged_shape()}")
 
     residence_leg()
     ratchet_leg()
@@ -4152,6 +4382,36 @@ def selftest() -> None:
     # : that is smaller is not a plan that shrank.
     skipped: dict[str, dict[str, int]] = {rid: {"canaries": 0, "negatives": 0} for rid in per_rule}
     absent: dict[str, set[str]] = {rid: set() for rid in per_rule}
+    # : The forms this run could NOT JUDGE — a runner that refused, a plant
+    # : refused because its path is taken, a tree the rule could not read. A
+    # : third state beside fired/dead and silent/fired: each is printed on the
+    # : rule's own line with its cause, counted at the foot, and never read as
+    # : a canary that died or a negative that held. The refusal itself is
+    # : already in `broken` (exit 2) — this is where the line says so.
+    unjudged: dict[str, dict[str, int]] = {rid: {"canaries": 0, "negatives": 0} for rid in per_rule}
+    unjudged_why: dict[str, list[str]] = {rid: [] for rid in per_rule}
+
+    def not_judged(rid: str, kind: str, cause: str) -> None:
+        unjudged[rid][kind] += 1
+        if cause not in unjudged_why[rid]:
+            unjudged_why[rid].append(cause)
+
+    # : Per (rule, via): the rule's raw findings on the UNPLANTED tree, read
+    # : once, before its first form. Every form is judged against it.
+    baselines: dict[tuple[str, str], tuple[list[Finding], str]] = {}
+
+    def baseline_of(rule: dict, via: str) -> tuple[list[Finding], str]:
+        key = (str(rule["id"]), via)
+        if key not in baselines:
+            baselines[key] = raw_form_findings(rule, via)
+        return baselines[key]
+
+    def plant_form(plant: Plant, rid: str, home: Path, entry: dict) -> str:
+        """Plant a form and its extra files. '' when held; the cause when refused."""
+        for e in [entry, *(entry.get("extra_files") or [])]:
+            if not plant.put(home / e["fixture"], e["plant_at"], e["mode"], rid=rid):
+                return f"plant refused: {resolve_plant_text(str(e['plant_at']))}"
+        return ""
 
     # -- AST + diff canaries and negatives, one fixture at a time ---------------
     for rule in RULES:
@@ -4167,22 +4427,26 @@ def selftest() -> None:
                 continue
             if via == "django":
                 continue  # batched probe runs below
+            base_findings, base_cause = baseline_of(rule, via)
+            if base_cause:
+                not_judged(rid, "canaries", base_cause)
+                continue
             plant = Plant()
             try:
-                home = fixture_home("canary", rid)
-                plant.put(home / entry["fixture"], entry["plant_at"], entry["mode"])
-                for extra in entry.get("extra_files") or []:
-                    plant.put(home / extra["fixture"], extra["plant_at"], extra["mode"])
-                if via == "diff":
-                    result = C.diff_checks(ROOT, "HEAD", RULES_BY_ID).get(rid, CheckResult())
-                    kept, _ = apply_overrides(rid, result.findings)
-                else:
-                    kept, _, _skip = run_rule(rule, floors=False)
+                refused = plant_form(plant, rid, fixture_home("canary", rid), entry)
+                if refused:
+                    not_judged(rid, "canaries", refused)
+                    continue
+                planted, cause = raw_form_findings(rule, via)
+                if cause:
+                    not_judged(rid, "canaries", cause)
+                    continue
+                added = form_delta(planted, base_findings)
                 want = (entry.get("expect") or {}).get("contains")
                 hit = any(
                     names_planted(f, resolve_plant_text(str(entry["plant_at"])))
                     and (not want or want in str(f))
-                    for f in kept
+                    for f in added
                 )
                 if hit:
                     fired += 1
@@ -4202,32 +4466,28 @@ def selftest() -> None:
                 continue
             if via == "django":
                 continue
+            base_findings, base_cause = baseline_of(rule, via)
+            if base_cause:
+                not_judged(rid, "negatives", base_cause)
+                continue
             plant = Plant()
             try:
-                home = fixture_home("negative", rid)
-                plant.put(home / entry["fixture"], entry["plant_at"], entry["mode"])
-                for extra in entry.get("extra_files") or []:
-                    plant.put(home / extra["fixture"], extra["plant_at"], extra["mode"])
-                if via == "diff":
-                    result = C.diff_checks(ROOT, "HEAD", RULES_BY_ID).get(rid, CheckResult())
-                    kept, _ = apply_overrides(rid, result.findings)
-                else:
-                    kept, _, _skip = run_rule(rule, floors=False)
-                # A negative fires when something in the output NAMES it. The
-                # plant path is that signature for a one-file fixture; a
-                # MULTI-FILE negative is not, because a finding about a relation
-                # between three modules is pathed at whichever of them is wrong,
-                # which need not be the one written as `plant_at`. Such a fixture
-                # declares its own signature in `expect.contains` — the same
-                # grammar the django probe uses — and the two are read together,
-                # never one instead of the other.
-                want = (entry.get("expect") or {}).get("contains")
-                hits = [
-                    f
-                    for f in kept
-                    if names_planted(f, resolve_plant_text(str(entry["plant_at"])))
-                    or (want and want in str(f))
-                ]
+                refused = plant_form(plant, rid, fixture_home("negative", rid), entry)
+                if refused:
+                    not_judged(rid, "negatives", refused)
+                    continue
+                planted, cause = raw_form_findings(rule, via)
+                if cause:
+                    not_judged(rid, "negatives", cause)
+                    continue
+                # A negative fires when its plant ADDED any finding at all. The
+                # delta is what makes that total question answerable: before
+                # it, the output held the tree's own backlog too, and a
+                # negative could only be judged by whether something NAMED it
+                # (its plant path, or `expect.contains` for a multi-file
+                # fixture pathed elsewhere). The difference holds only what the
+                # plant did, so a finding it caused anywhere is a finding.
+                hits = form_delta(planted, base_findings)
                 if hits:
                     broken.append(
                         f"rule {rid}: FALSE-POSITIVE REGRESSION — negative {entry['fixture']} "
@@ -4265,11 +4525,16 @@ def selftest() -> None:
         plant = Plant()
         try:
             plant.scaffold_probe()
+            # A refused plant takes its own form out of the batch — not
+            # judged, with its cause — and leaves the rest to be asserted.
+            held: list[tuple[str, dict]] = []
             for rid, entry in entries:
-                home = fixture_home(kind, rid)
-                plant.put(home / entry["fixture"], entry["plant_at"], entry["mode"])
-                for extra in entry.get("extra_files") or []:
-                    plant.put(home / extra["fixture"], extra["plant_at"], extra["mode"])
+                refused = plant_form(plant, rid, fixture_home(kind, rid), entry)
+                if refused:
+                    not_judged(rid, kind, refused)
+                else:
+                    held.append((rid, entry))
+            entries = held
             env = dict(os.environ)
             env.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.test")
             proc = subprocess.run(
@@ -4381,6 +4646,10 @@ def selftest() -> None:
             if got["canaries"] >= floor["canaries"] and got["negatives"] >= floor["negatives"]
             else "SHORT"
         )
+        # A form nobody could judge is neither fired nor silent, and the line
+        # says so with the cause rather than reading as a plan that shrank.
+        if unjudged[rid]["canaries"] or unjudged[rid]["negatives"]:
+            status = f"COULD NOT LOOK ({'; '.join(unjudged_why[rid])})"
         elsewhere = (
             ""
             if not absent[rid]
@@ -4395,7 +4664,7 @@ def selftest() -> None:
             f"negatives {got['negatives']}/{floor['negatives']} — {status}{elsewhere}"
         )
         for kind in ("canaries", "negatives"):
-            if got[kind] < floor[kind]:
+            if got[kind] + unjudged[rid][kind] < floor[kind]:
                 broken.append(
                     f"rule {rid}: SELFTEST POPULATION SHORT — {got[kind]} of {floor[kind]} "
                     f"recorded {kind} were planted and proved. Either a form died (the line "
@@ -4420,7 +4689,17 @@ def selftest() -> None:
     # produce here.
     trailer_census([rid for rid, got in per_rule.items() if got["canaries"] > 0])
     cli_census()
-    say(f"selftest: {fired} canary forms fired · {silent} negatives stayed silent · tree restored")
+    not_judged_total = sum(u["canaries"] + u["negatives"] for u in unjudged.values())
+    not_judged_rules = [rid for rid, u in unjudged.items() if u["canaries"] or u["negatives"]]
+    foot = (
+        f"selftest: {fired} canary forms fired · {silent} negatives stayed silent · tree restored"
+    )
+    if not_judged_total:
+        foot += (
+            f" · {not_judged_total} forms could not be judged "
+            f"(rules: {', '.join(not_judged_rules)})"
+        )
+    say(foot)
 
 
 # --- main ------------------------------------------------------------------------
@@ -4791,6 +5070,8 @@ HARDCODED_READS: tuple[tuple[str, str], ...] = (
     # any member of them.
     ("scripts/tests", "drawers_leg: the shell case each `drawers` row names"),
     ("apps/core/tests/test_conftest_local.py", "drawers_leg: the fixtures drawer's case"),
+    # The judged-shape sentence runs the census and re-spells its `base` line.
+    (JUDGED_SHAPE_CENSUS, "judged_shape: the census's own `base` line, before the first plant"),
 )
 
 _GLOB_META = "*?["

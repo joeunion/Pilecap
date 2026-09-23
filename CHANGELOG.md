@@ -50,6 +50,51 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.1.6] — The engine's self-test judges every form on a consumer's shape
+
+**A product that folded the template had a self-test that could not pass on
+its own tree.** The engine's canaries and negatives were live only on the
+template's own shape: a paid backlog, a real barrel or a declared base turned
+a canary dead or a control loud, and the selftest leg carries the engine, so a
+folded product's full gate exited 2 by construction. This patch judges every
+form by the change it makes, keeps a plant off a product's own files, and
+reports a refused instrument as what it is.
+
+### What a product does at the merge
+
+1. Nothing new to type. `python -m quality.gate --selftest` on your tree
+   reads your declared base, says which shape it judged on its second line,
+   and exits 0 where 2.1.5 exited 2 on the two dead canaries and the three
+   firing controls.
+2. The twelve template-only drive cases named at 2.1.5 still skip as named
+   divergences, and one more joins them: the loop-scope case that moves an
+   `apps/test_*.py` aside expects the template's typed count of those
+   modules; a product with one more has no drawer to raise it yet.
+3. On the template's own tree only: commit before running the self-test
+   (the last sentence of the entry below says why).
+
+### Fixed
+
+- **The engine's self-test now judges every planted form by the change it
+  makes, refuses to plant over a file that exists, reports a refused
+  instrument as could-not-look, and holds rule 60's controls on a tree that
+  declares a template base.** On a folded product, `python -m quality.gate
+  --selftest` read a canary as dead when the product had paid down a backlog
+  or kept a real barrel, overwrote the product's own files and declared base
+  while planting, and scored a refused runner as dead canaries and silent
+  negatives. Each form is now judged on the findings it adds to the tree
+  as it stands; a plant onto an existing path is refused unless the plan says
+  `mode: replace` (the vocabulary is `create · append · replace · default ·
+  absent`); a form nobody could judge is printed on its rule's line as
+  `COULD NOT LOOK (<cause>)` and counted at the foot; and the transcript says
+  which template base it judged against before the first plant. Nothing for
+  a product to do at the merge. On the template's own tree, commit before
+  running the self-test: an uncommitted edit to a template-owned file now
+  reads as a false-positive regression on rule 60's drawer control, naming
+  that file, because the control plants the checkout's own `HEAD` as the base;
+  on a product's tree the same edit is already in the unplanted reading and is
+  subtracted.
+
 ## [2.1.5] — The self-test drives run on a consumer-shaped tree
 
 **Every template drive is measured by the bank on the PRODUCT's tree**, and
@@ -2958,7 +3003,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.1.5...HEAD
+[Unreleased]: ../../compare/v2.1.6...HEAD
+[2.1.6]: ../../compare/v2.1.5...v2.1.6
 [2.1.5]: ../../compare/v2.1.4...v2.1.5
 [2.1.4]: ../../compare/v2.1.3...v2.1.4
 [2.1.3]: ../../compare/v2.1.2...v2.1.3
