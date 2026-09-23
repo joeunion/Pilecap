@@ -32,7 +32,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .github/workflows/ci.yml deploy/provision.sh deploy/verifier/bake.sh scripts/check.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks/pre-push scripts/kill_mine.sh scripts/pm_fold.sh scripts/pm_push.sh scripts/queue_cited.sh scripts/sweep.sh scripts/test_impact.json scripts/test_impact.py scripts/tests/drive_preamble.sh scripts/tests/test_pm_push.sh scripts/tests/test_verifier_box.sh scripts/verifier_box.sh
-# cites: uv.lock
+# cites: uv.lock scripts/local/legs
 # A CITATION, NOT A SUBJECT: the docs-only cases below NAME `uv.lock`, because
 # the declared list rules it OUT and the refusal that says so is the assertion.
 # This drive never opens it, and declaring it as a subject would re-drive every

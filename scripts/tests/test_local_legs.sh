@@ -12,7 +12,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .github/workflows/ci.yml scripts/check.sh scripts/gate_ledger.sh scripts/pm_push.sh
-# cites: docs/product/build-contract.md scripts/tests/test_list_legs.sh
+# cites: docs/product/build-contract.md scripts/tests/test_list_legs.sh scripts/local
 # The drive for THE PRODUCT-LEG DRAWER — `scripts/local/legs/<name>.sh`.
 #
 #   ./scripts/tests/test_local_legs.sh          run every case

@@ -32,6 +32,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .github/workflows/ci.yml frontend/scripts scripts/check.sh scripts/db.sh scripts/db_sweep.sh scripts/gate_ledger.sh scripts/kill_mine.sh scripts/lifecycle.sh scripts/lifecycle_temporal.py scripts/queue_cited.sh scripts/setup.sh scripts/sweep.sh scripts/temporal_sweep.sh scripts/tests/test_backup_restore.sh scripts/tests/test_loop_ledger.sh scripts/tests/test_loop_scope.sh scripts/tests/test_pm_merge.sh scripts/tests/test_secrets_baseline_guard.sh
+# cites: scripts/local/lifecycle.d
 # The drive for `scripts/sweep.sh` and `scripts/lifecycle.sh` — the registry, the
 # four verdicts, the two new Temporal classes, and the unrecognized-shape refusal.
 #

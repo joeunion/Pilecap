@@ -3902,20 +3902,34 @@ gate_leg_took() {
 #
 # `local-legs` IS THE ONE LEG WHOSE NAME IS NOT ITS OWN MEMBERSHIP. It is the
 # RUNNER of the product drawer, and what the listing puts in a unit is the
-# drawer's legs — `local:<name>` — never the runner. So a unit that holds any
-# `local:` member holds the runner too, and a unit that holds none does not
-# announce it. Written once and read by both the announcement and the body,
+# drawer's legs — `local:<name>` — never the runner. So a unit that holds one
+# of the drawer's LEGS holds the runner too, and a unit that holds none does
+# not announce it. Written once and read by both the announcement and the body,
 # because the day those two answer differently is the day a unit announces a
 # leg no runner was handed, or runs one nobody announced.
+#
+# AND THE TEST IS THE LEG NAMES, NOT THE `local:` PREFIX. `local:<name>` is
+# also how a product DRIVE is printed (the drawer at `scripts/local/drives/`,
+# read by `selftest_registered_drives`), and the `selftest` unit's composed-of
+# carries every registered drive — so a bare-prefix test made every product
+# tree's selftest box announce and RUN the product's legs, whose `needs` that
+# unit never declared and whose organs it therefore never provisioned. Measured
+# on the first consumer's world: `--leg selftest` announced `local-legs` while
+# `--leg static` did not, and the listing said nothing about it. The membership
+# question is asked of `LOCAL_LEGS_MEMBERS` — the drawer's legs, and only its
+# legs, which is the same string `FULL_LEGS` grows by.
 gate_leg_in_unit() {
     [ -n "$GATE_LEG_UNIT_LEGS" ] || return 0
     case "$GATE_LEG_UNIT_LEGS" in
     *",$1,"*) return 0 ;;
     esac
     if [ "$1" = "local-legs" ]; then
-        case "$GATE_LEG_UNIT_LEGS" in
-        *",local:"*) return 0 ;;
-        esac
+        local member
+        for member in $(printf '%s' "${LOCAL_LEGS_MEMBERS:-}" | tr ',' ' '); do
+            case "$GATE_LEG_UNIT_LEGS" in
+            *",${member},"*) return 0 ;;
+            esac
+        done
     fi
     return 1
 }

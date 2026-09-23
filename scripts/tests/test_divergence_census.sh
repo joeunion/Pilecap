@@ -22,7 +22,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: quality/partition.yaml scripts/archaeology_lib.sh scripts/divergence_census.sh scripts/gate_refuse.sh
-# cites: scripts/pm_fold.sh docs/product/build-contract.md scripts/queue_cited.sh scripts/kill_mine.sh scripts/sweep.sh scripts/check.sh scripts/publish.sh scripts/tests/test_gate_lease.sh scripts/tests/test_publish.sh scripts/tests/drive_preamble.sh TEMPLATE_VERSION docs/product/instruments.md docs/product/architecture.md apps/core/roles.py apps/core/api/frozen_families.py pyproject.toml docs/product/queue.md apps/core/services.py quality/gate.py
+# cites: scripts/pm_fold.sh docs/product/build-contract.md scripts/queue_cited.sh scripts/kill_mine.sh scripts/sweep.sh scripts/check.sh scripts/publish.sh scripts/tests/test_gate_lease.sh scripts/tests/test_publish.sh scripts/tests/drive_preamble.sh TEMPLATE_VERSION docs/product/instruments.md docs/product/architecture.md apps/core/roles.py apps/core/api/frozen_families.py pyproject.toml docs/product/queue.md apps/core/services.py quality/gate.py scripts/local/template-base scripts/local/legs
 # The refusal-and-property drive for `scripts/divergence_census.sh`.
 #
 # Exit: 0 every case held · 1 a case did not hold · 2 COULD NOT LOOK (no git, a
@@ -118,7 +118,7 @@ build_repo() {
     local d=$1
     rm -rf "$d"
     mkdir -p "$d/scripts/tests" "$d/quality" "$d/docs/product" \
-        "$d/apps/core/api" "$d/apps/deals" "$d/config" "$d/deploy"
+        "$d/apps/core/api" "$d/apps/zzz_product_app" "$d/config" "$d/deploy"
     cp "$CENSUS" "$d/scripts/divergence_census.sh"
     chmod +x "$d/scripts/divergence_census.sh"
     # The classifier the census sources, and the seam THAT library sources. A
@@ -129,8 +129,19 @@ build_repo() {
     cp "$ROOT/scripts/archaeology_lib.sh" "$d/scripts/archaeology_lib.sh"
     cp "$ROOT/scripts/gate_refuse.sh" "$d/scripts/gate_refuse.sh"
     # The partition closure, reduced to the one thing the census reads out of
-    # it: which apps the template owns. `deals` is deliberately NOT in it — it
-    # is the product's own app, and everything under it is theirs.
+    # it: which apps the template owns. `zzz_product_app` is deliberately NOT
+    # in it — it is the product's own app, and everything under it is theirs.
+    #
+    # WHY THE NAME CARRIES `zzz_`, AND WHY THIS PARAGRAPH NAMES NO REAL APP.
+    # The fixture app used to be called after an ordinary business noun, and
+    # the first consumer's bank is what renamed it: a fixture app name is a
+    # path this drive SPELLS, the drive-keying floor judges every spelled path
+    # the measured tree really has, and that noun was one of their own apps.
+    # So a fixture name a product might ship made this drive refuse to key on
+    # that product and nowhere else. The convention is the plant convention
+    # `test_gate_explain.sh` already uses one directory over: a `zzz_` name no
+    # product can own — and the old name is described here rather than typed,
+    # because typing it would reintroduce exactly the path this rename removed.
     printf 'schema: v1\n\nplatform_apps:\n  - core\n\nclosure_classes: []\n' \
         >"$d/quality/partition.yaml"
     printf '0.1.0\n' >"$d/TEMPLATE_VERSION"
@@ -142,7 +153,7 @@ build_repo() {
     printf '# the platform app\n' >"$d/apps/core/services.py"
     printf 'ROLES = {}\n' >"$d/apps/core/roles.py"
     printf 'FAMILIES = {}\n' >"$d/apps/core/api/frozen_families.py"
-    printf '# the product'"'"'s own app\n' >"$d/apps/deals/models.py"
+    printf '# the product'"'"'s own app\n' >"$d/apps/zzz_product_app/models.py"
     printf '# queue — the product'"'"'s ledger\n' >"$d/docs/product/queue.md"
     printf '# the build contract\n' >"$d/docs/product/build-contract.md"
     printf '[project]\n' >"$d/pyproject.toml"
@@ -534,7 +545,7 @@ silent_case() { # silent_case <label> <path> <how>
 }
 
 silent_case "the drawer" "scripts/local/legs/x.sh" create
-silent_case "the product's own app" "apps/deals/models.py" append
+silent_case "the product's own app" "apps/zzz_product_app/models.py" append
 silent_case "the shared roles file" "apps/core/roles.py" append
 silent_case "the shared frozen families" "apps/core/api/frozen_families.py" append
 silent_case "a shared dependency manifest" "pyproject.toml" append

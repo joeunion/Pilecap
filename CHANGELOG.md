@@ -50,6 +50,98 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.1.5] — The self-test drives run on a consumer-shaped tree
+
+**Every template drive is measured by the bank on the PRODUCT's tree**, and
+until this patch none had ever been run on one: a tree with populated
+drawers, extra gate units, a declared rule namespace, named divergences and
+no bank output. The first product's bank found the class; this patch fixes
+the six causes it read and builds the world the template now measures
+itself against. A `quality/**` or `scripts/**` fold's gate is the FULL one,
+on a box, BEFORE the merge — the product that folded 2.1.4 ran `--loop` only
+and met the self-test at its bank.
+
+### What a product does at the merge
+
+1. Nothing new to type. A drive that could not key on your tree keys; the
+   drawer's proof cases plant in a scratch checkout, never your drawer; the
+   self-test unit runs your LEGS only under the `local` unit, never under
+   `selftest`. Delete any `# cites:` line you added to a template drive for a
+   drawer path, and any `divergence:` line naming one of those drives.
+2. Twelve template cases still assert template-only properties on a product
+   tree (the queue carries them under the consumer-shaped class): skip them as a
+   named divergence on the drive until the next patch.
+3. Builders: `.claude/agents/builder.md` ships and pins Claude Opus 5.5; a PM
+   session on Claude Code 2.1.280 or newer dispatches `subagent_type: builder`.
+
+### Added
+
+- **Agent definitions ship with the method.** `.claude/agents/` holds the
+  dispatched roles' definitions — `.claude/agents/builder.md` pins the model a
+  builder runs on — and the publication classifier now places
+  `.claude/agents/**` in bucket R5 beside `.claude/skills/**`
+  (`scripts/archaeology_lib.sh`, `docs/product/publication-manifest.md`), so a
+  product inherits the definitions with the skills instead of `publish.sh
+  --census` refusing the release with `could not place a path`.
+### Fixed
+
+- **The drawer cases no longer refuse the tree that uses the drawer.** Four
+  self-test cases planted their fixture at the tree's OWN `quality/local/` and
+  opened with "already exists in this checkout — this case plants one and will
+  not overwrite yours", so the cases that prove the drawer reader works could
+  only run where there was no drawer. On the first consumer's tree the
+  `test_gate_explain.sh` case exited 2 and the house-rules engine's selftest
+  read that as `DRAWER BROKEN … it cleared nothing` — the seam a product
+  depends on, unproven on exactly the trees that depend on it. Each case now
+  plants in a scratch CHECKOUT of its own (the engine derives its root from
+  its own file and honours no override, so another tree means another copy of
+  the engine), with any committed product drawer removed from that clone
+  first. A product sees the four cases hold; the template's own run is
+  unchanged.
+- **A reserved drawer path is judged on every tree, so the template's bank
+  catches what a product's would.** The drive-keying floor skipped any path a
+  drive spells that the measured tree does not carry — right for a plant name
+  inside a throwaway clone, wrong for a drawer: `scripts/local/legs` is absent
+  on the template and present on every product that uses the seam, so ten
+  drives here spelled one, keyed clean, and seven of them exited 2 with
+  `could not key` on a consumer. A path matching a reserved drawer glob is now
+  judged as if it existed, with the globs read from their one home
+  (`DRAWER_GLOBS` in `scripts/divergence_census.sh`); the ten drives declare
+  their drawer paths on a `# cites:` line. A product that hits the refusal
+  adds one token to one header.
+- **A derived output the release does not ship keys as `absent`, not as a
+  refusal.** `scripts/test_impact.json` is the bank's own output and is
+  trimmed from the release, so on a fresh product it does not exist — and
+  three drives DECLARE it, so `drive_key` refused, so the bank could not go
+  green, so the map was never written. A deadlock, on every consumer's first
+  bank. A declared path named in the fold's `FOLD_ABSORBED_PATHS` now keys as
+  `absent` when the tree has none; the path stays in the key, so the day the
+  map appears every verdict banked without it misses. Every other declared
+  path that expands to nothing still refuses.
+- **The leg-sequence cases no longer assert the template's shape about a
+  product's gate.** `test_list_legs.sh` typed the three announced leg
+  sequences and compared a product's run against them, so a populated
+  `scripts/local/legs/` — which makes the gate announce `local-legs`, grow
+  `FULL_LEGS` by one `local:<name>` per leg and declare a unit per local unit
+  — reded five cases on a tree where the gate was right. The baseline stays
+  the template's; what the drawer adds is now read through the gate's own
+  local-legs reader. Two more of the same class went with it: the shard
+  census left a product's real drives unstubbed in its clone, and its member
+  reader's name class had no `:`, so `local:<name>` drives were invisible to
+  it.
+- **The deploy-layer gap is derived, not typed.** `test_verifier_box.sh` and
+  `test_verifier_image.sh` each typed `7` for the drives under `deploy/tests/`
+  that no moment invokes. A product is licensed to grow that directory, so the
+  case read "wanted 7" on a tree where nothing was wrong. The number is now
+  derived two independent ways and the two compared, with the plant arms
+  relative to it — and the mirrored-helper comparison the second twin's own
+  comment promised is now performed, over both helpers.
+- **The publication drive keys again.** Its new agent-definition case spells
+  `.claude/agents`, `.claude/skills` and `CLAUDE.md` and its header declared
+  none of them, so the self-test could not key the drive and the bank exited
+  2. All three are now on its `# cites:` line: the drive plants its own
+  copies in a fixture and never reads the real tree's.
+
 ## [2.1.4] — A template-only test skips on a product
 
 One test. `test_fold_map.py`'s self-map case asserted that this tree's fixtures
@@ -2866,7 +2958,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.1.4...HEAD
+[Unreleased]: ../../compare/v2.1.5...HEAD
+[2.1.5]: ../../compare/v2.1.4...v2.1.5
 [2.1.4]: ../../compare/v2.1.3...v2.1.4
 [2.1.3]: ../../compare/v2.1.2...v2.1.3
 [2.1.2]: ../../compare/v2.1.1...v2.1.2

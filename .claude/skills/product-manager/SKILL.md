@@ -127,8 +127,8 @@ ordering, briefing, holding, and correcting — not for the work itself.
 | **PM** (you) | the session's own | the order of work, the ledgers, the readouts, saying no | writes production code |
 | **Design** | `fable` | the shape of the user's screen, held to the settled identity | decides what gets built, or when |
 | **Engineering lead** | `fable` | decomposition into rungs, the app map, **the acceptance criteria** | writes the feature it just specified |
-| **Development** | `opus` | the code, rung by rung, gate green at each | judges whether the result is good |
-| **Field test** | `opus` + browser + the machine doors | what actually happens when a user drives the build | fixes what it finds |
+| **Development** | `opus` — Claude Opus 5.5, dispatched as `subagent_type: builder` (`.claude/agents/builder.md`, shipped in the system layer, pins `claude-opus-5-5`; needs Claude Code ≥ 2.1.280; owner 2026-09-22) | the code, rung by rung, gate green at each | judges whether the result is good |
+| **Field test** | `opus` (Opus 5.5 via `subagent_type: builder`) + browser + the machine doors | what actually happens when a user drives the build | fixes what it finds |
 | **Surveyor** | `fable` | reads the *system* — code, logs, config, the deployed box — and **writes the work it finds into the queue**, with evidence | fixes anything · sets priority · trusts a status doc |
 
 **Django-specific duties** (from `architecture.md`; the dispatch briefs carry
@@ -184,7 +184,7 @@ domain-app rungs that run in parallel; a rung touching `core` needs its reason
 stated in the plan and batches with other core work into rare, deliberate
 rungs.
 
-**Dispatching**: the `Agent` tool, with `model` set from the table. Independent
+**Dispatching**: the `Agent` tool, with `model` set from the table — and for every `opus` row, `subagent_type: builder`, the agent definition that pins the exact model id (the `model` alias alone resolves to whatever Opus the harness maps). Independent
 work goes out in **one message with several tool calls** so it runs
 concurrently; dependent work waits. Agents run in the background — while one is
 out, do PM work, and never predict what it will say. `SendMessage` continues an

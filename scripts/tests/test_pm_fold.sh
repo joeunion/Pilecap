@@ -16,6 +16,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .gitignore .secrets.baseline apps/example/api.py apps/example/models.py frontend/openapi.json frontend/scripts/pin_client.sh frontend/src/api/generated/schema.d.ts manage.py quality/budgets.yaml quality/gate.py scripts/backup.sh scripts/budget_notes.sh scripts/fe_gate.sh scripts/gate_ledger.sh scripts/pm_fold.sh scripts/pm_merge.sh scripts/pm_push.sh scripts/rung_start.sh scripts/rung_tidy.sh scripts/sweep.sh scripts/test_impact.json scripts/test_impact.py scripts/tests/test_gate_lease.sh scripts/tests/test_pm_push.sh
+# cites: scripts/local/fold.d
 # THE FOLD'S REFUSAL DRIVE. `scripts/pm_fold.sh` COMMITS, UNATTENDED, from
 # inside `pm_push.sh --bank` and `pm_merge.sh --bank`, into the tree the gate's
 # verdict is about to vouch for. Every one of its teeth was proven once, by

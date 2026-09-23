@@ -1582,11 +1582,107 @@ drive__expand() {
     ' "$1" | LC_ALL=C sort
 }
 
-# drive__uncovered <listing> <declared paths> <drive file> — the FIRST checkout
-# path the body spells that no declared path covers, or nothing at all. The
-# three exclusions are argued in this section's header.
+# drive_drawer_globs — the reserved DRAWER patterns, read from their ONE home.
+#
+# THE HOME IS `scripts/divergence_census.sh`'s `DRAWER_GLOBS`, and it says so
+# itself: "one home for `which paths are the drawers`, not two of either". The
+# line is READ rather than sourced — the census is an executable whose body
+# runs a census — and it is read as TEXT, never expanded: every member is a
+# pathname pattern the shell would happily glob against the tree it is standing
+# in, which is the exact defect the census's own `set -f` exists to close.
+#
+# EMPTY IS A REFUSAL AND NEVER A NARROWER SET. A caller that could not read the
+# line must say so at exit 2, because the alternative — judging no path as a
+# drawer — is the silently-passing direction.
+drive_drawer_globs() {
+    [ -r scripts/divergence_census.sh ] || return 1
+    awk -F"'" '/^DRAWER_GLOBS=/ { print $2; exit }' scripts/divergence_census.sh |
+        grep . || return 1
+}
+
+# drive_absorbed_paths — the fold's ABSORBED list, read from its one home.
+#
+# THE HOME IS `scripts/pm_fold.sh`'s `FOLD_ABSORBED_PATHS`, and the class it
+# names is exactly the one this reader wants: a derived file written from
+# OUTSIDE this checkout that no step of the fold can regenerate, so it is the
+# one kind of declared path that can legitimately be missing from a tree. The
+# assignment is READ rather than sourced — pm_fold is an executable whose body
+# folds — and the reader handles the one-line and the multi-line quoted form,
+# because `DERIVED_PATHS` beside it is already multi-line and this list is a
+# strict subset of that one.
+#
+# UNREADABLE IS NOT "EVERYTHING IS ABSORBED". The caller falls back to its
+# refusal when this answers nothing, which is the failing-closed direction.
+drive_absorbed_paths() {
+    [ -r scripts/pm_fold.sh ] || return 1
+    awk '
+    BEGIN { q = sprintf("%c", 39); pfx = "FOLD_ABSORBED_PATHS=" q }
+    {
+        line = $0
+        if (!inside) {
+            if (index(line, pfx) != 1) next
+            inside = 1
+            line = substr(line, length(pfx) + 1)
+        }
+        p = index(line, q)
+        if (p > 0) { line = substr(line, 1, p - 1); done = 1 }
+        if (length(line)) print line
+        if (done) exit
+    }
+    ' scripts/pm_fold.sh | grep . || return 1
+}
+
+# drive_absorbed_path <path> — true when that exact path is in the list above.
+drive_absorbed_path() {
+    drive_absorbed_paths 2>/dev/null | grep -xF -- "$1" >/dev/null
+}
+
+# drive__uncovered <listing> <declared paths> <drive file> <drawer globs> — the
+# FIRST checkout path the body spells that no declared path covers, or nothing
+# at all. The three exclusions are argued in this section's header.
+#
+# THE FOURTH ARGUMENT IS THE ONE EXCEPTION TO THE FIRST EXCLUSION, and the
+# first consumer paid for it. "A path that is not in the measured tree" is
+# skipped because most absent paths a body spells are plant names inside a
+# throwaway clone — but a RESERVED DRAWER path is absent on the TEMPLATE and
+# present on every product that uses the drawer, so the floor judged
+# `scripts/local/legs` on their tree and not on ours: three drives keyed clean
+# here and exited 2 at their bank, on bytes nobody had changed. A drawer path
+# is therefore judged AS IF IT EXISTED, on every tree, so the template's own
+# bank meets the refusal the product would. The cost is one line per drive —
+# a drawer path a drive only spells goes on its `# cites:` line — and that is
+# the honest declaration either way: a drive that PLANTS a drawer in a clone is
+# not reading the tree's own.
 drive__uncovered() {
-    awk -v decls="$2" '
+    awk -v decls="$2" -v drawers="$4" '
+    # SHELL-CASE SEMANTICS, NOT `to_ere`s. The census matches these patterns
+    # with `case`, where a single `*` crosses `/` — `*.local.md` is meant to
+    # reach `docs/product/instruments.local.md`. `to_ere` reads a single `*` as
+    # `[^/]*`, which is right for a DECLARATION and wrong for these three.
+    function drawer_ere(p,   out, i, ch) {
+        out = ""
+        for (i = 1; i <= length(p); i++) {
+            ch = substr(p, i, 1)
+            if (ch == "*") {
+                out = out ".*"
+                while (substr(p, i + 1, 1) == "*") i++
+            } else if (index(".[]^$+?(){}|\\", ch) > 0) {
+                out = out "\\" ch
+            } else { out = out ch }
+        }
+        return out
+    }
+    # A HIT IS TESTED TWICE — bare, and with a trailing `/`. `**/local/**`
+    # becomes `.*/local/.*`, which reaches `scripts/local/legs` and NOT the
+    # bare directory `scripts/local`; the trailing slash is what makes the
+    # directory itself a drawer too, without widening the pattern.
+    function is_drawer(p,   i) {
+        for (i = 1; i <= dwn; i++) {
+            if (p ~ ("^" dwre[i] "$")) return 1
+            if ((p "/") ~ ("^" dwre[i] "$")) return 1
+        }
+        return 0
+    }
     function to_ere(p,   out, i, ch) {
         sub(/\/$/, "", p)
         out = ""
@@ -1604,6 +1700,8 @@ drive__uncovered() {
     BEGIN {
         n = split(decls, dd, " ")
         for (i = 1; i <= n; i++) re[i] = to_ere(dd[i])
+        dwn = split(drawers, dw, " ")
+        for (i = 1; i <= dwn; i++) dwre[i] = drawer_ere(dw[i])
     }
     NR == FNR {
         tab = index($0, "\t")
@@ -1648,7 +1746,7 @@ drive__uncovered() {
             before = (RSTART > 1) ? substr(line, RSTART - 1, 1) : ""
             line = substr(line, RSTART + RLENGTH)
             if (before ~ /[A-Za-z0-9_\/.-]/) continue
-            if (!(hit in intree)) continue
+            if (!(hit in intree) && !is_drawer(hit)) continue
             covered = 0
             for (i = 1; i <= n; i++) {
                 if (hit ~ ("^" re[i] "$") || hit ~ ("^" re[i] "/")) { covered = 1; break }
@@ -1669,7 +1767,7 @@ drive__uncovered() {
 # did. Nothing ranks or trusts it; it is an attributor's evidence, not a key.
 drive_key() {
     local file=$1 tree=$2 listing=$3
-    local marker decls d preamble parts="" text digest uncovered one label sorted sourced basename cites cites_line cited_count machine_label
+    local marker decls d preamble parts="" text digest uncovered one label sorted sourced basename cites cites_line cited_count machine_label drawers
     [ -r "$file" ] || {
         printf 'err the drive file %s is not readable\n' "$file"
         return 1
@@ -1720,7 +1818,11 @@ drive_key() {
     cites=""
     cites_line=$(drive_cites_line "$file") && cites=${cites_line#*cites:}
     cited_count=$(printf '%s' "$cites" | tr ' 	' '\n\n' | grep -c . || true)
-    uncovered=$(drive__uncovered "$listing" "$decls $cites $file $preamble" "$file")
+    drawers=$(drive_drawer_globs) || {
+        printf 'err the reserved drawer globs could not be read from scripts/divergence_census.sh (`DRAWER_GLOBS=`) — the floor cannot judge a drawer path it cannot name, and judging none is the silently-passing direction\n'
+        return 1
+    }
+    uncovered=$(drive__uncovered "$listing" "$decls $cites $file $preamble" "$file" "$drawers")
     if [ -n "$uncovered" ]; then
         printf 'err its body spells %s and its `# drives:` line does not cover it (a path it only CITES goes on a `# cites:` line)\n' "$uncovered"
         return 1
@@ -1766,6 +1868,32 @@ ${label%%:*} ${one}"
     for d in $sorted; do
         one=$(drive__expand "$listing" "$d")
         if [ -z "$one" ]; then
+            # AN ABSORBED DERIVED OUTPUT KEYS AS `absent`, AND NOTHING ELSE
+            # DOES. `FOLD_ABSORBED_PATHS` is the fold's one-member class of
+            # derived file WRITTEN FROM OUTSIDE THIS CHECKOUT that no step
+            # here can regenerate (scripts/pm_fold.sh) — `scripts/test_impact
+            # .json`, the bank's own output, which the release does not ship.
+            # So on every consumer it is absent until their first green bank
+            # writes it, three drives declare it, and a declared path that
+            # expands to nothing was a refusal: the bank could not go green
+            # because the drives were exit 2, and the drives were exit 2
+            # because the bank had not gone green. A deadlock, and it was the
+            # first consumer's.
+            #
+            # `absent` IS A KEY COMPONENT AND NOT A SUBTRACTION. The path
+            # stays in the key text, so the day the map appears the key moves
+            # and every verdict that was banked without it misses — which is
+            # the property the refusal was protecting and the reason this is
+            # not a `# cites:` line. `pm_fold.sh`'s own argument for keeping
+            # the map typed in `DERIVED_PATHS` says the same thing: a path a
+            # measurement reads is a path the key must carry.
+            if drive_absorbed_path "$d"; then
+                digest="absent"
+                text="${text}
+${d} ${digest}"
+                parts="${parts},${d}:${digest}"
+                continue
+            fi
             printf 'err the declared path %s expands to nothing in the measured tree — never a silently narrower key\n' "$d"
             return 1
         fi

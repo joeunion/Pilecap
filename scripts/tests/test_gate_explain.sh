@@ -2181,9 +2181,8 @@ sys.exit(0 if ok else 1)
 # WHY THEY LIVE IN THIS FILE. Same answer D1's namespace cases above give, and
 # the same subject: `consistency()` refusing a declaration a reader cannot act
 # on, plus the two readers printing whose rule it is. The drawer's END-TO-END
-# half — a product rule planted into the real tree, loaded by a fresh
-# interpreter and fired through the real scope — is the last case here, and it
-# is the only one that writes a byte outside $WORK.
+# half — a product rule loaded by a fresh interpreter and fired through the
+# real scope — is the last case here, and it plants in a scratch CHECKOUT.
 #
 # THE FIRST FIVE DRIVE THE SHIPPED FUNCTIONS OVER A TREE THE CASE BUILDS, by
 # pointing the module's own `LOCAL_*` paths at a tempdir and calling
@@ -2191,6 +2190,67 @@ sys.exit(0 if ok else 1)
 # `local_ratchet_consistency()` / `local_plant_consistency()`. That is
 # `namespace_leg`'s fixture-directory canary's shape (quality/gate.py): the
 # victim is created by the probe, never found on the tree.
+#
+# THE END-TO-END THREE USED TO PLANT IN THE CHECKOUT, AND THE FIRST CONSUMER'S
+# BANK IS WHAT MOVED THEM. Each of them opened with "the drawer is the tree's
+# own path, so refuse rather than overwrite yours" — which is the right
+# instinct and the wrong home: EVERY product that uses the drawer has one, so
+# the three cases that prove the drawer reader works could only run where
+# there was no drawer, and on the tree that actually uses the seam they exited
+# 2. The engine's selftest then read that as `DRAWER BROKEN … the case COULD
+# NOT LOOK (exit 2) — it cleared nothing` (`drawers_leg`, quality/gate.py), so
+# the seam a product depends on was unproven on exactly the trees that depend
+# on it. `apps/core/tests/test_conftest_local.py` had already paid the same
+# lesson for the fixtures drawer and says it in its own words: a drawer's
+# whole meaning is its ONE conventional path, so the path gets a world of its
+# own rather than an assertion about the tree we happen to be standing in.
+#
+# THE WORLD IS A CLONE, AND THE ENGINE IN IT IS THE ENGINE UNDER TEST.
+# `quality/gate.py` derives `ROOT` from its own file — `Path(__file__).resolve()
+# .parents[1]` — and honours no override, so "point the engine at another tree"
+# means running ANOTHER COPY OF THE ENGINE, which is what a checkout of this
+# checkout is. A symlink farm cannot do it (`.resolve()` walks straight back
+# here), and `$WORK` cannot (there is no engine in it). Measured on this box: a
+# `--shared --no-hardlinks` clone is ~0.3 s and its first `uv run` ~0.8 s.
+#
+# THE CLONE'S OWN DRAWER IS REMOVED BEFORE ANY CASE RUNS. A product's committed
+# `quality/local/` comes along in the clone, and it is the PRODUCT's — not this
+# drive's fixture. Removing it from the clone's working tree AND its index is
+# what makes "the drawer this case planted" a fact rather than an assumption,
+# and it is `test_local_legs.sh`'s `fresh_drawer` argument one file over.
+DRAWER_WORLD=""
+drawer_world() {
+    [ -z "$DRAWER_WORLD" ] || return 0
+    local w="${WORK}/drawer-world"
+    git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 ||
+        cannot_look "this checkout is not a git checkout — the drawer cases plant in a clone of it"
+    # A CLONE MEASURES WHAT IS COMMITTED, AND THE GATE MEASURES THE WORKING
+    # TREE. Everywhere else in this drive the two are the same file; here they
+    # are not, so a builder with an uncommitted `quality/` edit would watch
+    # these three cases pass over the engine they replaced. The rule that makes
+    # them agree is already the house's — a `quality/**` rung COMMITS before
+    # its gate, because the canary self-test refuses a dirty plant path — so
+    # this refuses rather than quietly measuring the old bytes.
+    [ -z "$(git -C "$ROOT" status --porcelain -- quality/ 2>/dev/null)" ] ||
+        cannot_look "quality/ is dirty in this checkout and these cases run in a CLONE, which carries only what is committed — so they would measure the engine you just replaced. Commit first: a quality/** rung commits before its gate here, for the same reason the canary self-test refuses a dirty plant path."
+    git clone --quiet --shared --no-hardlinks "$ROOT" "$w" >/dev/null 2>&1 ||
+        cannot_look "could not clone this checkout into ${w} — the drawer cases plant in a clone"
+    [ -f "${w}/quality/gate.py" ] && [ -f "${w}/quality/rules.yaml" ] ||
+        cannot_look "the clone carries no engine — ${w}/quality/gate.py is what these cases point the drawer at"
+    rm -rf "${w}/quality/local"
+    git -C "$w" rm -r -q --cached --ignore-unmatch quality/local >/dev/null 2>&1 || true
+    [ ! -e "${w}/quality/local" ] ||
+        cannot_look "the clone still has a drawer at quality/local/ — these cases plant their own"
+    # THE WORLD'S INTERPRETER IS WARMED HERE, ONCE, and that is not tidiness.
+    # The FIRST `uv run` in a fresh checkout prints `Creating virtual
+    # environment at: .venv` and `Installed N packages` — on stderr, which
+    # every capture here folds into stdout — so the absent-drawer negative read
+    # those three lines as a difference the drawer had made and failed on its
+    # own venv. Measured the first time these cases moved into a clone.
+    (cd "$w" && uv run python -c 'pass') >/dev/null 2>&1 ||
+        cannot_look "the clone's interpreter would not start — \`uv run\` failed in ${w}"
+    DRAWER_WORLD="$w"
+}
 
 case_a_drawer_ratchet_adds_to_a_template_class_and_never_replaces_it() {
     forge "case_a_drawer_ratchet_adds_to_a_template_class_and_never_replaces_it" '
@@ -2589,9 +2649,7 @@ case_a_drawer_rule_is_a_rule_end_to_end() {
     N=$((N + 1))
     OUT="${WORK}/drawer${N}.log"
     RC=0
-    if [ -e quality/local ]; then
-        cannot_look "quality/local/ already exists in this checkout — this case plants one and will not overwrite yours"
-    fi
+    drawer_world
     # THE HIGH-WATER IS DERIVED, NEVER TYPED, and this is the line that pays
     # for it. A literal `59` here was green the day it was written and red the
     # day the template minted rule 60 — `consistency()` correctly refused an
@@ -2602,22 +2660,22 @@ case_a_drawer_rule_is_a_rule_end_to_end() {
     # told to copy. A rule 61 cannot red this case either.
     local through
     through="$(
-        uv run python -c '
+        (cd "$DRAWER_WORLD" && uv run python -c '
 import sys
 sys.argv = ["gate"]
 from quality import gate
 gate.namespace_leg()
-' 2>/dev/null | sed -n 's/.*integers minted through \([0-9][0-9]*\).*/\1/p' | tail -1
+') 2>/dev/null | sed -n 's/.*integers minted through \([0-9][0-9]*\).*/\1/p' | tail -1
     )"
     case "$through" in
     "" | *[!0-9]*)
         cannot_look "the template's high-water rule id could not be read from namespace_leg()'s own line — the drawer case cannot record a release it cannot name (got '${through}')"
         ;;
     esac
-    mkdir -p quality/local/canary/acme-1 quality/local/negative/acme-1
-    cp quality/canary/1/import_user.py quality/local/canary/acme-1/import_user.py
-    cp quality/canary/1/fk_label.py quality/local/canary/acme-1/fk_label.py
-    cp quality/negative/1/get_user_model.py quality/local/negative/acme-1/get_user_model.py
+    mkdir -p "${DRAWER_WORLD}/quality/local/canary/acme-1" "${DRAWER_WORLD}/quality/local/negative/acme-1"
+    cp "${DRAWER_WORLD}/quality/canary/1/import_user.py" "${DRAWER_WORLD}/quality/local/canary/acme-1/import_user.py"
+    cp "${DRAWER_WORLD}/quality/canary/1/fk_label.py" "${DRAWER_WORLD}/quality/local/canary/acme-1/fk_label.py"
+    cp "${DRAWER_WORLD}/quality/negative/1/get_user_model.py" "${DRAWER_WORLD}/quality/local/negative/acme-1/get_user_model.py"
     # The two derived lines are printf'd and the REST is a quoted heredoc: the
     # body carries backticks (the doc anchor) and an unquoted heredoc would
     # run them as commands.
@@ -2652,8 +2710,8 @@ rules:
         plant_at: apps/example/services.py
         mode: append
 DRAWER
-    } >quality/local/rules.yaml
-    DJB_RULES_NO_MEMO=1 uv run python -c '
+    } >"${DRAWER_WORLD}/quality/local/rules.yaml"
+    (cd "$DRAWER_WORLD" && DJB_RULES_NO_MEMO=1 uv run python -c '
 import sys
 sys.argv = ["gate"]
 from quality import gate
@@ -2708,13 +2766,13 @@ ok = (
     and len(counted) == 1
 )
 sys.exit(0 if ok else 1)
-' >"$OUT" 2>&1 || RC=$?
+') >"$OUT" 2>&1 || RC=$?
     local tagged=1
-    uv run python -m quality.gate --rules >>"$OUT" 2>&1 || true
+    (cd "$DRAWER_WORLD" && uv run python -m quality.gate --rules) >>"$OUT" 2>&1 || true
     grep -qE '^acme-1  acme-no-auth-user-import .*\[local\]$' "$OUT" || tagged=0
-    uv run python -m quality.gate --explain acme-1 >>"$OUT" 2>&1 || true
+    (cd "$DRAWER_WORLD" && uv run python -m quality.gate --explain acme-1) >>"$OUT" 2>&1 || true
     grep -qF 'home: quality/local/rules.yaml' "$OUT" || tagged=0
-    rm -rf quality/local
+    rm -rf "${DRAWER_WORLD}/quality/local"
     capture_floor
     if [ "$RC" = "0" ] && [ "$tagged" = "1" ]; then
         ok "a drawer rule loaded from quality/local/rules.yaml, passed consistency, fired BOTH canaries through the real scope over a bound floor, kept its negative silent, was suppressed and COUNTED by its own valve, and is tagged [local] by both readers"
@@ -2738,9 +2796,7 @@ case_a_product_scope_kind_points_a_drawer_rule_at_its_own_files() {
     N=$((N + 1))
     OUT="${WORK}/drawerkind${N}.log"
     RC=0
-    if [ -e quality/local ]; then
-        cannot_look "quality/local/ already exists in this checkout — this case plants one and will not overwrite yours"
-    fi
+    drawer_world
     # THE PLANT SITES ARE TWO FILES THIS TREE ALREADY HAS, appended to and
     # restored in a `finally` — the idiom `case_a_drawer_rule_is_a_rule_end_to_end`
     # uses one file over. A plant that CREATED a new `docs/…md` would be a
@@ -2748,24 +2804,26 @@ case_a_product_scope_kind_points_a_drawer_rule_at_its_own_files() {
     # `dangling-docs` leg correctly reds; widening that leg's one exemption so
     # a drive could name a file it deletes would be the census bending for its
     # own driver.
-    [ -f docs/product/architecture.md ] || cannot_look "docs/product/architecture.md is not in this tree — the drawer kind's plant has no home"
+    [ -f "${DRAWER_WORLD}/docs/product/architecture.md" ] ||
+        cannot_look "the clone carries no docs/product/architecture.md — the drawer kind's plant has no home"
     # DERIVED, NEVER TYPED, for the reason the case above states in full.
     local through
     through="$(
-        uv run python -c '
+        (cd "$DRAWER_WORLD" && uv run python -c '
 import sys
 sys.argv = ["gate"]
 from quality import gate
 gate.namespace_leg()
-' 2>/dev/null | sed -n 's/.*integers minted through \([0-9][0-9]*\).*/\1/p' | tail -1
+') 2>/dev/null | sed -n 's/.*integers minted through \([0-9][0-9]*\).*/\1/p' | tail -1
     )"
     case "$through" in
     "" | *[!0-9]*)
         cannot_look "the template's high-water rule id could not be read from namespace_leg()'s own line (got '${through}')"
         ;;
     esac
-    mkdir -p quality/local/canary/acme-2 quality/local/negative/acme-2 quality/local/runners
-    cat <<'RUNNER' >quality/local/runners/ledger_probe.py
+    mkdir -p "${DRAWER_WORLD}/quality/local/canary/acme-2" \
+        "${DRAWER_WORLD}/quality/local/negative/acme-2" "${DRAWER_WORLD}/quality/local/runners"
+    cat <<'RUNNER' >"${DRAWER_WORLD}/quality/local/runners/ledger_probe.py"
 """A product's own rule about its LEDGERS — the drive's product-side runner.
 
 THE SUBJECT IS THE RUNNER'S AND THE ROOTS ARE THE RULE'S, which is the whole
@@ -2817,9 +2875,9 @@ RUNNER
     # The marker is assembled rather than spelled, for the reason every plant in
     # this drive assembles one: a literal here is a string a later census over
     # this file would count as a real occurrence.
-    printf 'A ledger row: UNFINISHED%sLEDGER-ROW\n' "-" >quality/local/canary/acme-2/stale_row.md
-    printf '# A plan\n\n- the second form, a row inside a list: UNFINISHED%sLEDGER-ROW\n' "-" >quality/local/canary/acme-2/stale_row_in_a_list.md
-    printf 'A ledger row, with its artifact: apps/example/models.py\n' >quality/local/negative/acme-2/named_row.md
+    printf 'A ledger row: UNFINISHED%sLEDGER-ROW\n' "-" >"${DRAWER_WORLD}/quality/local/canary/acme-2/stale_row.md"
+    printf '# A plan\n\n- the second form, a row inside a list: UNFINISHED%sLEDGER-ROW\n' "-" >"${DRAWER_WORLD}/quality/local/canary/acme-2/stale_row_in_a_list.md"
+    printf 'A ledger row, with its artifact: apps/example/models.py\n' >"${DRAWER_WORLD}/quality/local/negative/acme-2/named_row.md"
     {
         printf 'rule_id_namespace: acme\ntemplate_rule_ids_through: %s\n' "$through"
         cat <<'DRAWER'
@@ -2864,8 +2922,8 @@ rules:
         plant_at: docs/product/architecture.md
         mode: append
 DRAWER
-    } >quality/local/rules.yaml
-    DJB_RULES_NO_MEMO=1 uv run python -c '
+    } >"${DRAWER_WORLD}/quality/local/rules.yaml"
+    (cd "$DRAWER_WORLD" && DJB_RULES_NO_MEMO=1 uv run python -c '
 import sys
 sys.argv = ["gate"]
 from quality import gate
@@ -2957,9 +3015,9 @@ ok = (
     and attribution
 )
 sys.exit(0 if ok else 1)
-' >"$OUT" 2>&1 || RC=$?
+') >"$OUT" 2>&1 || RC=$?
     local tagged=1
-    uv run python -m quality.gate --explain acme-2 >>"$OUT" 2>&1 || true
+    (cd "$DRAWER_WORLD" && uv run python -m quality.gate --explain acme-2) >>"$OUT" 2>&1 || true
     grep -qF 'home: quality/local/rules.yaml' "$OUT" || tagged=0
     # HIGH-1 · THE FOURTH READER, run as the CLI the gate runs (check.sh's
     # selftest leg). A file root's walk is itself: a prefix test spelled
@@ -2967,13 +3025,13 @@ sys.exit(0 if ok else 1)
     # that was exactly where it said it was — exit 2 at the bank, on the
     # consumer's own case, while the release notes said "a directory or file".
     local inputs="${WORK}/drawerkind-inputs${N}.txt"
-    if uv run python -m quality.gate --selftest-inputs >"$inputs" 2>&1; then
+    if (cd "$DRAWER_WORLD" && uv run python -m quality.gate --selftest-inputs) >"$inputs" 2>&1; then
         grep -qx '.env.example' "$inputs" || tagged=0
     else
         tagged=0
     fi
     cat "$inputs" >>"$OUT"
-    rm -rf quality/local
+    rm -rf "${DRAWER_WORLD}/quality/local"
     capture_floor
     if [ "$RC" = "0" ] && [ "$tagged" = "1" ]; then
         ok "a product's own scope kind joins SCOPE_KINDS (a directory root AND a file root), points a drawer rule at docs/, fires its canary THERE over a bound floor, keeps its negative silent, is the ONLY rule a valve under docs/ is attributed to, and carries its file root through --selftest-inputs — and the same rule under a template kind is refused with the remedy naming \`scope_kinds:\` in the drawer"
@@ -2988,14 +3046,12 @@ case_no_drawer_is_byte_identical() {
     N=$((N + 1))
     OUT="${WORK}/nodrawer${N}.log"
     RC=0
-    if [ -e quality/local ]; then
-        cannot_look "quality/local/ already exists in this checkout — the absent-drawer negative cannot be driven over a tree that has one"
-    fi
+    drawer_world
     local before="${WORK}/nodrawer-before.txt" after="${WORK}/nodrawer-after.txt"
-    uv run python -m quality.gate --rules >"$before" 2>&1 || RC=$?
-    mkdir -p quality/local
-    uv run python -m quality.gate --rules >"$after" 2>&1 || RC=$?
-    rmdir quality/local
+    (cd "$DRAWER_WORLD" && uv run python -m quality.gate --rules) >"$before" 2>&1 || RC=$?
+    mkdir -p "${DRAWER_WORLD}/quality/local"
+    (cd "$DRAWER_WORLD" && uv run python -m quality.gate --rules) >"$after" 2>&1 || RC=$?
+    rmdir "${DRAWER_WORLD}/quality/local"
     cp "$before" "$OUT"
     capture_floor
     if [ "$RC" != "0" ]; then

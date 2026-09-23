@@ -186,6 +186,7 @@ Pilecap/
 ├── .claude/skills/django-conventions/ # what every builder loads before writing Django
 ├── .claude/skills/rung-execution/    # how a rung is EXECUTED: baseline, gate discipline, failing-test-first, the report contract
 ├── .claude/skills/platform-primer/   # the arrival map — a fresh session loads it first
+├── .claude/agents/                   # the dispatched roles' definitions — a builder's model and tools
 ├── CLAUDE.md · README.md · .gitignore
 ```
 
@@ -234,7 +235,7 @@ Pilecap/
 
 | class | paths | at a merge |
 |---|---|---|
-| **template-owned** — a product edit is a DIVERGENCE, recorded in the product's own `architecture.md` as `divergence: <path> — <reason>` | `scripts/**` less `scripts/local/**` · `quality/**` less `quality/local/**` · `.github/workflows/ci.yml` · `.claude/skills/**` · `config/**` · `manage.py` · the platform apps in `quality/partition.yaml` less `apps/core/roles.py` · `CLAUDE.md` · `docs/runbooks/**` · `docs/standards.md` · `docs/product/{build-contract,instruments,partition-closure,publication-manifest,api-editorial-standard,scale-envelope}.md` | fast-forwards; a conflict is the census's business |
+| **template-owned** — a product edit is a DIVERGENCE, recorded in the product's own `architecture.md` as `divergence: <path> — <reason>` | `scripts/**` less `scripts/local/**` · `quality/**` less `quality/local/**` · `.github/workflows/ci.yml` · `.claude/skills/**` · `.claude/agents/**` · `config/**` · `manage.py` · the platform apps in `quality/partition.yaml` less `apps/core/roles.py` · `CLAUDE.md` · `docs/runbooks/**` · `docs/standards.md` · `docs/product/{build-contract,instruments,partition-closure,publication-manifest,api-editorial-standard,scale-envelope}.md` | fast-forwards; a conflict is the census's business |
 | **product-owned, never shipped** — no conflict by construction | `**/local/**` · `*.local.md` · `apps/conftest_local.py` (an exact path, not a glob: a `conftest.py` sibling is collected by pytest BY NAME, so the fixtures drawer cannot leave the package pytest looks in) · `.github/workflows/<not ci.yml>` · the product's own `apps/<x>/**` · the nine ledgers · `north-star.md` · the product's own `architecture.md` · `README.md` · `frontend/**` past the example | untouched |
 | **shared, per-file conflict by design** — adjudicated, never a divergence | `apps/core/roles.py` · `apps/core/api/frozen_families.py` · `pyproject.toml` · `uv.lock` · `compose.yaml` · `.env.example` · `quality/budgets.yaml` · `deploy/tests/**` · the three measured files (`scripts/test_impact.json`, `pytest_durations.json`, `gate_member_durations.json`) | one file each, by hand |
 

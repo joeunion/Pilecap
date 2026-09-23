@@ -84,7 +84,7 @@ rules_for() {
     pyproject.toml | uv.lock | .python-version | .env.example | .gitignore | .editorconfig | .gitattributes | .secrets.baseline | vendor/* | templates/*) hit="$hit R4" ;;
     esac
     case "$p" in
-    .claude/skills/* | CLAUDE.md | README.md | docs/runbooks/* | docs/standards.md) hit="$hit R5" ;;
+    .claude/skills/* | .claude/agents/* | CLAUDE.md | README.md | docs/runbooks/* | docs/standards.md) hit="$hit R5" ;;
     esac
     case "$p" in
     TEMPLATE_VERSION | CHANGELOG.md) hit="$hit R6" ;;

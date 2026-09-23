@@ -12,7 +12,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .github/workflows/ci.yml apps/conftest.py config/ docs/product/build-contract.md quality/ scripts/check.sh scripts/loop_tier.sh scripts/test.sh scripts/tests/fixtures/collection_world/ scripts/tests/test_loop_scope.sh scripts/tests/test_selftest_leg.sh scripts/verify_start.sh
-# cites: scripts/tests/test_shard_census.sh scripts/pytest_durations.json apps/example/services.py
+# cites: scripts/tests/test_shard_census.sh scripts/pytest_durations.json apps/example/services.py scripts/local
 # The drive for the gate's UNIT TABLE and for `./scripts/check.sh --list-legs`.
 #
 #   ./scripts/tests/test_list_legs.sh          run every case
@@ -271,6 +271,53 @@ WORLD_NARROWED_FLOOR=10
 # full sequence gained `collectstatic` after `fe` (23 unique names → 24) and the
 # `--loop` sequence is unchanged. Same licence as the paragraph above: a rung
 # that changes the transcript ON PURPOSE re-captures and says so here.
+# --- THE DRAWER'S CONTRIBUTION, DERIVED FROM THE TREE AND NEVER TYPED --------
+#
+# WHY IT IS HERE. The three sequences below are THE TEMPLATE'S BASELINE, and on
+# the first consumer's tree every one of them was wrong by exactly one name:
+# a populated `scripts/local/legs/` makes `check.sh` announce `local-legs` at
+# the tail of the modes whose tier the drawer declares, grow `FULL_LEGS` by one
+# `local:<name>` per leg, and declare a unit per local unit. Three cases here
+# compared the run against the baseline and reded on a tree where the run was
+# RIGHT — a drive that refuses the seam the template ships.
+#
+# SO THE BASELINE STAYS THE BASELINE AND THE ASSERTION TOLERATES EXACTLY WHAT
+# THE DRAWER ADDS, read through `check.sh`'s OWN reader — the `local-legs`
+# fence, extracted and sourced, which is `test_local_legs.sh`'s idiom one file
+# over. A second typed list of what a drawer contributes would be the very
+# thing `FULL_LEGS` exists to refuse.
+DRAWER_FENCE="${WORK}/local-legs.sh"
+awk '
+    /^# >>> local-legs >>>$/ { on = 1; next }
+    /^# <<< local-legs <<<$/ { on = 0 }
+    on
+' scripts/check.sh >"$DRAWER_FENCE"
+[ -s "$DRAWER_FENCE" ] ||
+    cannot_look "scripts/check.sh carries no '# >>> local-legs >>>' block — the drawer's contribution to every sequence below cannot be derived, and guessing it is the defect this section closes"
+
+# drawer_run <snippet> — the fence sourced, the drawer scanned, the snippet run.
+# In a subshell: the fence assigns at file scope and a caller that inherited
+# those would be reading one case's drawer in the next.
+drawer_run() {
+    (
+        # shellcheck disable=SC1090  # the extracted block, by design
+        . "$DRAWER_FENCE"
+        local_legs_scan >/dev/null 2>&1 || exit 2
+        eval "$1"
+    )
+}
+DRAWER_MEMBERS=$(drawer_run 'local_legs_names | tr "\n" "," | sed "s/,\$//"') ||
+    cannot_look "the drawer in $(pwd)/scripts/local/legs could not be read — check.sh refuses this tree at its listing, so no sequence here has a subject"
+#: The two guards `check.sh` puts on its own call sites: the fast-tier site
+#: runs only when a leg declares that tier, the full-path site whenever the
+#: drawer holds anything at all.
+DRAWER_FAST=$(drawer_run 'local_legs_tier_any fast') || DRAWER_FAST=""
+#: `local-legs` at the tail, or nothing — the string to append to a baseline.
+DRAWER_TAIL_FAST=""
+[ -z "$DRAWER_FAST" ] || DRAWER_TAIL_FAST=" local-legs"
+DRAWER_TAIL_FULL=""
+[ -z "$DRAWER_MEMBERS" ] || DRAWER_TAIL_FULL=" local-legs"
+
 FIXTURE_FAST="ruff mypy import-linter djb-checks house-rules migrations goalpost-census queue-index db-pin archaeology adr-census dangling-docs loop-names ci-env"
 # `always-on` sits between the secret scan and pytest, and it is a `--loop`
 # name only: its members are every one of them already run by the full gate
@@ -565,16 +612,22 @@ case_the_full_fast_and_loop_leg_sequences_are_unchanged_by_the_refactor() {
     # function. The fixture is this tree's baseline (see the header).
     local got
 
+    local want
     CURRENT="--fast announces the baseline's legs, in order"
+    want="${FIXTURE_FAST}${DRAWER_TAIL_FAST}"
     got=$(dry_sequence --fast)
-    if [ "$got" = "$FIXTURE_FAST" ]; then
+    if [ "$got" = "$want" ]; then
         ok "$(printf '%s' "$got" | wc -w | tr -d ' ') legs: ${got}"
     else
         bad "the --fast sequence moved
-    fixture: ${FIXTURE_FAST}
+    fixture: ${want}
     got:     ${got}"
     fi
 
+    # `--loop` HAS NO `local-legs` CALL SITE — the drawer's two sites are the
+    # fast block's and the full path's — so this sequence is the baseline on
+    # every tree, and that is asserted here rather than assumed: if a site is
+    # ever added inside the loop block, this is the case that says so.
     CURRENT="--loop announces the baseline's legs, in order"
     got=$(dry_sequence --loop)
     if [ "$got" = "$FIXTURE_LOOP" ]; then
@@ -586,12 +639,13 @@ case_the_full_fast_and_loop_leg_sequences_are_unchanged_by_the_refactor() {
     fi
 
     CURRENT="the full gate announces the baseline's legs, in order"
+    want="${FIXTURE_FULL}${DRAWER_TAIL_FULL}"
     got=$(dry_sequence)
-    if [ "$got" = "$FIXTURE_FULL" ]; then
+    if [ "$got" = "$want" ]; then
         ok "$(printf '%s' "$got" | wc -w | tr -d ' ') legs (temporal-census twice, as it is announced): ${got}"
     else
         bad "the full sequence moved
-    fixture: ${FIXTURE_FULL}
+    fixture: ${want}
     got:     ${got}"
     fi
 
@@ -648,7 +702,18 @@ case_full_legs_equals_the_announced_full_sequence() {
         bad "scripts/check.sh has no FULL_LEGS line — the string every verdict row carries is gone"
         return 0
     fi
+    # THE TWO SIDES ARE THE TWO THE GATE ITSELF COMPARES. `FULL_LEGS` is a
+    # RUNTIME string: `check.sh` appends one `local:<name>` per declared leg to
+    # the literal above (its own line, beside the drawer's reader), and
+    # `gate_announced_full_legs` rewrites the ONE `local-legs` call site into
+    # those same members. So the literal alone is the template's half, and both
+    # halves grow here by the same derived string — never by a typed one.
+    [ -z "$DRAWER_MEMBERS" ] || full_legs="${full_legs},${DRAWER_MEMBERS}"
     for leg in $(dry_sequence); do
+        if [ "$leg" = "local-legs" ]; then
+            leg=$DRAWER_MEMBERS
+            [ -n "$leg" ] || continue
+        fi
         case ",${seen}," in
         *",${leg},"*) ;;
         *) seen="${seen}${seen:+,}${leg}" ;;
@@ -887,7 +952,14 @@ case_every_full_leg_is_in_exactly_one_unit() {
     # the legs a full run announces PLUS the drives the selftest leg walks —
     # checking only the legs would let a drive fall out of every shard with
     # this case still green.
-    population="$(printf '%s' "$full_legs" | tr ',' ' ') $(printf '%s' "$REGISTERED_DRIVES" | tr '\n' ' ')"
+    # THE DRAWER'S LEGS ARE FULL LEGS TOO. `check.sh` appends them to
+    # `FULL_LEGS` at startup and declares a unit per local unit, so a product's
+    # own leg is a member of the partition exactly as a template leg is — and
+    # reading only the typed literal made every product leg read as "neither a
+    # full leg nor a registered drive". (Product DRIVES need nothing here:
+    # `REGISTERED_DRIVES` runs the gate's own reader in this checkout, so it
+    # already carries `local:<name>` per drawer drive.)
+    population="$(printf '%s' "$full_legs" | tr ',' ' ') $(printf '%s' "$DRAWER_MEMBERS" | tr ',' ' ') $(printf '%s' "$REGISTERED_DRIVES" | tr '\n' ' ')"
     run_listing_here
     if [ "$LIST_RC" != "0" ]; then
         bad "--list-legs exits ${LIST_RC}, so there is no table to judge"
@@ -1011,7 +1083,9 @@ case_list_legs_prints_one_line_per_unit_in_the_grammar() {
     local rows bad_rows="" line unit needs shards legs leg full_legs population
     CURRENT="every line is <unit>\\t<needs>\\t<shards>\\t<composed-of>"
     full_legs=$(sed -n 's/^FULL_LEGS=//p' scripts/check.sh | sed -n 1p)
-    population="$(printf '%s' "$full_legs" | tr ',' ' ') $(printf '%s' "$REGISTERED_DRIVES" | tr '\n' ' ')"
+    # The drawer's legs, for `case_every_full_leg_is_in_exactly_one_unit`'s
+    # reason and not repeated here.
+    population="$(printf '%s' "$full_legs" | tr ',' ' ') $(printf '%s' "$DRAWER_MEMBERS" | tr ',' ' ') $(printf '%s' "$REGISTERED_DRIVES" | tr '\n' ' ')"
     run_listing_here
     if [ "$LIST_RC" != "0" ]; then
         bad "--list-legs exits ${LIST_RC}"
@@ -1209,8 +1283,24 @@ shard_harness_build() {
     # nothing, and all three shards came back holding no drives at all. The
     # subject here is the SHARD ARITHMETIC, not the key, so the stubs declare
     # one path that is in every tree and never moves inside a case.
+    # AND THE PRODUCT'S OWN DRIVES ARE STUBBED TOO. `selftest_registered_drives`
+    # reads the drawer (`scripts/local/drives/`), so on a product tree the clone
+    # arrives carrying real drives of somebody else's — and the shard walk would
+    # RUN them, inside a census whose subject is the arithmetic. A product drive
+    # that is slow, that needs a stack, or that simply prints nothing this
+    # reader recognises then reads as a shard that lost a member.
     for f in "$SHARD_CLONE"/scripts/tests/test_*.sh; do
         printf '#!/usr/bin/env bash\n# drives: scripts/tests/drive_preamble.sh\nexit 0\n' >"$f"
+        chmod +x "$f"
+    done
+    # THE PRODUCT'S STUBS CARRY THE SOURCE LINE, and the template's must not.
+    # `selftest_registered_drives` refuses a drawer drive that does not source
+    # the preamble (exit 2, at the listing), so a stub without it would take
+    # the whole census down; it asks nothing of the template's own drives, and
+    # adding the line there would change a stub this case has always had.
+    for f in "$SHARD_CLONE"/scripts/local/drives/test_*.sh; do
+        [ -f "$f" ] || continue
+        printf '#!/usr/bin/env bash\n# drives: scripts/tests/drive_preamble.sh\n. scripts/tests/drive_preamble.sh\nexit 0\n' >"$f"
         chmod +x "$f"
     done
     sed -n '/^# >>> selftest-leg >>>$/,/^# <<< selftest-leg <<<$/p' \
@@ -1294,10 +1384,16 @@ shard_members() {
     # not run. A member that was skipped prints `not in shard k/K` and a member
     # the leg could not key prints `could not key`; if NEITHER shape nor an
     # `exit` line is in the transcript, the leg did not run at all.
-    if ! grep -qE '^  drive [A-Za-z0-9_-]+: (exit |not in shard |REUSED |could not key)' "$out"; then
+    # THE NAME CLASS CARRIES `:`, and it is the product-drive drawer that
+    # needs it: a drive under `scripts/local/drives/` is printed `local:<name>`
+    # wherever this leg names a member (scripts/check.sh, beside the drawer's
+    # reader). Without the colon this reader saw every template drive and no
+    # product one, so on a tree with a drawer drive the union was short by
+    # exactly that member and the partition read as broken.
+    if ! grep -qE '^  drive [A-Za-z0-9_:-]+: (exit |not in shard |REUSED |could not key)' "$out"; then
         cannot_look "the extracted leg body printed no drive line at all (see ${out}) — the harness did not run the leg, and every set comparison below would be a comparison with nothing"
     fi
-    sed -n 's/^  drive \([A-Za-z0-9_-]*\): exit .*/\1/p' "$out"
+    sed -n 's/^  drive \([A-Za-z0-9_:-]*\): exit .*/\1/p' "$out"
 }
 
 case_every_drive_is_in_exactly_one_drives_unit() {
@@ -1486,6 +1582,11 @@ LEG_RC=0
 FULL_LEGS_STRING=$(sed -n 's/^FULL_LEGS=//p' scripts/check.sh | sed -n 1p)
 [ -n "$FULL_LEGS_STRING" ] ||
     cannot_look "scripts/check.sh has no FULL_LEGS line — the population these cases read is gone"
+#: THE RUNTIME STRING, not the literal: `check.sh` grows `FULL_LEGS` by one
+#: `local:<name>` per declared product leg (its own line, beside the drawer's
+#: reader), and a unit made of those is a unit whose every member would
+#: otherwise read as "not a full leg".
+[ -z "$DRAWER_MEMBERS" ] || FULL_LEGS_STRING="${FULL_LEGS_STRING},${DRAWER_MEMBERS}"
 
 # dry_unit <unit> [args…] — the leg names a unit run announces, space-joined,
 # de-duplicated on first appearance (`temporal-census` is announced twice and is
@@ -1533,6 +1634,14 @@ case_leg_static_announces_its_legs_and_no_other() {
             esac
         done
         got=$(dry_unit "$unit")
+        # ONE CALL SITE, N MEMBERS — `gate_announced_full_legs`'s own rewrite,
+        # applied to what the unit run announced. A `--leg <product unit>` run
+        # announces the drawer's RUNNER, and what the unit is composed OF is
+        # its legs; comparing the two without this substitution asks a product
+        # unit to announce a name `check.sh` deliberately never prints.
+        if [ "$got" = "local-legs" ] && [ -n "$DRAWER_MEMBERS" ]; then
+            got=$(drawer_run "local_legs_unit_members '${unit}' | tr '\n' ' ' | sed 's/ \$//'")
+        fi
         if [ "$got" = "$want" ]; then
             ok "$(printf '%s' "$got" | wc -w | tr -d ' ') leg(s): ${got}"
         else

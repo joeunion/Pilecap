@@ -32,7 +32,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .secrets.baseline README.md TEMPLATE_VERSION apps/example/models.py docs/product docs/runbooks/deploy.md scripts/archaeology_lib.sh scripts/backup.sh scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/publish.sh scripts/queue_cited.sh scripts/sweep.sh scripts/tests
-# cites: CHANGELOG.md manage.py scripts/test_impact.json scripts/pytest_durations.json scripts/gate_member_durations.json
+# cites: .claude/agents .claude/skills CHANGELOG.md CLAUDE.md manage.py scripts/test_impact.json scripts/pytest_durations.json scripts/gate_member_durations.json scripts/local apps/local
 # The refusal-and-property drive for `scripts/publish.sh`.
 #
 # Exit: 0 every case held · 1 a refusal did not fire or a property did not hold
@@ -174,7 +174,7 @@ build_fixture() {
     local d=$1
     rm -rf "$d"
     mkdir -p "$d/apps/example" "$d/config" "$d/quality" "$d/scripts" \
-        "$d/frontend" "$d/$CY" "$d/$SK" "$d/docs/runbooks"
+        "$d/frontend" "$d/$CY" "$d/$SK" "$d/docs/runbooks" "$d/.claude/agents"
     cp "$PUBLISH" "$d/scripts/publish.sh"
     chmod +x "$d/scripts/publish.sh"
     # publish.sh sources this — the bucket rules and the archaeology-census
@@ -238,6 +238,13 @@ build_fixture() {
     # fixture without this file reddens `dangling-docs` on the instrument
     # citing itself.
     echo "# standards" >"$d/docs/standards.md"
+    # R5's OTHER glob, and the member that makes it more than decoration. An
+    # agent definition pins the model and the tools a dispatched role runs
+    # with; it ships with the skills because a consumer inheriting the method
+    # without the definitions inherits half a team. Planted with real
+    # frontmatter so the file a case reads for is the shape a product inherits.
+    printf -- '---\nname: builder\nmodel: a-model\n---\n\nThe builder.\n' \
+        >"$d/.claude/agents/builder.md"
     echo "0.1.0" >"$d/TEMPLATE_VERSION"
     echo "# changelog" >"$d/CHANGELOG.md"
     echo "# architecture — ADR $ADR_REAL says so" >"$d/docs/product/architecture.md"
@@ -325,6 +332,28 @@ else
     bad "R12's row is not \`TRIM 3\` in the census — the three measured files are the
              whole population of that rule, so anything else means the arm is
              unreached or the fixture lost a member. Census rows:
+$(grep -E '^ +R[0-9]+' "$OUT" | sed 's/^/             /')"
+fi
+
+# --- case_an_agent_definition_is_r5 ------------------------------------------
+# THE DIRECTORY THE CLASSIFIER DID NOT KNOW. `.claude/agents/**` holds the
+# dispatched roles' definitions — the file that pins a builder's model and
+# tools — and before this case R5 named `.claude/skills/**` alone, so the first
+# tracked agent definition made `--census` exit 2 with `unplaced` at the next
+# release. It is R5 for the skills' reason exactly: the definitions ARE the
+# method, and a consumer inheriting one half of it inherits half a team.
+#
+# THE COUNT IS TYPED, and that is the point rather than an accident. R5's other
+# four members keep its row nonzero on their own, so `SHIP [1-9]` would stay
+# green with the agents arm deleted — the masking shape a reach-kind floor has
+# wherever two members share a kind. Naming the POPULATION instead (CLAUDE.md,
+# README.md, the runbook, the standards, the builder definition = 5) means
+# losing one member is a failure here rather than an arithmetic coincidence.
+if [ "$RC" = 0 ] && grep -E '^ +R5 +SHIP +5$' "$OUT" >/dev/null; then
+    ok "case_an_agent_definition_is_r5: R5 places all five of its fixture members, the agent definition among them"
+else
+    bad "case_an_agent_definition_is_r5: R5's row is not \`SHIP 5\` in the census — the
+             agents arm is unreached, or R5 lost a member. Census rows:
 $(grep -E '^ +R[0-9]+' "$OUT" | sed 's/^/             /')"
 fi
 
@@ -477,6 +506,15 @@ if [ -z "$m_left" ]; then
     ok "the three MEASURED files are not in the artifact — on disk or in its index"
 else
     bad "the measured files reached the artifact:$m_left"
+fi
+
+# case_an_agent_definition_is_r5, the export half. The census row above says
+# what the rule DECIDED; this says what the export DID — R12's two-facts
+# argument one rule over, in the SHIP direction.
+if git -C "$ART" ls-files --error-unmatch .claude/agents/builder.md >/dev/null 2>&1; then
+    ok "case_an_agent_definition_is_r5: the agent definition reached the artifact's index"
+else
+    bad "case_an_agent_definition_is_r5: .claude/agents/builder.md is not in the artifact — R5 classified it SHIP and the export dropped it"
 fi
 
 [ -d "$ART/docs/product/skeletons" ] &&

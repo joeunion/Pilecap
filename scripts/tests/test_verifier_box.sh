@@ -7325,10 +7325,14 @@ case_nothing_this_wrapper_promised_not_to_touch_moved() {
     # exactly the change the claim exists to ask for. `test_verifier_image.sh`
     # carried the identical defect and fixed it first; the derivation below is
     # that fix, and the two copies are compared rather than trusted.
-    local n
+    local n want
     n="$(deploy_layer_unfenced deploy/tests scripts/check.sh)"
-    [ "$n" = "7" ] && ok "7 deploy-layer drive(s) no moment invokes, unchanged — a drive WIRED into the gate leaves the set rather than growing it" ||
-        bad "the gate invokes none of ${n} drive(s) under deploy/tests/, wanted 7 — the population nothing runs moved"
+    want="$(deploy_layer_baseline deploy/tests scripts/check.sh)"
+    if [ "$n" = "$want" ]; then
+        ok "${n} deploy-layer drive(s) no moment invokes, and the two derivations agree — a drive WIRED into the gate leaves the set rather than growing it"
+    else
+        bad "the two derivations of the gap disagree: the per-file walk says ${n}, the directory minus the gate's invocation lines says ${want} — one of them has the fence's shape wrong"
+    fi
 
     # ITS OWN VICTIM. A count nobody has seen fail is a count that may be
     # unable to fail, and this one is arithmetic over two derived sets.
@@ -7340,18 +7344,18 @@ case_nothing_this_wrapper_promised_not_to_touch_moved() {
     cp scripts/check.sh "$plant/check.sh"
     : >"${plant}/test_zzz_probe.sh"
     n="$(deploy_layer_unfenced "$plant" "${plant}/check.sh")"
-    if [ "$n" = "8" ]; then
-        ok "an UNFENCED newcomer moves the gap: 7 -> 8"
+    if [ "$n" = "$((want + 1))" ]; then
+        ok "an UNFENCED newcomer moves the gap: ${want} -> ${n}"
     else
-        bad "an unfenced newcomer left the gap at ${n} — this count cannot fail"
+        bad "an unfenced newcomer left the gap at ${n}, wanted $((want + 1)) — this count cannot fail"
     fi
 
     printf './deploy/tests/test_zzz_probe.sh\n' >>"${plant}/check.sh"
     n="$(deploy_layer_unfenced "$plant" "${plant}/check.sh")"
-    if [ "$n" = "7" ]; then
+    if [ "$n" = "$want" ]; then
         ok "and the same newcomer WIRED at column zero does not — the gap is what nothing runs"
     else
-        bad "a wired newcomer left the gap at ${n} — fencing a drive must not red this"
+        bad "a wired newcomer left the gap at ${n}, wanted ${want} — fencing a drive must not red this"
     fi
     rm -rf "$plant"
 
@@ -7366,15 +7370,48 @@ case_nothing_this_wrapper_promised_not_to_touch_moved() {
     if [ ! -r "$twin" ]; then
         cannot_look "${twin} is not in this tree — the mirrored helper has no twin to be compared against"
     fi
-    mine="$(awk '/^deploy_layer_unfenced\(\) \{/{on=1} on{print} on && $0=="}"{exit}' "$0")"
-    theirs="$(awk '/^deploy_layer_unfenced\(\) \{/{on=1} on{print} on && $0=="}"{exit}' "$twin")"
-    if [ -z "$mine" ] || [ -z "$theirs" ]; then
-        cannot_look "one of the two deploy_layer_unfenced definitions could not be read (this file: $(printf '%s' "$mine" | grep -c .) line(s), ${twin}: $(printf '%s' "$theirs" | grep -c .))"
-    elif [ "$mine" = "$theirs" ]; then
-        ok "the mirrored helper is byte-identical to ${twin}'s"
-    else
-        bad "the two copies of deploy_layer_unfenced have drifted — two derivations of one population is the defect this pair just fixed"
-    fi
+    local fn
+    for fn in deploy_layer_unfenced deploy_layer_baseline; do
+        mine="$(awk -v f="${fn}() {" 'index($0, f) == 1 {on=1} on{print} on && $0=="}"{exit}' "$0")"
+        theirs="$(awk -v f="${fn}() {" 'index($0, f) == 1 {on=1} on{print} on && $0=="}"{exit}' "$twin")"
+        if [ -z "$mine" ] || [ -z "$theirs" ]; then
+            cannot_look "one of the two ${fn} definitions could not be read (this file: $(printf '%s' "$mine" | grep -c .) line(s), ${twin}: $(printf '%s' "$theirs" | grep -c .))"
+        elif [ "$mine" = "$theirs" ]; then
+            ok "the mirrored ${fn} is byte-identical to ${twin}'s"
+        else
+            bad "the two copies of ${fn} have drifted — two derivations of one population is the defect this pair just fixed"
+        fi
+    done
+}
+
+# deploy_layer_baseline <directory> <gate file> — the SAME gap, counted a
+# different way: every deploy-layer drive in the directory, minus the ones the
+# gate file invokes at column zero. MIRRORED in `test_verifier_box.sh` and
+# `test_verifier_image.sh`; both cases compare the two definitions byte for
+# byte, so the copy cannot drift.
+#
+# WHY IT EXISTS, AND WHY THE NUMBER IS NO LONGER TYPED. The expectation used to
+# be a literal — `7` here and `7` in the twin, each with its own plant arms at
+# `8`/`7` — and the first consumer's bank is what removed it: a product is
+# licensed to grow `deploy/tests/`, theirs holds sixteen, and the case reded
+# with `the gate invokes none of 15 drive(s) under deploy/tests/, wanted 7` on
+# a tree where nothing was wrong. A typed count of a population a product owns
+# is a template asserting about somebody else's directory.
+#
+# AND A DERIVATION COMPARED AGAINST ITSELF ASSERTS NOTHING, which is why this
+# is arithmetic over two whole sets rather than a second copy of the per-file
+# loop: `deploy_layer_unfenced` walks the directory and asks the gate about
+# each file; this one counts the directory and counts the gate's own
+# invocation lines. The two agree only if the fence's shape is what both of
+# them think it is, which is the property the typed number was standing in for.
+deploy_layer_baseline() {
+    local dir="$1" gate="$2" total=0 wired=0 d
+    for d in "$dir"/test_*.sh; do
+        [ -f "$d" ] || continue
+        total=$((total + 1))
+    done
+    wired=$(grep -c '^\./deploy/tests/test_[A-Za-z0-9_]*\.sh$' "$gate" || true)
+    printf '%s\n' "$((total - wired))"
 }
 
 # deploy_layer_unfenced <directory> <gate file> — how many deploy-layer drives

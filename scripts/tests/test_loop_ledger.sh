@@ -31,8 +31,8 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: README.md apps/ config/ docs/product/in-flight.md docs/product/queue.md docs/product/readouts.md quality/ scripts/archaeology_lib.sh scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks scripts/kill_mine.sh scripts/loop_health.py scripts/loop_tier.sh scripts/pm_push.sh scripts/publish.sh scripts/queue_cited.sh scripts/rung_start.sh scripts/secrets_scan.sh scripts/sweep.sh scripts/test.sh scripts/tests scripts/verify_start.sh
-# cites: uv.lock CHANGELOG.md TEMPLATE_VERSION CLAUDE.md scripts/test_impact.json
+# drives: README.md apps/ config/ scripts/divergence_census.sh scripts/pm_fold.sh docs/product/in-flight.md docs/product/queue.md docs/product/readouts.md quality/ scripts/archaeology_lib.sh scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks scripts/kill_mine.sh scripts/loop_health.py scripts/loop_tier.sh scripts/pm_push.sh scripts/publish.sh scripts/queue_cited.sh scripts/rung_start.sh scripts/secrets_scan.sh scripts/sweep.sh scripts/test.sh scripts/tests scripts/verify_start.sh
+# cites: uv.lock CHANGELOG.md TEMPLATE_VERSION CLAUDE.md scripts/test_impact.json scripts/local/legs docs/product/instruments.local.md apps/conftest_local.py
 
 # The drive for the `--loop` LEDGER — the key, the environment fingerprint with
 # its deriver-declared exclusions, and the fail-closed direction of every doubt
@@ -3672,6 +3672,193 @@ case_the_machine_half_is_the_image_on_a_box_and_the_host_elsewhere() {
     unset -f keyof
 }
 
+# --- a RESERVED DRAWER path is judged as if it were in the tree --------------
+#
+# THE DEFECT IT CLOSES, measured on the first consumer's bank and not here.
+# `drive__uncovered` skips a spelled path the MEASURED TREE does not carry,
+# and the argument for that (this section's header) is plant names inside a
+# throwaway clone. A reserved DRAWER path breaks it: `scripts/local/legs` is
+# absent on the template and present on every product that uses the seam, so
+# the floor judged their tree and not ours. Ten drives keyed clean here and
+# seven of them exited 2 at their bank, on bytes nobody had changed — the
+# template could not see its own defect, which is the whole class this
+# repository exists to end. A drawer path is therefore judged EVERYWHERE, and
+# the cost is one `# cites:` token per drive.
+#
+# THE GLOBS ARE READ FROM THEIR ONE HOME rather than typed here or in
+# `gate_ledger.sh` — `scripts/divergence_census.sh`'s `DRAWER_GLOBS`, which
+# says in its own comment that there is one home for which paths are the
+# drawers. The last two arms are what make that a derivation instead of a
+# copy: every member of the list is exercised, and a home that cannot be read
+# is a refusal rather than a floor that judges nothing.
+case_a_reserved_drawer_path_is_judged_even_where_the_tree_has_none() {
+    local dir="${WORK}/drawer-floor"
+    rm -rf "$dir"
+    mkdir -p "$dir/set"
+
+    # A FABRICATED LISTING THAT CARRIES NO DRAWER — the template's own shape.
+    # `git ls-tree -r`'s three fields, one real path so the top-level prefix
+    # list the floor derives is not empty.
+    printf '# a scratch drive set preamble — never sourced, always keyed\n' \
+        >"$dir/set/drive_preamble.sh"
+    {
+        printf '100644 blob %s\tscripts/gate_ledger.sh\n' "$(sha40 drawer-floor-a)"
+        printf '100644 blob %s\tapps/example/models.py\n' "$(sha40 drawer-floor-b)"
+        printf '100644 blob %s\tdocs/product/queue.md\n' "$(sha40 drawer-floor-c)"
+        printf '100644 blob %s\tquality/rules.yaml\n' "$(sha40 drawer-floor-d)"
+    } >"$dir/listing"
+
+    # keyof <file> — `drive_key` over one scratch drive, output and status.
+    keyof() {
+        KEYOF_RC=0
+        KEYOF_OUT="$(cd "$ROOT" && drive_key "$1" fake-tree "$dir/listing" 2>&1)" || KEYOF_RC=$?
+    }
+
+    plant_drive() {
+        printf '#!/bin/sh\n# drives: scripts/gate_ledger.sh\n%s# a body that spells %s\nexit 0\n' \
+            "${2:-}" "$1" >"$dir/set/test_drawerfloor.sh"
+    }
+
+    CURRENT="an undeclared drawer path cannot key, on a tree that has no drawer"
+    plant_drive "scripts/local/legs"
+    keyof "$dir/set/test_drawerfloor.sh"
+    is "$KEYOF_RC" "1" "drive_key's status over an undeclared drawer path"
+    case "$KEYOF_OUT" in
+    "err its body spells scripts/local/legs and"*)
+        ok "and it names the path — the refusal the product would have met is the refusal the template meets"
+        ;;
+    *) bad "a drawer path absent from the listing was not judged: ${KEYOF_OUT}" ;;
+    esac
+
+    CURRENT='and a `# cites:` line is what clears it'
+    plant_drive "scripts/local/legs" "# cites: scripts/local/legs
+"
+    keyof "$dir/set/test_drawerfloor.sh"
+    is "$KEYOF_RC" "0" "drive_key's status once the drawer path is cited"
+    case "$KEYOF_OUT" in
+    "ok drive-v1:"*) ok "the cited drawer keys clean — and a citation never joins the key, so a product's own leg never re-drives it" ;;
+    *) bad "a cited drawer path still did not key: ${KEYOF_OUT}" ;;
+    esac
+
+    # THE NEGATIVE, AND IT IS THE ONE THAT KEEPS THE FIRST EXCLUSION ALIVE. An
+    # ORDINARY path the listing does not carry is still not judged: most drives
+    # spell plant names inside a throwaway clone, and demanding a declaration
+    # that expands to nothing is a deadlock rather than a belt.
+    CURRENT="an ordinary absent path is still not judged"
+    plant_drive "apps/zzz_a_plant_no_tree_has/models.py"
+    keyof "$dir/set/test_drawerfloor.sh"
+    is "$KEYOF_RC" "0" "drive_key's status over an ordinary path the listing does not carry"
+
+    # EVERY MEMBER OF THE LIST, ONE ARM EACH. A floor that only drove
+    # `**/local/**` would be green with the other two members deleted from the
+    # home — which is the shape `DRAWER_GLOBS`' own count floor exists to
+    # refuse, asserted here about the reader instead of the list.
+    CURRENT="every reserved glob is judged, not only the first"
+    local spelled
+    for spelled in docs/product/instruments.local.md apps/conftest_local.py; do
+        plant_drive "$spelled"
+        keyof "$dir/set/test_drawerfloor.sh"
+        is "$KEYOF_RC" "1" "drive_key's status over an undeclared ${spelled}"
+    done
+
+    # AND THE HOME IS READ, NEVER ASSUMED. `drive_drawer_globs` reads the
+    # census's own assignment; where the census is not there the answer is a
+    # REFUSAL, because judging no path as a drawer is the silently-passing
+    # direction.
+    CURRENT="a home it cannot read is a refusal and never a narrower set"
+    local globs_out globs_rc=0
+    globs_out="$(cd "$ROOT" && drive_drawer_globs)" || globs_rc=$?
+    is "$globs_rc" "0" "drive_drawer_globs' status in this checkout"
+    case "$globs_out" in
+    *"local"*) ok "the reserved globs come from scripts/divergence_census.sh: ${globs_out}" ;;
+    *) bad "the reserved globs do not name the drawers: ${globs_out}" ;;
+    esac
+    local homeless_rc=0
+    (cd "$dir" && drive_drawer_globs) >/dev/null 2>&1 || homeless_rc=$?
+    is "$homeless_rc" "1" "drive_drawer_globs' status where the census is not beside it"
+
+    unset -f keyof plant_drive
+    unset KEYOF_RC KEYOF_OUT
+}
+
+# --- an ABSORBED derived output keys as `absent` ----------------------------
+#
+# THE DEADLOCK IT CLOSES, and it was the first consumer's. `scripts/test_impact
+# .json` is the bank's own output; the release does not ship it, so on every
+# product it is absent until their first green bank writes it. Three drives
+# DECLARE it, and a declared path that expanded to nothing was a refusal — so
+# the bank could not go green because the drives were exit 2, and the drives
+# were exit 2 because the bank had not gone green.
+#
+# THE CLASS IS THE FOLD'S, NOT A NEW ONE. `FOLD_ABSORBED_PATHS`
+# (scripts/pm_fold.sh) already names exactly "a derived file written from
+# OUTSIDE this checkout that no step here can regenerate", which is the only
+# kind of declared path that can legitimately be missing. Read from there, so
+# there is one home and not two.
+#
+# AND `absent` IS A COMPONENT, NOT A SUBTRACTION — the last arm is the one that
+# says so: the same drive over a listing that HAS the map keys differently, so
+# the day it appears every verdict banked without it misses.
+case_an_absorbed_derived_output_keys_as_absent_and_nothing_else_does() {
+    local dir="${WORK}/absorbed"
+    rm -rf "$dir"
+    mkdir -p "$dir/set"
+    printf '# a scratch drive set preamble — never sourced, always keyed\n' \
+        >"$dir/set/drive_preamble.sh"
+    printf '#!/bin/sh\n# drives: scripts/gate_ledger.sh scripts/test_impact.json\nexit 0\n' \
+        >"$dir/set/test_absorbed.sh"
+    printf '#!/bin/sh\n# drives: scripts/gate_ledger.sh scripts/loop_tier.sh\nexit 0\n' \
+        >"$dir/set/test_notabsorbed.sh"
+    # TWO LISTINGS THAT DIFFER BY ONE BLOB: the release's (no map) and a tree
+    # that has banked once. Neither carries `scripts/loop_tier.sh`, which is
+    # the ordinary declared path the refusal must still fire on.
+    printf '100644 blob %s\tscripts/gate_ledger.sh\n' "$(sha40 absorbed-a)" >"$dir/without"
+    cp "$dir/without" "$dir/with"
+    printf '100644 blob %s\tscripts/test_impact.json\n' "$(sha40 absorbed-b)" >>"$dir/with"
+
+    CURRENT="a release that ships no map still keys"
+    local out_without rc=0
+    out_without="$(cd "$ROOT" && drive_key "$dir/set/test_absorbed.sh" fake-tree "$dir/without" 2>&1)" || rc=$?
+    is "$rc" "0" "drive_key's status on a tree with no scripts/test_impact.json"
+    case "$out_without" in
+    *"scripts/test_impact.json:absent"*)
+        ok "the map is in the key, as \`absent\` — a component and not a subtraction"
+        ;;
+    *) bad "an absorbed path that expands to nothing did not key as absent: ${out_without}" ;;
+    esac
+
+    CURRENT="and the day it appears the key moves"
+    local out_with rc_with=0
+    out_with="$(cd "$ROOT" && drive_key "$dir/set/test_absorbed.sh" fake-tree "$dir/with" 2>&1)" || rc_with=$?
+    is "$rc_with" "0" "drive_key's status once the map is in the tree"
+    differs "$(printf '%s\n' "$out_without" | awk '{print $2}')" \
+        "$(printf '%s\n' "$out_with" | awk '{print $2}')" \
+        "the key with no map, and the key with one"
+
+    # THE NEGATIVE, AND IT IS WHAT KEEPS THE REFUSAL ALIVE. Only the fold's
+    # absorbed class is excused; an ORDINARY declared path that expands to
+    # nothing is still a silently narrower key and still refuses.
+    CURRENT="an ordinary declared path that expands to nothing still refuses"
+    local out_other rc_other=0
+    out_other="$(cd "$ROOT" && drive_key "$dir/set/test_notabsorbed.sh" fake-tree "$dir/without" 2>&1)" || rc_other=$?
+    is "$rc_other" "1" "drive_key's status over an undeclarable ordinary path"
+    case "$out_other" in
+    "err the declared path scripts/loop_tier.sh expands to nothing"*)
+        ok "and it names the path — the excuse is the absorbed list and not 'absent is fine'"
+        ;;
+    *) bad "an ordinary empty expansion did not refuse: ${out_other}" ;;
+    esac
+
+    CURRENT="the absorbed list is READ from the fold and not typed twice"
+    local list_out list_rc=0
+    list_out="$(cd "$ROOT" && drive_absorbed_paths)" || list_rc=$?
+    is "$list_rc" "0" "drive_absorbed_paths' status in this checkout"
+    is "$list_out" "scripts/test_impact.json" "the absorbed list, against pm_fold.sh's own assignment"
+    local homeless_rc=0
+    (cd "$dir" && drive_absorbed_paths) >/dev/null 2>&1 || homeless_rc=$?
+    is "$homeless_rc" "1" "drive_absorbed_paths' status where the fold is not beside it"
+}
+
 case_the_declaration_is_read_from_check_sh_and_not_kept_here() {
     # THE POPULATION IS THE GATE'S OWN ANSWER. A drive that typed the leg set
     # would be the second list this whole file exists to refuse, and it would
@@ -4742,6 +4929,8 @@ case_the_leak_proof_field_is_appended_last_or_the_row_is_refused
 case_a_one_pass_row_is_honoured_only_with_a_green_leak_proof
 case_a_drive_row_is_never_a_full_verdict
 case_the_machine_half_is_the_image_on_a_box_and_the_host_elsewhere
+case_a_reserved_drawer_path_is_judged_even_where_the_tree_has_none
+case_an_absorbed_derived_output_keys_as_absent_and_nothing_else_does
 case_the_declaration_is_read_from_check_sh_and_not_kept_here
 case_a_push_of_a_ref_that_is_not_the_measured_tree_is_not_honoured
 case_pm_pushs_detached_sha_push_is_honoured_in_seconds

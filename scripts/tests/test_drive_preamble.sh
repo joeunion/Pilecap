@@ -14,6 +14,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .github/workflows/ci.yml scripts/check.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/
+# cites: scripts/local/env_keys scripts/local/ci
 # The drive for THE REAL-REPOSITORY TRIPWIRE — `drive_repo_fingerprint` and
 # `drive_tripwire_check` in `scripts/tests/drive_preamble.sh` §3.
 #

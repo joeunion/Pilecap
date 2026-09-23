@@ -14,7 +14,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .secrets.baseline compose.yaml docs/product/build-contract.md docs/product/instruments.md scripts/check.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/ scripts/verifier_box.sh
-# cites: deploy/tests scripts/gate_member_durations.json
+# cites: deploy/tests scripts/gate_member_durations.json quality/local scripts/local/drives
 # The drive for THE SELFTEST LEG ITSELF — `selftest_drives_leg` in
 # `scripts/check.sh`, the leg that runs every shell refusal drive in this
 # repository and composes one exit out of all of them.
@@ -2166,25 +2166,56 @@ case_the_engines_inputs_carry_the_products_drawer() {
     # the negative every drawer owes — a tree with NO drawer lists exactly what
     # it listed before EP2, byte for byte.
     CURRENT=case_the_engines_inputs_carry_the_products_drawer
-    if [ -e "${ROOT}/quality/local" ]; then
-        bad "quality/local/ already exists in this checkout — this case plants one and will not overwrite yours"
+    # THE WORLD IS A CLONE, AND THE FIRST CONSUMER'S BANK IS WHY. This case
+    # used to open with "quality/local/ already exists in this checkout — this
+    # case plants one and will not overwrite yours", which is the right
+    # instinct and the wrong home: every product that USES the drawer has one,
+    # so the case that proves the engine's inputs carry a drawer could only run
+    # where there was no drawer. The engine's `ROOT` is derived from its own
+    # file and honours no override (`Path(__file__).resolve().parents[1]`, in
+    # the house-rules engine — named rather than spelled, because this drive's
+    # declaration deliberately does not carry that file), so pointing the
+    # engine at another tree means running another
+    # COPY of it — a checkout of this checkout. `test_gate_explain.sh`'s
+    # `drawer_world` is the same move for the same reason, one file over.
+    local world="${WORK}/drawer-world"
+    if [ ! -d "$world" ]; then
+        git clone --quiet --shared --no-hardlinks "$ROOT" "$world" >/dev/null 2>&1 || {
+            bad "could not clone this checkout into ${world} — the drawer plant needs a checkout of its own"
+            return
+        }
+        # A PRODUCT'S COMMITTED DRAWER COMES ALONG IN THE CLONE, and it is the
+        # PRODUCT's rather than this case's fixture. Out of the working tree
+        # and out of the index, so the before-capture below is a tree with no
+        # drawer on every tree this drive runs on.
+        rm -rf "${world}/quality/local"
+        git -C "$world" rm -r -q --cached --ignore-unmatch quality/local >/dev/null 2>&1 || true
+        # The world's first `uv run` prints its venv creation on stderr, which
+        # this case folds into stdout; warmed here so the before-capture is the
+        # engine's answer and nothing else.
+        (cd "$world" && uv run python -c 'pass') >/dev/null 2>&1 || {
+            bad "the clone's interpreter would not start — \`uv run\` failed in ${world}"
+            return
+        }
+    fi
+    if [ -e "${world}/quality/local" ]; then
+        bad "the clone still has a drawer at quality/local/ — this case plants its own"
         return
     fi
     local before="${WORK}/drawer-inputs-before.txt"
     local after="${WORK}/drawer-inputs-after.txt"
     local rc=0
-    (cd "$ROOT" && uv run python -m quality.gate --selftest-inputs) >"$before" 2>&1 || rc=$?
+    (cd "$world" && uv run python -m quality.gate --selftest-inputs) >"$before" 2>&1 || rc=$?
     if [ "$rc" != "0" ]; then
         bad "--selftest-inputs did not answer on a tree with no drawer (exit ${rc}): $(tail -3 "$before" | tr '\n' '|')"
         return
     fi
-    mkdir -p "${ROOT}/quality/local/canary/acme-1" "${ROOT}/quality/local/runners"
-    plant_in_checkout "quality/local/rules.yaml" \
-        'rule_id_namespace: acme'
-    plant_in_checkout "quality/local/canary/acme-1/planted.py" \
-        '# a drawer fixture the engine can read'
-    plant_in_checkout "quality/local/runners/acme_probe.py" \
-        '# a drawer runner the engine can read'
+    mkdir -p "${world}/quality/local/canary/acme-1" "${world}/quality/local/runners"
+    printf '%s\n' 'rule_id_namespace: acme' >"${world}/quality/local/rules.yaml"
+    printf '%s\n' '# a drawer fixture the engine can read' \
+        >"${world}/quality/local/canary/acme-1/planted.py"
+    printf '%s\n' '# a drawer runner the engine can read' \
+        >"${world}/quality/local/runners/acme_probe.py"
     # THE PLANTS ARE STAGED, AND THAT IS NOT A CONVENIENCE. Population 1 of the
     # engine's listing is `git ls-files --cached` over `quality/` — the
     # repository's own answer about what is in there, which is exactly what
@@ -2192,23 +2223,16 @@ case_the_engines_inputs_carry_the_products_drawer() {
     # honest drive stages these three (`add -N`, intent-to-add: no blob is
     # written) and unstages them again. The reset is registered before the
     # staging, so a killed drive leaves no index entry for a file it deleted.
-    unstage_drawer_plants() {
-        git -C "$ROOT" reset -q -- quality/local 2>/dev/null || true
-    }
-    drive_at_exit 'unstage_drawer_plants'
-    if ! git -C "$ROOT" add -N -- quality/local >/dev/null 2>&1; then
+    if ! git -C "$world" add -N -- quality/local >/dev/null 2>&1; then
         bad "could not stage the planted drawer, so the engine's listing cannot be asked about it"
-        unplant_checkout
-        rm -rf "${ROOT}/quality/local"
+        rm -rf "${world}/quality/local"
         return
     fi
     rc=0
-    (cd "$ROOT" && uv run python -m quality.gate --selftest-inputs) >"$after" 2>&1 || rc=$?
-    unstage_drawer_plants
-    unplant_checkout
-    rmdir "${ROOT}/quality/local/canary/acme-1" "${ROOT}/quality/local/canary" \
-        "${ROOT}/quality/local/runners" "${ROOT}/quality/local" 2>/dev/null || true
-    if [ -e "${ROOT}/quality/local" ]; then
+    (cd "$world" && uv run python -m quality.gate --selftest-inputs) >"$after" 2>&1 || rc=$?
+    git -C "$world" reset -q -- quality/local >/dev/null 2>&1 || true
+    rm -rf "${world}/quality/local"
+    if [ -e "${world}/quality/local" ]; then
         bad "the case left quality/local/ behind — a planted drawer is not allowed to outlive its case"
         return
     fi

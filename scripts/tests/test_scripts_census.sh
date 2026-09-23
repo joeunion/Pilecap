@@ -18,6 +18,7 @@ case ":${SHELLOPTS:-}:" in
 esac
 # census: cross-app it classifies every script under scripts/ that depends on a local main, so its subject is the whole shell population and no scope narrows it; no organs
 # drives: docs/product/instruments.md scripts/
+# cites: docs/product/instruments.local.md
 # THE CROSS-APP CENSUS OVER THE SHELL POPULATION.
 #
 #   ./scripts/tests/test_scripts_census.sh          run every case
