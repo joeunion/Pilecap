@@ -1239,17 +1239,27 @@ case_the_pin_marker_is_read_from_db_sh_and_not_recopied() {
     else
         bad "line ${own_grep} greps for the marker itself — a second implementation to leave behind; call db_pin_marked"
     fi
-    marker_call="$(grep -n '^if db_pin_marked; then' "$REAL" | cut -d: -f1 || true)"
+    # THE ONE RESOLVER: the block asks `db_pin_decide` (scripts/db.sh), the
+    # table setup.sh and the gate's db-pin leg read too — never the marker, and
+    # never a copy of the table.
+    marker_call="$(grep -n '^db_pin_decide$' "$REAL" | cut -d: -f1 || true)"
     db_source="$(grep -n '^\. "\$ROOT/scripts/db.sh"' "$REAL" | cut -d: -f1 || true)"
     if [ -z "$marker_call" ]; then
-        bad "this script never calls db_pin_marked — the pin block reads the marker some other way"
+        bad "this script never calls db_pin_decide — the pin block decides some other way"
         return 0
     fi
-    ok "the pin block asks db_pin_marked (line ${marker_call})"
+    ok "the pin block asks db_pin_decide (line ${marker_call})"
     if [ -n "$db_source" ] && [ "$marker_call" -gt "$db_source" ]; then
         ok "db.sh is sourced first (line ${db_source}), so the function exists when it is called"
     else
-        bad "db_pin_marked is called at ${marker_call} with db.sh sourced at '${db_source}' — the call would be a command-not-found"
+        bad "db_pin_decide is called at ${marker_call} with db.sh sourced at '${db_source}' — the call would be a command-not-found"
+    fi
+    local create_line
+    create_line="$(grep -n '^db_create_out=\$(db_create 2>&1)$' "$REAL" | cut -d: -f1 || true)"
+    if [ -n "$create_line" ] && [ "$create_line" -gt "$marker_call" ]; then
+        ok "the database is created (line ${create_line}) after the name is settled (line ${marker_call})"
+    else
+        bad "db_create at '${create_line:-none}' does not follow the pin block at ${marker_call} — it would prepare a name the block may override"
     fi
     # The announcement itself: a checkout that keeps its pin has to be TOLD, or
     # the scripts and a bare manage.py silently disagree for the rest of the rung.
@@ -1258,6 +1268,62 @@ case_the_pin_marker_is_read_from_db_sh_and_not_recopied() {
     else
         bad "nothing announces the leave-alone branch — the pin would be honoured in silence"
     fi
+}
+
+case_an_unmarked_exported_stale_pin_is_overridden_and_the_leg_is_silent() {
+    # THE LOOP setup.sh had, in its copy here: `.env` pins an unmarked stale
+    # name and the shell exports the same name (it sourced db.sh before the
+    # checkout moved). The block used to write that name back over the pin;
+    # the gate's db-pin leg then refused it, naming setup as the remedy. Now
+    # the block reads `db_pin_decide`, writes the derivation and says what it
+    # overrode, and the leg — run on the same checkout — has nothing to say.
+    #
+    # THE FENCED BLOCK, RUN, NOT THE SCRIPT: rung_start.sh resets its checkout
+    # to main and needs a database; the block between its `env-pin` sentinels
+    # is the whole of the decision and needs neither. db.sh is the real one.
+    local fence derived line
+    CURRENT="rung_start's pin block over an unmarked stale pin exported in the shell"
+    fence="$(sed -n '/^# >>> env-pin >>>$/,/^# <<< env-pin <<<$/p' "$REAL")"
+    case "$fence" in
+    *db_pin_decide*) ;;
+    *)
+        OUT=""
+        bad "rung_start.sh has no env-pin fenced block calling db_pin_decide — the pin block decides some other way"
+        return 0
+        ;;
+    esac
+    fresh_repo
+    printf '%s\n' 'DEBUG=1' 'DATABASE_NAME=djb_stale' >"${REPO}/.env"
+    N=$((N + 1))
+    OUT="${WORK}/out${N}.log"
+    RC=0
+    (
+        cd "$REPO"
+        export DATABASE_NAME=djb_stale
+        unset DATABASE_NAME_SOURCE
+        # shellcheck source=scripts/db.sh
+        . "${ROOT}/scripts/db.sh" 2>/dev/null
+        ROOT="$REPO"
+        say() { printf '   %s\n' "$*"; }
+        eval "$fence"
+        echo "block-left-DATABASE_NAME=${DATABASE_NAME}"
+        echo "derived=$(db_name)"
+        echo "== the leg, same checkout, same shell"
+        db_pin_leg fast
+        echo "leg-rc=$?"
+    ) >"$OUT" 2>&1 || RC=$?
+    derived="$(sed -n 's/^derived=//p' "$OUT")"
+    exits 0
+    says "DATABASE_NAME: the unmarked .env pin djb_stale (also exported in this shell) was overridden by the derivation ${derived}; add \"# pinned\" above it to keep it"
+    says "block-left-DATABASE_NAME=${derived}"
+    line="$(grep -E '^DATABASE_NAME=' "${REPO}/.env" | tail -1)"
+    if [ -n "$derived" ] && [ "$line" = "DATABASE_NAME=${derived}" ]; then
+        ok ".env now carries the derivation (${line})"
+    else
+        bad ".env carries '${line}', not DATABASE_NAME=${derived:-<none derived>}"
+    fi
+    says "leg-rc=0"
+    says_not "DISAGREE"
 }
 
 echo "== test_rung_start — driving scripts/rung_start.sh's refusals"
@@ -1298,6 +1364,7 @@ case_the_identity_carry_says_so_when_there_is_no_primary_env
 case_the_identity_carry_is_wired_into_step_three
 
 case_the_pin_marker_is_read_from_db_sh_and_not_recopied
+case_an_unmarked_exported_stale_pin_is_overridden_and_the_leg_is_silent
 
 echo
 echo "== ${PASSED} passed, ${FAILED} failed"

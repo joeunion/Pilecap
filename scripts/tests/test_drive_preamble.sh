@@ -14,7 +14,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .github/workflows/ci.yml scripts/check.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/
-# cites: scripts/local/env_keys scripts/local/ci
+# cites: scripts/local/env_keys scripts/local/ci .claude/agents .claude/skills CLAUDE.md
 # The drive for THE REAL-REPOSITORY TRIPWIRE — `drive_repo_fingerprint` and
 # `drive_tripwire_check` in `scripts/tests/drive_preamble.sh` §3.
 #
@@ -802,6 +802,92 @@ case_every_registered_drive_declares_what_it_drives() {
     ok "$(printf '%s\n' "$names" | grep -c .) registered drive(s), each with a \`# drives:\` line that keys cleanly against tree ${tree:0:12}…"
 }
 
+case_a_body_spelling_three_undeclared_paths_is_named_whole_and_refused_at_the_hook() {
+    CURRENT=case_a_body_spelling_three_undeclared_paths_is_named_whole_and_refused_at_the_hook
+    # THE MEASURED SHAPE. A drive edit spelled `.claude/agents`, `.claude/skills`
+    # and `CLAUDE.md` in its body and declared none of them; the hook and
+    # `--loop` never asked, and the first reader was a ten-box bank that named
+    # ONE of the three — so learning all three would have cost three banks. Two
+    # teeth: the floor names every path in one sentence, and the tier the hook
+    # runs decides the key of every drive the active rung touched.
+    local clone drive list out rc
+    # shellcheck source=scripts/gate_refuse.sh
+    . "${ROOT}/scripts/gate_refuse.sh"
+    # shellcheck source=scripts/gate_ledger.sh
+    . "${ROOT}/scripts/gate_ledger.sh"
+    if ! command -v drive_keys_of_touched >/dev/null 2>&1; then
+        bad "scripts/gate_ledger.sh defines no drive_keys_of_touched — a drive's key is still decided only at the bank"
+        return
+    fi
+    clone="${WORK}/three-paths-clone"
+    git clone --quiet --shared --no-hardlinks "$ROOT" "$clone" >/dev/null 2>&1 ||
+        cannot_look "could not clone this checkout into ${clone}"
+    drive="scripts/tests/test_three_undeclared.sh"
+    # THE MARKER IS ASSEMBLED, never typed at column zero in this file's own
+    # first forty lines — the same rule every planted declaration here keeps.
+    {
+        echo '#!/usr/bin/env bash'
+        printf '# %s scripts/check.sh\n' 'drives:'
+        echo '. "$(dirname "$0")/drive_preamble.sh"'
+        echo 'ls .claude/agents >/dev/null'
+        echo 'ls .claude/skills >/dev/null'
+        echo 'grep -c gate CLAUDE.md'
+    } >"${clone}/${drive}"
+    chmod +x "${clone}/${drive}"
+    list="${WORK}/three-paths-changed"
+    printf '%s\0' "$drive" >"$list"
+    rc=0
+    out="$(cd "$clone" && drive_keys_of_touched "$list" 2>&1)" || rc=$?
+    if [ "$rc" = "2" ]; then
+        ok "the touched drive does not key — exit 2, the selftest leg's own status"
+    else
+        bad "a touched drive spelling three undeclared paths keyed, or answered ${rc} (not 2): ${out}"
+    fi
+    case "$out" in
+    *"drive three_undeclared: could not key — its body spells .claude/agents, .claude/skills and CLAUDE.md and its"*)
+        ok "ONE line names ALL THREE, in the leg's own sentence: ${out}"
+        ;;
+    *) bad "the refusal does not name all three paths in the leg's sentence: ${out}" ;;
+    esac
+    # THE CONTROL: the same drive, declaring what it reads, keys.
+    {
+        echo '#!/usr/bin/env bash'
+        printf '# %s scripts/check.sh .claude/agents .claude/skills CLAUDE.md\n' 'drives:'
+        echo '. "$(dirname "$0")/drive_preamble.sh"'
+        echo 'ls .claude/agents >/dev/null'
+        echo 'ls .claude/skills >/dev/null'
+        echo 'grep -c gate CLAUDE.md'
+    } >"${clone}/${drive}"
+    rc=0
+    out="$(cd "$clone" && drive_keys_of_touched "$list" 2>&1)" || rc=$?
+    if [ "$rc" = "0" ]; then
+        ok "declared, the same drive keys: ${out}"
+    else
+        bad "a drive declaring every path it spells still could not key (${rc}): ${out}"
+    fi
+    # AND NO DRIVE TOUCHED IS NOTHING TO DECIDE, said rather than silent.
+    : >"$list"
+    rc=0
+    out="$(cd "$clone" && drive_keys_of_touched "$list" 2>&1)" || rc=$?
+    case "${rc}:${out}" in
+    "0:"*"touched no drive"*) ok "an empty touched set is exit 0 and says so" ;;
+    *) bad "an empty touched set answered ${rc}: ${out}" ;;
+    esac
+    rm -rf "$clone"
+    # WIRED INTO THE HOOK'S TIER: the call sits inside the goalpost-census leg's
+    # body, which `--fast` runs — so no new leg, and `--list-legs` does not move.
+    if awk '
+        /^gate_leg_goalpost_census\(\) \{/ { inside = 1 }
+        inside && /drive_keys_of_touched / { found = 1 }
+        inside && /^gate_run_body goalpost-census / { exit }
+        END { exit !found }
+    ' "${ROOT}/scripts/check.sh"; then
+        ok "check.sh's goalpost-census leg (a --fast leg) calls drive_keys_of_touched"
+    else
+        bad "the --fast tier never decides a touched drive's key — the goalpost-census leg does not call drive_keys_of_touched"
+    fi
+}
+
 # --- the product's own drawers: the env keys, and the workflow's one step -----
 #
 # WHY THESE TWO LIVE IN THIS DRIVE. Section 4a of the preamble is what strips
@@ -1048,6 +1134,121 @@ case_the_workflows_optional_local_job_runs_the_products_ci_steps() {
     ok "the local job declares needs: verdict, so a product's own steps run behind the gate's verdict"
 }
 
+# --- section 9: a template-only case says so, and the skip is counted ---------
+#
+# A child drive that sources the REAL preamble from this checkout and carries
+# two cases, one template-only. The answer to "has this tree folded" is handed
+# to the child the way `_declared_namespace(doc=)` is handed a drawer on the
+# Python side — `DRIVE__NAMESPACE_READ=1` and `DRIVE__NAMESPACE` set after the
+# source — because reading this checkout's own declaration would make this
+# case's expectation depend on which shape it happens to stand in. The live
+# reader is proved by the fourth arm: an engine that cannot answer is exit 2.
+TO_OUT=""
+TO_RC=0
+run_template_only_child() { # <arm> <namespace|-> [uv shim dir]
+    local arm="$1" ns="$2" shim="${3:-}" child="${WORK}/to-child-$1.sh"
+    TO_OUT="${WORK}/to-child-$1.out"
+    TO_RC=0
+    cat >"$child" <<CHILD
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${ROOT}"
+. scripts/tests/drive_preamble.sh
+if [ "${ns}" != "-" ]; then
+    DRIVE__NAMESPACE_READ=1
+    DRIVE__NAMESPACE="${ns}"
+fi
+RAN=""
+case_the_templates_own_count() {
+    template_only "it types the template's own rule count" || return 0
+    RAN="\${RAN} template"
+}
+case_any_tree() {
+    RAN="\${RAN} any"
+}
+case_the_templates_own_count
+case_any_tree
+echo "child: ran[\${RAN# }] · \${DRIVE_SKIPPED} skipped"
+if [ "${arm}" = "no-reason" ]; then template_only ""; fi
+exit 0
+CHILD
+    (
+        if [ -n "$shim" ]; then
+            PATH="${shim}:${PATH}"
+            export PATH
+        fi
+        bash "$child"
+    ) >"$TO_OUT" 2>&1 || TO_RC=$?
+}
+
+case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_product() {
+    CURRENT=case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_product
+    OUT=""
+    # (1) THE TEMPLATE: no namespace declared. Both cases run, nothing is
+    #     counted, and nothing new is printed — not even a zero.
+    run_template_only_child template ""
+    OUT="$TO_OUT"
+    if [ "$TO_RC" != "0" ] || ! grep -qxF 'child: ran[template any] · 0 skipped' "$TO_OUT"; then
+        bad "on a tree with no namespace the template-only case did not run (exit ${TO_RC})"
+        return
+    fi
+    if grep -q 'skipped  \|template-only' "$TO_OUT"; then
+        bad "the template printed a skip line — its output is no longer byte-identical to a drive with no template-only case"
+        return
+    fi
+    ok "the template runs the template-only case, counts nothing and prints nothing new"
+
+    # (2) A PRODUCT: the case returns before it asserts, the skip is printed
+    #     with the Python side's sentence and counted, the other case still
+    #     runs, the epilogue repeats the reason under the summary, and the exit
+    #     status does not move.
+    run_template_only_child product acme
+    OUT="$TO_OUT"
+    local sentence="case_the_templates_own_count — template-only: this tree declares rule_id_namespace acme; it types the template's own rule count"
+    if [ "$TO_RC" != "0" ]; then
+        bad "a template-only skip moved the exit status to ${TO_RC} — a skip is not a status"
+        return
+    fi
+    if ! grep -qxF 'child: ran[any] · 1 skipped' "$TO_OUT"; then
+        bad "on a product the template-only case ran, or the other case did not, or the count is not 1"
+        return
+    fi
+    if ! grep -qxF "  skipped  ${sentence}" "$TO_OUT"; then
+        bad "the skip line does not name the case and the reason in the one sentence"
+        return
+    fi
+    if ! grep -qxF "to-child-product: 1 skipped — template-only cases this tree cannot pose:" "$TO_OUT" ||
+        ! grep -qxF "    ${sentence}" "$TO_OUT"; then
+        bad "the epilogue did not print the count and the reason under the summary"
+        return
+    fi
+    ok "a product skips the template-only case with the one sentence, counts it, runs the rest, and exits 0"
+
+    # (3) A SKIP WITH NO REASON is exit 2: a skip nobody can audit.
+    run_template_only_child no-reason acme
+    OUT="$TO_OUT"
+    if [ "$TO_RC" != "2" ] || ! grep -qF 'with no reason' "$TO_OUT"; then
+        bad "template_only with no reason gave exit ${TO_RC}, want 2 naming the missing reason"
+        return
+    fi
+    ok "template_only with no reason is exit 2"
+
+    # (4) THE LIVE READER FAILS CLOSED. An engine that cannot answer is
+    #     could-not-look — never "template" (which would red a product) and
+    #     never "product" (which would skip the template's own cases).
+    local shim="${WORK}/template-only-shim"
+    mkdir -p "$shim"
+    printf '#!/usr/bin/env bash\necho "uv: the engine would not start" >&2\nexit 1\n' >"${shim}/uv"
+    chmod +x "${shim}/uv"
+    run_template_only_child reader-broken - "$shim"
+    OUT="$TO_OUT"
+    if [ "$TO_RC" != "2" ] || ! grep -qF 'did not answer' "$TO_OUT"; then
+        bad "a reader that could not ask the engine gave exit ${TO_RC}, want 2"
+        return
+    fi
+    ok "an engine that cannot answer is exit 2, never a guess in either direction"
+}
+
 # --- run ----------------------------------------------------------------------
 
 run_case case_the_fingerprint_records_a_sha_for_every_ref
@@ -1066,8 +1267,10 @@ run_case case_the_drive_is_registered_in_the_gate
 run_case case_a_registered_drive_that_cannot_look_is_exit_2_not_a_pass
 run_case case_every_variable_the_workflow_sets_is_accounted_for
 run_case case_every_registered_drive_declares_what_it_drives
+run_case case_a_body_spelling_three_undeclared_paths_is_named_whole_and_refused_at_the_hook
 run_case case_the_product_env_keys_drawer_declares_product_keys_only
 run_case case_the_workflows_optional_local_job_runs_the_products_ci_steps
+run_case case_a_template_only_case_runs_on_the_template_and_is_counted_skipped_on_a_product
 
 echo "test_drive_preamble: ${PASSED} passed · ${FAILED} failed"
 drive_finished

@@ -126,7 +126,7 @@ PURGE_SESSIONS_WORKFLOW = "PurgeExpiredSessionsWorkflow"
 PURGE_EVERY = timedelta(hours=24)
 
 
-@activity.defn(name="mark_run_finished")
+@activity.defn(name="mark_run_finished", no_thread_cancel_exception=True)
 def mark_run_finished(payload: MarkRunFinished) -> str:
     """Close out a run's visibility row, and report the tenant it acted for.
 
@@ -159,7 +159,7 @@ def mark_run_finished(payload: MarkRunFinished) -> str:
         close_old_connections()
 
 
-@activity.defn(name="send_email")
+@activity.defn(name="send_email", no_thread_cancel_exception=True)
 def send_email(payload: SendEmail) -> int:
     """Render one email and hand it to the configured backend.
 
@@ -194,7 +194,7 @@ def send_email(payload: SendEmail) -> int:
         close_old_connections()
 
 
-@activity.defn(name="rewrite_organization_paths")
+@activity.defn(name="rewrite_organization_paths", no_thread_cancel_exception=True)
 def rewrite_organization_paths(payload: MoveOrganization) -> str:
     """Re-parent a node and rewrite its subtree's paths. Reports the new path.
 
@@ -345,7 +345,7 @@ NEVER_STARTED = (
 )
 
 
-@activity.defn(name="reconcile_runs")
+@activity.defn(name="reconcile_runs", no_thread_cancel_exception=True)
 def reconcile_runs(window: ReconcileRuns) -> int:
     """Close the rows whose execution was promised and never started.
 
@@ -441,7 +441,7 @@ def reconcile_runs(window: ReconcileRuns) -> int:
         close_old_connections()
 
 
-@activity.defn(name="purge_finished_runs")
+@activity.defn(name="purge_finished_runs", no_thread_cancel_exception=True)
 def purge_finished_runs(window: PurgeFinishedRuns) -> int:
     """Apply the run ledger's retention window. Returns how many rows went.
 
@@ -470,7 +470,7 @@ def purge_finished_runs(window: PurgeFinishedRuns) -> int:
         close_old_connections()
 
 
-@activity.defn(name="purge_expired_sessions")
+@activity.defn(name="purge_expired_sessions", no_thread_cancel_exception=True)
 def purge_expired_sessions() -> int:
     """Clear expired sessions. Returns how many rows were eligible when it ran.
 

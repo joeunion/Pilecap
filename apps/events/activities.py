@@ -412,7 +412,7 @@ def is_worth_retrying(code: int | None) -> bool:
     return True
 
 
-@activity.defn(name="load_delivery_targets")
+@activity.defn(name="load_delivery_targets", no_thread_cancel_exception=True)
 def load_delivery_targets(payload: DispatchEvent) -> LoadedTargets:
     """Which endpoints have asked for this event.
 
@@ -456,7 +456,7 @@ def load_delivery_targets(payload: DispatchEvent) -> LoadedTargets:
         close_old_connections()
 
 
-@activity.defn(name="deliver_webhook")
+@activity.defn(name="deliver_webhook", no_thread_cancel_exception=True)
 def deliver_webhook(payload: DeliverWebhook) -> DeliveryOutcome:
     """One signed POST to one subscriber. Raises so that Temporal retries.
 
@@ -539,7 +539,7 @@ def deliver_webhook(payload: DeliverWebhook) -> DeliveryOutcome:
         close_old_connections()
 
 
-@activity.defn(name="dead_letter_delivery")
+@activity.defn(name="dead_letter_delivery", no_thread_cancel_exception=True)
 def dead_letter_delivery(payload: DeadLetter) -> None:
     """Park a delivery whose retries are spent, and say so as an event."""
     close_old_connections()
@@ -566,7 +566,7 @@ def dead_letter_delivery(payload: DeadLetter) -> None:
         close_old_connections()
 
 
-@activity.defn(name="close_outbox")
+@activity.defn(name="close_outbox", no_thread_cancel_exception=True)
 def close_outbox(payload: CloseOutbox) -> None:
     """Move the outbox row to its terminal state."""
     close_old_connections()
@@ -585,7 +585,7 @@ def close_outbox(payload: CloseOutbox) -> None:
         close_old_connections()
 
 
-@activity.defn(name="push_realtime")
+@activity.defn(name="push_realtime", no_thread_cancel_exception=True)
 def push_realtime(payload: PushRealtime) -> bool:
     """Hand the event to the socket bridge, if this deployment has one.
 
@@ -659,7 +659,7 @@ class IndexesSearchDocuments(Protocol):
     def __call__(self, *, tenant_id: Any, event: dict[str, Any]) -> bool: ...
 
 
-@activity.defn(name="index_search")
+@activity.defn(name="index_search", no_thread_cancel_exception=True)
 def index_search(payload: IndexSearch) -> bool:
     """Hand the event to the search indexer, if this deployment has one.
 
@@ -710,7 +710,7 @@ def index_search(payload: IndexSearch) -> bool:
         close_old_connections()
 
 
-@activity.defn(name="purge_expired_records")
+@activity.defn(name="purge_expired_records", no_thread_cancel_exception=True)
 def purge_expired_records(window: PurgeExpired) -> PurgeOutcome:
     """Housekeeping: expired idempotency keys, old outbox rows, finished deliveries.
 
@@ -754,7 +754,7 @@ def purge_expired_records(window: PurgeExpired) -> PurgeOutcome:
         close_old_connections()
 
 
-@activity.defn(name="reconcile_outbox")
+@activity.defn(name="reconcile_outbox", no_thread_cancel_exception=True)
 def reconcile_outbox(window: ReconcileOutbox) -> ReconcileOutcome:
     """The relay: hand one **batch** of stranded outbox rows back to the dispatch.
 

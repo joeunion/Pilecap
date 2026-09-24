@@ -770,6 +770,10 @@ drive_finished() {
 drive_epilogue() {
     local rc=$?
     local cleanup
+    # Section 9: every template-only skip, under the drive's own summary line.
+    # Guarded: a drive that died inside this file before section 9 was read
+    # has no such function, and a missing command here must not replace rc.
+    if declare -F drive__skip_report >/dev/null; then drive__skip_report || true; fi
     while IFS= read -r cleanup; do
         [ -n "$cleanup" ] || continue
         eval "$cleanup" || true
@@ -1047,4 +1051,110 @@ drive__base_ref_refused() {
     echo "     2. refs/heads/main        (a laptop, a worktree, the primary checkout)" >&2
     echo "     3. refs/remotes/origin/main  (a runner: actions/checkout detaches HEAD)" >&2
     echo "   Nothing this drive would have compared can be trusted without one." >&2
+}
+
+# --- 9 · A TEMPLATE-ONLY CASE SAYS SO, AND THE SKIP IS COUNTED -----------------
+#
+# THE DEFECT, and it is the consumer's. A handful of cases here assert a
+# property only the TEMPLATE'S OWN TREE has — a typed count of its own rules,
+# a listing with no product drawer in it, a transcript compared against a tree
+# with no drawer at all. On the template they are exactly right. On a product
+# that folded a release they are red BY CONSTRUCTION, and the product's only
+# move was to skip them by name and carry the edit as a divergence: the first
+# consumer carried thirty-three such named skips across six drives, each one a
+# hand edit to a template-owned file that the next fold fast-forwards away.
+#
+# THE REMEDY IS THE ONE `apps/core/tests/test_fold_map.py` ALREADY SHIPS
+# (`_skip_unless_template_tree`), made available to a shell drive. ONE form:
+#
+#     case_x() {
+#         template_only "<why this property is the template's own>" || return 0
+#         ...
+#     }
+#
+# On the template it returns 0 and prints nothing — the case runs exactly as
+# before. On a tree that declares `rule_id_namespace:` it prints one `skipped`
+# line naming the case and the reason, counts it, and returns 1, so the case
+# returns before it asserts anything. The reason string is the Python side's,
+# prefix for prefix — `template-only: this tree declares rule_id_namespace
+# <ns>; <why>` — so a product reading either suite reads one sentence.
+#
+# THE KEY IS THE ENGINE'S READING, NEVER A SECOND ONE. "Has this tree folded"
+# is answered by `quality.gate`'s own parse of the drawer (`LOCAL_DOC`), the
+# RAW declaration, for the reason `_declared_namespace` gives: a product with a
+# typo in its namespace is still a product. It is asked ONCE per drive, lazily
+# (a drive whose template-only cases never run never pays an interpreter
+# start), from the checkout root this preamble was sourced in, whatever the
+# case has `cd`'d to since. An engine that cannot answer is could-not-look,
+# never a guess in either direction: guessing "template" reds the product,
+# guessing "product" skips the template's own cases silently.
+#
+# THE COUNT, AND WHERE IT IS PRINTED. `DRIVE_SKIPPED` is the number; a drive
+# that carries a template-only case prints it on its own summary line
+# (`N passed · M failed · K skipped`), and the epilogue prints every skipped
+# case and its reason UNDER that line, on every exit path. A drive with no
+# template-only case prints nothing new at all: on the template, every other
+# driver's output is byte-identical to what it was.
+#
+# WHAT IT IS NOT, declared rather than discovered:
+#
+#   * NOT A VALVE FOR A CASE THAT COULD DERIVE. A skip is not a pass: a case
+#     this prints is a property that went undriven on this tree, and the line
+#     says which. A case that can DERIVE its expectation from the tree it is
+#     standing in (a count read off the listing rather than typed, a scratch
+#     drawer rather than the tree's own) derives it instead — that case is not
+#     template-only, it was only ever written on one shape.
+#   * NOT AN ENVIRONMENT SWITCH. The state below is assigned at source time, so
+#     nothing inherited can pre-answer the question; the drive of THIS
+#     mechanism (`test_drive_preamble.sh`) sets `DRIVE__NAMESPACE_READ` and
+#     `DRIVE__NAMESPACE` after sourcing — the device `_declared_namespace(doc=)`
+#     uses on the Python side, for the same reason.
+#   * NOT A STATUS. A template-only skip does not move the exit code: the
+#     property is the template's, and the template's own run still drives it.
+DRIVE_SKIPPED=0
+DRIVE_SKIP_REASONS=""
+DRIVE__NAMESPACE=""
+DRIVE__NAMESPACE_READ=0
+DRIVE__ROOT="$(pwd -P)"
+
+# Sets DRIVE__NAMESPACE in THIS shell — never through a command substitution
+# of this function, which would ask the engine on every call and cache nothing.
+drive__read_namespace() {
+    [ "$DRIVE__NAMESPACE_READ" = 1 ] && return 0
+    local out="" rc=0
+    out="$(cd "$DRIVE__ROOT" && uv run python -c '
+import sys
+sys.argv = ["gate"]
+from quality import gate
+print("namespace=" + str(gate.LOCAL_DOC.get("rule_id_namespace") or "").strip())
+' 2>&1)" || rc=$?
+    if [ "$rc" != 0 ] || ! grep -q '^namespace=' <<<"$out"; then
+        printf '%s\n' "$out" | sed 's/^/   /' >&2
+        drive_cannot_look "template_only: the engine's reading of rule_id_namespace (quality.gate LOCAL_DOC) did not answer in ${DRIVE__ROOT} (exit ${rc}) — whether this tree is the template's cannot be guessed in either direction"
+    fi
+    DRIVE__NAMESPACE="$(sed -n 's/^namespace=//p' <<<"$out" | tail -1)"
+    DRIVE__NAMESPACE_READ=1
+}
+
+# template_only "<why>" — 0 on the template (run the case); on a tree that
+# declares a namespace, print and count the skip and return 1.
+template_only() {
+    local why="${1:-}" case_name="${FUNCNAME[1]:-$DRIVE_NAME}" line
+    [ -n "$why" ] || drive_cannot_look "template_only called from ${case_name} with no reason — a skip that cannot say why is a skip nobody can audit"
+    drive__read_namespace
+    [ -n "$DRIVE__NAMESPACE" ] || return 0
+    line="${case_name} — template-only: this tree declares rule_id_namespace ${DRIVE__NAMESPACE}; ${why}"
+    echo "  skipped  ${line}"
+    DRIVE_SKIPPED=$((DRIVE_SKIPPED + 1))
+    DRIVE_SKIP_REASONS="${DRIVE_SKIP_REASONS}    ${line}
+"
+    return 1
+}
+
+# Printed by the epilogue, under the drive's own summary line; nothing at all
+# when nothing was skipped.
+drive__skip_report() {
+    [ "${DRIVE_SKIPPED:-0}" != 0 ] || return 0
+    echo "${DRIVE_NAME}: ${DRIVE_SKIPPED} skipped — template-only cases this tree cannot pose:"
+    printf '%s' "$DRIVE_SKIP_REASONS"
 }

@@ -155,7 +155,7 @@ def _rows(declaration: Searchable) -> Iterator[Any]:
     )
 
 
-@activity.defn
+@activity.defn(no_thread_cancel_exception=True)
 def list_search_kinds() -> list[str]:
     """Which kinds this build declares. The reconcile's first act.
 
@@ -167,7 +167,7 @@ def list_search_kinds() -> list[str]:
     return list(registry.labels())
 
 
-@activity.defn
+@activity.defn(no_thread_cancel_exception=True)
 def reconcile_search_index(label: str) -> str:
     """Make one kind's index agree with its declaration. Returns the outcome word.
 

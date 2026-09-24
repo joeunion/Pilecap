@@ -32,6 +32,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .github/workflows/ci.yml CLAUDE.md compose.yaml docs/product/build-contract.md manage.py scripts/check.sh scripts/db.sh scripts/kill_mine.sh scripts/queue_cited.sh scripts/setup.sh scripts/sweep.sh scripts/tests/test_pm_merge.sh
+# cites: .env.example
 # The drive for the gate's `db-pin` leg — `db_pin_leg` in `scripts/db.sh`, the
 # refusal that stands between a stale `.env` pin and a checkout quietly running
 # two databases.
@@ -523,6 +524,230 @@ case_the_refusal_says_what_the_disagreement_costs() {
     says "DISAGREE"
     says "manage.py"
     says "TWO databases"
+}
+
+# --- setup.sh's pin block, run for real against the leg ------------------------
+#
+# THE LOOP THIS SECTION EXISTS FOR. An unmarked `.env` pin that differs from the
+# derivation, with the SAME name exported in the shell (a shell that sourced
+# db.sh before the checkout moved — setup.sh's own closing block tells an
+# operator to source it). setup.sh used to write the exported name back over the
+# pin and migrate it, while the leg refused the same `.env` naming setup.sh as
+# the remedy: each instrument pointed at the other. The cases below run
+# setup.sh's REAL block — extracted from the file, from its `db_pin_decide` call
+# to the `db_create` that follows it — in a scratch checkout, and then run the
+# REAL leg on the same checkout.
+#
+# WHAT IS NOT setup.sh's OWN TEXT, declared: `env_set` is extracted from
+# setup.sh too, but its `make_tmp` (the registry of setup's EXIT trap) is a
+# two-line stand-in here — a mktemp under $WORK — because arming setup's trap
+# inside this drive would replace the drive's own. And `db_create` is not run:
+# the block's job is to settle the NAME, and the extraction stops at the line
+# that would create it. Whether the settled name is created and migrated is
+# setup.sh's next two lines, read as text by `case_setup_creates_after_the_name_is_settled`.
+SETUP_BLOCK=""
+SETUP_ENV_SET=""
+setup_extract() {
+    local setup="${ROOT}/scripts/setup.sh"
+    SETUP_BLOCK="$(awk '/^db_pin_decide$/ { on = 1 } on && /^db_create$/ { exit } on { print }' "$setup")"
+    SETUP_ENV_SET="$(awk '/^env_set\(\) \{$/ { on = 1 } on { print } on && /^}$/ { exit }' "$setup")"
+    [ -n "$SETUP_BLOCK" ] || cannot_look "setup.sh has no column-zero db_pin_decide … db_create block to run"
+    [ -n "$SETUP_ENV_SET" ] || cannot_look "setup.sh defines no env_set() at column zero"
+}
+
+# run_setup_block <dir> <case> <exported name or empty> — the block, in a
+# subshell standing in the scratch checkout, with db.sh sourced there the way
+# setup.sh sources it (so rule 1 resolves the export, not this drive). Output
+# to $OUT; the name the block leaves in DATABASE_NAME is its last line.
+run_setup_block() {
+    local dir="$1" exported="$3"
+    CURRENT="$2"
+    N=$((N + 1))
+    OUT="${WORK}/out${N}.log"
+    RC=0
+    (
+        cd "$dir"
+        unset DATABASE_NAME DATABASE_NAME_SOURCE
+        if [ -n "$exported" ]; then
+            export DATABASE_NAME="$exported"
+        fi
+        # shellcheck source=scripts/db.sh
+        . "${ROOT}/scripts/db.sh" 2>/dev/null
+        make_tmp() { eval "$1=\"\$(mktemp \"${WORK}/envset.XXXXXX\")\""; }
+        eval "$SETUP_ENV_SET"
+        eval "$SETUP_BLOCK"
+        echo "block-left-DATABASE_NAME=${DATABASE_NAME}"
+    ) >"$OUT" 2>&1 || RC=$?
+}
+
+env_line() {
+    grep -E '^DATABASE_NAME=' "$REPO/.env" | tail -1
+}
+
+# THE ENVIRONMENT STEP, THEN THE PIN BLOCK — setup.sh's own order. The env-sync
+# fence rebuilds `.env` from `.env.example` BEFORE the pin block reads it, so a
+# marker the rebuild drops is a marker the pin block never sees: the block then
+# overrides the name and tells the reader to add the line that was just erased.
+# Driving the block alone (above) cannot see that; this runs both, extracted
+# from setup.sh, in the order setup.sh runs them.
+SETUP_ENV_FENCE=""
+setup_extract_env_fence() {
+    SETUP_ENV_FENCE="$(sed -n '/^# >>> env-sync >>>$/,/^# <<< env-sync <<<$/p' "${ROOT}/scripts/setup.sh")"
+    case "$SETUP_ENV_FENCE" in
+    *"env_sync_from_example() {"*) ;;
+    *) cannot_look "setup.sh's env-sync fence defines no env_sync_from_example" ;;
+    esac
+}
+
+run_setup_env_then_block() {
+    local dir="$1"
+    CURRENT="$2"
+    N=$((N + 1))
+    OUT="${WORK}/out${N}.log"
+    RC=0
+    (
+        cd "$dir"
+        unset DATABASE_NAME DATABASE_NAME_SOURCE
+        # shellcheck source=scripts/db.sh
+        . "${ROOT}/scripts/db.sh" 2>/dev/null
+        make_tmp() { eval "$1=\"\$(mktemp \"${WORK}/envset.XXXXXX\")\""; }
+        eval "$SETUP_ENV_FENCE"
+        env_sync_from_example
+        eval "$SETUP_ENV_SET"
+        eval "$SETUP_BLOCK"
+        echo "block-left-DATABASE_NAME=${DATABASE_NAME}"
+    ) >"$OUT" 2>&1 || RC=$?
+}
+
+case_setup_keeps_a_pinned_line_through_the_environment_step() {
+    setup_extract
+    setup_extract_env_fence
+    fresh_checkout
+    printf '%s\n' '# the database' 'DATABASE_URL=' 'DATABASE_NAME=' 'DEBUG=0' >"$REPO/.env.example"
+    write_env '# the database' 'DATABASE_URL=' '# pinned' 'DATABASE_NAME=djb_stale' 'DEBUG=1'
+    cp "$REPO/.env" "${WORK}/pinned-through-sync-before.env"
+    run_setup_env_then_block "$REPO" "setup's environment step, then its pin block, over a # pinned stale pin"
+    exits 0
+    says "DATABASE_NAME left alone"
+    says_not "overridden"
+    if cmp -s "$REPO/.env" "${WORK}/pinned-through-sync-before.env"; then
+        ok ".env is byte-identical after both steps"
+    else
+        bad ".env changed: $(diff "${WORK}/pinned-through-sync-before.env" "$REPO/.env" | tr '\n' ' ')"
+    fi
+}
+
+case_setup_adopts_the_derivation_over_an_unmarked_exported_stale_pin() {
+    setup_extract
+    fresh_checkout
+    write_env "DEBUG=1" "DATABASE_NAME=djb_stale"
+    run_setup_block "$REPO" "setup over an unmarked stale pin exported in the shell" djb_stale
+    exits 0
+    says "DATABASE_NAME: the unmarked .env pin djb_stale (also exported in this shell) was overridden by the derivation ${DERIVED}; add \"# pinned\" above it to keep it"
+    says "unset DATABASE_NAME"
+    says "block-left-DATABASE_NAME=${DERIVED}"
+    if [ "$(env_line)" = "DATABASE_NAME=${DERIVED}" ]; then
+        ok ".env now carries the derivation"
+    else
+        bad ".env carries '$(env_line)', not DATABASE_NAME=${DERIVED}"
+    fi
+    # AND THE LEG, ON THE SAME CHECKOUT, HAS NOTHING TO SAY — the other half of
+    # the loop. Full mode is the mode the incident refused in; the existence
+    # half needs the stack, so full runs where it is up and fast (the whole pin
+    # comparison, no database) runs everywhere.
+    run_leg_in "$REPO" "the leg after setup reconciled" fast
+    exits 0
+    says_not "DISAGREE"
+    if [ -n "$STACK" ]; then
+        make_database "$DERIVED" || cannot_look "could not create ${DERIVED} for the full-mode leg"
+        run_leg_in "$REPO" "the leg after setup reconciled, full mode" full
+        exits 0
+        says_not "DISAGREE"
+    else
+        CURRENT="the leg after setup reconciled, full mode"
+        skip "the compose Postgres is not reachable — full mode asks whether ${DERIVED} exists"
+    fi
+}
+
+case_setup_names_only_the_pin_when_nothing_is_exported() {
+    setup_extract
+    fresh_checkout
+    write_env "DATABASE_NAME=djb_stale"
+    run_setup_block "$REPO" "setup over an unmarked stale pin, nothing exported" ""
+    exits 0
+    says "DATABASE_NAME: the unmarked .env pin djb_stale was overridden by the derivation ${DERIVED}; add \"# pinned\" above it to keep it"
+    says_not "also exported"
+    says "block-left-DATABASE_NAME=${DERIVED}"
+}
+
+case_setup_leaves_a_pinned_line_alone() {
+    # `# pinned` present → unchanged behaviour: the pin stays byte-identical,
+    # the run keeps what db.sh resolved, and the old sentence is printed.
+    setup_extract
+    fresh_checkout
+    write_env "# pinned" "DATABASE_NAME=djb_stale"
+    cp "$REPO/.env" "${WORK}/pinned-before.env"
+    run_setup_block "$REPO" "setup over a # pinned stale pin exported in the shell" djb_stale
+    exits 0
+    says "DATABASE_NAME left alone"
+    says_not "overridden"
+    says "block-left-DATABASE_NAME=djb_stale"
+    if cmp -s "$REPO/.env" "${WORK}/pinned-before.env"; then
+        ok ".env is byte-identical"
+    else
+        bad ".env changed under # pinned"
+    fi
+}
+
+case_setup_and_the_leg_read_one_decision_table() {
+    # ONE RESOLVER. A second copy of the table in either reader is the defect
+    # this section closes, so the readers are held to calling db_pin_decide and
+    # to asking none of its ingredients themselves.
+    CURRENT="setup.sh, rung_start.sh and db_pin_leg read one decision table"
+    OUT="${WORK}/one-table.log"
+    : >"$OUT"
+    local leg_body
+    # setup.sh AND rung_start.sh — the second carried its own copy of setup's
+    # pin block, and every builder runs it before anything else.
+    local reader
+    for reader in setup.sh rung_start.sh; do
+        if grep -q '^db_pin_decide$' "${ROOT}/scripts/${reader}"; then
+            ok "${reader} calls db_pin_decide at column zero"
+        else
+            bad "${reader} never calls db_pin_decide — its pin block decides some other way"
+        fi
+        if grep -nE 'db_pin_marked|db_pin_line_has_inline_comment|db_env_file_pin|DB_PIN_MARKER_ERE|#\[\[:space:\]\]\*pinned' "${ROOT}/scripts/${reader}" | grep -v '^[0-9]*:[[:space:]]*#' | grep -v 'DB_PIN_MARKER_ERE="\$DB_PIN_MARKER_ERE"\|DB_PIN_MARKER_ERE:-\|ENVIRON\["DB_PIN_MARKER_ERE"\]' >"$OUT"; then
+            bad "${reader} asks an ingredient of the table itself — a second decision table: $(tr '\n' ' ' <"$OUT")"
+        else
+            ok "${reader} asks no ingredient of the table itself"
+        fi
+    done
+    leg_body="$(awk '/^db_pin_leg\(\) \{$/ { on = 1 } on { print } on && /^}$/ { exit }' "${ROOT}/scripts/db.sh")"
+    case "$leg_body" in
+    *"db_pin_decide"*) ok "db_pin_leg calls db_pin_decide" ;;
+    *) bad "db_pin_leg never calls db_pin_decide" ;;
+    esac
+    if grep -v '^[[:space:]]*#' <<<"$leg_body" | grep -E 'db_pin_marked|db_pin_line_has_inline_comment|db_env_file_pin' >/dev/null; then
+        bad "db_pin_leg asks an ingredient of the table itself — a second decision table"
+    else
+        ok "db_pin_leg asks no ingredient of the table itself"
+    fi
+}
+
+case_setup_creates_after_the_name_is_settled() {
+    # The block may override a stale exported name; a db_create above it would
+    # prepare the name the run no longer uses.
+    CURRENT="setup.sh creates the database after the name is settled"
+    OUT="${WORK}/create-order.log"
+    : >"$OUT"
+    local decide create
+    decide="$(grep -n '^db_pin_decide$' "${ROOT}/scripts/setup.sh" | head -1 | cut -d: -f1 || true)"
+    create="$(grep -n '^db_create$' "${ROOT}/scripts/setup.sh" | head -1 | cut -d: -f1 || true)"
+    if [ -n "$decide" ] && [ -n "$create" ] && [ "$create" -gt "$decide" ]; then
+        ok "db_create (line ${create}) follows db_pin_decide (line ${decide})"
+    else
+        bad "db_create (line ${create:-none}) does not follow db_pin_decide (line ${decide:-none})"
+    fi
 }
 
 case_a_pinned_line_passes_silently() {
@@ -1463,6 +1688,12 @@ case_the_leg_is_wired_into_the_fast_tier() {
 
 case_a_stale_pin_is_refused
 case_the_refusal_says_what_the_disagreement_costs
+case_setup_adopts_the_derivation_over_an_unmarked_exported_stale_pin
+case_setup_names_only_the_pin_when_nothing_is_exported
+case_setup_leaves_a_pinned_line_alone
+case_setup_keeps_a_pinned_line_through_the_environment_step
+case_setup_and_the_leg_read_one_decision_table
+case_setup_creates_after_the_name_is_settled
 case_a_pinned_line_passes_silently
 case_the_marker_carries_a_reason_and_still_passes
 case_the_marker_must_be_directly_above_the_database_name_line

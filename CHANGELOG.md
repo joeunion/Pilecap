@@ -50,6 +50,223 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.2.0] — A product merges the tag and banks green the same day
+
+**At its last fold a product needed three template releases to reach a green
+bank, skipped template drives it could not pass by name, and lost a bank to
+a hang the template caused.** Each was a form, a drive or an instrument that
+was live only on the template's own shape. This release closes that class:
+the template's bank now judges every rule's forms on a consumer-shaped tree,
+a plant that could land on a product's own file is refused before anything
+is planted, and a cancelled activity no longer dies holding the import lock
+a test worker needs. The rest is what the same fold found, fixed. 2.2.0 is a
+minor by the owner's word, on the precedent above: the census changes what a
+drawer may declare and the bank now judges every rule on a consumer-shaped
+tree, so each gets a version boundary and a note below rather than riding in
+as a patch.
+
+### What a product does at the merge
+
+1. **A plant in your drawer declared `mode: create` sits under a
+   `zzz_canary` directory**, beneath the layer it proves, or carries
+   `namespace_exempt: <reason> (MOVE-TRIGGER <date>)` naming why that path
+   can never be a product's. Anything else is refused at exit 2 before
+   anything is planted, naming the rule, the fixture and the path, with
+   both remedies printed; `python -m quality.gate --explain <id>` prints the
+   reserved segment once. Exempt without a declaration: a `mode: default`
+   plant (it creates only where nothing is) and anything under
+   `apps/example/`. A declaration is refused as vacuous under `zzz_canary`,
+   on a `default`, or under `apps/example/` — remove it. Two more refusals
+   come with the census: a plant `mode: absent` naming a path neither your
+   tree nor any form plants is could-not-look on its rule's line, never a
+   silent no-op; and a canary may not declare `needs_shape:` (only a
+   negative may declare the shape it needs). A declaration on a plant that
+   creates nothing (`append`, `replace`, `absent`) is refused as exempting
+   nothing.
+2. **Nothing to type for the bank's widened reach.** The template's bank
+   now judges every rule's forms on a consumer-shaped tree — a root page, a
+   token sheet, `frontend/app/env.ts`, a barrel with its drawer ratchet and
+   a base declared through the `template` remote — so a release that reaches
+   you has been measured on that shape. The shapes drive is safe on your
+   checkout: it tags a synthetic release name, and plants each product file
+   only where your tree has none. One behaviour to know: rule 60's
+   base-planting forms are now COULD NOT LOOK (exit 2) on any tree with an
+   uncommitted edit to a template-owned path, a product's tree included,
+   unless your `architecture.md` names the path as a divergence, in which
+   case it is subtracted, not refused — commit or stash before running the
+   self-test. This supersedes 2.1.6 item 3's "on the template's own tree
+   only".
+3. **A cancelled synchronous activity now runs to its declared timeout
+   instead of being interrupted mid-thread, and a worker's shutdown waits
+   for in-flight activities up to that timeout.** Your own activities are
+   held to the same by a census over `discovered_activities()`: add
+   `no_thread_cancel_exception=True` to each synchronous `@activity.defn`,
+   or the test names the function (an `async def` activity is cancelled as
+   a task, and the census leaves it out). The worker derives its shutdown
+   window from the timeouts your workflows declare at their call sites, so
+   a timeout there that is not a module constant, a dotted attribute or a
+   literal `timedelta(...)` makes `build_worker` refuse with
+   `ImproperlyConfigured`, naming the `file:line` — declare it as a
+   module-level constant.
+4. **A leg that rewrites a tracked file declares it in the
+   `derived-tree-paths` block of its own file.** A `--loop` that finds a
+   tracked path changed during the run that no declaration covers banks
+   nothing, exit 2, and names every path with the arm that named it. A hand
+   edit during a `--loop` is now the same exit 2 (it was exit 0 with no
+   row): the run cannot tell your edit from a leg's re-take. A refused run
+   remembers the bytes it refused, so re-running on the same bytes is
+   refused again and `touch` clears nothing. What clears a path: commit it
+   or `git checkout --` it, change its bytes, or — for a leg that re-takes
+   it on every run — declare it in that leg's block.
+5. **A module under `apps/` or `config/` that quotes a docs path it never
+   opens says so on one line** — `# names, never reads: <path> — <why>` —
+   or the docs-only push road refuses the push, naming the quote at its
+   `file:line`. Test modules are where the quotes usually are, but the
+   declaration is read for any module in those two trees.
+6. **`setup.sh` now writes the derived database name over an unmarked
+   `DATABASE_NAME` pin in `.env`, and prints what it overrode and where the
+   value came from.** A `# pinned` line directly above the pin keeps it,
+   and the marker now survives setup's rebuild of `.env` (before this
+   release the rebuild dropped it).
+7. `compose.yaml` (shared, adjudicated by hand — build-contract.md's
+   ownership table): take the `shm_size` line into your `db` service, or
+   keep your own if larger; an override file that redefines `db` inherits
+   it unless it sets its own. Your running stack keeps 64 MB until you run
+   `docker compose up -d db` with nothing running against it.
+8. **Your gate units' rows live in your `build-contract.local.md`**, and
+   the listing case reads the template's table and that sibling as one. Once
+   you have a drive of your own, your sibling carries the whole `selftest`
+   row, so a fold that adds or drops a template drive reds that case until
+   you re-paste the row — the red prints the exact row. Spell the file bare
+   in prose: the dangling-docs census exempts only
+   `docs/product/instruments.local.md`.
+9. **Remove the named skips you carry for template drive cases —
+   twenty-six of them now run on your tree.** On a product's tree (one whose
+   `quality/local/rules.yaml` declares `rule_id_namespace`), three
+   `test_gate_explain` cases are the template's own — the namespaced-id
+   refusal, the no-product-rules wall and the self fold-map. They skip with
+   a counted, reasoned line (`K skipped` on the drive's summary line, the
+   reasons under it), in the same sentence the Python suite's template-only
+   skip prints, and a skip never changes the exit code. The other 26 cases
+   a product used to skip by name now derive their expectation from the
+   tree (the rule listing counts the drawer, the no-drawer baselines point
+   at an absent drawer, the buildx step is found by what it runs), so
+   remove those named skips at this fold. Three cases that depend on your
+   tree's content (a barrel with rule-52 findings; backlog lines) may still
+   need your named skip. A drive's own `skipped` count that means "this
+   machine cannot pose the case" is a different kind of skip and stays.
+10. **Your drawer's fixtures are excluded from ruff; its runners are not.**
+    `quality/local/canary/**` and `quality/local/negative/**` are now
+    excluded from ruff like the template's own fixtures; your drawer's
+    runners (`quality/local/runners/*.py`) are real code and stay linted.
+    `pyproject.toml` is shared and adjudicated by hand, so if you already
+    carry your own exclude, keep the union; if you added it as a declared
+    divergence, you can drop that line. The exclusion applies to the hook's
+    `ruff check .` form: an editor that passes a filename without
+    `--force-exclude` still lints it.
+11. **Rule 60 now sees your edits under the template's platform apps, so
+    expect it red at your first gate after the fold.** Rule 60's census has
+    been blind to edits under the template's platform apps (`apps/<name>/**`
+    for each name in `quality/partition.yaml`'s `platform_apps`), because it
+    matched a one-name-per-line list space-delimited. From 2.2.0 it sees
+    them. Every path you changed there since your base will therefore report
+    as an UNNAMED divergence, and rule 60 will be red (exit 1) at your first
+    gate after the fold. It stays red until each path is declared in your
+    `docs/product/architecture.md` as `divergence: <path> — <reason>`,
+    moved into a drawer, or upstreamed. Nothing in your tree changed, only
+    what the census can see.
+
+### Added
+
+- **The plant-namespace census.** Every `mode: create` plant, template or
+  drawer, sits under the one reserved segment, in `apps/example/`, or
+  declares `namespace_exempt: <reason> (MOVE-TRIGGER <date>)`; the
+  self-test's head counts the population, and `--explain` prints the
+  reserved segment.
+- **The whole-run shapes drive.** Under a sharded bank the drive runs the
+  engine's whole self-test on the consumer-shaped tree as a shard-balanced
+  member of its own; on a laptop `--loop` or `--fast` it never does.
+- **`needs_clean_tree:` on a rule 60 form** — a closed word declaring the
+  clean tree the form needs; a tree that is not clean is could-not-look,
+  never a lowered floor.
+- **A drawer-raised population floor.** `DJB_POPULATION_FLOOR_ADDENDS` in
+  `apps/conftest_local.py` adds to a typed floor such as
+  `apps_root_modules`; one reader, beside the floors.
+- **The `derived-tree-paths` clause for legs** — the declaration a fold
+  step already used, now read for a leg that re-takes a tracked file.
+- **The docs-only quote declaration** — `# names, never reads: <path> —
+  <why>` in any module under `apps/` or `config/`.
+- **The `.local.md` unit-table sibling** — `build-contract.local.md`, read
+  with the template's table by the listing case.
+- **The sync-activity census** — every synchronous callable in
+  `discovered_activities()` declares `no_thread_cancel_exception=True`;
+  an `async def` activity is outside the question by design.
+- **A drawer's fixtures are excluded from ruff.** `pyproject.toml`'s ruff
+  `extend-exclude` gains `quality/local/canary` and `quality/local/negative`
+  — a product's deliberately wrong fixtures, excluded as the template's
+  own are; the drawer's runners stay linted.
+- **The counted `template_only` skip for drive cases.** A case that asserts
+  a property only the template's own tree has opens with `template_only
+  "<why>"` (`scripts/tests/drive_preamble.sh`): it runs on the template,
+  and on a tree that declares `rule_id_namespace` it skips, counted on the
+  drive's summary line with its reason, never changing the exit code. A
+  case that calls it with no reason, or on a tree whose namespace the
+  engine cannot read, is could-not-look.
+
+### Fixed
+
+- **A cancelled synchronous activity could die owning importlib's module
+  lock and hang a test worker.** The exception Temporal delivers
+  into a running thread on cancellation could land inside an import; it is
+  no longer delivered, and `build_worker`'s shutdown now waits up to the
+  longest declared activity timeout instead of cancelling everything at
+  zero seconds — which was also wrong in production, where a stop signal
+  cancelled running deliveries instantly.
+- **The two-pass verdict quotes pytest's own summary.** It had also quoted
+  captured-log lines that happen to begin `ERROR`, and it no longer claims
+  the two passes had an identical worker assignment: the seed fixes the
+  collection order, and the assignment is timing-dependent.
+- **The fork point travels with a verify clone.** The clone records the
+  fold point it was built on, the box push prefers a recorded fork point
+  over its own derivation and refuses rather than pushing an empty one, and
+  the verifier-box territory case reads the carried point first and skips,
+  counted and named, on a change that does not own that territory.
+- **One `.env` pin resolver** for `setup.sh`, `rung_start.sh` and the
+  db-pin leg, where there were three decision tables that disagreed; the
+  pin note no longer lands in `./scripts/check.sh --list-legs`, whose
+  output is the unit table.
+- **A drive's key is decided at the hook.** The fast tier keys every drive
+  a change touches and refuses in the self-test leg's own sentence, naming
+  every uncovered path in one line rather than the first.
+- **`shm_size` on the compose db service.** Docker's default 64 MB
+  `/dev/shm` fills with Postgres's cumulative-statistics area as databases
+  accumulate, and then new connections and queries start failing;
+  `compose.yaml` carries the value and the reason.
+- **Twenty-six template drive cases no longer assert the template's shape
+  on a product's tree.** Each typed an expectation only the template's own
+  tree meets, so a product skipped it by name; each now derives it from the
+  tree it runs on — the rule listing counts the drawer's rules, the
+  no-drawer baselines point at a drawer that is absent, and the buildx
+  step is found by what it runs rather than where it sits.
+- **Two drive readers no longer red the sweep's presence probe.** Two lines
+  that ended a `pipefail` pipeline in `grep -q` stopped reading at the
+  first match, so the pipeline could fail under the writer; they now read
+  to the end of their input, with the output redirected.
+- **The divergence census sees a product's edits under the platform apps.**
+  Its platform-app test matched a one-name-per-line list as if it were
+  space-delimited and never matched, so every edit under a platform app
+  was owned `product` and rule 60 was blind to it; the match is now
+  newline-delimited, and a drive case with the real `partition.yaml`
+  proves a committed edit under `apps/core/` is a divergence (item 11
+  above says what that means at your fold).
+- **The self-test's riders.** A census exit 1 is labelled a finding, not a
+  cause it has not proven, and the closing line counts a form not
+  producible on this shape; the shapes drive reports an engine that judged
+  nothing as its own exit 2; a whole run is never reused from a banked
+  green, and the drive's key covers a product's `frontend/`; the COULD NOT
+  BANK sentence names each path's arm and the escapes that actually clear
+  it.
+
 ## [2.1.7] — A form declares the shape it needs, and the bank judges the consumer's shape
 
 **A product whose base is declared through the `template` remote, or whose
@@ -3049,7 +3266,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.1.7...HEAD
+[Unreleased]: ../../compare/v2.2.0...HEAD
+[2.2.0]: ../../compare/v2.1.7...v2.2.0
 [2.1.7]: ../../compare/v2.1.6...v2.1.7
 [2.1.6]: ../../compare/v2.1.5...v2.1.6
 [2.1.5]: ../../compare/v2.1.4...v2.1.5

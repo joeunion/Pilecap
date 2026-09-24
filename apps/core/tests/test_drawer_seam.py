@@ -28,6 +28,8 @@ a real `quality/local/rules.yaml` would move the working tree a concurrent
 gate's verdict is keyed on.
 """
 
+# names, never reads: docs/product/queue.md — a path outside the roots, handed to the engine over tmp_path  # noqa: E501
+
 from __future__ import annotations
 
 import importlib

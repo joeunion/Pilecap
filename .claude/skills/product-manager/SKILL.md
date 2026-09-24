@@ -268,27 +268,43 @@ the calendar. The full pattern and the surface order live in
 `references/operations.md` § The surface-review program; the ordering itself
 is `queue.md`'s, as always.
 
-## Arm the watchdog — first thing, every session
+## Arm the watchdog — hourly, at the first dispatch
 
-**Set this up at the start of every session, before any other work.** A loop
-nobody is watching does not stop loudly; it stops silently, mid-stage, with an
-agent that returned to nobody.
+**Arm it at the first dispatch of every session, and only while an agent is
+out.** A loop nobody is watching does not stop loudly; it stops silently,
+mid-stage, with an agent that returned to nobody. **It is hourly, not every
+fifteen minutes (owner, 2026-09-23).** Each fire re-reads the session's whole
+context — 1.4M tokens a fire past 150k of context — and the measurement that
+set the cadence (readouts § COST BASELINE, Row 15) is fifty fires across one
+night, 59M tokens, zero stalls found: every stage advanced on a harness
+notification (a subagent's return, a background task's exit, a Monitor line, a
+peer's message). The watchdog insures only against a LOST notification, and
+that insurance does not need a quarter-hour cadence.
 
 ```
-CronCreate  cron: "*/15 * * * *"  recurring: true
-prompt: Check the product loop is still running. Read docs/product/in-flight.md:
-  if an agent is out, confirm it is still working and do nothing. If the loop has
-  stalled — nothing dispatched and the stage has not advanced — restart it by
-  dispatching the next stage from the cycle plan in docs/product/cycles/. Keep the
-  dispatch ledger written BEFORE sending. If a hard stop is blocking (real money,
-  real people's inboxes, interactive credentials, irreversible acts on real data,
-  or a change to the ship definition), tell the owner rather than waiting silently.
-  Note the check was a no-op if nothing needed doing.
+CronCreate  cron: "<an off-minute> * * * *"  recurring: true
+prompt: Watchdog. ONE ListAgents call, nothing else read. If an agent named in
+  docs/product/in-flight.md as OUT is still running, answer in one line: no-op.
+  If the loop has stalled — nothing running and the stage has not advanced —
+  restart it by dispatching the next stage from the cycle plan in
+  docs/product/cycles/, the dispatch ledger written BEFORE sending. If a hard
+  stop is blocking (real money, real people's inboxes, interactive credentials,
+  irreversible acts on real data, or a change to the ship definition), tell the
+  owner rather than waiting silently. If in-flight.md says PAUSED, or the stage
+  is an external wait (a peer's bank, the owner's word), delete this job.
 ```
 
-Then **run it once immediately** rather than waiting for the first fire — the
-first check is the one most likely to find something, because it runs against
-whatever the previous session left behind.
+**Delete it when the stage becomes an external wait or a PAUSE; re-arm it at
+the next dispatch.** And **compact the session at every stage boundary** — the
+FRAME written, a wave merged, a release tagged — because the fire's cost scales
+with the context, and at a boundary the contracts, the ledger and the memory
+already carry everything the context does; the owner runs `/compact`, the PM
+asks for it at the boundary.
+
+The pickup read of `in-flight.md` is the first check, and the one most likely
+to find something, because it runs against whatever the previous session left
+behind: a row marked OUT with nothing running is a stalled stage, restarted
+before the job is armed.
 
 Then `scripts/verifier_box.sh census` — exit 0 and `no verifier boxes` is the
 answer you want; an `OVERDUE` line is a box no session remembers, `down` it now

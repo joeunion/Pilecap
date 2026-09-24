@@ -922,6 +922,37 @@ case_the_clone_is_given_a_local_main_ref_at_the_verified_sha() {
     fi
 }
 
+# THE FOLD POINT IS RECORDED IN THE CLONE, as `refs/djb/base`. It was printed
+# and never written, so a clone whose union was pushed to a box as `main` — or
+# committed as its own `main` — carried no fork point: `merge-base HEAD main` is
+# HEAD there and the box's `--loop` measured an empty scope. The push reads this
+# ref (scripts/verifier_box.sh, cmd_push). Both arms: a real merge (the fold
+# point is the branch point) and an already-folded branch (it is main's tip).
+case_the_clone_records_its_fold_point_as_refs_djb_base() {
+    local want got arm
+    for arm in moved-on already-up-to-date; do
+        fresh_source "ignores-dotenv" "$arm"
+        want=$(git -C "$SRC" merge-base main rung-x)
+        run_it "the clone records its fold point as refs/djb/base (${arm})" "rung-x"
+        exits 0
+        if got=$(git -C "$DEST" rev-parse -q --verify refs/djb/base 2>/dev/null); then
+            ok "the clone carries refs/djb/base"
+            is "$got" "$want" "refs/djb/base (the fold point, ${arm})"
+        else
+            bad "the clone carries no refs/djb/base — the fold point was printed and not recorded"
+        fi
+        says "fork point   refs/djb/base = $(git -C "$SRC" rev-parse --short "$want")"
+        says "fold point   ${want}"
+        # THE CLONE'S OWN, NEVER THE SOURCE'S — a ref written into the source
+        # would be every linked worktree's of that family.
+        if git -C "$SRC" rev-parse -q --verify refs/djb/base >/dev/null 2>&1; then
+            bad "refs/djb/base was written into the SOURCE checkout"
+        else
+            ok "the source checkout carries no refs/djb/base"
+        fi
+    done
+}
+
 # --- the loop-verdict seed ----------------------------------------------------
 #
 # The scratch source can carry a `.git/djb-loop-verdicts` with rows of both
@@ -1681,6 +1712,7 @@ case_an_occupied_destination_is_refused
 case_a_conflicting_rung_branch_is_an_exit_1_naming_the_paths
 case_it_never_reads_the_environment_file_into_its_own_shell
 case_the_clone_is_given_a_local_main_ref_at_the_verified_sha
+case_the_clone_records_its_fold_point_as_refs_djb_base
 case_the_loop_ledger_is_seeded_and_the_counts_are_exact
 case_a_source_with_no_loop_ledger_is_a_named_absence
 case_the_seed_never_writes_to_the_source

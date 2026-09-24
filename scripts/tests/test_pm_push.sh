@@ -3692,9 +3692,16 @@ case_ci_skips_a_present_tag_and_builds_an_absent_one() {
     # (c) AND THE BUILD STEP ACTUALLY CONSUMES IT. The body decides; the `if:`
     #     is what makes the decision skip a build, and a body whose answer
     #     nothing reads is the same as no body at all.
+    #
+    #     THE BUILD STEP IS FOUND BY WHAT IT RUNS, NOT BY ITS NAME: the
+    #     first step whose body runs `docker buildx build`, and its own `if:`.
+    #     A product that builds a third image renames the step ("build web,
+    #     worker and next") and keeps the property; reading the template's
+    #     title found no step on that tree and redded the case for a word.
     if awk '
-        /^      - name: build web and worker/ { instep = 1 }
-        instep && /^        if: / { print; exit }
+        /^      - / { cond = "" }
+        /^        if: / { cond = $0 }
+        /^ +docker buildx build / { print cond; exit }
     ' "$ROOT/$CI_YML" | grep -F "steps.have.outputs.have != 'true'" >/dev/null; then
         ok "the buildx step is conditioned on the registry answer"
     else

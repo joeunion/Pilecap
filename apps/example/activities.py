@@ -42,7 +42,7 @@ from apps.example.types import WidgetAnnouncement, WidgetOnboarding
 from apps.workflows.context import workflow_context
 
 
-@activity.defn(name="mark_widget_onboarded")
+@activity.defn(name="mark_widget_onboarded", no_thread_cancel_exception=True)
 def mark_widget_onboarded(payload: WidgetOnboarding) -> str:
     """Mark the widget onboarded, and report when.
 
@@ -82,7 +82,7 @@ def mark_widget_onboarded(payload: WidgetOnboarding) -> str:
         close_old_connections()
 
 
-@activity.defn(name="announce_widget_onboarded")
+@activity.defn(name="announce_widget_onboarded", no_thread_cancel_exception=True)
 def announce_widget_onboarded(payload: WidgetAnnouncement) -> str:
     """Emit `example.widget.onboarded`, through the service that owns the event.
 

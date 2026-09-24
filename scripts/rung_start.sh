@@ -221,18 +221,19 @@ esac
 #   4. WHETHER THE MIGRATED SCHEMA IS THE RIGHT ONE. `migrate --check` proves
 #      nothing is UNAPPLIED. A migration that applied and is wrong is the
 #      gate's subject, not this script's.
-#   5. THE .ENV PIN POLICY IS A SECOND COPY — the WRITE half of it, and no
-#      longer the read. The reconcile-or-leave-alone behaviour below is
-#      setup.sh's, re-implemented rather than shared, because setup.sh is a
-#      script that runs top to bottom and cannot be sourced for one function.
-#      The MARKER TEST itself is no longer copied: both scripts call
-#      `db_pin_marked` out of the `db.sh` they already source. That copy was
-#      the one that mattered — when the marker's grammar changed (its own
-#      comment line above a bare value; `scripts/db.sh`, "THE MARKER'S
-#      GRAMMAR") a hand copy left behind here would have gone on rewriting a
-#      line a human pinned on purpose. What remains copied is behaviour a test
-#      can see: `scripts/tests/test_rung_start.sh` drives this side so a
-#      divergence in the write half is at least loud here.
+#   5. THE .ENV PIN POLICY IS ONE RESOLVER, AND ONLY THE FILE WRITE IS OURS.
+#      Which cell a checkout's pin is in — marked, disagreeing, agreeing,
+#      absent — is `db_pin_decide`'s (scripts/db.sh), the one table setup.sh
+#      and the gate's db-pin leg read too, and this script acts on that
+#      verdict with setup.sh's three branches (left alone · the derivation
+#      written over an unmarked disagreement, said · otherwise written). What
+#      stays this script's is the mechanics of writing the line, because
+#      setup.sh runs top to bottom and cannot be sourced for one function.
+#      It used to carry its own copy of the policy, and the copy kept the
+#      defect setup.sh had: an unmarked stale pin exported in the same shell
+#      was written back over itself while the leg refused it.
+#      `scripts/tests/test_rung_start.sh` runs the fenced block
+#      (`# >>> env-pin >>>`) and the real leg after it.
 #   6. WHETHER A CARRIED CREDENTIAL STILL WORKS. The carry copies what the
 #      primary checkout HAS. An expired PAT, or one seeded against a Zitadel
 #      instance that has since been rebuilt, is copied faithfully and this
@@ -972,6 +973,65 @@ if ! db_query 'SELECT 1' -tA >/dev/null 2>&1; then
         ""
 fi
 
+# The pin, so a bare manage.py resolves the same name every script here does —
+# and SETTLED BEFORE ANYTHING IS CREATED, because the block may override a
+# stale exported name and a `db_create` above it would prepare the name this
+# run no longer uses.
+#
+# THE DECISION IS `db_pin_decide`'S (scripts/db.sh), the one table setup.sh and
+# the gate's db-pin leg read too, with setup.sh's three branches. This block
+# used to carry its own copy of setup's policy, and the copy kept the defect
+# setup.sh had: an unmarked stale pin with the same name exported in the shell
+# (a shell that sourced db.sh before the checkout moved) was written straight
+# back over itself, while the leg refused it naming setup as the remedy.
+#   DB_PIN_MARKED    left alone, and said so
+#   disagree         the derivation written, the override said — which name,
+#                    and that the shell exported it too when it did
+#   anything else    what db.sh resolved is written, as before
+# The file-writing mechanics stay this script's (it cannot source setup.sh);
+# the sentinels are what `scripts/tests/test_rung_start.sh` extracts and runs.
+# >>> env-pin >>>
+db_pin_decide
+if [ -n "$DB_PIN_MARKED" ]; then
+    say ".env carries the \`# pinned\` marker — DATABASE_NAME left alone"
+    say "  .env:       $(grep -E '^DATABASE_NAME=' "$ROOT/.env" | tail -1)"
+    say "  derivation: ${DATABASE_NAME}"
+else
+    pin_overridden=""
+    pin_overridden_also=""
+    if [ "$DB_PIN_VERDICT" = "disagree" ]; then
+        pin_overridden="$DB_PIN_VALUE"
+        if [ "${DATABASE_NAME}" = "$pin_overridden" ]; then
+            pin_overridden_also=" (also exported in this shell)"
+            DATABASE_NAME="$DB_PIN_DERIVED"
+            DATABASE_NAME_SOURCE="derived"
+            export DATABASE_NAME DATABASE_NAME_SOURCE
+        fi
+        pin_write="$DB_PIN_DERIVED"
+    else
+        pin_write="$DATABASE_NAME"
+    fi
+    if grep -qE '^DATABASE_NAME=' "$ROOT/.env"; then
+        tmp=$(mktemp "$ROOT/.env.rung_start.XXXXXX")
+        DBN="$pin_write" awk '
+            /^DATABASE_NAME=/ { print "DATABASE_NAME=" ENVIRON["DBN"]; next }
+            { print }
+        ' "$ROOT/.env" >"$tmp"
+        mv "$tmp" "$ROOT/.env"
+        say ".env         DATABASE_NAME=${pin_write}"
+    else
+        printf 'DATABASE_NAME=%s\n' "$pin_write" >>"$ROOT/.env"
+        say ".env         DATABASE_NAME=${pin_write} (appended)"
+    fi
+    if [ -n "$pin_overridden" ]; then
+        say "DATABASE_NAME: the unmarked .env pin ${pin_overridden}${pin_overridden_also} was overridden by the derivation ${DB_PIN_DERIVED}; add \"# pinned\" above it to keep it"
+        if [ -n "$pin_overridden_also" ]; then
+            say "  This shell still exports DATABASE_NAME=${pin_overridden}; \`unset DATABASE_NAME\` there, or open a new shell."
+        fi
+    fi
+fi
+# <<< env-pin <<<
+
 # db.sh's PUBLIC CLI and nothing below it: db_create / db_exists, exactly as its
 # own header advertises them (scripts/db.sh:4-5). What db_create does inside
 # can change; this line is the seam that must not notice.
@@ -985,29 +1045,6 @@ printf '%s\n' "$db_create_out" | sed 's/^/   /'
 db_exists ||
     cannot_verify "db_create returned, and db_exists says $DATABASE_NAME is not there." \
         "The database was not created and the failure was silent."
-
-# The pin, so a bare manage.py resolves the same name every script here does.
-# setup.sh's pin-reconcile semantics, second copy, declared in the header —
-# except for the MARKER TEST, which is `db_pin_marked` from the db.sh sourced
-# above and is no longer copied here. The marker's grammar moved (its own
-# comment line above a bare value; scripts/db.sh, "THE MARKER'S GRAMMAR") and
-# a hand copy is a reader that gets left behind at exactly that moment.
-if db_pin_marked; then
-    say ".env carries the \`# pinned\` marker — DATABASE_NAME left alone"
-    say "  .env:       $(grep -E '^DATABASE_NAME=' "$ROOT/.env" | tail -1)"
-    say "  derivation: ${DATABASE_NAME}"
-elif grep -qE '^DATABASE_NAME=' "$ROOT/.env"; then
-    tmp=$(mktemp "$ROOT/.env.rung_start.XXXXXX")
-    DBN="$DATABASE_NAME" awk '
-        /^DATABASE_NAME=/ { print "DATABASE_NAME=" ENVIRON["DBN"]; next }
-        { print }
-    ' "$ROOT/.env" >"$tmp"
-    mv "$tmp" "$ROOT/.env"
-    say ".env         DATABASE_NAME=${DATABASE_NAME}"
-else
-    printf 'DATABASE_NAME=%s\n' "$DATABASE_NAME" >>"$ROOT/.env"
-    say ".env         DATABASE_NAME=${DATABASE_NAME} (appended)"
-fi
 
 set +e
 DATABASE_NAME="$DATABASE_NAME" "$PY" manage.py migrate

@@ -111,7 +111,7 @@ def purge_workflow_id(task_queue: str) -> str:
     return f"{PURGE_WORKFLOW_PREFIX}:{task_queue}"
 
 
-@activity.defn(name="purge_inbound_webhooks")
+@activity.defn(name="purge_inbound_webhooks", no_thread_cancel_exception=True)
 def purge_inbound_webhooks(window: PurgeInboundWebhooks) -> PurgeOutcome:
     """Take the processed deliveries past their retention.
 

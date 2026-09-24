@@ -64,6 +64,7 @@ not tell its own plants from your work, and could not restore honestly.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import hashlib
 import io
 import json
@@ -2309,7 +2310,198 @@ def plant_mode_findings(rules: list[dict]) -> list[str]:
                             "property of the FORM, declared on the form, and a key an extra "
                             "file carries is read by nothing"
                         )
+                # A CANARY NEVER DECLARES A SHAPE. The lowering `needs_shape`
+                # buys is a form subtracted from the floor on a tree that is not
+                # its shape; a canary so lowered is a red nobody asked for, and
+                # the rule could go blind on every product while its line still
+                # read `ok`. A shape-bound subject is a NEGATIVE's (rule 60's
+                # skip clause) — a canary that needs one is a rule that needs a
+                # second canary, not a quieter first one.
+                if kind == "canaries" and "needs_shape" in entry:
+                    out.append(
+                        f"rule {rid}: canary {entry.get('fixture')} declares needs_shape — a "
+                        "canary lowered on a shape is a rule that can go blind on that shape "
+                        "with its line still reading ok; only a negative may declare the shape "
+                        "it needs"
+                    )
+                # THE CLEAN TREE A FORM NEEDS is the same kind of declaration
+                # and is held to the same three refusals: a closed word, on the
+                # form and never on an extra file, and never on a batched form.
+                # Unlike a shape it LOWERS nothing — a tree that is not clean is
+                # could-not-look — so a canary may declare it.
+                if "needs_clean_tree" in entry and (
+                    entry.get("needs_clean_tree") not in NEEDS_CLEAN_TREES
+                ):
+                    out.append(
+                        f"rule {rid}: {noun} {entry.get('fixture')} declares needs_clean_tree: "
+                        f"{entry.get('needs_clean_tree')!r}, which is not one of "
+                        f"{', '.join(NEEDS_CLEAN_TREES)} — the vocabulary is closed, and a "
+                        "tree this engine cannot ask about is a form it cannot run"
+                    )
+                if "needs_clean_tree" in entry and entry.get("via") == "django":
+                    out.append(
+                        f"rule {rid}: {noun} {entry.get('fixture')} declares needs_clean_tree "
+                        "on a `via: django` form — those are planted and judged in one batch, "
+                        "so no single form can be held back; the key would be read by nothing"
+                    )
+                for extra in entry.get("extra_files") or []:
+                    if "needs_clean_tree" in extra:
+                        out.append(
+                            f"rule {rid}: {noun} {entry.get('fixture')}'s extra file "
+                            f"{extra.get('fixture')} declares needs_clean_tree — it is a "
+                            "property of the FORM, declared on the form, and a key an extra "
+                            "file carries is read by nothing"
+                        )
     return out
+
+
+# --- the plant namespace census ----------------------------------------------
+#
+# A PLANT IS A CREATION WHERE NO PRODUCT'S FILE CAN BE. `mode: create` over a
+# path a product really has is `PLANT REFUSED` at `Plant.put` — loud, but
+# only on the tree that has the file, which is never the tree the plan was
+# written on: the template's self-test went green over `frontend/src/app/
+# page.tsx`, a path every Next product has, and a product's fold paid. This census
+# asks the question of the PLAN instead of the tree, so it has the same answer
+# everywhere: every `mode: create` or `mode: default` plant — the template's
+# or a drawer's — has a path segment equal to `PROBE_APP`, the ONE declaration
+# of the reserved name, or it is exit 2 before anything is planted.
+#
+# THE EXEMPTION GRAMMAR IS CLOSED, and it has three members:
+#   mode: default     a creation only where absent — cannot collide, by mode;
+#   apps/example/**   the worked example, by the standing promise that it
+#                     keeps every shape a rule needs (stated once, here);
+#   namespace_exempt  on the plant itself, `<reason> (MOVE-TRIGGER YYYY-MM-
+#                     DD)`: the member's own declaration of why its path can
+#                     never be a product's (a runner keyed on an app's NAME
+#                     cannot be moved under a nested segment). A declaration
+#                     on a plant the census would not refuse is vacuous and
+#                     refused, so the valve count means what it says.
+# No runner learns the reserved name; the census reads `rules.yaml` only.
+
+#: The worked example's root — exempt by promise, never per form.
+PLANT_NAMESPACE_EXAMPLE_ROOT = "apps/example/"
+#: The one shape a `namespace_exempt:` value takes: a reason, then a dated
+#: MOVE-TRIGGER in parentheses as its last word.
+NAMESPACE_EXEMPT_RE = re.compile(
+    r"^(?P<reason>\S.*\S)\s+\(MOVE-TRIGGER (?P<date>\d{4}-\d{2}-\d{2})\)$"
+)
+
+
+def _namespace_exempt_problem(value: object) -> str:
+    """'' when `value` is a well-formed declaration; else what is wrong with it."""
+    if not isinstance(value, str) or not value.strip():
+        return "is empty — a valve with no reason is an off switch"
+    m = NAMESPACE_EXEMPT_RE.match(value.strip())
+    if not m:
+        return (
+            f"reads {value!r}, which does not end in a dated `(MOVE-TRIGGER YYYY-MM-DD)` — an "
+            "exemption with no date is a note somebody wrote once"
+        )
+    try:
+        datetime.date.fromisoformat(m.group("date"))
+    except ValueError:
+        return f"carries MOVE-TRIGGER {m.group('date')}, which is not a date"
+    if len(m.group("reason")) < MIN_REASON:
+        return f"gives the reason {m.group('reason')!r}, too short to be one"
+    return ""
+
+
+def plant_namespace_census(rules: list[dict]) -> tuple[list[str], dict[str, int], list[str]]:
+    """Judge every create/default plant against the reserved segment.
+
+    Returns (refusals, counts, declaring rule ids). The counts are derived from
+    the plan handed in and nothing else — the head line of the self-test prints
+    them, and a number typed anywhere would be a census that agrees with itself.
+    """
+    refusals: list[str] = []
+    counts = {"judged": 0, "reserved": 0, "example": 0, "default": 0, "declared": 0, "outside": 0}
+    declaring: list[str] = []
+    for rule in rules:
+        rid = str(rule.get("id", "?"))
+        for kind in ("canaries", "negatives"):
+            noun = "canary" if kind == "canaries" else "negative"
+            for entry in rule.get(kind) or []:
+                for e in [entry, *(entry.get("extra_files") or [])]:
+                    if "plant_at" not in e:
+                        continue
+                    mode = e.get("mode")
+                    plant_at = str(e.get("plant_at"))
+                    fixture = e.get("fixture")
+                    reserved = PROBE_APP in plant_at.split("/")
+                    declared = "namespace_exempt" in e
+                    if mode not in ("create", "default"):
+                        if declared:
+                            refusals.append(
+                                f"rule {rid}: {noun} {fixture} at {plant_at} declares "
+                                f"namespace_exempt on a mode: {mode} plant — the census judges "
+                                "only creations (create, default), so the declaration exempts "
+                                "nothing; remove it"
+                            )
+                        continue
+                    counts["judged"] += 1
+                    if declared:
+                        if reserved:
+                            refusals.append(
+                                f"rule {rid}: {noun} {fixture} at {plant_at} declares "
+                                f"namespace_exempt, and its path already carries the {PROBE_APP} "
+                                "segment — a declaration that exempts nothing is vacuous; remove it"
+                            )
+                            continue
+                        if mode == "default":
+                            refusals.append(
+                                f"rule {rid}: {noun} {fixture} at {plant_at} declares "
+                                "namespace_exempt on a mode: default plant, which creates only "
+                                "where the path is absent and is exempt by mode — the declaration "
+                                "is vacuous; remove it"
+                            )
+                            continue
+                        if plant_at.startswith(PLANT_NAMESPACE_EXAMPLE_ROOT):
+                            refusals.append(
+                                f"rule {rid}: {noun} {fixture} at {plant_at} declares "
+                                f"namespace_exempt under {PLANT_NAMESPACE_EXAMPLE_ROOT}, which is "
+                                "exempt by the worked example's promise — vacuous; remove it"
+                            )
+                            continue
+                        problem = _namespace_exempt_problem(e.get("namespace_exempt"))
+                        if problem:
+                            refusals.append(
+                                f"rule {rid}: {noun} {fixture} at {plant_at}: namespace_exempt "
+                                f"{problem}. The shape is `namespace_exempt: <why this path can "
+                                "never be a product's> (MOVE-TRIGGER <date>)`"
+                            )
+                            continue
+                        counts["declared"] += 1
+                        if rid not in declaring:
+                            declaring.append(rid)
+                    elif reserved:
+                        counts["reserved"] += 1
+                    elif mode == "default":
+                        counts["default"] += 1
+                    elif plant_at.startswith(PLANT_NAMESPACE_EXAMPLE_ROOT):
+                        counts["example"] += 1
+                    else:
+                        counts["outside"] += 1
+                        refusals.append(
+                            f"rule {rid}: PLANT OUTSIDE THE RESERVED NAMESPACE — {fixture} is "
+                            f"declared mode: {mode} at {plant_at}, which carries no {PROBE_APP} "
+                            "segment; a plant is a creation where no product's file can be — "
+                            f"move it under a {PROBE_APP} directory beneath the layer it proves, "
+                            "or declare namespace_exempt: <why this path can never be a "
+                            "product's> (MOVE-TRIGGER <date>)"
+                        )
+    return refusals, counts, declaring
+
+
+def plant_namespace_line(rules: list[dict]) -> str:
+    """The census's counts, one line, as the self-test's head prints them."""
+    _refusals, c, declaring = plant_namespace_census(rules)
+    by = f" (rules {', '.join(declaring)})" if declaring else ""
+    return (
+        f"plant census: {c['judged']} create/default · {c['reserved']} under {PROBE_APP} · "
+        f"{c['example']} example · {c['default']} default (exempt by mode) · "
+        f"{c['declared']} exempt{by} · {c['outside']} outside"
+    )
 
 
 def consistency() -> None:
@@ -2323,6 +2515,7 @@ def consistency() -> None:
     local_ratchet_consistency()
     local_plant_consistency()
     broken.extend(plant_mode_findings(RULES))
+    broken.extend(plant_namespace_census(RULES)[0])
     broken.extend(duplicate_id_findings(RULES))
     fixture_census()
     broken.extend(fixture_dir_findings())
@@ -2654,6 +2847,46 @@ PLANT_MODES: tuple[str, ...] = ("create", "append", "replace", "default", "absen
 #: is could-not-look (exit 2). An unknown word is exit 2 at `consistency()`.
 NEEDS_SHAPES: tuple[str, ...] = ("template",)
 
+#: THE TREE A FORM NEEDS TO BE CLEAN, declared on the form itself
+#: (`needs_clean_tree:`), a closed vocabulary like `needs_shape:`. The dirty-tree
+#: refusal the self-test already makes (`tree_dirty_under_plants`) asks only
+#: about the PLANT paths; a form that plants a template BASE (`mode: default` at
+#: `scripts/local/template-base`) makes the census judge every template-owned
+#: path against that base, so an uncommitted edit ANYWHERE in the template's
+#: territory reads as the form's own finding — true, and about your edit rather
+#: than the form (HC2 § 8c F1: a FALSE-POSITIVE a builder debugs). Such a form
+#: says so here:
+#:
+#:   template-owned  no template-owned path outside the plants differs from
+#:                   HEAD. Asked of the census's OWN classifier, with HEAD typed
+#:                   as the base (`DJB_TEMPLATE_BASE=HEAD`), so "template-owned"
+#:                   has one reader in this tree and not two.
+#:
+#: A tree that is not clean that way is COULD NOT LOOK on the rule's line, naming
+#: the paths — never a lowering and never a fired negative. An unknown word is
+#: exit 2 at `consistency()`.
+NEEDS_CLEAN_TREES: tuple[str, ...] = ("template-owned",)
+
+
+def plan_created_paths() -> set[str]:
+    """Every path some form in the plan CREATES — the shapes this engine can produce.
+
+    Read by `Plant.put`'s `absent` branch: a path a form plants is a path some
+    tree carries (the product whose own file a `default` defers to), so an
+    `absent` over it on a tree that lacks it is the template's shape, not a
+    misspelling. Literal, not resolved: a `{{...}}` placeholder names a migration
+    a plant writes, never a path an `absent` removes, and resolving here could
+    append a placeholder refusal to `broken` from a question that asked none.
+    """
+    out: set[str] = set()
+    for rule in RULES:
+        for kind in ("canaries", "negatives"):
+            for entry in rule.get(kind) or []:
+                for e in [entry, *(entry.get("extra_files") or [])]:
+                    if "plant_at" in e and e.get("mode") != "absent":
+                        out.add(str(e["plant_at"]))
+    return out
+
 
 class Plant:
     """Plant fixture files into the real tree; restore exactly, whatever happens."""
@@ -2661,6 +2894,9 @@ class Plant:
     def __init__(self) -> None:
         self.saved: dict[Path, bytes | None] = {}
         self.made_dirs: list[Path] = []
+        #: The cause the rule line prints when a refusal has a sharper one than
+        #: `plant refused: <path>`; '' for every refusal that does not.
+        self.refusal = ""
 
     def _remember(self, target: Path) -> None:
         if target not in self.saved:
@@ -2707,6 +2943,24 @@ class Plant:
             # The tree's own file stands, untouched and unremembered: there is
             # nothing to restore because nothing was written.
             return True
+        if mode == "absent" and not exists and plant_at not in plan_created_paths():
+            # A PATH NO TREE CARRIES. An `absent` over a path this tree lacks is
+            # legitimate only when some shape carries it — a product's, which
+            # the plan's own forms produce by planting it (rule 60's template
+            # base). A path this tree lacks AND no form plants is a misspelling
+            # or a stale site, and removing nothing would read as a control that
+            # held: could-not-look, never a silent no-op.
+            self.refusal = (
+                f"absent plant names a path this tree does not carry: {plant_at} — and no "
+                "form in the plan plants it, so no shape could"
+            )
+            broken.append(
+                f"rule {rid}: PLANT REFUSED — {fixture.name} is declared mode: absent at "
+                f"{plant_at}, which this tree does not carry and no form in the plan plants; "
+                "removing nothing proves nothing, so the form is could-not-look (a misspelled "
+                "or stale plant_at)"
+            )
+            return False
         self._remember(target)
         if mode == "absent":
             if exists:
@@ -2870,6 +3124,61 @@ def tree_dirty_under_plants() -> list[str]:
         check=False,
     )
     return [ln for ln in proc.stdout.splitlines() if ln.strip()]
+
+
+def tree_dirty_on_template_owned() -> tuple[list[str], str]:
+    """Template-owned paths OUTSIDE the plants that differ from HEAD. (paths, could-not-look).
+
+    `tree_dirty_under_plants`, widened — and only for a form that declares
+    `needs_clean_tree: template-owned` (rule 60's base-planting forms). Those
+    forms plant a base and make the census compare the WHOLE template-owned
+    territory against it, so the plant paths are not the whole of what they
+    read: an uncommitted edit to `scripts/db.sh` reads as the form's finding.
+
+    ONE CLASSIFIER. "Template-owned" is the census's answer and nobody else's
+    (`scripts/divergence_census.sh`, through the publication bucket rules), so
+    this asks the census itself with HEAD typed as the base — its tracked and
+    untracked arms both — and reads its unnamed `divergence:` rows. A path the
+    product's own architecture.md names is a decision the census already
+    subtracts, so it cannot be misread and is not refused. Stdout to a file,
+    never a pipe: the census refuses a pipe.
+    """
+    script = ROOT / JUDGED_SHAPE_CENSUS
+    if not script.is_file():
+        return [], f"{JUDGED_SHAPE_CENSUS} is not in this tree, so no path's owner could be read"
+    env = {**os.environ, "DJB_TEMPLATE_BASE": "HEAD"}
+    with tempfile.NamedTemporaryFile("w+", prefix="djb-clean-tree-", suffix=".log") as sink:
+        proc = subprocess.run(
+            ["bash", str(script), "--if-declared"],
+            cwd=ROOT,
+            env=env,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        sink.flush()
+        sink.seek(0)
+        report = sink.read()
+    if proc.returncode not in (0, 1):
+        return [], (
+            f"the template-owned paths could not be read ({JUDGED_SHAPE_CENSUS} against HEAD "
+            f"exited {proc.returncode})"
+        )
+    plants = plant_paths()
+    found: list[str] = []
+    for line in report.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("divergence: "):
+            continue
+        body = stripped[len("divergence: ") :]
+        if " · " not in body:
+            continue  # the refusal's line-to-add, never a row (see rule 60's reader)
+        path = body.split(" · ", 1)[0].strip()
+        if not path or any(path == p or path.startswith(p.rstrip("/") + "/") for p in plants):
+            continue
+        if path not in found:
+            found.append(path)
+    return found, ""
 
 
 # --- selftest --------------------------------------------------------------------
@@ -4358,11 +4667,18 @@ def judged_shape() -> str:
             return "none declared (the template's own shape)"
         m = re.match(r"(\S+)\s+\(from (.+)\)$", value)
         if m:
-            tail = (
-                ""
-                if proc.returncode == 0
-                else f"; the census could not look (exit {proc.returncode})"
-            )
+            # EXIT 1 IS A FINDING, NOT A BLINDNESS. The census exits 1 when it
+            # looked and found unnamed divergences — under rule 60's own
+            # negative 2 it does so by construction — and its `census:` line
+            # says how many. Only 2 (or anything else) is could-not-look.
+            if proc.returncode == 0:
+                tail = ""
+            elif proc.returncode == 1:
+                counted = re.search(r"^census:.*\bunnamed=(\d+)", report, re.MULTILINE)
+                n = counted.group(1) if counted else "an uncounted number of"
+                tail = f"; the census found {n} unnamed divergence(s) (exit 1)"
+            else:
+                tail = f"; the census could not look (exit {proc.returncode})"
             return f"{m.group(1)} (from {m.group(2)}){tail}"
     return f"could not be read (the census printed no base line; exit {proc.returncode})"
 
@@ -4388,13 +4704,13 @@ def shape_verdict(need: str) -> tuple[str, str]:
     shape = judged_shape()
     if shape.startswith("could not be read"):
         return "could not look", f"judged shape {shape}"
-    if "; the census could not look (exit 2)" in shape:
+    if "; the census could not look" in shape:
         return "could not look", f"judged shape {shape}"
     declares_none = shape.startswith("none declared")
     if need == "template":
         if declares_none:
             return "judged", ""
-        return "not producible", shape.split("; the census could not look")[0]
+        return "not producible", shape.split("; the census ")[0]
     return "could not look", f"needs_shape {need!r} is not one this engine can judge"
 
 
@@ -4402,6 +4718,19 @@ def narrowed_ids(only: list[str]) -> list[str]:
     """The ids a narrowed self-test judges — once each, in the plan's own order."""
     wanted = set(only)
     return [str(r["id"]) for r in RULES if str(r["id"]) in wanted]
+
+
+#: What the last `selftest()` counted that `main()`'s closing line must repeat:
+#: a clean run with a form not producible on this shape is not "every canary
+#: fired, every negative stayed silent", and the closing line says so.
+SELFTEST_RESULT: dict[str, int] = {"unproducible": 0}
+
+
+def _not_producible_clause() -> str:
+    n = SELFTEST_RESULT.get("unproducible", 0)
+    if not n:
+        return ""
+    return f" · {n} form{'' if n == 1 else 's'} not producible on this shape"
 
 
 def selftest(only: list[str] | None = None) -> None:
@@ -4432,6 +4761,10 @@ def selftest(only: list[str] | None = None) -> None:
     # WHICH SHAPE THIS RUN JUDGES, said before the first plant: rule 60's
     # controls read differently on a tree that declares a template base.
     say(f"selftest: template base — {judged_shape()}")
+    # THE PLANT CENSUS'S COUNTS, once, derived from the plan this run judges:
+    # `consistency()` already refused any outside plant (exit 2, nothing
+    # planted), so the last number is 0 on every run that reaches this line.
+    say(plant_namespace_line(RULES))
 
     narrowed = narrowed_ids(only) if only else []
     if narrowed:
@@ -4540,6 +4873,36 @@ def selftest(only: list[str] | None = None) -> None:
         not_judged(rid, kind, detail)
         return False
 
+    # : The clean tree a form declares it needs (`needs_clean_tree:`), asked
+    # : once per run and only if some in-scope form declares one: the census
+    # : costs seconds, and a run that judges no such form must not pay them.
+    clean_tree_answer: dict[str, tuple[list[str], str]] = {}
+    clean_tree_refused: set[str] = set()
+
+    def clean_enough(rid: str, kind: str, entry: dict) -> bool:
+        """Ask a form's declared clean tree of the tree at rest. False: could not look."""
+        need = entry.get("needs_clean_tree")
+        if not need:
+            return True
+        if need not in clean_tree_answer:
+            clean_tree_answer[str(need)] = tree_dirty_on_template_owned()
+        dirty, failed = clean_tree_answer[str(need)]
+        if not dirty and not failed:
+            return True
+        cause = failed or (
+            f"the tree is dirty on a template-owned path outside the plants: "
+            f"{', '.join(dirty)} — commit or stash it; a base-planting form cannot tell your "
+            "edit from a product's"
+        )
+        not_judged(rid, kind, cause)
+        if rid not in clean_tree_refused:
+            clean_tree_refused.add(rid)
+            broken.append(
+                f"rule {rid}: COULD NOT LOOK — {entry['fixture']} declares needs_clean_tree: "
+                f"{need} and {cause}"
+            )
+        return False
+
     # : Per (rule, via): the rule's raw findings on the UNPLANTED tree, read
     # : once, before its first form. Every form is judged against it.
     baselines: dict[tuple[str, str], tuple[list[Finding], str]] = {}
@@ -4554,7 +4917,7 @@ def selftest(only: list[str] | None = None) -> None:
         """Plant a form and its extra files. '' when held; the cause when refused."""
         for e in [entry, *(entry.get("extra_files") or [])]:
             if not plant.put(home / e["fixture"], e["plant_at"], e["mode"], rid=rid):
-                return f"plant refused: {resolve_plant_text(str(e['plant_at']))}"
+                return plant.refusal or f"plant refused: {resolve_plant_text(str(e['plant_at']))}"
         return ""
 
     # -- AST + diff canaries and negatives, one fixture at a time ---------------
@@ -4571,6 +4934,8 @@ def selftest(only: list[str] | None = None) -> None:
                 continue
             if via == "django":
                 continue  # batched probe runs below
+            if not clean_enough(rid, "canaries", entry):
+                continue
             base_findings, base_cause = baseline_of(rule, via)
             if base_cause:
                 not_judged(rid, "canaries", base_cause)
@@ -4611,6 +4976,8 @@ def selftest(only: list[str] | None = None) -> None:
                 absent[rid].add(gone)
                 continue
             if via == "django":
+                continue
+            if not clean_enough(rid, "negatives", entry):
                 continue
             base_findings, base_cause = baseline_of(rule, via)
             if base_cause:
@@ -4872,6 +5239,7 @@ def selftest(only: list[str] | None = None) -> None:
             f" · {unproducible_total} forms not producible on this shape "
             f"(rules: {', '.join(unproducible_rules)})"
         )
+    SELFTEST_RESULT["unproducible"] = unproducible_total
     say(foot)
 
 
@@ -5116,6 +5484,13 @@ def explain(rid: str) -> int:
     say("negatives:")
     for entry in rule.get("negatives") or []:
         say(f"  {entry.get('fixture')} → {entry.get('plant_at')} ({entry.get('via', 'ast')})")
+    # The ONE declaration of the reserved name, read from `PROBE_APP` and
+    # printed once: a reader holding a PLANT OUTSIDE THE RESERVED NAMESPACE
+    # refusal learns here where a plant may go without opening the engine.
+    say(
+        f"reserved segment: {PROBE_APP} — every mode: create plant sits under it, in "
+        "apps/example/, or declares namespace_exempt: <reason> (MOVE-TRIGGER <date>)"
+    )
     # --- THE CENSUS (C0's seam) -------------------------------------------
     #
     # Everything above this line is the rule's DECLARATION: what it says, where
@@ -7509,10 +7884,13 @@ def main(argv: list[str]) -> int:
         if mode == "selftest" and only_rules:
             say(
                 f"selftest clean for rule(s) {', '.join(narrowed_ids(only_rules))} only — "
-                "not the gate's verdict."
+                f"not the gate's verdict{_not_producible_clause()}."
             )
         elif mode == "selftest":
-            say("selftest clean: every canary fired, every negative stayed silent.")
+            say(
+                "selftest clean: every canary fired, every negative stayed silent"
+                f"{_not_producible_clause()}."
+            )
         else:
             say(f"House rules: {len(RULES)} rules · all scopes bound · clean.")
     return 2 if broken else (1 if deduped else 0)

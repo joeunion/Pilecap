@@ -343,7 +343,7 @@ def _declared_exclusions() -> dict[str, str]:
 # --- the activities ------------------------------------------------------------
 
 
-@activity.defn(name="build_export_archive")
+@activity.defn(name="build_export_archive", no_thread_cancel_exception=True)
 def build_export_archive(payload: BuildExport) -> ExportBuilt:
     """Walk the census, write the zip, record the result.
 
@@ -405,7 +405,7 @@ def build_export_archive(payload: BuildExport) -> ExportBuilt:
         close_old_connections()
 
 
-@activity.defn(name="record_export_failure")
+@activity.defn(name="record_export_failure", no_thread_cancel_exception=True)
 def record_export_failure(payload: ExportFailed) -> str:
     """Mark an export failed, with the reason the workflow walked out of the cause.
 
@@ -443,7 +443,7 @@ def record_export_failure(payload: ExportFailed) -> str:
         close_old_connections()
 
 
-@activity.defn(name="purge_expired_exports")
+@activity.defn(name="purge_expired_exports", no_thread_cancel_exception=True)
 def purge_expired_exports(window: PurgeExports) -> PurgeOutcome:
     """Take the archives past their retention — the object first, then the row.
 

@@ -1034,6 +1034,63 @@ case_a_floor_member_moved_aside_is_a_refusal() {
     fi
 }
 
+case_a_drawer_raised_floor_refuses_a_member_moved_aside_on_a_six_module_tree() {
+    # THE THIRD PIECE of the drawer-raised floor: the declaration
+    # (`DJB_POPULATION_FLOOR_ADDENDS` in apps/conftest_local.py), its ONE
+    # reader (`_population_floors` in apps/conftest.py), and this case, which
+    # plants a drawer row and proves the reader ran it.
+    #
+    # THE WORLD IS A PRODUCT'S: a sixth apps-root module the template does not
+    # have. Without a drawer the case above goes blind on it — six members,
+    # one moved aside, five remain, five meet the template's floor, exit 0
+    # (`wanted '4', got '0'` on the first consumer's tree). With the drawer
+    # declaring the product's one extra member, the floor is template + drawer
+    # and moving one aside is a refusal again.
+    #
+    # THE PLANT WORKS ON A TREE THAT ALREADY HAS A DRAWER: the line appended
+    # adds ONE to whatever the drawer already declares, so a product carrying
+    # its own addend is measured with its own plus this case's module.
+    local victim="${ROOT}/apps/test_absent_world.py" hidden="${WORK}/moved-aside-6.py"
+    local probe="${ROOT}/apps/test_zzz_probe_floor.py" drawer="${ROOT}/apps/conftest_local.py"
+    local drawer_backup="${WORK}/conftest_local.backup" had_drawer=""
+    [ -f "$victim" ] || cannot_look "apps/test_absent_world.py is gone — the floor member this case moves aside"
+    [ -e "$probe" ] && cannot_look "${probe} already exists — this case plants it and will not overwrite it"
+    if [ -f "$drawer" ]; then
+        had_drawer=1
+        cp "$drawer" "$drawer_backup"
+    fi
+    drive_at_exit "rm -f \"$probe\"; [ -f \"$hidden\" ] && mv \"$hidden\" \"$victim\" 2>/dev/null; if [ -n \"$had_drawer\" ]; then cp \"$drawer_backup\" \"$drawer\" 2>/dev/null; else rm -f \"$drawer\"; fi; true"
+    printf '%s\n' '"""A planted sixth apps-root module (test_loop_scope.sh, the drawer-raised floor)."""' \
+        '' '' 'def test_zzz_probe_floor() -> None:' '    assert True' >"$probe"
+    printf '%s\n' '' '# planted by test_loop_scope.sh: the drawer-raised floor, one more apps-root member' \
+        'DJB_POPULATION_FLOOR_ADDENDS = {' \
+        '    **globals().get("DJB_POPULATION_FLOOR_ADDENDS", {}),' \
+        '    "apps_root_modules": globals().get("DJB_POPULATION_FLOOR_ADDENDS", {}).get("apps_root_modules", 0) + 1,' \
+        '}' >>"$drawer"
+    mv "$victim" "$hidden"
+    collect_scope "a drawer-raised floor: a member moved aside on a six-module tree is a refusal" \
+        --djb-tier=fast --djb-scope-narrow
+    mv "$hidden" "$victim"
+    rm -f "$probe"
+    if [ -n "$had_drawer" ]; then
+        cp "$drawer_backup" "$drawer"
+    else
+        rm -f "$drawer"
+    fi
+    if [ "$RC" = "4" ]; then
+        ok "the exit status is '4'"
+    else
+        bad "the exit status: wanted '4', got '${RC}' — the drawer's addend was not read; its one reader is _population_floors in apps/conftest.py"
+    fi
+    says "apps_root_modules"
+    CURRENT="the refusal names the drawer's half of the floor"
+    if grep -q "apps_root_modules (floor [0-9]* = [0-9]* in apps/conftest.py + [0-9]* in apps/conftest_local.py" "$OUT"; then
+        ok "the floor is printed as template + drawer — _population_floors read the planted row"
+    else
+        bad "no 'template + drawer' floor in the refusal — the planted DJB_POPULATION_FLOOR_ADDENDS row was not read by _population_floors (apps/conftest.py), the one reader of the drawer's declaration"
+    fi
+}
+
 case_the_always_on_set_survives_the_real_parallel_invocation() {
     # MEASURE THE LEG YOU SHIP. A serial approximation of a parallel leg is green
     # either way, because the approximation genuinely passes. So this runs the
@@ -4952,6 +5009,7 @@ case_an_undiscoverable_app_is_exit_2_naming_its_apps_py
 case_a_broken_changed_file_derivation_is_the_inherited_exit_2
 case_the_floors_refuse_when_the_cross_app_derivation_returns_nothing
 case_a_floor_member_moved_aside_is_a_refusal
+case_a_drawer_raised_floor_refuses_a_member_moved_aside_on_a_six_module_tree
 case_the_always_on_set_survives_the_real_parallel_invocation
 case_a_narrower_scope_selects_strictly_less_than_a_wider_one
 case_a_planted_apps_root_census_runs_at_every_scope

@@ -6,7 +6,7 @@
 // APPENDED, not created: the seam is a real module with real content, and a
 // negative that overwrote it would prove the fence around a file the product
 // does not have. The two edges below are THE SAME TWO the third canary plants
-// one path over (`screens/welcome/welcome-twin.tsx`) and fires on — the
+// one path over (`screens/zzz_canary/welcome/welcome-twin.tsx`) and fires on — the
 // refusal vocabulary as a TYPE, and `unhandledRefusal` as a VALUE. Same
 // layer, same specifiers, same two shapes: silent here, firing there. That
 // pair is the whole claim a chokepoint makes and a syntax valve cannot, since

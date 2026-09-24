@@ -232,6 +232,12 @@ make_tmp() {
     printf -v "$__t" '%s' "$(mktemp "${WORK}/tmp.XXXXXXXX")"
 }
 
+# THE `# pinned` GRAMMAR IS scripts/db.sh's (`DB_PIN_MARKER_ERE`), and the fence
+# reads it rather than spelling a second copy — so the drive sources db.sh the
+# way setup.sh does before the environment step. Its source-time pin note is
+# about THIS checkout's .env and goes nowhere a case reads.
+# shellcheck source=scripts/db.sh
+. scripts/db.sh 2>/dev/null
 # shellcheck source=/dev/null
 . "$EXTRACT"
 command -v env_sync_from_example >/dev/null 2>&1 ||
@@ -688,6 +694,77 @@ case_an_empty_env_is_a_truncated_file_and_not_an_empty_environment() {
         sed 's/^/             | /' "$OUT"
     else
         ok "no \"=\" anywhere in the block"
+    fi
+}
+
+case_the_pinned_marker_survives_the_rebuild() {
+    # THE ONE COMMENT THE REBUILD CARRIES. `# pinned` directly above the
+    # operative DATABASE_NAME line says a human meant that name, and setup.sh's
+    # pin block — run after this step — keeps a marked pin and overrides an
+    # unmarked one. The rebuild used to drop it with the rest of the old prose,
+    # and the pin block then overwrote the very name it was marked to keep.
+    local above count
+    new_case_dir
+    plant .env.example \
+        '# the database' \
+        'DATABASE_URL=' \
+        'DATABASE_NAME=' \
+        'OTHER=1'
+    plant .env \
+        'OTHER=1' \
+        '# pinned — the owner said so' \
+        'DATABASE_NAME=djb_x'
+    run_sync "a # pinned marker above DATABASE_NAME, at the example's position"
+    exits 0
+    CURRENT="a # pinned marker above DATABASE_NAME, at the example's position"
+    above="$(awk '/^DATABASE_NAME=djb_x$/ { print prev; exit } { prev = $0 }' "${CASE_DIR}/.env")"
+    if [ "$above" = "# pinned — the owner said so" ]; then
+        ok "the marker line, verbatim, sits directly above DATABASE_NAME=djb_x"
+    else
+        bad "the line above DATABASE_NAME=djb_x is \"${above}\" — the rebuild dropped the # pinned marker"
+    fi
+    count="$(grep -c 'pinned' "${CASE_DIR}/.env" || true)"
+    if [ "$count" = "1" ]; then
+        ok "the marker appears exactly once"
+    else
+        bad "the marker appears ${count} time(s), wanted 1"
+    fi
+
+    # THE KEPT-AT-END BLOCK, for an example that does not name DATABASE_NAME.
+    new_case_dir
+    plant .env.example \
+        'OTHER=1'
+    plant .env \
+        '# pinned' \
+        'DATABASE_NAME=djb_y' \
+        'OTHER=1'
+    run_sync "a # pinned marker above DATABASE_NAME, in the kept-at-end block"
+    exits 0
+    CURRENT="a # pinned marker above DATABASE_NAME, in the kept-at-end block"
+    above="$(awk '/^DATABASE_NAME=djb_y$/ { print prev; exit } { prev = $0 }' "${CASE_DIR}/.env")"
+    if [ "$above" = "# pinned" ]; then
+        ok "the marker sits directly above DATABASE_NAME=djb_y in the kept block"
+    else
+        bad "the line above DATABASE_NAME=djb_y is \"${above}\""
+    fi
+
+    # AND ONLY WHERE IT MARKS: a `# pinned` that is not directly above the
+    # operative line marks nothing and is prose, dropped as before.
+    new_case_dir
+    plant .env.example \
+        'DATABASE_NAME=' \
+        'OTHER=1'
+    plant .env \
+        '# pinned' \
+        'OTHER=2' \
+        'DATABASE_NAME=djb_z'
+    run_sync "a # pinned line that is not above DATABASE_NAME"
+    exits 0
+    CURRENT="a # pinned line that is not above DATABASE_NAME"
+    if grep -q 'pinned' "${CASE_DIR}/.env"; then
+        bad "a marker that marked nothing was carried"
+    else
+        ok "a # pinned that marks no DATABASE_NAME line is dropped with the prose"
     fi
 }
 
@@ -1765,6 +1842,7 @@ case_no_env_at_all_copies_the_example
 case_no_example_is_a_refusal_that_touches_nothing
 case_an_empty_env_is_a_truncated_file_and_not_an_empty_environment
 case_a_key_present_twice_collapses_to_its_last_value
+case_the_pinned_marker_survives_the_rebuild
 case_the_digest_agrees_when_the_files_agree
 case_the_digest_model_still_matches_the_shipped_digest
 case_a_pull_failure_is_could_not_look_naming_the_image

@@ -21,7 +21,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: CLAUDE.md apps/ config/ frontend/src/components quality/ scripts/kill_mine.sh scripts/queue_cited.sh scripts/sweep.sh
+# drives: CLAUDE.md apps/ config/ frontend/src/components quality/ scripts/kill_mine.sh scripts/queue_cited.sh scripts/sweep.sh pyproject.toml
 # cites: docs/product/architecture.md .env.example
 # The drive for the LEGIBLE RED — `quality/gate.py`'s per-rule trailer, its two
 # readers (`--explain <id>` and the listing `--rules` aliases), and `--terse`.
@@ -516,7 +516,20 @@ for name, argv in probes:
     (out / (name + ".rc")).write_text(str(rc), encoding="utf-8")
 count = len(yaml.safe_load(pathlib.Path("quality/rules.yaml").read_text())["rules"])
 (out / "rule-count").write_text(str(count), encoding="utf-8")
-print("captured %d reader probes; %d rules in quality/rules.yaml" % (len(probes), count))
+# THE LISTING'S POPULATION IS BOTH DOCUMENTS. A product's drawer rules
+# are listed beside the template's, tagged [local], so the listing's expected
+# line count is the template document's rules PLUS the drawer's — read out of
+# the drawer's own yaml here, still never from `gate.RULES`, so the case keeps
+# comparing the printer against something other than its own input. On the
+# template there is no drawer and the two counts are one number.
+drawer = pathlib.Path("quality/local/rules.yaml")
+drawer_doc = yaml.safe_load(drawer.read_text()) if drawer.is_file() else None
+drawer_count = len((drawer_doc or {}).get("rules") or []) if isinstance(drawer_doc, dict) else 0
+(out / "listed-count").write_text(str(count + drawer_count), encoding="utf-8")
+print(
+    "captured %d reader probes; %d rules in quality/rules.yaml, %d in the drawer"
+    % (len(probes), count, drawer_count)
+)
 PY
     [ "$RC" = "0" ] ||
         cannot_look "the reader capture exited ${RC} — every reader case below would read a capture that was never taken (see ${OUT})"
@@ -539,6 +552,8 @@ reader_probe() {
 readers_once
 RULE_COUNT="$(cat "${READERS_DIR}/rule-count" 2>/dev/null || true)"
 [ -n "$RULE_COUNT" ] || cannot_look "the rule count derived empty"
+LISTED_COUNT="$(cat "${READERS_DIR}/listed-count" 2>/dev/null || true)"
+[ -n "$LISTED_COUNT" ] || cannot_look "the listing's population (template rules + drawer rules) derived empty"
 
 # --- the field ---------------------------------------------------------------
 
@@ -1306,10 +1321,10 @@ case_the_listing_is_the_same_under_both_names() {
     fi
     local listed
     listed="$(grep -c . "$OUT" || true)"
-    if [ "$listed" = "$RULE_COUNT" ]; then
-        ok "one line per rule, ${listed} of ${RULE_COUNT}, byte-identical under both names"
+    if [ "$listed" = "$LISTED_COUNT" ]; then
+        ok "one line per rule, ${listed} of ${LISTED_COUNT} (${RULE_COUNT} template + $((LISTED_COUNT - RULE_COUNT)) drawer), byte-identical under both names"
     else
-        bad "the listing printed ${listed} lines for ${RULE_COUNT} rules"
+        bad "the listing printed ${listed} lines for ${LISTED_COUNT} rules (${RULE_COUNT} template + $((LISTED_COUNT - RULE_COUNT)) drawer)"
     fi
 }
 
@@ -1425,8 +1440,20 @@ import sys
 sys.argv = ["gate"]
 from quality import gate
 
+# THE FORGED ID IS ONE THIS TREE DOES NOT OWN. A product whose
+# namespace is `acme` numbers its first drawer rule acme-1, and a typed id
+# then collided with that rule and with its fixture directory.
+RID = next(
+    f"acme-{n}"
+    for n in range(1, 1000)
+    if f"acme-{n}" not in gate.RULES_BY_ID
+    and not any(
+        (d / f"acme-{n}").exists()
+        for d in (gate.CANARY_DIR, gate.NEGATIVE_DIR, gate.LOCAL_CANARY_DIR, gate.LOCAL_NEGATIVE_DIR)
+    )
+)
 rule = copy.deepcopy(gate.RULES_BY_ID["1"])
-rule["id"] = "acme-1"
+rule["id"] = RID
 # THE HOME IS ASKED FOR, NEVER SPELLED. `fixture_home` is the ONE resolver
 # — a rule loaded from the product drawer lives under the drawer, a rule in
 # the template document under the template tree — and a drive that typed
@@ -1438,7 +1465,7 @@ rule["id"] = "acme-1"
 # there is case_a_drawer_rule_is_a_rule_end_to_end.
 made = []
 for kind in ("canary", "negative"):
-    dst = gate.fixture_home(kind, "acme-1")
+    dst = gate.fixture_home(kind, RID)
     shutil.copytree(gate.fixture_home(kind, "1"), dst)
     made.append(dst)
 through = max(int(r["id"]) for r in gate.RULES if gate.is_template_id(str(r["id"])))
@@ -1449,7 +1476,7 @@ try:
         plant = gate.Plant()
         try:
             plant.put(
-                gate.fixture_home("canary", "acme-1") / entry["fixture"],
+                gate.fixture_home("canary", RID) / entry["fixture"],
                 entry["plant_at"],
                 entry["mode"],
             )
@@ -1459,13 +1486,13 @@ try:
             target = pathlib.Path(gate.ROOT) / bare[0].path
             lines = target.read_text().splitlines()
             index = bare[0].line - 1
-            lines[index] = lines[index] + "  # rule-acme-1: the product excuses its own rule here"
+            lines[index] = lines[index] + "  # rule-" + RID + ": the product excuses its own rule here"
             target.write_text("\n".join(lines) + "\n")
             valved, _t2, _why2 = gate.run_rule(rule, floors=False)
             counted = [
                 row
                 for row in gate.all_overrides()
-                if row[0] == "acme-1" and row[1] == bare[0].path
+                if row[0] == RID and row[1] == bare[0].path
             ]
         finally:
             plant.restore()
@@ -1542,6 +1569,9 @@ case_fold_map_does_not_eat_the_next_flag_as_a_path() {
 # rules.yaml has nothing to rename and no fixture out of place; a run that
 # printed either would be a reader firing on the shipped tree.
 case_fold_map_of_this_tree_against_itself_has_nothing_to_do() {
+    # The same property, and the same reason, as
+    # `apps/core/tests/test_fold_map.py::test_this_template_tree_maps_onto_itself_with_nothing_to_do`.
+    template_only "the self-map has content by construction on a product" || return 0
     reader_probe fold-map-self
     CURRENT="case_fold_map_of_this_tree_against_itself_has_nothing_to_do"
     local moved
@@ -2019,8 +2049,20 @@ import sys
 sys.argv = ["gate"]
 from quality import gate
 
+# THE FORGED ID IS ONE THIS TREE DOES NOT OWN. A product whose
+# namespace is `acme` numbers its first drawer rule acme-1, and a typed id
+# then collided with that rule and with its fixture directory.
+RID = next(
+    f"acme-{n}"
+    for n in range(1, 1000)
+    if f"acme-{n}" not in gate.RULES_BY_ID
+    and not any(
+        (d / f"acme-{n}").exists()
+        for d in (gate.CANARY_DIR, gate.NEGATIVE_DIR, gate.LOCAL_CANARY_DIR, gate.LOCAL_NEGATIVE_DIR)
+    )
+)
 rule = copy.deepcopy(gate.RULES_BY_ID["1"])
-rule["id"] = "acme-1"
+rule["id"] = RID
 # THE HOME IS ASKED FOR, NEVER SPELLED. `fixture_home` is the ONE resolver
 # — a rule loaded from the product drawer lives under the drawer, a rule in
 # the template document under the template tree — and a drive that typed
@@ -2032,7 +2074,7 @@ rule["id"] = "acme-1"
 # there is case_a_drawer_rule_is_a_rule_end_to_end.
 made = []
 for kind in ("canary", "negative"):
-    dst = gate.fixture_home(kind, "acme-1")
+    dst = gate.fixture_home(kind, RID)
     shutil.copytree(gate.fixture_home(kind, "1"), dst)
     made.append(dst)
 gate.RULE_ID_NAMESPACE = "acme"
@@ -2040,17 +2082,17 @@ gate.TEMPLATE_IDS_THROUGH = max(
     int(r["id"]) for r in gate.RULES if gate.is_template_id(str(r["id"]))
 )
 gate.RULES.append(rule)
-gate.RULES_BY_ID["acme-1"] = rule
+gate.RULES_BY_ID[RID] = rule
 rc = 1
 try:
     gate.broken.clear()
     gate.consistency()
-    named = [b for b in gate.broken if "acme-1" in b]
+    named = [b for b in gate.broken if RID in b]
     entry = rule["canaries"][0]
     plant = gate.Plant()
     try:
         plant.put(
-            gate.fixture_home("canary", "acme-1") / entry["fixture"],
+            gate.fixture_home("canary", RID) / entry["fixture"],
             entry["plant_at"],
             entry["mode"],
         )
@@ -2092,6 +2134,7 @@ sys.exit(0 if problem and "acme-<n>" in problem and "60" in problem else 1)
 }
 
 case_a_namespaced_id_on_a_template_tree_is_refused() {
+    template_only "the refusal it drives exists only on a tree that claims no namespace" || return 0
     forge "case_a_namespaced_id_on_a_template_tree_is_refused" '
 import sys
 sys.argv = ["gate"]
@@ -2143,6 +2186,7 @@ finally:
 }
 
 case_a_tree_with_no_product_rules_is_unchanged() {
+    template_only "it asserts this tree declares neither namespace key and carries no product rule" || return 0
     forge "case_a_tree_with_no_product_rules_is_unchanged" '
 import sys
 sys.argv = ["gate"]
@@ -2616,9 +2660,18 @@ def engine():
 
 base = engine()
 same = engine()
-gate.LOCAL_DOC["rule_id_namespace"] = "acme"
+# THE EDIT IS DERIVED FROM THE DRAWER THIS TREE HAS: a namespace the
+# tree does not already declare, restored to exactly what was there — on the
+# template an absent key, on a product its own namespace. A typed "acme" was a
+# no-op on a product that IS acme and read as "a drawer edit moved nothing".
+MISSING = object()
+had = gate.LOCAL_DOC.get("rule_id_namespace", MISSING)
+gate.LOCAL_DOC["rule_id_namespace"] = "acme" if had != "acme" else "acmeprobe"
 moved = engine()
-gate.LOCAL_DOC.pop("rule_id_namespace")
+if had is MISSING:
+    gate.LOCAL_DOC.pop("rule_id_namespace")
+else:
+    gate.LOCAL_DOC["rule_id_namespace"] = had
 back = engine()
 
 template = copy.deepcopy(gate.RULES_BY_ID["1"])
@@ -2641,6 +2694,74 @@ sys.exit(0 if (base == same and base != moved and base == back and one == two an
         ok "the drawer's NON-rule keys fold into the engine digest (every rule re-keys), a no-op moves nothing, and one rule's own text re-keys only that rule (X3.5)"
     else
         bad "a drawer edit either re-keyed nothing or re-keyed everything — the first banks a verdict for a tree nobody measured, the second throws the memo away (see ${OUT})"
+    fi
+}
+
+# THE DRAWER'S FIXTURES ARE NOT LINTED, AND THE DRAWER'S RUNNERS ARE. A drawer
+# canary or negative is deliberately wrong Python exactly as the template's own
+# `quality/canary` and `quality/negative` are, so the hook's ruff leg must not
+# demand it stop being wrong; a drawer RUNNER is real code the engine loads and
+# must stay linted — which is why the exclude names the two fixture roots and
+# never the whole drawer. The two commands are the ruff leg's own, run at the
+# world's root with `.`: ruff does not apply `extend-exclude` to a path named
+# on its command line (without `--force-exclude`), so a case that named the
+# fixture would measure a different road from the one the hook takes.
+#
+# The world is a CLONE, which carries the COMMITTED `pyproject.toml` — so a
+# dirty one here is refused for the reason `drawer_world` refuses a dirty
+# `quality/`: the case would measure the exclude you did not commit.
+ruff_pairs() { # ruff_pairs <file> — one `<path> <code>` line per finding, either output format
+    awk '
+        /^[^ ].*:[0-9]+:[0-9]+: [A-Z]+[0-9]+/ {
+            split($0, a, ":"); c = $2; print a[1], c; next
+        }
+        /^[A-Z]+[0-9]+ / { code = $1; next }
+        /^ *--> / { p = $2; sub(/:[0-9]+:[0-9]+$/, "", p); print p, code; next }
+    ' "$1"
+}
+
+case_a_drawer_fixture_is_not_linted_and_a_drawer_runner_is() {
+    CURRENT=case_a_drawer_fixture_is_not_linted_and_a_drawer_runner_is
+    [ -z "$(git -C "$ROOT" status --porcelain -- pyproject.toml 2>/dev/null)" ] ||
+        cannot_look "pyproject.toml is dirty in this checkout and this case runs in a CLONE, which carries only what is committed — so it would measure the ruff exclude you did not commit. Commit first."
+    drawer_world
+    local neg="quality/local/negative/zzz_probe/bad.py"
+    local can="quality/local/canary/zzz_probe/bad.py"
+    local run="quality/local/runners/zzz_probe.py"
+    mkdir -p "${DRAWER_WORLD}/quality/local/negative/zzz_probe" \
+        "${DRAWER_WORLD}/quality/local/canary/zzz_probe" "${DRAWER_WORLD}/quality/local/runners"
+    printf 'import os\nx=[1,2 ,3]\n' >"${DRAWER_WORLD}/${neg}"
+    printf 'import os\nx=[1,2 ,3]\n' >"${DRAWER_WORLD}/${can}"
+    printf 'import os\n' >"${DRAWER_WORLD}/${run}"
+    N=$((N + 1))
+    local check_out="${WORK}/ruffcheck${N}.log" fmt_out="${WORK}/rufffmt${N}.log"
+    local check_rc=0 fmt_rc=0
+    (cd "$DRAWER_WORLD" && uv run ruff check .) >"$check_out" 2>&1 || check_rc=$?
+    (cd "$DRAWER_WORLD" && uv run ruff format --check --quiet .) >"$fmt_out" 2>&1 || fmt_rc=$?
+    rm -rf "${DRAWER_WORLD}/quality/local"
+    # The check run always has something to say — the runner's F401 — so an
+    # empty capture is a run that never started, and it is could-not-look.
+    OUT="$check_out"
+    RC="$check_rc"
+    capture_floor
+    local pairs="${WORK}/ruffpairs${N}.log"
+    ruff_pairs "$check_out" >"$pairs"
+    if grep -F -e "$neg" -e "$can" "$check_out" >/dev/null; then
+        bad "ruff check . reports a drawer FIXTURE — quality/local/canary and quality/local/negative are deliberately wrong Python and must be excluded like the template's (exit ${check_rc}); findings: $(grep -F -e "$neg" -e "$can" "$pairs" | tr '\n' ';')"
+    else
+        ok "ruff check . names neither drawer fixture (${neg}, ${can})"
+    fi
+    if grep -Fx "${run} F401" "$pairs" >/dev/null; then
+        ok "and the drawer RUNNER is still linted — ${run} reports F401 (exit ${check_rc})"
+    else
+        bad "the drawer runner ${run} no longer reports F401 — a runner is real code and must stay linted; the exclude has swallowed the whole drawer (exit ${check_rc})"
+    fi
+    OUT="$fmt_out"
+    RC="$fmt_rc"
+    if [ "$fmt_rc" = 0 ] && [ ! -s "$fmt_out" ]; then
+        ok "ruff format --check --quiet . is silent and exit 0 with both fixtures planted"
+    else
+        bad "ruff format --check --quiet . is exit ${fmt_rc}, want 0 and silent — it names a drawer fixture"
     fi
 }
 
@@ -3402,6 +3523,7 @@ run_case case_a_drawer_canary_may_not_plant_into_a_platform_app
 run_case case_the_drawers_key_moves_only_when_the_drawer_does
 run_case case_a_drawer_rule_is_a_rule_end_to_end
 run_case case_a_product_scope_kind_points_a_drawer_rule_at_its_own_files
+run_case case_a_drawer_fixture_is_not_linted_and_a_drawer_runner_is
 run_case case_no_drawer_is_byte_identical
 run_case case_a_rule_with_no_valve_is_enforcement_broken
 run_case case_a_none_valve_with_no_sentence_is_enforcement_broken
@@ -3455,7 +3577,7 @@ run_case case_rule_54s_census_agrees_with_the_rules_own_read_findings
 # LAST, deliberately: it reads the tree every case above left behind.
 run_case case_the_drive_leaves_the_working_tree_as_it_found_it
 
-echo "test_gate_explain: ${PASSED} passed · ${FAILED} failed"
+echo "test_gate_explain: ${PASSED} passed · ${FAILED} failed · ${DRIVE_SKIPPED} skipped"
 drive_finished
 if [ "$FAILED" -gt 0 ]; then
     echo "!! a red can no longer explain itself. The trailer, the two readers and" >&2

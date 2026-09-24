@@ -437,6 +437,190 @@ gate_measured_tree() {
     printf '%s\n' "$tree"
 }
 
+# ---- WHAT THE RUN ITSELF WROTE INTO THE TREE IT IS ABOUT TO VOUCH FOR ---------
+#
+# THE MEASURED SHAPE. A product's frontend leg re-takes tracked evidence images
+# on every run. A `--loop` whose START already carried the previous run's
+# re-take ends on the same bytes, the key re-derives, and the row banks a tree
+# no HEAD carries — two box runs banked `tree=86dbe6c7` and `tree=847544e3`
+# while HEAD^{tree} was `28bd09bc` and `ad1f72dc`, and every consult after them
+# missed. The key's own re-derivation cannot see it: it compares the end with
+# the start, and both were the leg's output.
+#
+# SO THE RUN SNAPSHOTS ITS OWN STARTING STATE and, before it banks, asks one
+# closed question: did any path this tree's key reads change DURING the run —
+# its content, its presence, or (for a path that already differed from HEAD)
+# a fresh write of the same bytes? A path the key already subtracts — a
+# `derived-tree-paths` declaration, `gate__derived_tree_paths` above — is not
+# asked about: its bytes are not part of what a verdict is about, and that
+# declaration is the remedy the refusal names.
+#
+# THE POPULATION IS THE DIRTY SET, NOT THE TREE. Only paths that differ from
+# HEAD (modified, deleted, or untracked and not ignored) at either end are
+# hashed, so the snapshot costs what `git status` costs. A path clean at both
+# ends cannot have moved the key, whatever was written to it and restored.
+#
+# DECLARED BLIND SPOTS. A write that lands within the filesystem's timestamp
+# resolution of the snapshot and leaves the bytes unchanged is not seen (the
+# content arm still sees any byte that changed); an edit the operator made by
+# hand while the gate ran is reported exactly like a leg's — the refusal names
+# both causes and proves neither.
+
+# loop_tree_snapshot <file> — write this checkout's dirty set, `<hash>\t<path>`
+# per line (`-` for a path that is absent), to <file>, and stamp <file>.stamp
+# with the moment it was taken. Exit 1 when git could not answer.
+loop_tree_snapshot() {
+    local out=$1 set
+    set=$(loop_tree__dirty_set) || return 1
+    : >"${out}.stamp" || return 1
+    loop_tree__hash_set "$set" >"$out" || return 1
+}
+
+# loop_tree__dirty_set → every path that differs from HEAD in the working tree:
+# modified, deleted, staged, and untracked-but-not-ignored (the population
+# `git add -A` puts into the measured tree), one per line, sorted and unique.
+loop_tree__dirty_set() {
+    local changed untracked
+    changed=$(git diff --name-only --no-renames HEAD -- 2>/dev/null) || return 1
+    untracked=$(git ls-files --others --exclude-standard 2>/dev/null) || return 1
+    printf '%s\n%s\n' "$changed" "$untracked" | awk 'NF' | LC_ALL=C sort -u
+}
+
+# loop_tree__hash_set <newline-separated paths> → `<blob hash or ->\t<path>`.
+loop_tree__hash_set() {
+    local p h
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        if [ -f "$p" ] || [ -L "$p" ]; then
+            h=$(git hash-object -- "$p" 2>/dev/null) || return 1
+        else
+            h=-
+        fi
+        printf '%s\t%s\n' "$h" "$p"
+    done <<EOF
+$1
+EOF
+}
+
+# loop_tree_rewrites <snapshot-file> → every path that changed since the
+# snapshot and that no `derived-tree-paths` declaration covers, one per line.
+# Exit 0 with the list (empty is "nothing moved") · 2 could-not-look (the
+# snapshot is gone or git could not answer) — never a silent empty list.
+#
+# THE CARRIED ARM, and it is what a measurement on a box made necessary. The
+# run that re-takes the artefact is refused below; the NEXT run starts on the
+# re-take, may reuse the leg's own verdict (so nothing is written at all), ends
+# on the same bytes and would bank them. So a refused run REMEMBERS what it
+# refused — `<hash>\t<path>` per line in <snapshot>.rewrites
+# (`loop_tree_remember`) — and a later run whose dirty set still carries one of
+# those exact lines is asked the same question again: those bytes were written
+# by a run, not by an author. A path whose bytes moved since (committed,
+# restored, edited) no longer matches its line and is nobody's business.
+loop_tree_rewrites() {
+    local snap=$1 arms=${2:-} now nowset derived p arm covered d tab
+    tab=$(printf '\t')
+    [ -r "$snap" ] && [ -e "${snap}.stamp" ] || return 2
+    nowset=$(loop_tree__dirty_set) || return 2
+    now=$(loop_tree__hash_set "$nowset") || return 2
+    derived=$(gate__derived_tree_paths "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" 2>/dev/null) || derived=""
+    # Every arm prints `<path>\t<arm>`; a path two arms name is reported once,
+    # under `changed` — a write THIS run made is the stronger fact.
+    {
+        # THE CARRIED ARM: bytes an earlier refused run wrote, still here.
+        if [ -r "${snap}.rewrites" ] && [ -n "$now" ]; then
+            printf '%s\n' "$now" | awk -F '\t' 'NR == FNR { seen[$0] = 1; next } ($0 in seen) { print $NF "\tcarried" }' \
+                "${snap}.rewrites" -
+        fi
+        # THE CONTENT ARM: a line in one snapshot and not the other is a path
+        # whose presence or bytes moved. `comm -3` on the sorted pairs; the
+        # path is the field after the tab.
+        comm -3 <(LC_ALL=C sort -u "$snap") <(printf '%s\n' "$now" | awk 'NF' | LC_ALL=C sort -u) |
+            awk -F '\t' '{ print $NF "\tchanged" }'
+        # THE WRITE ARM: a path dirty at the end and written after the stamp,
+        # even with the bytes it already had — the re-take on a dirty start.
+        while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            if [ -e "$p" ] && [ -n "$(find "$p" -prune -newer "${snap}.stamp" 2>/dev/null)" ]; then
+                printf '%s\tchanged\n' "$p"
+            fi
+        done <<EOF
+$nowset
+EOF
+    } | awk -F '\t' 'NF { if (!($1 in a) || $2 == "changed") a[$1] = $2 } END { for (k in a) print k "\t" a[k] }' |
+        LC_ALL=C sort | while IFS="$tab" read -r p arm; do
+        [ -n "$p" ] || continue
+        covered=0
+        while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            if gate_docs_only_covers "$d" "$p"; then
+                covered=1
+                break
+            fi
+        done <<EOF
+$derived
+EOF
+        [ "$covered" = 1 ] && continue
+        if [ "$arms" = "--arms" ]; then
+            printf '%s\t%s\n' "$p" "$arm"
+        else
+            printf '%s\n' "$p"
+        fi
+    done
+}
+
+# loop_tree_refusal <`<path>\t<arm>` lines, from `loop_tree_rewrites --arms`>
+#   → the bank's refusal, on stderr: every path with the arm that named it, and
+#   the escapes that actually clear it.
+#
+# THE REMEDY IS THE ONE THAT WORKS, MEASURED. "Re-run on a still tree" was
+# false: a refused run remembers the bytes it refused (the carried arm), so the
+# re-run is refused again, and every later one, and `touch` changes no bytes
+# and clears nothing. What clears a path is committing it, restoring it
+# (`git checkout -- <path>`) or changing its bytes — and, for a leg that
+# re-takes it on every run, declaring it in that leg's own file.
+loop_tree_refusal() {
+    local p arm tab
+    tab=$(printf '\t')
+    {
+        echo "!! COULD NOT BANK — these paths moved while a --loop measured them (a leg's"
+        echo "   re-take or a hand edit; this cannot tell which), and no derived-tree-paths"
+        echo "   declaration covers them:"
+        while IFS="$tab" read -r p arm; do
+            [ -n "$p" ] || continue
+            case "$arm" in
+            carried) echo "     ${p} — carried from a refused run: it still holds the bytes an earlier --loop refused" ;;
+            *) echo "     ${p} — changed during this run" ;;
+            esac
+        done <<EOF
+$1
+EOF
+        echo "   A verdict keyed on them is a key no HEAD carries, so no consult would"
+        echo "   ever hit it and it would vouch for bytes nobody committed."
+        echo "   A refused run REMEMBERS these bytes (per worktree): re-running on the same"
+        echo "   bytes is refused again, and \`touch\` clears nothing. What clears a path:"
+        echo "     * commit it, or restore it with: git checkout -- <path>"
+        echo "     * or change its bytes — an edit of yours is judged afresh"
+        echo "     * or, if a LEG re-takes it on every run, declare it in that leg's own"
+        echo "       file and the key subtracts it (gate__derived_tree_paths):"
+        echo "         # ${GATE_TREE_DECL_BEGIN}"
+        echo "         # <path> — <why nothing this gate measures reads it back>"
+        echo "         # ${GATE_TREE_DECL_END}"
+        echo "   No verdict banked (exit 2 — could-not-look, never a pass)."
+    } >&2
+}
+
+# loop_tree_remember <snapshot-file> <newline-separated paths> — record the
+# paths a refused run named, with their bytes now, in <snapshot>.rewrites; an
+# empty list forgets everything (a run that banked has nothing to carry).
+loop_tree_remember() {
+    local snap=$1
+    if [ -z "$2" ]; then
+        rm -f "${snap}.rewrites"
+        return 0
+    fi
+    loop_tree__hash_set "$2" >"${snap}.rewrites"
+}
+
 # gate_measured_tree_of <tree-ish> — THE SAME KEY, ASKED OF A REF.
 #
 # WHY IT HAD TO EXIST. Everything that decides whether a tree has been measured
@@ -1097,9 +1281,18 @@ EOF
 # prose is admitted.
 #
 # THE DIRECTION OF EVERY DOUBT IS STILL CLOSED. A quoted mention inside a
-# docstring is judged a read; a path assembled from parts, reached by a glob or
-# walked as a directory is judged prose and MISSED. That second half is this
-# path's declared blind spot, and the belt is the next non-docs push.
+# docstring is judged a QUOTE, and a quote refuses unless the module itself says
+# it is not a read (`GATE_DOCS_ONLY_NONREAD`, below); a path assembled from
+# parts, reached by a glob or walked as a directory is judged prose and MISSED.
+# That second half is this path's declared blind spot, and the belt is the next
+# non-docs push.
+#
+# A QUOTE IS WHAT THIS JUDGE PROVES, NOT A READ. It sees the bytes of a string,
+# never an `open()`, so the refusal says "is quoted at" and never "is read" — a
+# message never names a cause it has not proven (measured: `test_drawer_seam.py`
+# quotes `docs/product/queue.md` as a string handed to the engine over
+# `tmp_path`, opens no file, and every ledger push was refused as a "literal
+# read" of it).
 gate_docs_only_literal_reads() {
     local roots="" r out n
     local -a args=()
@@ -1119,7 +1312,17 @@ gate_docs_only_literal_reads() {
     # shellcheck disable=SC2086
     out=$(grep -rnI -F "${args[@]}" $roots 2>/dev/null) || out=""
     [ -n "$out" ] || return 0
-    awk -v needles="$*" '
+    gate__docs_only_judge "$*" <<EOF
+$out
+EOF
+}
+
+# gate__docs_only_judge "<needle> …" < `<file>:<line>:<text>` lines
+#   → `<file>:<line> <needle>` per QUOTED hit. ONE JUDGE, read by the road
+#   (above) and by the stale-declaration census (below), so "is this path
+#   quoted here" has one answer.
+gate__docs_only_judge() {
+    awk -v needles="$1" '
     BEGIN { nn = split(needles, NEEDLE, " "); sq = sprintf("%c", 39) }
     {
         i = index($0, ":"); if (i == 0) next
@@ -1156,8 +1359,93 @@ gate_docs_only_literal_reads() {
             }
         }
     }
-    ' <<EOF
-$out
+    '
+}
+
+#: The declaration a module under `apps/` or `config/` makes when it QUOTES a
+#: docs path it never opens — a comment line of its own, in that module:
+#:
+#:   # names, never reads: docs/product/queue.md — <why the quote is no read>
+#:
+#: One or more checkout-relative paths before the dash; the reason after it is
+#: for the human and is not parsed. It covers a quote of the path, or of its
+#: basename, IN THAT FILE ONLY — never a directory, never another module. It is
+#: the NEGATIVE form only: a positive "this module reads P" declaration would be
+#: a reader kind with no reader (no module under apps/ or config/ opens a
+#: docs/product/*.md today), deferred until the first one does.
+GATE_DOCS_ONLY_NONREAD='names, never reads:'
+
+# gate_docs_only_nonreads <file> → `<line> <path>` per declared path.
+gate_docs_only_nonreads() {
+    awk -v m="$GATE_DOCS_ONLY_NONREAD" '
+    {
+        t = $0
+        sub(/^[ \t]*/, "", t)
+        if (substr(t, 1, 1) != "#") next
+        t = substr(t, 2)
+        sub(/^[ \t]*/, "", t)
+        if (index(t, m) != 1) next
+        t = substr(t, length(m) + 1)
+        n = split(t, W, /[ \t]+/)
+        for (i = 1; i <= n; i++) {
+            if (W[i] == "") continue
+            # The reason starts at the dash, in either spelling.
+            if (W[i] == "\342\200\224" || W[i] == "--" || substr(W[i], 1, 1) == "#") break
+            print NR " " W[i]
+        }
+    }
+    ' "$1" 2>/dev/null
+}
+
+# gate_docs_only_nonread_covers <file> <needle> → 0 when the file's own
+# declaration names the needle, or a path whose basename the needle is.
+gate_docs_only_nonread_covers() {
+    local file=$1 needle=$2 lno d
+    while read -r lno d; do
+        [ -n "${d:-}" ] || continue
+        if [ "$d" = "$needle" ] || [ "${d##*/}" = "$needle" ]; then
+            return 0
+        fi
+    done <<EOF
+$(gate_docs_only_nonreads "$file")
+EOF
+    return 1
+}
+
+# gate_docs_only_stale_nonreads → `<file>:<line> <path>` per declared path the
+# declaring module does NOT quote, judged by the ONE judge above. A STALE VALVE
+# IS LOUD: a declaration that outlived its quote is a line that would silently
+# admit the next quote somebody writes there.
+gate_docs_only_stale_nonreads() {
+    local roots="" r f lno d hits judged
+    for r in apps config; do
+        if [ -d "$r" ]; then
+            roots="${roots}${roots:+ }${r}"
+        fi
+    done
+    [ -n "$roots" ] || return 0
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        while read -r lno d; do
+            [ -n "${d:-}" ] || continue
+            hits=$(grep -nIH -F -e "$d" -e "${d##*/}" "$f" 2>/dev/null) || hits=""
+            judged=""
+            if [ -n "$hits" ]; then
+                judged=$(gate__docs_only_judge "$d ${d##*/}" <<EOF
+$hits
+EOF
+)
+            fi
+            [ -n "$judged" ] && continue
+            printf '%s:%s %s\n' "$f" "$lno" "$d"
+        done <<EOF
+$(gate_docs_only_nonreads "$f")
+EOF
+    done <<EOF
+$(
+        # shellcheck disable=SC2086
+        grep -rlI -F -e "$GATE_DOCS_ONLY_NONREAD" $roots 2>/dev/null
+    )
 EOF
 }
 
@@ -1285,13 +1573,26 @@ EOF
         file=${hit%%:*}
         case "$file" in
         apps/* | config/*)
-            GATE_DOCS_ONLY_WHY="docs-only? no — ${hit#* } is read literally at ${hit%% *} — full bank"
+            # A QUOTE THE MODULE ITSELF DECLARES A NON-READ is admitted and
+            # derives no reader; every other quote still refuses, saying what
+            # was proven (a quote) and what is missing (the declaration).
+            if gate_docs_only_nonread_covers "$file" "${hit#* }"; then
+                continue
+            fi
+            GATE_DOCS_ONLY_WHY="docs-only? no — ${hit#* } is quoted at ${hit%% *} and nothing declares the quote a non-read — full bank"
             return 1
             ;;
         quality/*) engine=1 ;;
         esac
     done <<EOF
 $(gate_docs_only_literal_reads $needles)
+EOF
+    while IFS= read -r hit; do
+        [ -n "$hit" ] || continue
+        GATE_DOCS_ONLY_WHY="docs-only? no — ${hit%% *} declares ${hit#* } a non-read and the module never quotes it — a stale declaration — full bank"
+        return 1
+    done <<EOF
+$(gate_docs_only_stale_nonreads)
 EOF
     if [ "$engine" = "1" ]; then
         readers="${readers},full-house-rules"
@@ -1637,9 +1938,15 @@ drive_absorbed_path() {
     drive_absorbed_paths 2>/dev/null | grep -xF -- "$1" >/dev/null
 }
 
-# drive__uncovered <listing> <declared paths> <drive file> <drawer globs> — the
-# FIRST checkout path the body spells that no declared path covers, or nothing
-# at all. The three exclusions are argued in this section's header.
+# drive__uncovered <listing> <declared paths> <drive file> <drawer globs> —
+# EVERY checkout path the body spells that no declared path covers, one per
+# line in the order the body first spells it, or nothing at all. The three
+# exclusions are argued in this section's header.
+#
+# EVERY ONE, NOT THE FIRST. It used to stop at the first hit, so a body that
+# spelled three undeclared paths cost three rounds of a ten-box bank to learn
+# them one at a time; a floor that already walked the whole body owes the whole
+# answer.
 #
 # THE FOURTH ARGUMENT IS THE ONE EXCEPTION TO THE FIRST EXCLUSION, and the
 # first consumer paid for it. "A path that is not in the measured tree" is
@@ -1751,10 +2058,24 @@ drive__uncovered() {
             for (i = 1; i <= n; i++) {
                 if (hit ~ ("^" re[i] "$") || hit ~ ("^" re[i] "/")) { covered = 1; break }
             }
-            if (!covered) { print hit; exit }
+            if (!covered && !(hit in told)) { told[hit] = 1; print hit }
         }
     }
     ' "$1" "$3"
+}
+
+# drive__uncovered_phrase <newline-separated paths> → `A`, `A and B`, or
+# `A, B and C` — the sentence's list, so one line names every path.
+drive__uncovered_phrase() {
+    awk 'NF { p[++n] = $0 }
+        END {
+            for (i = 1; i <= n; i++) {
+                if (i > 1) printf "%s", (i == n ? " and " : ", ")
+                printf "%s", p[i]
+            }
+        }' <<EOF
+$1
+EOF
 }
 
 # drive_key <drive file> <tree> <listing> — `ok <key> <parts>` on stdout, or
@@ -1824,7 +2145,16 @@ drive_key() {
     }
     uncovered=$(drive__uncovered "$listing" "$decls $cites $file $preamble" "$file" "$drawers")
     if [ -n "$uncovered" ]; then
-        printf 'err its body spells %s and its `# drives:` line does not cover it (a path it only CITES goes on a `# cites:` line)\n' "$uncovered"
+        case "$uncovered" in
+        *"
+"*)
+            printf 'err its body spells %s and its `# drives:` line covers none of them (a path it only CITES goes on a `# cites:` line)\n' \
+                "$(drive__uncovered_phrase "$uncovered")"
+            ;;
+        *)
+            printf 'err its body spells %s and its `# drives:` line does not cover it (a path it only CITES goes on a `# cites:` line)\n' "$uncovered"
+            ;;
+        esac
         return 1
     fi
     # THE TWO ALWAYS-IN-THE-KEY COMPONENTS ARE LABELLED `self` AND `preamble` IN
@@ -1934,6 +2264,74 @@ machine ${one}"
     # REUSED and every miss.
     printf 'ok %s:%s %s cites=%s machine=%s\n' \
         "$DRIVE_KEY_SCHEMA" "$digest" "$parts" "${cited_count:-0}" "${machine_label:-unstated}"
+}
+
+# drive_keys_of_touched <changed-file list, NUL separated>
+#   → a line per drive under scripts/tests/ in that list, in the selftest leg's
+#     own grammar: `  drive <name>: keys — every checkout path its body spells
+#     is declared` or `  drive <name>: could not key — <reason>`; with none
+#     touched, one line saying so.
+#   Exit 0 every touched drive keys (or none was touched) · 2 at least one
+#   could not, or the measured tree could not be read.
+#
+# THE KEY DECIDED AT THE CHEAPEST MOMENT ANYONE WILL EVER DECIDE IT. `drive_key`
+# was read only by the selftest leg — the full gate, and a bank's selftest
+# shards — so a drive whose body spelled a path its `# drives:` line did not
+# cover went green through the hook and through `--loop`, merged, and was first
+# refused by a ten-box bank twelve minutes in. The pre-commit tier now asks the
+# SAME function about every drive the active rung touched: a header read and a
+# spell scan, seconds, and the refusal is the leg's own sentence so the two can
+# never disagree about what is wrong.
+#
+# A DRIVE THE RUNG DID NOT TOUCH IS NOT ASKED HERE — its key is what it was at
+# the last bank, and the selftest leg still decides every drive at every full
+# gate. A touched drive that is GONE (deleted) has no key to decide.
+drive_keys_of_touched() {
+    local changed=$1 f name tree listing keyout rc=0 n=0 drives=""
+    [ -r "$changed" ] || return 2
+    drives=$(tr '\0' '\n' <"$changed" | awk '/^scripts\/tests\/test_[A-Za-z0-9_]+\.sh$/' | LC_ALL=C sort -u)
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        [ -f "$f" ] || continue
+        n=$((n + 1))
+    done <<EOF
+$drives
+EOF
+    if [ "$n" = 0 ]; then
+        echo "  drive keys: the active rung touched no drive under scripts/tests/ — none to decide"
+        return 0
+    fi
+    tree=$(gate_measured_tree 2>/dev/null) || tree=""
+    if [ -z "$tree" ]; then
+        echo "  drive keys: could not key — the measured tree could not be read"
+        return 2
+    fi
+    listing=$(mktemp "${TMPDIR:-/tmp}/djb-drive-listing.XXXXXX") || return 2
+    if ! git ls-tree -r "$tree" >"$listing" 2>/dev/null || [ ! -s "$listing" ]; then
+        rm -f "$listing"
+        echo "  drive keys: could not key — the measured tree ${tree} could not be listed"
+        return 2
+    fi
+    while IFS= read -r f; do
+        [ -n "$f" ] && [ -f "$f" ] || continue
+        name=${f##*/}
+        name=${name#test_}
+        name=${name%.sh}
+        keyout=$(drive_key "$f" "$tree" "$listing") || true
+        case "$keyout" in
+        "ok ${DRIVE_KEY_SCHEMA}:"*)
+            echo "  drive ${name}: keys — every checkout path its body spells is declared"
+            ;;
+        *)
+            echo "  drive ${name}: could not key — ${keyout#err }"
+            rc=2
+            ;;
+        esac
+    done <<EOF
+$drives
+EOF
+    rm -f "$listing"
+    return "$rc"
 }
 
 # drive_ledger_record <key> <name> <took> <tree> <parts> — one appended line.

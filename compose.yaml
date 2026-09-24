@@ -32,6 +32,31 @@ services:
     # component refusing 18 — a stop-and-report for whichever rung finds it.
     image: postgres:18
     restart: unless-stopped
+    # /dev/shm IS 1g, NOT DOCKER'S 64 MB DEFAULT (an ADR in this file's own form).
+    # Context: Postgres keeps its dynamic shared memory in /dev/shm, and on this
+    # stack the thing that fills it is the cumulative-statistics area — one entry
+    # per relation in every database the server has touched, in segments that
+    # double (1M, 2M, 4M, 8M, 16M, 32M…) and are not given back while the server
+    # runs (dropping databases does not shrink it). Measured on a throwaway
+    # postgres:18 with parallel query OFF: 1.1M empty, 14M/22M/30M at 100/200/300
+    # databases of 60 tables, then new connections and queries start failing with
+    #   could not resize shared memory segment "/PostgreSQL.<n>" to 33554432 bytes: No space left on device
+    # near 680 databases; flat at 1.1M through 700 with track_counts=off. It is
+    # the same error the postgres image's README documents, under Caveats, at
+    # https://hub.docker.com/_/postgres#caveats (the README Docker Hub renders).
+    # Decision: shm_size 1g. tmpfs is charged only when used, so the cost is the
+    # pages actually written. Rejected: a `tmpfs: /dev/shm` overlay (HostConfig.
+    # ShmSize would still read 64M, so the one instrument that reads the setting
+    # would lie); 256m (one more doubling pair, tops out near 251M with nothing to
+    # spare for a transient parallel-query segment beside it); turning parallel
+    # query off (the probe reproduces the error with it off — it is not the
+    # cause); fewer databases alone (reaping is the other half, not a remedy: a
+    # drop does not shrink a running server's area). An existing stack keeps the
+    # old size until `docker compose up -d db` recreates the container — data
+    # survives, connections drop for seconds, so only with no lane running.
+    # Revisit trigger: a DiskFull on /dev/shm at 1g, or a stats population (live
+    # databases × relations) more than 8× the one this was measured against.
+    shm_size: 1g
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-djb}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-djb}

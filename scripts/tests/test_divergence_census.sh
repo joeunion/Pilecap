@@ -407,6 +407,88 @@ case_a_death_part_way_is_exit_2_on_every_bash() {
     rm -rf "$dead"
 }
 
+# --- (d) THE PLATFORM-APP LIST IS MATCHED BY WHOLE NAME, AT ANY POSITION ----
+# `build_repo` writes a ONE-entry `platform_apps` list, and a one-entry list
+# is a world too small to falsify the match: the census held its names one per
+# line and tested them space-delimited, so against the REAL list every
+# platform app read `product` and an edit to `apps/core/services.py` was silent
+# while the one-entry case above stayed green. So this case's world carries the
+# real `quality/partition.yaml` — the population derived, never typed — and
+# probes an edge of it: a middle name (`core`), the LAST name read with the
+# census's own awk, and a product app that is in no list at all.
+case_a_platform_app_edit_is_seen_against_the_real_partition_list() {
+    local w="$WORK/realpartition"
+    build_repo "$w" || {
+        bad "the real-partition fixture would not build"
+        return 0
+    }
+    cp "$ROOT/quality/partition.yaml" "$w/quality/partition.yaml"
+    gitq "$w" add quality/partition.yaml
+    gitq "$w" commit -q -m "the template at v0.1.0, with its real platform-app list"
+    gitq "$w" tag -f -a v0.1.0 -m v0.1.0 HEAD >/dev/null
+    local last
+    last=$(awk '/^platform_apps:/{f=1;next} f&&/^[a-z_]+:/{exit} f&&/^  - /{print $2}' \
+        "$w/quality/partition.yaml" | tail -n 1)
+    if [ -z "$last" ] || [ "$last" = core ]; then
+        bad "the real partition list reads no last name distinct from core ('$last') — this world cannot probe the edge"
+        rm -rf "$w"
+        return 0
+    fi
+    local saved=${DJB_TEMPLATE_BASE-}
+    export DJB_TEMPLATE_BASE=v0.1.0
+
+    printf '# our patch to the platform app\n' >>"$w/apps/core/services.py"
+    gitq "$w" add apps/core/services.py
+    gitq "$w" commit -q -m "edit a platform app"
+    run "$w"
+    if [ "$RC" = 1 ] && grep -q "^   divergence: apps/core/services.py" "$OUT" &&
+        grep -qE "^census: .* diverged=1 unnamed=1$" "$OUT"; then
+        ok "against the real platform_apps list an edit to apps/core/services.py is a divergence (diverged=1 unnamed=1)"
+    else
+        bad "real-list platform app edit: exit $RC, want 1 with a divergence row for apps/core/services.py and diverged=1 unnamed=1"
+        sed 's/^/         /' "$OUT"
+    fi
+
+    printf '\ndivergence: apps/core/services.py — probe\n' >>"$w/docs/product/architecture.md"
+    gitq "$w" add docs/product/architecture.md
+    gitq "$w" commit -q -m "name the divergence"
+    run "$w"
+    if [ "$RC" = 0 ] && grep -q "named-divergence: apps/core/services.py" "$OUT"; then
+        ok "and named in architecture.md it is a NAMED divergence, exit 0"
+    else
+        bad "real-list named platform divergence: exit $RC, want 0 with named-divergence: apps/core/services.py"
+        sed 's/^/         /' "$OUT"
+    fi
+
+    mkdir -p "$w/apps/$last"
+    printf '# a probe under the last platform app\n' >"$w/apps/$last/zzz_probe.py"
+    gitq "$w" add "apps/$last/zzz_probe.py"
+    gitq "$w" commit -q -m "edit the last platform app"
+    run "$w"
+    if [ "$RC" = 1 ] && grep -q "^   divergence: apps/$last/zzz_probe.py" "$OUT"; then
+        ok "the list's LAST name ($last) is matched too — apps/$last/zzz_probe.py is a divergence"
+    else
+        bad "last platform app ($last): exit $RC, want 1 with a divergence row for apps/$last/zzz_probe.py"
+        sed 's/^/         /' "$OUT"
+    fi
+    gitq "$w" rm -q "apps/$last/zzz_probe.py"
+    gitq "$w" commit -q -m "undo"
+
+    printf '# the product changed this\n' >>"$w/apps/zzz_product_app/models.py"
+    gitq "$w" add apps/zzz_product_app/models.py
+    gitq "$w" commit -q -m "product change"
+    run "$w"
+    if [ "$RC" = 0 ] && ! grep -q "divergence: apps/zzz_product_app/models.py" "$OUT"; then
+        ok "and an app in no list is still the product's — apps/zzz_product_app/models.py is silent"
+    else
+        bad "product app against the real list: exit $RC, want 0 with no row for apps/zzz_product_app/models.py"
+        sed 's/^/         /' "$OUT"
+    fi
+
+    if [ -n "$saved" ]; then export DJB_TEMPLATE_BASE="$saved"; else unset DJB_TEMPLATE_BASE; fi
+    rm -rf "$w"
+}
+
 build_repo "$REPO" || {
     echo "!! the fixture would not build" >&2
     exit 2
@@ -595,6 +677,7 @@ run_case case_the_declared_base_is_read_from_the_product_drawer
 run_case case_the_drawer_count_is_the_list_and_not_the_filesystem
 run_case case_a_library_that_sets_no_rules_for_is_exit_2_naming_both_files_to_take
 run_case case_a_death_part_way_is_exit_2_on_every_bash
+run_case case_a_platform_app_edit_is_seen_against_the_real_partition_list
 
 # --- the derived reader: a 'template' remote and TEMPLATE_VERSION -----------
 UPSTREAM="$WORK/upstream"

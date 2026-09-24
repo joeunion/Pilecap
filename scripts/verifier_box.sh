@@ -2272,11 +2272,53 @@ cmd_push() {
     # cannot diff against. `push_the_tree_shallow` deepens the mirror to reach
     # the base commit and pushes it as `refs/djb/base`; `cmd_loop` names that
     # ref in `DJB_LOOP_SCOPE_BASE` on the gate's command line.
-    local base_sha=""
-    if [ -n "$main_sha" ]; then
+    #
+    # A FORK POINT THE CHECKOUT ALREADY DECLARES WINS OVER THE ONE DERIVED HERE.
+    # `scripts/verify_start.sh` writes `refs/djb/base` into every verify clone at
+    # its fold point, and a checkout whose `main` IS its HEAD — the union
+    # committed as `main`, which is what a consumer product's verifier pushes —
+    # derives `merge-base HEAD main` = HEAD and used to carry NOTHING,
+    # so the box's `--loop` measured an empty scope and said "frontend:
+    # UNTOUCHED" about a frontend rung. The declared ref is honoured only when
+    # it names a commit that is an ANCESTOR of HEAD and is not HEAD — a fork
+    # point that is not behind the tree is not a fork point of it — and the line
+    # below says which of the two answers went, every time.
+    #
+    # THE REF IS FAMILY-SHARED IN A LINKED WORKTREE. `refs/djb/*` lives in the
+    # common git dir, so one typed in any worktree of a family is read by all of
+    # them; the refusal's remedy says so, and the `carried` line names the sha so
+    # a stranger's base is visible at the push rather than inferred at a verdict.
+    local base_sha="" base_from="" declared=""
+    declared="$(git -C "$ROOT" rev-parse -q --verify 'refs/djb/base^{commit}' 2>/dev/null || true)"
+    if [ -n "$declared" ] && [ "$declared" != "$head_sha" ] &&
+        git -C "$ROOT" merge-base --is-ancestor "$declared" HEAD >/dev/null 2>&1; then
+        base_sha="$declared"
+        base_from="refs/djb/base, declared in this checkout"
+    elif [ -n "$main_sha" ]; then
         base_sha="$(git -C "$ROOT" merge-base HEAD refs/heads/main 2>/dev/null || true)"
-        [ "$base_sha" = "$head_sha" ] && base_sha=""
+        [ -n "$base_sha" ] && base_from="merge-base HEAD refs/heads/main"
+        [ "$base_sha" = "$head_sha" ] && base_sha="" && base_from=""
+        # COMMITS PAST MAIN AND NO FORK POINT AT ALL IS A REFUSAL, NEVER AN EMPTY
+        # SCOPE. HEAD is not `main`'s tip, the checkout declares no base, and
+        # its history reaches none (a shallow clone, an unrelated history): a
+        # silent `base_sha=""` here is a box whose `--loop` grades the rung
+        # against nothing while printing a sentence that reads like a
+        # measurement. Refused before the vouch, so nothing leaves this machine.
+        if [ -z "$base_sha" ] && [ "$main_sha" != "$head_sha" ] &&
+            ! git -C "$ROOT" merge-base --is-ancestor HEAD refs/heads/main >/dev/null 2>&1; then
+            echo "!! verifier_box: HEAD (${head_ref} ${head_sha:0:8}) has commits past this checkout's main" >&2
+            echo "   (${main_sha:0:8}) and no fork point can be derived: no refs/djb/base is declared" >&2
+            echo "   and \`git merge-base HEAD refs/heads/main\` answers nothing. The box's --loop" >&2
+            echo "   would derive an EMPTY scope for this tree. Nothing was pushed." >&2
+            echo "   Declare the commit this tree forked from, then push again:" >&2
+            echo "     git update-ref refs/djb/base <sha>" >&2
+            echo "   (in a clone of its own — a linked worktree shares refs/djb/base with its" >&2
+            echo "   whole family; scripts/verify_start.sh writes it into every verify clone)" >&2
+            return 2
+        fi
     fi
+    [ -z "$base_sha" ] ||
+        say "carried    fork point ${base_sha:0:8} (${base_from}) as refs/djb/base" >&2
     local b
     for b in "$@"; do
         vouch_refs+=("refs/heads/${b}:refs/heads/${b}")

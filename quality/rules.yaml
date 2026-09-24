@@ -1940,6 +1940,7 @@ rules:
       - { fixture: diff_undeclared_emit.py, plant_at: apps/example/services.py, mode: append,
           via: diff, expect: { contains: example.widget.zapped } }
       - { fixture: singular_app.py, plant_at: apps/gadget/apps.py, mode: create,
+          namespace_exempt: "naming_grammar judges an app by its own directory name directly under apps/, and a new app's name is this form's whole subject; a probe nested under zzz_canary is not an app. Moves the day the check can read a nested probe app (MOVE-TRIGGER 2026-09-23)",
           expect: { contains: "'gadget' is not plural" } }
       - { fixture: plural_model.py, plant_at: apps/example/models.py, mode: append,
           expect: { contains: "model 'Widgets' is plural" } }
@@ -1953,7 +1954,8 @@ rules:
           expect: { contains: "CanaryFlagged.archived" } }
     negatives:
       - { fixture: compound_past_event.py, plant_at: apps/example/events.py, mode: append }
-      - { fixture: plural_app.py, plant_at: apps/gizmos/apps.py, mode: create }
+      - { fixture: plural_app.py, plant_at: apps/gizmos/apps.py, mode: create,
+          namespace_exempt: "the control for the canary above: naming_grammar judges an app by its own directory name directly under apps/, and a probe nested under zzz_canary is not an app. Moves with the canary (MOVE-TRIGGER 2026-09-23)" }
       - { fixture: singular_models.py, plant_at: apps/example/models.py, mode: append }
       - { fixture: verb_services.py, plant_at: apps/example/services.py, mode: append }
       - { fixture: prefixed_selectors.py, plant_at: apps/example/selectors.py, mode: append }
@@ -7011,6 +7013,7 @@ rules:
       # and if there is none, to a two-file scaffold plant (`api.py` + `mcp.py`
       # into `apps/zzz_canary`) with the ratchet class asserted instead.
       - { fixture: a_second_door_and_no_parity_test.py, plant_at: apps/connections/mcp.py,
+          namespace_exempt: "door_pair_parity keys on the app label, and a REAL one-door app growing a second door is this form's subject; the scaffold has no history to cross. Moves on the trigger in the comment above (MOVE-TRIGGER 2026-09-23)",
           mode: create, expect: { contains: "(rest, mcp)" } }
       # (ii) THE LYING MARKER. `apps/example` has no `consumers.py`, so there is
       # no session handshake and no bearer handshake for a test to compare. A
@@ -7034,6 +7037,7 @@ rules:
       # backlog is gone and this form retires with it, which is the healthy end.
       - { fixture: a_backlogged_app_takes_on_a_second_debt.py,
           plant_at: apps/accounts/consumers.py, mode: create,
+          namespace_exempt: "door_pair_parity keys on the app label, and an app already AT its recorded ratchet is this form's subject; the scaffold has no ratchet entry to exceed. Moves on the trigger in the comment above (MOVE-TRIGGER 2026-09-23)",
           expect: { contains: "(session, bearer)" } }
     negatives:
       # THE DEMANDED SHAPE, whole: two doors, an `apps.py` so the walk sees the
@@ -7783,32 +7787,32 @@ rules:
     selftest_floor: { canaries: 3, negatives: 3 }
     canaries:
       # (1) THE DEFECT ITSELF.
-      - { fixture: secret_literal.ts, plant_at: frontend/app/config.ts, mode: create,
+      - { fixture: secret_literal.ts, plant_at: frontend/app/zzz_canary/config.ts, mode: create,
           expect: { contains: "ships to a browser" } }
       # (2) THE SAME DEFECT in the other suffix and one directory down, so the
       # rule is not one folder's habit and the walk is proved to descend.
-      - { fixture: secret_in_component.tsx, plant_at: frontend/app/panel/Panel.tsx,
+      - { fixture: secret_in_component.tsx, plant_at: frontend/app/zzz_canary/panel/Panel.tsx,
           mode: create, expect: { contains: "ships to a browser" } }
       # (3) THE VALVE WITH NO REASON, in the second language's own comment
       # syntax. An exemption nobody has to justify is an off switch, and it is
       # an off switch in every language — the reason floor is the same number,
       # read through the same walk, refused with the same sentence.
-      - { fixture: valve_without_reason.ts, plant_at: frontend/app/thin.ts, mode: create,
+      - { fixture: valve_without_reason.ts, plant_at: frontend/app/zzz_canary/thin.ts, mode: create,
           expect: { contains: "with no reason" } }
     negatives:
       # THE VALVE THAT IS A DECISION: suppressed here, and counted in the
       # standing override census — the seam leg asserts both halves over this
       # same file, because suppression without a census is an off switch with
       # extra steps.
-      - { fixture: valve_with_reason.ts, plant_at: frontend/app/valved.ts, mode: create }
+      - { fixture: valve_with_reason.ts, plant_at: frontend/app/zzz_canary/valved.ts, mode: create }
       # THE FETCH-VOCABULARY COLLISION (mid-rung finding, P16 R-a x SCAFFOLD
       # merge): `credentials: "same-origin"` is cookie-inclusion policy, not a
       # secret, and it must stay silent WITHOUT a valve — the precision fix is
       # in the runner, not an exemption a reader has to keep renewing.
-      - { fixture: fetch_credentials_mode.ts, plant_at: frontend/app/fetch-options.ts,
+      - { fixture: fetch_credentials_mode.ts, plant_at: frontend/app/zzz_canary/fetch-options.ts,
           mode: create }
       # THE RIGHT FORM beside the exclusion a hash has always carried.
-      - { fixture: env_read_and_hash.ts, plant_at: frontend/app/env.ts, mode: create }
+      - { fixture: env_read_and_hash.ts, plant_at: frontend/app/zzz_canary/env.ts, mode: create }
 
   - id: "51"
     name: js-ingredient-boundary
@@ -8194,20 +8198,20 @@ rules:
     selftest_floor: { canaries: 2, negatives: 3 }
     canaries:
       # (1) DECLARED-UNREAD — rule 30's class.
-      - { fixture: declared_unread.css, plant_at: frontend/src/tokens/declared-unread.css,
+      - { fixture: declared_unread.css, plant_at: frontend/src/tokens/zzz_canary/declared-unread.css,
           mode: create, expect: { contains: "reader-less token" } }
       # (2) CONSUMED-UNDECLARED, THE WORSE CLASS — its own canary, planted at a
       # NON-tokens consumer so the chain-reaches-a-non-token-consumer half is
       # proven and not merely asserted.
-      - { fixture: consumed_undeclared.tsx, plant_at: frontend/src/components/panel.tsx,
+      - { fixture: consumed_undeclared.tsx, plant_at: frontend/src/components/zzz_canary/panel.tsx,
           mode: create, expect: { contains: "fails open" } }
     negatives:
       # BOTH DIRECTIONS CLEAN: declared and consumed in the same file.
-      - { fixture: declared_and_consumed.css, plant_at: frontend/src/tokens/theme.css,
+      - { fixture: declared_and_consumed.css, plant_at: frontend/src/tokens/zzz_canary/theme.css,
           mode: create }
       # A THIRD-PARTY TOKEN, consumed and never declared here — legal by its
       # vendor prefix, not by loosening the syntax this rule watches.
-      - { fixture: vendor_token.tsx, plant_at: frontend/src/components/vendor-panel.tsx,
+      - { fixture: vendor_token.tsx, plant_at: frontend/src/components/zzz_canary/vendor-panel.tsx,
           mode: create }
       # A TOKEN NAMED ONLY IN A COMMENT, in BOTH directions — the shape that
       # tripped this runner on the scaffold's own documentation until RDF-1
@@ -8216,7 +8220,7 @@ rules:
       # defect). Comments are stripped rather than the markers narrowed: the
       # marker was right and the POPULATION was wrong, which is rule 50's
       # lesson pointed at this rule's own vocabulary.
-      - { fixture: documented_tokens.css, plant_at: frontend/src/tokens/doc-example.css,
+      - { fixture: documented_tokens.css, plant_at: frontend/src/tokens/zzz_canary/doc-example.css,
           mode: create }
 
 
@@ -9471,8 +9475,16 @@ rules:
       # template's tree has none and the plant supplies `HEAD`; a product's
       # tree has its own and KEEPS it, so the form is judged against the base
       # that product really merged rather than an overwrite of it.
+      #
+      # AND ALL THREE DECLARE `needs_clean_tree: template-owned`: a planted base
+      # makes the census judge the whole template-owned territory, so an
+      # uncommitted edit anywhere in it would read as this form's finding. A
+      # tree dirty that way is COULD NOT LOOK on this rule's line, naming the
+      # paths, before anything is planted (quality/gate.py,
+      # `tree_dirty_on_template_owned`).
       - { fixture: a_product_edit_in_a_template_owned_file.md,
           plant_at: docs/product/api-editorial-standard.md, mode: append,
+          needs_clean_tree: template-owned,
           expect: { contains: "the local/ drawer beside it" },
           extra_files: [ { fixture: the_declared_template_base,
               plant_at: scripts/local/template-base, mode: default } ] }
@@ -9482,7 +9494,8 @@ rules:
       # Without this form that arm could be deleted and every canary here
       # would still fire.
       - { fixture: a_product_file_in_a_template_owned_directory.sh,
-          plant_at: scripts/a_product_stage_leg.sh, mode: create,
+          plant_at: scripts/zzz_canary/a_product_stage_leg.sh, mode: create,
+          needs_clean_tree: template-owned,
           expect: { contains: "the local/ drawer beside it" },
           extra_files: [ { fixture: the_declared_template_base,
               plant_at: scripts/local/template-base, mode: default } ] }
@@ -9492,7 +9505,7 @@ rules:
       # repository is permanently in and the state every product is in before
       # its first fold.
       - { fixture: a_runnable_list_with_no_drawer_row.sh,
-          plant_at: scripts/a_product_stage_runner.sh, mode: create,
+          plant_at: scripts/zzz_canary/a_product_stage_runner.sh, mode: create,
           expect: { contains: "scripts/local/stage.d" } }
       # (4) CLASS (b), FORM 2: A ROW WITH NO READER — and it plants into the
       # rule's own TEXT, the one plant site that could not have been anywhere
@@ -9515,9 +9528,12 @@ rules:
       # negative as a FALSE-POSITIVE REGRESSION naming that file — true, and
       # about your edit rather than this form. On a product's tree the base is
       # already declared, the unplanted baseline already holds that finding,
-      # and the delta subtracts it.
+      # and the delta subtracts it. The sentence is now also a refusal: the
+      # form declares `needs_clean_tree: template-owned`, so on a dirty tree the
+      # line reads COULD NOT LOOK naming your file, and never FALSE-POSITIVE.
       - { fixture: a_product_file_in_the_drawer.sh,
-          plant_at: scripts/local/legs/a_product_stage_leg.sh, mode: create,
+          plant_at: scripts/local/legs/zzz_canary/a_product_stage_leg.sh, mode: create,
+          needs_clean_tree: template-owned,
           extra_files: [ { fixture: the_declared_template_base,
               plant_at: scripts/local/template-base, mode: default } ] }
       # (2) THE CONTROL FOR THE SKIP: canary 1's plant with NO base declared.
@@ -9552,7 +9568,7 @@ rules:
       # stays a control for class (b) on both shapes. On the template's tree
       # (no base) the line is read by nothing.
       - { fixture: a_runnable_list_whose_drawer_has_its_row.sh,
-          plant_at: scripts/a_product_stage_runner.sh, mode: create,
+          plant_at: scripts/zzz_canary/a_product_stage_runner.sh, mode: create,
           extra_files: [ { fixture: names_the_stage_runner_as_a_divergence.md,
               plant_at: docs/product/architecture.md, mode: append } ] }
       # (4) THE CONTROL FOR THE `held` STATE. Without it a reserved name and a

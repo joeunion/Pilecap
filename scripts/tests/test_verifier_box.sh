@@ -11,7 +11,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: .env.example README.md deploy/ scripts/check.sh scripts/gate_lease.sh scripts/gate_ledger.sh scripts/githooks scripts/setup.sh scripts/tests/test_loop_ledger.sh scripts/tests/test_verifier_image.sh scripts/verifier_box.sh scripts/verify_start.sh
+# drives: .env.example README.md deploy/ scripts/check.sh scripts/gate_lease.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks scripts/secrets_scan.sh scripts/setup.sh scripts/tests/test_loop_ledger.sh scripts/tests/test_verifier_image.sh scripts/verifier_box.sh scripts/verify_start.sh
 # cites: scripts/pm_push.sh quality/rules.yaml
 # THE VERIFIER BOX WRAPPER'S DRIVE — every refusal, every recorded argument, and
 # every exit status the wrapper owns.
@@ -91,6 +91,18 @@ ok() {
 bad() {
     echo "  FAILED   ${CURRENT} — $1"
     FAILED=$((FAILED + 1))
+}
+# A CLAIM WITH NO OWNER IN THIS TREE IS SKIPPED, PRINTED AND COUNTED — never a
+# silent pass. The count is on the summary line and each reason is repeated
+# under it, so a run that skipped is never read as a run that asserted (the
+# `test_db_pin.sh` / `test_sweep.sh` form).
+SKIPPED=0
+SKIP_REASONS=""
+skip() {
+    echo "  SKIP     ${CURRENT} — $1"
+    SKIPPED=$((SKIPPED + 1))
+    SKIP_REASONS="${SKIP_REASONS}
+     ${CURRENT} — $1"
 }
 cannot_look() {
     echo "!! test_verifier_box: $*" >&2
@@ -541,6 +553,13 @@ for _a in "$@"; do
     # which is what every case written before the base was carried expects, and
     # it is also the honest shape of a checkout with no local `main`.
     if [ "$_a" = "merge-base" ]; then
+        # `--is-ancestor` IS A QUESTION WITH A STATUS AND NO WORDS. Unplanted it
+        # answers yes, which is the shape of every checkout these cases model
+        # (a fork point is behind its HEAD); a case about a history that reaches
+        # no fork point plants `git.ancestor.rc`.
+        case " $* " in
+        *" --is-ancestor "*) exit "$(cat "$REC/git.ancestor.rc" 2>/dev/null || echo 0)" ;;
+        esac
         cat "$REC/git.mergebase" 2>/dev/null || true
         exit 0
     fi
@@ -549,6 +568,17 @@ for _a in "$@"; do
         exit 0
     fi
     if [ "$_a" = "rev-parse" ]; then
+        # A DECLARED FORK POINT IS A FIXTURE, AND ITS ABSENCE IS THE DEFAULT.
+        # `refs/djb/base` in the checkout is what a verify clone carries; every
+        # other world has none, and answering it with HEAD's sha — this shim's
+        # answer to everything else — would invent a declaration nobody made.
+        case " $* " in
+        *refs/djb/base*)
+            [ -f "$REC/git.djbbase" ] || exit 1
+            cat "$REC/git.djbbase"
+            exit 0
+            ;;
+        esac
         # A CHECKOUT WITH NO LOCAL `main` IS A FIXTURE, and it has to be: the
         # wrapper reads its OWN checkout — the one this drive runs in, which
         # has the ref — so the population a `git clone --branch <tag>` belongs
@@ -2535,8 +2565,11 @@ case_a_rung_too_far_from_its_fork_point_carries_nothing_and_says_so() {
     *"fetch -q --depth 1 "*) ok "the mirror stays one commit deep" ;;
     *) bad "a 5000-commit history was dragged over a tunnel measured in tens of KB/s" ;;
     esac
+    # CREATED OR SENT, not merely asked about: the push now reads a declared
+    # `refs/djb/base` in the checkout before it derives one, and that question is
+    # in the record too.
     case "$flat" in
-    *refs/djb/base*) bad "the fork point was carried past the ceiling" ;;
+    *"update-ref refs/djb/base"* | *"refs/djb/base:refs/djb/base"*) bad "the fork point was carried past the ceiling" ;;
     *) ok "no base ref was created or pushed" ;;
     esac
     # SAID, NOT SILENT: the box's scope will be empty and the operator is the
@@ -2544,6 +2577,184 @@ case_a_rung_too_far_from_its_fork_point_carries_nothing_and_says_so() {
     said "5000 commits from its fork point" || out_has "5000 commits from its fork point" &&
         ok "and the push says the base is not being carried and what follows from it" ||
         bad "nothing said the scope on the box will be empty"
+}
+
+# --- the union pushed as main, and the fork point it declares ------------------
+#
+# THE SHAPE A CONSUMER'S VERIFIER PUSHES: a checkout whose `main` IS its HEAD —
+# the union of a rung and main, committed as main. `merge-base HEAD main` is
+# HEAD there, so the derivation answers "nothing to carry", the box's `--loop`
+# finds its fork point at HEAD, and every changed-file reader over there — the
+# scope, the secret scan, the censuses, the fe leg — asks about nothing
+# ("frontend: UNTOUCHED" for a frontend rung). `verify_start.sh` now writes the
+# fold point into the clone as `refs/djb/base`; the push honours a declared
+# base before it derives one.
+#
+# TWO HALVES, and the second is why this is not a claim about argv alone. The
+# WRAPPER'S half runs in this drive's fake-git world (what it decides to carry,
+# and how deep); the READER'S half replays exactly that decision with real git —
+# the recorded depth, the recorded base — into a real receiver, and asks the
+# box-side reader itself (`secrets_scan_changed_files`, which `loop_tier.sh`
+# reuses) what the rung changed. `test_secrets_scan.sh`'s carried-base case is
+# the reader's precedent; this is the same reader fed by the writer.
+case_a_union_pushed_as_main_carries_the_fork_point_it_declares() {
+    CURRENT=case_a_union_pushed_as_main_carries_the_fork_point_it_declares
+    local w="${WORK}/union-as-main" src fold union
+    rm -rf "$w"
+    mkdir -p "$w"
+    src="$w/src"
+    git init -q "$src" || cannot_look "git init refused for the union's source"
+    git -C "$src" symbolic-ref HEAD refs/heads/main
+    git -C "$src" config user.email drive@example.invalid
+    git -C "$src" config user.name "verifier box drive"
+    echo shared >"$src/shared.txt"
+    git -C "$src" add shared.txt && git -C "$src" commit -q -m "the fold point"
+    fold="$(git -C "$src" rev-parse HEAD)"
+    echo "the rung's own work" >"$src/rung.txt"
+    git -C "$src" add rung.txt && git -C "$src" commit -q -m "the rung"
+    union="$(git -C "$src" rev-parse HEAD)"
+    # `main` IS HEAD, and the fork point is declared — the verify clone's shape.
+    git -C "$src" update-ref refs/djb/base "$fold"
+
+    # --- the wrapper's half ----------------------------------------------------
+    world_new push_union_as_main
+    ans "ec2_describe-instances__Reservations0Instances0StateName" "running"
+    mkdir -p "$W/vhome/i-ua1"
+    printf 'key\n' >"$W/vhome/i-ua1/id_ed25519"
+    printf '%s\n' "$union" >"$REC/git.revparse"
+    printf '%s\n' "$union" >"$REC/ssh/default.out"
+    printf '%s\n' "$union" >"$REC/git.mergebase"
+    git -C "$src" rev-list --count "${fold}..${union}" >"$REC/git.revlist"
+    printf '%s\n' "$fold" >"$REC/git.djbbase"
+    vb -- push i-ua1
+    [ "$VB_RC" = "0" ] || {
+        bad "push exited ${VB_RC}"
+        report
+        return
+    }
+    local flat depth carried first_push
+    flat="$(cat "$REC/git.flat" 2>/dev/null || true)"
+    carried="$(printf '%s\n' "$flat" | sed -n 's/.* update-ref refs\/djb\/base \([0-9a-f]\{40\}\).*/\1/p' | sed -n '1p')"
+    [ "$carried" = "$fold" ] &&
+        ok "a checkout whose main IS HEAD carries the fork point it declares (${fold:0:8})" ||
+        bad "the declared fork point was not carried: update-ref named '${carried:-nothing}', wanted ${fold:0:8}"
+    first_push="$(grep -F 'push --force ssh://' "$REC/git.flat" | sed -n '1p' || true)"
+    case "$first_push" in
+    *"refs/djb/base:refs/djb/base"*) ok "and it goes over first, in a push of its own" ;;
+    *) bad "the first ssh:// push does not carry refs/djb/base: '${first_push}'" ;;
+    esac
+    said "carried    fork point ${fold:0:8} (refs/djb/base, declared in this checkout)" &&
+        ok "the push says which base went and where it came from" ||
+        bad "nothing said which fork point was carried: $(tr '\n' ' ' <"$W/err")"
+    depth="$(printf '%s\n' "$flat" | sed -n 's/.*fetch -q --depth \([0-9]*\) .*/\1/p' | sed -n '1p')"
+    [ -n "$carried" ] && [ -n "$depth" ] || return 0
+
+    # --- the reader's half, with real git ---------------------------------------
+    local mirror="$w/mirror" box="$w/box" list="$w/list" basis="$w/basis" rc=0
+    git init -q --bare "$mirror"
+    git -C "$mirror" fetch -q --depth "$depth" "file://${src}" "+HEAD:refs/heads/main" ||
+        cannot_look "could not build the depth-${depth} mirror the wrapper recorded"
+    git -C "$mirror" update-ref refs/djb/base "$carried" ||
+        cannot_look "the recorded depth ${depth} does not reach the carried base — the mirror has no ${carried:0:8}"
+    git init -q "$box"
+    git -C "$box" config user.email drive@example.invalid
+    git -C "$box" config user.name "verifier box drive"
+    git -C "$box" config receive.denyCurrentBranch updateInstead
+    git -C "$box" config receive.shallowUpdate true
+    echo seed >"$box/seed.txt"
+    git -C "$box" add -A && git -C "$box" commit -q -m seed
+    git -C "$box" checkout -q -b verifier-parking
+    git -C "$box" update-ref -d refs/heads/main
+    git -C "$mirror" push -q --force "$box" refs/djb/base:refs/djb/base >"$w/push.log" 2>&1 &&
+        git -C "$mirror" push -q --force "$box" refs/heads/main:refs/heads/main >>"$w/push.log" 2>&1 ||
+        cannot_look "the replayed transfer did not land: $(tr '\n' ' ' <"$w/push.log")"
+    git -C "$box" reset -q --hard refs/heads/main
+    (
+        cd "$box" || exit 2
+        # shellcheck source=scripts/secrets_scan.sh
+        . "$ROOT/scripts/secrets_scan.sh"
+        DJB_LOOP_SCOPE_BASE=refs/djb/base secrets_scan_changed_files "$list" >"$w/derive.log" 2>&1 || exit $?
+        printf '%s\n' "$SECRETS_SCAN_BASIS" >"$basis"
+    ) || rc=$?
+    [ "$rc" = "0" ] || {
+        bad "the box-side derivation exited ${rc}: $(tr '\n' ' ' <"$w/derive.log")"
+        return
+    }
+    tr '\0' '\n' <"$list" >"$w/list.txt"
+    if grep -Fx rung.txt "$w/list.txt" >/dev/null; then
+        ok "and on the box the reader derives the rung's own file (rung.txt) from the carried base"
+    else
+        bad "the box-side reader did not list rung.txt: '$(tr '\n' ' ' <"$w/list.txt")' — $(cat "$basis")"
+    fi
+    if grep -Fx shared.txt "$w/list.txt" >/dev/null; then
+        bad "the box-side reader listed shared.txt, which the rung never touched"
+    else
+        ok "and nothing the rung did not touch"
+    fi
+    grep -F "CARRIED fork point" "$basis" >/dev/null 2>&1 &&
+        ok "the reader's basis says the fork point was carried" ||
+        bad "the reader's basis does not say it was carried: $(cat "$basis")"
+}
+
+# COMMITS PAST MAIN AND NO FORK POINT AT ALL — a refusal, never an empty scope.
+# HEAD is not main's tip, no `refs/djb/base` is declared, and the history
+# reaches no merge-base (a shallow clone, an unrelated history). The shape this
+# replaces carried `base_sha=""` in silence and the box graded the rung against
+# nothing.
+case_commits_past_main_with_no_fork_point_are_refused_before_anything_leaves() {
+    CURRENT=case_commits_past_main_with_no_fork_point_are_refused_before_anything_leaves
+    world_new push_no_fork_point
+    ans "ec2_describe-instances__Reservations0Instances0StateName" "running"
+    mkdir -p "$W/vhome/i-nf1"
+    printf 'key\n' >"$W/vhome/i-nf1/id_ed25519"
+    printf '%s\t%s\n' "$ROOT" "3333333333333333333333333333333333333333" >"$REC/git.revparse.main"
+    printf '1\n' >"$REC/git.ancestor.rc"
+    vb -- push i-nf1
+    [ "$VB_RC" = "2" ] && ok "exit 2 for a tree with commits past main and no fork point" ||
+        bad "wanted exit 2, got ${VB_RC}"
+    said "git update-ref refs/djb/base <sha>" &&
+        ok "the refusal names the remedy: declare the fork point" ||
+        bad "the refusal does not name the update-ref remedy: $(tr '\n' ' ' <"$W/err")"
+    said "Nothing was pushed" && ok "and says nothing left" ||
+        bad "the refusal does not say what state it left: $(tr '\n' ' ' <"$W/err")"
+    local pushes
+    pushes="$(grep -cF -- " push " "$REC/git.flat" 2>/dev/null || true)"
+    [ "${pushes:-0}" = "0" ] && ok "no push of any kind was attempted — not the vouch, not the transfer" ||
+        bad "${pushes} push(es) were attempted after the fork point could not be found"
+    # AND A DERIVABLE ONE IS NOT REFUSED — the same world with a merge-base.
+    world_new push_fork_point_derived
+    ans "ec2_describe-instances__Reservations0Instances0StateName" "running"
+    mkdir -p "$W/vhome/i-nf2"
+    printf 'key\n' >"$W/vhome/i-nf2/id_ed25519"
+    printf '%s\t%s\n' "$ROOT" "3333333333333333333333333333333333333333" >"$REC/git.revparse.main"
+    printf '3333333333333333333333333333333333333333\n' >"$REC/git.mergebase"
+    printf '1\n' >"$REC/git.revlist"
+    vb -- push i-nf2
+    [ "$VB_RC" = "0" ] && ok "the same tree with a derivable fork point pushes, exit 0" ||
+        bad "a derivable fork point was refused too, exit ${VB_RC}: $(tr '\n' ' ' <"$W/err")"
+}
+
+# A DECLARED BASE THAT IS NOT BEHIND HEAD IS NOT A FORK POINT OF IT. `refs/djb/*`
+# is family-shared in a linked worktree, so a ref somebody typed for another
+# tree can be in view; honouring one that is not an ancestor would carry a
+# stranger's scope to the box.
+case_a_declared_base_that_is_not_behind_head_is_not_carried() {
+    CURRENT=case_a_declared_base_that_is_not_behind_head_is_not_carried
+    world_new push_foreign_base
+    ans "ec2_describe-instances__Reservations0Instances0StateName" "running"
+    mkdir -p "$W/vhome/i-fb1"
+    printf 'key\n' >"$W/vhome/i-fb1/id_ed25519"
+    printf '5555555555555555555555555555555555555555\n' >"$REC/git.djbbase"
+    printf '1\n' >"$REC/git.ancestor.rc"
+    vb -- push i-fb1
+    [ "$VB_RC" = "0" ] || {
+        bad "push exited ${VB_RC}"
+        report
+        return
+    }
+    grep -F "refs/djb/base 5555555555555555555555555555555555555555" "$REC/git.flat" >/dev/null 2>&1 &&
+        bad "a declared base that is not an ancestor of HEAD was carried" ||
+        ok "a declared base that is not behind HEAD is not carried"
 }
 
 case_loop_detaches_the_gate_on_the_box_and_never_pipes_it() {
@@ -6888,12 +7099,49 @@ case_the_territory_this_change_does_not_own_did_not_move() {
     # VERIFIER's clone, which is the union of the branch and a main that has
     # moved since the fold. The honest question is "did THIS branch change
     # it", and `merge-base` is where that question is asked.
-    local base f dirty="" a b
-    base="$(git merge-base main HEAD 2>/dev/null || true)"
+    #
+    # AND A CARRIED FORK POINT IS ASKED BEFORE `main` IS. `merge-base main HEAD`
+    # is only the fork point where `main` is the tip this branch forked from. On
+    # a pull-request runner `main` lags the last merged train, so "this branch"
+    # became the union of several trains INCLUDING the fold that legitimately
+    # moved these files (a consumer's train PR: 568 passed, 2 failed); on a box
+    # `main` IS HEAD and the case measured nothing. So: a declared
+    # `refs/djb/base` (verify_start.sh writes it into every verify clone; the
+    # box push carries it), then `DJB_LOOP_SCOPE_BASE` (what the box's gate is
+    # handed), then `merge-base main HEAD`. Each is honoured only when it names
+    # a commit behind HEAD.
+    local base="" base_from="" cand f dirty="" a b owned
+    cand="$(git rev-parse -q --verify 'refs/djb/base^{commit}' 2>/dev/null || true)"
+    if [ -n "$cand" ] && git merge-base --is-ancestor "$cand" HEAD 2>/dev/null; then
+        base="$cand"
+        base_from="refs/djb/base"
+    fi
+    if [ -z "$base" ] && [ -n "${DJB_LOOP_SCOPE_BASE:-}" ]; then
+        cand="$(git rev-parse -q --verify "${DJB_LOOP_SCOPE_BASE}^{commit}" 2>/dev/null || true)"
+        if [ -n "$cand" ] && git merge-base --is-ancestor "$cand" HEAD 2>/dev/null; then
+            base="$cand"
+            base_from="DJB_LOOP_SCOPE_BASE"
+        fi
+    fi
+    if [ -z "$base" ]; then
+        base="$(git merge-base main HEAD 2>/dev/null || true)"
+        base_from="merge-base main HEAD"
+    fi
     [ -n "$base" ] || {
         bad "no merge base between main and HEAD — this claim has no other side"
         return
     }
+    # THE CLAIM IS FALSIFIABLE ONLY FOR A CHANGE THAT OWNS THIS TERRITORY. "The
+    # files this change does not own did not move" is a promise a verifier-box
+    # change makes; for any other change there is nothing it promised, and
+    # asserting it anyway reds every fold train for a file it was entitled to
+    # move. The owner is read off the diff from the fork point to the working
+    # tree (committed and uncommitted): the wrapper or this drive.
+    owned="$(git diff --name-only "$base" -- "$VB" scripts/tests/test_verifier_box.sh 2>/dev/null || true)"
+    if [ -z "$owned" ]; then
+        skip "not a verifier-box change — the claim has no owner here (base ${base:0:8} from ${base_from}; the diff names neither ${VB} nor its drive)"
+        return
+    fi
     for f in scripts/pm_push.sh scripts/check.sh quality/rules.yaml; do
         a="$(git rev-parse "${base}:${f}" 2>/dev/null || true)"
         b="$(git rev-parse "HEAD:${f}" 2>/dev/null || true)"
@@ -6902,7 +7150,7 @@ case_the_territory_this_change_does_not_own_did_not_move() {
             return
         fi
         [ "$a" = "$b" ] || dirty="${dirty}
-      ${f}  main ${a:0:8} vs HEAD ${b:0:8}"
+      ${f}  fork point (${base_from}) ${a:0:8} vs HEAD ${b:0:8}"
         git diff --quiet HEAD -- "$f" 2>/dev/null || dirty="${dirty}
       ${f}  uncommitted in the working tree"
     done
@@ -7502,6 +7750,9 @@ case_leg_passes_the_shards_own_status_through
 case_leg_without_a_unit_or_log_is_refused
 case_the_push_carries_the_rungs_fork_point_as_a_ref
 case_a_rung_too_far_from_its_fork_point_carries_nothing_and_says_so
+case_a_union_pushed_as_main_carries_the_fork_point_it_declares
+case_commits_past_main_with_no_fork_point_are_refused_before_anything_leaves
+case_a_declared_base_that_is_not_behind_head_is_not_carried
 case_wait_passes_the_gates_own_status_through
 case_harvest_brings_exactly_the_banked_row_home
 case_harvest_refuses_a_log_that_banked_nothing
@@ -7590,7 +7841,10 @@ case_the_host_key_posture_is_argued_where_it_is_used
 case_nothing_this_wrapper_promised_not_to_touch_moved
 
 echo ""
-echo "test_verifier_box: ${PASSED} passed, ${FAILED} failed"
+echo "test_verifier_box: ${PASSED} passed, ${FAILED} failed, ${SKIPPED} skipped"
+if [ "$SKIPPED" -gt 0 ]; then
+    echo "  skipped, each with the shape that has no owner here:${SKIP_REASONS}"
+fi
 drive_finished
 [ "$FAILED" = "0" ] || exit 1
 exit 0

@@ -37,7 +37,7 @@ from apps.core.schedules import ScheduleDeclaration
 log = get_logger("apps.core.activities")
 
 
-@activity.defn(name="probe_integrations")
+@activity.defn(name="probe_integrations", no_thread_cancel_exception=True)
 def probe_integrations() -> dict[str, str]:
     """Read the census, say the loud parts out loud, hand back `{key: status}`.
 

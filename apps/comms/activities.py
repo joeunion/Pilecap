@@ -64,7 +64,7 @@ from apps.workflows.context import workflow_context
 SENDABLE: frozenset[str] = services.SENDABLE
 
 
-@activity.defn(name="deliver_message")
+@activity.defn(name="deliver_message", no_thread_cancel_exception=True)
 def deliver_message(payload: DeliverMessage) -> DeliveryAttempt:
     """Render the message and hand it to its transport — **if the wall still says so.**
 
@@ -213,7 +213,7 @@ def deliver_message(payload: DeliverMessage) -> DeliveryAttempt:
         close_old_connections()
 
 
-@activity.defn(name="finish_message")
+@activity.defn(name="finish_message", no_thread_cancel_exception=True)
 def finish_message(payload: MessageOutcome) -> str:
     """Record how the delivery ended, through the service that owns the event.
 
@@ -255,7 +255,7 @@ def finish_message(payload: MessageOutcome) -> str:
         close_old_connections()
 
 
-@activity.defn(name="send_step")
+@activity.defn(name="send_step", no_thread_cancel_exception=True)
 def send_step(payload: SendStep) -> StepStarted:
     """Start one later rung of an escalation, and say whether it may go out.
 

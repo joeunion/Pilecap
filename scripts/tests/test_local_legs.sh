@@ -280,15 +280,26 @@ case_an_absent_drawer_is_byte_identical() {
     # listings — the checkout's own, which has no `scripts/local/`, against one
     # taken with the reader pointed at an empty directory — because the only
     # honest form of "byte-identical" is a byte comparison.
+    #
+    # THE ABSENT DRAWER IS POINTED AT, NOT ASSUMED. "This checkout has no
+    # `scripts/local/`" is true of the template and false of every product that
+    # uses the seam, so on a product the baseline carried the product's own leg
+    # and the case read its own drawer as a defect. Both drawers — legs and
+    # drives — are pointed at a path that does not exist, which is the exact
+    # `[ -d ]` arm a tree with no `scripts/local/` takes; on the template it is
+    # the same listing byte for byte, and on a product it is the no-drawer
+    # listing the promise is about.
     CURRENT="an absent drawer leaves the listing byte-identical"
-    local a b empty
+    local a b empty absent
     a="${WORK}/listing-absent.tsv"
     b="${WORK}/listing-empty.tsv"
     empty="${WORK}/empty-drawer"
+    absent="${WORK}/no-drawer-at-all"
     mkdir -p "$empty"
-    ./scripts/check.sh --list-legs >"$a" 2>"${WORK}/listing-absent.err" ||
-        cannot_look "this checkout's own --list-legs exited non-zero — there is no baseline to compare against"
-    (DJB_LOCAL_LEGS_DIR="$empty" ./scripts/check.sh --list-legs) >"$b" 2>&1 ||
+    [ ! -e "$absent" ] || cannot_look "${absent} exists — the absent-drawer baseline needs a path that does not"
+    (DJB_LOCAL_LEGS_DIR="$absent" DJB_LOCAL_DRIVES_DIR="$absent" ./scripts/check.sh --list-legs) >"$a" 2>"${WORK}/listing-absent.err" ||
+        cannot_look "--list-legs with no drawer exited non-zero — there is no baseline to compare against"
+    (DJB_LOCAL_LEGS_DIR="$empty" DJB_LOCAL_DRIVES_DIR="$absent" ./scripts/check.sh --list-legs) >"$b" 2>&1 ||
         cannot_look "--list-legs over an empty drawer exited non-zero"
     if cmp -s "$a" "$b"; then
         ok "no drawer and an empty drawer print the same listing, byte for byte"
@@ -420,10 +431,14 @@ case_the_verdict_row_names_each_local_leg() {
     *",local:canary,"*) ok "gate_full_legs names local:canary when the drawer holds it" ;;
     *) bad "gate_full_legs did not name local:canary (got '${out}')" ;;
     esac
+    # WITH NO DRAWER — POINTED AT, NOT ASSUMED: the reader is aimed at a
+    # path that does not exist, the `[ -d ]` arm a tree with no
+    # `scripts/local/legs/` takes. Reading "this checkout's own" answered the
+    # product's drawer on every product that has one.
     out=$(
         set +e
         cd "$ROOT" || exit 2
-        bash -c '. scripts/gate_ledger.sh; gate_full_legs'
+        DJB_LOCAL_LEGS_DIR="${WORK}/no-leg-drawer-at-all" bash -c '. scripts/gate_ledger.sh; gate_full_legs'
     )
     case ",${out}," in
     *",local:"*) bad "gate_full_legs names a local leg with no drawer in the tree (got '${out}')" ;;

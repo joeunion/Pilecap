@@ -335,15 +335,22 @@ db_checkout_root() {
 # above the DATABASE_NAME line the pin is read from" — the LAST one, matching
 # django-environ's last-wins reading and `db_env_file_pin`'s. A `# pinned`
 # anywhere else in the file is still not this line's marker.
+#
+# THE GRAMMAR IS ONE CONSTANT, and it has two readers: `db_pin_marked` below,
+# and `setup.sh`'s env-sync render, which rebuilds `.env` from `.env.example`
+# and must carry the marker line through the rebuild or it erases the pin it
+# was told to keep. Both hand it to awk through `ENVIRON`, so there is no second
+# spelling of the regex anywhere to be left behind when the grammar moves.
+DB_PIN_MARKER_ERE='^[[:space:]]*#[[:space:]]*pinned([[:space:]].*)?$'
 db_pin_marked() {
     local root
     root="$(db_checkout_root)"
     [ -f "${root}/.env" ] || return 1
     # `marked` is re-decided at every DATABASE_NAME line, so the LAST one wins,
     # which is the line `db_env_file_pin` reports and the one environ resolves.
-    awk '
+    DB_PIN_MARKER_ERE="$DB_PIN_MARKER_ERE" awk '
         /^DATABASE_NAME=/ { marked = previous_line_is_marker }
-        { previous_line_is_marker = ($0 ~ /^[[:space:]]*#[[:space:]]*pinned([[:space:]].*)?$/) }
+        { previous_line_is_marker = ($0 ~ ENVIRON["DB_PIN_MARKER_ERE"]) }
         END { exit(marked ? 0 : 1) }
     ' "${root}/.env" 2>/dev/null
 }
@@ -361,6 +368,83 @@ db_pin_line_has_inline_comment() {
     *"#"*) return 0 ;;
     *) return 1 ;;
     esac
+}
+
+# --- THE DECISION TABLE, ONCE ------------------------------------------------
+#
+# db_pin_decide — what does this checkout's `.env` pin SAY, against the
+# derivation? One function, and every reader of the pin that has to act on the
+# answer calls it: `db_pin_leg` (the gate's refusal), `setup.sh` (the writer
+# that reconciles) and `db_announce_pin_disagreement` (the source-time note).
+#
+# WHY IT IS ONE FUNCTION. The leg and setup.sh used to carry the table twice,
+# and the two copies disagreed on one cell: `.env` carrying an UNMARKED pin
+# that differs from the derivation, with the same name exported in the shell
+# (a shell that sourced db.sh before the checkout moved). setup.sh wrote the
+# exported name back over the pin and migrated it; the leg read the same
+# `.env`, found a disagreement with no marker, and refused — naming setup.sh as
+# the remedy. The remedy was the instrument that disagreed with it, and a
+# checkout went round that loop until a human read both. One table has no
+# second cell to disagree with (principle 9: one owner, one resolver).
+#
+# IT DECIDES AND PRINTS NOTHING. Each caller owns its voice — the leg refuses,
+# setup.sh reconciles, the note notes — and none of them re-derives the
+# verdict. It sets four globals:
+#
+#   DB_PIN_VERDICT   no-env      no .env in the checkout
+#                    unreadable  an .env that cannot be read
+#                    no-line     an .env with no DATABASE_NAME line
+#                    inline      the operative line carries an inline comment
+#                                (the corrupting form; THE MARKER'S GRAMMAR)
+#                    agree       the pin equals the derivation
+#                    marked      the pin differs and the marker sits above it
+#                    disagree    the pin differs and nothing marks it
+#   DB_PIN_VALUE     the pin, raw as environ reads it (empty for the first three)
+#   DB_PIN_DERIVED   `db_name` for this checkout, computed now
+#   DB_PIN_MARKED    1 when the marker sits directly above the operative line,
+#                    WHATEVER the verdict. setup.sh's "leave it alone" reads
+#                    this rather than the verdict: an inline line under a marker
+#                    is refused by the leg, but it is still a line a human
+#                    marked, and what setup.sh may OVERWRITE is a question about
+#                    the marker, not about the comparison.
+#
+# THE ORDER IS THE LEG'S ORDER and it is load-bearing: an inline comment is
+# judged before agreement (the value environ reads carries the comment, so an
+# "agreeing" inline line is the worst case, not the safe one), and agreement
+# before the marker (a marked pin that agrees has nothing to excuse).
+db_pin_decide() {
+    local root
+    DB_PIN_VERDICT=""
+    DB_PIN_VALUE=""
+    DB_PIN_MARKED=""
+    DB_PIN_DERIVED="$(db_name)"
+    root="$(db_checkout_root)"
+    if [ ! -f "${root}/.env" ]; then
+        DB_PIN_VERDICT="no-env"
+        return 0
+    fi
+    if [ ! -r "${root}/.env" ]; then
+        DB_PIN_VERDICT="unreadable"
+        return 0
+    fi
+    DB_PIN_VALUE="$(db_env_file_pin)"
+    if [ -z "$DB_PIN_VALUE" ]; then
+        DB_PIN_VERDICT="no-line"
+        return 0
+    fi
+    if db_pin_marked; then
+        DB_PIN_MARKED=1
+    fi
+    if db_pin_line_has_inline_comment; then
+        DB_PIN_VERDICT="inline"
+    elif [ "$DB_PIN_VALUE" = "$DB_PIN_DERIVED" ]; then
+        DB_PIN_VERDICT="agree"
+    elif [ -n "$DB_PIN_MARKED" ]; then
+        DB_PIN_VERDICT="marked"
+    else
+        DB_PIN_VERDICT="disagree"
+    fi
+    return 0
 }
 
 # --- THE REFUSAL SEAM -------------------------------------------------------
@@ -532,32 +616,35 @@ db_pin_leg() {
         echo "  db-pin mode: ${mode} — this checkout's database must exist"
     fi
     root="$(db_checkout_root)"
-    if [ ! -f "${root}/.env" ]; then
+    # THE VERDICT IS `db_pin_decide`'S. This function maps it to a voice and
+    # an exit status and decides nothing itself — setup.sh reads the same
+    # verdict, so the refusal below and the reconciliation there cannot come to
+    # disagree about which cell a checkout is in.
+    db_pin_decide
+    pin="$DB_PIN_VALUE"
+    derived="$DB_PIN_DERIVED"
+    if [ "$DB_PIN_VERDICT" = "no-env" ]; then
         # No file, no second opinion: the derivation is the only truth here.
-        derived="$(db_name)"
         echo "  no .env in this checkout — the derivation is the only name (${derived})"
         db_pin_existence "$mode" "$derived" derived
         return $?
     fi
-    if [ ! -r "${root}/.env" ]; then
+    if [ "$DB_PIN_VERDICT" = "unreadable" ]; then
         gate_refuse "${root}/.env exists and cannot be read — the pin could not be compared."
         return 2
     fi
-    pin="$(db_env_file_pin)"
-    if [ -z "$pin" ]; then
-        derived="$(db_name)"
+    if [ "$DB_PIN_VERDICT" = "no-line" ]; then
         echo "  .env pins no DATABASE_NAME — the derivation is the only name (${derived})"
         db_pin_existence "$mode" "$derived" derived
         return $?
     fi
-    derived="$(db_name)"
     # THE CORRUPTED LINE IS REFUSED BEFORE ANYTHING IS COMPARED, and before the
     # marker can excuse it, because the comparison is not the point: whatever
     # the value looks like to the left of the `#`, environ and docker both read
     # the `#` and everything after it AS PART OF THE NAME. A line that "agrees"
     # here is the worst case of the three, not the safe one — it passed
     # silently while a bare `manage.py` opened a different database.
-    if db_pin_line_has_inline_comment; then
+    if [ "$DB_PIN_VERDICT" = "inline" ]; then
         # The value with the comment cut off AND the whitespace that separated
         # them trimmed — printing `djb_x  ` with two trailing spaces as the
         # suggested rewrite would hand the reader a second corrupt line.
@@ -580,18 +667,25 @@ db_pin_leg() {
         echo "   ./scripts/setup.sh to reconcile.)" >&2
         return 1
     fi
-    if [ "$pin" = "$derived" ]; then
+    if [ "$DB_PIN_VERDICT" = "agree" ]; then
         echo "  .env and the derivation agree: ${derived}"
         db_pin_existence "$mode" "$derived" derived
         return $?
     fi
-    if db_pin_marked; then
+    if [ "$DB_PIN_VERDICT" = "marked" ]; then
         # Declared deliberate. Silent ABOUT THE PIN by design — see the block
         # above. The existence question is a different question and is still
         # asked: a deliberate name that opens nothing is exactly the shape above,
         # and "I meant this name" is not "this name is there".
         db_pin_existence "$mode" "$pin" ".env pin"
         return $?
+    fi
+    # Every verdict but one is handled above; a verdict this function has no
+    # cell for is the table and its reader disagreeing, which is broken
+    # enforcement and never a refusal blamed on the checkout.
+    if [ "$DB_PIN_VERDICT" != "disagree" ]; then
+        gate_refuse "db-pin: db_pin_decide answered '${DB_PIN_VERDICT}', which db_pin_leg has no cell for."
+        return 2
     fi
     gate_refuse "DATABASE_NAME: this checkout's .env and its derivation DISAGREE."
     echo "     .env pins:  ${pin}" >&2
@@ -611,7 +705,8 @@ db_pin_leg() {
     echo "       form this file used to prescribe corrupts the very name it pins." >&2
     echo "       The name stays, setup.sh stops rewriting it, and this leg goes silent." >&2
     echo "     * RECONCILE — re-run ./scripts/setup.sh, which rewrites the line to the" >&2
-    echo "       derivation and prepares that database." >&2
+    echo "       derivation, says which name it overrode, and prepares that database" >&2
+    echo "       (it reads this same verdict — db_pin_decide — so it cannot disagree)." >&2
     return 1
 }
 
@@ -836,21 +931,38 @@ db_pin_existence() {
 # deserves a one-line heads-up rather than a surprise. It points at the leg
 # instead of restating the fixes, so there is exactly one place that spells
 # them out and it is the one with an exit status.
+#
+# It reads `db_pin_decide`'s verdict like every other reader of the pin. The
+# `inline` cell prints the refusing form whether or not a marker sits above
+# the line: the leg refuses an inline comment marked or not, so a note saying
+# "(# pinned)" over it would be telling the reader the one thing that is false.
 db_announce_pin_disagreement() {
-    local pin derived
-    pin="$(db_env_file_pin)"
-    [ -n "$pin" ] || return 0
-    derived="$(db_name)"
-    [ "$pin" != "$derived" ] || return 0
-    if db_pin_marked; then
+    db_pin_decide
+    case "$DB_PIN_VERDICT" in
+    marked)
         printf 'note: DATABASE_NAME pinned to %s by .env (# pinned); derivation says %s\n' \
-            "$pin" "$derived" >&2
-    else
+            "$DB_PIN_VALUE" "$DB_PIN_DERIVED" >&2
+        ;;
+    disagree | inline)
         printf 'note: DATABASE_NAME pinned to %s by .env; derivation says %s — the gate'"'"'s db-pin leg refuses this (./scripts/check.sh --fast says what to do)\n' \
-            "$pin" "$derived" >&2
-    fi
+            "$DB_PIN_VALUE" "$DB_PIN_DERIVED" >&2
+        ;;
+    esac
+    return 0
 }
-db_announce_pin_disagreement
+# THE NOTE IS NOT PRINTED WHERE THE CALLER'S OUTPUT IS A TABLE. `check.sh
+# --list-legs` sources this file and its whole output is the unit table a CI
+# job or a drive reads line by line — and a reader that captures stderr with
+# stdout (`test_list_legs.sh` does, so a refusal is never lost) read the note
+# as a unit row: `every line is <unit>\t<needs>…` red, a dry `--leg note:…`,
+# exit 2, on every checkout whose pin disagrees — `# pinned` included. So the
+# caller whose output is data says so, by setting `DB_PIN_NOTE_OFF` in its OWN
+# shell before the source (never exported: a child still gets its note). The
+# leg is untouched by it — the note is the heads-up, the leg is the
+# enforcement, and a listing runs no leg.
+if [ -z "${DB_PIN_NOTE_OFF:-}" ]; then
+    db_announce_pin_disagreement
+fi
 
 POSTGRES_USER="${POSTGRES_USER:-djb}"
 export POSTGRES_USER

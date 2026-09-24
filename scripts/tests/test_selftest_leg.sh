@@ -447,13 +447,17 @@ run_leg() {
         export DJB_FAKE_INPUTS_RC
         DJB_SELFTEST_DRIVES_DIR="$dir"
         export DJB_SELFTEST_DRIVES_DIR
-        # SET ONLY WHEN A CASE ASKED FOR ONE, so every case written before the
-        # drawer existed drives a leg with no product drives at all — which is
-        # this repository's own shape, and the negative those cases now carry.
-        if [ -n "$LEG_LOCAL_DRIVES" ]; then
-            DJB_LOCAL_DRIVES_DIR="$LEG_LOCAL_DRIVES"
-            export DJB_LOCAL_DRIVES_DIR
-        fi
+        # THE CASE'S DRAWER WHEN IT ASKED FOR ONE, AND NO DRAWER OTHERWISE —
+        # POINTED AT, NOT ASSUMED. Every case written before the drawer existed
+        # drives a leg with no product drives at all. "This tree's own drawer"
+        # meant none only on the template: on a product the REAL drives joined
+        # every scratch set, and every typed count (4 green, 1 red …), every
+        # banked reuse and every shard cost below it went red for the
+        # product's drives rather than the property. A path that does not
+        # exist is the `[ -d ]` arm a tree with no drawer takes, so on the
+        # template the run is the same one.
+        DJB_LOCAL_DRIVES_DIR="${LEG_LOCAL_DRIVES:-${WORK}/no-drive-drawer-at-all}"
+        export DJB_LOCAL_DRIVES_DIR
         if [ -n "$LEG_DURATIONS" ]; then
             DJB_GATE_MEMBER_DURATIONS="$LEG_DURATIONS"
             export DJB_GATE_MEMBER_DURATIONS

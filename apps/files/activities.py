@@ -112,7 +112,7 @@ def _restored(version: FileVersion) -> tuple[Tenant, Organization | None]:
     return version.tenant, org
 
 
-@activity.defn(name="verify_object")
+@activity.defn(name="verify_object", no_thread_cancel_exception=True)
 def verify_object(payload: FinalizeUpload) -> VerifiedObject:
     """Go and look at what is actually at that key, and measure it.
 
@@ -152,7 +152,7 @@ def verify_object(payload: FinalizeUpload) -> VerifiedObject:
         close_old_connections()
 
 
-@activity.defn(name="record_stored")
+@activity.defn(name="record_stored", no_thread_cancel_exception=True)
 def record_stored(payload: StoreMeasurement) -> str:
     """Write the measurement down, through the service that owns the transaction.
 
@@ -188,7 +188,7 @@ def record_stored(payload: StoreMeasurement) -> str:
         close_old_connections()
 
 
-@activity.defn(name="sweep_pending_uploads")
+@activity.defn(name="sweep_pending_uploads", no_thread_cancel_exception=True)
 def sweep_pending_uploads(window: SweepPendingUploads) -> SweepOutcome:
     """Expire the abandoned uploads, through the service that owns the decision.
 

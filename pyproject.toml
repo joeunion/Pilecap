@@ -207,7 +207,7 @@ target-version = "py312"
 # The canary and negative fixtures are deliberately wrong Python — planted
 # violations the house-rules engine proves it can catch. Linting them would
 # demand they stop being wrong, which is the one thing they must stay.
-extend-exclude = ["*/migrations/*", "quality/canary", "quality/negative"]
+extend-exclude = ["*/migrations/*", "quality/canary", "quality/negative", "quality/local/canary", "quality/local/negative"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "DJ"]

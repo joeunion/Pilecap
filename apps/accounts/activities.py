@@ -65,7 +65,7 @@ from apps.core.time import now
 log = get_logger(__name__)
 
 
-@activity.defn(name="apply_identity_config")
+@activity.defn(name="apply_identity_config", no_thread_cancel_exception=True)
 def apply_identity_config(payload: IdentityConfigSync) -> IdentityConfigApplied:
     """Make Zitadel agree with one configuration row, and record what it became.
 
@@ -440,7 +440,7 @@ def _idp_name(connection: SsoConnection) -> str:
     return f"{connection.tenant.slug}:{connection.pk}"
 
 
-@activity.defn(name="provision_invited_identity")
+@activity.defn(name="provision_invited_identity", no_thread_cancel_exception=True)
 def provision_invited_identity(payload: InvitedPerson) -> InvitedIdentity:
     """Give an invited person an account they can set a password on. **Both calls.**
 

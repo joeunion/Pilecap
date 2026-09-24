@@ -739,6 +739,23 @@ git -C "$DEST" merge-base --is-ancestor "$CLONE_HEAD" HEAD ||
         "The merge reported success over a tree that is not the union."
 
 say "verified     both parents are ancestors of the union"
+
+# THE FOLD POINT TRAVELS WITH THE TREE, AS `refs/djb/base` IN THE CLONE. It was
+# printed and never recorded, so a clone whose union is later pushed as a box's
+# `main` — or committed as its own `main` — had no fork point anyone could read:
+# `merge-base HEAD main` is HEAD there, and the box's `--loop` measured an empty
+# scope. `scripts/verifier_box.sh` (cmd_push) prefers this ref over its own
+# derivation and pushes it; the box's gate reads it through
+# `DJB_LOOP_SCOPE_BASE` (scripts/secrets_scan.sh). A CLONE, NOT A WORKTREE: the
+# ref lives in this clone's own git dir and in no other checkout's.
+if [ -n "$FOLD_POINT" ]; then
+    git -C "$DEST" update-ref refs/djb/base "$FOLD_POINT" ||
+        cannot_verify "could not record the fold point ${FOLD_POINT} as refs/djb/base in the clone." \
+            "A box pushed from this clone would carry no fork point."
+    say "fork point   refs/djb/base = $(git -C "$DEST" rev-parse --short "$FOLD_POINT") (the fold point, recorded for the box push)"
+else
+    say "fork point   NOT recorded — the branch and main share no merge-base, so there is no fold point to carry"
+fi
 step_end
 
 # =============================================================================

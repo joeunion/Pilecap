@@ -1156,6 +1156,49 @@ case_list_legs_needs_no_venv_no_docker_and_is_fast() {
     rm -rf "$plant"
 }
 
+case_a_disagreeing_pin_does_not_reach_the_listing() {
+    # THE LISTING IS THE UNIT TABLE AND NOTHING ELSE, whatever this checkout's
+    # `.env` pins. db.sh prints a `note: DATABASE_NAME pinned …` on stderr at
+    # source time when the pin disagrees with the derivation — `# pinned`
+    # included — and every reader that captures both streams (this drive's own
+    # `run_listing` does, so a refusal is never lost) read it as a unit row:
+    # the grammar case red, the doc-table case red, a dry `--leg note:…` exit 2.
+    # Every rung that renamed its branch after rung_start hit it. So: a clone
+    # with a `# pinned` pin that disagrees, and one with no `.env`, and the two
+    # listings must be byte-identical — both streams.
+    local plant="${WORK}/plant-pinned" clean="${WORK}/plant-unpinned" rc_p=0 rc_c=0
+    CURRENT="a # pinned pin that disagrees does not reach --list-legs"
+    clone_into "$plant"
+    clone_into "$clean"
+    printf '# pinned\nDATABASE_NAME=djb_zzz_list_legs_pin\n' >"${plant}/.env"
+    (cd "$plant" && ./scripts/check.sh --list-legs) >"${WORK}/pinned-list.out" 2>&1 || rc_p=$?
+    (cd "$clean" && ./scripts/check.sh --list-legs) >"${WORK}/clean-list.out" 2>&1 || rc_c=$?
+    LIST_OUT="${WORK}/pinned-list.out"
+    LIST_RC="$rc_p"
+    listing_floor
+    if [ "$rc_p" = "0" ] && [ "$rc_c" = "0" ]; then
+        ok "both listings exit 0"
+    else
+        bad "the pinned clone's listing exits ${rc_p}, the clean one's ${rc_c}"
+    fi
+    if cmp -s "${WORK}/pinned-list.out" "${WORK}/clean-list.out"; then
+        ok "byte-identical to a clean checkout's listing, stderr included"
+    else
+        bad "the listings differ: $(diff "${WORK}/clean-list.out" "${WORK}/pinned-list.out" | sed -n 2p)"
+    fi
+    # AND THE NOTE STILL EXISTS where it is a heads-up, so the case above is
+    # not green because the note was deleted: sourcing db.sh in the same clone
+    # outside the listing still prints it.
+    CURRENT="and the note still prints outside the listing"
+    (cd "$plant" && . scripts/db.sh) >"${WORK}/pinned-source.out" 2>&1 || true
+    if grep -q '^note: DATABASE_NAME pinned to djb_zzz_list_legs_pin' "${WORK}/pinned-source.out"; then
+        ok "a plain source of db.sh in the pinned clone still notes the disagreement"
+    else
+        bad "the note is gone everywhere, not only from the listing"
+    fi
+    rm -rf "$plant" "$clean"
+}
+
 case_list_legs_precedes_the_lease() {
     # G9.4's position assertion, in the A2.5/A5F.2 shape: derived line numbers,
     # never typed ones. A listing that queued behind somebody else's full gate
@@ -1539,31 +1582,190 @@ PY_PLANT2
     rm -rf "$plant"
 }
 
-case_the_build_contract_table_equals_the_listing() {
-    # G9.7. The docs carry the unit table, and the command is the authority: the
-    # table in `build-contract.md` is compared field for field against what
-    # `--list-legs` prints, so a doc that drifts is a red rather than a reading.
-    local doc=docs/product/build-contract.md unit needs shards legs row missing=""
-    CURRENT="every unit the listing prints has its row in build-contract.md"
-    [ -f "$doc" ] || {
-        bad "$doc is not in this tree"
+# build_contract_rows <checkout> — THE ONE READER of the unit table's rows: the
+# template-owned `build-contract.md` and, when the product has written one, its
+# `.local.md` sibling beside it, concatenated. Exit 1 when the template's own
+# document is not in the checkout.
+#
+# WHY A UNION. A product's gate units — `local`, and
+# any unit a drawer leg names (`frontend`) — are listed by `--list-legs` like
+# the template's, and a case that looked for their rows in the TEMPLATE's
+# table made a product edit a template file to add a leg: the fold conflict the
+# drawer convention exists to prevent (ADR platform-extension-1). So a
+# product's rows live in the product-owned sibling (`build-contract.md`'s
+# ownership table: `*.local.md` is product-owned and never shipped), and the
+# comparison reads both.
+#
+# THE SIBLING'S PATH IS DERIVED FROM ITS ORIGINAL, NOT SPELLED. It is correctly
+# absent on the template, and a spelled docs pointer to it is one the
+# dangling-docs census judges dangling (its one drawer exemption is an exact
+# path), while the drive-key floor refuses a declared path that expands to
+# nothing. Deriving it also keeps the pairing true by construction: the sibling
+# is always the table's own name with `.local` before `.md`.
+BUILD_CONTRACT_DOC=docs/product/build-contract.md
+BUILD_CONTRACT_SIBLING="${BUILD_CONTRACT_DOC%.md}.local.md"
+build_contract_rows() {
+    local dir=$1
+    [ -f "${dir}/${BUILD_CONTRACT_DOC}" ] || return 1
+    cat "${dir}/${BUILD_CONTRACT_DOC}"
+    [ ! -f "${dir}/${BUILD_CONTRACT_SIBLING}" ] || cat "${dir}/${BUILD_CONTRACT_SIBLING}"
+    return 0
+}
+
+# build_contract_verdict <checkout> <listing> — ok/bad on the union of the two
+# tables against the listing, line for line. A unit carrying ANY `local:`
+# member is the PRODUCT's row — a unit made of drawer legs (`local`, a unit a
+# leg names), or a template unit a drawer GREW (`selftest` gains `local:<name>`
+# for every product drive) — and its remedy names the sibling and the whole row
+# as listed; a unit of template members only is the template's own table.
+build_contract_verdict() {
+    local dir=$1 listing=$2 rows unit needs shards legs row missing="" product="" template="" remedy=""
+    rows="${WORK}/build-contract-rows.md"
+    build_contract_rows "$dir" >"$rows" || {
+        bad "${BUILD_CONTRACT_DOC} is not in this tree"
         return 0
     }
+    while IFS=$'\t' read -r unit needs shards legs; do
+        [ -n "${unit:-}" ] || continue
+        row="| \`${unit}\` | ${needs} | ${shards} | ${legs} |"
+        grep -qF "$row" "$rows" && continue
+        missing="${missing}${missing:+; }${unit}"
+        if printf '%s\n' "$legs" | tr ',' '\n' | grep '^local:' >/dev/null; then
+            product="${product}${product:+; }${unit}"
+            remedy="${remedy}
+      ${row}"
+        else
+            template="${template}${template:+; }${unit}"
+        fi
+    done <"$listing"
+    if [ -z "$missing" ]; then
+        ok "$(grep -c . "$listing") row(s), each byte-identical to the listing's own line"
+        return 0
+    fi
+    [ -z "$template" ] ||
+        bad "build-contract.md has no matching row for: ${template} — the doc and the command disagree"
+    [ -z "$product" ] ||
+        bad "no byte-identical row for the product's own unit(s): ${product} — a unit carrying drawer members (local:<name>) owes its whole row, as listed, in ${BUILD_CONTRACT_SIBLING}, the product-owned sibling of ${BUILD_CONTRACT_DOC} (never in the template's table, which a fold would conflict on). Write there:${remedy}"
+    return 0
+}
+
+case_the_build_contract_table_equals_the_listing() {
+    # G9.7. The docs carry the unit table, and the command is the authority: the
+    # table in `build-contract.md` — with its product-owned `.local.md` sibling,
+    # when there is one — is compared field for field against what
+    # `--list-legs` prints, so a doc that drifts is a red rather than a reading.
+    CURRENT="every unit the listing prints has its row in build-contract.md"
     run_listing_here
     if [ "$LIST_RC" != "0" ]; then
         bad "--list-legs exits ${LIST_RC}, so there is nothing to compare"
         return 0
     fi
-    while IFS=$'\t' read -r unit needs shards legs; do
-        [ -n "${unit:-}" ] || continue
-        row="| \`${unit}\` | ${needs} | ${shards} | ${legs} |"
-        grep -qF "$row" "$doc" || missing="${missing}${missing:+; }${unit}"
-    done <"$LIST_OUT"
-    if [ -z "$missing" ]; then
-        ok "$(grep -c . "$LIST_OUT") row(s), each byte-identical to the listing's own line"
-    else
-        bad "build-contract.md has no matching row for: ${missing} — the doc and the command disagree"
+    build_contract_verdict "$ROOT" "$LIST_OUT"
+}
+
+case_a_products_unit_row_lives_in_the_local_sibling() {
+    # A clone shaped like a product: one drawer leg in `unit: local` (the
+    # header `test_local_legs.sh`'s `plant_leg` writes), so the listing grows a
+    # `local` row the template's table cannot carry. WITH the row in the
+    # sibling the comparison is green; WITHOUT it the red names `local`, the
+    # sibling and the row to write. Both halves in one clone, the sibling
+    # written and then removed — the plant is this case's own. The verdict is
+    # captured to a file and judged here, so its own ok/bad lines are not
+    # counted twice. THEN A PRODUCT DRIVE: a `scripts/local/drives/` member
+    # grows the TEMPLATE's `selftest` row by `local:<name>`, and that row too is
+    # the product's to carry in the sibling, whole — the red names it there and
+    # never sends the product to the template's table.
+    local clone sibling expected got verdict before_p before_f grown
+    clone="${WORK}/product-unit-clone"
+    clone_into "$clone"
+    mkdir -p "${clone}/scripts/local/legs"
+    {
+        echo '#!/usr/bin/env bash'
+        echo '# >>> leg v1 >>>'
+        echo '# unit: local'
+        echo '# needs: none'
+        echo '# tier: full'
+        echo '# two-means: broken'
+        echo '# <<< leg <<<'
+        echo 'echo "x: this is a planted product leg"'
+        echo 'exit 0'
+    } >"${clone}/scripts/local/legs/x.sh"
+    chmod +x "${clone}/scripts/local/legs/x.sh"
+    sibling="${clone}/${BUILD_CONTRACT_SIBLING}"
+    expected="| \`local\` | none | 0 | local:x |"
+    verdict="${WORK}/product-unit-verdict.out"
+
+    CURRENT="a product clone's local unit, its row in the sibling, passes the comparison"
+    run_listing "$clone"
+    got=$(awk -F'\t' '$1 == "local" { print }' "$LIST_OUT")
+    if [ "$LIST_RC" != "0" ] || [ "$got" != "$(printf 'local\tnone\t0\tlocal:x')" ]; then
+        bad "the product clone's listing did not grow the planted local unit (exit ${LIST_RC}): '${got}'"
+        rm -rf "$clone"
+        return 0
     fi
+    printf '# The product'"'"'s own gate units\n\n| unit | needs | shards | composed-of |\n|---|---|---|---|\n%s\n' "$expected" >"$sibling"
+    before_p=$PASSED before_f=$FAILED
+    build_contract_verdict "$clone" "$LIST_OUT" >"$verdict"
+    PASSED=$before_p FAILED=$before_f
+    if grep -q '^  ok ' "$verdict" && ! grep -q '^  FAILED ' "$verdict"; then
+        ok "green with the row in the sibling: $(sed -n 's/^  ok  *[^—]*— //p' "$verdict")"
+    else
+        bad "with the row in the sibling the comparison is still red: $(cat "$verdict")"
+    fi
+
+    CURRENT="without the sibling's row, the red names local, the sibling and the row"
+    rm -f "$sibling"
+    before_p=$PASSED before_f=$FAILED
+    build_contract_verdict "$clone" "$LIST_OUT" >"$verdict"
+    PASSED=$before_p FAILED=$before_f
+    if grep -q '^  FAILED ' "$verdict" &&
+        grep -qF "unit(s): local " "$verdict" &&
+        grep -qF "$BUILD_CONTRACT_SIBLING" "$verdict" &&
+        grep -qF "$expected" "$verdict" &&
+        ! grep -q 'build-contract.md has no matching row for' "$verdict"; then
+        ok "red naming the remedy: $(grep -m1 '^  FAILED ' "$verdict" | sed 's/^  FAILED  *[^—]*— //' | cut -c1-150)…"
+    else
+        bad "without the row the comparison did not name local, the sibling and the row: $(cat "$verdict")"
+    fi
+
+    CURRENT="a product drive grows the selftest row, and its remedy is the sibling too"
+    mkdir -p "${clone}/scripts/local/drives"
+    printf '#!/usr/bin/env bash\n. scripts/tests/drive_preamble.sh\necho "y: a planted product drive"\n' \
+        >"${clone}/scripts/local/drives/test_y.sh"
+    chmod +x "${clone}/scripts/local/drives/test_y.sh"
+    run_listing "$clone"
+    got=$(awk -F'\t' '$1 == "selftest" { print $4 }' "$LIST_OUT")
+    case ",${got}," in
+    *",local:y,"*) ;;
+    *)
+        bad "the product drive did not reach the listing's selftest row (exit ${LIST_RC}): '${got}'"
+        rm -rf "$clone"
+        return 0
+        ;;
+    esac
+    grown=$(awk -F'\t' '$1 == "selftest" { printf "| `%s` | %s | %s | %s |", $1, $2, $3, $4 }' "$LIST_OUT")
+    printf '# The product'"'"'s own gate units\n\n| unit | needs | shards | composed-of |\n|---|---|---|---|\n%s\n' "$expected" >"$sibling"
+    before_p=$PASSED before_f=$FAILED
+    build_contract_verdict "$clone" "$LIST_OUT" >"$verdict"
+    PASSED=$before_p FAILED=$before_f
+    if grep -q '^  FAILED ' "$verdict" &&
+        grep -qF "unit(s): selftest " "$verdict" &&
+        grep -qF "$grown" "$verdict" &&
+        ! grep -q 'build-contract.md has no matching row for' "$verdict"; then
+        ok "red naming the sibling and the grown row, never the template's table"
+    else
+        bad "the grown selftest row was not sent to the sibling: $(cat "$verdict")"
+    fi
+    printf '%s\n' "$grown" >>"$sibling"
+    before_p=$PASSED before_f=$FAILED
+    build_contract_verdict "$clone" "$LIST_OUT" >"$verdict"
+    PASSED=$before_p FAILED=$before_f
+    if grep -q '^  ok ' "$verdict" && ! grep -q '^  FAILED ' "$verdict"; then
+        ok "green with the grown row in the sibling: $(sed -n 's/^  ok  *[^—]*— //p' "$verdict")"
+    else
+        bad "with the grown row in the sibling the comparison is still red: $(cat "$verdict")"
+    fi
+    rm -rf "$clone"
 }
 
 # --- `--leg <unit>`: running ONE unit -----------------------------------------
@@ -2152,6 +2354,93 @@ case_an_empty_shard_is_exit_2() {
         ok "exit 1 — a failing suite is a finding, not a could-not-look"
     else
         bad "a pytest exit 1 came back as ${X2_DRIVE_RC}"
+    fi
+}
+
+case_the_pass_two_verdict_quotes_pytests_summary_not_its_captured_log() {
+    # THE VERDICT QUOTES WHAT PYTEST SAID FAILED. A pass-2 log whose captured
+    # log carries twenty-five `ERROR    django.db.backends…` lines — a green
+    # test's own logging, printed on every run of it — and ONE real failure in
+    # pytest's short test summary. The summary used to be every line matching
+    # `^(FAILED|ERROR) `, which the captured-log lines match too, so the twenty
+    # slots filled with them and the FAILED line never showed (the first
+    # consumer's FOLD-LEAK-1). And the banner used to say the worker
+    # assignment was IDENTICAL under one seed — false under xdist's default
+    # `--dist load`, where the seed fixes the collection order and nothing
+    # fixes which worker is free.
+    #
+    # `pytest_x2_verdict` is extracted from check.sh and called on the planted
+    # log: the bytes the gate ships, not a copy.
+    local log="${WORK}/x2-pass2-captured.log" out="${WORK}/x2-verdict.out" i=0 first
+    CURRENT="the pass-2 verdict over a log with 25 captured ERROR lines and one FAILED"
+    gate_fn pytest_x2_verdict
+    {
+        echo "============================= test session starts =============================="
+        echo "collected 3 items"
+        echo ""
+        echo "apps/x/tests/test_y.py .F.                                                [100%]"
+        echo ""
+        echo "=================================== FAILURES ==================================="
+        echo "___________________________________ test_y ___________________________________"
+        echo "E       AssertionError: assert 1 == 2"
+        echo "------------------------------ Captured log call -------------------------------"
+        while [ "$i" -lt 25 ]; do
+            printf 'ERROR    django.db.backends.base:base.py:762 Error calling start_workflow_on_commit %02d (tests must not dial Temporal)\n' "$i"
+            i=$((i + 1))
+        done
+        echo "=========================== short test summary info ============================"
+        echo "FAILED apps/x/tests/test_y.py::test_y - AssertionError: assert 1 == 2"
+        echo "========================= 1 failed, 2 passed in 1.23s =========================="
+    } >"$log"
+    (
+        GATE_SLOT_WORKERS=2
+        pytest_x2_verdict "$log" 4242
+    ) >"$out" 2>&1 || true
+    if grep -q 'FAILED apps/x/tests/test_y.py::test_y' "$out"; then
+        ok "the FAILED line is quoted"
+    else
+        bad "the FAILED line is not in the verdict: $(grep -c 'ERROR    django' "$out") captured-log line(s) are"
+    fi
+    first=$(awk '/What pass 2 reported:/ { getline; print; exit }' "$out")
+    case "$first" in
+    *"FAILED apps/x/tests/test_y.py::test_y"*) ok "and it is the first summary line" ;;
+    *) bad "the first summary line is '${first}', not the FAILED line" ;;
+    esac
+    if grep -q 'ERROR    django' "$out"; then
+        bad "the verdict quotes $(grep -c 'ERROR    django' "$out") captured-log line(s) as failures"
+    else
+        ok "no captured-log line is quoted as a failure"
+    fi
+    CURRENT="and the banner says what the seed fixes, and what it does not"
+    if grep -qF "the seed fixes the collection order; under xdist's default --dist load the worker assignment is timing-dependent" "$out"; then
+        ok "the collection order is the seed's; the worker assignment is timing-dependent"
+    else
+        bad "the banner does not say what the seed fixes: $(grep -m1 'seed 4242' "$out")"
+    fi
+    if grep -q 'IDENTICAL' "$out"; then
+        bad "the banner still claims something IDENTICAL: $(grep -m1 IDENTICAL "$out")"
+    else
+        ok "the word IDENTICAL is absent"
+    fi
+    CURRENT="and the quote is capped at twenty inside awk"
+    {
+        echo "=========================== short test summary info ============================"
+        i=0
+        while [ "$i" -lt 30 ]; do
+            printf 'FAILED apps/x/tests/test_y.py::test_%02d - AssertionError\n' "$i"
+            i=$((i + 1))
+        done
+        echo "======================== 30 failed, 0 passed in 1.23s =========================="
+    } >"$log"
+    (
+        GATE_SLOT_WORKERS=2
+        pytest_x2_verdict "$log" 4242
+    ) >"$out" 2>&1 || true
+    i=$(grep -c '^     FAILED apps/x/tests/test_y.py::test_' "$out" || true)
+    if [ "$i" = "20" ] && grep -q 'test_00 ' "$out"; then
+        ok "20 of 30 summary lines, the first included"
+    else
+        bad "${i} summary line(s) quoted of 30 (wanted 20, the first included)"
     fi
 }
 
@@ -3284,6 +3573,7 @@ case_a_leg_in_no_unit_is_exit_2
 case_a_unit_with_no_needs_declaration_is_exit_2
 case_list_legs_prints_one_line_per_unit_in_the_grammar
 case_list_legs_needs_no_venv_no_docker_and_is_fast
+case_a_disagreeing_pin_does_not_reach_the_listing
 case_list_legs_precedes_the_lease
 case_list_legs_with_an_argument_is_exit_2
 case_an_unknown_flag_is_still_exit_2_with_the_same_sentence
@@ -3291,6 +3581,7 @@ case_the_usage_header_names_the_listing
 case_every_drive_is_in_exactly_one_drives_unit
 case_a_drive_that_appears_in_no_unit_or_two_is_exit_2
 case_the_build_contract_table_equals_the_listing
+case_a_products_unit_row_lives_in_the_local_sibling
 case_leg_static_announces_its_legs_and_no_other
 case_leg_takes_no_lease_no_lock_and_writes_no_verdict
 case_leg_needs_no_sanction
@@ -3303,6 +3594,7 @@ case_shard_on_a_non_pytest_unit_is_exit_2
 case_the_shard_census_reads_the_gates_own_flags
 case_a_malformed_shard_pair_is_exit_2
 case_an_empty_shard_is_exit_2
+case_the_pass_two_verdict_quotes_pytests_summary_not_its_captured_log
 case_passes_1_runs_one_pass_and_says_so
 case_passes_outside_a_shard_or_malformed_is_exit_2
 case_composed_of_names_the_pass_count

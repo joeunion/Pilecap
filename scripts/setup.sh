@@ -324,15 +324,41 @@ env_sync_classify() {
 # The whole LINE is carried over, never a re-joined key and value: a value
 # holding an `=` or a `#` is common in a `.env` (a URL, a password, a JSON
 # fragment) and a split-then-join is where that gets quietly rewritten.
+#
+# ONE COMMENT IS CARRIED, AND IT IS NOT PROSE: the `# pinned` marker. It says a
+# human meant the DATABASE_NAME pin below it (scripts/db.sh, THE MARKER'S
+# GRAMMAR), and `setup.sh`'s pin block — run after this — keeps a marked pin
+# and overrides an unmarked one. Dropping it with the rest of the old prose
+# erased the pin it protected: the pin block then found no marker, overwrote
+# the name, and told the reader to add the very line this function had just
+# removed. So the marker line directly above the OPERATIVE `DATABASE_NAME=`
+# line (the last one — django-environ's last-wins reading, and
+# `db_pin_marked`'s) is printed verbatim directly above wherever that line is
+# printed: the example's position, or the kept-at-end block. The grammar is
+# `DB_PIN_MARKER_ERE` from scripts/db.sh, handed in through ENVIRON — never a
+# second spelling here — and a fence sourced without it refuses (exit 2)
+# rather than render a file that quietly drops a pin.
+#
+# A FILE WITH NO MARKER RENDERS BYTE-IDENTICAL to before. A file WITH one now
+# keeps a line the example lacks, so its bytes differ from a verifier clone's
+# `.env` and `loop_env_fingerprint` (scripts/gate_ledger.sh) keys it apart: a
+# pinned checkout reuses fewer banked verdicts, never a wrong one. Accepted —
+# a pinned checkout already opens a different database from its clone.
 env_sync_render() {
-    awk -v envfile="$1" -v marker="$ENV_SYNC_MARKER" '
+    if [ -z "${DB_PIN_MARKER_ERE:-}" ]; then
+        echo "env-sync: the # pinned grammar is not loaded — scripts/db.sh owns it and was not sourced; refusing to render a .env that would drop a pin." >&2
+        return 2
+    fi
+    DB_PIN_MARKER_ERE="$DB_PIN_MARKER_ERE" awk -v envfile="$1" -v marker="$ENV_SYNC_MARKER" '
         FILENAME == envfile {
             if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
                 name = $0
                 sub(/=.*$/, "", name)
                 if (!(name in seen)) { seen[name] = 1; order[++n] = name }
                 line[name] = $0
+                if (name == "DATABASE_NAME") pinmark = previous
             }
+            previous = ($0 ~ ENVIRON["DB_PIN_MARKER_ERE"]) ? $0 : ""
             next
         }
         {
@@ -340,7 +366,11 @@ env_sync_render() {
                 name = $0
                 sub(/=.*$/, "", name)
                 fromexample[name] = 1
-                if (name in seen) { print line[name]; next }
+                if (name in seen) {
+                    if (name == "DATABASE_NAME" && pinmark != "") print pinmark
+                    print line[name]
+                    next
+                }
             }
             print
         }
@@ -350,7 +380,10 @@ env_sync_render() {
             if (any) {
                 print ""
                 print marker
-                for (i = 1; i <= n; i++) if (!(order[i] in fromexample)) print line[order[i]]
+                for (i = 1; i <= n; i++) if (!(order[i] in fromexample)) {
+                    if (order[i] == "DATABASE_NAME" && pinmark != "") print pinmark
+                    print line[order[i]]
+                }
             }
         }
     ' "$1" "$2"
@@ -393,7 +426,10 @@ env_sync_from_example() {
     kept_names=$(sed -n 's/^K //p' "$cls" | tr '\n' ' ')
 
     make_tmp tmp
-    env_sync_render "$target" "$example" >"$tmp"
+    if ! env_sync_render "$target" "$example" >"$tmp"; then
+        rm -f "$tmp" "$cls"
+        return 2
+    fi
 
     # THE PREVIOUS FILE FIRST, and the mode before the content: a `>` creates
     # the file with the umask's bits, so filling it and then chmod-ing it leaves
@@ -613,6 +649,12 @@ step "local main"
 ensure_local_main
 
 step "environment file"
+# db.sh FIRST: it owns the `# pinned` grammar (`DB_PIN_MARKER_ERE`) the render
+# below carries through the rebuild, and it is the same file the database step
+# further down relies on — sourced once, here, after the local-main step has
+# settled the ref its derivation reads.
+# shellcheck source=scripts/db.sh
+source "${ROOT}/scripts/db.sh"
 # THE STEP REGENERATES rather than leaves alone, because the per-rung ledger's
 # env-file component (`loop_env_fingerprint` in `scripts/gate_ledger.sh`) hashes
 # every line of `.env` in file order, comments included — so a checkout whose
@@ -801,9 +843,8 @@ else
 fi
 
 step "database for this worktree"
-# shellcheck source=scripts/db.sh
-source "${ROOT}/scripts/db.sh"
-db_create
+# scripts/db.sh was sourced at the environment step above (its marker grammar
+# is what the render carries); every name below is its.
 # Persist the derivation into .env, so a BARE `manage.py` — one that never
 # sourced db.sh — resolves the same database every script here does. Without
 # this line .env keeps whatever .env.example shipped and a stray
@@ -832,17 +873,60 @@ db_create
 # GRAMMAR") — three copies meant three chances to leave one behind, and a
 # reader left behind here is `setup.sh` silently clobbering a name a human
 # pinned. `db.sh` is already sourced above; the marker has one definition.
-if db_pin_marked; then
+#
+# AND THE WHOLE DECISION IS `db_pin_decide`'S, NOT ONLY THE MARKER. This block
+# used to ask the marker and then write `${DATABASE_NAME}` — whatever db.sh
+# resolved, and db.sh lets an EXPORTED name win (rule 1). A shell that had
+# sourced db.sh before the checkout moved still exported the OLD derivation,
+# so an unmarked stale pin was written straight back over itself, migrated,
+# and announced as this worktree's database — while the gate's db-pin leg read
+# the same `.env`, found an unmarked disagreement, and refused naming this
+# script as the remedy. Two tables, one cell each, pointing at each other.
+# Now both read the one verdict:
+#
+#   DB_PIN_MARKED    left alone, and said so — unchanged
+#   disagree         the pin is OVERRIDDEN: the derivation is written, the run
+#                    migrates the derivation, and the line says which name it
+#                    overrode and where that name came from — the .env pin,
+#                    and the shell too when the shell exports the same stale
+#                    name (that export is the pin's echo, not a separate
+#                    choice, so it is overridden with it and the reader is told
+#                    to drop it). An export naming a THIRD name is a separate
+#                    choice and rule 1 keeps it for this run.
+#   anything else    what db.sh resolved is written, as before
+db_pin_decide
+if [ -n "$DB_PIN_MARKED" ]; then
     env_pin="$(grep -E '^DATABASE_NAME=' .env | tail -1)"
     echo "DATABASE_NAME left alone — .env carries the \`# pinned\` marker"
     echo "  .env:       ${env_pin}"
     echo "  derivation: ${DATABASE_NAME}"
     echo "  This checkout's scripts will use the derivation and a bare manage.py"
     echo "  will use the pin. Remove the marker and re-run to reconcile them."
+elif [ "$DB_PIN_VERDICT" = "disagree" ]; then
+    overridden="$DB_PIN_VALUE"
+    overridden_also=""
+    if [ "${DATABASE_NAME}" = "$overridden" ]; then
+        overridden_also=" (also exported in this shell)"
+        DATABASE_NAME="$DB_PIN_DERIVED"
+        DATABASE_NAME_SOURCE="derived"
+        export DATABASE_NAME DATABASE_NAME_SOURCE
+    fi
+    env_set DATABASE_NAME "$DB_PIN_DERIVED"
+    echo "DATABASE_NAME: the unmarked .env pin ${overridden}${overridden_also} was overridden by the derivation ${DB_PIN_DERIVED}; add \"# pinned\" above it to keep it"
+    if [ -n "$overridden_also" ]; then
+        echo "  This shell still exports DATABASE_NAME=${overridden}, and every script run"
+        echo "  from it will open that name (scripts/db.sh rule 1): \`unset DATABASE_NAME\`"
+        echo "  there, or open a new shell."
+    fi
+    echo "DATABASE_NAME=${DATABASE_NAME}"
 else
     env_set DATABASE_NAME "${DATABASE_NAME}"
     echo "DATABASE_NAME=${DATABASE_NAME}"
 fi
+# Created AFTER the name is settled, never before: the block above may have
+# overridden a stale exported name, and a `db_create` above it would have
+# prepared the name this run no longer uses.
+db_create
 
 step "migrations"
 DATABASE_NAME="${DATABASE_NAME}" uv run python manage.py migrate

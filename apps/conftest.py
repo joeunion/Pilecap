@@ -633,8 +633,8 @@ DJB_REACH_FLOORS: dict[str, int] = {kind: 1 for kind in DJB_REACH_TOKENS}
 #: only at a bank, because the case still reddened on `absent_world_consumers`
 #: (its victim is a member of two populations) while saying nothing about the
 #: population the case exists to name. **A rung that adds an `apps/test_*.py`
-#: raises this integer in the same commit**; it is not a number anyone reads
-#: off the tree later. The other two read 14 and 7 against the 10 and 4 they
+#: raises this integer in the same commit** (a product: its drawer, below); not a
+#: number read off the tree later. The other two read 14 and 7 against the 10 and 4 they
 #: still carry from the 2026-09-07 run on tree 08c4120e (3 · 10 · 3 · 4 · 8):
 #: a floor left under its own derivation cannot tell a deletion from a
 #: derivation going blind, so both are a live gap and both are somebody's
@@ -648,6 +648,82 @@ DJB_POPULATION_FLOORS: dict[str, int] = {
     "introspect_registry_readers": 4,
     "lifecycle_registry_walkers": 8,
 }
+
+# THE DRAWER RAISES A FLOOR; IT NEVER EDITS ONE. The integers above are the
+# TEMPLATE's populations and a product cannot change them: this file is
+# template-owned and a fold overwrites it, so "a rung that adds an
+# `apps/test_*.py` raises this integer in the same commit" was a remedy only
+# the template could take. A product with a sixth apps-root module had a floor
+# one under its own membership — the moved-aside case read `wanted '4', got '0'`
+# on the first consumer, because five of six remained and five met the floor.
+#
+# So the product declares its OWN members in its fixtures drawer,
+#
+#     # apps/conftest_local.py
+#     DJB_POPULATION_FLOOR_ADDENDS = {"apps_root_modules": 1}
+#
+# and the floor asserted is the template's number PLUS the drawer's. It is the
+# `DRAWER_RATCHET_PARTS` shape in `quality/gate.py`: the two halves are kept
+# apart so the refusal can say which number lives in which file, because a
+# reader told "floor 6" looks for a 6 written in neither.
+#
+# ONE READER, `_population_floors`, and nothing else reads the declaration.
+# `test_loop_scope.sh` plants a drawer row and proves the refusal names the
+# drawer's half — a declaration no reader reads would otherwise be a comment.
+#
+# RAISES ONLY. An addend is a non-negative integer for a population the
+# template declares; a negative one would let a drawer silence the canary the
+# floor is, and a name the template does not declare is a typo that would
+# otherwise raise nothing. Both are a refusal naming the drawer, never a
+# silent skip.
+DJB_POPULATION_FLOOR_DRAWER = "apps/conftest_local.py"
+
+
+def _population_floors() -> dict[str, tuple[int, int]]:
+    """Each named population's floor as `(template's, drawer's addend)`.
+
+    The ONE reader of `DJB_POPULATION_FLOOR_ADDENDS` in the fixtures drawer.
+    No drawer, or a drawer that declares nothing, is `(n, 0)` for every
+    population — the template's floors, unchanged.
+    """
+    parts = {name: (floor, 0) for name, floor in DJB_POPULATION_FLOORS.items()}
+    if importlib.util.find_spec("apps.conftest_local") is None:
+        return parts
+    drawer = importlib.import_module("apps.conftest_local")
+    declared = getattr(drawer, "DJB_POPULATION_FLOOR_ADDENDS", None)
+    if declared is None:
+        return parts
+    where = f"{DJB_POPULATION_FLOOR_DRAWER}'s DJB_POPULATION_FLOOR_ADDENDS"
+    if not isinstance(declared, dict):
+        raise pytest.UsageError(
+            f"{where} is a {type(declared).__name__}, not a dict of population name to addend."
+        )
+    for name, addend in declared.items():
+        if name not in parts:
+            raise pytest.UsageError(
+                f"{where} names {name!r}, which is not a population apps/conftest.py "
+                f"declares ({', '.join(sorted(parts))}) — an addend for no population "
+                "raises nothing, so it is refused rather than ignored."
+            )
+        if isinstance(addend, bool) or not isinstance(addend, int) or addend < 0:
+            raise pytest.UsageError(
+                f"{where}[{name!r}] is {addend!r} — an addend is a non-negative integer: "
+                "a drawer raises a floor by its own members and never lowers the template's."
+            )
+        parts[name] = (parts[name][0], addend)
+    return parts
+
+
+def _population_floor_text(name: str, parts: tuple[int, int], derived: int) -> str:
+    """One unmet floor, saying which half of the number lives in which file."""
+    template, addend = parts
+    if not addend:
+        return f"{name} (floor {template}, derived {derived} module(s))"
+    return (
+        f"{name} (floor {template + addend} = {template} in apps/conftest.py + {addend} in "
+        f"{DJB_POPULATION_FLOOR_DRAWER}, derived {derived} module(s))"
+    )
+
 
 # THE THIRD WAY IN, AND IT IS A DECLARATION RATHER THAN A DERIVATION.
 #
@@ -1604,10 +1680,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             for kind, floor in DJB_REACH_FLOORS.items()
             if len(reached_kinds.get(kind, ())) < floor
         )
+        floor_parts = _population_floors()
         unmet_population = sorted(
-            f"{name} (floor {floor}, derived {len(populations.get(name, ()))} module(s))"
-            for name, floor in DJB_POPULATION_FLOORS.items()
-            if len(populations.get(name, ())) < floor
+            _population_floor_text(name, parts, len(populations.get(name, ())))
+            for name, parts in floor_parts.items()
+            if len(populations.get(name, ())) < parts[0] + parts[1]
         )
         if unmet_reach or unmet_population:
             raise pytest.UsageError(

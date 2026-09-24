@@ -2392,6 +2392,237 @@ case_a_dirty_tree_is_never_docs_only() {
     esac
 }
 
+# --- a run may not vouch for bytes it wrote itself ---------------------------
+#
+# THE MEASURED SHAPE. A product leg re-takes tracked evidence images on every
+# run. A `--loop` whose START already carried the last run's re-take ends on the
+# same bytes, the key re-derives, and the row banks a tree no HEAD carries. The
+# key's own start/end comparison cannot see it; the snapshot the run takes of
+# its own dirty set at the start is what can (`loop_tree_snapshot`,
+# `loop_tree_rewrites`, scripts/gate_ledger.sh).
+#: The re-taken artefact, under a top-level directory no tree carries. NOT the
+#: consumer's frontend path: this drive's key floor judges every checkout path
+#: its body spells that exists in the tree, so spelling a product's real
+#: evidence path here would make this drive un-keyable on exactly the product
+#: it was written for (measured: the BL.2 world, where it did).
+REWRITE_PATH="zzz_rewritten/evidence.png"
+rewrite_checkout() {
+    fresh_checkout
+    mkdir -p "$REPO/${REWRITE_PATH%/*}"
+    printf 'the committed evidence\n' >"$REPO/$REWRITE_PATH"
+    git -C "$REPO" add -A >/dev/null
+    git -C "$REPO" commit -q -m "a tracked evidence file"
+    REWRITE_SNAP="${WORK}/rewrite-snapshot-${N}"
+}
+
+# A write the filesystem can tell from the snapshot's own stamp. One second is
+# the coarsest mtime any filesystem this runs on keeps.
+rewrite_after_the_stamp() {
+    sleep 1
+    printf '%s\n' "$2" >"$REPO/$1"
+}
+
+rewrites_in() {
+    REWRITES_RC=0
+    REWRITES=$(in_repo "$REPO" loop_tree_rewrites "$REWRITE_SNAP" 2>/dev/null) || REWRITES_RC=$?
+}
+
+case_a_run_that_rewrites_a_path_the_key_reads_names_it() {
+    CURRENT="the snapshot and its reader exist"
+    if command -v loop_tree_snapshot >/dev/null 2>&1 && command -v loop_tree_rewrites >/dev/null 2>&1; then
+        ok "scripts/gate_ledger.sh defines loop_tree_snapshot and loop_tree_rewrites"
+    else
+        bad "scripts/gate_ledger.sh has no snapshot of the run's own starting tree — a leg's rewrite banks unseen"
+        return
+    fi
+
+    rewrite_checkout
+    CURRENT="a clean start and a leg that re-takes the evidence"
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" || cannot_look "loop_tree_snapshot would not write in the scratch checkout"
+    rewrite_after_the_stamp "$REWRITE_PATH" "re-taken by the leg"
+    rewrites_in
+    is "$REWRITES_RC" "0" "the reader's status"
+    is "$REWRITES" "$REWRITE_PATH" "the paths the run itself changed"
+
+    CURRENT="a DIRTY start — the last run's re-take — and the same bytes re-taken again"
+    # THE SHAPE THAT BANKED ON MAIN: start and end are the same bytes, so the
+    # key re-derives to itself; only the fresh write says the run made them.
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" || cannot_look "loop_tree_snapshot would not write on a dirty start"
+    rewrite_after_the_stamp "$REWRITE_PATH" "re-taken by the leg"
+    rewrites_in
+    is "$REWRITES_RC" "0" "the reader's status"
+    is "$REWRITES" "$REWRITE_PATH" "the re-take on a dirty start is named"
+
+    CURRENT="the NEXT run, which writes nothing (its leg's verdict reused), still carries the bytes"
+    # MEASURED ON A BOX: run 2 reused the leg's drive verdict, so nothing was
+    # written during it, and on main it banked the re-take. The refused run
+    # remembers what it refused; the carried bytes are asked about again.
+    in_repo "$REPO" loop_tree_remember "$REWRITE_SNAP" "$REWRITES" || cannot_look "loop_tree_remember would not write"
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" || cannot_look "loop_tree_snapshot would not write"
+    rewrites_in
+    is "$REWRITES_RC" "0" "the reader's status"
+    is "$REWRITES" "$REWRITE_PATH" "the carried re-take is named with nothing written"
+
+    CURRENT="and once the author moves those bytes, the memory no longer matches"
+    printf 'an author edit\n' >"$REPO/$REWRITE_PATH"
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" || cannot_look "loop_tree_snapshot would not write"
+    rewrites_in
+    is "$REWRITES" "" "an author's own bytes are not a run's"
+    in_repo "$REPO" loop_tree_remember "$REWRITE_SNAP" "" || cannot_look "loop_tree_remember would not forget"
+    [ ! -e "${REWRITE_SNAP}.rewrites" ] && ok "a run that banks forgets what it carried" ||
+        bad "an empty remember left ${REWRITE_SNAP}.rewrites behind"
+
+    CURRENT="the control: a dirty start the run never wrote to is nobody's business"
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" || cannot_look "loop_tree_snapshot would not write"
+    rewrites_in
+    is "$REWRITES_RC" "0" "the reader's status"
+    is "$REWRITES" "" "the paths the run changed (none — the builder's own edit stands)"
+
+    CURRENT="an untracked, unignored file the run made is in the key too"
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" || cannot_look "loop_tree_snapshot would not write"
+    rewrite_after_the_stamp made-by-a-leg.txt "a new file"
+    rewrites_in
+    is "$REWRITES" "made-by-a-leg.txt" "the new file is named"
+    rm -f "$REPO/made-by-a-leg.txt"
+
+    CURRENT="a snapshot that is gone is could-not-look, never an empty list"
+    rm -f "$REWRITE_SNAP" "${REWRITE_SNAP}.stamp"
+    rewrites_in
+    is "$REWRITES_RC" "2" "the reader's status with no snapshot"
+}
+
+case_a_rewrite_the_leg_declares_is_subtracted_and_the_key_is_heads() {
+    rewrite_checkout
+    {
+        echo '#!/usr/bin/env bash'
+        echo "# $GATE_TREE_DECL_BEGIN"
+        echo "# ${REWRITE_PATH} — re-taken by this leg on every run"
+        echo "# $GATE_TREE_DECL_END"
+    } >"$REPO/scripts/rewrite_leg.sh"
+    git -C "$REPO" add -A >/dev/null
+    git -C "$REPO" commit -q -m "the leg declares what it re-takes"
+    CURRENT="a declared re-take is not the run's to answer for"
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" || cannot_look "loop_tree_snapshot would not write"
+    rewrite_after_the_stamp "$REWRITE_PATH" "re-taken by the leg"
+    rewrites_in
+    is "$REWRITES_RC" "0" "the reader's status"
+    is "$REWRITES" "" "the declared path is subtracted, exactly as the key subtracts it"
+    CURRENT="and the key the run would bank is HEAD's measured tree"
+    local end head
+    end=$(in_repo "$REPO" gate_measured_tree 2>/dev/null) || end=""
+    head=$(in_repo "$REPO" gate_measured_tree_of "HEAD^{tree}" 2>/dev/null) || head=""
+    [ -n "$head" ] || cannot_look "gate_measured_tree_of would not answer"
+    is "$end" "$head" "the measured working tree after the re-take"
+}
+
+# first_line_in <file> <fixed string> [at-start] → the first line number that
+# carries the string (at column one with `at-start`). One awk, no pipe.
+first_line_in() {
+    awk -v s="$2" -v start="${3:-}" '
+        (start == "" && index($0, s) > 0) || (start != "" && index($0, s) == 1) { print NR; exit }
+    ' "$1"
+}
+
+case_the_bank_asks_before_the_key_re_derives() {
+    # WIRING, READ FROM THE FILE: the snapshot is taken where the key takes its
+    # tree, and the question is asked BEFORE the key re-derives — after it, a
+    # re-take on a dirty start has already re-derived to itself.
+    CURRENT="check.sh takes the snapshot beside the key and asks before the re-derivation"
+    local snap key ask rederive
+    snap=$(first_line_in "$ROOT/scripts/check.sh" 'loop_tree_snapshot "$LOOP_TREE_SNAPSHOT"')
+    key=$(first_line_in "$ROOT/scripts/check.sh" '    LOOP_LEDGER_TREE=$(gate_measured_tree' at-start)
+    ask=$(first_line_in "$ROOT/scripts/check.sh" 'loop_tree_rewrites "$LOOP_TREE_SNAPSHOT"')
+    rederive=$(first_line_in "$ROOT/scripts/check.sh" 'LOOP_LEDGER_TREE_END=$(gate_measured_tree')
+    if [ -n "$snap" ] && [ -n "$key" ] && [ "$snap" -lt "$key" ]; then
+        ok "the snapshot (check.sh:${snap}) is taken before the key's tree (check.sh:${key})"
+    else
+        bad "the snapshot is not taken beside the key: snapshot='${snap}' key='${key}'"
+    fi
+    if [ -n "$ask" ] && [ -n "$rederive" ] && [ "$ask" -lt "$rederive" ]; then
+        ok "the bank asks (check.sh:${ask}) before the key re-derives (check.sh:${rederive})"
+    else
+        bad "the bank does not ask before the re-derivation: ask='${ask}' rederive='${rederive}'"
+    fi
+    # THE SENTENCE HAS ONE HOME, and the bank calls it.
+    if [ -n "$(awk -v a="${ask:-1}" 'NR >= a && NR < a + 40 && /loop_tree_refusal "\$LOOP_TREE_MOVED"/ { print NR; exit }' "$ROOT/scripts/check.sh")" ]; then
+        ok "the bank refuses through loop_tree_refusal"
+    else
+        bad "the bank does not refuse through loop_tree_refusal"
+    fi
+    CURRENT="the refusal names each path's arm and the escapes that work"
+    local said
+    said=$(loop_tree_refusal "$(printf 'a.py\tchanged\nb.png\tcarried\n')" 2>&1 >/dev/null) || true
+    case "$said" in
+    *"a.py — changed during this run"*"b.png — carried from a refused run"*) ok "each path carries the arm that named it" ;;
+    *) bad "the arms are not named per path: ${said}" ;;
+    esac
+    case "$said" in
+    *"git checkout -- <path>"*"change its bytes"*"$GATE_TREE_DECL_BEGIN"*) ok "the escapes that clear a path, and the declaration form, are printed" ;;
+    *) bad "the refusal does not print the working escapes: ${said}" ;;
+    esac
+    case "$said" in
+    *"still tree"*) bad "the refusal still offers 're-run on a still tree', which the carried arm refuses again" ;;
+    *) ok "no 're-run on a still tree' — the remedy that was measured false is gone" ;;
+    esac
+}
+
+# bank_memory_wiring <check.sh> — 0 when the bank REMEMBERS what it refused
+# (`loop_tree_remember` between the question and the snapshot's removal) and
+# that removal spares the memory: exactly the two files, nothing wider. Prints
+# the first thing that is wrong.
+bank_memory_wiring() {
+    awk '
+        index($0, "loop_tree_rewrites \"$LOOP_TREE_SNAPSHOT\"") && !ask { ask = NR; next }
+        ask && !rem && index($0, "loop_tree_remember \"$LOOP_TREE_SNAPSHOT\"") { rem = NR; next }
+        ask && !rm && $0 ~ /^[ \t]*rm -f / && index($0, "LOOP_TREE_SNAPSHOT") { rm = NR; line = $0 }
+        END {
+            if (!ask) { print "no question asked of the snapshot"; exit 1 }
+            if (!rem) { print "the bank never calls loop_tree_remember after the question"; exit 1 }
+            if (!rm) { print "the bank never removes the snapshot"; exit 1 }
+            if (rem > rm) { print "the memory is written after the snapshot is removed"; exit 1 }
+            sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+            want = "rm -f \"$LOOP_TREE_SNAPSHOT\" \"${LOOP_TREE_SNAPSHOT}.stamp\""
+            if (line != want) { print "the removal is not exactly the two files — it reads: " line; exit 1 }
+        }
+    ' "$1"
+}
+
+case_the_bank_remembers_what_it_refused_and_its_rm_spares_the_memory() {
+    CURRENT="check.sh wires loop_tree_remember at the refusal, and the bank's rm spares .rewrites"
+    local why planted
+    if why=$(bank_memory_wiring "$ROOT/scripts/check.sh"); then
+        ok "remember sits between the question and the rm, and the rm names exactly the snapshot and its stamp"
+    else
+        bad "the carried arm's memory is not wired, or is swept: ${why}"
+    fi
+    # THE TOOTH, PROVED ON A PLANTED COPY: a widened rm must red this reader.
+    CURRENT="a widened rm (the snapshot and every sibling) is caught"
+    planted="${WORK}/check-widened-rm.sh"
+    awk -v old='"${LOOP_TREE_SNAPSHOT}.stamp"' -v new='"${LOOP_TREE_SNAPSHOT}".*' '
+        !done && index($0, "rm -f \"$LOOP_TREE_SNAPSHOT\" " old) {
+            i = index($0, old)
+            $0 = substr($0, 1, i - 1) new substr($0, i + length(old))
+            done = 1
+        }
+        { print }
+    ' "$ROOT/scripts/check.sh" >"$planted"
+    if cmp -s "$planted" "$ROOT/scripts/check.sh"; then
+        cannot_look "the widened-rm plant did not take — the bank's rm line was not found"
+    fi
+    if why=$(bank_memory_wiring "$planted"); then
+        bad "a widened rm that sweeps .rewrites passed the wiring check"
+    else
+        ok "the widened rm reds: ${why}"
+    fi
+    CURRENT="and a bank that forgets to remember is caught"
+    awk '!/loop_tree_remember "\$LOOP_TREE_SNAPSHOT"/' "$ROOT/scripts/check.sh" >"$planted"
+    if why=$(bank_memory_wiring "$planted"); then
+        bad "a bank with no loop_tree_remember passed the wiring check"
+    else
+        ok "the missing remember reds: ${why}"
+    fi
+}
+
 case_a_bank_measured_on_a_dirty_tree_is_no_basis_for_a_docs_only_reuse() {
     # R3's F1, DRIVEN. A `--loop` verdict is keyed on the MEASURED WORKING TREE
     # (`gate_measured_tree` reads through `git add -A`), and a builder's working
@@ -2975,6 +3206,110 @@ case_the_docs_only_road_admits_a_declaring_product() {
     case "$GATE_DOCS_ONLY_WHY" in
     *"apps/loud.py is not a docs-only path"*) ok "the refusal names the path that closed the road" ;;
     *) bad "an apps/ change was admitted, or refused without naming the path: '${GATE_DOCS_ONLY_WHY}'" ;;
+    esac
+}
+
+# --- the docs-only road: a QUOTE is what the judge proves, and a module may say it is no read --
+#
+# THE MEASURED SHAPE. `apps/core/tests/test_drawer_seam.py` quotes
+# `docs/product/queue.md` as a STRING handed to the engine over `tmp_path` and
+# opens no file; the road called that "read literally" and refused every ledger
+# push. The three cases below are its three answers: a declared quote takes the
+# road, an undeclared one still refuses and says only what was proven, and a
+# declaration that outlived its quote is refused, naming its own line.
+#
+# THE MARKER IS ASSEMBLED, never typed whole in this file, so the only
+# declarations any census could read are the ones a case writes into its world.
+NONREAD_MARK="names, never reads:"
+
+case_a_quote_the_module_declares_a_non_read_takes_the_road() {
+    CURRENT="a quoted docs path its module declares a non-read is admitted"
+    docs_only_world
+    {
+        printf '# %s %s — a string handed to an engine, never opened\n' "$NONREAD_MARK" "$DOCSONLY_DOC"
+        printf 'PATH = "%s"\n' "$DOCSONLY_DOC"
+    } >"$REPO/apps/a.py"
+    docs_only_rebase_m "a module that QUOTES a docs path and declares it no read"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "0" "the decision"
+    is "$GATE_DOCS_ONLY_WHY" "" "the refusal sentence (a declared quote is none)"
+    case "$GATE_DOCS_ONLY_READERS" in
+    static | static,*) ok "the readers are derived as on any docs-only push: ${GATE_DOCS_ONLY_READERS}" ;;
+    *) bad "a declared quote derived no readers: '${GATE_DOCS_ONLY_READERS}'" ;;
+    esac
+
+    CURRENT="the declaration covers ITS OWN module only — the same quote next door refuses"
+    printf 'OTHER = "%s"\n' "$DOCSONLY_DOC" >"$REPO/apps/b.py"
+    docs_only_rebase_m "a second module quoting the same path, declaring nothing"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "1" "the decision"
+    is "$GATE_DOCS_ONLY_WHY" \
+        "docs-only? no — ${DOCSONLY_DOC} is quoted at apps/b.py:1 and nothing declares the quote a non-read — full bank" \
+        "the refusal names the undeclared module, not the declaring one"
+}
+
+case_an_undeclared_quote_refuses_and_names_a_quote_not_a_read() {
+    CURRENT="an undeclared quote still refuses — the loud direction is kept"
+    docs_only_world
+    {
+        printf '"""A docstring quoting '"'"'%s'"'"' and opening nothing."""\n' "$DOCSONLY_DOC"
+    } >"$REPO/apps/a.py"
+    docs_only_rebase_m "a module that quotes a docs path and declares nothing"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "1" "the decision"
+    is "$GATE_DOCS_ONLY_WHY" \
+        "docs-only? no — ${DOCSONLY_DOC} is quoted at apps/a.py:1 and nothing declares the quote a non-read — full bank" \
+        "the refusal says QUOTED — what the judge proved — never 'read'"
+    case "$GATE_DOCS_ONLY_WHY" in
+    *"read literally"*) bad "the refusal still names a read it never proved" ;;
+    *) ok "the refusal names no cause it has not proven" ;;
+    esac
+
+    CURRENT="a declaration naming ANOTHER path does not cover this quote"
+    {
+        printf '# %s %s — a different path\n' "$NONREAD_MARK" "${DOCSONLY_DIR}/elsewhere.md"
+        printf 'ELSEWHERE = "%s"\n' "${DOCSONLY_DIR}/elsewhere.md"
+        printf 'PATH = "%s"\n' "$DOCSONLY_DOC"
+    } >"$REPO/apps/a.py"
+    docs_only_rebase_m "a module declaring one path and quoting two"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "1" "the decision"
+    is "$GATE_DOCS_ONLY_WHY" \
+        "docs-only? no — ${DOCSONLY_DOC} is quoted at apps/a.py:3 and nothing declares the quote a non-read — full bank" \
+        "the refusal names the uncovered quote's own line"
+}
+
+case_a_stale_non_read_declaration_is_refused_naming_its_line() {
+    CURRENT="a declaration naming a path its module never quotes is refused"
+    docs_only_world
+    {
+        printf '"""A module that quotes nothing at all."""\n'
+        printf '# %s %s — the quote this excused was deleted\n' "$NONREAD_MARK" "${DOCSONLY_DIR}/gone.md"
+    } >"$REPO/config/stale.py"
+    docs_only_rebase_m "a module whose declaration outlived its quote"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "1" "the decision"
+    is "$GATE_DOCS_ONLY_WHY" \
+        "docs-only? no — config/stale.py:2 declares ${DOCSONLY_DIR}/gone.md a non-read and the module never quotes it — a stale declaration — full bank" \
+        "the refusal names the stale line"
+
+    CURRENT="a PROSE mention does not keep a declaration alive — only a quote does"
+    {
+        printf '"""Mentions `%s` in backticks, which is prose."""\n' "${DOCSONLY_DIR}/gone.md"
+        printf '# %s %s — the quote this excused was deleted\n' "$NONREAD_MARK" "${DOCSONLY_DIR}/gone.md"
+    } >"$REPO/config/stale.py"
+    docs_only_rebase_m "the stale declaration beside a prose mention"
+    docs_only_commit "$DOCSONLY_DOC" "one more row"
+    plan_in "$REPO" HEAD
+    is "$PLAN_RC" "1" "the decision"
+    case "$GATE_DOCS_ONLY_WHY" in
+    *"config/stale.py:2 declares ${DOCSONLY_DIR}/gone.md"*"stale declaration"*) ok "still stale: ${GATE_DOCS_ONLY_WHY}" ;;
+    *) bad "a prose mention kept a stale declaration alive: '${GATE_DOCS_ONLY_WHY}'" ;;
     esac
 }
 
@@ -3871,9 +4206,16 @@ case_the_declaration_is_read_from_check_sh_and_not_kept_here() {
     # declared leg — and `scripts/tests/test_local_legs.sh` is where that half
     # is driven. What this case holds is the half that belongs to the template:
     # no drawer, no subprocess, and the same answer it has always given.
+    #
+    # THE NO-DRAWER ARM IS POINTED AT, NOT ASSUMED. On a product that
+    # uses `scripts/local/legs/` "this tree has no drawer" is false, and the
+    # case compared the product's listing against the text. The drawer is
+    # aimed at a path that does not exist — the `[ -d ]` arm a tree with no
+    # drawer takes — and the memo is cleared so an earlier answer in this shell
+    # cannot stand in for this one. On the template it is the same call.
     CURRENT="gate_full_legs reads this repository's own FULL_LEGS assignment"
     local declared shipped
-    declared=$(cd "$ROOT" && gate_full_legs)
+    declared=$(cd "$ROOT" && GATE_FULL_LEGS_MEMO="" DJB_LOCAL_LEGS_DIR="${WORK}/no-leg-drawer-at-all" gate_full_legs)
     shipped=$(sed -n 's/^FULL_LEGS=//p' "$ROOT/scripts/check.sh")
     shipped=${shipped%%$'\n'*}
     is "$declared" "$shipped" "the declaration, against check.sh's own line"
@@ -4135,7 +4477,7 @@ case_a_deletion_carries_no_tree_and_falls_back_to_the_working_tree() {
 # — the checkout's tree with every DECLARED derived path SUBTRACTED. On this
 # template nothing is declared, so the two readings are the same forty
 # characters and the disagreement was invisible. On a product that declares one
-# (the consumer's `frontend/quality/visual-baseline-evidence`) they can NEVER
+# (the consumer's visual-baseline evidence directory under its frontend) they can NEVER
 # agree, so EVERY push — to a forge, to a verifier box, of the checkout's own
 # `main` — takes the two-tree refusal that exists for pushing somebody ELSE's
 # tree. The product's own tree is mistaken for a foreign one, by arithmetic,
@@ -4913,6 +5255,10 @@ case_a_miss_prints_the_docs_only_line_by_default
 case_a_docs_only_commit_reuses_the_pytest_verdict_and_banks_a_reuse_row
 case_a_mixed_delta_measures_in_full
 case_a_dirty_tree_is_never_docs_only
+case_a_run_that_rewrites_a_path_the_key_reads_names_it
+case_a_rewrite_the_leg_declares_is_subtracted_and_the_key_is_heads
+case_the_bank_asks_before_the_key_re_derives
+case_the_bank_remembers_what_it_refused_and_its_rm_spares_the_memory
 case_a_bank_measured_on_a_dirty_tree_is_no_basis_for_a_docs_only_reuse
 case_a_declaring_product_still_reuses_a_docs_only_loop_verdict
 case_a_docs_path_spelled_under_apps_forces_a_measure
@@ -4921,6 +5267,9 @@ case_loop_health_reads_a_reuse_row
 case_the_two_ledger_files_that_bought_a_2302s_remeasure_are_a_reuse
 case_the_docs_only_source_is_the_nearest_MEASURED_ancestor
 case_the_docs_only_road_admits_a_declaring_product
+case_a_quote_the_module_declares_a_non_read_takes_the_road
+case_an_undeclared_quote_refuses_and_names_a_quote_not_a_read
+case_a_stale_non_read_declaration_is_refused_naming_its_line
 case_a_path_outside_the_declared_list_is_a_full_bank
 case_the_readers_are_derived_per_path_and_a_literal_read_refuses
 case_a_banked_row_whose_legs_do_not_cover_this_gate_is_not_honoured

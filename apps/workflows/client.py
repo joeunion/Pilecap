@@ -17,16 +17,21 @@ is edited when an app is added.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib
 import importlib.util
+import inspect
+import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from types import ModuleType
 from typing import Any
 
 from django.apps import apps as django_apps
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from temporalio.client import (
     Client,
     Schedule,
@@ -405,6 +410,100 @@ async def ensure_schedules(client: Client) -> list[str]:
     return [await ensure_declaration(client, declaration) for declaration in declarations]
 
 
+#: The two keywords that bound one activity attempt at its call site. An
+#: attempt is bounded by `start_to_close_timeout` when the call names one, and
+#: by `schedule_to_close_timeout` only when it names nothing narrower.
+_ATTEMPT_BOUNDS = ("start_to_close_timeout", "schedule_to_close_timeout")
+
+
+def _timeout_value(module: ModuleType, node: ast.expr, where: str) -> timedelta:
+    """Resolve one call-site timeout expression without executing anything new.
+
+    Three shapes are read: a module-level name (`start_to_close_timeout=X`, the
+    house form), a dotted attribute off one (`types.X`), and a literal
+    `timedelta(...)` whose arguments are constants. Anything else is refused,
+    naming the site — a graceful window derived from a timeout it could not
+    read would be a number that only looks derived.
+    """
+    if isinstance(node, ast.Name | ast.Attribute):
+        path: list[str] = []
+        cursor: ast.expr = node
+        while isinstance(cursor, ast.Attribute):
+            path.insert(0, cursor.attr)
+            cursor = cursor.value
+        if isinstance(cursor, ast.Name) and hasattr(module, cursor.id):
+            value: Any = getattr(module, cursor.id)
+            for attribute in path:
+                value = getattr(value, attribute, None)
+            if isinstance(value, timedelta):
+                return value
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name | ast.Attribute)
+        and (node.func.id if isinstance(node.func, ast.Name) else node.func.attr) == "timedelta"
+    ):
+        try:
+            args = [ast.literal_eval(arg) for arg in node.args]
+            kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords if kw.arg}
+            return timedelta(*args, **kwargs)
+        except (ValueError, TypeError, SyntaxError):
+            pass
+    raise ImproperlyConfigured(
+        f"{where}: an activity timeout the worker's graceful shutdown cannot read "
+        f"({ast.unparse(node)}). Declare it as a module-level timedelta constant and "
+        "pass the name — the worker waits for the longest declared attempt on shutdown, "
+        "and a timeout it cannot read is one it would not wait for."
+    )
+
+
+def activity_timeouts_declared_in(module: ModuleType) -> dict[str, timedelta]:
+    """Every activity-attempt bound one module's call sites declare, by `file:line`.
+
+    Read from the module's source (the call sites), resolved against the
+    module's own namespace (the constants), so the number is the one the
+    workflow really passes — never a copy of it.
+    """
+    filename = inspect.getsourcefile(module) or getattr(module, "__file__", "") or module.__name__
+    with open(filename, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=filename)
+    found: dict[str, timedelta] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        named = {kw.arg: kw.value for kw in node.keywords if kw.arg in _ATTEMPT_BOUNDS}
+        for bound in _ATTEMPT_BOUNDS:
+            if bound in named:
+                where = f"{filename}:{named[bound].lineno}"
+                found[where] = _timeout_value(module, named[bound], where)
+                break
+    return found
+
+
+def declared_activity_timeouts() -> dict[str, timedelta]:
+    """The attempt bound at every activity call site of every discovered workflow."""
+    modules = {sys.modules[cls.__module__] for cls in discovered_workflows()}
+    found: dict[str, timedelta] = {}
+    for module in sorted(modules, key=lambda one: one.__name__):
+        found.update(activity_timeouts_declared_in(module))
+    return found
+
+
+def worker_graceful_shutdown() -> timedelta:
+    """How long a stopping worker waits for in-flight activities. DERIVED, never typed.
+
+    The longest single attempt any discovered workflow allows an activity
+    (`declared_activity_timeouts`). Temporal's own default is zero
+    (`temporalio/worker/_worker.py`, `graceful_shutdown_timeout=timedelta()`),
+    which cancels every running activity the instant a worker is asked to stop
+    — a SIGTERM mid-delivery, or every `async with build_worker(...)` exit in a
+    test. Waiting as long as the longest declared attempt means no attempt
+    that could legitimately still be running is cut off; a product that
+    declares a longer one moves this with it and edits nothing here
+    (ADR workflows-8). No call site at all is zero: nothing can be in flight.
+    """
+    return max(declared_activity_timeouts().values(), default=timedelta())
+
+
 class _PoolClosingWorker(Worker):
     """A `Worker` that shuts down the executor it was handed. **Temporal does not.**
 
@@ -433,7 +532,11 @@ class _PoolClosingWorker(Worker):
 
 
 def build_worker(client: Client, *, queue: str | None = None) -> Worker:
-    """One worker, holding everything every app declared."""
+    """One worker, holding everything every app declared.
+
+    It waits `worker_graceful_shutdown()` for in-flight activities when asked
+    to stop, instead of Temporal's zero-second default.
+    """
     return _PoolClosingWorker(
         attach_interceptors(client),
         task_queue=queue or task_queue(),
@@ -444,4 +547,5 @@ def build_worker(client: Client, *, queue: str | None = None) -> Worker:
             thread_name_prefix="temporal-activity-",
         ),
         max_concurrent_activities=MAX_CONCURRENT_ACTIVITIES,
+        graceful_shutdown_timeout=worker_graceful_shutdown(),
     )

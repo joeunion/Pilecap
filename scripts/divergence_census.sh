@@ -277,8 +277,12 @@ PLATFORM_APPS=$(
 is_platform_app_path() {
     local label=${1#apps/}
     label=${label%%/*}
-    case " $PLATFORM_APPS " in
-    *" $label "*) return 0 ;;
+    # NEWLINE-DELIMITED, because the awk above prints one name per line: a
+    # space-delimited test matched only a one-entry list. No pipe, no
+    # IFS, no globbing — the same whole-line form `is_named` uses below.
+    local nl=$'\n'
+    case "${nl}${PLATFORM_APPS}${nl}" in
+    *"${nl}${label}${nl}"*) return 0 ;;
     esac
     return 1
 }
