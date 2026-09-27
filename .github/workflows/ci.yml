@@ -336,6 +336,13 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.derive.outputs.matrix) }}
 
+    # THE WORKFLOW'S `contents: read` PLUS `id-token: write` — the one widening,
+    # for the MinIO pull's login (the login steps say why). OIDC mints a per-job
+    # AWS identity; nothing durable holds a key.
+    permissions:
+      contents: read
+      id-token: write
+
     # NO `services:` BLOCK. There was one — postgres:16 and redis:7 as GitHub
     # service containers — and it is gone rather than kept alongside: a service
     # container publishes 5432 on the runner, which is the same port compose
@@ -438,11 +445,42 @@ jobs:
           echo "DATABASE_NAME=${DATABASE_NAME}" >>"$GITHUB_ENV"
           echo "this runner's database: ${DATABASE_NAME} (derived by scripts/db.sh)"
 
+      - name: the arm64 handler the MinIO mirror needs
+        # `compose.yaml` pins MinIO's last public release from the owner's ECR
+        # Public mirror, linux/arm64 only; this runner is amd64, so the one
+        # arm64 service runs under QEMU — the action the `images` job uses.
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: assume an AWS identity for the MinIO pull
+        # ECR Public rations ANONYMOUS pulls by data, and a full matrix (about
+        # sixteen shards × ~170 MB) exhausts it: `toomanyrequests: Data limit
+        # exceeded`. Authenticated pulls are not rationed. The role is the
+        # `images` job's, and it must carry the `ecr-public-login` policy
+        # (docs/runbooks/deploy.md, step 5b). us-east-1 is not a guess: ECR
+        # Public's API lives in that region only. No role variable (a fork, a
+        # clone with no AWS account yet) → anonymous, as a laptop pulls.
+        if: vars.AWS_ECR_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: log in to the registry the MinIO pin names
+        # `registry-type: public` is `docker login public.ecr.aws` with an ECR
+        # Public token, through the action the `images` job already uses.
+        # `scripts/tests/test_setup_env.sh` refuses a compose-up job without it.
+        if: vars.AWS_ECR_ROLE_ARN != ''
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
       - name: the stack the gate assumes (docker compose up)
         # THE ENVIRONMENT, from the repository's OWN `compose.yaml` — the same
         # file, the same pinned images and the same published ports a laptop
         # runs, which is the point (see the header). ubuntu-latest ships docker
-        # and the compose v2 plugin, so this needs no setup action.
+        # and the compose v2 plugin; the two steps above are MinIO's alone.
         #
         # `--wait` is what makes it a precondition rather than a race: every
         # service named here declares a healthcheck in `compose.yaml`, and
@@ -539,6 +577,15 @@ jobs:
           SHARD: ${{ matrix.shard }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           DJB_GATE_PYTEST_SEED: ${{ needs.derive.outputs.seed }}
+          # THE COMPOSE STORE'S CREDENTIAL, RE-PINNED. The AWS login above exports
+          # its assumed STS credentials into the job env for every later step,
+          # over the workflow `env:`; the gate dials the compose MinIO, not AWS.
+          # MinIO was created from compose.yaml's `${MINIO_ROOT_USER:-minioadmin}`
+          # default (nothing here sets it), which is the literal below. Literal,
+          # not `${{ env.… }}`: that context already holds the exported STS key.
+          AWS_ACCESS_KEY_ID: minioadmin  # pragma: allowlist secret — the published compose credential, as in the workflow env above
+          AWS_SECRET_ACCESS_KEY: minioadmin  # pragma: allowlist secret — the published compose credential, as in the workflow env above
+          AWS_SESSION_TOKEN: ""
         run: |
           set -euo pipefail
           args=()

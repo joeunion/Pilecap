@@ -50,6 +50,38 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.2.1] — A fresh clone and CI pull the files store again
+
+MinIO archived its open-source project and withdrew every public image, so
+the release `compose.yaml` pinned no longer pulls from any registry: a fresh
+clone's `./scripts/setup.sh` stopped at its pull step, and every CI leg died
+at `docker compose up`. One fix, a patch: the pin moves, the release does not.
+
+### What a product does at the merge
+
+1. **If your CI sets `AWS_ECR_ROLE_ARN`, grant that role the
+   `ecr-public-login` policy before your next run** — the command is
+   `docs/runbooks/deploy.md` step 5b. Without it the new login step fails and
+   every leg is red before the stack starts. A CI with no such variable pulls
+   anonymously, and can hit ECR Public's anonymous data limit under a full
+   matrix.
+2. **If your `compose.yaml` carries your own MinIO pin**, keep it or take this
+   one; `scripts/tests/test_setup_env.sh` asserts this one by digest.
+
+### Fixed
+
+- **The files store pulls again, on a laptop, a fresh clone and CI.**
+  `compose.yaml`'s `minio` service names the same release from the owner's ECR
+  Public mirror, pinned by digest, with `platform: linux/arm64` — the only
+  architecture any surviving copy holds. A Mac or an arm64 host runs it
+  natively and pulls it anonymously. CI's `legs` job, on amd64 runners,
+  registers the arm64 QEMU handler and logs in to ECR Public before the pull,
+  and `scripts/tests/test_setup_env.sh` refuses a compose-up job that does
+  neither. After that login the CI legs still talk to the compose store with
+  its own credential: the gate step re-pins the store's key pair and empties
+  `AWS_SESSION_TOKEN` over the AWS credentials the login exports, and the
+  same test refuses a gate step that inherits them.
+
 ## [2.2.0] — A product merges the tag and banks green the same day
 
 **At its last fold a product needed three template releases to reach a green
@@ -3266,7 +3298,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.2.0...HEAD
+[Unreleased]: ../../compare/v2.2.1...HEAD
+[2.2.1]: ../../compare/v2.2.0...v2.2.1
 [2.2.0]: ../../compare/v2.1.7...v2.2.0
 [2.1.7]: ../../compare/v2.1.6...v2.1.7
 [2.1.6]: ../../compare/v2.1.5...v2.1.6

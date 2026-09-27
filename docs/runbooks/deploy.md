@@ -620,7 +620,25 @@ cat > /tmp/djb-ci-policy.json <<JSON
 JSON
 aws iam put-role-policy --role-name "$DJB_DEPLOY_NAMESPACE-ci-images" \
   --policy-name djb-ci-images --policy-document file:///tmp/djb-ci-policy.json
-rm -f /tmp/djb-ci-trust.json /tmp/djb-ci-policy.json
+
+# 5b · REQUIRED: the same role logs CI in to ECR Public for the MinIO pull.
+#     `compose.yaml` pins MinIO from the owner's ECR Public mirror, and every
+#     `legs` row pulls it. Anonymous ECR Public pulls are rationed by data: a
+#     full matrix (about sixteen shards × ~170 MB) answers `toomanyrequests:
+#     Data limit exceeded` and the legs die at `docker compose up`. So the legs
+#     job assumes this role in us-east-1 (ECR Public's only API region) and
+#     logs in with `registry-type: public` — and without this policy that login
+#     step fails and every leg is red before the stack starts. Neither action
+#     takes a resource, hence `*`.
+cat > /tmp/djb-ci-ecr-public.json <<JSON
+{"Version": "2012-10-17", "Statement": [
+  {"Effect": "Allow",
+   "Action": ["ecr-public:GetAuthorizationToken", "sts:GetServiceBearerToken"],
+   "Resource": "*"}]}
+JSON
+aws iam put-role-policy --role-name "$DJB_DEPLOY_NAMESPACE-ci-images" \
+  --policy-name ecr-public-login --policy-document file:///tmp/djb-ci-ecr-public.json
+rm -f /tmp/djb-ci-trust.json /tmp/djb-ci-policy.json /tmp/djb-ci-ecr-public.json
 
 # 6 · tell CI where to push and who to be. VARIABLES, NOT SECRETS: a role ARN
 #     and a registry host are coordinates, and `.github/workflows/ci.yml` reads

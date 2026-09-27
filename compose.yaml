@@ -351,19 +351,25 @@ services:
     # whose S3 dialect moved between two worktrees would be a debugging
     # session nobody asked for.
     #
-    # SERVED FROM QUAY.IO, NOT DOCKER HUB, and the registry is the only thing
-    # that moved: the tag is the same release this tree has always pinned. On
-    # 2026-09-12 `docker manifest inspect minio/minio:RELEASE.2025-09-07T16-13-09Z`
-    # started answering "denied: requested access to the resource is denied"
-    # — Docker Hub stopped serving the tag — while the same tag on quay.io
-    # (MinIO's own registry, and the one their own quickstart names) resolves.
-    # A fresh clone could not pull the files store at all, which is the first
-    # thing a stranger runs. Pinning a NEWER Hub release was the other option
-    # and was rejected: same registry, same failure mode, and it would move the
-    # S3 dialect for no reason. A registry can drop a tag again — the tripwire
-    # for the next time is `scripts/setup.sh`'s pull step, which refuses with
-    # COULD NOT LOOK and names the image rather than timing out inside `up`.
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # SERVED FROM THE OWNER'S ECR PUBLIC MIRROR, pinned by digest. The release
+    # is the one this tree has always run; only the source moved, twice. Docker
+    # Hub dropped the tag on 2026-09-12; quay.io served the byte-identical
+    # digest until MinIO archived the project and withdrew every public image
+    # and binary on 2026-09-24 (dl.min.io answers 410, the GitHub project is
+    # archived). The mirror is the last public release, re-pushed from a cache
+    # into the owner's ECR Public repository — a vendor behind a boundary we own
+    # (principle 5). LINUX/ARM64 ONLY, because no box of ours had cached the
+    # amd64 layers and no registry serves them now; `platform:` says so, a Mac
+    # or a Graviton box runs it natively, and an amd64 host needs the arm64
+    # QEMU handler (CI registers it before `compose up`). BY DIGEST, so a
+    # re-push under the same tag cannot move it silently. Anonymous pulls work
+    # for a laptop, a fresh clone and a verifier box; CI logs in, because ECR
+    # Public rations anonymous data and a full matrix exhausts it. The tripwire
+    # for the next time a registry loses it is still `scripts/setup.sh`'s pull
+    # step, which refuses with COULD NOT LOOK and names the image. To re-pin:
+    # push to the same repository and replace tag and digest together.
+    image: public.ecr.aws/w9i8o4b2/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f
+    platform: linux/arm64
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     environment:

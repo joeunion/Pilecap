@@ -481,11 +481,13 @@ wait_healthy() {
 # and leaving `wait_healthy` to count to 180 against a container that was never
 # going to exist.
 #
-# The measurement behind it (2026-09-12): `compose.yaml` pinned
-# `minio/minio:RELEASE.2025-09-07T16-13-09Z`, Docker Hub stopped serving that
-# tag, and the first thing a fresh clone runs stopped working. The pin moved to
-# quay.io; this step is what makes the NEXT registry to drop a tag a refusal
-# that names the image instead of a setup that hangs. A registry is a vendor
+# The measurement behind it (2026-09-12): `compose.yaml` pinned MinIO's Docker
+# Hub release, Docker Hub stopped serving that tag, and the first thing a fresh
+# clone runs stopped working. The pin moved to quay.io — and on 2026-09-24 MinIO
+# withdrew every public image, so it moved again, to the owner's ECR Public
+# mirror, by digest (the comment beside the pin in `compose.yaml`). This step is
+# what makes each NEXT registry to drop a tag a refusal that names the image
+# instead of a setup that hangs. A registry is a vendor
 # behind a pin (principle 5) and an external system is untrusted (principle 4):
 # the failure gets a handling path, not a timeout.
 #
@@ -522,9 +524,9 @@ services_up() {
         echo "   host it would be fetched from:" >&2
         services_image_census >&2
         echo "   Read the pull transcript above for the one that failed. A registry" >&2
-        echo "   that has stopped serving a pinned tag (Docker Hub and" >&2
-        echo "   minio/minio:RELEASE.2025-09-07T16-13-09Z, 2026-09-12) looks exactly" >&2
-        echo "   like this, and the fix is in compose.yaml beside the pin." >&2
+        echo "   that has stopped serving a pinned tag (MinIO's release on Docker Hub," >&2
+        echo "   2026-09-12, then on quay.io, 2026-09-24) looks exactly like this, and" >&2
+        echo "   the fix is in compose.yaml beside the pin." >&2
         exit 2
     fi
 
@@ -552,9 +554,9 @@ services_image_census() {
 
 # Docker's own rule for reading a reference: the first path segment is a
 # registry host only when it carries a dot or a colon, or is exactly
-# `localhost`. That is the whole difference between `minio/minio` (Docker Hub)
-# and `quay.io/minio/minio` (quay.io), and it is the difference the registry
-# move turned on.
+# `localhost`. That is the whole difference between a bare `org/image` (Docker
+# Hub) and `public.ecr.aws/<alias>/minio` (the ECR Public mirror the MinIO pin
+# names now), and it is the difference each registry move turned on.
 image_registry_host() {
     local ref="$1" first="${1%%/*}"
     case "$ref" in

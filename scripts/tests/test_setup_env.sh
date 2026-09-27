@@ -31,7 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: .env.example README.md apps/conftest.py compose.yaml deploy/tests/test_release.sh scripts/check.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/queue_cited.sh scripts/rung_start.sh scripts/secrets_scan.sh scripts/setup.sh scripts/sweep.sh scripts/verifier_box.sh scripts/verify_start.sh
+# drives: .env.example .github/workflows/ci.yml README.md apps/conftest.py compose.yaml deploy/tests/test_release.sh scripts/check.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/queue_cited.sh scripts/rung_start.sh scripts/secrets_scan.sh scripts/setup.sh scripts/sweep.sh scripts/verifier_box.sh scripts/verify_start.sh
 set -euo pipefail
 
 # The drive for the sentinel-fenced blocks of `scripts/setup.sh`: the
@@ -85,8 +85,7 @@ set -euo pipefail
 # over a function nobody defined.
 #
 # WHY THE SERVICES STEP IS DRIVEN AT ALL (measured 2026-09-12). `compose.yaml`
-# pinned `minio/minio:RELEASE.2025-09-07T16-13-09Z`; Docker Hub stopped serving
-# that tag; `setup.sh` — the first thing a stranger runs — went straight to
+# pinned MinIO's Docker Hub release; Docker Hub stopped serving that tag; `setup.sh` — the first thing a stranger runs — went straight to
 # `docker compose up -d` and the failure arrived in compose's vocabulary, or as
 # `wait_healthy` counting to 180 against a container that could not exist. The
 # step now pulls first and a failed pull is exit 2 naming the image and its
@@ -123,10 +122,19 @@ set -euo pipefail
 #   * THE COMMENTS A HUMAN ADDED to their own `.env`. They are not kept, on
 #     purpose — the example owns the prose — and no case asserts otherwise.
 #   * WHETHER A REAL REGISTRY SERVES A REAL TAG. The shim answers; nothing here
-#     dials quay.io or Docker Hub. That a pin RESOLVES is a `docker manifest
+#     dials a registry. That a pin RESOLVES is a `docker manifest
 #     inspect` on a box with network, run by hand and pasted — never a case,
 #     because a case that needed the internet would be red on an aeroplane and
 #     green nowhere useful.
+#   * WHETHER CI'S LOGIN WORKS. The workflow case reads the steps' shape — the
+#     QEMU handler, the role assumed in us-east-1, the public-registry login,
+#     all before the up, and `id-token: write` on the job. Whether the role
+#     actually carries the `ecr-public-login` policy is IAM's answer, read on a
+#     real run's log (`Login Succeeded`), never here. A step counts only with
+#     no `if:` or exactly `vars.AWS_ECR_ROLE_ARN != ''`; what it still cannot
+#     see is a guard that is true in text and false at run time — that
+#     variable unset on the repository skips the login, and only the run's
+#     log says so.
 #   * WHETHER `docker compose config --images` ANSWERS THE WAY THE SHIM DOES.
 #     The shim reads the scratch compose file's `image:` lines, which is what
 #     that subcommand answers for a file with no build stanzas and no variable
@@ -959,6 +967,8 @@ DOCKER
     echo "           planted ${CASE_DIR##*/}/bin/docker — the shim, first on PATH"
 }
 
+MINIO_PINNED_REF="public.ecr.aws/w9i8o4b2/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f"
+
 plant_the_scratch_compose() {
     # $1 the minio reference this case pins. Two services, because a census that
     # only ever sees one line cannot show that it names each one's registry.
@@ -1021,15 +1031,15 @@ says_not() {
 
 case_a_pull_failure_is_could_not_look_naming_the_image() {
     new_case_dir
-    plant_the_scratch_compose 'minio/minio:RELEASE.9999-01-01T00-00-00Z'
+    plant_the_scratch_compose 'example/files-store:RELEASE.9999-01-01T00-00-00Z'
     plant_the_shim
     run_services "a pull that fails is a refusal, not a start" \
-        "" 1 "minio/minio:RELEASE.9999-01-01T00-00-00Z"
+        "" 1 "example/files-store:RELEASE.9999-01-01T00-00-00Z"
     exits 2
     says "COULD NOT LOOK"
-    says "minio/minio:RELEASE.9999-01-01T00-00-00Z"
-    # The registry host, derived rather than spelled: `minio/minio` has no host
-    # segment, so it is Docker Hub — which is the whole of the finding.
+    says "example/files-store:RELEASE.9999-01-01T00-00-00Z"
+    # The registry host, derived rather than spelled: `example/files-store` has
+    # no host segment, so it is Docker Hub — which is the whole of the finding.
     says "(registry docker.io)"
     says "NOTHING WAS STARTED"
     log_says "compose pull"
@@ -1039,10 +1049,10 @@ case_a_pull_failure_is_could_not_look_naming_the_image() {
 
 case_a_healthy_stack_is_reused_without_a_pull() {
     new_case_dir
-    plant_the_scratch_compose 'quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z'
+    plant_the_scratch_compose 'public.ecr.aws/w9i8o4b2/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f'
     plant_the_shim
     run_services "a healthy stack is reused and nothing is fetched" \
-        "healthy" 0 "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
+        "healthy" 0 "public.ecr.aws/w9i8o4b2/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f"
     exits 0
     says "reusing running stack"
     log_never_says "compose pull"
@@ -1055,10 +1065,10 @@ case_a_clean_pull_starts_the_stack_and_then_waits() {
     # then up, then wait — in that order, with the order asserted rather than
     # assumed from the fact that all three happened.
     new_case_dir
-    plant_the_scratch_compose 'quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z'
+    plant_the_scratch_compose 'public.ecr.aws/w9i8o4b2/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f'
     plant_the_shim
     run_services "a clean pull starts the stack and waits for it" \
-        "" 0 "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
+        "" 0 "public.ecr.aws/w9i8o4b2/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f"
     exits 0
     log_says "compose pull"
     log_says "compose up -d"
@@ -1090,8 +1100,9 @@ case_a_reference_names_its_registry_the_way_docker_reads_one() {
             bad "${ref} → ${got}, wanted ${want}"
         fi
     done <<'REFS'
-minio/minio:RELEASE.2025-09-07T16-13-09Z|docker.io
-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z|quay.io
+example/files-store:1|docker.io
+quay.io/example/thing:1|quay.io
+public.ecr.aws/w9i8o4b2/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f|public.ecr.aws
 ghcr.io/zitadel/zitadel:v4.17.1|ghcr.io
 localhost:5000/thing:1|localhost:5000
 postgres:17|docker.io
@@ -1099,11 +1110,12 @@ REFS
 }
 
 case_the_minio_pin_names_the_registry_that_serves_it() {
-    # The pin itself, as a text census over compose.yaml: one minio image line, and
-    # it carries a registry host — a bare `minio/…` is Docker Hub, which stopped
-    # serving this tag on 2026-09-12.
+    # The pin itself, as a text census over compose.yaml: one minio image line,
+    # and it names the owner's ECR Public mirror BY DIGEST. MinIO withdrew every
+    # public image on 2026-09-24; a tag on a mirror can be re-pushed, a digest
+    # cannot, so the digest is what keeps this the release the tree always ran.
     CURRENT="compose.yaml's minio pin"
-    local lines count
+    local lines count block
     lines="$(grep -n 'image: .*minio' compose.yaml || true)"
     count="$(printf '%s\n' "$lines" | grep -c 'image:' || true)"
     if [ "$count" -eq 1 ]; then
@@ -1118,11 +1130,22 @@ case_the_minio_pin_names_the_registry_that_serves_it() {
     # run. `$lines` is already a shell string, so the membership test needs no
     # process at all.
     case "$lines" in
-    *"quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"*)
-        ok "it names quay.io and keeps the release this tree has always pinned"
+    *"${MINIO_PINNED_REF}"*)
+        ok "it names the ECR Public mirror, the release this tree always pinned, by digest"
         ;;
     *)
-        bad "it does not name quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
+        bad "it does not name ${MINIO_PINNED_REF}"
+        ;;
+    esac
+    # The mirror holds ONE architecture, so the service says which rather than
+    # leaving the daemon to infer it from a single-arch manifest.
+    block="$(sed -n '/^  minio:$/,/^  [a-z]/p' compose.yaml)"
+    case "$block" in
+    *$'\n'"    platform: linux/arm64"$'\n'*)
+        ok "the minio service states platform: linux/arm64"
+        ;;
+    *)
+        bad "the minio service carries no \`platform: linux/arm64\` line"
         ;;
     esac
     if grep -qF 'newest release published to' compose.yaml; then
@@ -1130,6 +1153,262 @@ case_the_minio_pin_names_the_registry_that_serves_it() {
     else
         ok "the comment beside the pin no longer claims the tag comes from Docker Hub"
     fi
+}
+
+# --- the CI half of the pin -----------------------------------------------------
+#
+# The mirror is linux/arm64 only and CI's runners are amd64, so every CI job that
+# starts the compose stack must register the arm64 QEMU handler first. And ECR
+# Public rations ANONYMOUS pulls by data: a full matrix (about sixteen shards
+# pulling about 170 MB each) answered `toomanyrequests: Data limit exceeded` on
+# the first consumer that measured it. So every such job logs in to the registry
+# the pin names before its pull, with an OIDC role assumed in us-east-1 (ECR
+# Public's API lives in that region only). One reader, pointed at this tree's
+# workflow and at a planted copy with the login removed, so "no job logs in" is
+# told apart from "the reader sees no login".
+compose_up_jobs_census() {
+    # $1 the workflow file. Prints one line per compose-up job and a total.
+    "$ROOT/.venv/bin/python" - "$1" compose.yaml <<'PYTHON'
+import re
+import sys
+
+import yaml
+
+wf = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+compose = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
+host = compose["services"]["minio"]["image"].split("/", 1)[0]
+jobs = 0
+for name, job in (wf.get("jobs") or {}).items():
+    steps = job.get("steps") or []
+    up = next(
+        (i for i, s in enumerate(steps) if re.search(r"docker compose\b[^\n]*\bup\b", str(s.get("run", "")))),
+        None,
+    )
+    if up is None:
+        continue
+    jobs += 1
+    before = steps[:up]
+
+    def uses(step, prefix):
+        # A step counts only when it can run: no `if:`, or exactly the one guard
+        # the workflow uses (no role variable -> anonymous, like the images job).
+        # `if: false`, or any other condition, does not count.
+        guard = step.get("if", None)
+        runs = "if" not in step or guard == "vars.AWS_ECR_ROLE_ARN != ''"
+        return runs and str(step.get("uses", "")).startswith(prefix)
+
+    qemu = any(uses(s, "docker/setup-qemu-action@") and "arm64" in str((s.get("with") or {}).get("platforms", "")) for s in before)
+    assume = next(
+        (
+            i
+            for i, s in enumerate(before)
+            if uses(s, "aws-actions/configure-aws-credentials@")
+            and (s.get("with") or {}).get("aws-region") == "us-east-1"
+            and "vars.AWS_ECR_ROLE_ARN" in str((s.get("with") or {}).get("role-to-assume", ""))
+        ),
+        None,
+    )
+    login = next(
+        (
+            i
+            for i, s in enumerate(before)
+            if host == "public.ecr.aws"
+            and uses(s, "aws-actions/amazon-ecr-login@")
+            and (s.get("with") or {}).get("registry-type") == "public"
+        ),
+        None,
+    )
+    perms = job.get("permissions", wf.get("permissions")) or {}
+    oidc = isinstance(perms, dict) and perms.get("id-token") == "write"
+    logged = login is not None and assume is not None and assume < login and oidc
+    print(f"job {name}: qemu-arm64-before-up={'yes' if qemu else 'no'} logged-in-before-up={'yes' if logged else 'no'}")
+print(f"host={host}")
+print(f"compose-up-jobs={jobs}")
+PYTHON
+}
+
+case_every_compose_up_job_runs_arm64_and_logs_in_before_the_pull() {
+    CURRENT="every CI job that starts the stack can pull and run the minio mirror"
+    [ -x "$ROOT/.venv/bin/python" ] || cannot_look "no venv interpreter at $ROOT/.venv/bin/python — the workflow reader cannot run"
+    local out="${WORK}/compose-up-jobs.txt" plant="${WORK}/ci-without-login.yml" n
+    if ! compose_up_jobs_census .github/workflows/ci.yml >"$out" 2>&1; then
+        bad "the reader could not read .github/workflows/ci.yml and compose.yaml: $(tr '\n' ' ' <"$out")"
+        return
+    fi
+    sed 's/^/             | /' "$out"
+    n="$(sed -n 's/^compose-up-jobs=//p' "$out")"
+    # THE FLOOR, BY NAME: the legs job is the population the finding came from.
+    if grep -q '^job legs:' "$out"; then
+        ok "the legs job starts the stack, so the census has its subject"
+    else
+        bad "no \`legs\` job starts the stack — the census has no subject"
+    fi
+    if [ "$(grep -c 'qemu-arm64-before-up=yes' "$out" || true)" = "$n" ]; then
+        ok "all ${n} compose-up job(s) register the arm64 QEMU handler before the up"
+    else
+        bad "not every compose-up job registers the arm64 QEMU handler before the up"
+    fi
+    if [ "$(grep -c 'logged-in-before-up=yes' "$out" || true)" = "$n" ]; then
+        ok "all ${n} compose-up job(s) assume the role in us-east-1 and log in to $(sed -n 's/^host=//p' "$out") before the up"
+    else
+        bad "not every compose-up job logs in to $(sed -n 's/^host=//p' "$out") before the up (id-token: write, the role in us-east-1, then registry-type: public)"
+    fi
+    # THE READER CAN FIRE: the same workflow with every login step removed.
+    "$ROOT/.venv/bin/python" - .github/workflows/ci.yml "$plant" <<'PYTHON'
+import sys
+
+import yaml
+
+wf = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+for job in (wf.get("jobs") or {}).values():
+    job["steps"] = [s for s in job.get("steps") or [] if not str(s.get("uses", "")).startswith("aws-actions/amazon-ecr-login@")]
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    yaml.safe_dump(wf, handle)
+PYTHON
+    compose_up_jobs_census "$plant" >"${WORK}/compose-up-jobs-plant.txt" 2>&1 || true
+    if [ "$(grep -c 'logged-in-before-up=yes' "${WORK}/compose-up-jobs-plant.txt" || true)" = "0" ] &&
+        grep -q '^job legs:' "${WORK}/compose-up-jobs-plant.txt"; then
+        ok "and the same reader sees no login in a planted copy with the login removed"
+    else
+        bad "the reader still reports a login in a planted copy that has none: $(tr '\n' ' ' <"${WORK}/compose-up-jobs-plant.txt")"
+    fi
+    # AND A STEP THAT CAN NEVER RUN IS NOT A LOGIN: the same workflow with
+    # `if: false` on every login and QEMU step.
+    "$ROOT/.venv/bin/python" - .github/workflows/ci.yml "${WORK}/ci-if-false.yml" <<'PYTHON'
+import sys
+
+import yaml
+
+wf = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+for job in (wf.get("jobs") or {}).values():
+    for s in job.get("steps") or []:
+        if str(s.get("uses", "")).startswith(
+            ("aws-actions/amazon-ecr-login@", "aws-actions/configure-aws-credentials@", "docker/setup-qemu-action@")
+        ):
+            s["if"] = False
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    yaml.safe_dump(wf, handle)
+PYTHON
+    compose_up_jobs_census "${WORK}/ci-if-false.yml" >"${WORK}/compose-up-jobs-if-false.txt" 2>&1 || true
+    if grep -q '^job legs: qemu-arm64-before-up=no logged-in-before-up=no$' "${WORK}/compose-up-jobs-if-false.txt"; then
+        ok "and it counts neither the QEMU step nor the login when a planted \`if: false\` guards them"
+    else
+        bad "the reader counts a step guarded by \`if: false\`: $(tr '\n' ' ' <"${WORK}/compose-up-jobs-if-false.txt")"
+    fi
+}
+
+# --- the gate after the login dials the compose store --------------------------
+#
+# `aws-actions/configure-aws-credentials` EXPORTS the assumed STS credentials
+# into the job environment for every later step, over the workflow `env:` — so
+# a gate step that inherits them talks to the compose MinIO with an AWS key it
+# has never heard of (`InvalidAccessKeyId` on every MinIO test, every shard).
+# So in every job that assumes an AWS identity, each later step that runs the
+# gate re-pins the store's pair at step level to the workflow's own values, as
+# literals (an `${{ env.… }}` expression reads the context the login already
+# overwrote), and empties AWS_SESSION_TOKEN.
+#
+# BLIND SPOT, declared: this reads the YAML. It cannot see what the action
+# exports at run time — a future version that exports under another name
+# (AWS_SECURITY_TOKEN, a profile) passes here, and there is no belt short of
+# the CI run itself. Which one place owns the store credential under test (the
+# workflow or the test settings) is an open design question for a later cycle.
+gate_after_login_census() {
+    # $1 the workflow file. Prints one line per gate step after a login, and a total.
+    "$ROOT/.venv/bin/python" - "$1" <<'PYTHON'
+import sys
+
+import yaml
+
+wf = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+top = wf.get("env") or {}
+steps_seen = 0
+for name, job in (wf.get("jobs") or {}).items():
+    steps = job.get("steps") or []
+    login = next(
+        (i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("aws-actions/configure-aws-credentials@")),
+        None,
+    )
+    if login is None:
+        continue
+    for s in steps[login + 1 :]:
+        if "check.sh" not in str(s.get("run", "")):
+            continue
+        steps_seen += 1
+        env = s.get("env") or {}
+        key = env.get("AWS_ACCESS_KEY_ID")
+        secret = env.get("AWS_SECRET_ACCESS_KEY")
+        token = env.get("AWS_SESSION_TOKEN", "<inherited>")
+        pinned = (
+            key is not None
+            and key == top.get("AWS_ACCESS_KEY_ID")
+            and secret is not None
+            and secret == top.get("AWS_SECRET_ACCESS_KEY")
+            and token == ""
+        )
+        print(
+            f"job {name} step {s.get('name', '?')!r}: "
+            f"store-credential-pinned={'yes' if pinned else 'no'} "
+            f"key={key if key is not None else '<inherited>'} token={token!r}"
+        )
+print(f"gate-steps-after-login={steps_seen}")
+PYTHON
+}
+
+case_the_gate_after_the_login_dials_the_compose_store() {
+    CURRENT="the gate step after the AWS login re-pins the compose store's credential"
+    [ -x "$ROOT/.venv/bin/python" ] || cannot_look "no venv interpreter at $ROOT/.venv/bin/python — the workflow reader cannot run"
+    local out="${WORK}/gate-after-login.txt" n
+    if ! gate_after_login_census .github/workflows/ci.yml >"$out" 2>&1; then
+        bad "the reader could not read .github/workflows/ci.yml: $(tr '\n' ' ' <"$out")"
+        return
+    fi
+    sed 's/^/             | /' "$out"
+    n="$(sed -n 's/^gate-steps-after-login=//p' "$out")"
+    # THE FLOOR, BY NAME: the legs job's gate step is the population the finding came from.
+    if grep -q '^job legs step ' "$out"; then
+        ok "the legs job runs the gate after its AWS login, so the census has its subject"
+    else
+        bad "no gate step follows an AWS login in the \`legs\` job — the census has no subject"
+        return
+    fi
+    if [ "$(grep -c 'store-credential-pinned=yes' "$out" || true)" = "$n" ]; then
+        ok "all ${n} gate step(s) after an AWS login re-pin the store's key and secret and empty AWS_SESSION_TOKEN"
+    else
+        bad "not every gate step after an AWS login re-pins the store's credential — it inherits the login's STS export and MinIO answers InvalidAccessKeyId"
+    fi
+    # THE READER CAN FIRE: the same workflow with the step-level pins removed,
+    # and again with the key read through the env context the login overwrote.
+    "$ROOT/.venv/bin/python" - .github/workflows/ci.yml "${WORK}/ci-unpinned.yml" "${WORK}/ci-env-context.yml" <<'PYTHON'
+import copy
+import sys
+
+import yaml
+
+wf = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+unpinned, via_context = copy.deepcopy(wf), copy.deepcopy(wf)
+for job in (unpinned.get("jobs") or {}).values():
+    for s in job.get("steps") or []:
+        for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            (s.get("env") or {}).pop(key, None)
+for job in (via_context.get("jobs") or {}).values():
+    for s in job.get("steps") or []:
+        if "AWS_ACCESS_KEY_ID" in (s.get("env") or {}):
+            s["env"]["AWS_ACCESS_KEY_ID"] = "${{ env.AWS_ACCESS_KEY_ID }}"
+for path, doc in ((sys.argv[2], unpinned), (sys.argv[3], via_context)):
+    with open(path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(doc, handle)
+PYTHON
+    local plant
+    for plant in unpinned env-context; do
+        gate_after_login_census "${WORK}/ci-${plant}.yml" >"${WORK}/gate-after-login-${plant}.txt" 2>&1 || true
+        if grep -q '^job legs step .*store-credential-pinned=no' "${WORK}/gate-after-login-${plant}.txt" &&
+            ! grep -q 'store-credential-pinned=yes' "${WORK}/gate-after-login-${plant}.txt"; then
+            ok "and the same reader refuses a planted copy (${plant})"
+        else
+            bad "the reader passes a planted copy (${plant}): $(tr '\n' ' ' <"${WORK}/gate-after-login-${plant}.txt")"
+        fi
+    done
 }
 
 # --- the tag-clone world ------------------------------------------------------
@@ -1850,6 +2129,8 @@ case_a_healthy_stack_is_reused_without_a_pull
 case_a_clean_pull_starts_the_stack_and_then_waits
 case_a_reference_names_its_registry_the_way_docker_reads_one
 case_the_minio_pin_names_the_registry_that_serves_it
+case_every_compose_up_job_runs_arm64_and_logs_in_before_the_pull
+case_the_gate_after_the_login_dials_the_compose_store
 case_a_tag_clone_gets_main_at_head_and_is_on_it
 case_the_printed_remedy_runs_where_the_step_leaves_you
 case_a_clone_with_main_is_untouched
