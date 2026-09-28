@@ -1,0 +1,8 @@
+/* Planted: a second ring — a focus-visible rule that names no ring token. */
+.zzz-own {
+    cursor: pointer;
+    min-block-size: var(--act-min);
+}
+.zzz-own:focus-visible {
+    outline: 3px solid currentColor;
+}

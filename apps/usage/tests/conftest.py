@@ -9,9 +9,10 @@ real `meters.py`, discovered off the live app registry — rather than teaching
 
 Two ways, deliberately, because they prove different things:
 
-* `declared_meter` **plants a real file** on disk in an installed app and
-  invalidates the import caches, so the discovery walk is the real one. That is
-  the only way to prove the walk finds a module it has never seen;
+* `declared_meter` **plants a real file** in an installed app's package, for
+  this process only, and invalidates the import caches, so the discovery walk
+  is the real one. That is the only way to prove the walk finds a module it has
+  never seen;
 * `a_declared_meter` **replaces the registry function** for the tests whose
   subject is the ledger rather than the vocabulary. Faster, and it keeps a
   hundred assertions from depending on a file this directory writes.
@@ -23,8 +24,9 @@ Every row is written by the service that really writes it rather than by
 from __future__ import annotations
 
 import importlib
-import os
+import shutil
 import sys
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,11 +55,11 @@ METER = "example.widgets.count"
 #: A second one, so "this meter's total" can be wrong by including another's.
 OTHER_METER = "example.widgets.seconds"
 
-#: Where the planted `meters.py` goes. `apps/example` rather than `apps/usage`:
-#: a meter is declared by the app that SPENDS it, and planting into this app
-#: would make the registry's most important property — that it finds somebody
-#: else's file — untested.
-_PLANT = Path(__file__).resolve().parents[2] / "example" / "meters.py"
+#: The package the plant is declared under. `apps/example` rather than
+#: `apps/usage`: a meter is declared by the app that SPENDS it, and planting into
+#: this app would make the registry's most important property — that it finds
+#: somebody else's module — untested.
+_PLANT_PACKAGE = "apps.example"
 
 _PLANT_SOURCE = '''"""Planted by apps/usage/tests/conftest.py. Removed by the same fixture."""
 
@@ -65,38 +67,57 @@ WIDGETS_COUNT = "example.widgets.count"
 WIDGETS_SECONDS = "example.widgets.seconds"
 '''
 
+#: The live plant, when there is one: the overlay directory and the package's
+#: search path as it was before the overlay joined it.
+_planted: list[tuple[Path, list[str]]] = []
 
-def plant_meters(source: str, *, at: Path = _PLANT) -> None:
-    """Write a `meters.py` where discovery will find it, caches invalidated.
 
-    `importlib.invalidate_caches()` is not optional: `find_spec` caches a
-    package's directory listing, so a module created after the first import in
-    this process is invisible without it — and the test would pass for the wrong
-    reason, having proved that discovery finds nothing.
+def plant_meters(source: str) -> None:
+    """Declare a `meters.py` in `apps.example` for THIS PROCESS ONLY.
 
-    **Written under another name and `os.replace`d into position**, because
-    every tree-walking census in the suite is running on another xdist worker
-    while this file exists (`apps/core/tests/tree_census.py` has the argument).
-    A plain `write_text` truncates and then fills, so a census could read a
-    half-written module and report a `SyntaxError` that describes nothing in
-    the tree; `os.replace` within one directory is atomic, so the file is
-    complete or absent and never in between. The *absent* half is what the
-    tolerant read on the census side is for — nothing here can close that,
-    because `unlink` is already a single syscall.
+    **Never written into the shared tree.** Every xdist worker runs out of one
+    checkout, so a file under `apps/example/` is a file every worker's
+    `declared_meters()` walks. The plant used to live there, and a worker
+    recording usage for real (a `files` test metering stored bytes) found the
+    module with `find_spec`, lost it to this fixture's `unlink` before
+    `import_module` read it, and failed with `FileNotFoundError` on a test that
+    had nothing to do with meters — one test in 2,707, under whichever schedule
+    put the two on different workers at the same millisecond.
+
+    So the module goes in a private directory appended to the package's own
+    search path (`apps.example.__path__`). `declared_meters()` still does the
+    real walk — the live app registry, `find_spec` by module name,
+    `import_module` — and the import system still finds a module it has never
+    seen in an app that is not this one; nothing else in any process can see it.
+    What this does NOT exercise is the import system reading the package's
+    first directory, which is Python's behaviour rather than this registry's.
+
+    `importlib.invalidate_caches()` is not optional: `find_spec` caches
+    directory listings, so a module created after the first lookup is invisible
+    without it — and the test would pass for the wrong reason, having proved
+    that discovery finds nothing.
     """
-    building = at.with_name(f".{at.name}.building")
-    building.write_text(source)
-    os.replace(building, at)
-    sys.modules.pop(f"apps.{at.parent.name}.meters", None)
+    unplant_meters()
+    package = importlib.import_module(_PLANT_PACKAGE)
+    overlay = Path(tempfile.mkdtemp(prefix="djb-meters-plant-"))
+    (overlay / "meters.py").write_text(source)
+    _planted.append((overlay, list(package.__path__)))
+    package.__path__.append(str(overlay))
+    sys.modules.pop(f"{_PLANT_PACKAGE}.meters", None)
     importlib.invalidate_caches()
 
 
-def unplant_meters(*, at: Path = _PLANT) -> None:
-    """Take it away again, whatever happened. A leaked plant is a novel module
-    name in somebody else's app, which is a house-rule-11 violation the next
-    person to run the gate would inherit."""
-    at.unlink(missing_ok=True)
-    sys.modules.pop(f"apps.{at.parent.name}.meters", None)
+def unplant_meters() -> None:
+    """Take it away again, whatever happened — the search path restored, the
+    overlay removed, the module forgotten, so the next walk in this process
+    finds what the tree declares and nothing else."""
+    package = importlib.import_module(_PLANT_PACKAGE)
+    while _planted:
+        overlay, original = _planted.pop()
+        package.__path__[:] = original
+        sys.path_importer_cache.pop(str(overlay), None)
+        shutil.rmtree(overlay, ignore_errors=True)
+    sys.modules.pop(f"{_PLANT_PACKAGE}.meters", None)
     importlib.invalidate_caches()
 
 

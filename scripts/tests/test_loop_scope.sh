@@ -31,8 +31,8 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: .gitignore apps/ config/ deploy/tests docs/product/instruments.md pyproject.toml quality/ scripts/archaeology_lib.sh scripts/check.sh scripts/db.sh scripts/gate_lease.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/queue_cited.sh scripts/secrets_scan.sh scripts/sweep.sh scripts/test.sh scripts/tests/test_gate_lease.sh scripts/tests/test_loop_ledger.sh scripts/tests/test_pipefail_readers.sh scripts/tests/test_sweep.sh
-# cites: scripts/test_impact.py scripts/test_impact.json .env.example
+# drives: .gitignore apps/ config/ deploy/grants.sql.py deploy/tests docs/product/instruments.md pyproject.toml quality/ scripts/archaeology_lib.sh scripts/check.sh scripts/db.sh scripts/gate_lease.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/queue_cited.sh scripts/secrets_scan.sh scripts/sweep.sh scripts/test.sh scripts/tests/test_gate_lease.sh scripts/tests/test_loop_ledger.sh scripts/tests/test_pipefail_readers.sh scripts/tests/test_sweep.sh
+# cites: scripts/test_impact.py scripts/test_impact.json .env.example TEMPLATE_VERSION README.md
 
 # The drive for the `--loop` SCOPE — `scripts/loop_tier.sh`'s fan-out decision
 # table, its reverse-transitive `depends_on` closure, its refusals, and the
@@ -137,6 +137,7 @@ cannot_look() {
     exit 2
 }
 
+ONLY_CASE=""
 case "${1:-}" in
 "") ;;
 --list)
@@ -146,8 +147,19 @@ case "${1:-}" in
     grep -n '^case_[A-Za-z0-9_]*() {' "$0" | sed 's/() {.*//; s/^/  /'
     exit 0
     ;;
+--case)
+    # ONE CASE, BY NAME — the seam `test_divergence_census.sh` and
+    # `test_selftest_leg.sh` already carry, for re-running the one case a
+    # rung is about without the whole drive. A name this file does not define
+    # is exit 2, never a silent run of nothing.
+    [ -n "${2:-}" ] && grep -q "^${2}() {" "$0" || {
+        echo "!! --case: test_loop_scope.sh defines no case named '${2:-}'; --list names them" >&2
+        exit 2
+    }
+    ONLY_CASE="$2"
+    ;;
 *)
-    echo "!! unknown argument '$1': test_loop_scope.sh takes nothing or --list" >&2
+    echo "!! unknown argument '$1': test_loop_scope.sh takes nothing, --list or --case <name>" >&2
     exit 2
     ;;
 esac
@@ -884,6 +896,21 @@ case_a_broken_changed_file_derivation_is_the_inherited_exit_2() {
 
 # --- the always-on set, and its two layers of floors -------------------------
 
+# counts_field <field> <counts file> — the field's value, or nothing.
+#
+# A MISSING FILE IS AN EMPTY ANSWER, NEVER A READ OF STDIN. Handed an empty
+# path — which is exactly what a RED run produces, when no collector wrote a
+# counts file — `awk … ""` falls through to reading standard input, and under
+# `verifier_box.sh run` that is an ssh session that never closes: the red path
+# hung for 29 minutes instead of failing. So the path is tested first and awk's
+# stdin is closed besides; the caller's own assertion turns the empty answer
+# into the failure it is (`case_counts_field_answers_nothing_for_no_counts_file`).
+counts_field() {
+    local field="$1" file="${2:-}"
+    [ -n "$file" ] && [ -f "$file" ] || return 0
+    awk -F= -v key="$field" '$1 == key {print $2}' "$file" </dev/null
+}
+
 collected_count() {
     # `679/3409 tests collected (2730 deselected)` -> 679; `3409 tests collected` -> 3409.
     local n
@@ -999,7 +1026,10 @@ severed = source.replace(
     '    "introspect_registry": ("__severed__",),',
 ).replace(
     '    "absent_world": ("DJB_DISABLED_APPS",),', '    "absent_world": ("__severed__",),'
-).replace('    "door_parity": ("DOOR_PAIR",),', '    "door_parity": ("__severed__",),')
+).replace('    "door_parity": ("DOOR_PAIR",),', '    "door_parity": ("__severed__",),').replace(
+    '''    "door_registry": ("get_openapi_schema(", '"tools/list"', "'tools/list'"),''',
+    '''    "door_registry": ("__severed__",),''',
+)
 if severed == source:
     sys.stderr.write("the severance found nothing to sever — the declaration moved\n")
     raise SystemExit(2)
@@ -1091,6 +1121,242 @@ case_a_drawer_raised_floor_refuses_a_member_moved_aside_on_a_six_module_tree() {
     fi
 }
 
+# --- the door registry, the banner's ways in, and the drawer's reach kinds ----
+
+# names_platform_app <name> — exit 0 when `quality/partition.yaml`'s
+# `platform_apps` lists the name, 1 when it does not. Read at DRIVE time, never
+# trusted from a sentence: a probe app sited inside the partition would be
+# measured for a reason that has nothing to do with the scope.
+names_platform_app() {
+    "$PY" - "$ROOT/quality/partition.yaml" "$1" <<'PY'
+import pathlib
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+name = sys.argv[2]
+inside = False
+for line in text.splitlines():
+    if line.startswith("platform_apps:"):
+        inside = True
+        continue
+    if inside:
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            if stripped[2:].strip() == name:
+                raise SystemExit(0)
+            continue
+        if stripped and not stripped.startswith("#"):
+            break
+raise SystemExit(1)
+PY
+}
+
+# probe_clone <dir> — a throwaway clone of this checkout carrying THIS tree's
+# `apps/conftest.py` (the selection machinery under test), with the probe app
+# `apps/zzz_probe/` sited as a PRODUCT app. The app exists only inside the
+# clone, which lives under the drive's scratch directory and is removed with it.
+PROBE_APP=zzz_probe
+PROBE_DB=djb_loop_scope_drive_probe
+probe_clone() {
+    local dir="$1"
+    drive_require_scratch dir "${dir:-}"
+    rm -rf "$dir"
+    git clone --quiet --shared --no-hardlinks "$ROOT" "$dir" >/dev/null 2>&1 ||
+        cannot_look "could not clone this checkout into the scratch directory"
+    cp "$ROOT/apps/conftest.py" "$dir/apps/conftest.py"
+    if names_platform_app "$PROBE_APP"; then
+        cannot_look "quality/partition.yaml lists '${PROBE_APP}' as a platform app — the probe must be a product app"
+    fi
+    [ -e "$dir/apps/${PROBE_APP}" ] && cannot_look "apps/${PROBE_APP} already exists in the clone — the probe will not overwrite it"
+    mkdir -p "$dir/apps/${PROBE_APP}/tests"
+    : >"$dir/apps/${PROBE_APP}/__init__.py"
+    : >"$dir/apps/${PROBE_APP}/tests/__init__.py"
+    {
+        echo "from django.apps import AppConfig"
+        echo ""
+        echo ""
+        echo "class ZzzProbeConfig(AppConfig):"
+        echo "    name = \"apps.${PROBE_APP}\""
+        echo "    depends_on: tuple[str, ...] = ()"
+    } >"$dir/apps/${PROBE_APP}/apps.py"
+}
+
+# probe_collect <dir> <name> <args…> — collect the clone's WHOLE suite at a
+# scope that EXCLUDES the probe app: the change is one file in `apps/example`,
+# the `--loop` shape for a rung whose only changed files are there.
+probe_collect() {
+    local dir="$1"
+    CURRENT="$2"
+    shift 2
+    N=$((N + 1))
+    OUT="${WORK}/probe${N}.log"
+    RC=0
+    (cd "$dir" && DATABASE_NAME="$PROBE_DB" "$PY" -m pytest --collect-only -q -p no:randomly \
+        --djb-scope-narrow --djb-scope=example --djb-own-app=example \
+        --djb-changed=apps/example/api.py "$@") >"$OUT" 2>&1 || RC=$?
+}
+
+case_an_example_only_change_keeps_the_door_schema_parity_module() {
+    # THE CONSUMER'S FIFTH CENSUS. It compares what the two doors PUBLISH — the
+    # REST document and the MCP catalogue — and carries no marker and no seed
+    # line, so only a derived reach kind can keep it when the change is in an
+    # app no scope pairs with core.
+    local parity=apps/core/tests/test_door_schema_parity.py
+    collect_scope "a --loop collection whose changed files are only apps/example/**" \
+        --djb-scope-narrow --djb-scope=example --djb-own-app=example \
+        --djb-changed=apps/example/api.py
+    is "$RC" "0" "the exit status"
+    says "${parity}::"
+    says "${parity} derived: door_registry"
+    CURRENT="the banner counts the always-on set in modules"
+    if grep -Eq '^  always-on: [0-9]+ modules ran — [0-9]+ derived before the tier' "$OUT"; then
+        ok "$(grep -E '^  always-on: [0-9]+ modules ran — ' "$OUT")"
+    else
+        bad "no 'always-on: <n> modules ran — <m> derived before the tier' line"
+    fi
+    says " structural"
+    says " declared"
+    CURRENT="every listed module is one line with its way in"
+    local n listed
+    n=$(sed -n 's/^  always-on: \([0-9]*\) modules ran — .*/\1/p' "$OUT")
+    listed=$(grep -Ec '^    apps/[^ ]+\.py (structural|derived: [a-z_,]+|declared|seeded)$' "$OUT" || true)
+    is "$listed" "$n" "the listed modules against the count"
+
+    # THE FOURTH WAY IN: a census the declarations seeded arrives as a
+    # changed-test path, and the banner says so rather than calling it edited.
+    collect_scope "a seeded census is listed as seeded" \
+        --djb-scope-narrow --djb-scope=example --djb-own-app=example \
+        --djb-changed-test=apps/core/tests/test_vocabulary.py
+    is "$RC" "0" "the exit status"
+    says "apps/core/tests/test_vocabulary.py seeded"
+
+    # MEASURE THE LEG YOU SHIP: under `-n` the controller collects nothing, so
+    # the enumeration has to reach the pre-run banner through the counts files.
+    local counts="${WORK}/counts-door"
+    drive_require_scratch counts "${counts:-}"
+    mkdir -p "$counts"
+    CURRENT="the enumeration survives the real parallel invocation"
+    N=$((N + 1))
+    OUT="${WORK}/xdist-door${N}.log"
+    RC=0
+    (cd "$ROOT" && "$PY" -m pytest -q -p no:randomly -n 2 \
+        --djb-scope-narrow --djb-scope=example --djb-own-app=example \
+        --djb-changed=apps/example/api.py "--djb-scope-counts=$counts" \
+        -k test_the_namer_unwraps_and_never_reaches_for_repr) >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the exit status"
+    says "scope     ${parity} derived: door_registry"
+    CURRENT="every collector's counts file carries the module"
+    local f carried=0 files=0
+    for f in $(find "$counts" -type f | sort); do
+        files=$((files + 1))
+        grep -qxF "always_on_module=${parity} derived: door_registry" "$f" && carried=$((carried + 1))
+    done
+    if [ "$files" -ge 2 ] && [ "$carried" = "$files" ]; then
+        ok "${carried} of ${files} collector files name it"
+    else
+        bad "${carried} of ${files} collector files name ${parity} (wanted every one of at least two)"
+    fi
+}
+
+case_a_product_app_walking_the_door_registry_is_always_on() {
+    # THE PLANTED UNREGISTERED CENSUS. A product app's test module that walks
+    # the door registry and says so nowhere — no marker, no seed line — must be
+    # kept by a scope that does not contain its app, because a route any app
+    # adds can move its answer.
+    local dir="${WORK}/probe-door"
+    local module="apps/${PROBE_APP}/tests/test_door_walk.py"
+    probe_clone "$dir"
+    {
+        echo '"""A planted product census over the published REST document."""'
+        echo ""
+        echo "from config.api import api"
+        echo ""
+        echo ""
+        echo "def test_every_published_path_has_an_operation() -> None:"
+        echo "    document = api.get_openapi_schema()"
+        echo "    assert all(document[\"paths\"].values())"
+    } >"$dir/${module}"
+    probe_collect "$dir" "an undeclared door-registry walker in a product app"
+    is "$RC" "0" "the exit status"
+    says "${module}::test_every_published_path_has_an_operation"
+    says "${module} derived: door_registry"
+    rm -rf "$dir"
+}
+
+case_a_drawer_reach_kind_makes_its_reader_always_on() {
+    # A PRODUCT'S OWN REGISTRY, declared in the fixtures drawer — the one
+    # reader is `_reach_tokens` in apps/conftest.py. Then the drawer's keys as
+    # a closed set: a typo'd key declares nothing and is refused by name.
+    local dir="${WORK}/probe-drawer"
+    local module="apps/${PROBE_APP}/tests/test_widget_census.py"
+    probe_clone "$dir"
+    {
+        echo '"""A planted product census over a product-owned registry."""'
+        echo ""
+        echo ""
+        echo "def list_widgets() -> list[str]:"
+        echo "    return [\"a\"]"
+        echo ""
+        echo ""
+        echo "def test_every_widget_is_named() -> None:"
+        echo "    assert all(list_widgets())"
+    } >"$dir/${module}"
+    probe_collect "$dir" "no drawer: the product's registry reader is deselected"
+    is "$RC" "0" "the exit status"
+    CURRENT="without the declaration the scope deselects it"
+    if grep -qF "${module}::" "$OUT"; then
+        bad "${module} was kept with no declaration — then the drawer proves nothing"
+    else
+        ok "${module} is deselected by a scope that excludes its app"
+    fi
+    printf '%s\n' '"""The fixtures drawer, planted by test_loop_scope.sh."""' '' \
+        'DJB_REACH_KINDS = {"acme_registry": ("list_widgets(",)}' >"$dir/apps/conftest_local.py"
+    probe_collect "$dir" "a drawer reach kind makes its reader always-on"
+    is "$RC" "0" "the exit status"
+    says "${module}::test_every_widget_is_named"
+    says "${module} derived: acme_registry"
+    printf '%s\n' '"""The fixtures drawer, planted by test_loop_scope.sh."""' '' \
+        'DJB_REACH_KIND = {"acme_registry": ("list_widgets(",)}' >"$dir/apps/conftest_local.py"
+    probe_collect "$dir" "an unknown drawer key is a usage error naming the key"
+    is "$RC" "4" "the exit status (pytest UsageError; scripts/check.sh maps 4 to exit 2)"
+    says "declares DJB_REACH_KIND, which no reader"
+    rm -rf "$dir"
+}
+
+case_counts_field_answers_nothing_for_no_counts_file() {
+    # THE RED PATH, PLANTED: no collector wrote a counts file, so the path the
+    # readers are handed is empty. Standard input is a FIFO held open by this
+    # case and never written, so a reader that falls through to stdin blocks —
+    # and the watchdog below turns a block into a named failure instead of a
+    # hung drive.
+    local fifo="${WORK}/held-stdin" got="${WORK}/counts-field.out" pid waited=0
+    drive_require_scratch fifo "${fifo:-}"
+    rm -f "$fifo" "$got"
+    mkfifo "$fifo" || cannot_look "could not make a FIFO in the scratch directory"
+    exec 7<>"$fifo"
+    CURRENT="an empty counts path is an empty answer, and stdin is never read"
+    (counts_field always_on "" <&7 >"$got") &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        bad "counts_field was still running after ${waited}s on an empty path — it read stdin"
+    else
+        wait "$pid" 2>/dev/null || true
+        is "$(cat "$got")" "" "the answer for an empty path"
+    fi
+    CURRENT="a path to no file is an empty answer too"
+    is "$(counts_field always_on "${WORK}/no-such-counts-file" <&7)" "" "the answer for a missing file"
+    exec 7<&-
+    rm -f "$fifo"
+    CURRENT="a real counts file still answers"
+    printf 'workers=2\nalways_on=5\nalways_on_modules=3\n' >"${WORK}/counts-field-file"
+    is "$(counts_field always_on "${WORK}/counts-field-file")" "5" "always_on from a real file"
+}
+
 case_the_always_on_set_survives_the_real_parallel_invocation() {
     # MEASURE THE LEG YOU SHIP. A serial approximation of a parallel leg is green
     # either way, because the approximation genuinely passes. So this runs the
@@ -1142,7 +1408,7 @@ case_the_always_on_set_survives_the_real_parallel_invocation() {
     fi
     CURRENT="the always-on set is not empty"
     local always
-    always=$(awk -F= '/^always_on=/ {print $2}' "$first")
+    always=$(counts_field always_on "$first")
     if [ "${always:-0}" -gt 0 ]; then
         ok "always_on=${always} at an EMPTY scope — the cross-app population still runs"
     else
@@ -1526,7 +1792,7 @@ case_mine_runs_own_apps_only_and_never_banks() {
     local always
     mine_collection_once "the --mine selection, with the counts writer on"
     is "$RC" "0" "the exit status"
-    always=$(awk -F= '/^always_on=/ {print $2}' "$(find "$MINE_COUNTS" -type f | sort | head -1)" 2>/dev/null || true)
+    always=$(counts_field always_on "$(find "$MINE_COUNTS" -type f 2>/dev/null | sort | head -1)")
     CURRENT="the always-on set runs under --mine"
     if [ -n "$always" ] && [ "$always" -gt 0 ]; then
         ok "always_on=${always} under --mine — the cross-app tripwires are outside the narrowing"
@@ -1855,8 +2121,8 @@ case_the_pre_run_counts_agree_with_the_reconciliation() {
     fi
     ok "${n} collector files written under -n 2"
     first=$(printf '%s\n' "$files" | head -1)
-    file_selected=$(awk -F= '/^selected=/ {print $2}' "$first")
-    file_deselected=$(awk -F= '/^deselected=/ {print $2}' "$first")
+    file_selected=$(counts_field selected "$first")
+    file_deselected=$(counts_field deselected "$first")
     banner_selected=$(sed -n 's/.*scope   selected \([0-9][0-9]*\) .*/\1/p' "$OUT" | head -1)
     banner_deselected=$(sed -n 's/.*scope   selected [0-9][0-9]* · deselected \([0-9][0-9]*\).*/\1/p' "$OUT" | head -1)
     is "${banner_selected:-unset}" "${file_selected:-unset}" "the banner's selected count"
@@ -2776,8 +3042,8 @@ case_the_full_gate_passes_write_counts_and_the_whole_suite_reconciles() {
     done
     ok "all ${n} counts files identical"
     CURRENT="the whole-suite file is a POPULATION, not a scope"
-    selected=$(awk -F= '/^selected=/ {print $2}' "$first")
-    is "$(awk -F= '/^deselected=/ {print $2}' "$first")" "0" "deselected under the whole suite"
+    selected=$(counts_field selected "$first")
+    is "$(counts_field deselected "$first")" "0" "deselected under the whole suite"
     CURRENT="and selected is this tree's collected count"
     collect_scope_memo whole "the whole tree's collected count"
     collected=$(collected_count "$OUT")
@@ -2899,6 +3165,116 @@ check_sh_function() {
         cannot_look "the ${name}() definition in scripts/check.sh has no closing brace at column 1 — the extraction cannot be trusted"
     # shellcheck source=/dev/null
     . "$out"
+}
+
+# THE THIRD BELT, WORN BY THE SUITE. The full gate's pytest leg runs one more
+# pass connected as a least-privilege role holding deploy/grants.sql.py's
+# grants (`gate_grants_pass`, scripts/check.sh). The plant is a queryset
+# `.update()` on an append-only table inside a real service, driven by a real
+# REST test: as the OWNER it is green (every belt the suite wore before this
+# pass let it through), under the grants it is red at the wire, naming the
+# ledger. The plant is in a scratch clone; the functions are check.sh's bytes.
+case_the_grants_pass_reds_a_planted_ledger_update_at_the_wire() {
+    local target="apps/example/tests/test_api.py::test_authenticated_create_returns_201_and_owns_the_row"
+    local svc said
+    CURRENT="the grants pass over a planted ledger update"
+    real_clone
+    cp "${ROOT}/.env" "${REAL_CLONE}/.env" 2>/dev/null || true
+    svc="${REAL_CLONE}/apps/example/services.py"
+    awk '
+        /^def create_widget\(/ { in_fn = 1 }
+        in_fn && /^    return / && !done {
+            print "    WidgetEntry.objects.filter(widget_id=widget.pk).update(note=\"\")"
+            done = 1
+        }
+        { print }
+    ' "${ROOT}/apps/example/services.py" >"$svc"
+    grep -q 'WidgetEntry.objects.filter(widget_id=widget.pk).update' "$svc" ||
+        cannot_look "the plant did not take — create_widget has no return line this drive can find"
+
+    CURRENT="as the OWNER the planted update is green (the belts the suite wore before)"
+    OUT="${WORK}/grants-owner.log"
+    RC=0
+    (cd "$REAL_CLONE" && ./scripts/test.sh -n 1 -p no:randomly "$target") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "pytest's exit as the owner"
+
+    CURRENT="under the grants the planted update is RED at the wire, naming the ledger"
+    check_sh_function gate_grants_db
+    check_sh_function gate_grants_pass
+    OUT="${WORK}/grants-pass.log"
+    RC=0
+    (
+        cd "$REAL_CLONE" || exit 2
+        # shellcheck source=scripts/db.sh
+        . scripts/db.sh >/dev/null 2>&1 || true
+        GATE_GRANTS_ROLE=djb_grants_pass
+        GATE_GRANTS_SECRET="djb-grants-pass" # pragma: allowlist secret
+        GATE_SLOT_WORKERS=1
+        PYTEST_SEED=1
+        unset CI DJB_GATE_GRANTS_PASS GATE_STORE_DURATIONS GATE_PR
+        gate_grants_pass "$target"
+    ) >"$OUT" 2>&1 || RC=$?
+    is "$RC" "1" "the grants pass's exit over the plant"
+    says "THE GRANTS PASS IS RED"
+    says "example_widgetentry"
+
+    CURRENT="and the same test with the plant removed is green under the grants"
+    cp "${ROOT}/apps/example/services.py" "$svc"
+    OUT="${WORK}/grants-clean.log"
+    RC=0
+    (
+        cd "$REAL_CLONE" || exit 2
+        # shellcheck source=scripts/db.sh
+        . scripts/db.sh >/dev/null 2>&1 || true
+        GATE_GRANTS_ROLE=djb_grants_pass
+        GATE_GRANTS_SECRET="djb-grants-pass" # pragma: allowlist secret
+        GATE_SLOT_WORKERS=1
+        PYTEST_SEED=1
+        unset CI DJB_GATE_GRANTS_PASS GATE_STORE_DURATIONS GATE_PR
+        gate_grants_pass "$target"
+    ) >"$OUT" 2>&1 || RC=$?
+    is "$RC" "0" "the grants pass's exit with no plant"
+    says "grants pass: green"
+
+    CURRENT="a write issued by a helper in another app names the helper AND the product caller"
+    mkdir -p "${REAL_CLONE}/apps/core"
+    {
+        echo '"""A scratch helper that writes to a ledger (the plant)."""'
+        echo ""
+        echo ""
+        echo "def zz_touch(widget_pk: int) -> None:"
+        echo "    from apps.example.models import WidgetEntry"
+        echo ""
+        echo "    WidgetEntry.objects.filter(widget_id=widget_pk).update(note=\"\")"
+    } >"${REAL_CLONE}/apps/core/zz_probe.py"
+    awk '
+        /^def create_widget\(/ { in_fn = 1 }
+        in_fn && /^    return / && !done {
+            print "    from apps.core.zz_probe import zz_touch"
+            print ""
+            print "    zz_touch(widget.pk)"
+            done = 1
+        }
+        { print }
+    ' "${ROOT}/apps/example/services.py" >"$svc"
+    OUT="${WORK}/grants-helper.log"
+    RC=0
+    (
+        cd "$REAL_CLONE" || exit 2
+        # shellcheck source=scripts/db.sh
+        . scripts/db.sh >/dev/null 2>&1 || true
+        GATE_GRANTS_ROLE=djb_grants_pass
+        GATE_GRANTS_SECRET="djb-grants-pass" # pragma: allowlist secret
+        GATE_SLOT_WORKERS=1
+        PYTEST_SEED=1
+        unset CI DJB_GATE_GRANTS_PASS GATE_STORE_DURATIONS GATE_PR
+        gate_grants_pass "$target"
+    ) >"$OUT" 2>&1 || RC=$?
+    is "$RC" "1" "the grants pass's exit over the helper plant"
+    says "via apps/core/zz_probe.py:"
+    says "(called from apps/example/services.py:"
+    rm -f "${REAL_CLONE}/apps/core/zz_probe.py"
+    git -C "$REAL_CLONE" checkout -q -- . 2>/dev/null || true
 }
 
 case_last_failed_reruns_only_the_failure() {
@@ -4363,6 +4739,66 @@ scratch_census() {
     printf '%s' "apps/core/tests/test_scratch_census.py"
 }
 
+# THE INERT ROW'S TWO FALSE MEMBERS. `TEMPLATE_VERSION` and `*.md` are classed
+# inert — "no pytest blast radius" — while tests quote them by name and open
+# them: a release-prep rung that changed only the version selected no test that
+# judges it. The row now asks the docs-only road's literal-read judge
+# (`gate_docs_only_literal_reads`) which modules QUOTE the changed path, and
+# seeds the test modules among them. The scratch world plants its own readers
+# at paths no product owns, so the assertion is about the derivation and never
+# about the real tree's modules; a backtick mention is planted beside them as
+# the negative — prose, never a read.
+literal_world() {
+    local dir=$1
+    mkdir -p "$dir/apps/core/tests" "$dir/apps/mid/tests"
+    printf '0.0.1\n' >"$dir/TEMPLATE_VERSION"
+    {
+        echo '"""Reads the version file by name."""'
+        echo ""
+        echo 'VERSION_FILE = "TEMPLATE_VERSION"'
+    } >"$dir/apps/core/tests/test_zzz_version_reader.py"
+    {
+        echo '"""Reads the changelog by name."""'
+        echo ""
+        echo 'LOG = "zzz_notes.md"'
+    } >"$dir/apps/mid/tests/test_zzz_notes_reader.py"
+    {
+        echo '"""Mentions `TEMPLATE_VERSION` in prose and never opens it."""'
+    } >"$dir/apps/mid/tests/test_zzz_prose_only.py"
+    printf '# notes\n' >"$dir/zzz_notes.md"
+    git -C "$dir" add -A
+    git -C "$dir" commit -q -m "the literal readers"
+}
+
+case_a_version_or_markdown_change_seeds_the_tests_that_quote_it() {
+    fresh_checkout
+    literal_world "$REPO"
+    touch_and_scope "$REPO" "TEMPLATE_VERSION only -> the modules that quote it" TEMPLATE_VERSION
+    is "$RC" "0" "the exit status"
+    is "$LOOP_SCOPE_APPS" "" "the derived scope (no app is widened)"
+    is "$LOOP_SCOPE_SEEDED_TESTS" "apps/core/tests/test_zzz_version_reader.py" "the seeded module(s)"
+    notes_say "literal-read seeded by TEMPLATE_VERSION: apps/core/tests/test_zzz_version_reader.py"
+    notes_say "gate_docs_only_literal_reads"
+    CURRENT="the leg is handed it as a changed-test flag, and the key carries it"
+    is "$(seeded_args)" "--djb-changed-test=apps/core/tests/test_zzz_version_reader.py" "the --djb-changed-test flags"
+    case "$LOOP_SCOPE_CANONICAL" in
+    *"seeded=apps/core/tests/test_zzz_version_reader.py "*) ok "the canonical scope carries the seed" ;;
+    *) bad "the canonical scope does not carry the seed: ${LOOP_SCOPE_CANONICAL}" ;;
+    esac
+
+    fresh_checkout
+    literal_world "$REPO"
+    touch_and_scope "$REPO" "a *.md change -> the module that quotes its name" zzz_notes.md
+    is "$RC" "0" "the exit status"
+    is "$LOOP_SCOPE_SEEDED_TESTS" "apps/mid/tests/test_zzz_notes_reader.py" "the seeded module(s)"
+
+    fresh_checkout
+    literal_world "$REPO"
+    touch_and_scope "$REPO" "a *.md nobody quotes seeds nothing" README.md
+    is "$RC" "0" "the exit status"
+    is "$LOOP_SCOPE_SEEDED_TESTS" "" "the seeded module(s)"
+}
+
 case_a_policies_touch_census_seeds_the_vocabulary_module() {
     # R.1 and R.2. The seed is ONE MODULE, the app is not widened, the
     # footer says so, and the banked key carries it.
@@ -4977,9 +5413,18 @@ $args" in
 
 # --- the cases, in the order they should run ---------------------------------
 
+if [ -n "$ONLY_CASE" ]; then
+    "$ONLY_CASE"
+    echo "test_loop_scope: ${PASSED} passed · ${FAILED} failed (--case ${ONLY_CASE})"
+    drive_finished
+    [ "$FAILED" -eq 0 ] || exit 1
+    exit 0
+fi
+
 case_an_empty_capture_is_could_not_look
 case_the_always_on_digest_survives_a_machine_with_no_shasum
 case_a_collapsed_checkout_derives_the_same_scope_when_the_base_is_carried
+case_a_version_or_markdown_change_seeds_the_tests_that_quote_it
 case_a_policies_touch_census_seeds_the_vocabulary_module
 case_roles_seed_the_same_census_and_ordinary_files_seed_nothing
 case_the_seeded_census_goes_red_on_a_planted_nineteenth_key
@@ -5010,6 +5455,10 @@ case_a_broken_changed_file_derivation_is_the_inherited_exit_2
 case_the_floors_refuse_when_the_cross_app_derivation_returns_nothing
 case_a_floor_member_moved_aside_is_a_refusal
 case_a_drawer_raised_floor_refuses_a_member_moved_aside_on_a_six_module_tree
+case_an_example_only_change_keeps_the_door_schema_parity_module
+case_a_product_app_walking_the_door_registry_is_always_on
+case_a_drawer_reach_kind_makes_its_reader_always_on
+case_counts_field_answers_nothing_for_no_counts_file
 case_the_always_on_set_survives_the_real_parallel_invocation
 case_a_narrower_scope_selects_strictly_less_than_a_wider_one
 case_a_planted_apps_root_census_runs_at_every_scope
@@ -5051,6 +5500,7 @@ case_the_full_gate_passes_write_counts_and_the_whole_suite_reconciles
 case_a_dying_collector_under_the_full_gate_leg_body_is_exit_2_and_banks_nothing
 case_a_dying_collector_under_pr_is_exit_2_and_writes_no_narrowed_run_note
 case_the_full_counts_dir_is_removed_on_an_early_red
+case_the_grants_pass_reds_a_planted_ledger_update_at_the_wire
 
 case_a_seen_leaf_file_selects_only_its_tests
 case_a_never_seen_file_falls_back_and_says_so

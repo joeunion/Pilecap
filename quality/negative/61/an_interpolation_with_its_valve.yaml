@@ -1,0 +1,5 @@
+
+# zzz_canary: rule 61's self-test negative — an interpolation that says what pins it.
+x-zzz-canary-valved:
+  # pin-exception: the release script resolves this tag to a registry digest first
+  image: ${DJB_IMAGE_REGISTRY:?unset}/djb-web:${DJB_IMAGE_TAG:?unset}

@@ -1,0 +1,4 @@
+/* Not a pressable: no pointer, no pressable element, no pressable host. */
+.zzz-card {
+    padding: var(--space-3);
+}

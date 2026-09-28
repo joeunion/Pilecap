@@ -1,18 +1,23 @@
 """The one tolerant read for every census that walks the source tree.
 
 **A census that walks `apps/**` is racing every other xdist worker's fixtures.**
-Two tests plant a real file inside `apps/` on purpose, because what they prove
-is that a *directory listing* is the registration:
+A test plants a real directory inside `apps/` on purpose, because what it
+proves is that a *directory listing* is the registration:
+`apps/core/tests/test_settings.py` builds and removes `apps/zzz_probe/`, so
+discovery can be asked whether a new directory is a new app.
 
-* `apps/core/tests/test_settings.py` builds and removes `apps/zzz_probe/`, so
-  discovery can be asked whether a new directory is a new app;
-* `apps/usage/tests/conftest.py` writes and unlinks `apps/example/meters.py`,
-  so the meter registry can be asked whether it finds somebody else's file.
-
-Neither plant can move: the claim under test is about the real `apps/`
+That plant cannot move: the claim under test is about the real `apps/`
 directory, and a plant under `tmp_path` would prove the opposite of what the
 test says. So the tolerance belongs on the reading side, and it belongs here
 rather than once per census.
+
+The meter registry's plant (`apps/usage/tests/conftest.py`) is NOT one of
+these any more, and the difference is the subject: `declared_meters()` asks
+the import system for a module by name, never lists a directory, so its plant
+joins `apps.example`'s search path in one process and never touches the shared
+tree. In the tree it raced production code rather than a census —
+`find_spec` then `import_module`, the file unlinked in between — and a
+tolerant read in a test helper could not reach that reader.
 
 **What actually races, measured.** `Path.rglob` is safe: it enumerates through
 `os.scandir` and a directory that vanishes mid-walk simply yields nothing more

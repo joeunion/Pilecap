@@ -2765,6 +2765,9 @@ case_loop_detaches_the_gate_on_the_box_and_never_pipes_it() {
     printf 'key\n' >"$W/vhome/i-up1/id_ed25519"
     printf 'a-rung\n' >"$W/vhome/i-up1/rung"
     printf '4242\n' >"$REC/ssh/default.out"
+    # THE PRE-FLIGHT'S TWO READS ANSWER WITH THIS CHECKOUT'S TREE: a box that
+    # stands on what HEAD measures, which is the only box `loop` launches on.
+    box_on_head_tree
     vb -- loop i-up1 --log v1
     [ "$VB_RC" = "0" ] || {
         bad "loop exited ${VB_RC}"
@@ -3096,6 +3099,103 @@ case_wait_passes_the_gates_own_status_through() {
         bad "the status is not printed"
 }
 
+# TWO RED BLOCKS ABOVE THE TAIL, AND ONE INSIDE IT. The leg prints
+# `!! RED: <members>` with each red member's FAILED lines beneath it, and the
+# gate goes on printing after that — so with two reds the first member's cases
+# fall out of the forty lines `wait` prints. The case runs the REAL remote
+# command `wait` recorded — the bytes it sends — against a planted log on this
+# machine, the way the detach case re-points a recorded command at scratch.
+# The log: twenty member lines; a `!! and RED:` block and a `!! RED:` block,
+# each followed by an unindented line that ends it; filler; and a third block
+# that starts inside the last forty lines, which must be printed once, by the
+# tail, and never again.
+case_wait_prints_every_red_block_the_tail_cannot_reach() {
+    CURRENT=case_wait_prints_every_red_block_the_tail_cannot_reach
+    world_new wait_two_reds
+    ans "ec2_describe-instances__Reservations0Instances0StateName" "running"
+    mkdir -p "$W/vhome/i-up1"
+    printf 'key\n' >"$W/vhome/i-up1/id_ed25519"
+    printf 'a-rung\n' >"$W/vhome/i-up1/rung"
+    printf '4242\n' >"$W/vhome/i-up1/v1.pid"
+    printf 'gone\n' >"$REC/ssh/1.out"
+    printf '1\n' >"$REC/ssh/2.out"
+    vb -- wait i-up1 v1
+    [ "$VB_RC" = "1" ] && ok "wait still exits with the gate's own 1" ||
+        bad "wait exited ${VB_RC}, wanted the gate's 1"
+    local rec cmd log i got
+    rec="$(cat "$REC/ssh/3.flat" 2>/dev/null || true)"
+    case "$rec" in *"~/verify/a-rung/v1.log"*) ;; *)
+        bad "the third session is not the log read: ${rec:-<none>}"
+        return
+        ;;
+    esac
+    cmd="${rec#* -- }"
+    cmd="${cmd#touch /run/verifier/last-activity 2>/dev/null || true; }"
+    log="$W/box-v1.log"
+    {
+        i=1
+        while [ "$i" -le 20 ]; do
+            printf 'a member line %s\n' "$i"
+            i=$((i + 1))
+        done
+        printf '!! COULD NOT LOOK: engine\n'
+        printf '!! and RED: always_on\n'
+        printf '   always_on: 1 FAILED line(s)\n'
+        printf '     FAILED   case_always_one — a red above the window\n'
+        printf 'an unindented line that ends the first block\n'
+        printf '!! RED: pm_fold sweep\n'
+        printf '   pm_fold: 2 FAILED line(s)\n'
+        printf '     FAILED   case_fold_one — the first red member\n'
+        printf '     FAILED   case_fold_two — its second case\n'
+        printf '   sweep: 1 FAILED line(s)\n'
+        printf '     FAILED   case_sweep_one — the second red member\n'
+        printf '   Every drive ran and every red is named above.\n'
+        printf '\n'
+        i=1
+        while [ "$i" -le 30 ]; do
+            printf 'the fixed block, line %s\n' "$i"
+            i=$((i + 1))
+        done
+        printf '!! RED: inside_the_tail\n'
+        printf '     FAILED   case_inside — a red the tail already shows\n'
+        i=31
+        while [ "$i" -le 38 ]; do
+            printf 'the fixed block, line %s\n' "$i"
+            i=$((i + 1))
+        done
+    } >"$log"
+    cmd="${cmd//\~\/verify\/a-rung\/v1.log/$log}"
+    got="$(bash -c "$cmd" 2>&1 || true)"
+    case "$got" in *"the fixed block, line 38"*) ;; *)
+        bad "the recorded command no longer prints the tail: $(printf '%s' "$got" | tr '\n' '|')"
+        return
+        ;;
+    esac
+    local want miss=""
+    for want in "--- every RED block above those forty lines ---" \
+        "!! and RED: always_on" "FAILED   case_always_one — a red above the window" \
+        "!! RED: pm_fold sweep" "FAILED   case_fold_one — the first red member" \
+        "FAILED   case_fold_two — its second case" "FAILED   case_sweep_one — the second red member"; do
+        case "$got" in *"$want"*) ;; *) miss="${miss}
+      ${want}" ;; esac
+    done
+    [ -z "$miss" ] &&
+        ok "every RED block above the forty-line tail reaches wait's output, under its own header" ||
+        bad "wait's output does not carry:${miss}
+      it printed: $(printf '%s' "$got" | tr '\n' '|')"
+    local stray=""
+    for want in "a member line 20" "an unindented line that ends the first block" "!! COULD NOT LOOK: engine"; do
+        case "$got" in *"$want"*) stray="${stray}
+      ${want}" ;; esac
+    done
+    [ -z "$stray" ] && ok "and nothing outside a RED block is printed" ||
+        bad "the RED reader printed lines that are not part of a RED block:${stray}"
+    local n
+    n="$(printf '%s\n' "$got" | grep -cF -- "!! RED: inside_the_tail" || true)"
+    [ "$n" = "1" ] && ok "and a block that starts inside the tail is printed once, not twice" ||
+        bad "a block inside the tail was printed ${n} time(s), wanted 1"
+}
+
 # =============================================================================
 # 1.7b — harvest: the builder's box-banked --loop row comes home
 # =============================================================================
@@ -3220,6 +3320,50 @@ case_harvest_refuses_a_log_that_banked_nothing() {
     [ "$n" = "1" ] && ok "and nothing was appended" || bad "${n} row(s) in the local ledger, wanted 1"
     said "$(hex64 b)" && ok "and the refusal names the key it could not find" ||
         bad "the refusal does not name the key: $(cat "$W/err")"
+}
+
+# A GREEN WAIT BRINGS THE LOOP ROW HOME ITSELF. The box's verdict lives in the
+# box's ledger, and every consult elsewhere — the verifier's, the merge's, a
+# laptop's — can honour only a row in THIS checkout's ledger. So `wait` runs the
+# harvest when the gate it waited on ended 0, and its exit is still the gate's.
+case_a_green_wait_brings_the_loop_row_home() {
+    CURRENT=case_a_green_wait_brings_the_loop_row_home
+    world_new wait_green_harvest
+    world_harvest_ready
+    printf '4242\n' >"$W/vhome/i-up1/loop-a-rung.pid"
+    # gone; the rc; the tail — then the harvest: the log, the box's loop
+    # ledger, the box's gate ledger.
+    printf 'gone\n' >"$REC/ssh/1.out"
+    printf '0\n' >"$REC/ssh/2.out"
+    printf 'the last forty lines\n' >"$REC/ssh/3.out"
+    box_loop_log >"$REC/ssh/4.out"
+    box_loop_ledger >"$REC/ssh/5.out"
+    vb DJB_LOOP_LEDGER="$W/loop-verdicts" -- wait i-up1 loop-a-rung
+    [ "$VB_RC" = "0" ] && ok "the gate's 0 is still the wait's exit" || bad "the wait exited ${VB_RC}"
+    local appended want
+    appended="$(sed -n '2p' "$W/loop-verdicts")"
+    want="$(box_loop_ledger | sed -n '2p') box=i-up1"
+    [ "$appended" = "$want" ] && ok "the banked row came home with the wait, ' box=' appended" ||
+        bad "the wait brought no row home:
+      got  ${appended:-<nothing>}
+      want ${want}"
+    out_has "banked: tree bbbb222 key loop-v1:$(hex64 b) box=i-up1" &&
+        ok "and the wait prints the report's banked line" ||
+        bad "the wait did not print the banked line: $(cat "$W/out")"
+
+    CURRENT="a green wait over a log that banked nothing says so and keeps its exit"
+    world_new wait_green_nothing
+    world_harvest_ready
+    printf '4242\n' >"$W/vhome/i-up1/leg.pid"
+    printf 'gone\n' >"$REC/ssh/1.out"
+    printf '0\n' >"$REC/ssh/2.out"
+    printf 'the last forty lines\n' >"$REC/ssh/3.out"
+    printf 'ok: static checks passed\n' >"$REC/ssh/4.out"
+    vb DJB_LOOP_LEDGER="$W/loop-verdicts" -- wait i-up1 leg
+    [ "$VB_RC" = "0" ] && ok "the gate's 0 is still the wait's exit" || bad "the wait exited ${VB_RC}"
+    [ "$(grep -c . "$W/loop-verdicts")" = "1" ] && ok "nothing was appended" || bad "a row was appended for a log that banked nothing"
+    out_has "wait: no loop row came home" && ok "and one line says no row came home" ||
+        bad "no line says no row came home: $(cat "$W/out")"
 }
 
 case_harvest_twice_is_one_row() {
@@ -4702,6 +4846,62 @@ case_a_loop_over_a_box_that_is_not_on_the_pushed_tree_is_refused() {
     [ -f "$W/vhome/i-up1/v1.pid" ] &&
         bad "a pid was remembered for a gate that must not have started" ||
         ok "and nothing was remembered for wait to poll"
+}
+
+# box_on_head_tree — `loop`'s two pre-flight reads (the box's worktree tree,
+# then its main tree) answer with the sha the shimmed `git` gives this checkout
+# for HEAD's tree: a box that took the push HEAD would send.
+box_on_head_tree() {
+    printf '%s\n' "$MAIN_SHA" >"$REC/ssh/1.out"
+    printf '%s\n' "$MAIN_SHA" >"$REC/ssh/2.out"
+}
+
+# AND THE BOX THAT AGREES WITH ITSELF AND NOT WITH HEAD. Its worktree and its
+# main are one tree — an EARLIER push, landed properly — and this checkout has
+# moved since (a fold, one more commit). The belt above is satisfied by that
+# box; `loop` used to launch on it, bank the earlier tree, and `wait` printed
+# it as banked. The refusal names both trees and the one command.
+case_a_loop_over_a_box_holding_an_earlier_push_is_refused_by_name() {
+    CURRENT=case_a_loop_over_a_box_holding_an_earlier_push_is_refused_by_name
+    world_new loop_earlier_push
+    ans "ec2_describe-instances__Reservations0Instances0StateName" "running"
+    mkdir -p "$W/vhome/i-up1"
+    printf 'key\n' >"$W/vhome/i-up1/id_ed25519"
+    printf 'a-rung\n' >"$W/vhome/i-up1/rung"
+    # Low-entropy shas, for the stale-worktree case's reason — and never a
+    # twelve-digit literal in this file, which the account-id census reads.
+    local stale="5555555555555555555555555555555555555555"
+    printf '%s\n' "$stale" >"$REC/ssh/1.out"
+    printf '%s\n' "$stale" >"$REC/ssh/2.out"
+    printf '4242\n' >"$REC/ssh/default.out"
+    vb -- loop i-up1 --log v1
+    [ "$VB_RC" = "2" ] &&
+        ok "a loop over a box holding an earlier push is exit 2" ||
+        bad "loop exited ${VB_RC} over a box that holds an earlier push, wanted 2 — it measured the stale tree"
+    said "the box holds ${stale:0:12}, HEAD measures ${MAIN_SHA:0:12} — push first" &&
+        ok "and the refusal names both trees, twelve characters each, and says push first" ||
+        bad "the refusal does not name both trees: $(tr '\n' ' ' <"$W/err")"
+    said "scripts/verifier_box.sh push i-up1" &&
+        ok "and hands over the one command, with the id" ||
+        bad "the refusal names no command: $(tr '\n' ' ' <"$W/err")"
+    local launched="" f
+    for f in "$REC"/ssh/*.flat; do
+        [ -r "$f" ] || continue
+        case "$(cat "$f")" in
+        *"setsid nohup"*) launched="$(cat "$f")" ;;
+        esac
+    done
+    [ -z "$launched" ] &&
+        ok "and no gate was launched over the earlier tree" ||
+        bad "a gate was launched over a tree HEAD does not measure: ${launched}"
+    [ -f "$W/vhome/i-up1/v1.pid" ] &&
+        bad "a pid was remembered, so wait would print the stale tree's verdict as banked" ||
+        ok "and nothing was remembered for wait to poll"
+    local pushed
+    pushed="$(grep -c ' push ' "$REC/git.flat" 2>/dev/null || true)"
+    [ "${pushed:-0}" = "0" ] &&
+        ok "and nothing was pushed on the operator's behalf — the refusal is the whole answer" ||
+        bad "loop pushed (${pushed} push call(s)) — a loop must not move a tree unasked"
 }
 
 case_a_vouch_with_no_hook_is_refused() {
@@ -7123,14 +7323,33 @@ case_the_territory_this_change_does_not_own_did_not_move() {
             base_from="DJB_LOOP_SCOPE_BASE"
         fi
     fi
+    # AND WHEN NOTHING WAS CARRIED, `main` IS ONE OF THREE NAMES, NOT THE ONLY
+    # ONE. A pull-request runner's checkout has no local `main` at all — only
+    # `origin/main` — and this case died there with "no merge base between main
+    # and HEAD" on every PR run: git's answer to a question about a ref that
+    # was never there, printed as if it were a finding about the branch. So:
+    # `main` when present, else `origin/main`, else `refs/djb/base` (a carried
+    # one that is not behind HEAD still has a merge base with it), each asked
+    # by its full ref name so a file or tag called `main` cannot answer, and the
+    # one that answered is printed. None of the three is not a red claim; it is
+    # a drive with no other side to look from, and that is exit 2.
     if [ -z "$base" ]; then
-        base="$(git merge-base main HEAD 2>/dev/null || true)"
-        base_from="merge-base main HEAD"
+        for cand in refs/heads/main refs/remotes/origin/main refs/djb/base; do
+            git rev-parse -q --verify "${cand}^{commit}" >/dev/null 2>&1 || continue
+            base="$(git merge-base "$cand" HEAD 2>/dev/null || true)"
+            if [ -n "$base" ]; then
+                case "$cand" in
+                refs/heads/main) base_from="merge-base main HEAD" ;;
+                refs/remotes/origin/main) base_from="merge-base origin/main HEAD" ;;
+                *) base_from="merge-base refs/djb/base HEAD" ;;
+                esac
+                break
+            fi
+        done
     fi
-    [ -n "$base" ] || {
-        bad "no merge base between main and HEAD — this claim has no other side"
-        return
-    }
+    [ -n "$base" ] ||
+        cannot_look "no fork point to measure this change from: none of main, origin/main or refs/djb/base is a ref that shares a merge base with HEAD."
+    echo "  base     ${CURRENT} — fork point ${base:0:8} from ${base_from}"
     # THE CLAIM IS FALSIFIABLE ONLY FOR A CHANGE THAT OWNS THIS TERRITORY. "The
     # files this change does not own did not move" is a promise a verifier-box
     # change makes; for any other change there is nothing it promised, and
@@ -7154,8 +7373,18 @@ case_the_territory_this_change_does_not_own_did_not_move() {
         git diff --quiet HEAD -- "$f" 2>/dev/null || dirty="${dirty}
       ${f}  uncommitted in the working tree"
     done
-    [ -z "$dirty" ] && ok "pm_push.sh, check.sh and rules.yaml are byte-identical to the fork point's" ||
-        bad "files this change does not own have moved:${dirty}"
+    # A CHANGE THAT MOVES THEM ON PURPOSE IS NOT A WRAPPER-ONLY CHANGE. The
+    # promise above is the wrapper-only rung's, and a permanent drive cannot
+    # read a rung's territory: a change whose diff names the wrapper AND one of
+    # these files (a loop rung that owns check.sh and the wrapper's `wait`, say)
+    # made no such promise. It is skipped with the files NAMED, so a reviewer
+    # can disagree with the ownership — never silently, and never a red for a
+    # file the change was entitled to move.
+    if [ -n "$dirty" ]; then
+        skip "this change moves ${dirty# } beside the wrapper — the claim is a wrapper-only change's promise, and the moved files are named so a reviewer can disagree"
+    else
+        ok "pm_push.sh, check.sh and rules.yaml are byte-identical to the fork point's"
+    fi
 
     # THE MATCH IS LITERAL, AND THE ESCAPES ARE WHY. This extraction was
     # `awk -v f="^${fn}\\(\\) \\{" '$0 ~ f …'`, and it matched NOTHING: the
@@ -7200,6 +7429,89 @@ case_the_territory_this_change_does_not_own_did_not_move() {
         [ "$before" = "$after" ] && ok "${fn}'s own body is byte-identical to the fork point's" ||
             bad "${fn} moved: ${base:0:8} ${before} vs HEAD ${after}"
     done
+}
+
+# THE FORK POINT'S FOUR SHAPES, PLANTED — each a real repository under scratch,
+# and each read by the REAL case above run inside it, so what is proven is the
+# case's own lookup and not a copy of it. `main` present (with an `origin/main`
+# beside it that would answer differently), only `origin/main` (a pull-request
+# runner's checkout), only a `refs/djb/base` that is not behind HEAD, and none
+# of the three — which is exit 2 with the sentence naming all three.
+forkpoint_git() {
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        git -c user.name=drive -c user.email=drive@example.invalid -c commit.gpgsign=false \
+        -c init.defaultBranch=main "$@"
+}
+
+# forkpoint_world <dir> — a root commit on `main`, a sibling of it on `side`,
+# and HEAD on `feature` one commit past the root. Prints the root's sha.
+forkpoint_world() {
+    mkdir -p "$1"
+    forkpoint_git -C "$1" init -q
+    printf 'root\n' >"$1/f"
+    forkpoint_git -C "$1" add f
+    forkpoint_git -C "$1" commit -q -m root
+    forkpoint_git -C "$1" checkout -q -b side
+    printf 'side\n' >"$1/f"
+    forkpoint_git -C "$1" commit -q -am side
+    forkpoint_git -C "$1" checkout -q main
+    forkpoint_git -C "$1" checkout -q -b feature
+    printf 'feature\n' >"$1/f"
+    forkpoint_git -C "$1" commit -q -am feature
+    forkpoint_git -C "$1" rev-parse main
+}
+
+# forkpoint_read <dir> — the ownership case run inside <dir>; its output lands
+# in <dir>.out and its exit status is printed.
+forkpoint_read() {
+    local rc=0
+    (
+        cd "$1" || exit 3
+        unset DJB_LOOP_SCOPE_BASE
+        case_the_territory_this_change_does_not_own_did_not_move
+    ) >"$1.out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+
+case_the_fork_point_is_main_else_origin_main_else_the_carried_base() {
+    CURRENT=case_the_fork_point_is_main_else_origin_main_else_the_carried_base
+    local d="$WORK/forkpoint" root side rc shape
+    mkdir -p "$d"
+
+    # 1. `main` present: it answers, though `origin/main` would answer otherwise.
+    root="$(forkpoint_world "$d/main")"
+    forkpoint_git -C "$d/main" update-ref refs/remotes/origin/main refs/heads/feature
+    rc="$(forkpoint_read "$d/main")"
+    grep -F -- "fork point ${root:0:8} from merge-base main HEAD" "$d/main.out" >/dev/null 2>&1 &&
+        ok "main present: the fork point is merge-base main HEAD (${root:0:8}), printed" ||
+        bad "main present: wanted 'fork point ${root:0:8} from merge-base main HEAD' (rc ${rc}): $(cat "$d/main.out")"
+
+    # 2. No local `main`, `origin/main` present: a pull-request runner.
+    root="$(forkpoint_world "$d/origin")"
+    forkpoint_git -C "$d/origin" update-ref refs/remotes/origin/main refs/heads/main
+    forkpoint_git -C "$d/origin" branch -q -D main
+    rc="$(forkpoint_read "$d/origin")"
+    grep -F -- "fork point ${root:0:8} from merge-base origin/main HEAD" "$d/origin.out" >/dev/null 2>&1 &&
+        ok "no local main: the fork point is merge-base origin/main HEAD (${root:0:8}), printed" ||
+        bad "no local main: wanted 'fork point ${root:0:8} from merge-base origin/main HEAD' (rc ${rc}): $(cat "$d/origin.out")"
+
+    # 3. Neither: a `refs/djb/base` on a sibling, not behind HEAD.
+    root="$(forkpoint_world "$d/carried")"
+    forkpoint_git -C "$d/carried" update-ref refs/djb/base refs/heads/side
+    forkpoint_git -C "$d/carried" branch -q -D main side
+    rc="$(forkpoint_read "$d/carried")"
+    grep -F -- "fork point ${root:0:8} from merge-base refs/djb/base HEAD" "$d/carried.out" >/dev/null 2>&1 &&
+        ok "neither main: the fork point is merge-base refs/djb/base HEAD (${root:0:8}), printed" ||
+        bad "neither main: wanted 'fork point ${root:0:8} from merge-base refs/djb/base HEAD' (rc ${rc}): $(cat "$d/carried.out")"
+
+    # 4. None of the three: exit 2, one sentence naming all three.
+    forkpoint_world "$d/none" >/dev/null
+    forkpoint_git -C "$d/none" branch -q -D main side
+    rc="$(forkpoint_read "$d/none")"
+    shape="none of main, origin/main or refs/djb/base"
+    [ "$rc" = "2" ] && grep -F -- "$shape" "$d/none.out" >/dev/null 2>&1 &&
+        ok "none of the three: exit 2, naming main, origin/main and refs/djb/base" ||
+        bad "none of the three: wanted exit 2 and '${shape}' (rc ${rc}): $(cat "$d/none.out")"
 }
 
 # =============================================================================
@@ -7273,6 +7585,7 @@ case_the_detach_returns_while_the_gate_is_still_running() {
         printf 'a-rung\n' >"$W/vhome/i-up1/rung"
         printf '4242\n' >"$REC/ssh/default.out"
         if [ "$sub" = "loop" ]; then
+            box_on_head_tree
             vb -- loop i-up1 --log v1
         else
             vb -- leg i-up1 --unit ruff --log v1
@@ -7754,9 +8067,11 @@ case_a_union_pushed_as_main_carries_the_fork_point_it_declares
 case_commits_past_main_with_no_fork_point_are_refused_before_anything_leaves
 case_a_declared_base_that_is_not_behind_head_is_not_carried
 case_wait_passes_the_gates_own_status_through
+case_wait_prints_every_red_block_the_tail_cannot_reach
 case_harvest_brings_exactly_the_banked_row_home
 case_harvest_refuses_a_log_that_banked_nothing
 case_harvest_twice_is_one_row
+case_a_green_wait_brings_the_loop_row_home
 case_push_sends_only_the_drive_rows
 case_harvest_brings_the_drive_rows_of_the_banked_tree
 case_the_wrapper_reaches_python_only_through_the_checkout
@@ -7774,6 +8089,7 @@ case_a_hook_that_refuses_stops_the_push_before_the_tunnel
 case_the_push_moves_the_boxs_working_tree_onto_what_it_pushed
 case_a_push_whose_box_worktree_will_not_move_is_refused
 case_a_loop_over_a_box_that_is_not_on_the_pushed_tree_is_refused
+case_a_loop_over_a_box_holding_an_earlier_push_is_refused_by_name
 case_a_vouch_with_no_hook_is_refused
 case_an_unmeasured_union_tree_reaches_the_box_without_a_mac_gate
 case_a_box_destination_never_carries_a_foreign_tree
@@ -7831,6 +8147,7 @@ case_a_describe_that_has_not_caught_up_cannot_lie_about_the_market
 case_a_warm_claim_says_the_zone_you_typed_applied_to_nothing
 case_the_ops_policy_grants_the_spot_request_read
 case_the_territory_this_change_does_not_own_did_not_move
+case_the_fork_point_is_main_else_origin_main_else_the_carried_base
 case_the_detach_returns_while_the_gate_is_still_running
 
 case_a_piped_stdout_is_refused

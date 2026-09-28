@@ -270,6 +270,20 @@ if [ -z "${GATE_REFUSE_SOURCED:-}" ]; then
     esac
 fi
 
+# THE LITERAL-READ JUDGE IS gate_ledger.sh's, AND IT IS BORROWED, NOT COPIED.
+# `gate_docs_only_literal_reads` already answers "which module quotes this
+# path" for the docs-only push road; the inert row below asks it the same
+# question (principle 13: one reader, never a second list). `scripts/check.sh`
+# sources gate_ledger.sh before this file, so this only ever loads it for a
+# drive that sources this library alone — from this file's own directory, the
+# refusal seam's precedent above, and guarded so nothing is sourced twice.
+if ! command -v gate_docs_only_literal_reads >/dev/null 2>&1; then
+    case "${BASH_SOURCE[0]:-}" in
+    */*) [ ! -r "${BASH_SOURCE[0]%/*}/gate_ledger.sh" ] || . "${BASH_SOURCE[0]%/*}/gate_ledger.sh" ;;
+    *) [ ! -r scripts/gate_ledger.sh ] || . scripts/gate_ledger.sh ;;
+    esac
+fi
+
 #: `fast` (the derived fast tier, narrowed to the scope) or `full` (every test).
 LOOP_TIER_MODE="fast"
 
@@ -354,6 +368,14 @@ LOOP_SCOPE_CHANGED_TESTS=""
 #: diff, and a seed with no seeder beside it is a line nobody can falsify.
 LOOP_SCOPE_SEEDED_TESTS=""
 LOOP_SCOPE_SEEDED_BY=""
+#: The test modules that QUOTE an inert-classed path the rung changed
+#: (`TEMPLATE_VERSION`, a `*.md`), and the changed paths that put them in —
+#: derived by `loop_scope__literal_seed` through `gate_docs_only_literal_reads`.
+#: They join LOOP_SCOPE_SEEDED_TESTS (so the key and the flags carry them) and
+#: are kept apart here only so the note can say which reader added them.
+LOOP_SCOPE_LITERAL_TESTS=""
+LOOP_SCOPE_LITERAL_BY=""
+LOOP_SCOPE_LITERAL_UNSELECTED=""
 
 #: The digest of the always-on derivation's DECLARATION — the sentinel-delimited
 #: block in `apps/conftest.py`. Part of the canonical scope, because changing
@@ -705,6 +727,60 @@ loop_scope__census_seed() {
         loop_scope__add LOOP_SCOPE_SEEDED_BY "$path"
     done <<EOF
 $(loop_scope__census_modules)
+EOF
+    return 0
+}
+
+# loop_scope__literal_seed <changed inert path>… — seed every TEST MODULE the
+# literal-read judge says quotes one of these paths (or its basename).
+#
+# THE JUDGE IS THE DOCS-ONLY ROAD'S, UNCHANGED. `gate_docs_only_literal_reads`
+# (scripts/gate_ledger.sh) greps `apps/`, `config/` and `quality/` for the path
+# and its basename and keeps the QUOTED hits — a string a module could open —
+# never a backtick mention or a comment. A quote the module itself declares a
+# non-read (`gate_docs_only_nonread_covers`) is admitted there and dropped here
+# for the same reason. What is selected is the hit's MODULE when it is a test
+# module (`apps/<x>/tests/test_*.py`); any other quoting file is named in a
+# note and not selected, because this row adds modules and never apps.
+#
+# COULD NOT LOOK IS SAID, NEVER A SILENT EMPTY SET: with no judge in this shell
+# the note says so and nothing is seeded.
+loop_scope__literal_seed() {
+    local needles="" p hit file needle why
+    if ! command -v gate_docs_only_literal_reads >/dev/null 2>&1; then
+        loop_scope__note "literal-read NOT asked: gate_docs_only_literal_reads (scripts/gate_ledger.sh) is not in this shell, so a test that quotes a changed ${*} is not selected — the push runs everything."
+        return 0
+    fi
+    for p in "$@"; do
+        needles="${needles}${needles:+ }${p}"
+        [ "${p##*/}" = "$p" ] || needles="${needles} ${p##*/}"
+    done
+    while IFS= read -r hit; do
+        [ -n "$hit" ] || continue
+        file=${hit%%:*}
+        needle=${hit#* }
+        if command -v gate_docs_only_nonread_covers >/dev/null 2>&1 &&
+            gate_docs_only_nonread_covers "$file" "$needle"; then
+            continue
+        fi
+        why=""
+        for p in "$@"; do
+            if [ "$needle" = "$p" ] || [ "$needle" = "${p##*/}" ]; then
+                why=$p
+                break
+            fi
+        done
+        case "$file" in
+        apps/*/tests/test_*.py)
+            loop_scope__add LOOP_SCOPE_LITERAL_TESTS "$file"
+            loop_scope__add LOOP_SCOPE_LITERAL_BY "${why:-$needle}"
+            ;;
+        *)
+            loop_scope__add LOOP_SCOPE_LITERAL_UNSELECTED "${file}(${needle})"
+            ;;
+        esac
+    done <<EOF
+$(gate_docs_only_literal_reads $needles)
 EOF
     return 0
 }
@@ -1275,7 +1351,7 @@ PY
 # answer, an unclassifiable path was met, or the closure could not be read —
 # all of which are could-not-look and outrank a pass everywhere in the gate.
 loop_tier_own_apps() {
-    local list path label seen shape shapes closure touched rc tests_touched kept
+    local list path label seen shape shapes closure touched rc tests_touched kept literal_paths
     tests_touched=""
     kept=""
     LOOP_TIER_MODE="fast"
@@ -1294,6 +1370,9 @@ loop_tier_own_apps() {
     LOOP_SCOPE_CHANGED_TESTS=""
     LOOP_SCOPE_SEEDED_TESTS=""
     LOOP_SCOPE_SEEDED_BY=""
+    LOOP_SCOPE_LITERAL_TESTS=""
+    LOOP_SCOPE_LITERAL_BY=""
+    LOOP_SCOPE_LITERAL_UNSELECTED=""
     LOOP_SCOPE_ALWAYS_DIGEST=""
     LOOP_SCOPE_ALWAYS_ON_DIGEST=""
     LOOP_SCOPE_CHANGED_FILES=""
@@ -1360,6 +1439,7 @@ loop_tier_own_apps() {
     seen=" "
     shapes=""
     touched=""
+    literal_paths=""
     while IFS= read -r -d '' path; do
         shape=$(loop_scope__classify "$path") || {
             rm -f "$list"
@@ -1410,6 +1490,16 @@ loop_tier_own_apps() {
             esac
             seen="$seen$label "
             touched="${touched}${touched:+ }$label"
+            ;;
+        inert)
+            # AN INERT ROW IS A CLAIM THAT NO TEST READS THE FILE, and for two
+            # of its members that claim is false: tests quote TEMPLATE_VERSION
+            # and `*.md` files by name and open them. Those two are asked of
+            # the literal-read judge after the loop (`loop_scope__literal_seed`);
+            # the rest of the row stays what it was.
+            case "$path" in
+            TEMPLATE_VERSION | *.md) literal_paths="${literal_paths}${literal_paths:+ }$path" ;;
+            esac
             ;;
         app-tests)
             label=${path#apps/}
@@ -1551,6 +1641,27 @@ loop_tier_own_apps() {
         LOOP_SCOPE_SEEDED_TESTS=$(loop_scope__sorted "$LOOP_SCOPE_SEEDED_TESTS")
         LOOP_SCOPE_SEEDED_BY=$(loop_scope__sorted "$LOOP_SCOPE_SEEDED_BY")
         loop_scope__note "census-seeded by ${LOOP_SCOPE_SEEDED_BY}: ${LOOP_SCOPE_SEEDED_TESTS} — a core census that reads OTHER apps' declarations, which the reverse depends_on closure can never reach (core is everyone's dependency and nobody's dependant). The module is added, never the core app or its organ tests."
+    fi
+
+    # THE LITERAL READS, SEEDED THE SAME WAY AND ANNOUNCED APART. A module the
+    # judge says quotes a changed TEMPLATE_VERSION or `*.md` joins the seeded
+    # set — the key's `seeded=` and the `--djb-changed-test` flags carry it —
+    # and the note names the reader that put it there.
+    if [ -n "$literal_paths" ]; then
+        # shellcheck disable=SC2086  # a space-separated path list, split on purpose
+        loop_scope__literal_seed $literal_paths
+    fi
+    if [ -n "$LOOP_SCOPE_LITERAL_TESTS" ]; then
+        LOOP_SCOPE_LITERAL_TESTS=$(loop_scope__sorted "$LOOP_SCOPE_LITERAL_TESTS")
+        LOOP_SCOPE_LITERAL_BY=$(loop_scope__sorted "$LOOP_SCOPE_LITERAL_BY")
+        for path in $LOOP_SCOPE_LITERAL_TESTS; do
+            loop_scope__add LOOP_SCOPE_SEEDED_TESTS "$path"
+        done
+        LOOP_SCOPE_SEEDED_TESTS=$(loop_scope__sorted "$LOOP_SCOPE_SEEDED_TESTS")
+        loop_scope__note "literal-read seeded by ${LOOP_SCOPE_LITERAL_BY}: ${LOOP_SCOPE_LITERAL_TESTS} — each module QUOTES a changed path the inert row would otherwise have dropped, found by gate_docs_only_literal_reads (scripts/gate_ledger.sh), the docs-only push road's own judge. The module is added, never its app."
+    fi
+    if [ -n "$LOOP_SCOPE_LITERAL_UNSELECTED" ]; then
+        loop_scope__note "literal-read NOT selected: ${LOOP_SCOPE_LITERAL_UNSELECTED} — a module that is not a test quotes a changed inert path; its behaviour is reached only through the tests that import it, and the push runs everything."
     fi
 
     if [ -n "$LOOP_SCOPE_TOUCHED" ]; then

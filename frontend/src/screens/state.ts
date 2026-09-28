@@ -1,3 +1,4 @@
+// patterns: none — draws no face
 /**
  * `SurfaceState` — the total function. A screen is a total function from state
  * to render, and it is not a screen until all four states are authored

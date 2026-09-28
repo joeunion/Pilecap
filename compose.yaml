@@ -16,6 +16,16 @@
 # identity — every container, network and volume on your machine keys on it, so
 # changing it orphans the running stack and its data (ADR platform-1 in
 # docs/product/architecture.md — the one recorded exception).
+#
+# EVERY `image:` IS PINNED BY THE DIGEST OF A MULTI-ARCH INDEX, from a registry
+# on house rule 61's allow-list (`quality/rules.yaml`), or carries a
+# `# pin-exception: <reason>` on the line or directly above it. A tag is a
+# promise the publisher can withdraw — MinIO's was, and every clone failed at
+# its first `compose up` — and an index digest is the one reference a Mac, a
+# Graviton box and an amd64 runner all resolve to their own layers. The tag
+# stays in front of the digest for the reader; the digest is what is pulled.
+# To move a pin: `docker buildx imagetools inspect <image>:<tag>`, check the
+# index lists linux/amd64 and linux/arm64, and replace tag and digest together.
 name: djangobootstrap
 
 services:
@@ -30,7 +40,7 @@ services:
     # 16.10 and rebuild RDS (an owner-approval infra act, to buy a shorter-lived
     # major); no pin at all (that is the finding). Revisit trigger: a stack
     # component refusing 18 — a stop-and-report for whichever rung finds it.
-    image: postgres:18
+    image: postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
     restart: unless-stopped
     # /dev/shm IS 1g, NOT DOCKER'S 64 MB DEFAULT (an ADR in this file's own form).
     # Context: Postgres keeps its dynamic shared memory in /dev/shm, and on this
@@ -85,7 +95,7 @@ services:
       retries: 30
 
   redis:
-    image: redis:7
+    image: redis:7@sha256:c6eabf748fc7a61dbb5a705c78bcf3d6377b1127a97d0ce965c11c44ba46896f
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
@@ -102,7 +112,7 @@ services:
     # Pinned: `latest` is the CLI's rolling tag, and a laptop that silently
     # moves a server version between two worktrees is a debugging session
     # nobody asked for. 1.8.2 ships Temporal server 1.31.2 / UI 2.50.1.
-    image: temporalio/temporal:1.8.2
+    image: temporalio/temporal:1.8.2@sha256:cf86707827fac99e4d1c4a47dc11b105382d796199c7bd41fb3213fb0471628e
     restart: unless-stopped
     command:
       - server
@@ -140,7 +150,7 @@ services:
     #
     # Pinned to the patch, like Temporal and the collector are, so two worktrees
     # never see two versions.
-    image: axllent/mailpit:v1.30.7
+    image: axllent/mailpit:v1.30.7@sha256:d5ecbb067db3705fa953d79e1b7f81ef84038df67aba6c52825d8c02a1ea748a
     restart: unless-stopped
     environment:
       # Accept whatever credentials a client offers, over plain SMTP: this
@@ -172,7 +182,7 @@ services:
     # first-instance bootstrap and a token format between two worktrees, and an
     # identity provider that changes underneath a half-finished OIDC flow is the
     # debugging session the Temporal pin's comment already refuses.
-    image: ghcr.io/zitadel/zitadel:v4.17.1
+    image: ghcr.io/zitadel/zitadel:v4.17.1@sha256:3ac6910685d48f32481f01f45e3e6215efe5a9df2c069591b481e9a101712db5
     restart: unless-stopped
     # `start-from-init` is init + setup + start in one command, and all three
     # are idempotent: a container that is recreated against an existing database
@@ -368,6 +378,9 @@ services:
     # for the next time a registry loses it is still `scripts/setup.sh`'s pull
     # step, which refuses with COULD NOT LOOK and names the image. To re-pin:
     # push to the same repository and replace tag and digest together.
+    # pin-exception: pinned by digest, but to a single linux/arm64 manifest on the
+    # owner's ECR Public mirror rather than a multi-arch index on a listed registry —
+    # no registry serves the amd64 layers of this release any more (see above).
     image: public.ecr.aws/w9i8o4b2/minio:RELEASE.2025-09-07T16-13-09Z@sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f
     platform: linux/arm64
     restart: unless-stopped
@@ -419,7 +432,7 @@ services:
     # the stronger of the two and it is the house precedent (Temporal, Mailpit,
     # Zitadel): `v1.53` moves under a running worktree when a patch ships,
     # `v1.53.1` does not.
-    image: getmeili/meilisearch:v1.53.1
+    image: getmeili/meilisearch:v1.53.1@sha256:8d6643d86d71fad6ad3cba92cde7ccfce9e4d6c384bda67598eb553571c32431
     restart: unless-stopped
     environment:
       # Published development value, worth exactly nothing — see
@@ -463,7 +476,7 @@ services:
 
   otel-collector:
     profiles: ["observability"]
-    image: otel/opentelemetry-collector-contrib:0.140.0
+    image: otel/opentelemetry-collector-contrib:0.140.0@sha256:ffc818ee108d0b934fd14207fd87ff247c9b64f344ed349d0b66c166c18a2312
     restart: unless-stopped
     command: ["--config=/etc/otel/config.yaml"]
     environment:
@@ -482,7 +495,7 @@ services:
     # ingestion in one container. Pinned rather than `latest`, for the same
     # reason the Temporal image is: a sink that changes its schema between two
     # worktrees is a debugging session nobody asked for.
-    image: docker.hyperdx.io/hyperdx/hyperdx-all-in-one:2.10.0
+    image: docker.hyperdx.io/hyperdx/hyperdx-all-in-one:2.10.0@sha256:a747cd94827b5a75913953d00dea1546430460fc36145b4197df5c6b067ccf2a
     restart: unless-stopped
     environment:
       HYPERDX_API_KEY: ${CLICKSTACK_API_KEY:-local-development-ingestion-key}

@@ -263,6 +263,15 @@ introspection output for the apps in scope.
   section. Measured: turns and tool calls per build, against I8's 201 and
   125 (the plan's SPEED PROGRAM, S5).
 
+**A frontend rung whose element class has no pattern-book entry is refused
+at DECOMPOSE.** The lead reads `docs/product/design/patterns.md` and the
+product's drawer beside it before decomposing any rung under `frontend/src/`;
+for every element class the rung draws, the criteria cite the entry by section
+and its instrument by file (house rule 63 guarantees the file exists). A class
+with no entry is not decided in the criteria — the rung is returned to DESIGN,
+which writes the entry and lands its instrument first. The verifier's brief on
+such a rung carries the book's mirror-pass clause (§27).
+
 **The one demand that has failed most often.** For **every** criterion, require:
 *what observable thing differs if this is false?* Criteria that assert a
 **mechanism** rather than a **property** pass while the property they meant to

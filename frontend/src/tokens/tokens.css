@@ -46,6 +46,26 @@
     --space-3: 1rem;
     --space-4: 2rem;
 
+    /* THE TYPE ROLES (patterns.md §26; house rule 64). Every size, tracking and
+       font shorthand under src/ names one of these, and none is a half pixel.
+       A role is a MEANING, so two roles may share a value today: the section
+       title and the body are both 1rem and are still two roles. */
+    --type-body: 1rem;
+    --type-title: 1.5rem;
+    --type-section: 1rem;
+    --type-facts: 0.85rem;
+    --type-label: 0.8rem;
+    --type-label-tracking: 0.06em;
+
+    /* THE ONE FOCUS RING (house rule 67). Every pressable's `:focus-visible`
+       rule names it; nothing draws a second. */
+    --focus-ring: 2px solid var(--accent);
+    --focus-ring-offset: 2px;
+
+    /* THE ACT FLOOR (house rule 67, the static half): every pressable is at
+       least this tall and this wide. The measured box needs a browser. */
+    --act-min: 44px;
+
     --radius: 6px;
 
     /* One measure column: the reading width the whole register uses. */
@@ -68,6 +88,7 @@ body {
     background: var(--surface);
     color: var(--ink);
     font-family: var(--font-body);
+    font-size: var(--type-body);
     line-height: 1.5;
     /* Named so no control anywhere wears the user-agent default blue — the
        exact thing the rendered census asserts and no static check can see. */
@@ -76,4 +97,25 @@ body {
 
 a {
     color: var(--accent);
+}
+
+/* THE FLOOR EVERY PRESSABLE STANDS ON — not taste, a minimum. A control a
+   keyboard reaches wears the one ring (never on mouse focus: that is what
+   `:focus-visible` means), and a pressable ELEMENT is at least the act floor.
+   An `a` inside a sentence is the one named exception to the floor, so it
+   takes the ring and not the size. A product's pressable CLASSES carry both
+   themselves (house rule 67); these rules are the elements' half. */
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+[role="button"]:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}
+
+button,
+summary,
+[role="button"] {
+    min-block-size: var(--act-min);
+    min-inline-size: var(--act-min);
 }

@@ -258,6 +258,15 @@ build_fixture() {
         operating-protocol partition-closure scale-envelope publication-manifest; do
         echo "# $f" >"$d/docs/product/$f.md"
     done
+    # R9's GLOB ARM, and its one member today: the pattern book. The census
+    # refused the tree with `unplaced` the day the book landed, because R9's
+    # arm named files and no rule knew the directory — so the member is
+    # planted here, where a deleted glob reads as a red typed count below, not
+    # as a green run that never reached it. It is also a path the template's
+    # own scripts SPELL (the ownership arm in `divergence_census.sh`), which is
+    # the self-citation reason the block above gives for its own members.
+    mkdir -p "$d/docs/product/design"
+    echo "# the pattern book" >"$d/docs/product/design/patterns.md"
     echo "# a cycle plan, trimmed" >"$d/$CY/$PLAN"
     echo "# a dated handoff, trimmed" >"$d/$PROD/$HANDOFF"
     for name in $LEDGERS; do
@@ -354,6 +363,26 @@ if [ "$RC" = 0 ] && grep -E '^ +R5 +SHIP +5$' "$OUT" >/dev/null; then
 else
     bad "case_an_agent_definition_is_r5: R5's row is not \`SHIP 5\` in the census — the
              agents arm is unreached, or R5 lost a member. Census rows:
+$(grep -E '^ +R[0-9]+' "$OUT" | sed 's/^/             /')"
+fi
+
+# --- case_the_pattern_book_is_r9 ---------------------------------------------
+# THE SECOND DIRECTORY THE CLASSIFIER DID NOT KNOW. `docs/product/design/`
+# arrived with the pattern book, and R9's arm spelled its members one file at
+# a time, so the first tracked book made `--census` exit 2 with `unplaced` —
+# the census is not a gate leg, so nothing before a release saw it. R9 now
+# ends in one glob for the directory.
+#
+# THE COUNT IS TYPED, for case_an_agent_definition_is_r5's reason: R9's eight
+# spelled members keep its row nonzero on their own, so `SHIP [1-9]` would stay
+# green with the glob deleted. The population is named instead — architecture,
+# adrs-ingredients, the six standing documents, and the book = 9 — so losing
+# the glob is a failure here rather than an arithmetic coincidence.
+if [ "$RC" = 0 ] && grep -E '^ +R9 +SHIP +9$' "$OUT" >/dev/null; then
+    ok "case_the_pattern_book_is_r9: R9 places all nine of its fixture members, the pattern book among them"
+else
+    bad "case_the_pattern_book_is_r9: R9's row is not \`SHIP 9\` in the census — the
+             design glob is unreached, or R9 lost a member. Census rows:
 $(grep -E '^ +R[0-9]+' "$OUT" | sed 's/^/             /')"
 fi
 

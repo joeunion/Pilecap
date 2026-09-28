@@ -1,0 +1,7 @@
+/* Planted: a motion token the ledger has no row for. */
+:root {
+    --motion-zzz-extra: 120ms ease-out;
+}
+.zzz-extra {
+    transition: opacity var(--motion-zzz-extra);
+}

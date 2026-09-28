@@ -50,6 +50,7 @@ import contextlib
 import io
 import pathlib
 import sys
+import types
 from typing import Any
 
 import pytest
@@ -57,15 +58,20 @@ import pytest
 from apps.conftest import (
     DJB_CENSUS_MARKER,
     DJB_CENSUS_POPULATION,
+    DJB_REACH_KINDS_KEY,
     DJB_REACH_TOKENS,
     DJB_WALK_TOKENS,
+    _always_on_banner,
     _census_banner,
     _census_population_or_refuse,
     _census_verdict,
+    _drawer_reach_kinds,
+    _drawer_unknown_keys,
     _impact_selection,
     _module_census_population,
     _module_census_reason,
     _module_reach,
+    _way_in,
 )
 
 #: The checkout root. `apps/test_census_markers.py` -> the directory above `apps`.
@@ -433,9 +439,11 @@ def test_every_declared_population_on_this_tree_resolves(tree_modules: list[str]
 def test_impact_select_keeps_the_named_and_the_always_on() -> None:
     """b2.5. The seam b1 wires: an explicit selection plus the always-on set.
 
-    A named nodeid nothing collected is a STALE MAP, and a stale map is
-    could-not-look: selecting from a list that no longer describes the suite is
-    how a loop runs three tests and reports a green tree.
+    A named nodeid nothing collected is a STALE MAP — a test renamed,
+    parametrized or deleted since the map was measured. It is NAMED on the
+    banner line and its module runs whole in its place (the renamed test lives
+    in the file its old id named); it is never a `UsageError`, which killed
+    every xdist worker and never reached the log.
     """
     nodeids = [f"apps/alpha/tests/test_a.py::test_{index}" for index in range(5)]
     nodeids.append("apps/test_root_census.py::test_the_whole_tree")
@@ -447,6 +455,86 @@ def test_impact_select_keeps_the_named_and_the_always_on() -> None:
     assert len(keep) == 3
     assert banner == "impact-select: 2 named, 1 always-on", banner
 
-    with pytest.raises(pytest.UsageError) as caught:
-        _impact_selection(nodeids, frozenset({"apps/ghost/tests/test_gone.py::test_x"}), always_on)
-    assert "apps/ghost/tests/test_gone.py::test_x" in str(caught.value)
+    renamed = "apps/alpha/tests/test_a.py::test_renamed_since"
+    gone = "apps/ghost/tests/test_gone.py::test_x"
+    keep, banner = _impact_selection(nodeids, frozenset({nodeids[0], renamed, gone}), always_on)
+    assert keep == frozenset(nodeids), keep
+    stale = f"impact map: 2 ids no longer collected — {renamed}, {gone} · "
+    assert banner.startswith(stale), banner
+    assert "1 module(s) run whole in their place: apps/alpha/tests/test_a.py" in banner, banner
+
+
+# --- the door registry, the banner's ways in, and the drawer's reach kinds -----
+
+
+def test_the_door_schema_parity_module_derives_door_registry_reach() -> None:
+    """The module that compares the two published documents reads the door
+    registry by its own source — no marker, no seed line, no list naming it."""
+    path = REPO_ROOT / "apps/core/tests/test_door_schema_parity.py"
+    assert "door_registry" in _module_reach(str(path))
+    assert _module_census_reason(str(path)) == ""
+
+
+def test_the_banner_names_every_module_with_its_way_in() -> None:
+    """`always-on: <n> modules`, then one line per module, each with its way in."""
+    assert _way_in("apps/test_x.py::test_y", frozenset()) == "structural"
+    assert (
+        _way_in("apps/core/tests/test_x.py::test_y", frozenset({"door_registry", "app_registry"}))
+        == "derived: app_registry,door_registry"
+    )
+    assert _way_in("apps/core/tests/test_x.py::test_y", frozenset()) == "declared"
+    ways = {
+        "apps/test_x.py": "structural",
+        "apps/core/tests/test_door_schema_parity.py": "derived: door_registry",
+        "apps/core/tests/test_settings.py": "declared",
+        "apps/core/tests/test_vocabulary.py": "seeded",
+    }
+    lines = _always_on_banner(ways, 5, 2)
+    assert lines[0] == (
+        "  always-on: 4 modules ran — 5 derived before the tier, 2 dropped whole by the "
+        "fast tier (organ-reaching, outside the own apps), 1 seeded by the change"
+    ), lines
+    assert _always_on_banner({"apps/test_x.py": "structural"}, 1, 0)[0] == (
+        "  always-on: 1 modules ran — 1 derived before the tier"
+    )
+    assert len(lines) == 5, lines
+    for module, way in ways.items():
+        assert f"    {module} {way}" in lines, lines
+
+
+def test_a_drawer_reach_kind_joins_the_derivation() -> None:
+    """A product's own reach kind, read by its one reader."""
+    drawer = types.SimpleNamespace(**{DJB_REACH_KINDS_KEY: {"acme_registry": ("list_widgets(",)}})
+    kinds = _drawer_reach_kinds(drawer)
+    assert kinds == {"acme_registry": ("list_widgets(",)}
+    assert _drawer_unknown_keys(drawer) == []
+    assert _drawer_reach_kinds(None) == {}
+    assert _drawer_reach_kinds(types.SimpleNamespace()) == {}
+
+
+def test_a_drawer_key_no_reader_reads_is_refused_by_name() -> None:
+    """A typo'd drawer key declares nothing, so it is named rather than ignored."""
+    drawer = types.SimpleNamespace(DJB_REACH_KIND={"acme_registry": ("list_widgets(",)})
+    assert _drawer_unknown_keys(drawer) == ["DJB_REACH_KIND"]
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        {"door_registry": ("x(",)},
+        {"acme_registry": ()},
+        {"acme_registry": ("",)},
+        {"acme_registry": "list_widgets("},
+        ["acme_registry"],
+    ],
+)
+def test_a_drawer_reach_kind_that_edits_or_declares_nothing_is_refused(declared: Any) -> None:
+    """A drawer adds a kind; it never replaces the template's, and never declares an empty one."""
+    drawer = types.SimpleNamespace(**{DJB_REACH_KINDS_KEY: declared})
+    with pytest.raises(pytest.UsageError, match=DJB_REACH_KINDS_KEY):
+        _drawer_reach_kinds(drawer)
+
+
+def test_the_template_kinds_carry_the_door_registry() -> None:
+    """The kind the derivation was missing is declared in the sentinel block."""
+    assert DJB_REACH_TOKENS["door_registry"]

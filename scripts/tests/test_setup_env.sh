@@ -32,6 +32,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .env.example .github/workflows/ci.yml README.md apps/conftest.py compose.yaml deploy/tests/test_release.sh scripts/check.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/loop_tier.sh scripts/queue_cited.sh scripts/rung_start.sh scripts/secrets_scan.sh scripts/setup.sh scripts/sweep.sh scripts/verifier_box.sh scripts/verify_start.sh
+# cites: config/settings/test.py apps/files/tests/test_store_credential_belt.py
 set -euo pipefail
 
 # The drive for the sentinel-fenced blocks of `scripts/setup.sh`: the
@@ -1304,15 +1305,16 @@ PYTHON
 # a gate step that inherits them talks to the compose MinIO with an AWS key it
 # has never heard of (`InvalidAccessKeyId` on every MinIO test, every shard).
 # So in every job that assumes an AWS identity, each later step that runs the
-# gate re-pins the store's pair at step level to the workflow's own values, as
-# literals (an `${{ env.… }}` expression reads the context the login already
-# overwrote), and empties AWS_SESSION_TOKEN.
+# gate pins all three exported names EMPTY at step level (house rule 62's
+# form): the gate needs no cloud credential, and the store's own address and
+# pair have one authority, `config/settings/test.py`. An `${{ env.… }}`
+# expression is not a pin — it reads the context the login already overwrote.
 #
 # BLIND SPOT, declared: this reads the YAML. It cannot see what the action
 # exports at run time — a future version that exports under another name
-# (AWS_SECURITY_TOKEN, a profile) passes here, and there is no belt short of
-# the CI run itself. Which one place owns the store credential under test (the
-# workflow or the test settings) is an open design question for a later cycle.
+# (AWS_SECURITY_TOKEN, a profile) passes here; the belt for the store is
+# `apps/files/tests/test_store_credential_belt.py`, which exports a hostile
+# credential and proves the suite's clients never carry it.
 gate_after_login_census() {
     # $1 the workflow file. Prints one line per gate step after a login, and a total.
     "$ROOT/.venv/bin/python" - "$1" <<'PYTHON'
@@ -1321,7 +1323,6 @@ import sys
 import yaml
 
 wf = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-top = wf.get("env") or {}
 steps_seen = 0
 for name, job in (wf.get("jobs") or {}).items():
     steps = job.get("steps") or []
@@ -1339,13 +1340,7 @@ for name, job in (wf.get("jobs") or {}).items():
         key = env.get("AWS_ACCESS_KEY_ID")
         secret = env.get("AWS_SECRET_ACCESS_KEY")
         token = env.get("AWS_SESSION_TOKEN", "<inherited>")
-        pinned = (
-            key is not None
-            and key == top.get("AWS_ACCESS_KEY_ID")
-            and secret is not None
-            and secret == top.get("AWS_SECRET_ACCESS_KEY")
-            and token == ""
-        )
+        pinned = key == "" and secret == "" and token == ""
         print(
             f"job {name} step {s.get('name', '?')!r}: "
             f"store-credential-pinned={'yes' if pinned else 'no'} "
@@ -1356,7 +1351,7 @@ PYTHON
 }
 
 case_the_gate_after_the_login_dials_the_compose_store() {
-    CURRENT="the gate step after the AWS login re-pins the compose store's credential"
+    CURRENT="the gate step after the AWS login holds no cloud credential"
     [ -x "$ROOT/.venv/bin/python" ] || cannot_look "no venv interpreter at $ROOT/.venv/bin/python — the workflow reader cannot run"
     local out="${WORK}/gate-after-login.txt" n
     if ! gate_after_login_census .github/workflows/ci.yml >"$out" 2>&1; then
@@ -1373,9 +1368,9 @@ case_the_gate_after_the_login_dials_the_compose_store() {
         return
     fi
     if [ "$(grep -c 'store-credential-pinned=yes' "$out" || true)" = "$n" ]; then
-        ok "all ${n} gate step(s) after an AWS login re-pin the store's key and secret and empty AWS_SESSION_TOKEN"
+        ok "all ${n} gate step(s) after an AWS login pin AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN empty"
     else
-        bad "not every gate step after an AWS login re-pins the store's credential — it inherits the login's STS export and MinIO answers InvalidAccessKeyId"
+        bad "not every gate step after an AWS login pins the three exported names empty — it inherits the login's STS export"
     fi
     # THE READER CAN FIRE: the same workflow with the step-level pins removed,
     # and again with the key read through the env context the login overwrote.

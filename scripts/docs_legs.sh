@@ -256,8 +256,11 @@ docs_dangling_docs() {
         # still a finding, the number is printed, and in a PRODUCT's tree the
         # drawer exists and is checked like any other file — this exemption
         # only ever fires where the file is legitimately not there.
+        # A SECOND EXACT PATH, for the second `.local.md` drawer the template
+        # documents: the pattern book's (`build-contract.md`'s drawers row, and
+        # its one reader). Still one path per drawer, never a glob.
         case "$ref" in
-        docs/product/instruments.local.md)
+        docs/product/instruments.local.md | docs/product/design/patterns.local.md)
             drawers=$((drawers + 1))
             continue
             ;;
@@ -269,7 +272,7 @@ docs_dangling_docs() {
         # TO STDERR, because this body's STDOUT is its findings: every line of
         # it is printed by the caller with a `VIOLATION` in front. A note that
         # arrived on stdout would be a clean tree reported as a red one.
-        printf '  %s pointer(s) exempt: docs/product/instruments.local.md is the product-owned drawer this template documents and never ships (publish.sh R0)\n' \
+        printf '  %s pointer(s) exempt: docs/product/instruments.local.md and docs/product/design/patterns.local.md are product-owned drawers this template documents and never ships (publish.sh R0)\n' \
             "$drawers" >&2
     fi
     rm -f "$refs"
@@ -818,9 +821,19 @@ docs_loop_names_leg() {
 # AND ONE SUBTRACTION, which is the mirror lens: a key `config/settings/test.py`
 # PINS is inert whatever the workflow supplies — the suite reads the pin. So a
 # pinned key is not required in the workflow, AND a pin of a key the workflow
-# DOES supply is a finding of its own: the `env:` line looks like it is doing
-# something and is doing nothing. `test.py` pins one bucket name today and the
-# workflow deliberately does not supply it, which is the negative.
+# DOES supply is a finding of its own: TWO AUTHORITIES for one value, printed
+# as `file:line` each, because the `env:` line looks like it is doing
+# something and is doing nothing. THE STORE UNDER TEST HAS ONE AUTHORITY:
+# `test.py` pins its endpoint, region and published pair, and the workflow
+# supplies none of them — the side an exporter could overwrite was the
+# workflow's, and on the first CI attempt it was.
+#
+# AN EMPTY VALUE IS A PIN, NOT A SUPPLY. House rule 62 has every step after a
+# credential exporter set the exported names to `""` so the exported value
+# never reaches it; that line CLEARS a name rather than supplying one. It is
+# said out loud on every run and it satisfies neither half: it does not count
+# as the workflow supplying a population name, and it is not a second
+# authority beside a test-settings pin.
 #
 # DECLARED BLIND SPOTS, printed by the leg itself on every clean run:
 #   · KEYS, NOT VALUES. A wrong endpoint port is a green census and a red run.
@@ -901,12 +914,48 @@ docs_ci_env_keys() {
     return 0
 }
 
+# docs_ci_env_entries <workflow-file> — `<line>\t<key>\t<value>` for every
+# key under any `env:` map, by the same indentation parse as
+# `docs_ci_env_keys` (run that one first: it owns the could-not-look refusals).
+# The value is the scalar after the colon with a trailing ` #` comment and one
+# layer of quotes taken off — enough to tell `""` from a value, which is the
+# only question this leg asks of it.
+docs_ci_env_entries() {
+    awk '
+        /^[ ]*#/ { next }
+        {
+            line = $0
+            sub(/[ ]*$/, "", line)
+            if (line == "") next
+            indent = match(line, /[^ ]/) - 1
+            if (in_env && indent <= env_indent) in_env = 0
+            if (line ~ /^[ ]*env:[ ]*$/) {
+                in_env = 1
+                env_indent = indent
+                next
+            }
+            if (in_env && indent > env_indent) {
+                key = line
+                sub(/^[ ]*/, "", key)
+                if (key ~ /^[A-Za-z_][A-Za-z0-9_]*[ ]*:/) {
+                    value = key
+                    sub(/[ ]*:.*$/, "", key)
+                    sub(/^[^:]*:[ ]*/, "", value)
+                    sub(/[ ]+#.*$/, "", value)
+                    if (value ~ /^".*"$/ || value ~ /^\047.*\047$/) value = substr(value, 2, length(value) - 2)
+                    printf "%d\t%s\t%s\n", NR, key, value
+                }
+            }
+        }
+    ' "$1"
+}
+
 docs_ci_env_leg() {
     local settings=${1:-$DOCS_CI_ENV_SETTINGS}
     local wf=${2:-$DOCS_CI_ENV_WORKFLOW}
     local example=${3:-$DOCS_CI_ENV_EXAMPLE}
     local test_settings=${4:-$DOCS_CI_ENV_TEST_SETTINGS}
-    local pop keys pinned bad name n
+    local pop keys pinned bad name n entries tline wlines
 
     if [ ! -f "$settings" ]; then
         gate_refuse "ci-env: $settings is not in this tree — the population is derived from it"
@@ -963,8 +1012,16 @@ docs_ci_env_leg() {
         rm -f "$pop" "$keys"
         return 2
     fi
-    echo "  $(wc -l <"$keys" | tr -d ' ') key(s) under the env: maps of $wf (any level; any value"
-    echo "  satisfies the census — this leg reads KEYS, never values)"
+    echo "  $(wc -l <"$keys" | tr -d ' ') key(s) under the env: maps of $wf (any level; any NON-EMPTY"
+    echo "  value satisfies the census — this leg reads keys, and of values only whether one is empty)"
+    # AN EMPTY VALUE CLEARS A NAME; IT SUPPLIES NOTHING. The supplied set is
+    # the keys with a non-empty value on at least one line, and every clearing
+    # of an AWS_ name is printed with its line.
+    entries=$(docs_ci_env_entries "$wf")
+    printf '%s\n' "$entries" | awk -F '\t' 'NF >= 2 && $3 != "" { print $2 }' |
+        LC_ALL=C sort -u >"$keys"
+    printf '%s\n' "$entries" | awk -F '\t' -v wf="$wf" \
+        'NF >= 2 && $3 == "" && $2 ~ /^AWS_/ { printf "  cleared: %s at %s:%s — empty is a pin, not a supply\n", $2, wf, $1 }'
 
     bad=0
     while IFS= read -r name; do
@@ -976,7 +1033,7 @@ docs_ci_env_leg() {
         # its absence is correct rather than missing — and it is said out loud,
         # because a name silently dropped from a population is how a census
         # stops looking.
-        if [ -f "$test_settings" ] && grep -qE "^${name}[[:space:]]*=" "$test_settings"; then
+        if [ -f "$test_settings" ] && grep -qE "^${name}[[:space:]]*(:[^=]*)?=" "$test_settings"; then
             echo "  exempt: $name is pinned by $test_settings, so a workflow value would be"
             echo "          overridden and misleading — the suite reads the pin"
             continue
@@ -992,14 +1049,19 @@ docs_ci_env_leg() {
     # `env:` line doing nothing at all, while every criterion about the block
     # passes.
     if [ -f "$test_settings" ]; then
-        pinned=$({ grep -ohE '^AWS_[A-Z0-9_]+[[:space:]]*=' "$test_settings" || true; } |
-            sed -E 's/[[:space:]]*=$//' | LC_ALL=C sort -u)
+        pinned=$({ grep -ohE '^AWS_[A-Z0-9_]+[[:space:]]*(:[^=]*)?=' "$test_settings" || true; } |
+            sed -E 's/[[:space:]]*(:[^=]*)?=$//' | LC_ALL=C sort -u)
         while IFS= read -r name; do
             [ -n "$name" ] || continue
             if grep -qxF "$name" "$keys"; then
-                echo "  VIOLATION  ci-env: $test_settings pins $name, which $wf also supplies as an"
-                echo "             env: key — the pin wins, so the workflow line is inert and the"
-                echo "             runner is not dialling what the block says it dials"
+                tline=$(grep -nE "^${name}[[:space:]]*(:[^=]*)?=" "$test_settings" | sed -n '1p' | cut -d: -f1)
+                wlines=$(printf '%s\n' "$entries" |
+                    awk -F '\t' -v k="$name" -v wf="$wf" '$2 == k && $3 != "" { printf "%s%s:%s", sep, wf, $1; sep = ", " }')
+                echo "  VIOLATION  ci-env: $name has TWO authorities — $test_settings:${tline:-?} and $wlines."
+                echo "             $test_settings pins $name, which $wf also supplies as an env: key — the"
+                echo "             pin wins, so the workflow line is inert and the runner is not dialling"
+                echo "             what the block says it dials. The test settings are the one authority:"
+                echo "             delete the workflow line"
                 bad=$((bad + 1))
             fi
         done <<<"$pinned"
@@ -1010,8 +1072,8 @@ docs_ci_env_leg() {
 
     rm -f "$pop" "$keys"
     if [ "$bad" = "0" ]; then
-        echo "  ok — every name the settings read from the environment is a key the workflow"
-        echo "  supplies, and no pin makes one of them inert"
+        echo "  ok — every name the settings read from the environment is supplied by the"
+        echo "  workflow or pinned by the test settings, and no name has two authorities"
         echo "  blind spot: KEYS, NOT VALUES — a wrong endpoint or a stale credential is a"
         echo "  green census and a red run; the run is the belt. AWS names only."
         return 0

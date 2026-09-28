@@ -4,6 +4,7 @@
 #   deploy/stage.sh ec2-user@1.2.3.4 --env staging               stage HEAD
 #   deploy/stage.sh ec2-user@1.2.3.4 --env staging --key ~/k.pem with an identity file
 #   deploy/stage.sh ec2-user@1.2.3.4 --env staging --dry-run     say what would run, touch nothing
+#   deploy/stage.sh ec2-user@5.6.7.8 --env prod --sanction '<who>: <why>' --staging ec2-user@1.2.3.4 --nightly <dir>
 #
 # WHY THIS EXISTS. A deploy to the stage box was five hand-typed commands in
 # three runbook parts — `ship.sh`, runbook step 31, a registry login, step 34's
@@ -75,6 +76,61 @@
 #     refuses two leaves per app upstream, so a migration whose file changed
 #     without the leaf moving is a state the tree cannot reach.
 #
+# THE LIVE MARKER. `<namespace>/LIVE`, one line, `live <tree tag> <UTC stamp>`,
+# written by act 6 after the readyz answered 200 and by nothing else; it is
+# removed before the first act whenever any act that changes the box will run
+# (a ship, an up or a release). A ship swaps the whole namespace directory, so
+# a newly shipped tree arrives with no marker at all. What it does NOT see: a
+# `release.sh` or `provision.sh up` run by hand on the box, which leaves the
+# marker standing over a box it did not prove; the recovery path re-stages.
+#
+# THE CLOSING LINE IS THE MEASURE'S INSTRUMENT. A stage that reached a 200 ends
+# on exactly one line, and it is the last one:
+#
+#   stage: <tree tag> live in <n>s (migrate <m>s)
+#
+# `<n>` is this script's own wall, from its first line to the readyz answer;
+# `<m>` is the release's migrate act as `release.sh` printed it (`migrate:
+# <m>s`), CARRIED rather than re-measured from out here, so the two halves of a
+# slow deploy are told apart. When the release act did not run the half reads
+# `(migrate skipped)`, and when it ran and printed no wall it reads `(migrate
+# unmeasured)` — never a zero, which would be a measurement nobody took. A dry
+# run and the docs-only short circuit print no closing line: nothing went live.
+#
+# PROMOTION TO PROD HAS FOUR TEETH, AND ALL FOUR ARE READ BEFORE THE PROD BOX IS
+# CONTACTED. Every environment NOT on the declared non-prod list
+# (`DJB_NONPROD_ENVIRONMENTS`; default `staging stage dev development test qa
+# local`) is prod, whatever it is spelled. It runs the same six acts as staging —
+# ADR deploy-4 (f): promotion is neither a re-tag nor a rebuild — but only when
+#
+#   1. `--sanction '<who>: <why>'` names who is promoting and why (the shape
+#      the full gate's own sanction takes, and stricter: one printable line,
+#      no control character, neither half whitespace only);
+#   2. the staging box named by `--staging <destination>` has PROVED this tree
+#      live — its `LIVE` marker reads `live <this checkout's tree tag> <at>`.
+#      NOT line 1 of `TREE`: the ship act writes that at act 1, before the
+#      pull, the migrate, the swap and the readyz, so mid-deploy (or after a
+#      deploy that stopped past act 1) it names a tree the OLD containers are
+#      still answering for. `LIVE` is withdrawn before any act that changes a
+#      box and written only once act 6 has answered 200 (see "THE LIVE
+#      MARKER" below);
+#   3. that staging box's readyz answers 200, probed exactly as act 6 probes;
+#   4. the nightly leak proof handed in as `--nightly <artifact dir>` is green
+#      and no older than 24 h — read by `gate_nightly_read` in
+#      scripts/gate_ledger.sh, sourced and called, never re-parsed here. Its
+#      `nightly:none`, `nightly:stale:<at>`, a non-zero `rc=` and an unreadable
+#      record (its exit 2) are each a red tooth, named.
+#
+# Every red precondition is named in one refusal (exit 2), so an operator fixes
+# them in one pass. The staging box is READ — its marker and its readyz — and
+# never acted on; the prod box is not contacted at all. The three flags mean
+# nothing for any other environment and are refused there, so a sanction typed
+# at staging is never mistaken for one that was checked. What this does NOT
+# check: that staging and prod share a namespace directory and an identity file
+# (`--dest` and `--key` serve both boxes), and that the nightly measured THIS
+# tree — the nightly is the suite's leak proof over main, and the tooth is its
+# freshness and its colour, as the design rules it.
+#
 # THE DOCS-ONLY SHORT CIRCUIT, AND WHY IT IS NOT JUST "EVERY PATH IS INERT".
 # The class list is `loop_scope__classify`'s (scripts/loop_tier.sh) — sourced
 # and CALLED, never copied, so a territory added there is known here the day it
@@ -85,6 +141,9 @@
 # moved the alert route would report nothing to deploy.
 
 set -euo pipefail
+
+# The closing line's wall starts here, before anything else is paid for.
+STAGE_T0="$(date +%s)"
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$HERE/.." && pwd)"
@@ -113,7 +172,7 @@ die() {
 say() { echo "stage: $*"; }
 
 usage() {
-    sed -n '2,6p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,7p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     echo ""
     echo "The header of ${BASH_SOURCE[0]} says what each act is and what keys it."
     exit 2
@@ -128,10 +187,16 @@ KEY=""
 REMOTE_DIR="${DJB_DEPLOY_NAMESPACE:-}"
 ENVIRONMENT="${DJB_DEPLOY_ENVIRONMENT:-}"
 DRY_RUN=""
+# The prod gate's three inputs. Set means typed; they are refused outside prod.
+SANCTION=""
+SANCTION_TYPED=""
+STAGING_DEST=""
+NIGHTLY_DIR=""
+PROD_FLAGS_TYPED=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
     -h | --help)
-        sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     --key)
@@ -152,6 +217,25 @@ while [ "$#" -gt 0 ]; do
     --dry-run)
         DRY_RUN=1
         shift
+        ;;
+    --sanction)
+        [ "$#" -ge 2 ] || die "--sanction needs '<who>: <why>'"
+        SANCTION="$2"
+        SANCTION_TYPED=1
+        PROD_FLAGS_TYPED=1
+        shift 2
+        ;;
+    --staging)
+        [ "$#" -ge 2 ] || die "--staging needs the staging box's destination"
+        STAGING_DEST="$2"
+        PROD_FLAGS_TYPED=1
+        shift 2
+        ;;
+    --nightly)
+        [ "$#" -ge 2 ] || die "--nightly needs the downloaded nightly-leak-proof artifact's directory"
+        NIGHTLY_DIR="$2"
+        PROD_FLAGS_TYPED=1
+        shift 2
         ;;
     -*)
         echo "!! stage: unknown argument '$1'." >&2
@@ -179,6 +263,21 @@ command -v ssh >/dev/null 2>&1 || die "no 'ssh' on PATH"
 [ -x "$HERE/ship.sh" ] || die "no $HERE/ship.sh — the ship act has nothing to call"
 [ -n "$REMOTE_DIR" ] || die "DJB_DEPLOY_NAMESPACE is required — this deployment's namespace, the directory the tree lives in on the box. There is no default: a guessed namespace acts in somebody else's directory. Export it, or name the directory outright with --dest."
 [ -n "$ENVIRONMENT" ] || die "no environment named — the vault prefix is \"<namespace>/<environment>/\" and there is no default, because a default is how one environment's secrets get written onto another environment's box. Pass --env <name>, or export DJB_DEPLOY_ENVIRONMENT."
+# PROD IS EVERYTHING NOT DECLARED OTHERWISE. The teeth are not keyed on a
+# spelling of "prod" — `PROD`, `Production` and `prod-eu` would each walk past
+# a list of prod names. They are keyed on the one declared list of NON-prod
+# names, matched exactly and case-sensitively, and every other environment is
+# gated. The list is `DJB_NONPROD_ENVIRONMENTS` (space-separated), defaulting to
+# the names below; a product with another pre-prod environment names it there.
+# Set empty, it gates every environment — the failure mode is a refusal, never
+# a bare deploy.
+NONPROD_ENVIRONMENTS="${DJB_NONPROD_ENVIRONMENTS-staging stage dev development test qa local}"
+IS_PROD=1
+for nonprod in $NONPROD_ENVIRONMENTS; do
+    [ "$ENVIRONMENT" != "$nonprod" ] || IS_PROD=""
+done
+[ -n "$IS_PROD" ] || [ -z "$PROD_FLAGS_TYPED" ] ||
+    die "--sanction, --staging and --nightly are the prod gate's and mean nothing for --env ${ENVIRONMENT}. A sanction typed here would read as one that was checked."
 [ -z "$KEY" ] || [ -f "$KEY" ] || die "no identity file at $KEY"
 git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || die "$ROOT is not a git checkout, so there is no tree to stage and nothing that could name one"
 
@@ -241,6 +340,22 @@ remote() {
     ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} "$DESTINATION" "$1"
 }
 
+# The same transport to a NAMED box — the prod gate's reads of staging.
+remote_at() {
+    ssh ${SSH_ARGS[@]+"${SSH_ARGS[@]}"} "$1" "$2"
+}
+
+# ONE readyz probe, from inside the box's own `readyz-prober` container, with
+# that container's target, `--connect-to` and certificate posture — act 6's
+# command, and the prod gate's probe of staging, so the two can never disagree
+# about what "answers" means.
+READYZ_PROBE="cd '${REMOTE_DIR}' && set -a && . deploy/.env && set +a && \
+curl_args=\"-sS -o /dev/null -w %{http_code} --max-time 10\" && \
+if [ \"\${PROBE_INSECURE:-0}\" = 1 ]; then curl_args=\"\$curl_args -k\"; fi && \
+if [ -n \"\${PROBE_CONNECT_TO:-}\" ]; then curl_args=\"\$curl_args --connect-to \$PROBE_CONNECT_TO\"; fi && \
+docker compose --env-file deploy/.env -f deploy/compose.yaml exec -T readyz-prober \
+curl \$curl_args \"\${PROBE_TARGET:-https://\${SITE_ADDRESS}/readyz}\""
+
 say "destination  ${DESTINATION}"
 say "namespace    ${REMOTE_DIR}  (environment ${ENVIRONMENT}; vault prefix ${REMOTE_DIR}/${ENVIRONMENT}/)"
 say "tree         HEAD → ${TREE_TAG}"
@@ -249,6 +364,111 @@ say "registry     ${IMAGE_REGISTRY}${REGISTRY_REGION:+  (ECR, region ${REGISTRY_
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/djb-stage.XXXXXX")" || die "could not make a scratch directory"
 trap 'rm -rf "$WORK"' EXIT
 MARKER="$WORK/TREE"
+
+# --- THE PROD GATE: four preconditions, read before the prod box is contacted --
+# sanction_shaped <sanction> — `<who>: <why>`, neither half whitespace only.
+# The halves are copied OUT of BASH_REMATCH before they are tested, because
+# each later `=~` overwrites it.
+sanction_shaped() {
+    local who why
+    [[ $1 =~ ^([^:]+):\ (.+)$ ]] || return 1
+    who=${BASH_REMATCH[1]}
+    why=${BASH_REMATCH[2]}
+    [[ $who =~ [^[:space:]] ]] && [[ $why =~ [^[:space:]] ]]
+}
+
+if [ -n "$IS_PROD" ]; then
+    PROD_RED=()
+    PROD_SEEN_SANCTION=""
+    PROD_SEEN_STAGING=""
+    PROD_SEEN_NIGHTLY=""
+
+    # 1 · the sanction — the full gate's shape (scripts/check.sh), and stricter:
+    # it is ONE printable line a human typed. Bash's `.` matches a newline, so
+    # the shape alone admits a second line smuggled into either half; and a
+    # reason (or a who) of whitespace only is a sanction that names nobody.
+    if [ -z "$SANCTION_TYPED" ] || [ -z "$SANCTION" ]; then
+        PROD_RED+=("sanction: no sanction — --sanction '<who>: <why>' names who is promoting this tree to prod and why")
+    elif [[ $SANCTION =~ [[:cntrl:]] ]]; then
+        PROD_RED+=("sanction: the sanction carries a control character (a newline, a tab, an escape) — it is one printable line, '<who>: <why>'")
+    elif ! sanction_shaped "$SANCTION"; then
+        PROD_RED+=("sanction: the sanction '${SANCTION}' is not '<who>: <why>' — something before the first colon, a colon, a space, then the reason")
+    else
+        PROD_SEEN_SANCTION="$SANCTION"
+    fi
+
+    # 2 and 3 · staging holds THIS tree, and answers.
+    if [ -z "$STAGING_DEST" ]; then
+        PROD_RED+=("staging tree: no staging box named — --staging <destination> is the box whose TREE marker must already say ${TREE_TAG}")
+        PROD_RED+=("staging readyz: not probed — no staging box named")
+    else
+        # THE LIVE MARKER, NOT THE TREE MARKER (the header's tooth 2): what
+        # staging PROVED, never merely what it was shipped.
+        set +e
+        remote_at "$STAGING_DEST" "cat '${REMOTE_DIR}/LIVE'" >"$WORK/staging-LIVE" 2>"$WORK/staging-LIVE.err"
+        staging_rc=$?
+        set -e
+        staging_tag=""
+        if [ "$staging_rc" = "0" ]; then
+            staging_tag="$(awk 'NR == 1 && $1 == "live" && $2 ~ /^tree-[0-9a-f]+$/ { print $2 }' "$WORK/staging-LIVE")"
+        fi
+        if [ -z "$staging_tag" ]; then
+            PROD_RED+=("staging tree: staging cannot say which tree it holds live — ${STAGING_DEST}:${REMOTE_DIR}/LIVE is absent or not 'live <tag> <at>' (read exit ${staging_rc}): a staging deploy is in flight, or the last one stopped before its readyz answered 200. Re-stage staging, then promote")
+        elif [ "$staging_tag" != "$TREE_TAG" ]; then
+            PROD_RED+=("staging tree: staging holds ${staging_tag}, and this tree is ${TREE_TAG} — prod is promoted only to the tree staging has proven live (its LIVE marker, written after its readyz answered)")
+        fi
+        set +e
+        staging_code="$(remote_at "$STAGING_DEST" "$READYZ_PROBE" 2>"$WORK/staging-readyz.err")"
+        staging_probe_rc=$?
+        set -e
+        if [ "$staging_probe_rc" != "0" ] || [ "$staging_code" != "200" ]; then
+            PROD_RED+=("staging readyz: staging's readyz answered '${staging_code:-nothing}', not 200 (probe exit ${staging_probe_rc}) — a staging box that does not answer has proven nothing about this tree")
+        fi
+        [ -n "$staging_tag" ] && [ "$staging_tag" = "$TREE_TAG" ] && [ "$staging_probe_rc" = "0" ] && [ "$staging_code" = "200" ] &&
+            PROD_SEEN_STAGING="${staging_tag} on ${STAGING_DEST}, readyz 200"
+    fi
+
+    # 4 · the nightly leak proof, read by the ledger's own reader.
+    # shellcheck source=scripts/gate_ledger.sh
+    . "$ROOT/scripts/gate_ledger.sh" ||
+        die "could not source $ROOT/scripts/gate_ledger.sh (its own error is above) — the nightly's forms are its gate_nightly_read's and this script keeps no second parser"
+    command -v gate_nightly_read >/dev/null 2>&1 ||
+        die "$ROOT/scripts/gate_ledger.sh defines no gate_nightly_read — the nightly leak proof cannot be read, so the prod gate cannot look"
+    set +e
+    nightly_form="$(gate_nightly_read "$NIGHTLY_DIR" 2>"$WORK/nightly.err")"
+    nightly_rc=$?
+    set -e
+    nightly_why="$(sed -n '1p' "$WORK/nightly.err")"
+    case "$nightly_rc:$nightly_form" in
+    0:nightly:none)
+        PROD_RED+=("nightly: there is no nightly leak proof (nightly:none) — hand the downloaded nightly-leak-proof artifact's directory to --nightly")
+        ;;
+    0:nightly:stale:*)
+        PROD_RED+=("nightly: the nightly leak proof is older than 24 h (${nightly_form}) — run the nightly on main, then promote")
+        ;;
+    0:nightly:*" rc=0")
+        PROD_SEEN_NIGHTLY="$nightly_form"
+        ;;
+    0:nightly:*" rc="*)
+        PROD_RED+=("nightly: the nightly leak proof is RED (rc=${nightly_form##* rc=}) — ${nightly_form}; a leak the suite found last night is not promoted today")
+        ;;
+    *)
+        PROD_RED+=("nightly: the nightly leak proof is unreadable (reader exit ${nightly_rc}) — ${nightly_why:-${nightly_form:-no reason given}}")
+        ;;
+    esac
+
+    if [ "${#PROD_RED[@]}" -gt 0 ]; then
+        echo "!! stage: REFUSED — a promotion to prod needs four preconditions green, and ${#PROD_RED[@]} of 4 preconditions are red:" >&2
+        for red in "${PROD_RED[@]}"; do
+            echo "   - ${red}" >&2
+        done
+        echo "   Nothing was staged; no act ran; the prod box was not contacted." >&2
+        exit 2
+    fi
+    say "prod gate  sanction  ${PROD_SEEN_SANCTION}"
+    say "prod gate  staging   ${PROD_SEEN_STAGING}"
+    say "prod gate  nightly   ${PROD_SEEN_NIGHTLY}"
+fi
 
 set +e
 remote "cat '${REMOTE_DIR}/TREE'" >"$MARKER" 2>"$WORK/marker.err"
@@ -431,8 +651,26 @@ RELEASE_MOVED=""
 RELEASE_FLAGS=""
 [ -n "$OBSERVABILITY_MOVED" ] || RELEASE_FLAGS="--without-alerts"
 
+# The closing line's migrate half: `skipped` unless the release act runs and
+# says otherwise.
+MIGRATE_REPORT="skipped"
+
 say "box holds    ${BOX_TAG}  (${DELTA_COUNT} path(s) moved since)"
 echo ""
+
+# --- the LIVE marker, withdrawn before anything changes the box ----------------
+# WHENEVER AN ACT THAT CHANGES THE BOX WILL RUN, the box stops claiming a proven
+# tree until act 6 proves one again — so a deploy in flight, or one that stops
+# at any act, leaves no marker a promotion could read as a proof. A readyz-only
+# re-stage changes nothing and withdraws nothing. Nothing has been touched yet,
+# so a box that will not let go of its marker is a refusal, exit 2.
+if [ -z "$DRY_RUN" ] && { [ -n "$DO_SHIP" ] || [ -n "$DO_UP" ] || [ -n "$DO_RELEASE" ]; }; then
+    set +e
+    remote "rm -f '${REMOTE_DIR}/LIVE'"
+    rc=$?
+    set -e
+    [ "$rc" = "0" ] || die "could not withdraw ${REMOTE_DIR}/LIVE on the box (exit ${rc}) — a marker left standing over a deploy in flight would read as a proof"
+fi
 
 # --- 1 · ship -----------------------------------------------------------------
 act_begin
@@ -525,10 +763,19 @@ else
     # back for exactly this reason. So the release writes to a file beside the
     # tree, its own status is carried out, and the transcript is printed here
     # in full: nothing is filtered and nothing replaces the exit status.
+    #
+    # The transcript lands in a file HERE too, and is printed whole before the
+    # status is read, so this script can read the release's own `migrate: <n>s`
+    # line out of it for the closing line. Nothing is filtered on the way.
     set +e
-    remote "cd '${REMOTE_DIR}' && DJB_IMAGE_REGISTRY='${IMAGE_REGISTRY}' ./deploy/release.sh ${RELEASE_FLAGS} >.stage-release.log 2>&1; release_rc=\$?; cat .stage-release.log; exit \$release_rc"
+    remote "cd '${REMOTE_DIR}' && DJB_IMAGE_REGISTRY='${IMAGE_REGISTRY}' ./deploy/release.sh ${RELEASE_FLAGS} >.stage-release.log 2>&1; release_rc=\$?; cat .stage-release.log; exit \$release_rc" >"$WORK/release.out"
     rc=$?
     set -e
+    cat "$WORK/release.out"
+    MIGRATE_WALL="$(sed -n 's/^release: migrate: \([0-9][0-9]*\)s$/\1/p' "$WORK/release.out")"
+    MIGRATE_WALL="${MIGRATE_WALL%%$'\n'*}"
+    MIGRATE_REPORT="${MIGRATE_WALL:+${MIGRATE_WALL}s}"
+    MIGRATE_REPORT="${MIGRATE_REPORT:-unmeasured}"
     [ "$rc" = "0" ] || stopped "$rc"
     act_ran "${RELEASE_MOVED}${RELEASE_FLAGS:+  (${RELEASE_FLAGS})}"
 fi
@@ -551,12 +798,6 @@ if [ -n "$DRY_RUN" ]; then
     say "DRY RUN — the box's TREE marker was read and nothing was touched."
     exit 0
 fi
-READYZ_PROBE="cd '${REMOTE_DIR}' && set -a && . deploy/.env && set +a && \
-curl_args=\"-sS -o /dev/null -w %{http_code} --max-time 10\" && \
-if [ \"\${PROBE_INSECURE:-0}\" = 1 ]; then curl_args=\"\$curl_args -k\"; fi && \
-if [ -n \"\${PROBE_CONNECT_TO:-}\" ]; then curl_args=\"\$curl_args --connect-to \$PROBE_CONNECT_TO\"; fi && \
-docker compose --env-file deploy/.env -f deploy/compose.yaml exec -T readyz-prober \
-curl \$curl_args \"\${PROBE_TARGET:-https://\${SITE_ADDRESS}/readyz}\""
 set +e
 READYZ_CODE="$(remote "$READYZ_PROBE" 2>"$WORK/readyz.err")"
 rc=$?
@@ -577,6 +818,21 @@ if [ "$READYZ_CODE" != "200" ]; then
 fi
 act_ran "HTTP 200"
 
+# THE PROOF, WRITTEN ONLY NOW: the one place `LIVE` is written. A box that
+# answers but will not take the marker is a stage a promotion cannot read, so
+# it is exit 1, named — the deployment IS serving, and a re-stage writes it.
+set +e
+remote "echo 'live ${TREE_TAG} $(date -u +%Y%m%dT%H%M%SZ)' >'${REMOTE_DIR}/LIVE'"
+rc=$?
+set -e
+if [ "$rc" != "0" ]; then
+    echo "!! stage: the deployment answers 200, but ${REMOTE_DIR}/LIVE could not be written (exit ${rc})." >&2
+    echo "   A promotion to prod reads that marker and will refuse this tree until a" >&2
+    echo "   re-stage (readyz only, when nothing moved) writes it." >&2
+    exit 1
+fi
+
 echo ""
 say "STAGED. ${BOX_TAG} → ${TREE_TAG} on ${DESTINATION}, and it answers."
+say "${TREE_TAG} live in $(($(date +%s) - STAGE_T0))s (migrate ${MIGRATE_REPORT})"
 exit 0

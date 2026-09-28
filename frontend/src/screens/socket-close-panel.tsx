@@ -1,3 +1,4 @@
+// patterns: §15
 /**
  * J4 — THE CLIENT'S CLOSE-CODE COMPONENT (design P-14).
  *

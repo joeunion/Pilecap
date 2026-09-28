@@ -1,0 +1,8 @@
+.zzz-busy {
+    cursor: pointer;
+}
+
+.zzz-busy[data-busy] {
+    pointer-events: none;
+    cursor: not-allowed;
+}

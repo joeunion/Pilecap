@@ -41,6 +41,7 @@ import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ import pytest
 from django.conf import settings as django_settings
 from django.core.cache import cache
 from django.core.management import call_command
+from django.middleware import csrf
 from django.test import Client
 from django.urls import resolve, reverse
 
@@ -3547,21 +3549,94 @@ def test_the_enrolment_road_reads_the_persons_own_org_not_the_instance(
     assert "_auth_user_id" not in client.session, "a forged skip landed somebody"
 
 
+#: A CSRF token that carries the instance's day count. The token on the face
+#: is random, so a whole-page search for the number passes or fails by luck —
+#: `yYAaELPloj365cEfq16` was a real draw that turned a green tree red.
+A_TOKEN_CARRYING_THE_DIGITS = "a" * 30 + "365" + "b" * 31
+
+
+class _SkipLabels(HTMLParser):
+    """The text of every *Not now* button, and every text node a person reads.
+
+    Attribute values — the CSRF token among them — are never text, so no draw
+    of the token can put a number where this looks.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.labels: list[str] = []
+        self.text: list[str] = []
+        self._in_skip = False
+        self._hidden = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("script", "style"):
+            self._hidden += 1
+        if tag == "button" and ("value", "skip") in attrs:
+            self._in_skip = True
+            self.labels.append("")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style"):
+            self._hidden -= 1
+        if tag == "button":
+            self._in_skip = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_skip:
+            self.labels[-1] += data
+        if not self._hidden:
+            self.text.append(data)
+
+
+def _read_skip_face(body: str) -> _SkipLabels:
+    parsed = _SkipLabels()
+    parsed.feed(body)
+    parsed.close()
+    return parsed
+
+
+def _the_face_offers_the_orgs_thirty_days(client: Client, door: FakeSignInZitadel) -> str:
+    """Sign in under an org allowing 30 days and an instance allowing 365; read the face.
+
+    Read off the *Not now* button itself: the page also carries a random CSRF
+    token, and a 365 inside it is not a day count anybody reads.
+    """
+    door.login_settings = {"forceMfa": True, "mfaInitSkipLifetime": "2592000s"}
+    door.instance_login_policy["mfaInitSkipLifetime"] = "31536000s"
+
+    body: str = _sign_in(client).content.decode()
+
+    face = _read_skip_face(body)
+    assert [label.strip() for label in face.labels] == ["Not now (30 days)"], face.labels
+    assert "365" not in "".join(face.text), "the instance's day count is on the face"
+    return body
+
+
 def test_the_day_count_on_the_face_is_the_orgs_own(
     client: Client, door: FakeSignInZitadel, ours: None
 ) -> None:
     """Thirty days where the org says thirty, whatever the instance says."""
-    door.login_settings = {"forceMfa": True, "mfaInitSkipLifetime": "2592000s"}
-    door.instance_login_policy["mfaInitSkipLifetime"] = "31536000s"
-
-    body = _sign_in(client).content.decode()
-
-    assert "Not now (30 days)" in body
-    assert "365" not in body
+    _the_face_offers_the_orgs_thirty_days(client, door)
 
     landed = client.post(LOGIN_URL, {"action": "skip"})
     assert landed.status_code == 302
     assert "_auth_user_id" in client.session
+
+
+def test_a_token_carrying_the_instances_digits_does_not_move_the_verdict(
+    client: Client, door: FakeSignInZitadel, ours: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same face, with a CSRF token that happens to carry `365`.
+
+    The token is drawn at random, so without this case the day-count check
+    would meet those digits only by luck — once in a while, on some box.
+    """
+    monkeypatch.setattr(csrf, "_mask_cipher_secret", lambda _secret: A_TOKEN_CARRYING_THE_DIGITS)
+
+    body = _the_face_offers_the_orgs_thirty_days(client, door)
+
+    assert A_TOKEN_CARRYING_THE_DIGITS in body, "the forced token never reached the face"
 
 
 def test_the_sender_note_is_only_on_the_face_waiting_for_mail(

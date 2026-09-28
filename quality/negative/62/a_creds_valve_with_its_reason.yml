@@ -1,0 +1,14 @@
+# zzz_canary: rule 62's self-test negative — a step that keeps the credential, and says why.
+name: zzz-canary
+on: [workflow_dispatch]
+jobs:
+  zzz_canary_job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::000000000000:role/zzz-canary
+          aws-region: us-east-1
+      - name: a deliberate use
+        # creds: asks the registry whether this tag is already pushed
+        run: aws ecr describe-images --repository-name zzz-canary

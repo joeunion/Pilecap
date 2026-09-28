@@ -326,11 +326,17 @@ project_name() {
 # `postgres:16.10` while deploy/compose.yaml pinned `postgres:18.6` — the client
 # and the server drifted two majors apart in a file nobody diffs against the
 # other. Taking the db service's own pin makes that drift impossible.
+#
+# AND THE DIGEST RIDES WITH IT. House rule 61 pins every compose image by
+# `@sha256:<64 hex>`; a client pulled by the tag alone is whatever the registry
+# answers for that tag today, which is the one thing the pin exists to stop.
+# So the digest is carried when the compose line has one, and a line without
+# one still yields the tag (a checkout older than the rule, or a valved line).
 psql_image() {
     local pin
     # READ WHOLE, THEN SLICE — no pipe, so `sed`'s own status reaches `set -e`
     # and nothing can take SIGPIPE on a compose file past the 64 KiB pipe buffer.
-    pin="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(postgres:[0-9][0-9.]*\).*/\1/p' "$HERE/compose.yaml")"
+    pin="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(postgres:[0-9][0-9.]*\(@sha256:[0-9a-f]\{64\}\)\{0,1\}\).*/\1/p' "$HERE/compose.yaml")"
     pin="${pin%%$'\n'*}"
     [ -n "$pin" ] || die "could not read the postgres image pin out of $HERE/compose.yaml; the psql client version is not this script's to guess"
     printf '%s' "$pin"
@@ -603,7 +609,15 @@ set -e
 # (`-e NAME`, no `=`) so neither value ever lands in argv, `ps` or a history
 # file. `DATABASE_URL` is empty in every environment file for this exact reason
 # — a URL would win over the parts and make this override silently do nothing.
+#
+# ITS WALL IS PRINTED, `migrate: <n>s`, on its own line under the act. The
+# migrate is the one act whose length belongs to the schema rather than to this
+# script — an expand/contract step on a large table is minutes, a no-op is
+# seconds — and `deploy/stage.sh` carries this number into its closing line, so
+# a deploy that got slow says which half got slow. Printed whether the act
+# succeeded or not: a migrate that failed after four minutes is a fact too.
 act
+migrate_t0="$(date +%s)"
 set +e
 (
     export DATABASE_USER="$POSTGRES_USER"
@@ -613,6 +627,7 @@ set +e
 )
 rc=$?
 set -e
+say "migrate: $(($(date +%s) - migrate_t0))s"
 [ "$rc" = "0" ] || stopped "$rc"
 
 # =============================================================================

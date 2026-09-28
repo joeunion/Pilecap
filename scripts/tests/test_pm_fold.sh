@@ -16,7 +16,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .gitignore .secrets.baseline apps/example/api.py apps/example/models.py frontend/openapi.json frontend/scripts/pin_client.sh frontend/src/api/generated/schema.d.ts manage.py quality/budgets.yaml quality/gate.py scripts/backup.sh scripts/budget_notes.sh scripts/fe_gate.sh scripts/gate_ledger.sh scripts/pm_fold.sh scripts/pm_merge.sh scripts/pm_push.sh scripts/rung_start.sh scripts/rung_tidy.sh scripts/sweep.sh scripts/test_impact.json scripts/test_impact.py scripts/tests/test_gate_lease.sh scripts/tests/test_pm_push.sh
-# cites: scripts/local/fold.d
+# cites: .github/workflows/nightly-proof.yml scripts/gate_member_durations.ci.json scripts/local/fold.d
 # THE FOLD'S REFUSAL DRIVE. `scripts/pm_fold.sh` COMMITS, UNATTENDED, from
 # inside `pm_push.sh --bank` and `pm_merge.sh --bank`, into the tree the gate's
 # verdict is about to vouch for. Every one of its teeth was proven once, by
@@ -148,6 +148,12 @@ says_not() {
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/djb-test-pm-fold.XXXXXX")"
 drive_require_scratch WORK "$WORK"
+# NO FOLD IN THIS DRIVE ASKS THE REAL GitHub. Steps (e) and (f) read a
+# workflow's artifacts through `gh`; a case that means to exercise that plants a
+# fake and names it, and every other fold here gets a gh that does not exist —
+# could-not-look, the committed files standing — rather than whatever `gh` and
+# credentials the machine running this drive happens to have.
+export DJB_FOLD_GH="$WORK/no-such-gh-anywhere"
 drive_at_exit "rm -rf '$WORK'"
 
 # The transcript lives OUTSIDE every fixture. Written inside one it is an
@@ -1489,7 +1495,11 @@ case_the_fold_sits_where_the_ordering_requires() {
     P_FOLD="$(line_of "$PUSH_SRC" 'FOLD="$ROOT/scripts/pm_fold.sh"')"
     P_CLEAN="$(line_of "$PUSH_SRC" 'pm_push --bank: ${ROOT} has uncommitted changes')"
     P_GATE="$(line_of "$PUSH_SRC" '"$GATE" --bank || BANK_RC=$?')"
-    P_RESOLVE="$(line_of "$PUSH_SRC" 'could not re-read HEAD after the fold')"
+    # THE BANK'S OWN RE-RESOLVE, the first one AFTER its fold: `--pr` folds and
+    # re-resolves too, higher in the file, and a first-match anchor read that
+    # one and compared the bank's fold against the train road's re-read.
+    P_RESOLVE="$(grep -n -- 'could not re-read HEAD after the fold' "$PUSH_SRC" |
+        awk -F: -v f="${P_FOLD:-0}" '$1 > f { print $1; exit }')"
     if [ -n "$P_FOLD" ] && [ -n "$P_CLEAN" ] && [ -n "$P_GATE" ] && [ -n "$P_RESOLVE" ]; then
         holds "pm_push: the fold is before the cleanliness check" "1" \
             "$([ "$P_FOLD" -lt "$P_CLEAN" ] && echo 1 || echo 0)"
@@ -1566,7 +1576,518 @@ case_the_fe_leg_names_a_client_suspect() {
 }
 
 # ---------------------------------------------------------------------------
+# STEP (e) — the CI walls table, harvested whole or not at all
+# ---------------------------------------------------------------------------
+#
+# THE FIXTURE IS THE BASELINE RUN'S OWN ROWS. Run 36282702383 (the first green
+# CI run on main) drove 41 selftest members across three shards, and printed
+# `drive <member>: exit <rc> (<s>s)` for each; these are those 41 lines as
+# `<k/N>:<member>:<seconds>`, transcribed from the run's log. Every rc was 0.
+# The step is driven through its two seams — a harvest directory
+# (`DJB_FOLD_WALLS_DIR`) and a population file (`DJB_FOLD_WALLS_POPULATION`,
+# because a fixture repository has no gate to list) — and once through a stub
+# `gh` whose log carries the same lines, so the log reader is driven too.
+#
+# NOT COVERED: the real GitHub API (a stub answers every call), and whether
+# the walls are representative of anything but that one run.
+WALLS_RUN_ROWS="1/3:backup_restore:17 1/3:sweep:52 1/3:secrets_scan:3 1/3:scripts_census:1 1/3:archaeology_loop:1 1/3:loop_tier:90 1/3:rung_start:2 1/3:db_template:33 1/3:verify_start:18 1/3:db_zsh:0 1/3:queue_index:2 1/3:test_impact:2 1/3:verifier_box:46 1/3:local_legs:13 2/3:pm_push:147 2/3:fe_leg:7 2/3:db_pin:20 2/3:loop_scope:433 2/3:loop_ledger:38 2/3:serve_port:1 2/3:gate_lease:47 2/3:publish:34 2/3:divergence_census:2 2/3:gate_explain:283 2/3:drive_preamble:31 2/3:shard_census:9 2/3:selftest_leg:85 2/3:stage:1 3/3:house-rules-engine:383 3/3:pm_merge:4 3/3:pm_fold:14 3/3:rung_tidy:2 3/3:secrets_baseline_guard:5 3/3:setup_env:3 3/3:fast_censuses:3 3/3:runbook_recipes:37 3/3:loop_metrics:1 3/3:pipefail_readers:7 3/3:list_legs:297 3/3:verifier_image:5 3/3:selftest_shapes:401"
 
+#: walls_fixture <dir> — the three shards' row files, the run's meta and the
+#: population, all under <dir>. The tree is the fixture repository's own, so no
+#: sha is typed into this file.
+walls_fixture() {
+    local dir="$1" spec part rest name secs
+    rm -rf "$dir"
+    mkdir -p "$dir/harvest"
+    : >"$dir/population"
+    for spec in $WALLS_RUN_ROWS; do
+        part="${spec%%:*}"
+        rest="${spec#*:}"
+        name="${rest%%:*}"
+        secs="${rest##*:}"
+        printf 'member-walls/1\t%s\t0\t%s\t%s\n' "$name" "$secs" "$part" >>"$dir/harvest/shard-${part%/*}.walls"
+        printf '%s\n' "$name" >>"$dir/population"
+    done
+    {
+        echo "run=36282702383"
+        echo "machine=ubuntu-latest"
+        echo "tree=$(git -C "$REPO" rev-parse 'HEAD^{tree}')"
+    } >"$dir/harvest/run.meta"
+}
+
+#: run_walls_fold <fixture dir> [extra env assignments are the caller's] — the
+#: fold with the harvest seams pointed at the fixture.
+run_walls_fold() {
+    local dir="$1"
+    shift
+    set +e
+    (
+        cd "$REPO" || exit 2
+        PATH="$REPO/bin:$PATH" \
+            DJB_FOLD_PIN_CLIENT="$REPO/frontend/scripts/pin_client.sh" \
+            DJB_FOLD_UV="uv" \
+            DJB_FOLD_WALLS_DIR="$dir/harvest" \
+            DJB_FOLD_WALLS_POPULATION="$dir/population" \
+            ./scripts/pm_fold.sh "$@"
+    ) >"$OUT" 2>&1
+    RC=$?
+    set -e
+}
+
+case_walls_harvests_the_runs_three_shards_into_one_table() {
+    local fx="$WORK/walls-fx-ok" table
+    CURRENT="the 41 rows of three shards become one committed table"
+    make_repo walls-ok
+    walls_fixture "$fx"
+    run_walls_fold "$fx"
+    holds "the fold's exit status" "0" "$RC"
+    says "the step says what it harvested" "walls: harvested run 36282702383 (41 members, ubuntu-latest" "$OUT"
+    table="$REPO/scripts/gate_member_durations.ci.json"
+    holds "the table's member count" "41" "$(grep -c '^    "' "$table" 2>/dev/null || echo 0)"
+    holds "the table's machine line" '  "machine": "ubuntu-latest",' "$(sed -n 3p "$table")"
+    holds "the table's measured_at names the run and the tree" \
+        "  \"measured_at\": \"run:36282702383 tree:$(git -C "$REPO" rev-parse 'HEAD~1^{tree}')\"," "$(sed -n 2p "$table")"
+    holds "loop_scope's wall is the run's" '    "loop_scope": 433,' "$(grep '"loop_scope"' "$table")"
+    holds "the engine member is named as the leg names it" '    "house-rules-engine": 383,' "$(grep '"house-rules-engine"' "$table")"
+    holds "the commit carries exactly the table" "scripts/gate_member_durations.ci.json" \
+        "$(git -C "$REPO" show --name-only --format= HEAD)"
+    says "and its subject says so" "CI walls harvested" "$OUT"
+
+    CURRENT="a second harvest of the same run moves no byte and commits nothing"
+    local head
+    head="$(git -C "$REPO" rev-parse HEAD)"
+    run_walls_fold "$fx"
+    holds "the fold's exit status" "0" "$RC"
+    says "the step says the table already agrees" "the committed table already says exactly this" "$OUT"
+    says "the fold has nothing to commit" "NOTHING TO FOLD" "$OUT"
+    holds "HEAD did not move" "$head" "$(git -C "$REPO" rev-parse HEAD)"
+}
+
+#: walls_refused <label> <needle> — the fixture was spoiled by the caller; the
+#: fold must exit as it would without the step, name the reason, and leave the
+#: committed table and HEAD exactly where they were.
+walls_refused() {
+    local fx="$1" needle="$2" head before
+    head="$(git -C "$REPO" rev-parse HEAD)"
+    before="$(cat "$REPO/scripts/gate_member_durations.ci.json")"
+    run_walls_fold "$fx"
+    holds "the fold's exit status is unchanged" "0" "$RC"
+    says "the step names why" "walls: NOT harvested — " "$OUT"
+    says "and names the member" "$needle" "$OUT"
+    holds "the committed table is byte-identical" "$before" "$(cat "$REPO/scripts/gate_member_durations.ci.json")"
+    holds "HEAD did not move" "$head" "$(git -C "$REPO" rev-parse HEAD)"
+}
+
+#: walls_repo_with_a_table <name> — a fixture repository with a committed table
+#: from an OLDER run, so "unchanged" is a comparison with bytes, not absence.
+walls_repo_with_a_table() {
+    make_repo "$1"
+    printf '{\n  "measured_at": "run:1 tree:older",\n  "machine": "older-runner",\n  "members": {\n    "sweep": 99\n  }\n}\n' \
+        >"$REPO/scripts/gate_member_durations.ci.json"
+    git -C "$REPO" add scripts/gate_member_durations.ci.json
+    git -C "$REPO" commit -q -m "an older table"
+}
+
+case_walls_refuses_a_partial_or_borrowed_harvest() {
+    local fx="$WORK/walls-fx-bad"
+
+    CURRENT="a member in two shards"
+    walls_repo_with_a_table walls-twice
+    walls_fixture "$fx"
+    printf 'member-walls/1\tsweep\t0\t52\t2/3\n' >>"$fx/harvest/shard-2.walls"
+    walls_refused "$fx" "in two shards: sweep(1/3,2/3)"
+
+    CURRENT="a member of the population with no row"
+    walls_repo_with_a_table walls-missing
+    walls_fixture "$fx"
+    grep -v '	pm_push	' "$fx/harvest/shard-2.walls" >"$fx/s2" && mv "$fx/s2" "$fx/harvest/shard-2.walls"
+    walls_refused "$fx" "missing against the population: pm_push"
+
+    CURRENT="a red member"
+    walls_repo_with_a_table walls-red
+    walls_fixture "$fx"
+    sed 's/	gate_lease	0	/	gate_lease	1	/' "$fx/harvest/shard-2.walls" >"$fx/s2" && mv "$fx/s2" "$fx/harvest/shard-2.walls"
+    walls_refused "$fx" "not green: gate_lease(exit 1)"
+
+    CURRENT="a reused member"
+    walls_repo_with_a_table walls-reused
+    walls_fixture "$fx"
+    sed 's/	stage	0	1	/	stage	reused	-	/' "$fx/harvest/shard-2.walls" >"$fx/s2" && mv "$fx/s2" "$fx/harvest/shard-2.walls"
+    walls_refused "$fx" "reused (never this run's wall): stage"
+}
+
+#: a stub gh, answering the calls step (e) makes. `$REPO/gh.act` picks the
+#: shape: `fail` exits 1 on everything; `log` answers as run 36282702383
+#: did, with its selftest members in the log and no artifacts.
+plant_stub_gh() {
+    cat >"$REPO/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+act="$(cat "$(dirname "$0")/../gh.act" 2>/dev/null || echo fail)"
+[ "$act" = "log" ] || { echo "stub gh: HTTP 401: Bad credentials" >&2; exit 1; }
+case "$*" in
+"run list "*) echo 36282702383 ;;
+"run view 36282702383 --json "*) echo "completed success $(git rev-parse HEAD)" ;;
+"api repos/{owner}/{repo}/actions/runs/"*) printf 'ubuntu-latest\nubuntu-latest\nubuntu-latest\n' ;;
+"run download "*) echo "no artifact matches any of the names or patterns provided" >&2; exit 1 ;;
+"run view 36282702383 --log") cat "$(dirname "$0")/../gh.log" ;;
+*) echo "stub gh: unexpected $*" >&2; exit 1 ;;
+esac
+STUB
+    chmod +x "$REPO/bin/gh"
+    printf 'gh.act\ngh.log\n' >>"$REPO/.git/info/exclude"
+}
+
+case_walls_reads_a_runs_log_when_it_has_no_artifacts() {
+    local fx="$WORK/walls-fx-log" spec part rest name secs
+    CURRENT="the run's own log lines are harvested; a nested drive's are not"
+    make_repo walls-log
+    walls_fixture "$fx"
+    plant_stub_gh
+    echo log >"$REPO/gh.act"
+    : >"$REPO/gh.log"
+    for spec in $WALLS_RUN_ROWS; do
+        part="${spec%%:*}"
+        rest="${spec#*:}"
+        name="${rest%%:*}"
+        secs="${rest##*:}"
+        printf 'legs (selftest, %s)\tUNKNOWN STEP\t2026-09-27T00:32:04.1069319Z   drive %s: exit 0 (%ss)\n' "$part" "$name" "$secs" >>"$REPO/gh.log"
+    done
+    # DECOYS: a nested drive's own line (indented further) and a pytest job's.
+    printf 'legs (selftest, 2/3)\tUNKNOWN STEP\t2026-09-27T00:40:00.0000000Z       drive 1_alpha: exit 0 (0s)\n' >>"$REPO/gh.log"
+    printf 'legs (pytest-x2, 1/3)\tUNKNOWN STEP\t2026-09-27T00:40:00.0000000Z   drive sweep: exit 1 (9s)\n' >>"$REPO/gh.log"
+    set +e
+    (
+        cd "$REPO" || exit 2
+        PATH="$REPO/bin:$PATH" \
+            DJB_FOLD_PIN_CLIENT="$REPO/frontend/scripts/pin_client.sh" \
+            DJB_FOLD_UV="uv" \
+            DJB_FOLD_GH="$REPO/bin/gh" \
+            DJB_FOLD_WALLS_POPULATION="$fx/population" \
+            ./scripts/pm_fold.sh --only walls --no-commit
+    ) >"$OUT" 2>&1
+    RC=$?
+    set -e
+    holds "the fold's exit status" "0" "$RC"
+    says "the step harvested the run from its log" "walls: harvested run 36282702383 (41 members, ubuntu-latest" "$OUT"
+    holds "no decoy became a member" "41" "$(grep -c '^    "' "$REPO/scripts/gate_member_durations.ci.json" 2>/dev/null || echo 0)"
+}
+
+#: plant_honoured_gh — a stub gh for an HONOURED push: run 900 (the push) is a
+#: green run whose log is derive's one `honoured:` line and nothing else; run
+#: 36282702383 (the pull request's) is the run that measured the tree, and its
+#: log carries the members. Neither uploads artifacts.
+plant_honoured_gh() {
+    cat >"$REPO/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+here="$(dirname "$0")/.."
+case "$*" in
+"run list "*) echo 900 ;;
+"run view 900 --json "*|"run view 36282702383 --json "*) echo "completed success $(git rev-parse HEAD)" ;;
+"api repos/{owner}/{repo}/actions/runs/900/jobs"*) : ;;
+"api repos/{owner}/{repo}/actions/runs/36282702383/jobs"*) printf 'ubuntu-latest\nubuntu-latest\nubuntu-latest\n' ;;
+"run download "*) echo "no artifact matches any of the names or patterns provided" >&2; exit 1 ;;
+"run view 900 --log") printf 'derive\tconsult\t2026-09-27T01:00:00.0000000Z honoured: tree %s was measured green by run 36282702383 (attempt 1) — no row runs, and legs is skipped by its if:\n' "$(git rev-parse 'HEAD^{tree}')" ;;
+"run view 36282702383 --log") cat "$here/gh.log" ;;
+*) echo "stub gh: unexpected $*" >&2; exit 1 ;;
+esac
+STUB
+    chmod +x "$REPO/bin/gh"
+    printf 'gh.log\n' >>"$REPO/.git/info/exclude"
+}
+
+case_walls_follows_an_honoured_push_to_the_run_that_measured_it() {
+    local fx="$WORK/walls-fx-honoured" spec part rest name secs
+    CURRENT="an honoured push names the run that measured its tree, and the harvest follows it"
+    make_repo walls-honoured
+    walls_fixture "$fx"
+    plant_honoured_gh
+    : >"$REPO/gh.log"
+    for spec in $WALLS_RUN_ROWS; do
+        part="${spec%%:*}"
+        rest="${spec#*:}"
+        name="${rest%%:*}"
+        secs="${rest##*:}"
+        printf 'legs (selftest, %s)\tUNKNOWN STEP\t2026-09-27T00:32:04.1069319Z   drive %s: exit 0 (%ss)\n' "$part" "$name" "$secs" >>"$REPO/gh.log"
+    done
+    set +e
+    (
+        cd "$REPO" || exit 2
+        PATH="$REPO/bin:$PATH" \
+            DJB_FOLD_PIN_CLIENT="$REPO/frontend/scripts/pin_client.sh" \
+            DJB_FOLD_UV="uv" \
+            DJB_FOLD_GH="$REPO/bin/gh" \
+            DJB_FOLD_WALLS_POPULATION="$fx/population" \
+            ./scripts/pm_fold.sh --only walls --no-commit
+    ) >"$OUT" 2>&1
+    RC=$?
+    set -e
+    holds "the fold's exit status" "0" "$RC"
+    says "the step says it followed the honour" "walls: the push run 900 ran no selftest shard — derive honoured its tree by run 36282702383" "$OUT"
+    says "and harvested the run that measured the tree" "walls: harvested run 36282702383 (41 members, ubuntu-latest" "$OUT"
+    holds "the table holds every member" "41" "$(grep -c '^    "' "$REPO/scripts/gate_member_durations.ci.json" 2>/dev/null || echo 0)"
+}
+
+case_walls_could_not_look_leaves_the_table_standing() {
+    local fx="$WORK/walls-fx-cnl" head before
+    for CURRENT in "no gh at all" "a gh that fails"; do
+        walls_repo_with_a_table walls-cnl
+        walls_fixture "$fx"
+        head="$(git -C "$REPO" rev-parse HEAD)"
+        before="$(cat "$REPO/scripts/gate_member_durations.ci.json")"
+        local gh="$WORK/no-such-gh-anywhere"
+        if [ "$CURRENT" = "a gh that fails" ]; then
+            plant_stub_gh
+            gh="$REPO/bin/gh"
+        fi
+        set +e
+        (
+            cd "$REPO" || exit 2
+            PATH="$REPO/bin:$PATH" \
+                DJB_FOLD_PIN_CLIENT="$REPO/frontend/scripts/pin_client.sh" \
+                DJB_FOLD_UV="uv" \
+                DJB_FOLD_GH="$gh" \
+                DJB_FOLD_WALLS_POPULATION="$fx/population" \
+                ./scripts/pm_fold.sh
+        ) >"$OUT" 2>&1
+        RC=$?
+        set -e
+        holds "the fold's exit status is unchanged" "0" "$RC"
+        says "the step could not look, and says the table stands" "— the committed table stands" "$OUT"
+        says "and names why" "walls: could not look (" "$OUT"
+        holds "the committed table is byte-identical" "$before" "$(cat "$REPO/scripts/gate_member_durations.ci.json")"
+        holds "HEAD did not move" "$head" "$(git -C "$REPO" rev-parse HEAD)"
+    done
+}
+
+# ---------------------------------------------------------------------------
+# STEP (f) — the nightly's map, harvested when green, said when not
+# ---------------------------------------------------------------------------
+#
+# WHAT IS UNDER TEST. The latest nightly (`.github/workflows/nightly-proof.yml`)
+# publishes `leak_proof.txt` and, on a green pass 1, `test_impact.json`. The
+# step writes `scripts/test_impact.json` from a GREEN, FRESH night that carries
+# a map, and leaves it byte-identical — saying why — for red, stale and none.
+# The artifact is planted two ways: as a directory (DJB_FOLD_MAP_DIR, gh not
+# asked) and through a FAKE gh (no network). The record is written by THE
+# writer, `gate_nightly_line`, so a fixture is never a line the reader would
+# refuse unless a case plants one raw.
+
+#: map_night <dir> <age seconds> <rc> [<map rc>] — one night's artifact.
+map_night() {
+    local dir="$1" age="$2" rc="$3" mrc="${4:-0}"
+    mkdir -p "$dir"
+    (
+        . "$LEDGER_SRC"
+        gate_nightly_line "$(gate_ci_stamp_of "$(($(date -u +%s) - age))")" \
+            "$(git -C "$REPO" rev-parse HEAD)" "$(git -C "$REPO" rev-parse 'HEAD^{tree}')" \
+            99 0 "$rc" "$mrc" "$rc" 555 1 nightly
+    ) >"$dir/leak_proof.txt"
+    if [ "$mrc" = "0" ]; then
+        printf '{\n  "generated": {"tree": "tree:nightly00000"},\n  "tests": {},\n  "unmapped": {}\n}\n' \
+            >"$dir/test_impact.json"
+    fi
+}
+
+#: run_map_fold <extra env assignment>... — the fold, map step only, committing.
+run_map_fold() {
+    set +e
+    (
+        cd "$REPO" || exit 2
+        env PATH="$REPO/bin:$PATH" DJB_FOLD_PIN_CLIENT="$REPO/frontend/scripts/pin_client.sh" \
+            DJB_FOLD_UV="uv" "$@" ./scripts/pm_fold.sh --only map
+    ) >"$OUT" 2>&1
+    RC=$?
+    set -e
+}
+
+#: map_unchanged <label> <needle> — exit 0, the reason said, the map and HEAD
+#: exactly where they were.
+map_unchanged() {
+    local head before
+    head="$1"
+    before="$2"
+    holds "the fold's exit status is unchanged" "0" "$RC"
+    holds "the committed map is byte-identical" "$before" "$(cat "$REPO/scripts/test_impact.json")"
+    holds "HEAD did not move" "$head" "$(git -C "$REPO" rev-parse HEAD)"
+}
+
+# THE MAP IS PRUNED AGAINST THIS TREE'S COLLECTION. A map entry naming a test
+# the collection no longer holds (renamed, parametrized, deleted) is dropped,
+# through the map writer's own reader and renderer, and the commit says so.
+case_map_prunes_ids_the_collection_no_longer_holds() {
+    local fx collected="$WORK/map-prune-collected.txt"
+    CURRENT="an id the collection no longer holds is dropped from the committed map"
+    map_repo map-prune
+    cp "$ROOT/scripts/test_impact.py" "$REPO/scripts/test_impact.py"
+    {
+        printf '{\n  "generated": {\n    "tree": "tree:0"\n  },\n  "tests": {\n'
+        printf '    "apps/zzz_mapped/tests/test_a.py::test_kept": ["apps/zzz_mapped/models.py"],\n'
+        printf '    "apps/zzz_mapped/tests/test_a.py::test_renamed_away": ["apps/zzz_mapped/models.py"]\n'
+        printf '  },\n  "unmapped": {}\n}\n'
+    } >"$REPO/scripts/test_impact.json"
+    git -C "$REPO" add scripts/test_impact.json scripts/test_impact.py
+    git -C "$REPO" commit -q -m "a map with one entry the collection no longer holds"
+    printf 'apps/zzz_mapped/tests/test_a.py::test_kept\n\n1 test collected in 0.01s\n' >"$collected"
+    fx="$WORK/map-fx-prune"
+    rm -rf "$fx"
+    map_night "$fx" 3600 1
+    run_map_fold DJB_FOLD_MAP_DIR="$fx" DJB_FOLD_MAP_COLLECTED="$collected"
+    holds "exit 0" "0" "$RC"
+    says "the step names what it dropped" "map: pruned 1 ids no longer collected — apps/zzz_mapped/tests/test_a.py::test_renamed_away" "$OUT"
+    says "and the subject says pruned" "map pruned (1 ids no longer collected)" "$OUT"
+    holds "the committed map no longer names it" "0" \
+        "$(git -C "$REPO" show 'HEAD:scripts/test_impact.json' | grep -c 'test_renamed_away')"
+    holds "and still names the one that is collected" "1" \
+        "$(git -C "$REPO" show 'HEAD:scripts/test_impact.json' | grep -c 'test_kept')"
+
+    CURRENT="a map whose every entry is collected moves nothing"
+    local head
+    head="$(git -C "$REPO" rev-parse HEAD)"
+    run_map_fold DJB_FOLD_MAP_DIR="$fx" DJB_FOLD_MAP_COLLECTED="$collected"
+    holds "exit 0" "0" "$RC"
+    says "the step says nothing was pruned" "map: every entry is collected (1) — nothing pruned" "$OUT"
+    holds "HEAD did not move" "$head" "$(git -C "$REPO" rev-parse HEAD)"
+}
+
+case_map_harvests_a_green_night_and_leaves_red_stale_and_none_said() {
+    local fx head before
+    CURRENT="a green night's map is harvested and committed under its own verb"
+    map_repo map-green
+    fx="$WORK/map-fx-green"
+    map_night "$fx" 3600 0
+    run_map_fold DJB_FOLD_MAP_DIR="$fx"
+    holds "exit 0" "0" "$RC"
+    says "the step names the night" "map: harvested nightly run (given) (nightly:" "$OUT"
+    says "and the subject says harvested, not absorbed" "nightly map harvested" "$OUT"
+    holds "the commit carries exactly the map" "scripts/test_impact.json" \
+        "$(git -C "$REPO" show --name-only --format= HEAD)"
+    holds "the committed map is the night's" "1" \
+        "$(git -C "$REPO" show 'HEAD:scripts/test_impact.json' | grep -c 'tree:nightly00000')"
+
+    CURRENT="the same night again moves nothing"
+    head="$(git -C "$REPO" rev-parse HEAD)"
+    run_map_fold DJB_FOLD_MAP_DIR="$fx"
+    holds "exit 0" "0" "$RC"
+    says "the step says the map already agrees" "the committed map already says exactly this" "$OUT"
+    holds "HEAD did not move" "$head" "$(git -C "$REPO" rev-parse HEAD)"
+
+    for CURRENT in red stale nomap; do
+        map_repo "map-${CURRENT}"
+        fx="$WORK/map-fx-${CURRENT}"
+        rm -rf "$fx"
+        case "$CURRENT" in
+        red) map_night "$fx" 3600 1 ;;
+        stale) map_night "$fx" 172800 0 ;;
+        nomap) map_night "$fx" 3600 0 1 ;;
+        esac
+        head="$(git -C "$REPO" rev-parse HEAD)"
+        before="$(cat "$REPO/scripts/test_impact.json")"
+        run_map_fold DJB_FOLD_MAP_DIR="$fx"
+        case "$CURRENT" in
+        red) says "a red night is said" "map: NOT harvested — the latest nightly (run (given)) is red (nightly:" "$OUT" ;;
+        stale) says "a stale night is said" "is older than 24 h (nightly:stale:" "$OUT" ;;
+        nomap) says "a green night with no map is said" "is green and published no map (map=1)" "$OUT" ;;
+        esac
+        map_unchanged "$head" "$before"
+    done
+}
+
+#: plant_nightly_gh — a fake gh answering the calls step (f) makes, from
+#: `$REPO/ngh/`: `list.out` (the run id, or empty), `view` ("completed 1"),
+#: `art/` (the artifact's files; absent = no artifact), `fail` (every call 1).
+plant_nightly_gh() {
+    mkdir -p "$REPO/ngh"
+    cat >"$REPO/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# A FAKE gh. No network.
+D="$(dirname "$0")/../ngh"
+[ ! -f "$D/fail" ] || { echo "stub gh: HTTP 401: Bad credentials" >&2; exit 1; }
+case "${1:-} ${2:-}" in
+"run list") cat "$D/list.out" 2>/dev/null; exit 0 ;;
+"run view") cat "$D/view"; exit 0 ;;
+"run download")
+    dir=""
+    while [ "$#" -gt 0 ]; do [ "$1" != "--dir" ] || dir="$2"; shift; done
+    [ -d "$D/art" ] || { echo "no valid artifacts found to download" >&2; exit 1; }
+    mkdir -p "$dir"
+    cp "$D/art/"* "$dir/"
+    exit 0
+    ;;
+esac
+echo "stub gh: unexpected $*" >&2
+exit 1
+STUB
+    chmod +x "$REPO/bin/gh"
+    printf 'ngh/\n' >>"$REPO/.git/info/exclude"
+    printf '555\n' >"$REPO/ngh/list.out"
+    printf 'completed 1\n' >"$REPO/ngh/view"
+}
+
+case_map_reads_the_night_through_gh_and_could_not_look_is_said() {
+    local head before
+    CURRENT="the latest night, fetched through gh, is harvested by its run id"
+    map_repo map-gh
+    plant_nightly_gh
+    map_night "$REPO/ngh/art" 3600 0
+    run_map_fold DJB_FOLD_GH="$REPO/bin/gh"
+    holds "exit 0" "0" "$RC"
+    says "the step names the run gh answered" "map: harvested nightly run 555 (nightly:" "$OUT"
+    holds "the committed map is the night's" "1" \
+        "$(git -C "$REPO" show 'HEAD:scripts/test_impact.json' | grep -c 'tree:nightly00000')"
+
+    CURRENT="no completed night is none, said"
+    map_repo map-gh-none
+    plant_nightly_gh
+    : >"$REPO/ngh/list.out"
+    head="$(git -C "$REPO" rev-parse HEAD)"
+    before="$(cat "$REPO/scripts/test_impact.json")"
+    run_map_fold DJB_FOLD_GH="$REPO/bin/gh"
+    says "none is said" "map: none — no completed nightly-proof.yml run on main" "$OUT"
+    map_unchanged "$head" "$before"
+
+    CURRENT="a gh that fails is could-not-look, said"
+    map_repo map-gh-fail
+    plant_nightly_gh
+    : >"$REPO/ngh/fail"
+    head="$(git -C "$REPO" rev-parse HEAD)"
+    before="$(cat "$REPO/scripts/test_impact.json")"
+    run_map_fold DJB_FOLD_GH="$REPO/bin/gh"
+    says "could not look is said" "map: could not look (" "$OUT"
+    map_unchanged "$head" "$before"
+
+    CURRENT="no gh at all is could-not-look, said"
+    map_repo map-gh-absent
+    head="$(git -C "$REPO" rev-parse HEAD)"
+    before="$(cat "$REPO/scripts/test_impact.json")"
+    run_map_fold DJB_FOLD_GH="$WORK/no-such-gh-anywhere"
+    says "could not look is said" "map: could not look (no \`$WORK/no-such-gh-anywhere\` on PATH" "$OUT"
+    map_unchanged "$head" "$before"
+}
+
+case_a_map_a_bank_already_wrote_outranks_the_night() {
+    local fx
+    CURRENT="a map already dirty is this tree's measurement: absorbed, not replaced"
+    map_repo map-dirty
+    map_rewrite
+    fx="$WORK/map-fx-dirty"
+    rm -rf "$fx"
+    map_night "$fx" 3600 0
+    set +e
+    (
+        cd "$REPO" || exit 2
+        PATH="$REPO/bin:$PATH" DJB_FOLD_PIN_CLIENT="$REPO/frontend/scripts/pin_client.sh" \
+            DJB_FOLD_UV="uv" DJB_FOLD_MAP_DIR="$fx" ./scripts/pm_fold.sh
+    ) >"$OUT" 2>&1
+    RC=$?
+    set -e
+    holds "exit 0" "0" "$RC"
+    says "the step says it replaced nothing" "Absorbed as it stands; nothing was fetched." "$OUT"
+    says "the subject is the absorb verb" "acceptance map absorbed" "$OUT"
+    holds "the committed map is the bank's, not the night's" "1" \
+        "$(git -C "$REPO" show 'HEAD:scripts/test_impact.json' | grep -c '1111111111111111111111111111111111111111')"
+}
+
+# ---------------------------------------------------------------------------
 usage() {
     cat <<'USAGE'
 scripts/tests/test_pm_fold.sh — the fold's refusal drive.
@@ -2122,6 +2643,15 @@ case_a_local_step_reaching_for_the_gates_grammar_is_refused
 case_an_untracked_local_step_does_not_run
 case_a_local_step_that_deletes_its_declared_path_is_refused
 case_two_local_steps_declaring_one_path_are_refused_by_both_names
+case_walls_harvests_the_runs_three_shards_into_one_table
+case_walls_refuses_a_partial_or_borrowed_harvest
+case_walls_reads_a_runs_log_when_it_has_no_artifacts
+case_walls_could_not_look_leaves_the_table_standing
+case_walls_follows_an_honoured_push_to_the_run_that_measured_it
+case_map_harvests_a_green_night_and_leaves_red_stale_and_none_said
+case_map_prunes_ids_the_collection_no_longer_holds
+case_map_reads_the_night_through_gh_and_could_not_look_is_said
+case_a_map_a_bank_already_wrote_outranks_the_night
 "
 
 # >>> one case, by name >>>

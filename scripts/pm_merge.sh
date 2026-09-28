@@ -357,6 +357,129 @@ echo "pm_merge: MERGED. Proof of merge — git log -1 --oneline:"
 git -C "$ROOT" log -1 --oneline
 echo "  parents       $(git -C "$ROOT" log -1 --format='%p' "$HEAD_AFTER")"
 
+# --- THE CONSULTS THE MERGE CAN MAKE WITHOUT MEASURING ANYTHING ---------------
+#
+# TWO LINES, BOTH READ FROM THE LEDGERS, NEITHER A GATE. The fast gate below is
+# the merge's only measurement; these say what has ALREADY been measured about
+# what is being merged, so the operator reads it here rather than at the bank.
+#
+#   loop consult: HIT|MISS …   the branch head's tree against the loop ledger
+#                              (`loop_ledger_tree_row`): a rung's last boundary
+#                              is one box `--loop`, and its row comes home with
+#                              the box's `wait`. A MISS names the tree.
+#   drives: …                  every shell drive whose `# drives:` line covers a
+#                              file this merge changed (`gate_docs_only_drives`),
+#                              and whether a GREEN row of it — banked anywhere and
+#                              harvested home — was measured on the branch head's
+#                              tree (`drive_ledger_green_at`).
+#                              A merge whose declaring drives never ran meets them
+#                              only at the bank; this line is where that is said.
+#                              The ones NOT on it are two populations, and the
+#                              line keeps them apart (see `merge_drive_loop_seen`).
+#
+# ADVISORY BY CONSTRUCTION: in a subshell, after the merge is made and vouched
+# for, and its status is discarded — a reader that could not read prints that it
+# could not, and the gate below is still the merge's verdict.
+(
+    cd "$ROOT" || exit 0
+    [ -r "$ROOT/scripts/gate_ledger.sh" ] || {
+        echo "  loop consult: could not look — no scripts/gate_ledger.sh in ${ROOT}"
+        exit 0
+    }
+    set +eu
+    # shellcheck source=scripts/gate_ledger.sh
+    . "$ROOT/scripts/gate_ledger.sh" >/dev/null 2>&1 || {
+        echo "  loop consult: could not look — scripts/gate_ledger.sh would not load"
+        exit 0
+    }
+    tip_tree=$(gate_measured_tree_of "${TIP}^{tree}" 2>/dev/null) || tip_tree=$(git rev-parse "${TIP}^{tree}" 2>/dev/null)
+    loop_at=""
+    if row=$(loop_ledger_tree_row "$tip_tree"); then
+        loop_at=$(printf '%s\n' "$row" | awk '{ print $4 }')
+        box=$(loop_row_box "$row")
+        echo "  loop consult: HIT — tree ${tip_tree} (${BRANCH}'s head) key $(printf '%s\n' "$row" | awk '{ print $2 }') ${box:+box=${box} }banked ${loop_at}"
+    else
+        echo "  loop consult: MISS — no loop row names tree ${tip_tree} (${BRANCH}'s head); the verifier's consult re-measures"
+    fi
+    changed=$(git diff --name-only "$HEAD_BEFORE" "$HEAD_AFTER" 2>/dev/null)
+    # shellcheck disable=SC2086  # the changed paths, split on purpose
+    declaring=$(gate_docs_only_drives $changed 2>/dev/null)
+    if [ -z "$declaring" ]; then
+        echo "  drives: no shell drive declares a file this merge changed"
+        exit 0
+    fi
+    # THE TWO POPULATIONS A MISSING ROW BELONGS TO, TOLD APART BY THE LEDGERS'
+    # OWN WRITERS. Drive rows have exactly two writers: the `--loop` always-on
+    # leg (its members, on the loop's measured tree) and the full gate's
+    # selftest leg (every member, at a bank). So most declaring drives have no
+    # row on a rung's tree BY CONSTRUCTION — a `--loop` never runs them — and
+    # listing them beside a red one made the structural absence and the finding
+    # read alike. A drive is one a loop RECORDS when the ledger shows it: a
+    # green row on a tree a loop row names. That one, absent or red on these
+    # bytes, is a warning; every other one meets these files at the bank, which
+    # is information.
+    #
+    # READ FROM THE ROWS, NOT RE-DERIVED FROM THE DURATIONS TABLE. The loop's
+    # membership is the always-on leg's selection (`scripts/check.sh`), and a
+    # second derivation here would fall out of step with it; the rows are what
+    # the writers actually did. WHAT IT CANNOT SEE: a drive that just JOINED the
+    # loop's set and no loop has run yet reads as not recorded (information,
+    # one merge early); and a tree a loop AND a bank both measured makes that
+    # bank's full-only rows read as loop-recorded (a warning, the loud side).
+    #
+    # A ROW ON THESE BYTES THAT IS NOT GREEN is red whoever wrote it.
+    merge_drive_loop_seen() {
+        local name=$1 tree=$2 gl ll
+        gl=$(gate_ledger_path 2>/dev/null) || return 1
+        [ -r "$gl" ] || return 1
+        ll=$(loop_ledger_path 2>/dev/null) || ll=""
+        { [ -n "$ll" ] && [ -r "$ll" ]; } || ll=/dev/null
+        awk -v n="$name" -v t="tree=${tree}" '
+            FILENAME == ARGV[1] {
+                if ($3 == "loop") for (i = 5; i <= NF; i++) if ($i ~ /^tree=/) looped[$i] = 1
+                next
+            }
+            $1 == "v1" && $3 == "drive" && $5 == n {
+                green = 0; at = ""
+                for (i = 6; i <= NF; i++) {
+                    if ($i == "exit=0") green = 1
+                    if ($i ~ /^tree=/) at = $i
+                }
+                if (at == t) seen = 1
+                else if (green && (at in looped)) seen = 1
+            }
+            END { exit seen ? 0 : 1 }
+        ' "$ll" "$gl"
+    }
+    ran="" red="" unrecorded="" n=0 nu=0
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        n=$((n + 1))
+        name=${f##*/}
+        name=${name#test_}
+        name=${name%.sh}
+        # GREEN, ON THESE BYTES — never "the newest row by the clock": a red run,
+        # or a run on another tree, is not a measurement of what is merged.
+        if drive_ledger_green_at "$name" "$tip_tree" >/dev/null; then
+            ran="${ran}${ran:+, }${name}"
+        elif merge_drive_loop_seen "$name" "$tip_tree"; then
+            red="${red}${red:+, }${name}"
+        else
+            nu=$((nu + 1))
+            unrecorded="${unrecorded}${unrecorded:+, }${name}"
+        fi
+    done <<EOF
+$declaring
+EOF
+    echo "  drives: ${n} declare this merge's files — ran green on the branch head's tree (${tip_tree}): ${ran:-none}; red or absent on it: ${red:-none}; not recorded by any loop: ${unrecorded:-none}"
+    if [ -n "$red" ]; then
+        echo "  !! drives red or absent on these bytes that a loop records: ${red} — a finding; run them on a box before the bank"
+    fi
+    if [ -n "$unrecorded" ]; then
+        echo "          not recorded by any loop (${nu}): no --loop runs them, so they meet these files first at the bank — information, not a finding"
+    fi
+) || true
+
 # --- the template database, warmed for the wave about to be dispatched -------
 #
 # THE MERGE IS WHERE THE MIGRATION SET CHANGES, so it is where the template that

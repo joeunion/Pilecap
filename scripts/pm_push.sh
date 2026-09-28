@@ -42,6 +42,18 @@ esac
 #                                     # instead of on this laptop: one unit of the gate
 #                                     # per box, every shard's verdict fetched, ONE
 #                                     # composed row banked for the post-fold tree.
+#   ./scripts/pm_push.sh --pr         # push THIS pm/* train branch with NO local verdict:
+#                                     # its pull request's CI run is the measurement
+#   ./scripts/pm_push.sh --ci-verdict [<run id>]
+#                                     # read that run's record and bank the ci: row;
+#                                     # then a plain push fast-forwards main to it
+#   ./scripts/pm_push.sh --bank --on-boxes 8 --leak-proof nightly
+#                                     # the shards at one pass, the second whole pass
+#                                     # read from the latest nightly (report-only);
+#                                     # `acceptance` (the default) launches the box
+#   ./scripts/pm_push.sh --proof [--out D] [--seed S] [--workers N]
+#                                     # the leak proof itself, HERE: the suite twice
+#                                     # under one seed, the map, leak_proof.txt
 #
 # WHY THIS EXISTS, and it is a scar rather than a convenience. On
 # 2026-08-23 a `cd` into the pm-push worktree persisted as the PM session's
@@ -86,6 +98,12 @@ die() {
 }
 
 BANK=0
+#: The CI road's two modes (the `ci:` verdict). Each is its own arm below and
+#: neither pins the pm-push worktree: `--pr` pushes the checkout's own train
+#: branch, and `--ci-verdict` pushes nothing at all.
+PR_MODE=0
+CI_VERDICT_MODE=0
+CI_VERDICT_RUN=""
 
 # --- --no-fold, LIFTED OUT BEFORE THE MAIN PARSER, AND NEVER SILENTLY --------
 #
@@ -114,6 +132,20 @@ BANK=0
 # with nothing after it is a refusal rather than an empty count.
 NO_FOLD=0
 ON_BOXES=""
+#: WHERE THE SECOND WHOLE PASS COMES FROM on a `--bank --on-boxes` run: the
+#: acceptance box this bank launches (the default, and the only source before
+#: the nightly existed), or the latest nightly's record (ADR gate-1 as re-ruled:
+#: the leak proof goes nightly and is never silent). Lifted like `--on-boxes`,
+#: for the same reason: it takes a value, and `--bank` counts its arguments.
+LEAK_PROOF=""
+#: `--proof`'s own options, parsed in its arm below.
+PROOF_MODE=0
+PROOF_OUT=""
+PROOF_SEED=""
+PROOF_WORKERS=""
+PROOF_WHERE="acceptance"
+PROOF_RUN="0"
+PROOF_ATTEMPT="0"
 #: THE FLOOR, AND IT IS A RULE RATHER THAN A ROUND NUMBER. Below five boxes one
 #: unit of the gate would have no box at all (the criteria's § 1: N = 3 + P + S
 #: over today's five units). It is checked twice on purpose and neither check is
@@ -165,6 +197,13 @@ while [ "$_pm_push_i" -lt "$_pm_push_total" ]; do
         shift
         _pm_push_i=$((_pm_push_i + 1))
         ;;
+    --leak-proof)
+        [ "$_pm_push_i" -lt "$((_pm_push_total - 1))" ] ||
+            die "--leak-proof takes a source, nightly or acceptance: ./scripts/pm_push.sh --bank --on-boxes 8 --leak-proof nightly"
+        LEAK_PROOF="$1"
+        shift
+        _pm_push_i=$((_pm_push_i + 1))
+        ;;
     *) set -- ${@+"$@"} "$_pm_push_arg" ;;
     esac
     _pm_push_i=$((_pm_push_i + 1))
@@ -200,8 +239,60 @@ case "${1:-}" in
     SHA_ARG=""
     BANK=1
     ;;
+--pr)
+    # THE TRAIN'S PUSH. It takes no commit for `--bank`'s reason: the intent
+    # row it writes names THIS checkout's tree, and the push carries HEAD.
+    [ "$#" -eq 1 ] ||
+        die "--pr pushes THIS checkout's train branch, so it takes no commit argument. Got: $*"
+    DRY_RUN=0
+    SHA_ARG=""
+    PR_MODE=1
+    ;;
+--ci-verdict)
+    # THE READER. An optional run id; without one, the latest completed run of
+    # the CI workflow on this checkout's branch is asked for.
+    [ "$#" -le 2 ] ||
+        die "--ci-verdict takes at most one run id. Got: $*"
+    CI_VERDICT_RUN="${2:-}"
+    if [ -n "$CI_VERDICT_RUN" ] && ! [[ $CI_VERDICT_RUN =~ ^[1-9][0-9]*$ ]]; then
+        die "--ci-verdict takes a run id (a decimal, as gh prints it); got '${CI_VERDICT_RUN}'."
+    fi
+    set -- --ci-verdict
+    DRY_RUN=0
+    SHA_ARG=""
+    CI_VERDICT_MODE=1
+    ;;
+--proof)
+    # THE LEAK PROOF, RUN HERE. Its options are its own and parsed now, so the
+    # one-commit rule below sees only the mode word.
+    shift
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --out | --seed | --workers | --where | --run | --attempt)
+            [ "$#" -ge 2 ] || die "--proof ${1} takes a value."
+            case "$1" in
+            --out) PROOF_OUT="$2" ;;
+            --seed) PROOF_SEED="$2" ;;
+            --workers) PROOF_WORKERS="$2" ;;
+            --where) PROOF_WHERE="$2" ;;
+            --run) PROOF_RUN="$2" ;;
+            --attempt) PROOF_ATTEMPT="$2" ;;
+            esac
+            shift 2
+            ;;
+        *) die "--proof takes --out, --seed, --workers, --where, --run and --attempt; got '${1}'." ;;
+        esac
+    done
+    set -- --proof
+    DRY_RUN=0
+    SHA_ARG=""
+    PROOF_MODE=1
+    ;;
 -h | --help)
-    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    # THE USAGE BLOCK BY ITS OWN FIRST AND NEXT HEADINGS, never by line
+    # number: the bash belt was prepended above it once, and a `2,8p` then
+    # printed the belt's comment as this file's help for a cycle.
+    awk '/^# Pin the pm-push worktree/ { p = 1 } /^# WHY THIS EXISTS/ { exit } p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
 -*)
@@ -216,14 +307,14 @@ esac
 
 # The never-silent half of the lift above. A flag that was accepted and did
 # nothing is the defect; a flag that is refused with its reason is not.
-if [ "$NO_FOLD" = "1" ] && [ "$BANK" != "1" ]; then
-    die "--no-fold is only meaningful with --bank, and this is not a --bank run.
+if [ "$NO_FOLD" = "1" ] && [ "$BANK" != "1" ] && [ "$PR_MODE" != "1" ]; then
+    die "--no-fold is only meaningful with --bank or --pr, and this is neither.
    The fold runs at the BANK: it regenerates the derived files and commits them
    BEFORE the gate measures the tree, so that the verdict vouches for the tree
    the push carries. A plain push pins and pushes a commit that already exists
    and regenerates nothing, so there is nothing here for --no-fold to skip.
    Accepting it silently would be a flag that did nothing with no line printed.
-   scripts/pm_merge.sh refuses the same combination in the same words."
+   scripts/pm_merge.sh refuses the same combination (it has no --pr)."
 fi
 
 # --on-boxes, THE SAME NEVER-SILENT CLAUSE, AND BEFORE ANYTHING LAUNCHES.
@@ -239,6 +330,26 @@ if [ -n "$ON_BOXES" ] && [ "$BANK" != "1" ]; then
    is no verdict — so there is nothing for --on-boxes to place.
    Accepting it silently would be a flag that did nothing with no line printed.
    The form is: ./scripts/pm_push.sh --bank --on-boxes ${ON_BOXES}"
+fi
+# --leak-proof, THE SAME CLAUSE ONE LEVEL IN. It says where a SHARDED bank's
+# second whole pass comes from, so outside `--bank --on-boxes` there is no
+# second pass for it to source; and a source this file does not know is a
+# word that would otherwise select the default silently.
+if [ -n "$LEAK_PROOF" ]; then
+    if [ "$BANK" != "1" ] || [ -z "$ON_BOXES" ]; then
+        die "--leak-proof is only meaningful with --bank --on-boxes N, and this is not one.
+   It says where the sharded bank's second whole pass comes from — the
+   acceptance box it launches, or the latest nightly's record. Anywhere else
+   there is no one-pass suite for a proof to stand behind.
+   The form is: ./scripts/pm_push.sh --bank --on-boxes 8 --leak-proof ${LEAK_PROOF}"
+    fi
+    case "$LEAK_PROOF" in
+    nightly | acceptance) ;;
+    *)
+        die "--leak-proof takes nightly or acceptance, got '${LEAK_PROOF}'.
+   Nothing was folded, nothing was launched and nothing was pushed."
+        ;;
+    esac
 fi
 if [ -n "$ON_BOXES" ]; then
     case "$ON_BOXES" in
@@ -265,6 +376,407 @@ ROOT="$(git rev-parse --show-toplevel)" || die "not inside a git checkout"
 # wrong before.
 SHA="$(git -C "$ROOT" rev-parse --verify "${SHA_ARG:-HEAD}^{commit}" 2>/dev/null)" ||
     die "'${SHA_ARG:-HEAD}' is not a commit in $ROOT"
+
+# =============================================================================
+# THE CI ROAD — --pr AND --ci-verdict (the `ci:` verdict)
+# =============================================================================
+#
+# THE MERGE ROAD, IN FOUR COMMANDS, and each one is somebody else's check:
+#
+#   ./scripts/pm_push.sh --pr                   push this pm/* train branch
+#   gh pr create --base main --head pm/<train>  (once) — CI measures the PR
+#   ./scripts/pm_push.sh --ci-verdict [<run>]   read the run's record, bank the row
+#   ./scripts/pm_push.sh                        fast-forward main to the measured commit
+#
+# The PR's CI run is the ONE measurement: every unit of the gate, the suite at
+# one pass, one record (`scripts/gate_ledger.sh`, the CI VERDICT section, owns
+# its grammar, its fetch and its judge — this file only calls them). The last
+# command is the ordinary push: the pre-push hook honours the `ci:` row by the
+# tree key exactly as it honours a bank's, and a merge commit over a moved
+# main is a new tree with no row, measured. `pm_merge.sh` is unchanged — it
+# builds the train; the train's measurement is the PR run.
+#
+# NEITHER MODE PINS pm-push, and both sit here — after the commit is resolved
+# and before the pm-push worktree is looked for — because neither needs it:
+# `--pr` pushes the checkout's own branch, and `--ci-verdict` pushes nothing.
+
+#: The branch prefix a train branch carries — the one namespace `--pr` pushes
+#: and the one the pre-push hook honours an intent for.
+PR_BRANCH_PREFIX="pm/"
+
+# pr_main — `--pr`. Exit 2 on every refusal, before the intent row and before
+# the push; otherwise git's own status (the push is `exec`'d).
+pr_main() {
+    local branch tree fold_rc remote_sha
+    branch="$(git -C "$ROOT" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+    case "$branch" in
+    "${PR_BRANCH_PREFIX}"?*) ;;
+    *)
+        die "--pr pushes a TRAIN branch, and this checkout is on '${branch:-a detached HEAD}'.
+   Only a ${PR_BRANCH_PREFIX}* branch rides the CI road: its pull request's run is the
+   measurement, and main is reached by a fast-forward after --ci-verdict,
+   never by this push. Make the train branch first: git switch -c ${PR_BRANCH_PREFIX}<train>"
+        ;;
+    esac
+    if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+        echo "!! pm_push --pr: ${ROOT} has uncommitted changes." >&2
+        git -C "$ROOT" status --short >&2
+        echo "   The intent row names the tree CI is about to measure, and a dirty tree is" >&2
+        echo "   bytes no commit carries. Commit or stash first." >&2
+        echo "   Nothing was folded, nothing was written and nothing was pushed." >&2
+        exit 2
+    fi
+    if [ -z "${DJB_GATE_SANCTION:-}" ] || ! [[ ${DJB_GATE_SANCTION} =~ ^[^:]+:\ .+$ ]]; then
+        die "--pr pushes WITHOUT a local verdict, so it takes a typed sanction.
+   got:  DJB_GATE_SANCTION='${DJB_GATE_SANCTION:-}'
+   want: export DJB_GATE_SANCTION=\"<who>: <why>\" (the shape the full gate reads)
+   It is printed in this header and written into the intent row."
+    fi
+    [ -r "$ROOT/scripts/gate_ledger.sh" ] ||
+        die "no ${ROOT}/scripts/gate_ledger.sh — the intent row has no writer without it"
+    # THE FOLD, AS THE BANK FOLDS: before the tree is named, so the pull
+    # request's run measures the derived files the push carries. `--no-fold`
+    # is honoured and says so.
+    if [ "$NO_FOLD" = "1" ]; then
+        echo "pm_push --pr: ** --no-fold — THE DERIVED FILES WERE NOT REGENERATED. **"
+    else
+        [ -x "$ROOT/scripts/pm_fold.sh" ] ||
+            die "no executable fold at ${ROOT}/scripts/pm_fold.sh — pass --no-fold to push without one"
+        echo "pm_push --pr: folding ${ROOT} before the push — ${ROOT}/scripts/pm_fold.sh"
+        fold_rc=0
+        "$ROOT/scripts/pm_fold.sh" || fold_rc=$?
+        if [ "$fold_rc" != "0" ]; then
+            echo "!! pm_push --pr: the fold exited ${fold_rc}. Read its output above." >&2
+            echo "   Nothing was written and nothing was pushed." >&2
+            exit "$fold_rc"
+        fi
+        SHA="$(git -C "$ROOT" rev-parse --verify "HEAD^{commit}")" ||
+            die "could not re-read HEAD after the fold"
+        if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+            echo "!! pm_push --pr: the fold left ${ROOT} dirty." >&2
+            git -C "$ROOT" status --short >&2
+            echo "   Nothing was written and nothing was pushed." >&2
+            exit 2
+        fi
+    fi
+    tree="$(cd "$ROOT" && . scripts/gate_ledger.sh && gate_measured_tree)" ||
+        die "the measured tree of ${ROOT} could not be read — the intent row would name nothing"
+    # NOTHING NEW, NOTHING PUSHED — AND EXIT 0 BEFORE THE HOOK EVER RUNS. A
+    # push of a ref the remote already has at this commit hands the pre-push
+    # hook NO refs on stdin, and a hook that reads no refs has no train branch
+    # to honour an intent for: it fell through to a FULL LOCAL GATE, the most
+    # expensive thing on the machine, for a push that moved nothing. So the
+    # remote's own answer is asked first. A remote that cannot be asked is not
+    # "up to date": the push below goes ahead and says what git says.
+    remote_sha="$(git -C "$ROOT" ls-remote "$REMOTE" "refs/heads/${branch}" 2>/dev/null | awk 'NR == 1 { print $1 }')" || remote_sha=""
+    if [ -n "$remote_sha" ] && [ "$remote_sha" = "$SHA" ]; then
+        echo "pm_push --pr: ${REMOTE}/${branch} is already at ${SHA} — nothing to push."
+        echo "  No intent row was written and no push was made (so no hook and no gate ran)."
+        echo "  The pull request's run for this commit is the measurement; read it with"
+        echo "  ./scripts/pm_push.sh --ci-verdict [<run id>]"
+        exit 0
+    fi
+    echo "pm_push --pr: pushing ${branch} to ${REMOTE} with NO local verdict — its pull request's CI run is the measurement"
+    echo "  sanction      ${DJB_GATE_SANCTION}"
+    echo "  branch        ${branch}"
+    echo "  commit        ${SHA}  $(git -C "$ROOT" log -1 --format=%s "$SHA")"
+    echo "  tree          ${tree} (measured)"
+    if ! (cd "$ROOT" && . scripts/gate_ledger.sh &&
+        gate_ledger_intent_record "$tree" "$SHA" "$branch" "$DJB_GATE_SANCTION"); then
+        die "the intent row could not be written — a push nobody can account for is not a push this script makes"
+    fi
+    echo "  intent        intent=ci run=pending tree=${tree} (the verdict ledger)"
+    echo "  next          gh pr create --base ${TARGET_BRANCH} --head ${branch}   (once; CI measures the pull request)"
+    echo "                ./scripts/pm_push.sh --ci-verdict [<run id>]   (after the run completes; banks the ci: row)"
+    echo "                ./scripts/pm_push.sh   (on ${branch}: fast-forwards ${TARGET_BRANCH} to the measured commit)"
+    echo "pm_push: pushing ${SHA} -> ${REMOTE}/${branch}"
+    # THE ONE PUSH THIS ROAD MAKES, AND THE ONE PLACE THE INTENT IS SAID. The
+    # pre-push hook honours the intent row above only with this variable in
+    # its environment AND every pushed ref under refs/heads/pm/ — and the
+    # refspec below names the train branch and nothing else.
+    export DJB_PUSH_INTENT=ci
+    exec git -C "$ROOT" push "$REMOTE" "${SHA}:refs/heads/${branch}"
+}
+
+# ci_verdict_refuse <why> — the one refusal shape: exit 2, no row.
+# The footer is TRUE in both of its forms: "No row was written" everywhere a
+# row never reached the ledger or was taken back out, and the other sentence
+# on the one path where a refused row could not be removed.
+CI_VERDICT_ROW_STANDS=0
+ci_verdict_refuse() {
+    echo "!! pm_push --ci-verdict: THE CI RECORD CANNOT BE BANKED: $1" >&2
+    if [ "$CI_VERDICT_ROW_STANDS" = "1" ]; then
+        echo "   A REFUSED ROW STANDS in the ledger (named above) and nothing was pushed." >&2
+    else
+        echo "   No row was written and nothing was pushed. A reader that could not" >&2
+    fi
+    echo "   vouch for the record banks nothing (exit 2)." >&2
+    exit 2
+}
+
+# ci_verdict_main — `--ci-verdict [<run id>]`. Exit 0 with the `ci:` row
+# banked and honoured, or exit 2 (ci_verdict_refuse) with nothing written.
+ci_verdict_main() {
+    local sink runid listrc=0 branch attempt rc listing expanded line ledger before added
+    command -v gh >/dev/null 2>&1 ||
+        ci_verdict_refuse "no \`gh\` on PATH — the record is a workflow artifact and \`gh\` is its one reader."
+    [ -r "$ROOT/scripts/gate_ledger.sh" ] ||
+        ci_verdict_refuse "no ${ROOT}/scripts/gate_ledger.sh — the row has no writer without it."
+    # shellcheck source=scripts/gate_ledger.sh
+    . "$ROOT/scripts/gate_ledger.sh"
+    sink="$(mktemp -d "${TMPDIR:-/tmp}/djb-ci-verdict.XXXXXX")" ||
+        ci_verdict_refuse "could not make a directory to download the record into."
+    echo "pm_push --ci-verdict: reading the CI run's ${GATE_CI_ARTIFACT} record (logs: ${sink})"
+    runid="$CI_VERDICT_RUN"
+    if [ -z "$runid" ]; then
+        branch="$(git -C "$ROOT" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+        [ -n "$branch" ] ||
+            ci_verdict_refuse "no run id was given and this checkout is on a detached HEAD — there is no branch to ask \`gh\` about."
+        runid="$(cd "$ROOT" && gh run list --workflow "$GATE_CI_WORKFLOW" --branch "$branch" \
+            --status completed --limit 1 --json databaseId --jq '.[0].databaseId' \
+            2>"${sink}/gh-run-list.err" </dev/null)" || listrc=$?
+        [ "$listrc" = "0" ] ||
+            ci_verdict_refuse "\`gh run list\` did not answer (exit ${listrc}; ${sink}/gh-run-list.err) — a reader that could not look cannot say which run measured this branch."
+        [[ $runid =~ ^[1-9][0-9]*$ ]] ||
+            ci_verdict_refuse "no completed run of ${GATE_CI_WORKFLOW} on ${branch} (gh answered '${runid}') — nothing has measured this branch yet."
+        echo "  run      ${runid} (the latest completed ${GATE_CI_WORKFLOW} run on ${branch})"
+    else
+        echo "  run      ${runid} (given)"
+    fi
+    rc=0
+    attempt="$(cd "$ROOT" && gate_ci_fetch "$runid" "$sink")" || rc=$?
+    [ "$rc" = "0" ] || ci_verdict_refuse "${attempt}."
+    echo "  attempt  ${attempt} (the latest; its artifact is $(gate_ci_artifact_name "$attempt"))"
+    line="$(awk 'NF { print; exit }' "${sink}/record-${runid}/${GATE_CI_RECORD}")"
+    echo "  record   ${line:-<empty>}"
+    # THE LEGS are read against this checkout's listing, REDIRECTED to a file
+    # and never captured through a pipe (the gate refuses a piped stdout).
+    listing="${sink}/listlegs.tsv"
+    (cd "$ROOT" && gate_ci_listing "$listing") ||
+        ci_verdict_refuse "./scripts/check.sh --list-legs would not answer — the record's units cannot be read without it."
+    rc=0
+    expanded="$(cd "$ROOT" && gate_ci_record_judge "$line" "$runid" "$attempt" "$listing")" || rc=$?
+    [ "$rc" = "0" ] || ci_verdict_refuse "${expanded}."
+    gate_ci_record_parse "$line" ||
+        ci_verdict_refuse "the record parsed in the judge and not here (${GATE_CI_REC_WHY}) — the two readers disagree."
+    DJB_GATE_CALLER=pm-bank
+    GATE_RUN_SANCTION="ci-verdict run=${runid} attempt=${attempt} commit=${GATE_CI_REC_COMMIT:0:12} shards=${GATE_CI_REC_SHARDS}"
+    GATE_RUN_LEAK_PROOF="ci:${runid} rc=0"
+    export DJB_GATE_CALLER
+    # THE LEDGER'S LENGTH BEFORE THE WRITE, so a row the lookup then refuses
+    # can be taken back out — exactly that row and nothing else (below).
+    ledger="$(cd "$ROOT" && gate_ledger_path)" ||
+        ci_verdict_refuse "the verdict ledger's path would not resolve — there is nowhere to write the row."
+    before=0
+    [ ! -f "$ledger" ] || before="$(wc -c <"$ledger" | tr -d ' ')"
+    if ! (cd "$ROOT" && gate_ledger_record "$GATE_CI_REC_TREE" "$expanded"); then
+        ci_verdict_refuse "the verdict ledger could not be written — a green nobody can read is not a verdict."
+    fi
+    if ! (cd "$ROOT" && gate_ledger_lookup "$GATE_CI_REC_TREE" >/dev/null); then
+        # A ROW THE LEDGER'S OWN READER REFUSES IS TAKEN BACK OUT, NOT LEFT.
+        # The lookup reads the NEWEST row for a tree (`tail -1`), so a refused
+        # row left standing would shadow an older verdict that still holds for
+        # the same tree: the next consult would refuse a tree that has one.
+        # Removing it puts the ledger back to the bytes it held before this
+        # run. THE ROW IS IDENTIFIED BY POSITION AND CONTENT: the bytes past
+        # the length read before the write must be exactly ONE line, starting
+        # `<schema> <tree> full ` and ending `leak-proof=ci:<run> rc=0`, and
+        # only then is the file cut back to that length. Anything else there
+        # (another writer's line landed after ours) is left alone and said.
+        added="$(tail -c +"$((before + 1))" "$ledger" 2>/dev/null || true)"
+        case "$added" in
+        *$'\n'*) added="<more than one line>" ;;
+        esac
+        case "$added" in
+        "${GATE_LEDGER_SCHEMA} ${GATE_CI_REC_TREE} full "*" leak-proof=${GATE_RUN_LEAK_PROOF}")
+            # WRITE-THEN-`mv`, BESIDE THE LEDGER. The ledger is one file every
+            # worktree of the primary appends to; truncating it in place
+            # (`cat >`) opens a window in which a concurrent append lands in a
+            # file about to be overwritten, or a reader sees it half-written.
+            # A rename in one directory is atomic: the ledger is the old bytes
+            # or the new ones, never neither.
+            if head -c "$before" "$ledger" >"${ledger}.rewrite.$$" &&
+                mv -f "${ledger}.rewrite.$$" "$ledger"; then
+                ci_verdict_refuse "the row was written and gate_ledger_lookup refuses it (its note is above) — the row was REMOVED, and the ledger holds exactly what it held before this run."
+            fi
+            rm -f "${ledger}.rewrite.$$"
+            CI_VERDICT_ROW_STANDS=1
+            ci_verdict_refuse "the row was written, gate_ledger_lookup refuses it, and it could not be removed from ${ledger} — it STANDS there as its tree's newest row; remove that last line by hand."
+            ;;
+        esac
+        CI_VERDICT_ROW_STANDS=1
+        ci_verdict_refuse "the row was written and gate_ledger_lookup refuses it, and the ledger's tail past this run's write is not exactly that one row (${added:0:120}) — nothing was removed; the refused row STANDS in ${ledger}."
+    fi
+    echo "pm_push --ci-verdict: verdict banked for tree ${GATE_CI_REC_TREE}"
+    echo "  caller=pm-bank sanction=${GATE_RUN_SANCTION}"
+    echo "  legs=${expanded}"
+    echo "  leak-proof=${GATE_RUN_LEAK_PROOF} (the second whole pass is the nightly's)"
+    echo "  next     ./scripts/pm_push.sh   (fast-forwards ${TARGET_BRANCH} to ${GATE_CI_REC_COMMIT:0:12}; the hook honours this row)"
+    exit 0
+}
+
+# =============================================================================
+# --proof — THE LEAK PROOF, ONE FUNCTION, TWO CALLERS
+# =============================================================================
+#
+# WHAT IT IS. The whole suite twice under ONE seed — pass 1 with per-test
+# coverage contexts, the test-impact map inverted out of it, pass 2 plain — and
+# ONE record, `leak_proof.txt`, in the grammar `scripts/gate_ledger.sh` owns
+# (`gate_nightly_line` writes it, `gate_nightly_read` reads it):
+#
+#   schema=leak-proof/1 at= commit= tree= seed= pass1= pass2= map= rc= run=
+#     attempt= where=
+#
+# TWO CALLERS AND ONE BODY. `.github/workflows/nightly-proof.yml` runs
+# `./scripts/pm_push.sh --proof --where nightly --run <id> --attempt <n>` on a
+# runner, and a bank's acceptance box runs `./scripts/pm_push.sh --proof`
+# through `bank_boxes_acceptance_remote` — so the box's command is a CALL of
+# this function, never a second spelling of it, and the two write the same
+# field set by construction. (Before this, the box's body was a one-line string
+# of shell and nothing else could run it.)
+#
+# THE CLAIM AND THE MEASUREMENT SEPARATE HERE, as they always have on the box:
+# `pass1=`/`pass2=` and `rc=` are the claim; `map=` is a measurement and
+# decides nothing. The map is written only after a green pass 1 (a map
+# inverted out of a coverage database a red pass abandoned is half a run), and
+# it is written OUTSIDE THE CHECKOUT, into `--out`: a measurement may not dirty
+# the tree it measured (`scripts/test_impact.json` is tracked, and a box whose
+# tree moved under the image step refused to build — the header of
+# `bank_boxes_acceptance_remote` has the whole story).
+#
+# EXIT: 0 the proof is green · 1 a pass is red · 2 could not look (the
+# collection failed, or no record could be written). The record is written on
+# 0 and 1 and on a collection that failed, so the nightly publishes a record
+# whatever happened, and a bank reads a status rather than an absence.
+#
+# WHAT IT DOES NOT COVER: the environment — the stack the suite dials is the
+# caller's (the workflow's compose step, the box's image); what the suite
+# covers; a test whose leak needs more than two passes to show.
+
+# leak_proof_verdict <pass1> <pass2> <seed> <workers> — ONE line naming what
+# the two statuses mean and the command that replays them.
+#
+# A PASS-2-ONLY RED NAMES ITS CANDIDATES, NEVER ONE CAUSE. One seed fixes the
+# collection order, and it is still not the whole of what differs between the
+# two passes: pass 2 runs later (the wall clock — a date, an expiry, a
+# timezone), and xdist's scheduling hands tests to workers in an order the seed
+# does not pin (test order). State pass 1 left behind is the likeliest and the
+# one the proof exists for; a line that said it was the ONLY one would name a
+# cause nobody proved.
+leak_proof_verdict() {
+    local p1="$1" p2="$2" seed="$3" workers="$4"
+    if [ "$p1" = "0" ] && [ "$p2" = "0" ]; then
+        printf 'leak proof: GREEN - pass 1 and pass 2 both passed under seed %s\n' "$seed"
+    elif [ "$p1" = "0" ]; then
+        printf 'pass 2 red after a green pass 1 — candidate causes: state pass 1 left behind, the wall clock, test order; replay: ./scripts/pm_push.sh --proof --seed %s --workers %s\n' \
+            "$seed" "$workers"
+    elif [ "$p1" = "-" ]; then
+        printf 'leak proof: COULD NOT LOOK - the collection failed and neither pass ran (seed %s)\n' "$seed"
+    else
+        printf 'pass 1 red (exit %s; pass 2 exit %s) — the suite is red before a second pass could say anything about a leak; replay: ./scripts/test.sh -n %s --randomly-seed=%s\n' \
+            "$p1" "$p2" "$workers" "$seed"
+    fi
+}
+
+proof_main() {
+    local out seed workers where run attempt commit tree at line rc
+    local t0 t1 t2 p1="-" p2="-" map="-" collect_rc=0
+    [ -r "$ROOT/scripts/gate_ledger.sh" ] ||
+        die "no ${ROOT}/scripts/gate_ledger.sh — the leak-proof record has no writer without it"
+    # shellcheck source=scripts/gate_ledger.sh
+    . "$ROOT/scripts/gate_ledger.sh"
+    workers="${PROOF_WORKERS:-$BANK_PROOF_WORKERS}"
+    [[ $workers =~ ^[1-9][0-9]*$ ]] || die "--proof --workers takes a whole number above zero, got '${workers}'."
+    where="$PROOF_WHERE"
+    case "$where" in nightly | acceptance) ;; *) die "--proof --where takes nightly or acceptance, got '${where}'." ;; esac
+    run="$PROOF_RUN"
+    attempt="$PROOF_ATTEMPT"
+    [[ $run =~ ^(0|[1-9][0-9]*)$ ]] && [[ $attempt =~ ^(0|[1-9][0-9]*)$ ]] ||
+        die "--proof --run and --attempt take decimals (the workflow's run id and attempt), got '${run}' '${attempt}'."
+    if [ "$where" = "nightly" ] && { [ "$run" = "0" ] || [ "$attempt" = "0" ]; }; then
+        die "--proof --where nightly names the workflow run that is writing it: --run \${{ github.run_id }} --attempt \${{ github.run_attempt }}."
+    fi
+    # ONE SEED FOR BOTH PASSES, minted here when none is given. That is what
+    # makes this a leak proof rather than two runs of the suite, and a given
+    # seed is what makes the replay line below a replay.
+    seed="${PROOF_SEED:-$((RANDOM * 32768 + RANDOM))}"
+    [[ $seed =~ ^[0-9]+$ ]] || die "--proof --seed takes a decimal, got '${seed}'."
+    if [ -n "$PROOF_OUT" ]; then
+        out="$PROOF_OUT"
+        mkdir -p "$out" || die "could not make --out ${out}"
+        out="$(cd "$out" && pwd -P)" || die "could not resolve --out ${PROOF_OUT}"
+    else
+        out="$(mktemp -d "${TMPDIR:-/tmp}/djb-leak-proof.XXXXXX")" || die "could not make a directory for the proof"
+    fi
+    case "$out/" in
+    "$(cd "$ROOT" && pwd -P)/"*)
+        die "--proof --out ${out} is inside ${ROOT}. A measurement may not dirty the tree it
+   measured: the map and the record are written OUTSIDE the checkout, always."
+        ;;
+    esac
+    commit="$(git -C "$ROOT" rev-parse --verify HEAD)" || die "could not read HEAD in ${ROOT}"
+    tree="$(cd "$ROOT" && gate_measured_tree)" || die "could not read the measured tree of ${ROOT}"
+    rm -f "${out}/impact.coverage" "${out}/impact.coverage."* "${out}/${GATE_NIGHTLY_RECORD}" \
+        "${out}/test_impact.json" "${out}/map.log"
+    echo "pm_push --proof: the whole suite twice under one seed, and the map (where=${where})"
+    echo "  checkout      ${ROOT}"
+    echo "  commit        ${commit}"
+    echo "  tree          ${tree} (measured)"
+    echo "  seed          ${seed}"
+    echo "  workers       ${workers}"
+    echo "  out           ${out}"
+    t0=$(date +%s)
+    (cd "$ROOT" && ./scripts/test.sh --collect-only -q -p no:randomly) >"${out}/collected.txt" 2>&1 || collect_rc=$?
+    t1=$t0
+    t2=$t0
+    if [ "$collect_rc" != "0" ]; then
+        rc=2
+        echo "!! pm_push --proof: the collection exited ${collect_rc} (${out}/collected.txt); neither pass ran." >&2
+    else
+        p1=0
+        (cd "$ROOT" && COVERAGE_FILE="${out}/impact.coverage" ./scripts/test.sh -n "$workers" \
+            --randomly-seed="$seed" --cov=apps --cov=config --cov-context=test --cov-report=) \
+            >"${out}/pass1.log" 2>&1 || p1=$?
+        t1=$(date +%s)
+        map=2
+        if [ "$p1" = "0" ]; then
+            map=0
+            (cd "$ROOT" && .venv/bin/python scripts/test_impact.py write --coverage "${out}/impact.coverage" \
+                --collected "${out}/collected.txt" --root . --out "${out}/test_impact.json") \
+                >"${out}/map.log" 2>&1 || map=$?
+        fi
+        p2=0
+        (cd "$ROOT" && ./scripts/test.sh -n "$workers" --randomly-seed="$seed") \
+            >"${out}/pass2.log" 2>&1 || p2=$?
+        t2=$(date +%s)
+        rc=1
+        [ "$p1" != "0" ] || [ "$p2" != "0" ] || rc=0
+    fi
+    at="$(date -u +%Y%m%dT%H%M%SZ)"
+    line="$(gate_nightly_line "$at" "$commit" "$tree" "$seed" "$p1" "$p2" "$map" "$rc" "$run" "$attempt" "$where")" ||
+        die "the leak-proof record would not parse (above) — none was written, and a proof with no record proves nothing."
+    printf '%s\n' "$line" >"${out}/${GATE_NIGHTLY_RECORD}"
+    # THE SUMMARY LINE A BANK READS OUT OF THE BOX'S OWN OUTPUT (`^acceptance:
+    # pass1`), prefixed with where the proof ran.
+    echo "${where}: pass1 (contexts) $((t1 - t0))s · pass2 (plain) $((t2 - t1))s rc1=${p1} rc2=${p2} map=${map}"
+    cat "${out}/${GATE_NIGHTLY_RECORD}"
+    [ ! -s "${out}/map.log" ] || cat "${out}/map.log"
+    leak_proof_verdict "$p1" "$p2" "$seed" "$workers"
+    echo "  record        ${out}/${GATE_NIGHTLY_RECORD}"
+    [ ! -s "${out}/test_impact.json" ] || echo "  map           ${out}/test_impact.json"
+    exit "$rc"
+}
+
+if [ "$PROOF_MODE" = "1" ]; then
+    proof_main
+fi
+
+if [ "$PR_MODE" = "1" ]; then
+    pr_main
+fi
+if [ "$CI_VERDICT_MODE" = "1" ]; then
+    ci_verdict_main
+fi
 
 # Where pm-push is, asked rather than assumed.
 PM_PUSH=""
@@ -668,7 +1180,7 @@ bank_boxes_plan() {
 #     `gate_ledger_record` as `leak-proof=acceptance:<box> rc=0`.
 #
 # THE TWO ROLES SEPARATE AT THE `rc`, and they separate in the box's own
-# `proof.txt`: `pass1=` and `pass2=` are the claim, `map=` is the measurement.
+# `leak_proof.txt`: `pass1=` and `pass2=` are the claim, `map=` is the measurement.
 # A bank whose passes are green and whose map writer died writes the row and
 # prints that the map was not written; there is no state in which a map
 # refuses a tree every pass passed.
@@ -723,11 +1235,12 @@ bank_boxes_box_checkout() {
 # pass 2 means "order or state, cannot tell", which proves nothing and would be
 # banked as if it had.
 #
-# BOTH PASSES UNDER `set +e`, EACH WRITING ITS OWN rc, and the whole command
-# still `exit 0`. The wrapper's status stays "the command ran", and the three
-# statuses that matter travel home as DATA in one file rather than as one
-# collapsed exit code that cannot say which of them failed. `set -e` still
-# covers the setup up to pass 1, where a failure is the box and not the suite.
+# BOTH PASSES RUN WHATEVER EITHER ANSWERS, EACH WRITING ITS OWN rc, and a red
+# proof still comes home as `exit 0`. The wrapper's status stays "the command
+# ran", and the three statuses that matter travel home as DATA in one file
+# rather than as one collapsed exit code that cannot say which of them failed.
+# A collection that failed is the box and not the suite: that is `--proof`'s
+# exit 2, and it comes home as the command's own status.
 #
 # THE MAP WRITER RUNS ONLY AFTER A GREEN PASS 1 — today's `set -e` ordering,
 # made explicit now that pass 1 no longer kills the command. A map inverted out
@@ -753,25 +1266,17 @@ bank_boxes_box_checkout() {
 bank_boxes_acceptance_remote() {
     local checkout="$1" rung="$2" v
     v="\$HOME/verify/${rung}"
-    printf '%s' "set -e; mkdir -p ${v}; cd ${checkout}; \
-rm -f ${v}/impact.coverage ${v}/impact.coverage.* ${v}/proof.txt; \
-SEED=\$((\$RANDOM * 32768 + \$RANDOM)); \
-T0=\$(date +%s); \
-./scripts/test.sh --collect-only -q -p no:randomly > ${v}/collected.txt 2>&1; \
-set +e; \
-COVERAGE_FILE=${v}/impact.coverage ./scripts/test.sh -n ${BANK_PROOF_WORKERS} --randomly-seed=\${SEED} \
---cov=apps --cov=config --cov-context=test --cov-report= > ${v}/pass1.log 2>&1; P1=\$?; \
-T1=\$(date +%s); \
-MAP=2; \
-if [ \"\${P1}\" = 0 ]; then \
-.venv/bin/python scripts/test_impact.py write --coverage ${v}/impact.coverage \
---collected ${v}/collected.txt --root . --out ${v}/test_impact.json > ${v}/map.log 2>&1; \
-MAP=\$?; \
-fi; \
-./scripts/test.sh -n ${BANK_PROOF_WORKERS} --randomly-seed=\${SEED} > ${v}/pass2.log 2>&1; P2=\$?; T2=\$(date +%s); \
-printf 'seed=%s workers=${BANK_PROOF_WORKERS} pass1=%s pass2=%s map=%s\\n' \"\${SEED}\" \"\${P1}\" \"\${P2}\" \"\${MAP}\" > ${v}/proof.txt; \
-echo \"acceptance: pass1 (contexts) \$((T1-T0))s · pass2 (plain) \$((T2-T1))s rc1=\${P1} rc2=\${P2} map=\${MAP}\"; \
-cat ${v}/proof.txt; cat ${v}/map.log; exit 0"
+    # THE BODY IS `--proof`, CALLED — `proof_main` above, the one function the
+    # nightly runner calls too, so the box and the runner write one field set.
+    # `--out` is under $HOME, outside the checkout (the paragraph above). A
+    # proof that ran and was RED is still exit 0 here (`r=1` → 0): the
+    # statuses travel home as DATA in `leak_proof.txt`, and the wrapper's status
+    # stays "the command ran". Only 2 — the collection failed, or no record
+    # could be written — comes home as the command's status, which is what it
+    # always was when the setup, not the suite, failed.
+    printf '%s' "mkdir -p ${v}; cd ${checkout}; \
+./scripts/pm_push.sh --proof --where acceptance --workers ${BANK_PROOF_WORKERS} --out ${v}; \
+r=\$?; [ \"\${r}\" != 1 ] || r=0; exit \${r}"
 }
 
 # bank_boxes_acceptance_report <the acceptance box's rc> — what the ninth box
@@ -817,7 +1322,7 @@ bank_boxes_acceptance_report() {
     fi
     if [ ! -s "$fetched" ]; then
         # WHY NO FILE CAME BACK, WHEN THE BOX ITSELF SAYS SO. The command
-        # always exits 0 (its three statuses travel home in `proof.txt`
+        # always exits 0 (its three statuses travel home in `leak_proof.txt`
         # instead), so "the box said 0" is true of a dead map writer and of a
         # fetch that could not reach the file, and those are two different
         # things to go and look at. `map=` is read here — the same field the
@@ -874,7 +1379,7 @@ bank_boxes_first_match() {
 }
 
 # bank_boxes_proof_field <file> <key> — the value of `<key>=` in the box's
-# `proof.txt`, or NOTHING. Never a default: the caller distinguishes "the box
+# `leak_proof.txt`, or NOTHING. Never a default: the caller distinguishes "the box
 # said 0" from "the box said nothing", and a reader that answered 0 for an
 # absent key would turn an unreadable proof into a green one.
 #
@@ -1038,7 +1543,7 @@ bank_boxes_fetch_acceptance_files() {
         printf '%s\n' "$rc" >"${BANK_BOXES_SINK}/acceptance.fetch.rc"
     fi
     rc=0
-    "$BANK_BOXES_VB" fetch "$id" "${v}/proof.txt" \
+    "$BANK_BOXES_VB" fetch "$id" "${v}/leak_proof.txt" \
         "${BANK_BOXES_SINK}/acceptance.proof" \
         >"${BANK_BOXES_SINK}/fetch-proof.log" 2>&1 </dev/null || rc=$?
     printf '%s\n' "$rc" >"${BANK_BOXES_SINK}/acceptance.proof.fetch.rc"
@@ -1262,7 +1767,7 @@ bank_boxes_first_failing() {
 
 # bank_boxes_log_seed <log> — the seed pytest-randomly printed at the top of
 # that run, so a shard's replay names the order it reddened in. The acceptance
-# box's seed comes from its `proof.txt` instead, which is the authority there.
+# box's seed comes from its `leak_proof.txt` instead, which is the authority there.
 bank_boxes_log_seed() {
     bank_boxes_first_match "$1" '
         /--randomly-seed=/ {
@@ -1519,6 +2024,7 @@ bank_on_boxes() {
     local shard_legs listing_legs declared_legs missing extra uncovered labels drc
     local acheckout arung acmd arc hid passes planpasses onepass
     local proof_file pseed pworkers ppass1 ppass2 pmap member sawpasses
+    local nsource nform nline
     [ -x "$vb" ] ||
         die "no executable verifier wrapper at ${vb} — there is nothing to bank on"
     BANK_BOXES_VB="$vb"
@@ -1574,6 +2080,23 @@ bank_on_boxes() {
     acheckout="$(bank_boxes_box_checkout || true)"
     planpasses=2
     [ -z "$acheckout" ] || planpasses=1
+    # `--leak-proof nightly`: THE SECOND WHOLE PASS IS LAST NIGHT'S, READ, and
+    # there is no acceptance box to launch. The shards run one pass exactly as
+    # they do beside a box, and the row carries the nightly's form instead of
+    # the box's id. READ HERE, BEFORE ANYTHING IS LAUNCHED, so the one source
+    # line is at the top of the transcript where the operator is looking —
+    # and a read that cannot look costs this bank nothing but the warning:
+    # every form is honoured (report-only) and the teeth are at prod.
+    nform=""
+    nline=""
+    if [ "$LEAK_PROOF" = "nightly" ]; then
+        acheckout=""
+        planpasses=1
+        nsource="$(gate_nightly_source "${BANK_BOXES_SINK}/nightly" "$tree")"
+        nform="${nsource%%$'\n'*}"
+        nline="${nsource#*$'\n'}"
+        nline="${nline%%$'\n'*}"
+    fi
 
     BANK_BOXES_TREE8="$tree8"
     BANK_BOXES_ARUNG="$arung"
@@ -1589,6 +2112,10 @@ bank_on_boxes() {
     echo "  box lifetime: ${BANK_BOX_TTL_HOURS}h hard, ${BANK_BOX_IDLE_MINUTES}m idle - the box reaps itself if the Mac dies"
     echo "  This Mac MEASURES NOTHING: it takes no machine lease and no pytest slot,"
     echo "  so every builder's --loop on this box keeps its own slot throughout."
+    # THE ONE SOURCE LINE, and it is printed once: `leak-proof: nightly …` for
+    # a green night no older than 24 h, `WARNING: leak-proof: …` naming red,
+    # older than 24 h, or none (`gate_nightly_source` owns the four forms).
+    [ -z "$nline" ] || echo "$nline"
     echo ""
 
     # --- the listing, and the plan derived from it --------------------------
@@ -1659,7 +2186,7 @@ bank_on_boxes() {
             echo "    ${label}	--leg ${unit}${shard:+ --shard ${shard}}"
         fi
     done <"$plan"
-    if [ "$planpasses" = "1" ]; then
+    if [ "$planpasses" = "1" ] && [ "$LEAK_PROOF" != "nightly" ]; then
         echo "    ONE pass per suite shard (ADR gate-1's amendment): the whole-suite"
         echo "    two-pass leak proof runs on the acceptance box below, and the row is"
         echo "    not written until it comes home green."
@@ -1672,7 +2199,14 @@ bank_on_boxes() {
     # checked against `n`: this box is the (n+1)th machine and it takes no unit.
     # Its checkout path was read BEFORE the plan, because the plan's pass count
     # is decided by whether this box can exist.
-    if [ -z "$acheckout" ]; then
+    if [ "$LEAK_PROOF" = "nightly" ]; then
+        BANK_BOXES_ACCEPT_NOTE="acceptance: no box — --leak-proof nightly: the second whole pass is the
+   nightly's (${nform}), and so is the map: the fold harvests the latest green
+   nightly's scripts/test_impact.json. This bank writes neither."
+        echo "pm_push --bank --on-boxes: NO acceptance box — --leak-proof nightly."
+        echo "    ONE pass per suite shard; the row names the nightly as its leak proof."
+        echo ""
+    elif [ -z "$acheckout" ]; then
         BANK_BOXES_ACCEPT_NOTE="acceptance: no box — deploy/verifier/bake.sh could not be read, so
    the box's checkout path is unknown. The map is NOT written and the loop keeps
    the closure scope; the bank is unaffected."
@@ -2123,7 +2657,9 @@ bank_on_boxes() {
     # loop one wave of its map and may not refuse a tree whose every pass was
     # green. The two roles separate exactly here, at the `rc` each one wrote.
     proof_file="${BANK_BOXES_SINK}/acceptance.proof"
-    if [ "$onepass" = "1" ]; then
+    # UNDER `--leak-proof nightly` THERE IS NO BOX TO READ: the nightly's form
+    # was read before the launch and is the row's field as it stands.
+    if [ "$onepass" = "1" ] && [ "$LEAK_PROOF" != "nightly" ]; then
         pseed=""
         ppass1=""
         ppass2=""
@@ -2154,7 +2690,7 @@ bank_on_boxes() {
               fetch log is ${BANK_BOXES_SINK}/fetch-proof.log and the box's own log
               is ${BANK_BOXES_SINK}/acceptance.log."
         else
-            echo "acceptance: the leak proof — seed=${pseed} workers=${pworkers:-?} pass1=${ppass1} pass2=${ppass2} map=${pmap:-?}"
+            echo "acceptance: the leak proof — seed=${pseed} workers=${pworkers:-$BANK_PROOF_WORKERS} pass1=${ppass1} pass2=${ppass2} map=${pmap:-?}"
             echo "  from ${BANK_BOXES_ACCEPT_ID}, the whole suite twice under one seed. pass1= and"
             echo "  pass2= are the CLAIM this row rests on; map= is a measurement and decides nothing."
             if [ "$ppass1" != "0" ] || [ "$ppass2" != "0" ]; then
@@ -2169,11 +2705,13 @@ bank_on_boxes() {
                     ffwhat="pass 1"
                     fflog="${BANK_BOXES_SINK}/pass1.log"
                 fi
+                # THE PROSE NAMES CANDIDATES, NEVER ONE CAUSE — the one
+                # sentence `leak_proof_verdict` owns, and `--proof` prints the
+                # same line on the nightly runner.
                 red="${red}
      acceptance: the leak proof is RED on ${BANK_BOXES_ACCEPT_ID} — pass1=${ppass1} pass2=${ppass2}
-              under seed ${pseed}. Both passes ran the whole suite in the same order
-              with the same worker assignment, so a red pass 2 is state pass 1 left
-              behind and nothing else. Its whole log is ${BANK_BOXES_SINK}/acceptance.log.
+              under seed ${pseed}. Its whole log is ${BANK_BOXES_SINK}/acceptance.log.
+              $(leak_proof_verdict "$ppass1" "$ppass2" "$pseed" "${pworkers:-$BANK_PROOF_WORKERS}")
               $(bank_boxes_first_failing "$fflog" "$ffwhat" "$pseed")"
             fi
         fi
@@ -2250,7 +2788,11 @@ bank_on_boxes() {
         declared="${declared/,${BANK_SUITE_LEG},/,${BANK_SUITE_LEG}/1,}"
         declared="${declared#,}"
         declared="${declared%,}"
-        GATE_RUN_LEAK_PROOF="acceptance:${BANK_BOXES_ACCEPT_ID} rc=0"
+        if [ "$LEAK_PROOF" = "nightly" ]; then
+            GATE_RUN_LEAK_PROOF="$nform"
+        else
+            GATE_RUN_LEAK_PROOF="acceptance:${BANK_BOXES_ACCEPT_ID} rc=0"
+        fi
     fi
     # AND A RECORDER THAT REFUSED IS EXIT 2, NEVER A PUSH. `gate_ledger_record`
     # returns 1 when the proof field will not parse, and it writes nothing in
@@ -2264,7 +2806,7 @@ bank_on_boxes() {
     echo "  caller=pm-bank sanction=push-wall boxes=${n} shards=${labels}"
     if [ "$onepass" = "1" ]; then
         echo "  legs=${declared}"
-        echo "  leak-proof=acceptance:${BANK_BOXES_ACCEPT_ID} rc=0"
+        echo "  leak-proof=${GATE_RUN_LEAK_PROOF}"
     fi
     echo "  The pre-push hook will honour it and cost seconds."
 
@@ -2290,13 +2832,42 @@ bank_on_boxes() {
     # second opinion about all three. It never refuses — a carrier that could
     # not read costs a re-drive, never a verdict — so its status is not
     # consulted and the bank's own green stands whatever it says.
+    #
+    # AND A HOMING THAT FAILED IS SAID, PER BOX, WITH A COUNT. The harvest
+    # never refuses — its status decides nothing about the verdict — but a
+    # Spot reclaim between the leg and this call takes the box's rows with it,
+    # and before this line that loss was exit 0 and silence: the next bank
+    # re-drove every drive on that box and nobody could say why. So each box's
+    # own status is read (its output is kept in the sink and echoed), a box
+    # that did not answer is `LOST` with the reclaim status the wrapper named
+    # (or `exit <n>` when it named none), and the count says how many of the
+    # plan's boxes brought their rows home.
     echo "pm_push --bank --on-boxes: bringing the shards' drive rows home."
+    local hrc hboxes=0 hhomed=0 hwhy
     while IFS='	' read -r label unit az shard passes; do
         [ -n "$label" ] || continue
+        hboxes=$((hboxes + 1))
         hid="$(cat "${BANK_BOXES_SINK}/${label}.id" 2>/dev/null || true)"
-        [ -n "$hid" ] || continue
-        "$BANK_BOXES_VB" harvest-drives "$hid" "$tree" </dev/null || true
+        if [ -z "$hid" ]; then
+            echo "  drive rows from ${label}: LOST (no box id in the sink) — the next bank re-drives them"
+            continue
+        fi
+        hrc=0
+        "$BANK_BOXES_VB" harvest-drives "$hid" "$tree" </dev/null \
+            >"${BANK_BOXES_SINK}/harvest-${label}.log" 2>&1 || hrc=$?
+        cat "${BANK_BOXES_SINK}/harvest-${label}.log" 2>/dev/null || true
+        if [ "$hrc" = "0" ]; then
+            hhomed=$((hhomed + 1))
+            continue
+        fi
+        if bank_boxes_saw_reclaim "${BANK_BOXES_SINK}/harvest-${label}.log"; then
+            hwhy="$(bank_boxes_reclaim_status "${BANK_BOXES_SINK}/harvest-${label}.log")"
+        else
+            hwhy="exit ${hrc}"
+        fi
+        echo "  drive rows from ${label}: LOST (${hwhy}) — the next bank re-drives them"
     done <"$plan"
+    echo "  drive rows homed: ${hhomed}/${hboxes} boxes"
 
     # --- the image, built once, from the banked tree ------------------------
     #

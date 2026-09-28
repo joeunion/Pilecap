@@ -4665,6 +4665,124 @@ def _names_bound_to(tree: ast.Module, model: str) -> dict[str, str]:
     return bound
 
 
+# : The methods whose answer is a ROW or a plain value, never a queryset. A name
+# : bound to one of these does not hold a member's queryset, so `.update(...)`
+# : on it is not this rule's subject — `aggregate(...)` and `in_bulk(...)` hand
+# : back a dict, and `dict.update` is the over-fire this list exists to keep out.
+_NOT_A_QUERYSET = (
+    "aggregate",
+    "count",
+    "create",
+    "earliest",
+    "exists",
+    "first",
+    "get",
+    "get_or_create",
+    "in_bulk",
+    "last",
+    "latest",
+    "update_or_create",
+)
+
+
+def _queryset_rooted(node: ast.expr, model: str, names: set[str], helpers: set[str]) -> bool:
+    """Whether `node` is a queryset of `model`, walked down to its root.
+
+    The receiver forms the word-bounded match cannot see, because the model's
+    name is not in them: a name BOUND to the member's manager
+    (`entries = AuditEntry.objects.for_tenant(t)`, then `entries.update(...)`),
+    a name bound from such a name (`qs = entries.filter(...)`), and a call to a
+    function in the same module whose every return is one
+    (`_errors(t).update(...)`). The walk follows calls, attribute reads and
+    slices down to a root; the root is the model itself, a bound name, or a
+    call to such a helper.
+    """
+    while True:
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in helpers:
+                return True
+            node = node.func
+        elif isinstance(node, ast.Attribute):
+            if node.attr == model:
+                return True
+            node = node.value
+        elif isinstance(node, ast.Subscript):
+            # A SLICE answers a queryset (`qs[:10]`); an INDEX answers one row
+            # (`qs.values()[0]` is a dict), and a row is not a queryset.
+            if not isinstance(node.slice, ast.Slice):
+                return False
+            node = node.value
+        elif isinstance(node, ast.Name):
+            return node.id == model or node.id in names
+        else:
+            return False
+
+
+def _is_queryset_value(value: ast.expr, model: str, names: set[str], helpers: set[str]) -> bool:
+    """A binding's value that holds a queryset of `model` — not a row, not a dict."""
+    if isinstance(value, ast.Call):
+        func = value.func
+        # A bare call on the model class is a construction: a row, not a queryset.
+        if (isinstance(func, ast.Name) and func.id == model) or (
+            isinstance(func, ast.Attribute) and func.attr == model
+        ):
+            return False
+        if isinstance(func, ast.Attribute) and func.attr in _NOT_A_QUERYSET:
+            return False
+        if isinstance(func, ast.Name) and func.id not in helpers:
+            # `list(qs)`, `len(qs)` — a builtin over a queryset is not one.
+            return False
+    elif isinstance(value, ast.Attribute):
+        # Only the manager itself: `AuditEntry.objects`. A column read off a
+        # row (`entry.metadata`) is not a queryset.
+        if value.attr != "objects":
+            return False
+    elif not isinstance(value, (ast.Name, ast.Subscript)):
+        return False
+    return _queryset_rooted(value, model, names, helpers)
+
+
+def _queryset_bindings(tree: ast.Module, model: str) -> tuple[set[str], set[str]]:
+    """(names bound to a queryset of `model`, same-module functions returning one).
+
+    Walked to a fixed point, because each feeds the other: a helper may return
+    a bound name, and a name may be bound from a helper. The same over-reach as
+    `_names_bound_to` and in the same direction — a name bound in one function
+    and rewritten in another is still caught.
+    """
+    names: set[str] = set()
+    helpers: set[str] = set()
+    functions = [
+        n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            targets: list[ast.expr] = []
+            value: ast.expr | None = None
+            if isinstance(node, ast.Assign):
+                targets, value = node.targets, node.value
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                targets, value = [node.target], node.value
+            if value is None or not _is_queryset_value(value, model, names, helpers):
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in names:
+                    names.add(target.id)
+                    changed = True
+        for fn in functions:
+            if fn.name in helpers:
+                continue
+            returns = [
+                r.value for r in ast.walk(fn) if isinstance(r, ast.Return) and r.value is not None
+            ]
+            if returns and all(_is_queryset_value(v, model, names, helpers) for v in returns):
+                helpers.add(fn.name)
+                changed = True
+    return names, helpers
+
+
 def append_only_writes(root: Path, rule: dict) -> CheckResult:
     out = CheckResult()
     declared = append_only_model_names(root)
@@ -4686,11 +4804,15 @@ def append_only_writes(root: Path, rule: dict) -> CheckResult:
                 if bound.get(local, ("", ""))[1] != _BOUND_READ_BACK:
                     bound[local] = (name, how)
         out.count("bound_names", len(bound))
+        # : member -> (queryset-bound names, queryset-returning helpers).
+        querysets = {name: _queryset_bindings(tree, name) for name in sorted(subjects)}
+        out.count("queryset_bindings", sum(len(n) + len(h) for n, h in querysets.values()))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
                 continue
             receiver = ast.unparse(node.func.value)
             if node.func.attr in _QUERYSET_REWRITES:
+                queryset_hit = False
                 for name in sorted(subjects):
                     # WORD-BOUNDED, not substring . `AuditEntryDraft` is a
                     # different model that merely starts with a member's name, and
@@ -4704,8 +4826,38 @@ def append_only_writes(root: Path, rule: dict) -> CheckResult:
                             "append-only (core.models.append_only); a service may create a "
                             "row and no code path anywhere may update or delete one",
                         )
+                        queryset_hit = True
                         break
-                continue
+                else:
+                    # The receiver does not NAME a member, but it may still BE
+                    # one's queryset: a bound name, or a helper's answer. The
+                    # same rewrite one indirection along, and the shape a
+                    # manager method returning a queryset is written in.
+                    for name in sorted(subjects):
+                        names, helpers = querysets[name]
+                        if (names or helpers) and _queryset_rooted(
+                            node.func.value, name, names, helpers
+                        ):
+                            out.hit(
+                                rel,
+                                node.lineno,
+                                f"{name} queryset `{receiver}`: `.{node.func.attr}(...)` "
+                                f"rewrites its rows — {name} declared itself append-only "
+                                "(core.models.append_only); the receiver is bound to (or "
+                                f"returned as) a {name} queryset, so this is "
+                                f"`{name}.objects....{node.func.attr}(...)` one indirection "
+                                "along. A service may create a row and no code path anywhere "
+                                "may update or delete one",
+                            )
+                            queryset_hit = True
+                            break
+                # A `.delete()` that no queryset reading claimed FALLS THROUGH to
+                # the instance half below. It used to `continue` here, which
+                # left `entry.delete()` on a read-back row — the instance half's
+                # own `_INSTANCE_REWRITE_ALWAYS` — unreachable: the statement
+                # promised it, and the arm that kept the promise never ran.
+                if queryset_hit:
+                    continue
             if receiver not in bound:
                 continue
             model, how = bound[receiver]
@@ -11452,6 +11604,27 @@ def template_owned_files_carry_no_product_edits(root: Path, rule: dict) -> Check
     return out
 
 
+def pattern_book_names_its_instruments(root: Path, rule: dict) -> CheckResult:
+    """Rule 63. Every pattern-book entry names an instrument file that exists.
+
+    THE READING IS `quality/pattern_book.py`'s, not this function's. That module
+    is the one reader of the book and of the product's drawer beside it — the
+    motion-ledger runner (rule 66) reads the same two files through it, as a
+    subprocess, so the grammar lives once and this wrapper only turns its
+    findings into the engine's. Imported here rather than at the top so a
+    runner never has to drag this module's Django-shaped world in with it.
+    """
+    from quality import pattern_book
+
+    out = CheckResult()
+    found, counts = pattern_book.findings(root)
+    for key, n in counts.items():
+        out.count(key, n)
+    for finding in found:
+        out.hit(finding.path, finding.line, finding.msg, klass=finding.klass)
+    return out
+
+
 REGISTRY = {
     "socket_join_discipline": socket_join_discipline,
     "org_scoped_events_carry_their_branch": org_scoped_events_carry_their_branch,
@@ -11502,4 +11675,5 @@ REGISTRY = {
     "declared_lifecycles": declared_lifecycles,
     "audit_row_shape": audit_row_shape,
     "template_owned_files_carry_no_product_edits": template_owned_files_carry_no_product_edits,
+    "pattern_book_names_its_instruments": pattern_book_names_its_instruments,
 }

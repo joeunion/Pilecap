@@ -1,0 +1,4 @@
+/* Planted: a variable is not a step unless it is a --space-* step. */
+.zzz-card {
+    margin: var(--gutter) 0;
+}

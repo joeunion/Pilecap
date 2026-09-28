@@ -82,7 +82,29 @@ EXEMPT_APPS = {"zzz_canary", "example"}
 #: form inside an app would be a canary about somewhere the rule does not look.
 #: 49 -> 52 (2026-09-22, HOTFIX-CANARY-1): rule 60's three extra files; see
 #: `TOTAL_PLANTS`.
-OUTSIDE_APPS_PLANTS = 52
+#: 52 -> 63 (rules 61 and 62): eleven more, and none can live in an app. Rule
+#: 61's five append into the two compose stacks (`compose.yaml`,
+#: `deploy/compose.yaml`) — its kind's roots are those files; rule 62's six
+#: create workflows under `.github/workflows/zzz_canary/`.
+#: 63 -> 66 (rule 63): the pattern book's three forms, every one appended into
+#: the product's drawer beside the book (`docs/product/design/`) — the rule's
+#: subject is the book, so a form inside an app would prove somewhere it never
+#: reads.
+#: 66 -> 90 (rules 64-67, the scales): twenty-four forms, every one under
+#: `frontend/src/` (its `zzz_canary` segment and the tokens layer's) or
+#: appended into the pattern book's drawer — the JS layer is the rules'
+#: subject, and the scaffold is a Django app.
+#: 90 -> 94 (rule 63's second clause): two canaries and two negatives, each
+#: a face module created under `frontend/src/{screens,components}/zzz_canary/`.
+#: 94 -> 126 (rules 68-73, the act, dialog, route and word instruments):
+#: twenty canaries, ten negatives and two extra files, every one under
+#: `frontend/src/` — created under a `zzz_canary` segment (in `app/`, `copy/`
+#: or the bare tree) or appended into the route table
+#: (`frontend/src/screens/routes.ts`), which is the file rule 71 is about.
+#: 126 -> 130 (rules 68 and 69 widened): one canary and one negative each, all
+#: created under `frontend/src/zzz_canary/` — rule 68's stylesheet clause
+#: (`pointer-events: none` on a pressable) and rule 69's script word `loader`.
+OUTSIDE_APPS_PLANTS = 130
 
 #: Measured once, then re-measured every time a rule arrived. Rule 43 added
 #: five product-app plants across three entries. Rule 44 added six — four in the
@@ -311,9 +333,29 @@ OUTSIDE_APPS_PLANTS = 52
 #: divergence in the product's decision record (`docs/product/architecture.md`,
 #: `mode: append`) — rule 60's own valve, so both stay class (b) controls on a
 #: product's tree.
-TOTAL_PLANTS = 518
+#: 518 -> 529 (rules 61 and 62): the eleven plants above, every one OUTSIDE
+#: `apps/` (52 -> 63) — the compose stacks and the CI workflows are the rules'
+#: subjects, so a form inside an app would prove somewhere the rule never reads.
+#: 529 -> 533 (rule 20's queryset binding walk and the instance-delete arm):
+#: four more, every one into the worked example (223 -> 227) — three canaries
+#: (a bound queryset's `.update`, a same-module helper's answer `.update`d, a
+#: read-back row's `.delete()`) and one negative (`dict.update` on values that
+#: are not querysets).
+#: 533 -> 534 (rule 20): one more negative into the worked example (227 -> 228)
+#: — an integer index on a queryset expression answers a row, not a queryset.
+#: 534 -> 537 (rule 63): two canaries and one negative, all OUTSIDE `apps/`
+#: (63 -> 66), appended into the pattern book's drawer.
+#: 537 -> 561 (rules 64-67): fifteen canaries, eight negatives and one extra
+#: file (rule 66's ledger row for its negative), all OUTSIDE `apps/` (66 -> 90).
+#: 561 -> 565 (rule 63's face clause): four more, all OUTSIDE `apps/` (90 -> 94).
+#: 565 -> 597 (rules 68-73): twenty canaries, ten negatives and rule 71's two
+#: extra files (the rows its negatives' pages need), all OUTSIDE `apps/`
+#: (94 -> 126).
+#: 597 -> 601 (rules 68 and 69 widened): two canaries and two negatives, all
+#: OUTSIDE `apps/` (126 -> 130).
+TOTAL_PLANTS = 601
 SCAFFOLD_PLANTS = 172
-EXAMPLE_PLANTS = 223
+EXAMPLE_PLANTS = 228
 
 #: The judgement: every plant into a real product app, by rule and site. Each
 #: one carries a dated MOVE-TRIGGER beside it in `quality/rules.yaml`; the test

@@ -152,6 +152,25 @@ scope_kinds:
     # runner under `quality/runners/` (`quality/runners/_kindscope.py`) — read
     # THIS list and no other.
     skip_dirs: [node_modules, .next, .turbo, dist, build, coverage, .git]
+  # THE COMPOSE STACKS, and why they are a kind rather than a rule's private
+  # list. Rule 61 is about files that are neither Python nor the browser tree
+  # — the stack every checkout and CI runs, and the one a deployment runs —
+  # and a runner may only report inside the roots its kind declares
+  # (`quality/check_v1.py`'s out-of-roots refusal). Declaring them here is
+  # also what puts them in the override walk, the memo's walk and
+  # `--selftest-inputs`, so an edit to either file moves every key that ought
+  # to move. FILE roots, both of which the template always carries.
+  compose:
+    roots: [compose.yaml, deploy/compose.yaml]
+    suffixes: [".yaml"]
+    comment: "#"
+  # THE CI WORKFLOWS, for rule 62, for the same reason: a runner reports only
+  # inside its kind's roots. A product without Actions has no such directory
+  # and the rule skips on `needs_tree`, printed.
+  workflows:
+    roots: [.github/workflows]
+    suffixes: [".yml"]
+    comment: "#"
 
 # THE SEAM'S OWN RECORDED POPULATION.
 #
@@ -2282,7 +2301,17 @@ rules:
       declaring module calls .delete(), .update() or .bulk_update() on them,
       anywhere, ever — nor `.save()` on a name bound to a row that was read
       back, nor `.delete()` on such a name, which is the same rewrite one
-      indirection along. AuditEntry is the first member. (The enforceable half
+      indirection along — nor `.delete()`, `.update()` or `.bulk_update()` on a
+      name bound to a member's QUERYSET or on a same-module function's answer
+      that is one (a manager method's queryset bound to `entries`, then
+      `entries.update(...)`). AuditEntry is the first member.
+      (The queryset binding walk over-fires in the LOUD direction, and each is
+      cleared by renaming the local: a name rebound to a non-queryset later in
+      the same function; one name that is a queryset in one function and a dict
+      in another in the same module; a name bound to a row read off a
+      queryset expression through anything but an integer index. An integer
+      index on a queryset expression — `values()[0]` — answers one row, not a
+      queryset, and is silent.) (The enforceable half
       of rule 20; context-binding is the doors' construction.)
     check: append_only_writes
     doc: { file: docs/product/architecture.md, contains: "declared `append_only = True`" }
@@ -2305,10 +2334,23 @@ rules:
       whole word — made the receiver match word-bounded, and LF-Q's binding
       walk closes the `audit_entries.delete()` half of that gap where the
       binding itself is legible, which leaves the residue below; A BINDING THIS
-      CANNOT SEE — a function PARAMETER holding a member's row, a dict or list
-      element, a comprehension target, a name that came back from a helper —
-      whose `.save()` is invisible here and is exactly what the runtime belt is
-      for (ADR core-14, and the two halves are stated as a pair on purpose); a
+      CANNOT SEE — a function PARAMETER holding a member's row or queryset, a
+      dict or list element, an attribute (`self.entries`), a comprehension
+      target, a row that came back from a helper, a queryset that came back from
+      a helper in ANOTHER module (a same-module helper whose every `return` is a
+      member's queryset IS read) — whose `.save()` is invisible here and is
+      exactly what the runtime belt is for (ADR core-14, and the two halves are
+      stated as a pair on purpose), and whose `.update()`/`.bulk_update()`
+      bypasses that belt by construction — for a queryset write the wall is the
+      DATABASE ROLE: `deploy/grants.sql.py` revokes UPDATE and DELETE on every
+      append-only table from the app role (pinned by
+      `deploy/test_grants_census.py`), and the suite's half of that wall is the
+      full bank's pytest pass under the grants role; an INDIRECT call —
+      `getattr(qs, "update")(...)`, or any attribute reached dynamically — whose
+      method name is not a literal attribute on the receiver; the BODY of a custom manager or queryset method that writes
+      (`self.filter(...).update(...)` inside a `QuerySet` subclass defined
+      outside the declaring module) — the receiver is `self`, which names no
+      model; a
       model that means to be append-only and never declares it — the
       declaration IS the population, so silence here is silence there; whether
       an append-only table's rows should EXPIRE, which is a different question
@@ -2328,7 +2370,7 @@ rules:
       comms drive. Widening the scan is a separate call; today it
       is declared, not covered.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 4, negatives: 4 }
+    selftest_floor: { canaries: 7, negatives: 6 }
     canaries:
       - { fixture: audit_delete.py, plant_at: apps/example/services.py, mode: append }
       # MOVE-TRIGGER 2026-08-24: a real service module, so the forbidden
@@ -2348,6 +2390,24 @@ rules:
       # that does not need it to run.
       - { fixture: bound_instance_save.py, plant_at: apps/example/services.py, mode: append,
           expect: { contains: "AuditEntry row `entry`" } }
+      # The instance half's `delete()` arm. It was unreachable: the queryset
+      # branch ended every `.delete()` whose receiver named no member, so the
+      # statement's `entry.delete()` clause had no arm that ran.
+      # Its expectation names the CALL, not the row: `bound_instance_save.py`
+      # plants into the same module and its finding also says "AuditEntry row
+      # `entry`", which would answer for this form while this arm stayed dead.
+      - { fixture: bound_instance_delete.py, plant_at: apps/example/services.py, mode: append,
+          expect: { contains: "`entry.delete()` rewrites it" } }
+      # A consumer's shape: a manager method's queryset bound to a local name,
+      # then `.update(...)` on the name. A queryset write bypasses the runtime
+      # belt by construction, so this static reading is the only half that sees
+      # it at all.
+      - { fixture: bound_queryset_update.py, plant_at: apps/example/services.py, mode: append,
+          expect: { contains: "AuditEntry queryset `entries`" } }
+      # The same rewrite one call along: a same-module function answers the
+      # queryset and the caller writes on the answer.
+      - { fixture: helper_queryset_update.py, plant_at: apps/example/services.py, mode: append,
+          expect: { contains: "AuditEntry queryset `_canary_errored_entries(tenant)`" } }
     negatives:
       - { fixture: audit_read.py, plant_at: apps/example/services.py, mode: append }
       # THE ONE WRITE AN APPEND-ONLY MODEL LEGITIMATELY DOES, plus the bystander
@@ -2373,6 +2433,13 @@ rules:
       - { fixture: audit_entry_draft_delete.py, plant_at: apps/example/services.py, mode: append,
           extra_files: [{ fixture: audit_entry_draft_model.py, plant_at: apps/example/models.py,
                           mode: append }] }
+      # The queryset binding walk's over-fire: `dict.update` on an
+      # `aggregate(...)` answer, and on a value copied off a row. Neither is a
+      # queryset, so neither is a write to a member's table.
+      - { fixture: queryset_value_update.py, plant_at: apps/example/services.py, mode: append }
+      # An integer index on a queryset expression answers a row (here a dict
+      # from `.values()`), not a queryset; a slice still answers a queryset.
+      - { fixture: indexed_row_update.py, plant_at: apps/example/services.py, mode: append }
 
   - id: "21"
     name: admin-through-services
@@ -9580,6 +9647,986 @@ rules:
           plant_at: docs/product/build-contract.md, mode: append,
           extra_files: [ { fixture: names_the_build_contract_as_a_divergence.md,
               plant_at: docs/product/architecture.md, mode: append } ] }
+
+  - id: "61"
+    name: compose-images-pinned-by-digest
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    # THE WITHDRAWAL IS THE ARGUMENT. `compose.yaml` pinned MinIO by tag; Docker
+    # Hub dropped the tag, quay.io served it until the project archived itself
+    # and withdrew every public image, and every clone of the template failed
+    # at its first `compose up` with nothing in the tree having changed. A tag
+    # is a promise the publisher can take back; a digest cannot be moved under
+    # the same name. An INDEX digest (a multi-arch manifest list) is the one a
+    # Mac, a Graviton box and an amd64 runner all resolve to their own layers,
+    # which is why the pinning rung inspects each one on a box rather than
+    # copying the digest a laptop happened to pull.
+    #
+    # THE POPULATION IS THE TWO STACKS THE DESIGN NAMES, as the `compose`
+    # scope kind's roots: the stack every checkout and CI runs, and the one a
+    # deployment runs. `deploy/observability/alerts/compose.sink.yaml` is a
+    # third compose file and is NOT in it — named in `does_not_cover` with its
+    # trigger, never silently absent.
+    #
+    # A NUMBERED ROW OF ITS OWN IN THE ARCHITECTURE RECORD is owed and is
+    # outside the change that landed this rule; the doc anchor is the
+    # statement written at the head of `compose.yaml`, where anyone moving a
+    # pin reads it.
+    kind: compose
+    statement: >
+      Every `image:` in the compose stacks is pinned `@sha256:<64 hex>` to the
+      digest of a multi-arch index, from a registry on this rule's declared
+      `allow_registries`, or carries `# pin-exception: <reason>` on the line or
+      in the contiguous comment block directly above it. An interpolated
+      reference can only be valved, and the reason names what resolves it to a
+      digest.
+    runner:
+      argv: ["python3", "quality/runners/compose_image_pin.py"]
+    # THE ALLOW-LIST IS DATA IN THE RULE'S OWN DECLARATION, read by the runner
+    # and nowhere else. Each is a registry whose publishers in this tree ship
+    # multi-arch indexes (measured on a box, `docker buildx imagetools
+    # inspect`). A registry joins by a visible diff here; the owner's ECR
+    # Public mirror is deliberately NOT listed — a mirror holds what somebody
+    # re-pushed, not what a publisher indexed, so each mirrored line says why
+    # in its own valve.
+    allow_registries: [docker.io, ghcr.io, docker.hyperdx.io]
+    needs_tree: compose.yaml
+    doc: { file: compose.yaml, contains: "EVERY `image:` IS PINNED BY THE DIGEST OF A MULTI-ARCH INDEX" }
+    valve:
+      marker: "# pin-exception: <reason>"
+      where: "on the `image:` line after the value, or in the contiguous comment block directly above it (never across a non-comment line); every valve is counted on the rule's status line as `pin_exception_valves`, and a reason under 12 characters is its own finding. The generic `# rule-61: <reason>` override also suppresses, on the line or the block above it"
+    scope: {}
+    # TWO POPULATIONS, FLOORED SEPARATELY — the drive-authoring rule for
+    # populations that share a kind: one floor over "image lines" would stay
+    # green while either stack emptied. Measured on this tree: 9 in
+    # `compose.yaml`, 14 in `deploy/compose.yaml`, 19 pinned, 4 valves. The
+    # floors sit under the measurement: they bind the SCAN, not this week's
+    # count.
+    floors: { files_scanned: 2, "images_in:compose.yaml": 5, "images_in:deploy/compose.yaml": 10, allow_registries: 1 }
+    # THE FINDING CLASSES, DECLARED AND MEASURED AT ZERO — somewhere for a
+    # product to record its own count, in the drawer, added to this one.
+    ratchets:
+      unpinned: 0
+      registry: 0
+      short_reason: 0
+      unreadable: 0
+    does_not_cover: >
+      WHETHER A PINNED DIGEST IS AN INDEX AT ALL. That is a registry question —
+      `docker buildx imagetools inspect <ref>` answers it over the network — and
+      this is a static scan; a single-architecture manifest pinned from a listed
+      registry passes. The pinning change transcribes the inspection per image,
+      and the next re-pin owes the same transcript. THE DIGEST'S CONTENT: a
+      digest the publisher never published fails at pull, not here. OTHER
+      COMPOSE FILES: only the two stacks in the `compose` kind's roots are read
+      — `deploy/observability/alerts/compose.sink.yaml` (a `python:*-alpine`
+      tag) is outside it; the trigger to widen the kind is that file, or any
+      other compose file, gaining a service a deployment depends on. IMAGES
+      NAMED OUTSIDE COMPOSE — a `docker run <image>` in a script, a `FROM` in a
+      Dockerfile, a `services:` image in a workflow — are other populations.
+      A READER THAT DROPS THE DIGEST: a script that extracts the tag from an
+      `image:` line with a pattern stopping at `@` pulls the tag, not the pin;
+      each such reader is its own finding. AN INTERPOLATED REFERENCE is only
+      ever valved, so what its valve claims about the digest is a reviewer's
+      question.
+    selftest_floor: { canaries: 3, negatives: 2 }
+    # APPEND PLANTS, into the two roots: a `compose` root is a FILE, so there is
+    # no probe directory to create a plant in, and every form is an `x-`
+    # extension block — legal compose — appended where a reader of the file
+    # would find a real service. The cost is taken deliberately: a plant path
+    # is a path the self-test refuses to run over while it is dirty, so a
+    # change to either stack commits before it runs the self-test.
+    canaries:
+      # (1) THE DEFECT ITSELF: the tag the withdrawal broke.
+      - { fixture: a_tag_not_a_digest.yaml, plant_at: compose.yaml, mode: append,
+          expect: { contains: "names a tag, not a digest" } }
+      # (2) A DIGEST IS NOT ENOUGH: pinned, to a registry nobody listed.
+      - { fixture: a_digest_from_an_unlisted_registry.yaml, plant_at: compose.yaml, mode: append,
+          expect: { contains: "not on this rule's allow-list" } }
+      # (3) THE OTHER STACK, and the interpolated shape: nothing says what pins it.
+      - { fixture: an_interpolation_with_no_valve.yaml, plant_at: deploy/compose.yaml, mode: append,
+          expect: { contains: "is interpolated, so no digest" } }
+    negatives:
+      # (1) A LISTED REGISTRY'S INDEX DIGEST, the tag kept in front for the reader.
+      - { fixture: an_allow_listed_digest.yaml, plant_at: compose.yaml, mode: append }
+      # (2) THE DEPLOYMENT'S OWN SHAPE: an interpolation with its valve above it.
+      - { fixture: an_interpolation_with_its_valve.yaml, plant_at: deploy/compose.yaml, mode: append }
+
+  - id: "62"
+    name: an-exported-credential-reaches-only-the-steps-that-asked
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    # THE FIRST CI ATTEMPT IS THE ARGUMENT. The legs job assumed a role to log
+    # in to the registry the MinIO pin names; `configure-aws-credentials`
+    # wrote the role's keys into the JOB's environment, over the workflow's own
+    # `env:`, and the gate three steps later inherited them — every object-store
+    # test dialled the compose MinIO with an STS key it had never heard of.
+    # Nothing on the page said the gate step held a cloud credential. This rule
+    # makes the page say it: after an exporter, a `run:` step either clears the
+    # names (empty is a pin) or carries a sentence saying why it keeps them.
+    #
+    # THE STORE'S OWN CREDENTIAL IS NOT THIS RULE'S BUSINESS, and that is the
+    # other half of the same design: `config/settings/test.py` is the one
+    # authority for the store under test, so the gate needs NO AWS name at
+    # all and pins all three empty.
+    #
+    # A NUMBERED ROW OF ITS OWN IN THE ARCHITECTURE RECORD is owed and is
+    # outside the change that landed this rule; the doc anchor is the push
+    # role's paragraph in the deploy runbook, where the exporter is set up.
+    kind: workflows
+    statement: >
+      In a GitHub Actions workflow, every `run:` step that comes after a
+      credential exporter in the same job (a `uses:` step whose action is on
+      this rule's declared `exporters`) sets each of the rule's
+      `exported_names` in its own `env:` — an empty value is a pin — or
+      carries `# creds: <reason>` saying why it keeps the credential.
+    runner:
+      argv: ["python3", "quality/runners/workflow_credential_pins.py"]
+    # THE EXPORTER LIST AND THE NAMES ARE DATA IN THE RULE'S OWN DECLARATION,
+    # read by the runner and nowhere else. An action joins the list by a
+    # visible diff here, the day a workflow first uses one.
+    exporters: [aws-actions/configure-aws-credentials]
+    exported_names: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN]
+    needs_tree: .github/workflows
+    doc: { file: docs/runbooks/deploy.md, contains: "pins the three exported names or says why it keeps them (house rule 62)" }
+    valve:
+      marker: "# creds: <reason>"
+      where: "on a comment line inside the step (from its `-` line to its last line), or in the contiguous comment block directly above its `-`; every valve is counted on the rule's status line as `creds_valves`, and a reason under 12 characters is its own finding. The generic `# rule-62: <reason>` override also suppresses, on the step's first line or the block above it"
+    scope: {}
+    # POPULATIONS, FLOORED SEPARATELY. Measured on this tree: one workflow,
+    # 2 exporter steps (the legs' registry login and the images' push role),
+    # 7 `run:` steps after one — 3 pinned empty, 4 valved. The floors bind the
+    # scan: a parse that stopped seeing jobs, or an exporter list that
+    # emptied, trips them.
+    floors: { files_scanned: 1, exporter_steps: 1, run_steps_after_an_exporter: 1, declared_exporters: 1, declared_names: 3 }
+    ratchets:
+      unpinned: 0
+      short_reason: 0
+      unreadable: 0
+    does_not_cover: >
+      AN EXPORTER NOT ON THE LIST — another cloud's login action, a composite
+      or reusable workflow that exports inside itself, a `run:` step that
+      writes a credential to `$GITHUB_ENV` — is not an exporter to this rule;
+      the list grows by a visible diff. A `uses:` STEP after an exporter is
+      not judged: an action reads the job environment too, and whether it
+      should see the credential is the action's own question (the registry
+      login after the role is the deliberate case). A NAME AN EXPORTER WRITES
+      beyond the declared three (a region, an account id) is not required to
+      be pinned. JOB-LEVEL `env:` pins do not count, because the exporter
+      writes over them; only the step's own map does. WHAT A VALVE CLAIMS is a
+      reviewer's question. AND IT OVER-READS: every `.yml` under
+      `.github/workflows/` is judged, nested ones included, although GitHub
+      runs only the top level — which is what lets the self-test's plants live
+      in the probe namespace. A TOOL THE GATE SHELLS OUT TO that reads
+      `AWS_SESSION_TOKEN` from somewhere other than its environment is
+      outside every workflow file.
+    selftest_floor: { canaries: 3, negatives: 3 }
+    canaries:
+      # (1) THE DEFECT ITSELF: a run step after the exporter with no env: at all.
+      - { fixture: an_exporter_then_a_bare_run.yml,
+          plant_at: .github/workflows/zzz_canary/an_exporter_then_a_bare_run.yml, mode: create,
+          expect: { contains: "job zzz_canary_job, step 'a run with no env' runs after" } }
+      # (2) TWO OF THREE: the session token is the one the hotfix nearly forgot.
+      - { fixture: two_of_three_pinned.yml,
+          plant_at: .github/workflows/zzz_canary/two_of_three_pinned.yml, mode: create,
+          expect: { contains: "with AWS_SESSION_TOKEN unset" } }
+      # (3) A VALVE WITH NO SENTENCE IN IT.
+      - { fixture: a_creds_valve_too_short.yml,
+          plant_at: .github/workflows/zzz_canary/a_creds_valve_too_short.yml, mode: create,
+          expect: { contains: "the creds reason is" } }
+    negatives:
+      # (1) ALL THREE PINNED EMPTY — the gate's own shape.
+      - { fixture: all_three_pinned_empty.yml,
+          plant_at: .github/workflows/zzz_canary/all_three_pinned_empty.yml, mode: create }
+      # (2) A DELIBERATE USE, and its sentence — the images job's shape.
+      - { fixture: a_creds_valve_with_its_reason.yml,
+          plant_at: .github/workflows/zzz_canary/a_creds_valve_with_its_reason.yml, mode: create }
+      # (3) NO EXPORTER: a bare run step judged by nothing.
+      - { fixture: no_exporter_at_all.yml,
+          plant_at: .github/workflows/zzz_canary/no_exporter_at_all.yml, mode: create }
+
+  - id: "63"
+    name: pattern-entries-name-an-instrument-that-exists
+    enabled: true
+    # A RULING WITH NO INSTRUMENT IS A WISH. The first consumer's own book had
+    # an entry whose rule two verifiers passed a face against while the face
+    # broke it — the entry named no test, so nothing could fail. The owner's
+    # ruling (2026-09-26): the book's entries name the file that measures them,
+    # and a house rule refuses an entry whose file does not exist. The check is
+    # a wrapper; the reading is `quality/pattern_book.py`, the ONE reader of the
+    # book and of the product's drawer beside it.
+    statement: >
+      Every entry in the pattern book — docs/product/design/patterns.md, and a
+      product's own drawer beside it — is written in the six-part form (a
+      paragraph each for shape, words, placement, states, ruling and
+      instrument, each opening with its bold label), and its instrument
+      paragraph names, in backticks, at least one repository file that exists
+      in this tree. Every row of the book's instrument index names a file that
+      exists. Every motion-ledger row is four fields with a `--motion-<name>`
+      token. A pattern whose instrument does not exist cannot fail, so it is
+      not a pattern yet. AND NO FACE IS DRAWN WITH NO ENTRY: every module under
+      frontend/src/screens/ and frontend/src/components/ (test and story
+      modules aside) declares, in a header line within its first twelve lines,
+      the sections it draws — `// patterns: §15` (several allowed, `§15, §26`)
+      — and every declared section resolves to an entry heading in the book or
+      its drawer; the only other declarations are two named sentences the
+      reader accepts by name, `template placeholder — words owned` and
+      `none — draws no face`, each counted on the rule's line.
+    check: pattern_book_names_its_instruments
+    doc: { file: docs/product/design/patterns.md, contains: "House rule 63 refuses an entry whose instrument file" }
+    # THE VALVE IS AN INSTRUMENT, and that is the point. An entry whose file
+    # does not exist yet is not excused by a sentence; it is either landed with
+    # its instrument, or it is not an entry yet — the book's element-class list
+    # is where a class waits, as a heading with no parts.
+    valve:
+      none: "an entry's excuse is its instrument: land the file (red, with its owed list) and the entry names it; a class that has no instrument yet stays a line in the element-class list, which rule 63 does not read"
+    scope: {}
+    # THREE POPULATIONS, FLOORED SEPARATELY — the drive-authoring rule for
+    # populations that share a reach kind: a single floor over "things in the
+    # book" would stay green while the worked entry or the index emptied.
+    # Measured on this tree: 1 book (the template's; no drawer), 1 entry (the
+    # worked one), 8 index rows once the scale instruments land. The floors
+    # bind the READ, not this week's length of either list.
+    # FOURTH POPULATION: the face modules (measured: 4 — two refusal panels,
+    # the placeholder screen, the state seam).
+    floors: { books: 1, entries: 1, index_rows: 3, face_files: 1 }
+    memo: { "no": "the check reads docs/product/design/ and then asks whether every file an entry names exists anywhere in the tree — frontend/, quality/, apps/ — and no scope kind's roots reach either, so a memo key built from them would replay a verdict about files it never hashed" }
+    does_not_cover: >
+      WHETHER THE INSTRUMENT MEASURES WHAT THE ENTRY SAYS. The check proves the
+      named file exists, never that it asserts the pattern — a test file that
+      tests something else satisfies it, exactly as instruments.md's census
+      checks that a citation has the shape of a file:line and never that the
+      line says what the cell says. That is the mirror pass's and the
+      verifier's question. WHETHER EVERY ELEMENT CLASS A PRODUCT DRAWS HAS AN
+      ENTRY: the element-class list is prose, and a face drawn with no entry is
+      the engineering lead's DECOMPOSE refusal (the DESIGN stage), not this
+      rule's. A PATH NOT IN BACKTICKS, or one with no directory segment or no
+      suffix, is not read as an instrument, so an entry naming only `a-test`
+      reads as naming nothing (the closed direction). WHAT A PART SAYS is not
+      read — six labelled paragraphs of placeholder words satisfy the form.
+      THE RULING PART'S NUMBERS are not resolved against the agreements file.
+      A FACE'S DECLARATION IS TAKEN AT ITS WORD: that a screen declaring §15
+      draws only §15, and draws it as the entry says, is the mirror pass's
+      question; a named declaration (`none — draws no face`) on a module that
+      does draw is a reviewer's catch, counted on the line so it can be read.
+      Faces outside the two face layers (a route in `app/`, a primitive) are
+      not asked — a route hands state to a screen, and `primitives/` carries
+      no product noun.
+    selftest_floor: { canaries: 4, negatives: 3 }
+    # THE ENTRY FORMS PLANT INTO THE PRODUCT'S DRAWER BESIDE THE BOOK, `mode:
+    # append`: absent on the template's tree (the append creates it and the
+    # restore removes it), and on a product's tree the product's own drawer
+    # keeps its bytes and gains the form for the duration. The template's book
+    # is never a plant site, so a rung editing the book is never refused its
+    # own self-test for a dirty plant path — and the drawer being read at all
+    # is proven by every form, not asserted.
+    canaries:
+      # (1) THE DEFECT ITSELF: an entry in the six-part form naming a file this
+      # tree does not have.
+      - { fixture: an_entry_naming_a_missing_instrument.md,
+          plant_at: docs/product/design/patterns.local.md, mode: append,
+          expect: { contains: "which is not a file in this tree" } }
+      # (2) THE FORM, broken: an entry with its instrument and without its
+      # states — the part a builder most often answers alone.
+      - { fixture: an_entry_missing_a_part.md,
+          plant_at: docs/product/design/patterns.local.md, mode: append,
+          expect: { contains: "is missing **States.**" } }
+      # (3) THE SECOND CLAUSE: a face with no declaration at all.
+      - { fixture: a_screen_with_no_header.tsx,
+          plant_at: frontend/src/screens/zzz_canary/undeclared.tsx, mode: create,
+          expect: { contains: "declares no pattern-book section" } }
+      # (4) A DECLARATION NAMING A SECTION THE BOOK HAS NO ENTRY FOR.
+      - { fixture: a_screen_naming_a_section_with_no_entry.tsx,
+          plant_at: frontend/src/components/zzz_canary/unwritten.tsx, mode: create,
+          expect: { contains: "declares it draws §99, and no entry" } }
+    negatives:
+      # (1) THE WORKED ENTRY'S FORM, in the drawer: six parts, and an instrument
+      # that exists on every tree the template ships.
+      - { fixture: the_worked_entry_form.md,
+          plant_at: docs/product/design/patterns.local.md, mode: append }
+      # (2) and (3) THE SCAFFOLD'S TWO SCREEN HEADERS, verbatim in form: the
+      # refusal panel drawing the worked entry, and the placeholder landing
+      # accepted by name.
+      - { fixture: a_screen_drawing_the_worked_entry.tsx,
+          plant_at: frontend/src/screens/zzz_canary/refusal.tsx, mode: create }
+      - { fixture: a_screen_the_template_owns_the_words_of.tsx,
+          plant_at: frontend/src/screens/zzz_canary/welcome.tsx, mode: create }
+
+  # THE SCALES (rules 64-67) — the pattern book's §26 floor, as house rules over
+  # source text. The owner's ruling (2026-09-26): the generic instruments are
+  # HOUSE RULES with canaries, and they red a product until it adopts the floor
+  # — a floor a product can ignore is the class a consumer already paid for.
+  # All four read the same two populations through `quality/runners/_css.py`
+  # (every declaration in a stylesheet under frontend/src/, and every literal
+  # an inline style object hands a CSS property), so four runners cannot
+  # disagree about what a declaration is. No Node and no browser: the measured
+  # box, the computed style and the rendered story are Tier B/C, and are not
+  # house rules here. The template's own scaffold adopts the floor in the same
+  # change (frontend/src/tokens/tokens.css, the two screens), so the live scan
+  # is clean on the tree that ships the rules.
+  - id: "64"
+    name: js-every-size-names-a-type-role
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      Every `font-size`, `letter-spacing` and `font` shorthand under
+      frontend/src/ — in a stylesheet or an inline style literal — names a
+      `--type-*` role (`var(--type-…)`); only the CSS-wide keywords and
+      `letter-spacing: normal` stand without one. No size, tracking or
+      `--type-*` token is a half pixel.
+    runner:
+      argv: ["python3", "quality/runners/js_type_scale.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "Every size names a type role" }
+    valve:
+      marker: "<comment> rule-64: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. A finding in a `.css` file cannot be valved (rule 53's declared seam gap): the remedy there is a role"
+    scope: {}
+    # The floors bind the SCAN — a runner that stopped seeing frontend/src/ or
+    # stopped reading stylesheets — never this week's number of roles. Measured
+    # on this tree: 21 files, 1 stylesheet, 12 judged declarations, 6 roles.
+    floors: { files_scanned: 1, stylesheets: 1 }
+    ratchets:
+      literal-size: 0
+      half-pixel: 0
+    does_not_cover: >
+      WHICH ROLE A SEAT SPENDS — that the facts line wears the facts role and
+      not the title's is the book's entry and review's question; any
+      `var(--type-…)` satisfies this rule. A VALUE COMPUTED AT RUN TIME (a
+      variable, a ternary, a template literal with `${…}`) is not judged, nor
+      is a style object built by a helper or spread from another file. A
+      FALLBACK INSIDE THE ROLE (`var(--type-x, 14px)`) passes on the role. CSS
+      NESTING is read flat; a brace or semicolon inside a CSS string confuses
+      the block reader. `font-weight`, `line-height` and `font-family` are not
+      judged — the book's type roles carry them, and a product that wants them
+      held adds the rule in its drawer. A `.css` VALVE is not honoured (the
+      `js` kind's suffixes are the script ones). THE RENDERED SIZE — whether
+      the role resolves to a real value in the cascade — is a computed-style
+      fact, Tier C.
+    selftest_floor: { canaries: 4, negatives: 3 }
+    canaries:
+      # (1) THE DEFECT ITSELF, the book's own example: a half pixel, no role.
+      - { fixture: half_pixel_size.css, plant_at: frontend/src/zzz_canary/type/half-pixel.css,
+          mode: create, expect: { contains: "is a half pixel and names no" } }
+      # (2) THE INLINE HALF: the scaffold's own shape, with a literal in it.
+      - { fixture: inline_literal_size.tsx, plant_at: frontend/src/zzz_canary/type/inline-size.tsx,
+          mode: create, expect: { contains: "`font-size: 14px` names no `--type-*` role" } }
+      # (3) TRACKING is a size too.
+      - { fixture: literal_tracking.css, plant_at: frontend/src/zzz_canary/type/tracking.css,
+          mode: create, expect: { contains: "`letter-spacing: 0.02em` names no" } }
+      # (4) THE SCALE ITSELF: a role declared as a half pixel, in the tokens layer.
+      - { fixture: half_pixel_role.css, plant_at: frontend/src/tokens/zzz_canary/half-pixel-role.css,
+          mode: create, expect: { contains: "is declared as `12.5px` — a half pixel" } }
+    negatives:
+      - { fixture: role_sizes.css, plant_at: frontend/src/zzz_canary/type/roles.css, mode: create }
+      - { fixture: inline_role_size.tsx, plant_at: frontend/src/zzz_canary/type/inline-role.tsx,
+          mode: create }
+      # A STYLESHEET'S OWN DOCUMENTATION IS NOT A POPULATION — rule 53's RDF-1
+      # lesson, pointed at this rule's syntax before it could trip.
+      - { fixture: documented_size.css, plant_at: frontend/src/zzz_canary/type/documented.css,
+          mode: create }
+
+  - id: "65"
+    name: js-every-gap-is-on-the-spacing-scale
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      Every `gap`, `row-gap`, `column-gap`, `padding` and `margin` (and every
+      side and logical twin of the last two) under frontend/src/ — in a
+      stylesheet or an inline style literal — is made only of steps on the
+      scale: `0`, `auto`, a CSS-wide keyword, or a `var(--space-…)` token,
+      alone or inside calc()/min()/max()/clamp() beside unitless numbers. A
+      literal length, a bare non-zero number and a variable that is not a
+      `--space-*` step are off the scale.
+    runner:
+      argv: ["python3", "quality/runners/js_spacing_scale.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "Every gap is on the scale" }
+    valve:
+      marker: "<comment> rule-65: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. A finding in a `.css` file cannot be valved (rule 53's declared seam gap): the remedy there is a step"
+    scope: {}
+    # Measured on this tree: 21 files, 1 stylesheet, 32 judged declarations, 4 steps.
+    floors: { files_scanned: 1, stylesheets: 1 }
+    ratchets:
+      off-scale: 0
+    does_not_cover: >
+      WHICH STEP A SEAT SPENDS — the book's entry, never this instrument's.
+      GEOMETRY THAT IS NOT SPACING — `inset`, `top`, a width, a height, a
+      border, a radius, `outline-offset` — is not judged. A VALUE COMPUTED AT
+      RUN TIME (a variable, a ternary, a template literal with `${…}`) is not
+      judged, nor is a style object built by a helper. CSS NESTING is read
+      flat. A `.css` VALVE is not honoured. WHETHER THE STEPS THEMSELVES ARE A
+      SCALE — the `--space-*` values are the product's, and a scale of
+      eleven arbitrary steps passes this rule; the book's §26 entry and review
+      hold that.
+    selftest_floor: { canaries: 3, negatives: 2 }
+    canaries:
+      # (1) THE DEFECT ITSELF, the book's own example.
+      - { fixture: literal_gap.css, plant_at: frontend/src/zzz_canary/space/gap.css,
+          mode: create, expect: { contains: "`gap: 10px` is off the spacing scale" } }
+      # (2) THE INLINE HALF: a bare number React sends as pixels.
+      - { fixture: inline_literal_padding.tsx, plant_at: frontend/src/zzz_canary/space/inline.tsx,
+          mode: create, expect: { contains: "`padding: 12` is off the spacing scale" } }
+      # (3) A VARIABLE IS NOT A STEP unless it is a `--space-*` step.
+      - { fixture: a_variable_off_the_scale.css, plant_at: frontend/src/zzz_canary/space/variable.css,
+          mode: create, expect: { contains: "`var(--gutter)` is not" } }
+    negatives:
+      - { fixture: on_the_scale.css, plant_at: frontend/src/zzz_canary/space/on-scale.css, mode: create }
+      - { fixture: inline_on_the_scale.tsx, plant_at: frontend/src/zzz_canary/space/inline-on-scale.tsx,
+          mode: create }
+
+  - id: "66"
+    name: js-every-motion-is-on-the-ledger
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered — and it reads the
+        pattern book under docs/, which no scope kind's roots reach"
+    kind: js
+    statement: >
+      Every `transition`, `animation` and their duration, delay and
+      timing-function longhands under frontend/src/ — in a stylesheet or an
+      inline style literal — names a `var(--motion-…)` token and carries no
+      raw time or easing outside it (`none` and the CSS-wide keywords move
+      nothing). And the `--motion-*` tokens declared in frontend/src/tokens/
+      equal, by name, the rows of the motion ledger — every fenced
+      `motion-ledger` block in the pattern book and the product's drawer
+      beside it: a token off the ledger and a ledger row with no token are
+      both findings.
+    runner:
+      argv: ["python3", "quality/runners/js_motion_ledger.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "Every motion names a `--motion-*` token" }
+    valve:
+      marker: "<comment> rule-66: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. A finding in a `.css` file cannot be valved (rule 53's declared seam gap): the remedy there is a ledger row and its token"
+    scope: {}
+    # TWO INPUTS, FLOORED SEPARATELY: the source scan, and the book the ledger
+    # is read from — a runner that silently stopped reading the book would find
+    # every declared token "off the ledger" or, worse, none at all. Measured on
+    # this tree: 21 files, 1 stylesheet, 1 book, 0 ledger rows, 0 tokens (the
+    # template moves nothing).
+    floors: { files_scanned: 1, stylesheets: 1, ledger_books: 1 }
+    ratchets:
+      raw-motion: 0
+      off-ledger: 0
+      ledger-undeclared: 0
+    does_not_cover: >
+      WHAT MOVES AND WHETHER IT SHOULD — the ledger's rows are the rulings, and
+      whether a moment deserves to move is design's question. MOTION FROM
+      SCRIPT (the Web Animations API, a library that animates through
+      JavaScript, a `requestAnimationFrame` loop) is not a declaration and is
+      invisible here. `@keyframes` bodies are not judged — the animation that
+      names them is. REDUCED MOTION — whether each ledger row's reduced-motion
+      column is honoured by a `prefers-reduced-motion` rule — is not checked;
+      the mirror pass's line 8 captures it rendered. A VALUE COMPUTED AT RUN
+      TIME is not judged. A `.css` VALVE is not honoured. A LEDGER ROW WITH NO
+      TOKEN is reported at the tokens layer's first stylesheet, line 1,
+      because a runner reports inside its kind's roots and the book is not one
+      of them; rule 63 reports a malformed row in the book itself.
+    selftest_floor: { canaries: 4, negatives: 1 }
+    canaries:
+      # (1) THE DEFECT ITSELF, the book's own example: a raw duration.
+      - { fixture: raw_transition.css, plant_at: frontend/src/zzz_canary/motion/raw.css,
+          mode: create, expect: { contains: "`transition: 200ms` is a raw motion" } }
+      # (2) THE INLINE HALF, with its own time and easing.
+      - { fixture: inline_raw_animation.tsx, plant_at: frontend/src/zzz_canary/motion/inline.tsx,
+          mode: create, expect: { contains: "`transition: opacity 0.3s ease` is a raw motion" } }
+      # (3) THE SET, ONE DIRECTION: a token the ledger has no row for.
+      - { fixture: off_ledger_token.css, plant_at: frontend/src/tokens/zzz_canary/motion.css,
+          mode: create, expect: { contains: "`--motion-zzz-extra` is declared in the tokens layer and is on no motion-ledger row" } }
+      # (4) THE SET, THE OTHER DIRECTION — and the drawer read, proven: a
+      # ledger row in the product's drawer with no token behind it.
+      - { fixture: a_ledger_row_with_no_token.md, plant_at: docs/product/design/patterns.local.md,
+          mode: append, expect: { contains: "the motion ledger names `--motion-zzz-orphan`" } }
+    negatives:
+      # A MOMENT ON THE LEDGER: its token declared and spent, its row in the
+      # drawer, and a `transition: none` beside it.
+      - { fixture: on_the_ledger.css, plant_at: frontend/src/tokens/zzz_canary/arrive.css,
+          mode: create,
+          extra_files: [ { fixture: the_ledger_row_for_it.md,
+              plant_at: docs/product/design/patterns.local.md, mode: append } ] }
+
+  - id: "67"
+    name: js-one-focus-ring-and-the-act-floor
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      Every pressable under frontend/src/ — an `a`, `button`, `summary` or
+      pressable `[role]` a stylesheet styles or a screen renders as a host
+      element, and every class a stylesheet writes on one, gives
+      `cursor: pointer`, or a screen puts on one — has a `:focus-visible` rule
+      naming the ONE ring token, `var(--focus-ring)`. And every pressable CLASS
+      consumes `var(--act-min)` in a rule of its own: the act floor's static
+      half.
+    runner:
+      argv: ["python3", "quality/runners/js_focus_ring.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "Every pressable wears one ring when the keyboard reaches it" }
+    valve:
+      marker: "<comment> rule-67: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. A finding in a `.css` file cannot be valved (rule 53's declared seam gap): the remedy there is the ring and the floor"
+    scope: {}
+    # Measured on this tree: 21 files, 1 stylesheet, 4 pressables (`a`,
+    # `button`, `summary`, `[role="button"]` — the tokens layer's floor rules),
+    # 0 pressable classes. The floors bind the SCAN and the derivation.
+    floors: { files_scanned: 1, stylesheets: 1, pressables: 1 }
+    ratchets:
+      no-ring: 0
+      no-act-min: 0
+    does_not_cover: >
+      THE MEASURED BOX. A class that consumes `--act-min` in a `max-width` or a
+      rule the cascade overrides passes; whether the target really measures 44
+      × 44 at the phone width is a rendered fact, Tier C, and not a house rule
+      here. WHICH RING ON WHICH GROUND — one token satisfies the rule; a
+      product whose ground needs a second ring names it in the book and adds
+      the rule in its drawer. PRESSABILITY FROM SCRIPT — an `onClick` on a
+      `div`, a `tabIndex`, a component whose host element is decided at run
+      time, a `className` built by a helper or a template literal — is not
+      derived; `:where(…)`/`:is(…)` selectors are not unpacked, so a ring
+      written only through them is not credited. A BARE ELEMENT is asked for
+      the ring and not the floor, because an `a` inside a sentence is the named
+      exception and the tokens layer carries the elements' floor. `outline:
+      none` elsewhere is not judged. A `.css` VALVE is not honoured.
+    selftest_floor: { canaries: 4, negatives: 2 }
+    canaries:
+      # (1) THE DEFECT ITSELF, the book's own example: a pressable, no ring.
+      - { fixture: a_pressable_class_with_no_ring.css, plant_at: frontend/src/zzz_canary/focus/act.css,
+          mode: create, expect: { contains: "the pressable `.zzz-act` has no `:focus-visible` rule" } }
+      # (2) THE FLOOR: a button class with its ring and no act floor.
+      - { fixture: a_pressable_class_below_the_floor.css, plant_at: frontend/src/zzz_canary/focus/chip.css,
+          mode: create, expect: { contains: "the pressable class `.zzz-chip` consumes no `var(--act-min)`" } }
+      # (3) THE SCREEN HALF: a class a screen puts on a button, styled nowhere.
+      - { fixture: a_screen_button_with_a_bare_class.tsx, plant_at: frontend/src/zzz_canary/focus/go.tsx,
+          mode: create, expect: { contains: "the pressable `.zzz-go` has no `:focus-visible` rule" } }
+      # (4) A SECOND RING: a focus-visible rule of its own, naming no ring token.
+      - { fixture: a_ring_of_its_own.css, plant_at: frontend/src/zzz_canary/focus/own.css,
+          mode: create, expect: { contains: "the pressable `.zzz-own` has no `:focus-visible` rule" } }
+    negatives:
+      - { fixture: a_pressable_class_to_the_floor.css, plant_at: frontend/src/zzz_canary/focus/act-ok.css,
+          mode: create }
+      - { fixture: a_class_nobody_presses.css, plant_at: frontend/src/zzz_canary/focus/card.css,
+          mode: create }
+
+  - id: "68"
+    name: js-nothing-is-disabled
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      Nothing under frontend/src/ disables a control: no `disabled` or
+      `aria-disabled` attribute on a JSX element, no `disabled` key in an
+      object literal or a props type, no `.disabled =` assignment, no
+      `setAttribute`/`toggleAttribute` of `disabled`, no stylesheet
+      selector naming `:disabled`, `[disabled]` or `[aria-disabled]`, and no
+      `pointer-events: none` or `cursor: not-allowed` declared on a pressable
+      (rule 67's population: `a`, `button`, `summary`, a pressed `[role]`, or a
+      class styled on one, given `cursor: pointer` or put on one). An act
+      the role may not take is absent; an act at work says its verb's
+      progressive and stays pressable; an act that cannot run yet is answered
+      by the server's refusal.
+    runner:
+      argv: ["python3", "quality/runners/js_nothing_disabled.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "### §4 · The act vocabulary — nothing is disabled" }
+    valve:
+      marker: "<comment> rule-68: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. A finding in a `.css` file cannot be valved (rule 53's declared seam gap): the remedy there is to draw no disabled state"
+    scope: {}
+    # The floors bind the SCAN — both populations, scripts and stylesheets —
+    # never this week's count. Measured on this tree: 17 scripts, 1 stylesheet,
+    # 0 findings (the scaffold was already clean before the rule arrived).
+    floors: { files_scanned: 1, scripts: 1, stylesheets: 1 }
+    ratchets:
+      disabled: 0
+    does_not_cover: >
+      A SWITCH BUILT AT RUN TIME — a props object assembled by a helper, a
+      spread from another file (`{...rest}` carrying a `disabled`), an
+      attribute name computed from a variable — is not read. A THIRD-PARTY
+      COMPONENT that disables itself internally (a library control with its
+      own `isDisabled` or a `readOnly` field) is invisible: the rule reads this
+      tree's source, not a package's. `readonly`/`readOnly` on a field, and
+      `inert`, are not judged. JSX TEXT holding an apostrophe can hide the rest
+      of its line from the scan (the shared scanner's declared trade), and a
+      `<` in an expression that is not a tag can be read as one. A `.css`
+      VALVE is not honoured. A STYLESHEET IS READ FOR ITS SELECTORS AND FOR
+      TWO DECLARATIONS — `pointer-events: none` and `cursor: not-allowed` —
+      and only where the rule's subject is a pressable rule 67 derives: a
+      class made pressable by a helper, a computed `className` or a library
+      component is not known, the same declaration in an inline `style={{…}}`
+      object is not read, and a subject that is a pseudo-element
+      (`button::after`) or a descendant of a pressable (`button svg`) is
+      decoration and passes. Other ways of drawing a dead face (`opacity`,
+      `filter: grayscale`) are not judged. WHETHER the absent act, the
+      progressive and the refusal are actually drawn is the book's §4 entry
+      and review's.
+    selftest_floor: { canaries: 5, negatives: 3 }
+    canaries:
+      # (1) THE DEFECT ITSELF, the brief's own example: a `disabled` prop.
+      - { fixture: a_disabled_prop.tsx, plant_at: frontend/src/zzz_canary/act/disabled.tsx,
+          mode: create, expect: { contains: "`<button disabled>` disables a control" } }
+      # (2) THE SWITCH OFFERED: a props type is where every disabled act starts.
+      - { fixture: a_props_type_offering_the_switch.tsx, plant_at: frontend/src/zzz_canary/act/props.tsx,
+          mode: create, expect: { contains: "a `disabled` key offers the switch" } }
+      # (3) THE ARIA TWIN: the same dead control, announced instead of drawn.
+      - { fixture: an_aria_disabled_link.tsx, plant_at: frontend/src/zzz_canary/act/aria.tsx,
+          mode: create, expect: { contains: "`<a aria-disabled>` disables a control" } }
+      # (4) THE STYLESHEET HALF: a face styled for a state that never exists.
+      - { fixture: a_disabled_style.css, plant_at: frontend/src/zzz_canary/act/act.css,
+          mode: create, expect: { contains: "the selector `.zzz-act:disabled` styles a disabled state" } }
+      # (5) THE SAME DEAD CONTROL IN CSS: a busy pressable the pointer cannot press.
+      - { fixture: a_pointer_events_none.css, plant_at: frontend/src/zzz_canary/act/busy.css,
+          mode: create, expect: { contains: "`pointer-events: none` on the pressable `.zzz-busy[data-busy]` disables a control" } }
+    negatives:
+      # THE WORD IS NOT THE SWITCH: prose, a comment and a longer identifier.
+      - { fixture: the_word_in_prose.tsx, plant_at: frontend/src/zzz_canary/act/prose.tsx, mode: create }
+      # THE BOOK'S OWN ANSWER: busy says its progressive and stays pressable.
+      - { fixture: a_busy_act_that_stays_pressable.tsx, plant_at: frontend/src/zzz_canary/act/busy.tsx,
+          mode: create }
+      # DECORATION IS NOT THE CONTROL: an overlay nobody presses, an icon inside
+      # a button, a button's pseudo-element.
+      - { fixture: an_overlay_nobody_presses.css, plant_at: frontend/src/zzz_canary/act/overlay.css,
+          mode: create }
+
+  - id: "69"
+    name: js-no-toast-spinner-or-shimmer
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      Nothing under frontend/src/ draws a toast, a spinner or a shimmer. In a
+      script: no identifier whose words include `toast`, `toaster`,
+      `snackbar`, `spinner`, `shimmer` or `loader` (nor `CircularProgress` or
+      `ActivityIndicator`), no import from a package that names one or from the
+      named toast and loader libraries, and no `className` literal holding a
+      class from the class family. In a stylesheet: no class selector and no
+      `@keyframes` name whose words include `toast`, `toaster`, `snackbar`,
+      `spinner`, `spin`, `shimmer` or `loader`. An outcome is a band under the
+      head; loading is still shapes at the content's heights.
+    runner:
+      argv: ["python3", "quality/runners/js_no_toast_spinner.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "### §17 · Bands — there are no toasts" }
+    valve:
+      marker: "<comment> rule-69: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. A finding in a `.css` file cannot be valved (rule 53's declared seam gap): the remedy there is a band or a still shape"
+    scope: {}
+    # Measured on this tree: 17 scripts, 1 stylesheet, 0 findings (the
+    # scaffold's loading face is a still skeleton, already clean).
+    floors: { files_scanned: 1, scripts: 1, stylesheets: 1 }
+    ratchets:
+      toast: 0
+      spinner: 0
+      shimmer: 0
+    does_not_cover: >
+      THE FAMILIES ARE WORDS. A toast or a spinner under a name that carries
+      none of the family's words (`Notice`, `Busy`, `Progress`, a library's
+      own `Loading` component, an `animate-pulse` utility) is not seen, and a
+      name that happens to carry one for another reason is a finding for the
+      valve. MOTION FROM SCRIPT and a spinner drawn as an inline SVG with no
+      family word are invisible. A class assembled by a helper or a template
+      literal's `${…}` part is not read; a `className` is read only as a
+      literal beside `className=`. `animate-pulse`-style utility classes of a
+      CSS framework are outside the family. A `.css` VALVE is not honoured.
+      A framework's own `loader` (the `loader` prop of an image component, a
+      route loader) carries the word and is a finding for the valve.
+      WHETHER the band and the still shapes are drawn instead is the book's
+      §13 and §17 entries and review's.
+    selftest_floor: { canaries: 5, negatives: 3 }
+    canaries:
+      # (1) THE DEFECT ITSELF, the brief's own example: a `Spinner` import.
+      - { fixture: a_spinner_import.tsx, plant_at: frontend/src/zzz_canary/busy/wait.tsx,
+          mode: create, expect: { contains: "`Spinner` is a spinner" } }
+      # (2) A TOAST LIBRARY, named by its package.
+      - { fixture: a_toast_library.tsx, plant_at: frontend/src/zzz_canary/busy/saved.tsx,
+          mode: create, expect: { contains: "the import of `sonner` brings a toast" } }
+      # (3) THE CLASS FAMILY: a shimmer row.
+      - { fixture: a_shimmer_class.css, plant_at: frontend/src/zzz_canary/busy/rows.css,
+          mode: create, expect: { contains: "the class `.row--shimmer` is a shimmer" } }
+      # (4) THE ANIMATION ITSELF: a spin keyframe.
+      - { fixture: a_spin_keyframe.css, plant_at: frontend/src/zzz_canary/busy/spin.css,
+          mode: create, expect: { contains: "`@keyframes spin` is a spinner" } }
+      # (5) A LOADER ICON: an icon kit's spinner under the word `loader`.
+      - { fixture: a_loader_icon_import.tsx, plant_at: frontend/src/zzz_canary/busy/loader.tsx,
+          mode: create, expect: { contains: "`Loader2` is a spinner" } }
+    negatives:
+      # THE BOOK'S LOADING FACE: a still skeleton, and the words in prose.
+      - { fixture: a_still_skeleton.tsx, plant_at: frontend/src/zzz_canary/busy/skeleton.tsx, mode: create }
+      # WORDS, NOT SUBSTRINGS: `inspired` holds no `spin`, `toastmaster` no `toast`.
+      - { fixture: a_word_that_only_contains_one.css, plant_at: frontend/src/zzz_canary/busy/words.css,
+          mode: create }
+      # WORDS, NOT SUBSTRINGS, in a script: `Downloader`, `preload`, `loaded`.
+      - { fixture: a_downloader_is_not_a_loader.tsx, plant_at: frontend/src/zzz_canary/busy/download.tsx,
+          mode: create }
+
+  - id: "70"
+    name: js-one-dialog-primitive-and-its-foot
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      Only frontend/src/primitives/dialog.tsx draws a dialog: a `<dialog>`
+      element, a `role` of `dialog` or `alertdialog` (a JSX attribute or an
+      object key) or a `createElement("dialog")` anywhere else under
+      frontend/src/ is a second sheet. And no dialog foot carries a dismiss
+      word: inside the primitive's `foot={…}` prop, or a `<footer>` in a
+      module that draws a dialog, the words Close, Cancel, Done and Dismiss
+      appear in no JSX text, no string literal and no copy key — the sheet's
+      one dismiss is in its head. The primitive exists and draws a `<dialog>`.
+    runner:
+      argv: ["python3", "quality/runners/js_one_dialog.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "### §1 · The sheet" }
+    valve:
+      marker: "<comment> rule-70: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    # A POPULATION OF ONE, FLOORED: the rule's first clause compares every
+    # dialog against the primitive, so a tree with no primitive would pass by
+    # having nothing to compare. Measured on this tree: 17 scripts, 1 primitive.
+    floors: { files_scanned: 1, dialog_primitives: 1 }
+    ratchets:
+      second-dialog: 0
+      foot-word: 0
+    does_not_cover: >
+      A DIALOG FROM A LIBRARY under a component name (`<Modal>`, `<Sheet>`,
+      `<Popover>`) whose host element is decided inside the package is not
+      seen — the rule reads this tree's source; a product that adopts one
+      names it in the book and adds the rule in its drawer. A FOOT SPELLED
+      ANOTHER WAY — acts handed in through `children`, a `<div>` styled as a
+      foot, a foot built by a helper — is not read as a foot, and neither is a
+      `<footer>` in a module that draws no dialog. A dismiss WORD REACHED
+      THROUGH A REFERENCE whose key is not named for it (`COPY.leave` holding
+      "Cancel") passes. WHETHER the head really carries exactly one dismiss is
+      the primitive's own test. Stylesheet selectors on `[role="dialog"]` are
+      not read. A ROLE VALUE HELD IN A VARIABLE (`const kind = "dialog"; …
+      role={kind}`) is not read — the shared scanner's declared trade: a
+      value reached through a name is computed at run time as far as a
+      static read can tell.
+    selftest_floor: { canaries: 4, negatives: 2 }
+    canaries:
+      # (1) THE BRIEF'S OWN EXAMPLE: a second `role="dialog"`.
+      - { fixture: a_second_role_dialog.tsx, plant_at: frontend/src/zzz_canary/sheet/filters.tsx,
+          mode: create, expect: { contains: "a `role` of dialog outside the primitive" } }
+      # (2) A SECOND `<dialog>` element.
+      - { fixture: a_second_dialog_element.tsx, plant_at: frontend/src/zzz_canary/sheet/drawer.tsx,
+          mode: create, expect: { contains: "a `<dialog>` element outside the primitive" } }
+      # (3) THE FOOT WORD, the brief's own example: `Cancel` in a dialog foot.
+      - { fixture: cancel_in_a_dialog_foot.tsx, plant_at: frontend/src/zzz_canary/sheet/rename.tsx,
+          mode: create, expect: { contains: "`Cancel` sits in a dialog foot" } }
+      # (4) THE SAME WORD THROUGH A COPY KEY.
+      - { fixture: a_dismiss_key_in_a_foot.tsx, plant_at: frontend/src/zzz_canary/sheet/review.tsx,
+          mode: create, expect: { contains: "`done (a copy key)` sits in a dialog foot" } }
+    negatives:
+      # THE RIGHT FORM: a sheet through the primitive, an act in the foot, the
+      # word "Close" in the BODY and a `.requestSubmit()` call in the foot.
+      - { fixture: a_sheet_through_the_primitive.tsx, plant_at: frontend/src/zzz_canary/sheet/ok.tsx,
+          mode: create }
+      # A PAGE FOOTER IS NOT A SHEET'S FOOT.
+      - { fixture: a_page_footer_with_no_dialog.tsx, plant_at: frontend/src/zzz_canary/sheet/page-foot.tsx,
+          mode: create }
+
+  - id: "71"
+    name: js-the-route-table-names-every-page
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      frontend/src/screens/routes.ts — the route table — carries exactly one
+      row for every route a `page.*` file under frontend/src/app/ draws
+      (route groups `(…)` and parallel slots `@…` dropped, dynamic segments
+      kept verbatim), no row for a route no page draws, and every row carries
+      the four columns `path`, `job`, `primarySeat` and `operation` (`null`
+      is an answer; an absent column is not). The operation column names the
+      list or detail operation the route draws.
+    runner:
+      argv: ["python3", "quality/runners/js_route_table.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "### §0 · The route table" }
+    valve:
+      marker: "<comment> rule-71: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    # TWO POPULATIONS, FLOORED SEPARATELY: the pages and the table. A runner
+    # that stopped finding pages would pass every row as "no page" red, and one
+    # that stopped reading the table would pass nothing — each is its own
+    # floor. Measured on this tree: 2 pages, 1 table, 2 rows.
+    floors: { files_scanned: 1, pages: 1, route_tables: 1, rows: 1 }
+    ratchets:
+      table-missing: 0
+      page-unrowed: 0
+      row-unpaged: 0
+      row-form: 0
+      row-duplicate: 0
+    does_not_cover: >
+      WHETHER THE OPERATION IS REAL — the operation column is read for its
+      presence, not checked against the served document; the surface that
+      follows it (a remedy's link) owns that census. WHETHER THE JOB IS TRUE
+      and the seat is where the act really sits is the book's §0 entry and the
+      mirror pass's line 1. ROUTES NOT DRAWN BY A PAGE — a `route.ts` handler,
+      a rewrite, a redirect, a `pages/` directory, a `default.*` slot — are not
+      in the population. A ROW BUILT AT RUN TIME (spread from another array, a
+      path computed from a variable) is not read; a row is an object literal
+      with a quoted `path:` in the table file. An intercepting segment
+      (`(.)x`) is dropped like a group.
+    selftest_floor: { canaries: 3, negatives: 2 }
+    canaries:
+      # (1) THE BRIEF'S OWN EXAMPLE: a page with no route-table row.
+      - { fixture: a_page_with_no_row.tsx, plant_at: frontend/src/app/zzz_canary/orphan/page.tsx,
+          mode: create, expect: { contains: "draws the route `/zzz_canary/orphan` and the route table" } }
+      # (2) THE OTHER DIRECTION: a row with no page is a door onto a 404.
+      - { fixture: a_row_with_no_page.ts, plant_at: frontend/src/screens/routes.ts,
+          mode: append, expect: { contains: "has a row for `/zzz_canary/gone` and no page" } }
+      # (3) THE OPERATION COLUMN, which a remedy's link follows.
+      - { fixture: a_row_with_no_operation.ts, plant_at: frontend/src/screens/routes.ts,
+          mode: append, expect: { contains: "the row for `/zzz_canary/half` has no `operation` column" } }
+    negatives:
+      # A PAGE WITH ITS ROW.
+      - { fixture: a_page_with_its_row.tsx, plant_at: frontend/src/app/zzz_canary/listed/page.tsx,
+          mode: create,
+          extra_files: [ { fixture: the_row_for_it.ts, plant_at: frontend/src/screens/routes.ts,
+              mode: append } ] }
+      # A ROUTE GROUP IS NOT A SEGMENT: `(group)/nested` is `/zzz_canary/nested`.
+      - { fixture: a_grouped_page.tsx, plant_at: frontend/src/app/zzz_canary/(group)/nested/page.tsx,
+          mode: create,
+          extra_files: [ { fixture: the_row_for_the_grouped_page.ts,
+              plant_at: frontend/src/screens/routes.ts, mode: append } ] }
+
+  - id: "72"
+    name: js-every-label-is-a-lexicon-row
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      frontend/src/copy/lexicon.ts declares one `LEXICON` array of strings,
+      with no row twice; and every LABEL a module under frontend/src/copy/
+      writes — a string literal that is the value of a key named `label`,
+      `act`, `title`, `heading` or `dismiss`, or of a camel-cased key ending in
+      `Label`, `Act`, `Title` or `Heading` — equals a lexicon row verbatim.
+    runner:
+      argv: ["python3", "quality/runners/js_lexicon.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "### §21 · Words on a surface" }
+    valve:
+      marker: "<comment> rule-72: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    # THREE POPULATIONS: the copy modules, the lexicon, and the labels read out
+    # of the modules — a key grammar that stopped matching would read zero
+    # labels and pass. Measured on this tree: 3 modules, 1 lexicon, 8 rows,
+    # 9 labels.
+    floors: { files_scanned: 1, copy_modules: 1, lexicons: 1, labels: 1 }
+    ratchets:
+      lexicon-missing: 0
+      lexicon-duplicate: 0
+      off-lexicon: 0
+    does_not_cover: >
+      A LABEL UNDER ANOTHER KEY — `hatAsked`, `organizations`, a column
+      heading named for its column — is not read; the key grammar is the
+      rule's reach, and a product that wants a key read names it with a label
+      suffix. A LABEL REACHED THROUGH A REFERENCE or composed at run time
+      passes on the literal it was built from, or not at all. A STRING INLINE
+      IN A FACE is outside `frontend/src/copy/` and is fe-conventions §5's,
+      not this rule's. ONE WORD PER THING is held only as far as the lexicon
+      goes: two rows that name one act differently (*Remove* beside *Delete*)
+      both pass — the lexicon's own review is design's. A row nothing spends is
+      not a finding (a product's lexicon may run ahead of its faces).
+    selftest_floor: { canaries: 2, negatives: 1 }
+    canaries:
+      # (1) THE BRIEF'S OWN EXAMPLE: an off-lexicon label.
+      - { fixture: an_off_lexicon_label.ts, plant_at: frontend/src/copy/zzz_canary/save.ts,
+          mode: create, expect: { contains: "Save these changes now" } }
+      # (2) THE SUFFIX HALF OF THE GRAMMAR: a camel `…Act` key.
+      - { fixture: a_camel_label_off_the_lexicon.ts, plant_at: frontend/src/copy/zzz_canary/leave.ts,
+          mode: create, expect: { contains: "the label `leaveAct: \"Get rid of it\"`" } }
+    negatives:
+      # ROWS SPENT VERBATIM; a sentence under `detail`; `contract` is not an act.
+      - { fixture: labels_on_the_lexicon.ts, plant_at: frontend/src/copy/zzz_canary/door.ts, mode: create }
+
+  - id: "73"
+    name: js-no-machine-token-in-copy
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      No string literal value in a module under frontend/src/copy/ (the lexicon
+      included) carries a machine token: a snake token (letters and digits
+      joined by `_`), a hex id (thirty-two hex digits, or a UUID), or a kebab
+      key (a lower-case run joined by `-` of three or more parts with no small
+      joining word, or ending in a machine suffix — `-id`, `-uuid`, `-key`,
+      `-slug`, `-url`, `-uri`, `-code`, `-ref`, `-pk` — or a url-name action —
+      `-list`, `-detail`, `-create`, `-update`, `-delete`). A literal in a key
+      position and a module specifier are machine words by position and are
+      not read.
+    runner:
+      argv: ["python3", "quality/runners/js_machine_tokens.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "free of machine tokens." }
+    valve:
+      marker: "<comment> rule-73: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    # Measured on this tree: 4 copy modules, 34 copy strings, 0 findings (the
+    # scaffold's copy was already clean; its snake keys are keys).
+    floors: { files_scanned: 1, copy_modules: 1, copy_strings: 1 }
+    ratchets:
+      snake-token: 0
+      hex-id: 0
+      kebab-token: 0
+    does_not_cover: >
+      A TWO-PART KEBAB KEY with no machine suffix (`due-date`, `hat-switch`)
+      reads as an English compound and is not flagged; CAMEL-CASED
+      IDENTIFIERS (`invoiceId`) are not tokens here, since a proper name
+      (`iPhone`) has the same shape. A literal in a TERNARY's first branch is
+      read as a key (the `:` after it) and skipped. A STRING LITERAL TYPE in a
+      copy module is read as a string. A TOKEN THE SERVER SENDS — a refusal's
+      code, a remedy's destination — is rendered verbatim by design and is the
+      refusal notice's (§15), not a copy string; a token interpolated at run
+      time (`${…}`) is not read. Strings outside frontend/src/copy/ are
+      fe-conventions §5's.
+    selftest_floor: { canaries: 3, negatives: 1 }
+    canaries:
+      # (1) THE BRIEF'S OWN EXAMPLE: `invoice_id` in a copy string.
+      - { fixture: invoice_id_in_a_copy_string.ts, plant_at: frontend/src/copy/zzz_canary/invoice.ts,
+          mode: create, expect: { contains: "`invoice_id` is a machine token" } }
+      # (2) A RAW ID in a sentence (low-entropy on purpose: the secrets scan
+      # is not this rule's business).
+      - { fixture: a_hex_id_in_a_sentence.ts, plant_at: frontend/src/copy/zzz_canary/missing.ts,
+          mode: create, expect: { contains: "`deadbeefdeadbeefdeadbeefdeadbeef` is a machine token" } }
+      # (3) A URL NAME in a sentence.
+      - { fixture: a_kebab_key_in_a_sentence.ts, plant_at: frontend/src/copy/zzz_canary/find.ts,
+          mode: create, expect: { contains: "`widget-list` is a machine token" } }
+    negatives:
+      # A SNAKE KEY IS A KEY; English compounds; an import; an index.
+      - { fixture: plain_words_and_machine_keys.ts, plant_at: frontend/src/copy/zzz_canary/plain.ts,
+          mode: create }
 
 # THE PEER-FORK MIGRATION PATH (rules 51-53, the redemption item for the
 # living-workaround finding of the FEEDBACK-2 survey). That finding recorded

@@ -928,16 +928,16 @@ case_cis_matrix_takes_the_unit_with_no_yaml_edit() {
         cannot_look "--list-legs over the CI drawer exited non-zero"
     derive="${WORK}/derive.sh"
     awk '
-        /\.\/scripts\/check\.sh --list-legs > units\.tsv/ { on = 1; next }
+        /\.\/scripts\/check\.sh --list-legs --ci >"\$listing"/ { on = 1; next }
         /echo "matrix=\$matrix"/ { on = 0 }
         on { sub(/^          /, ""); print }
     ' .github/workflows/ci.yml >"$derive"
     [ -s "$derive" ] ||
-        cannot_look ".github/workflows/ci.yml carries no derive block between its --list-legs line and its matrix output — the case has no subject"
+        cannot_look ".github/workflows/ci.yml carries no derive block between its --list-legs --ci line and its matrix output — the case has no subject"
     grep -q 'read -r unit needs shards' "$derive" ||
         cannot_look "the extracted block does not read the listing's columns — it is not the derive block"
     got=$(
-        cd "$WORK" && SHARDS=3 bash -c "set -euo pipefail; matrix='[]'; $(cat "$derive"); printf '%s' \"\$matrix\" | jq -c '.[] | select(.unit==\"local\" or .unit==\"frontend\")'"
+        cd "$WORK" && SHARDS=3 bash -c "set -euo pipefail; listing='${listing}'; matrix='[]'; $(cat "$derive"); printf '%s' \"\$matrix\" | jq -c '.[] | select(.unit==\"local\" or .unit==\"frontend\")'"
     )
     got=$(printf '%s\n' "$got" | grep '^{')
     if [ "$(printf '%s\n' "$got" | grep -c .)" = "2" ]; then

@@ -1,0 +1,10 @@
+/* A pressable class carrying both halves: the one ring, and the act floor. */
+.zzz-act {
+    cursor: pointer;
+    min-block-size: var(--act-min);
+    min-inline-size: var(--act-min);
+}
+.zzz-act:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+}

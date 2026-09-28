@@ -510,7 +510,13 @@ DRIVE_CI_VARS="CI GITHUB_ACTIONS"
 # they would point that child's reader at somebody else's plant, which is
 # section 4's whole argument one drawer over. Section 4c reads its own name
 # BEFORE this loop runs, so being on this list costs the reader nothing.
-DRIVE_GATE_VARS="DJB_GATE_SANCTION DJB_GATE_CALLER DJB_GATE_PYTEST_SEED DJB_LOOP_HERE DJB_LOCAL_LEGS_DIR DJB_LOCAL_LEGS_KNOWN_NAMES DJB_LOCAL_LEGS_TEMPLATE_UNITS DJB_LOCAL_LEGS_CHANGED_FILES DJB_LOCAL_DRIVES_DIR DJB_LOCAL_ENV_KEYS"
+# AN EIGHTH, AND IT IS THE WALLS FILE. `DJB_MEMBER_WALLS_OUT` is set on every CI
+# row so the selftest leg appends one `member-walls/1` row per member it runs;
+# inherited by a drive that runs a planted selftest body, it would append the
+# PLANTED members' walls to the row's real file, and the fold's harvest refuses
+# a row for a member the population does not have. A case that drives the
+# append names its own file at its own call site.
+DRIVE_GATE_VARS="DJB_GATE_SANCTION DJB_GATE_CALLER DJB_GATE_PYTEST_SEED DJB_LOOP_HERE DJB_LOCAL_LEGS_DIR DJB_LOCAL_LEGS_KNOWN_NAMES DJB_LOCAL_LEGS_TEMPLATE_UNITS DJB_LOCAL_LEGS_CHANGED_FILES DJB_LOCAL_DRIVES_DIR DJB_LOCAL_ENV_KEYS DJB_MEMBER_WALLS_OUT"
 
 # --- 4b · WHAT CI SETS THAT A DRIVE IS MEANT TO INHERIT -----------------------
 #
@@ -539,7 +545,9 @@ DRIVE_GATE_VARS="DJB_GATE_SANCTION DJB_GATE_CALLER DJB_GATE_PYTEST_SEED DJB_LOOP
 # `DRIVE_GATE_VARS` this list is a DECLARATION rather than an instruction, so
 # there is nothing here to act on it.
 # shellcheck disable=SC2034
-DRIVE_INHERITED_VARS="DATABASE_NAME DATABASE_HOST DATABASE_PORT DATABASE_USER DATABASE_PASSWORD REDIS_URL CACHE_URL AWS_S3_ENDPOINT_URL AWS_S3_REGION_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN PYTHON_VERSION PYTEST_SHARDS UNIT SHARD PR_BASE"
+# `PASSES` and `PR_HEAD_REF` join `UNIT`, `SHARD` and `PR_BASE`: the row's own
+# coordinates, read by the workflow's gate step and by no script under test.
+DRIVE_INHERITED_VARS="DATABASE_NAME DATABASE_HOST DATABASE_PORT DATABASE_USER DATABASE_PASSWORD REDIS_URL CACHE_URL AWS_S3_ENDPOINT_URL AWS_S3_REGION_NAME AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN PYTHON_VERSION PYTEST_SHARDS UNIT SHARD PR_BASE PASSES PR_HEAD_REF"
 
 # --- 4c · WHAT THE PRODUCT DECLARES ITS OWN DRIVES NEED -----------------------
 #

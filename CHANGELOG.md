@@ -50,6 +50,188 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.3.0] — A product's first face meets a floor it set, and a train pays for one measurement
+
+**A product met two failures this release closes: two verifiers passed a
+face that broke a written design rule, because the rule had no test to fail;
+and a train was measured two or three times per tree, the push to main
+re-running every leg on bytes CI had already measured.** 2.3.0 puts an
+instrument under every design rule a face is held to and makes the pattern
+book the one place those rules are written; it measures a train once, on CI,
+and lets the push to main consult that verdict instead of measuring again;
+and it adds a deploy road that promotes to production only what staging
+proved and a nightly proof has vouched for. The rest is what the same work
+found, fixed. 2.3.0 is a minor by the owner's word, on the precedent above.
+Under the literal convention three items lean major: rules 61 and 62 red a
+product's compose and workflow files until they are edited, rules 63–73 red
+an existing `frontend/src/` until it adopts the floor, and the test store's
+credential moved to one authority. None is a wire break — no app, model,
+migration, service, door, event or workflow was added or changed — and the
+two command changes are refusals that print their remedy. The house rules
+red a product until it adopts the floor — the owner's ruling of 2026-09-26;
+a product that merges and does nothing gets a red gate that names each site,
+never a wrong answer.
+
+### What a product does at the merge
+
+1. **Every `image:` in your `compose.yaml` and `deploy/compose.yaml` carries
+   `@sha256:<64 hex>`** of a multi-arch index from `docker.io`, `ghcr.io` or
+   `docker.hyperdx.io`, or `# pin-exception: <reason>` on or above the line
+   (`python -m quality.gate --explain 61`). To re-pin, edit the digest and
+   transcribe `docker buildx imagetools inspect <ref>` showing both
+   architectures; no tool does this for you yet.
+2. **In every workflow job, each `run:` step after
+   `aws-actions/configure-aws-credentials` sets `AWS_ACCESS_KEY_ID`,
+   `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` in its own `env:`** (an
+   empty value is a pin) or carries `# creds: <reason>`
+   (`python -m quality.gate --explain 62`).
+3. **Delete every NON-EMPTY `AWS_*` value your workflow `env:` supplies
+   for a key `config/settings/test.py` pins.** That file is the one
+   authority for the test store's credential, and the ci-env census reds a
+   key with two authorities, naming the settings line and each workflow
+   line by `file:line`. The EMPTY pins rule 62 asks for stay: an empty
+   value clears a name and supplies nothing, and the census prints each one
+   as a pin, not a supply.
+4. **Before your first rung under `frontend/src/` — or at the merge, if
+   your tree already has one — run the DESIGN stage:**
+   write entries in `docs/product/design/patterns.local.md` in the book's
+   six-part form, each naming an instrument that exists. Rules 63–73 red
+   every off-scale stylesheet size, gap and motion, a missing focus ring, a
+   disabled control, a toast or spinner, a second dialog, an unrowed page, an
+   off-lexicon label and a machine token in copy until you adopt the floor. A
+   finding in a `.css` file has no valve; the remedy is a token.
+5. **The template's `ci.yml` — template-owned; a product's CI steps go in
+   `scripts/local/ci/`, `docs/product/build-contract.md` § "The drawers" —
+   asks the gate for its units**
+   (`scripts/check.sh --list-legs --ci`), runs pytest one pass, consults
+   before measuring a push to main, publishes a `gate-verdict-<attempt>`
+   record, and adds `deploy-staging` (skipped with a notice unless
+   `vars.DJB_STAGE_TARGET` and `vars.AWS_DEPLOY_ROLE_ARN` are set) and
+   `deploy-prod` (by dispatch; it refuses without its variables).
+6. **`.github/workflows/ci.yml` and `.github/workflows/nightly-proof.yml`
+   are template-owned** — an edit to either is a divergence. Every other
+   workflow file is yours.
+7. **Push a train from a `pm/*` branch as `scripts/pm_push.sh --pr`** with
+   `DJB_GATE_SANCTION="<who>: <why>"`, bank its CI run with
+   `scripts/pm_push.sh --ci-verdict`, then a plain `pm_push.sh` fast-forwards
+   main and is honoured without measuring again. `scripts/pm_push.sh --bank`
+   remains the fallback, and CI re-measures what it pushes.
+8. **`scripts/gate_member_durations.ci.json` is a derived file** your fold
+   rewrites from your latest green CI run; never edit it by hand.
+9. **A production deploy now refuses (exit 2, nothing touched) unless it is
+   typed in full** —
+   `deploy/stage.sh <box> --env prod --sanction '<who>: <why>' --staging <dest> --nightly <dir>`
+   — with staging's `TREE` on this tree, staging's readyz answering 200, and
+   a green nightly no older than 24 h.
+10. **`scripts/verifier_box.sh loop` refuses a box holding another tree** —
+    run `scripts/verifier_box.sh push` with the box's id first. A rung that
+    changes only `TEMPLATE_VERSION` or a `*.md` now runs the tests that quote
+    it, and the full bank's pytest runs once more under the least-privilege
+    grants role.
+11. **Your shell drives' red members print up to ten FAILED lines, and a
+    killed member's transcript reaches the shard log;** the merge line splits
+    "not recorded by any loop" from "red or absent".
+12. **A product test module that reads a registry no token names is made
+    always-on by declaring a reach kind** in `apps/conftest_local.py` —
+    `DJB_REACH_KINDS = {"<kind>": ("<token>(",)}`. An unknown `DJB_*` key in
+    that drawer is a `UsageError`; a drawer kind that reuses a template
+    kind's name is refused, naming both files; and a declared kind that no
+    module reads fails its floor of one.
+
+### Added
+
+- **The pattern book, its drawer and the DESIGN stage.**
+  `docs/product/design/patterns.md` holds one shape per element class, the
+  scales every face is held to and the instrument index; a product's entries
+  go in `patterns.local.md` beside it. Rule 63 refuses an entry whose
+  instrument does not exist and a face that declares no entry.
+- **Rules 64–73, the floor.** Stylesheet sizes, gaps and motion on the
+  scales; a focus ring on every pressable class; nothing disabled; no toast,
+  spinner or shimmer; one dialog primitive
+  (`frontend/src/primitives/dialog.tsx`) whose foot carries no dismiss word;
+  every page in the route table (`frontend/src/screens/routes.ts`); every
+  label a lexicon row (`frontend/src/copy/lexicon.ts`); no machine token in
+  copy. The scaffold adopts the floor.
+- **Rules 61 and 62.** Every compose image is pinned by digest or carries a
+  reason; every workflow step after the AWS credentials action pins or
+  justifies the credential it inherits.
+- **Trains measure once.** `scripts/check.sh --list-legs --ci` prints the
+  units CI runs; a member-walls table is measured on CI and the fold rewrites
+  it; CI's run publishes a `ci:` verdict that the push to main consults, and
+  `scripts/pm_push.sh --ci-verdict` banks it locally.
+- **Deploy by promotion.** `deploy-staging` runs on a push to main;
+  `deploy-prod` runs by dispatch and deploys only the tree staging proved; a
+  migrate wall runs before the swap and psql runs by digest; the deploy
+  runbook gains its CI part and both OIDC `sub` spellings.
+- **The nightly proof.** `.github/workflows/nightly-proof.yml` runs the
+  whole suite twice under one seed (`scripts/pm_push.sh --proof`) as a
+  record the production deploy and the bank read; a green night on another
+  tree is said rather than taken.
+- **A drawer-declared reach kind** (`DJB_REACH_KINDS` in
+  `apps/conftest_local.py`), and the door-registry reach kind with its own
+  floor.
+
+### Changed
+
+- **A production deploy refuses** without its sanction, the staging tree, a
+  staging readyz of 200 and a green nightly no older than 24 h; a dispatch
+  never cancels one already in flight, and every environment not listed as
+  staging is treated as production.
+- **CI's pytest runs one pass**; the `ci:` row says `pytest-x2/1`, and the
+  second whole pass is the nightly's record.
+- **The test store's credential has one authority**,
+  `config/settings/test.py`; a workflow `env:` that sets it too is red.
+
+### Fixed
+
+- **A queryset write through a binding or a helper is seen by rule 20**, and
+  the full bank's pytest runs once more under the least-privilege grants
+  role.
+- **The loop tells the truth about what it ran.** A changed
+  `TEMPLATE_VERSION` or `*.md` seeds the modules that quote it; a dead run's
+  re-take is remembered and every write is renamed into place; a rule that
+  could not look says so; a stale map id is named; no reader ends a pipeline
+  in `grep -q`; the verifier-box drive's fork point falls back to
+  `origin/main`; two tests fix their own clock.
+- **`scripts/verifier_box.sh loop` refuses a stale box by name**, a red
+  member's FAILED lines reach the log, the drives line splits the unrecorded
+  from the red, a killed member's transcript reaches the log, `wait` prints
+  every RED block, and an ignored signal is said.
+- **The publish census places the pattern book** (the design directory is
+  shipped), and the divergence census owns the book as the template's, so a
+  product's edit to it is a divergence and its drawer is not.
+
+### Known
+
+- **The re-pin road has no instrument.** A digest re-pin is transcribed by
+  hand from `docker buildx imagetools inspect`; nothing checks that the new
+  index carries both architectures.
+- A sign-in door test's passkey case failed once on a throwaway tree and has
+  passed on every run since; it is recorded and waits for a second sighting.
+- A verifier box's owner tag is read from the checkout's ledger header, which
+  a worktree carries as a stale copy, so the tag can name a session that has
+  ended.
+- Rules 67 and 68 each hold the walk that decides which classes are
+  pressable, rather than sharing one.
+- A loop over a verifier box whose test databases predate it is not refused
+  yet.
+- No census yet refuses a test that writes under `apps/`.
+- The front end's tier B and tier C instruments are not in this release.
+- An inbound webhook whose signature fails writes no receipt saying why; a
+  sign-in door test that asserts a number is absent from the whole page can
+  meet it inside a random CSRF token; the bank's acceptance box can be
+  reclaimed by Spot at the end of a run; a ten-box bank still takes far
+  longer than its tests; and a product extends the allowed upload content
+  types only by editing a template constant.
+- The always-on leg — the leg a `--loop` runs — still loses a killed
+  member's transcript and leaves its capture file, because its runner has no
+  kill trap; the selftest leg's fix is the road, and it lands as the next
+  instrument change.
+- Rule 70 fires on `Done` as an act label in a dialog's foot — a valve, by
+  design.
+- Rule 69's `loader` word catches data-loading hooks such as `useLoader` — a
+  valve, by design.
+
 ## [2.2.1] — A fresh clone and CI pull the files store again
 
 MinIO archived its open-source project and withdrew every public image, so
@@ -3298,7 +3480,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.2.1...HEAD
+[Unreleased]: ../../compare/v2.3.0...HEAD
+[2.3.0]: ../../compare/v2.2.1...v2.3.0
 [2.2.1]: ../../compare/v2.2.0...v2.2.1
 [2.2.0]: ../../compare/v2.1.7...v2.2.0
 [2.1.7]: ../../compare/v2.1.6...v2.1.7

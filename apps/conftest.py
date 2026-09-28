@@ -588,26 +588,55 @@ DJB_REACH_TOKENS: dict[str, tuple[str, ...]] = {
     "introspect_registry": ("management.commands.introspect",),
     "absent_world": ("DJB_DISABLED_APPS",),
     "door_parity": ("DOOR_PAIR",),
+    # THE DOOR REGISTRY: the two documents every door publishes, rendered
+    # whole. `get_openapi_schema(` is the REST door's document over EVERY
+    # mounted router — the call, not a receiver name, because the walkers spell
+    # the receiver five ways (`api`, `the_api`, `ninja_api`, `mounted`,
+    # `contract`) and no narrower token catches every one of them. `_list_tools(`
+    # is the MCP door's whole catalogue as a test reads it: the helper that
+    # returns every tool's published `outputSchema`. The bare wire method
+    # `tools/list` was measured and rejected — the modules that spell it are
+    # auth and throttle probes that ask for the list and read none of it. A
+    # module that reads either document reads a route or a tool that ANY app
+    # can add, rename or reshape, so a change in an app no scope pairs with it
+    # can move its answer. Derived from what
+    # `apps/core/tests/test_door_schema_parity.py` actually reads (both
+    # documents, compared), never from a list of modules. The import of
+    # `config.api` stays rejected (above): importing the router is not reading
+    # the document it renders.
+    "door_registry": ("get_openapi_schema(", "_list_tools("),
 }
 
 #: LAYER 1. One each, deliberately: what has to be caught here is a derivation
-#: that stopped seeing the KIND at all.
+#: that stopped seeing the KIND at all. A kind a product declares in its drawer
+#: (`DJB_REACH_KINDS`, below) is floored at one the same way, by
+#: `_reach_floors`: a declared kind nothing reads is a token with a typo in it.
 DJB_REACH_FLOORS: dict[str, int] = {kind: 1 for kind in DJB_REACH_TOKENS}
 
+#: The populations INSIDE a reach kind whose tokens name two different
+#: documents. Layer 1 over `door_registry` is satisfied by either half, so
+#: either half could empty while it stayed green — the masking gap the LAYER 2
+#: comment below names. Each token set here is one named population.
+DJB_REACH_POPULATIONS: dict[str, tuple[str, ...]] = {
+    "openapi_document_readers": ("get_openapi_schema(",),
+    "mcp_catalogue_readers": ("_list_tools(",),
+}
+
 #: LAYER 2. Named populations and the number of MODULES this tree must still
-#: hold for each — every one of these five integers was DERIVED by collecting
+#: hold for each — every one of these seven integers was DERIVED by collecting
 #: this suite, never chosen. A legitimate deletion reddens them and that is the
 #: trade: the alternative is a floor that cannot tell a deletion from a
 #: derivation going blind, which is the gap this layer exists to close.
 #:
 #: THE DERIVATION IS A COMMAND, NOT A WORD — pasted here because "derived" was
-#: true of four of these and false of the fifth for long enough that a reader
-#: had no way to tell which. It counts MODULES over the WHOLE collection: the
-#: populations are built in `pytest_collection_modifyitems` below BEFORE
+#: once true of four of these and false of the fifth for long enough that a
+#: reader had no way to tell which. It counts MODULES over the WHOLE collection:
+#: the populations are built in `pytest_collection_modifyitems` below BEFORE
 #: anything is deselected, so the scope a run was asked for does not move these
-#: numbers. Two of the five are a path shape and three are `DJB_REACH_TOKENS`
-#: above, matched as FIXED strings (an unescaped `.` in the introspect token
-#: also matches `management/commands/introspect.py` and reads 5):
+#: numbers. Two of the seven are a path shape and five are tokens declared above
+#: (`DJB_REACH_TOKENS`, `DJB_REACH_POPULATIONS`), matched as FIXED strings (an
+#: unescaped `.` in the introspect token also matches
+#: `management/commands/introspect.py` and reads one more):
 #:
 #:   uv run pytest --collect-only -q | sed -n 's/::.*//p' | sort -u > /tmp/m
 #:   grep -c '^apps/test_[^/]*\.py$'      /tmp/m                      # apps_root_modules
@@ -615,38 +644,42 @@ DJB_REACH_FLOORS: dict[str, int] = {kind: 1 for kind in DJB_REACH_TOKENS}
 #:   xargs grep -lF 'DJB_DISABLED_APPS' < /tmp/m | wc -l              # absent_world_consumers
 #:   xargs grep -lF 'management.commands.introspect' < /tmp/m | wc -l # introspect_registry_readers
 #:   grep -c 'tests/test_lifecycle\.py$'  /tmp/m                      # lifecycle_registry_walkers
+#:   xargs grep -lF 'get_openapi_schema(' < /tmp/m | wc -l            # openapi_document_readers
+#:   xargs grep -lF '_list_tools('     < /tmp/m | wc -l              # mcp_catalogue_readers
 #:
-#: RUN 2026-09-21 on tree 8f6047a8bee0181f6895bb6a12dab1294327dd0d (main
-#: e1a06674), N = 4440 items collected over 280 modules → 5 · 14 · 3 · 7 · 8.
-#: THREE OF THE FIVE INTEGERS BELOW ARE THAT RUN — `apps_root_modules`,
-#: `absent_world_consumers`, `lifecycle_registry_walkers`; `door_parity_census`
-#: and `introspect_registry_readers` ARE NOT, and the gap is recorded rather
-#: than closed here. `apps_root_modules` has now been re-derived TWICE for the
-#: same reason, and the repeat is the point: 3 → 4 when
-#: `apps/test_census_markers.py` joined the population (2026-09-18), and 4 → 5
-#: when `apps/test_retry_floor.py` joined it (2026-09-21, S5F — a cross-app
-#: tripwire that lives at the apps root because the layer contract forbids
-#: `apps.workflows` importing `apps.events`). BOTH TIMES the symptom was the
-#: same: a floor one under its own membership lets a member be moved aside
-#: without the refusal ever naming the population it emptied, and both times
-#: `test_loop_scope.sh`'s moved-aside case is what found it — the second time
-#: only at a bank, because the case still reddened on `absent_world_consumers`
-#: (its victim is a member of two populations) while saying nothing about the
-#: population the case exists to name. **A rung that adds an `apps/test_*.py`
-#: raises this integer in the same commit** (a product: its drawer, below); not a
-#: number read off the tree later. The other two read 14 and 7 against the 10 and 4 they
-#: still carry from the 2026-09-07 run on tree 08c4120e (3 · 10 · 3 · 4 · 8):
-#: a floor left under its own derivation cannot tell a deletion from a
-#: derivation going blind, so both are a live gap and both are somebody's
-#: rung, not a line changed in passing by a hotfix whose territory was this
-#: one floor. The floor that moved is RE-DERIVED, not reworded, so the
-#: sentence above stays a fact of it.
+#: RUN 2026-09-27 on a verifier box (aarch64 Linux), tree
+#: 88f17ef8f17c2bd7e04d6f185bd9259fe5932d59, N = 4492 items collected over 284
+#: modules → 5 · 14 · 3 · 7 · 8 · 18 · 2. ALL SEVEN INTEGERS BELOW ARE THAT RUN
+#: (the last read 8 while the MCP token was the bare `tools/list` method; the
+#: token moved to the catalogue helper and the population was re-derived).
+#: Two of them closed a recorded gap: `door_parity_census`
+#: and `introspect_registry_readers` had carried 10 and 4 from the 2026-09-07
+#: run on tree 08c4120e while the tree held 14 and 7 (measured 2026-09-21 and
+#: again here), and a floor left under its own derivation cannot tell a deletion
+#: from a derivation going blind. The last two are the halves of the
+#: `door_registry` reach kind (`DJB_REACH_POPULATIONS`), floored separately
+#: because either could empty while layer 1 stayed green.
+#:
+#: `apps_root_modules` has been re-derived TWICE for the same reason, and the
+#: repeat is the point: 3 → 4 when `apps/test_census_markers.py` joined the
+#: population (2026-09-18), and 4 → 5 when `apps/test_retry_floor.py` joined it
+#: (2026-09-21 — a cross-app tripwire that lives at the apps root because the
+#: layer contract forbids `apps.workflows` importing `apps.events`). BOTH TIMES
+#: the symptom was the same: a floor one under its own membership lets a member
+#: be moved aside without the refusal ever naming the population it emptied, and
+#: both times `test_loop_scope.sh`'s moved-aside case is what found it. **A rung
+#: that adds a member of any population here raises its integer in the same
+#: commit** (a product: its drawer, below); not a number read off the tree
+#: later. The floor that moved is RE-DERIVED, not reworded, so the paragraph
+#: above stays a fact of it.
 DJB_POPULATION_FLOORS: dict[str, int] = {
     "apps_root_modules": 5,
-    "door_parity_census": 10,
+    "door_parity_census": 14,
     "absent_world_consumers": 3,
-    "introspect_registry_readers": 4,
+    "introspect_registry_readers": 7,
     "lifecycle_registry_walkers": 8,
+    "openapi_document_readers": 18,
+    "mcp_catalogue_readers": 2,
 }
 
 # THE DRAWER RAISES A FLOOR; IT NEVER EDITS ONE. The integers above are the
@@ -687,9 +720,9 @@ def _population_floors() -> dict[str, tuple[int, int]]:
     population — the template's floors, unchanged.
     """
     parts = {name: (floor, 0) for name, floor in DJB_POPULATION_FLOORS.items()}
-    if importlib.util.find_spec("apps.conftest_local") is None:
+    drawer = _fixtures_drawer()
+    if drawer is None:
         return parts
-    drawer = importlib.import_module("apps.conftest_local")
     declared = getattr(drawer, "DJB_POPULATION_FLOOR_ADDENDS", None)
     if declared is None:
         return parts
@@ -723,6 +756,121 @@ def _population_floor_text(name: str, parts: tuple[int, int], derived: int) -> s
         f"{name} (floor {template + addend} = {template} in apps/conftest.py + {addend} in "
         f"{DJB_POPULATION_FLOOR_DRAWER}, derived {derived} module(s))"
     )
+
+
+# THE DRAWER DECLARES A REACH KIND; IT NEVER EDITS ONE. `DJB_REACH_TOKENS`
+# above is the TEMPLATE's registries, and a product's own registry reader —
+# a census over something the product registers, spelled with a call the
+# template has never heard of — was always-on only if somebody edited this
+# template-owned file, which the next fold overwrites. So the product declares
+# the kind in its fixtures drawer, in the template's own shape:
+#
+#     # apps/conftest_local.py
+#     DJB_REACH_KINDS = {"acme_registry": ("list_widgets(",)}
+#
+# and a module whose source carries `list_widgets(` is always-on, printed in
+# the banner as `derived: acme_registry`, and floored at one like every kind:
+# a declared kind nothing reads is a token with a typo in it.
+#
+# ONE READER, `_reach_tokens`. ADDS ONLY: a drawer kind that reuses a template
+# kind's name is refused naming both files, because it would silently replace
+# the template's tokens rather than add to them.
+#
+# AND THE DRAWER'S KEYS ARE A CLOSED SET. Every module-level name in the drawer
+# spelled `DJB_*` is a declaration to one of the readers in this file, and a
+# name no reader reads is a typo that would otherwise declare nothing, which
+# reads exactly like a product with nothing to declare. So `_fixtures_drawer`
+# refuses one, naming it, before any reader looks. Fixtures and helpers in the
+# drawer are not `DJB_*` and are untouched by this.
+DJB_REACH_KINDS_KEY = "DJB_REACH_KINDS"
+
+#: Every `DJB_*` name the drawer may declare, and the one reader of each.
+DJB_DRAWER_KEYS: dict[str, str] = {
+    "DJB_POPULATION_FLOOR_ADDENDS": "_population_floors",
+    DJB_REACH_KINDS_KEY: "_reach_tokens",
+}
+
+
+def _drawer_unknown_keys(drawer: Any) -> list[str]:
+    """The `DJB_*` names a drawer declares that no reader in this file reads."""
+    return sorted(
+        name for name in vars(drawer) if name.startswith("DJB_") and name not in DJB_DRAWER_KEYS
+    )
+
+
+def _fixtures_drawer() -> Any | None:
+    """The fixtures drawer module, or `None` when the product has none.
+
+    The ONE place the drawer is opened for a declaration, so the closed-key
+    refusal cannot be skipped by whichever reader happens to run first.
+    """
+    if importlib.util.find_spec("apps.conftest_local") is None:
+        return None
+    drawer = importlib.import_module("apps.conftest_local")
+    unknown = _drawer_unknown_keys(drawer)
+    if unknown:
+        raise pytest.UsageError(
+            f"{DJB_POPULATION_FLOOR_DRAWER} declares {', '.join(unknown)}, which no "
+            f"reader in apps/conftest.py reads (the drawer's keys: "
+            f"{', '.join(sorted(DJB_DRAWER_KEYS))}). A declaration nobody reads "
+            "declares nothing and reads exactly like a drawer with nothing to "
+            "declare, so it is refused rather than ignored."
+        )
+    return drawer
+
+
+def _drawer_reach_kinds(drawer: Any | None) -> dict[str, tuple[str, ...]]:
+    """The reach kinds a drawer declares, validated; `{}` when it declares none."""
+    if drawer is None:
+        return {}
+    declared = getattr(drawer, DJB_REACH_KINDS_KEY, None)
+    if declared is None:
+        return {}
+    where = f"{DJB_POPULATION_FLOOR_DRAWER}'s {DJB_REACH_KINDS_KEY}"
+    if not isinstance(declared, dict):
+        raise pytest.UsageError(
+            f"{where} is a {type(declared).__name__}, not a dict of reach kind to source tokens."
+        )
+    kinds: dict[str, tuple[str, ...]] = {}
+    for kind, tokens in declared.items():
+        if not isinstance(kind, str) or not kind:
+            raise pytest.UsageError(f"{where} names {kind!r} — a reach kind is a non-empty name.")
+        if kind in DJB_REACH_TOKENS:
+            raise pytest.UsageError(
+                f"{where} declares {kind!r}, which apps/conftest.py already declares in "
+                "DJB_REACH_TOKENS — a drawer adds a reach kind and never replaces the "
+                "template's, so name the product's kind something the template does not."
+            )
+        if (
+            not isinstance(tokens, (tuple, list))
+            or not tokens
+            or not all(isinstance(token, str) and token for token in tokens)
+        ):
+            raise pytest.UsageError(
+                f"{where}[{kind!r}] is {tokens!r} — a reach kind is a non-empty tuple of "
+                "non-empty source tokens; an empty one would derive no reader and floor "
+                "nothing."
+            )
+        kinds[kind] = tuple(tokens)
+    return kinds
+
+
+#: The merged kinds, read once per session: a 4000-item collection asks per module.
+_DJB_REACH_TOKENS_MERGED: list[dict[str, tuple[str, ...]]] = []
+
+
+def _reach_tokens() -> dict[str, tuple[str, ...]]:
+    """The template's reach kinds plus the drawer's — the ONE reader of `DJB_REACH_KINDS`."""
+    if not _DJB_REACH_TOKENS_MERGED:
+        _DJB_REACH_TOKENS_MERGED.append(
+            {**DJB_REACH_TOKENS, **_drawer_reach_kinds(_fixtures_drawer())}
+        )
+    return _DJB_REACH_TOKENS_MERGED[0]
+
+
+def _reach_floors() -> dict[str, int]:
+    """LAYER 1 over every kind in force: the template's floors, and one per drawer kind."""
+    return {**{kind: 1 for kind in _reach_tokens()}, **DJB_REACH_FLOORS}
 
 
 # THE THIRD WAY IN, AND IT IS A DECLARATION RATHER THAN A DERIVATION.
@@ -812,6 +960,10 @@ DJB_WALK_TOKENS: tuple[str, ...] = (
 #: Per-module reach verdicts, cached beside the organ verdicts and for the same
 #: reason: a 2600-test collection reads each module once.
 _DJB_MODULE_REACH: dict[str, frozenset[str]] = {}
+
+#: Per-module membership of the populations INSIDE a reach kind, filled by the
+#: same read as `_DJB_MODULE_REACH` so a module's source is read once.
+_DJB_MODULE_REACH_POPULATIONS: dict[str, frozenset[str]] = {}
 
 _FixtureFunction = TypeVar("_FixtureFunction", bound=Callable[..., Any])
 
@@ -926,12 +1078,21 @@ def _module_reach(path: str) -> frozenset[str]:
             "classified, so this is neither a scoped run nor a whole one."
         ) from exc
     reach = frozenset(
-        kind
-        for kind, tokens in DJB_REACH_TOKENS.items()
-        if any(token in source for token in tokens)
+        kind for kind, tokens in _reach_tokens().items() if any(token in source for token in tokens)
     )
     _DJB_MODULE_REACH[path] = reach
+    _DJB_MODULE_REACH_POPULATIONS[path] = frozenset(
+        name
+        for name, tokens in DJB_REACH_POPULATIONS.items()
+        if any(token in source for token in tokens)
+    )
     return reach
+
+
+def _module_reach_populations(path: str) -> frozenset[str]:
+    """The `DJB_REACH_POPULATIONS` this module belongs to — read with its reach."""
+    _module_reach(path)
+    return _DJB_MODULE_REACH_POPULATIONS.get(path, frozenset())
 
 
 #: Per-module census DECLARATIONS, cached beside the reach ones and for the same
@@ -1115,6 +1276,81 @@ def _census_population_or_refuse(path: str, root: pathlib.Path) -> tuple[str, ..
     return globs
 
 
+#: The counts-file field that carries one always-on module and its way in.
+DJB_ALWAYS_ON_FIELD = "always_on_module"
+#: The counts-file field carrying `_impact_selection`'s line.
+DJB_IMPACT_FIELD = "impact"
+
+#: The seeded census's own declaration, at column zero — the line
+#: `scripts/loop_tier.sh`'s `loop_scope__census_modules` greps for.
+DJB_CENSUS_SEEDED_BY = "CENSUS_SEEDED_BY"
+
+_DJB_MODULE_SEEDS: dict[str, bool] = {}
+
+
+def _module_seeds_a_census(path: str) -> bool:
+    """Whether the module declares `CENSUS_SEEDED_BY` at column zero."""
+    cached = _DJB_MODULE_SEEDS.get(path)
+    if cached is not None:
+        return cached
+    try:
+        lines = pathlib.Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError as exc:  # pragma: no cover - a module pytest just imported
+        raise pytest.UsageError(
+            f"the --loop scope could not read {path} to tell a seeded census from an "
+            f"edited module ({exc}). An underived population is not an empty one."
+        ) from exc
+    seeds = any(line.startswith(DJB_CENSUS_SEEDED_BY) for line in lines)
+    _DJB_MODULE_SEEDS[path] = seeds
+    return seeds
+
+
+def _way_in(nodeid: str, reach: frozenset[str]) -> str:
+    """How an always-on module got in, in `_is_always_on`'s own order.
+
+    `structural` (it belongs to no app, so no scope can hold it), `derived:
+    <kind>[,<kind>]` (it reads a whole registry), or `declared` (it carries the
+    census marker). The fourth way, `seeded`, is not unconditional and is named
+    where the kept set is known.
+    """
+    if _app_label(nodeid) is None:
+        return "structural"
+    if reach:
+        return "derived: " + ",".join(sorted(reach))
+    return "declared"
+
+
+def _always_on_headline(ways: dict[str, str], derived: int, dropped: int) -> str:
+    """The one line that heads the list, and says how it differs from `derived`.
+
+    TWO NUMBERS WOULD OTHERWISE SIT UNDER ONE LABEL: the derivation's module
+    count is taken BEFORE the fast tier, and the list is what RAN after it —
+    an organ-reaching census outside the rung's own apps is dropped whole there,
+    and a seeded census joins after the derivation. The line names both moves.
+    """
+    seeded = sum(1 for way in ways.values() if way == "seeded")
+    parts = [f"{derived} derived before the tier"]
+    if dropped:
+        parts.append(
+            f"{dropped} dropped whole by the fast tier (organ-reaching, outside the own apps)"
+        )
+    if seeded:
+        parts.append(f"{seeded} seeded by the change")
+    return f"always-on: {len(ways)} modules ran — " + ", ".join(parts)
+
+
+def _always_on_banner(ways: dict[str, str], derived: int, dropped: int) -> list[str]:
+    """`always-on: <n> modules …`, then every module with its way in, one line each.
+
+    An always-on set nobody can enumerate is one nobody audits — and a count
+    alone cannot say WHICH module a scope kept, or why, which is the question a
+    reader has when a cross-app census did or did not run.
+    """
+    return [f"  {_always_on_headline(ways, derived, dropped)}"] + [
+        f"    {module} {way}" for module, way in sorted(ways.items())
+    ]
+
+
 def _census_banner(declared: dict[str, tuple[str, ...]], changed: frozenset[str]) -> list[str]:
     """What the run SAYS about the declared censuses it narrowed.
 
@@ -1131,7 +1367,7 @@ def _census_banner(declared: dict[str, tuple[str, ...]], changed: frozenset[str]
     )
     unbounded = sorted(module for module, globs in declared.items() if not globs)
     lines = [
-        f"  always-on: {len(declared)} declared, "
+        f"  declared censuses: {len(declared)} declared, "
         f"{len(declared) - len(unbounded)} with a population, "
         f"{len(declared) - len(deselected)} selected"
     ]
@@ -1158,28 +1394,49 @@ def _read_impact_select(path: str) -> frozenset[str]:
     return frozenset(line.strip() for line in text.splitlines() if line.strip())
 
 
+#: How many orphaned ids the line spells before it counts the rest.
+DJB_IMPACT_ORPHANS_SHOWN = 10
+
+
 def _impact_selection(
     nodeids: list[str], named: frozenset[str], always_on: frozenset[str]
 ) -> tuple[frozenset[str], str]:
-    """(the nodeids to keep, the banner line). A named nodeid nothing collected refuses.
+    """(the nodeids to keep, the banner line). An orphan is NAMED, and its module runs whole.
 
-    THE ORPHAN IS THE POINT. A selection is a claim about a suite, and a claim
-    naming a test this collection does not hold is a STALE MAP — which is how a
-    loop runs three tests and reports on four thousand. The caller that wrote the
-    map owns fixing it; this refuses rather than quietly selecting what is left.
+    THE ORPHAN IS A STALE MAP, AND IT IS SAID — NEVER A CRASH. A map entry
+    naming a test this collection does not hold is a test that was renamed,
+    parametrized or deleted since the map was measured. This used to raise
+    `UsageError` in every xdist worker: the loop exited 2 blaming whichever test
+    a worker was on, and the sentence never reached the log. Now the line names
+    the ids (`impact map: <n> ids no longer collected — <ids>`), and every
+    collected test in an orphan's MODULE joins the selection — a renamed or
+    newly parametrized test lives in the file its old id named, so the module is
+    where it went. An orphan whose module is gone entirely selects nothing and
+    is named all the same. The map itself is pruned by the fold's map step.
     """
     collected = frozenset(nodeids)
     orphans = sorted(named - collected)
-    if orphans:
-        raise pytest.UsageError(
-            "--djb-impact-select names test(s) this collection does not hold: "
-            + ", ".join(orphans)
-            + ". A selection that cannot find its member is a stale map, and a "
-            "stale map read as a selection runs a subset nobody chose. Regenerate "
-            "the map, or run without the flag."
-        )
     keep = (named | always_on) & collected
-    return keep, f"impact-select: {len(named)} named, {len(keep - named)} always-on"
+    line = f"impact-select: {len(named)} named, {len(keep - named)} always-on"
+    if not orphans:
+        return keep, line
+    orphan_modules = {_module_of(nodeid) for nodeid in orphans}
+    whole = frozenset(nodeid for nodeid in collected if _module_of(nodeid) in orphan_modules)
+    live_modules = sorted({_module_of(nodeid) for nodeid in whole})
+    shown = ", ".join(orphans[:DJB_IMPACT_ORPHANS_SHOWN])
+    more = len(orphans) - DJB_IMPACT_ORPHANS_SHOWN
+    if more > 0:
+        shown += f" (+{more} more)"
+    line = (
+        f"impact map: {len(orphans)} ids no longer collected — {shown} · "
+        + (
+            f"{len(live_modules)} module(s) run whole in their place: {', '.join(live_modules)}"
+            if live_modules
+            else "no module of theirs is collected, so nothing runs in their place"
+        )
+        + f" · {line}"
+    )
+    return keep | whole, line
 
 
 #: Per-module cross-TEST import verdicts, beside the reach ones. Keyed on the
@@ -1249,6 +1506,7 @@ def _population_members(path: str, nodeid: str) -> frozenset[str]:
         members.add("introspect_registry_readers")
     if module.endswith("tests/test_lifecycle.py"):
         members.add("lifecycle_registry_walkers")
+    members |= _module_reach_populations(path)
     return frozenset(members)
 
 
@@ -1372,8 +1630,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help=(
             "keep exactly the nodeids PATH names (one per line) plus the always-on "
             "cross-app set, and deselect everything else. A missing or unreadable "
-            "file is a usage error, and so is a nodeid this collection does not "
-            "hold: a selection that cannot find its member is a stale map. The map "
+            "file is a usage error. A nodeid this collection does not hold is a "
+            "stale map entry: it is NAMED on the banner line and every collected "
+            "test in its module runs in its place. The map "
             "is written by scripts/test_impact.py and read by scripts/loop_tier.sh; "
             "no flag names a test INTO the run."
         ),
@@ -1658,6 +1917,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     # single item is deselected. Derived whenever narrowing is asked for, so the
     # refusal cannot be dodged by a scope that happens to be empty.
     always_on: set[str] = set()
+    always_on_ways: dict[str, str] = {}
     declared_censuses: dict[str, tuple[str, ...]] = {}
     if narrow or impact_select:
         reached_kinds: dict[str, set[str]] = {}
@@ -1674,10 +1934,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                 declared_censuses[module] = _census_population_or_refuse(path, DJB_REPO_ROOT)
             if _is_always_on(item, reach, changed):
                 always_on.add(item.nodeid)
+                always_on_ways.setdefault(module, _way_in(item.nodeid, reach))
 
         unmet_reach = sorted(
             f"{kind} (floor {floor}, derived {len(reached_kinds.get(kind, ()))} module(s))"
-            for kind, floor in DJB_REACH_FLOORS.items()
+            for kind, floor in _reach_floors().items()
             if len(reached_kinds.get(kind, ())) < floor
         )
         floor_parts = _population_floors()
@@ -1783,6 +2044,26 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         config.hook.pytest_deselected(items=dropped)
         items[:] = keep
 
+    # THE FOURTH WAY IN, AND IT IS NOT UNCONDITIONAL: a census the scope SEEDED
+    # because the change touched a declaration module it quantifies over
+    # (`CENSUS_SEEDED_BY`, derived by `scripts/loop_tier.sh`). It arrives as a
+    # changed-test path, so it is named here only when it is kept and carries
+    # the declaration — an edited module is not a census.
+    #
+    # AND THE LIST IS WHAT RAN: a member the organ tier took out whole (an
+    # organ-reaching census outside the rung's own apps, under `--djb-tier=fast`)
+    # is not printed as if it had run.
+    kept_modules = {_module_of(item.nodeid) for item in keep}
+    dropped_whole = sum(1 for module in always_on_ways if module not in kept_modules)
+    always_on_ways = {m: way for m, way in always_on_ways.items() if m in kept_modules}
+    for item in keep:
+        module = _module_of(item.nodeid)
+        if module in always_on_ways or module not in changed_tests:
+            continue
+        path = str(getattr(item, "path", "") or "")
+        if path and _module_seeds_a_census(path):
+            always_on_ways[module] = "seeded"
+
     if counts_dir:
         _write_scope_counts(
             config,
@@ -1797,6 +2078,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             len(importer_modules),
             len(keep),
             len(dropped),
+            always_on_ways,
+            dropped_whole,
+            impact_line,
         )
 
     census = ", ".join(f"{kind}={reached[kind]}" for kind in sorted(reached)) or "none"
@@ -1804,6 +2088,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         # THE ALWAYS-ON SET, ENUMERATED. A set nobody can enumerate is one
         # nobody audits — the argument `scripts/check.sh`'s declared-census
         # listing is printed for, and this is its narrowing half.
+        _DJB_TIER_REPORT.extend(
+            _always_on_banner(always_on_ways, len(always_on_modules), dropped_whole)
+        )
         _DJB_TIER_REPORT.extend(_census_banner(declared_censuses, changed))
         _DJB_TIER_REPORT.append(
             f"  {impact_line}" if impact_line else "  impact: not consulted (seam only)"
@@ -1857,6 +2144,9 @@ def _write_scope_counts(
     importer_modules: int,
     selected: int,
     deselected: int,
+    always_on_ways: dict[str, str] | None = None,
+    always_on_dropped_whole: int = 0,
+    impact_line: str = "",
 ) -> None:
     """One counts file per COLLECTOR, named for the collector.
 
@@ -1906,7 +2196,19 @@ def _write_scope_counts(
             f"deselected={deselected}\n"
             f"own={','.join(sorted(own_apps)) or '-'}\n"
             f"scope={','.join(sorted(scope_apps)) or '-'}\n"
-            f"tests_only={','.join(sorted(tests_only)) or '-'}\n",
+            f"tests_only={','.join(sorted(tests_only)) or '-'}\n"
+            f"always_on_dropped_whole={always_on_dropped_whole}\n"
+            # THE MAP'S OWN LINE, so a stale entry reaches the log under `-n`
+            # too: the controller collects nothing and prints this file.
+            + (f"{DJB_IMPACT_FIELD}={impact_line}\n" if impact_line else "")
+            # THE ALWAYS-ON SET BY MODULE, one line each, so the leg that runs
+            # under `-n` — whose controller collects nothing — prints the same
+            # enumeration the serial report does. Sorted, so every collector's
+            # file stays byte-identical to its siblings'.
+            + "".join(
+                f"{DJB_ALWAYS_ON_FIELD}={module} {way}\n"
+                for module, way in sorted((always_on_ways or {}).items())
+            ),
             encoding="utf-8",
         )
     except OSError as exc:  # pragma: no cover - the caller turns absence into 2
@@ -1966,6 +2268,11 @@ def _djb_prerun_banner(config: pytest.Config, counts_dir: str, collectors: int) 
             "the after-run reconciliation in scripts/check.sh is the refusal."
         )
         return
+    fields = dict(line.split("=", 1) for line in next(iter(texts)).splitlines() if "=" in line)
+    if fields.get(DJB_IMPACT_FIELD):
+        # THE MAP'S LINE FIRST, and on every shape of run below: a stale map
+        # entry is a fact about the selection whatever the tier said.
+        reporter.write_line(f"scope   {fields[DJB_IMPACT_FIELD]}")
     if str(config.getoption("--djb-tier")) == "all" and not bool(
         config.getoption("--djb-scope-narrow")
     ):
@@ -1977,7 +2284,6 @@ def _djb_prerun_banner(config: pytest.Config, counts_dir: str, collectors: int) 
         # this is its pre-run half, and the counts-dir plumbing is shared.
         reporter.write_line(f"collectors: {collectors} of {collectors} reported (the whole suite)")
         return
-    fields = dict(line.split("=", 1) for line in next(iter(texts)).splitlines() if "=" in line)
     lines: list[str] = []
     labels = fields.get("tests_only", "-")
     if labels and labels != "-":
@@ -1996,6 +2302,21 @@ def _djb_prerun_banner(config: pytest.Config, counts_dir: str, collectors: int) 
         f"{fields.get('always_on_modules', '?')} module(s) — the cross-app tripwires, "
         "floors met"
     )
+    listed = [
+        line.split("=", 1)[1]
+        for line in next(iter(texts)).splitlines()
+        if line.startswith(f"{DJB_ALWAYS_ON_FIELD}=")
+    ]
+    ways = dict(entry.split(" ", 1) for entry in listed)
+    lines.append(
+        "scope   "
+        + _always_on_headline(
+            ways,
+            int(fields.get("always_on_modules", "0") or 0),
+            int(fields.get("always_on_dropped_whole", "0") or 0),
+        )
+    )
+    lines += [f"scope     {entry}" for entry in listed]
     lines.append(
         f"scope   selected {fields.get('selected', '?')} · deselected "
         f"{fields.get('deselected', '?')}    (reconciled across {collectors} collectors)"

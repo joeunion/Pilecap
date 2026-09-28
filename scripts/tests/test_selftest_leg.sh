@@ -14,7 +14,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: .secrets.baseline compose.yaml docs/product/build-contract.md docs/product/instruments.md scripts/check.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/ scripts/verifier_box.sh
-# cites: deploy/tests scripts/gate_member_durations.json quality/local scripts/local/drives
+# cites: deploy/tests scripts/gate_member_durations.json scripts/gate_member_durations.ci.json quality/local scripts/local/drives
 # The drive for THE SELFTEST LEG ITSELF — `selftest_drives_leg` in
 # `scripts/check.sh`, the leg that runs every shell refusal drive in this
 # repository and composes one exit out of all of them.
@@ -423,9 +423,22 @@ LEG_LOCAL_DRIVES=""
 # gets the absent-table arm. Empty means "this tree's committed file", which is
 # every case written before the partition existed.
 LEG_DURATIONS=""
+# THE CI WALLS TABLE, WHICH THE PARTITION PREFERS TO THE ONE ABOVE. Its seam is
+# `DJB_GATE_MEMBER_WALLS_CI` (`selftest_walls_ci_path`), and a case that did not
+# ask for one gets a path that does not exist — so every case written before the
+# CI table existed still balances over `LEG_DURATIONS`, exactly as it did,
+# rather than over whatever table this checkout happens to have committed.
+LEG_WALLS_CI=""
+# WHERE THE LEG WRITES ITS `member-walls/1` ROWS. Empty means unset — no file,
+# which is what every run that is not a CI shard does.
+LEG_WALLS_OUT=""
 # THE COLLATION THE LEG IS RUN UNDER. Empty is this shell's own, which is every
 # case written before the drawer's name check had to be ASCII's.
 LEG_LOCALE=""
+# Shell text the leg's own shell evaluates before and after the leg; see
+# `run_leg_body`. Empty for every case that does not set it.
+LEG_PRELUDE=""
+LEG_POSTLUDE=""
 run_leg() {
     local dir="$1"
     local uv_rc="${2:-0}"
@@ -435,70 +448,89 @@ run_leg() {
     [ -n "$LEDGER" ] ||
         cannot_look "no scratch ledger is set — refusing to drive the leg against the shared djb-gate-verdicts"
     t0=$(date +%s)
-    (
-        set +e
-        PATH="${SHIM_BIN}:${PATH}"
-        export PATH
-        DJB_FAKE_UV_RC="$uv_rc"
-        export DJB_FAKE_UV_RC
-        DJB_FAKE_INPUTS="${LEG_INPUTS:-$ENGINE_INPUTS_DEFAULT}"
-        export DJB_FAKE_INPUTS
-        DJB_FAKE_INPUTS_RC="${LEG_INPUTS_RC:-0}"
-        export DJB_FAKE_INPUTS_RC
-        DJB_SELFTEST_DRIVES_DIR="$dir"
-        export DJB_SELFTEST_DRIVES_DIR
-        # THE CASE'S DRAWER WHEN IT ASKED FOR ONE, AND NO DRAWER OTHERWISE —
-        # POINTED AT, NOT ASSUMED. Every case written before the drawer existed
-        # drives a leg with no product drives at all. "This tree's own drawer"
-        # meant none only on the template: on a product the REAL drives joined
-        # every scratch set, and every typed count (4 green, 1 red …), every
-        # banked reuse and every shard cost below it went red for the
-        # product's drives rather than the property. A path that does not
-        # exist is the `[ -d ]` arm a tree with no drawer takes, so on the
-        # template the run is the same one.
-        DJB_LOCAL_DRIVES_DIR="${LEG_LOCAL_DRIVES:-${WORK}/no-drive-drawer-at-all}"
-        export DJB_LOCAL_DRIVES_DIR
-        if [ -n "$LEG_DURATIONS" ]; then
-            DJB_GATE_MEMBER_DURATIONS="$LEG_DURATIONS"
-            export DJB_GATE_MEMBER_DURATIONS
-        fi
-        if [ -n "$LEG_LOCALE" ]; then
-            LC_ALL="$LEG_LOCALE"
-            LANG="$LEG_LOCALE"
-            export LC_ALL LANG
-        fi
-        DJB_GATE_LEDGER="$LEDGER"
-        export DJB_GATE_LEDGER
-        # THE MEMO IS CLEARED ON EVERY RUN. `drive_machine_digest` memoises
-        # through the ENVIRONMENT so one leg pays one read; inherited from a
-        # previous run in this drive's own shell it would answer for the
-        # previous case's machine, and every arm below would pass whatever the
-        # code did.
-        unset DRIVE_MACHINE_DIGEST DRIVE_MACHINE_LABEL
-        if [ -n "$LEG_MACHINE_FILE" ]; then
-            DJB_DRIVE_MACHINE_FILE="$LEG_MACHINE_FILE"
-            export DJB_DRIVE_MACHINE_FILE
-        fi
-        if [ -n "$LEG_NO_REUSE" ]; then
-            DJB_SELFTEST_NO_REUSE=1
-            export DJB_SELFTEST_NO_REUSE
-        fi
-        . scripts/gate_refuse.sh
-        . scripts/gate_ledger.sh
-        . "$EXTRACT_DUR"
-        . "$EXTRACT_REG"
-        . "$EXTRACT"
-        # THE RECORDER'S OWN GUARD, honoured rather than bypassed: it records
-        # only on a bare full run (`MODE` empty, no unit), because seconds from
-        # a `--loop` or a `--leg` would be a measurement of a subset written
-        # into the file the whole set is derived from. A case that wants the
-        # accumulator filled sets these the way a full run does.
-        MODE="$LEG_MODE"
-        GATE_LEG_UNIT="$LEG_UNIT"
-        # shellcheck disable=SC2086
-        selftest_drives_leg $LEG_SHARD
-    ) >"$LEG_OUT" 2>&1 || LEG_RC=$?
+    (run_leg_body) >"$LEG_OUT" 2>&1 || LEG_RC=$?
     LEG_WALL=$(($(date +%s) - t0))
+}
+
+# run_leg_body — the leg in the environment `run_leg` sets up, in the calling
+# shell. `run_leg` runs it in a subshell; a case that must signal the leg's own
+# process runs that subshell itself. `LEG_PRELUDE` / `LEG_POSTLUDE` are
+# evaluated in the leg's shell before and after the leg — the one place a case
+# can plant a handler the leg's shell already had, or read what it has after.
+run_leg_body() {
+    set +e
+    PATH="${SHIM_BIN}:${PATH}"
+    export PATH
+    DJB_FAKE_UV_RC="$uv_rc"
+    export DJB_FAKE_UV_RC
+    DJB_FAKE_INPUTS="${LEG_INPUTS:-$ENGINE_INPUTS_DEFAULT}"
+    export DJB_FAKE_INPUTS
+    DJB_FAKE_INPUTS_RC="${LEG_INPUTS_RC:-0}"
+    export DJB_FAKE_INPUTS_RC
+    DJB_SELFTEST_DRIVES_DIR="$dir"
+    export DJB_SELFTEST_DRIVES_DIR
+    # THE CASE'S DRAWER WHEN IT ASKED FOR ONE, AND NO DRAWER OTHERWISE —
+    # POINTED AT, NOT ASSUMED. Every case written before the drawer existed
+    # drives a leg with no product drives at all. "This tree's own drawer"
+    # meant none only on the template: on a product the REAL drives joined
+    # every scratch set, and every typed count (4 green, 1 red …), every
+    # banked reuse and every shard cost below it went red for the
+    # product's drives rather than the property. A path that does not
+    # exist is the `[ -d ]` arm a tree with no drawer takes, so on the
+    # template the run is the same one.
+    DJB_LOCAL_DRIVES_DIR="${LEG_LOCAL_DRIVES:-${WORK}/no-drive-drawer-at-all}"
+    export DJB_LOCAL_DRIVES_DIR
+    if [ -n "$LEG_DURATIONS" ]; then
+        DJB_GATE_MEMBER_DURATIONS="$LEG_DURATIONS"
+        export DJB_GATE_MEMBER_DURATIONS
+    fi
+    DJB_GATE_MEMBER_WALLS_CI="${LEG_WALLS_CI:-${WORK}/no-ci-walls-table.json}"
+    export DJB_GATE_MEMBER_WALLS_CI
+    if [ -n "$LEG_WALLS_OUT" ]; then
+        DJB_MEMBER_WALLS_OUT="$LEG_WALLS_OUT"
+        export DJB_MEMBER_WALLS_OUT
+    else
+        unset DJB_MEMBER_WALLS_OUT
+    fi
+    if [ -n "$LEG_LOCALE" ]; then
+        LC_ALL="$LEG_LOCALE"
+        LANG="$LEG_LOCALE"
+        export LC_ALL LANG
+    fi
+    DJB_GATE_LEDGER="$LEDGER"
+    export DJB_GATE_LEDGER
+    # THE MEMO IS CLEARED ON EVERY RUN. `drive_machine_digest` memoises
+    # through the ENVIRONMENT so one leg pays one read; inherited from a
+    # previous run in this drive's own shell it would answer for the
+    # previous case's machine, and every arm below would pass whatever the
+    # code did.
+    unset DRIVE_MACHINE_DIGEST DRIVE_MACHINE_LABEL
+    if [ -n "$LEG_MACHINE_FILE" ]; then
+        DJB_DRIVE_MACHINE_FILE="$LEG_MACHINE_FILE"
+        export DJB_DRIVE_MACHINE_FILE
+    fi
+    if [ -n "$LEG_NO_REUSE" ]; then
+        DJB_SELFTEST_NO_REUSE=1
+        export DJB_SELFTEST_NO_REUSE
+    fi
+    . scripts/gate_refuse.sh
+    . scripts/gate_ledger.sh
+    . "$EXTRACT_DUR"
+    . "$EXTRACT_REG"
+    . "$EXTRACT"
+    # THE RECORDER'S OWN GUARD, honoured rather than bypassed: it records
+    # only on a bare full run (`MODE` empty, no unit), because seconds from
+    # a `--loop` or a `--leg` would be a measurement of a subset written
+    # into the file the whole set is derived from. A case that wants the
+    # accumulator filled sets these the way a full run does.
+    MODE="$LEG_MODE"
+    GATE_LEG_UNIT="$LEG_UNIT"
+    [ -z "${LEG_PRELUDE:-}" ] || eval "$LEG_PRELUDE"
+    local body_rc=0
+    # shellcheck disable=SC2086
+    selftest_drives_leg $LEG_SHARD || body_rc=$?
+    [ -z "${LEG_POSTLUDE:-}" ] || eval "$LEG_POSTLUDE"
+    return "$body_rc"
 }
 
 # --- the composition ----------------------------------------------------------
@@ -579,6 +611,274 @@ case_two_red_drives_are_both_named_and_the_leg_is_exit_1() {
         return
     fi
     ok "both reds named on one line, every later drive ran, exit 1"
+}
+
+# A RED MEMBER'S OWN FAILED LINES REACH THE END OF THE LEG. The verdict is read
+# at the tail of a log — a box's `wait` prints forty lines, a CI shard log is
+# read from the bottom — and a big drive's FAILED line is hundreds of lines
+# above its composed `!! RED:`. So the leg prints each red member's FAILED lines
+# again BESIDE the RED, at most ten, with the count of the rest; the member's
+# whole transcript is still printed where it ran.
+plant_failing_drive() {
+    local file="$1" n="$2" i=1
+    {
+        printf '#!/bin/sh\n# drives: %s\n' "$PLANT_DECL"
+        printf 'echo "planted drive %s speaking"\n' "$(basename "$file" .sh)"
+        while [ "$i" -le "$n" ]; do
+            printf 'echo "  FAILED   case_%s — planted why %s"\n' "$i" "$i"
+            i=$((i + 1))
+        done
+        printf 'exit 1\n'
+    } >"$file"
+    chmod +x "$file"
+}
+
+case_a_red_members_failed_lines_are_printed_beside_its_red() {
+    CURRENT=case_a_red_members_failed_lines_are_printed_beside_its_red
+    new_ledger failedlines
+    local dir="${WORK}/set-failed-lines"
+    plant_drive_set "$dir" 1_alpha:0 2_bravo:1 3_charlie:1
+    plant_failing_drive "${dir}/test_2_bravo.sh" 12
+    plant_failing_drive "${dir}/test_3_charlie.sh" 2
+    run_leg "$dir"
+    if [ "$LEG_RC" != "1" ]; then
+        bad "wanted exit 1 for two red drives, got ${LEG_RC}: $(tr '\n' '|' <"$LEG_OUT")"
+        return
+    fi
+    # EVERYTHING FROM THE COMPOSED RED DOWN — the part of the log a reader of
+    # its tail actually meets.
+    local tailpart
+    tailpart="$(awk '/^!! RED:/ { on = 1 } on' "$LEG_OUT")"
+    if [ -z "$tailpart" ]; then
+        bad "no composed RED line at all"
+        return
+    fi
+    local want miss=""
+    for want in \
+        "2_bravo: 12 FAILED line(s), the first 10 below" \
+        "FAILED   case_1 — planted why 1" \
+        "FAILED   case_10 — planted why 10" \
+        "... and 2 more FAILED line(s), above in its own output" \
+        "3_charlie: 2 FAILED line(s)" \
+        "FAILED   case_2 — planted why 2"; do
+        case "$tailpart" in *"$want"*) ;; *) miss="${miss}
+      ${want}" ;; esac
+    done
+    if [ -n "$miss" ]; then
+        bad "beside the RED, the leg does not print:${miss}
+      what it printed from the RED down: $(printf '%s' "$tailpart" | tr '\n' '|')"
+        return
+    fi
+    case "$tailpart" in
+    *"case_11 — planted why 11"*)
+        bad "the digest is not capped at ten — case_11 is beside the RED"
+        return
+        ;;
+    esac
+    # AND THE MEMBER'S OWN TRANSCRIPT IS STILL THERE, WHOLE, ABOVE IT: the
+    # capture replays; it does not replace.
+    if ! grep -qF "FAILED   case_12 — planted why 12" "$LEG_OUT" ||
+        ! grep -qF "planted drive 1_alpha speaking" "$LEG_OUT"; then
+        bad "a member's own output is gone from the transcript: $(tr '\n' '|' <"$LEG_OUT")"
+        return
+    fi
+    ok "each red member's FAILED lines are printed beside the RED, ten at most with the count of the rest, and every transcript is still whole"
+}
+
+# kill_a_member_mid_run <tag> <SIG> — the leg run as its OWN process group
+# (job control on for the one background job, so its pid is its group), with a
+# planted member that prints a line, marks that it is running and sleeps; the
+# WHOLE GROUP gets the signal — the shape of a CI timeout or an interrupted box.
+# Sets KILL_OUT (the leg's stdout and stderr), KILL_RC (the leg shell's own
+# status, read by `wait` on that shell and nothing between) and KILL_TMP (the
+# TMPDIR the capture file was made under). `LEG_PRELUDE` rides through.
+KILL_OUT=""
+KILL_RC=""
+KILL_TMP=""
+kill_a_member_mid_run() {
+    local tag=$1 sig=$2
+    local dir="${WORK}/set-killed-${tag}" marker="${WORK}/killed-running-${tag}" uv_rc=0 pid i
+    KILL_OUT="${WORK}/killed-${tag}.out"
+    KILL_TMP="${WORK}/killed-tmp-${tag}"
+    KILL_RC=""
+    rm -f "$marker" "$KILL_OUT"
+    rm -rf "$KILL_TMP"
+    mkdir -p "$KILL_TMP"
+    plant_drive_set "$dir" 1_alpha:0 2_bravo:0
+    {
+        printf '#!/bin/sh\n# drives: %s\n' "$PLANT_DECL"
+        printf 'echo "partial line from 2_bravo"\n'
+        printf 'echo "a second line from 2_bravo"\n'
+        printf ': >"%s"\n' "$marker"
+        printf 'sleep 30\n'
+        printf 'echo "never reached"\n'
+    } >"${dir}/test_2_bravo.sh"
+    chmod +x "${dir}/test_2_bravo.sh"
+    set -m
+    (TMPDIR="$KILL_TMP" run_leg_body) >"$KILL_OUT" 2>&1 &
+    pid=$!
+    set +m
+    i=0
+    while [ ! -f "$marker" ] && [ "$i" -lt 300 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    if [ ! -f "$marker" ]; then
+        kill -KILL -- "-${pid}" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        return 1
+    fi
+    kill -s "$sig" -- "-${pid}" 2>/dev/null || true
+    KILL_RC=0
+    wait "$pid" 2>/dev/null || KILL_RC=$?
+    return 0
+}
+
+# A MEMBER KILLED MID-RUN STILL REACHES THE LOG. For each of TERM, INT and HUP
+# with no handler of the leg shell's own: the leg's output names the member,
+# says it was killed and carries every line it had printed; the scratch capture
+# file is gone; the status is the signal's own 128+n. Then, with the handlers a
+# gate has — an EXIT handler that opens with `RC=$?` and a TERM handler of its
+# own, quotes in it — TERM still runs that handler AFTER the flush and the EXIT
+# handler reads the true 143, never the flush's zero.
+case_a_member_killed_mid_run_reaches_the_log_with_its_output_so_far() {
+    CURRENT=case_a_member_killed_mid_run_reaches_the_log_with_its_output_so_far
+    local sig want_rc want miss left sig_rc
+    for sig in TERM INT HUP; do
+        new_ledger "killed-${sig}"
+        case "$sig" in TERM) want_rc=143 ;; INT) want_rc=130 ;; HUP) want_rc=129 ;; esac
+        LEG_PRELUDE=""
+        # A SIGNAL THIS DRIVE WAS STARTED WITH IGNORED CANNOT KILL ANYTHING IT
+        # STARTS: bash can neither trap nor reset one ignored on entry, and every
+        # child inherits it. The box runs the gate under `nohup`, so there HUP
+        # is exactly that. The arm is then SAID and not claimed — no pass is
+        # counted for a kill that could not happen.
+        sig_rc=0
+        sh -c "kill -s ${sig} \$\$; exit 0" || sig_rc=$?
+        if [ "$sig_rc" = "0" ]; then
+            echo "  not run  ${CURRENT} — ${sig}: this drive was started with ${sig} ignored, so nothing it starts can be killed by it; the arm is not claimed"
+            continue
+        fi
+        if ! kill_a_member_mid_run "$sig" "$sig"; then
+            bad "${sig}: the planted member never started — nothing to kill: $(tr '\n' '|' <"$KILL_OUT")"
+            continue
+        fi
+        miss=""
+        for want in "drive 2_bravo: killed after" "its output so far:" \
+            "partial line from 2_bravo" "a second line from 2_bravo"; do
+            grep -qF -- "$want" "$KILL_OUT" || miss="${miss}
+      ${want}"
+        done
+        if [ -n "$miss" ]; then
+            bad "${sig}: a member killed mid-run left the log without:${miss}
+      the leg printed: $(tr '\n' '|' <"$KILL_OUT")"
+        else
+            ok "${sig}: the killed member is named and every line it had printed reaches the leg's stdout"
+        fi
+        grep -qF "never reached" "$KILL_OUT" &&
+            bad "${sig}: the member was not killed at all — its last line ran"
+        left="$(find "$KILL_TMP" -name 'djb-selftest-member.*' 2>/dev/null)"
+        [ -z "$left" ] && ok "${sig}: and its capture file is gone" ||
+            bad "${sig}: the capture file was left behind: ${left}"
+        [ "$KILL_RC" = "$want_rc" ] && ok "${sig}: and the leg's status is the signal's own ${want_rc}" ||
+            bad "${sig}: the leg exited ${KILL_RC}, wanted ${want_rc}"
+    done
+
+    new_ledger killed-handlers
+    local rcfile="${WORK}/killed-exit-rc" said="${WORK}/killed-term-said"
+    rm -f "$rcfile" "$said"
+    # THE PLANTED HANDLERS ARE A FILE THE LEG'S SHELL SOURCES, so their quotes
+    # are written once, as a shell reads them.
+    cat >"${WORK}/killed-prelude.sh" <<EOF
+trap 'RC=\$?; printf "%s\n" "\$RC" >"${rcfile}"' EXIT
+trap 'printf "%s\n" "it'\''s \"handled\"" >"${said}"; exit 143' TERM
+EOF
+    LEG_PRELUDE=". \"${WORK}/killed-prelude.sh\""
+    if ! kill_a_member_mid_run handlers TERM; then
+        LEG_PRELUDE=""
+        bad "handlers: the planted member never started — nothing to kill: $(tr '\n' '|' <"$KILL_OUT")"
+        return
+    fi
+    LEG_PRELUDE=""
+    grep -qF "partial line from 2_bravo" "$KILL_OUT" &&
+        ok "handlers: the killed member's output reaches the log with the shell's own handlers in place" ||
+        bad "handlers: the killed member's output is not in the log: $(tr '\n' '|' <"$KILL_OUT")"
+    [ "$(cat "$said" 2>/dev/null)" = "it's \"handled\"" ] &&
+        ok "handlers: the shell's own TERM handler still ran, quotes and all" ||
+        bad "handlers: the shell's own TERM handler did not run as written: '$(cat "$said" 2>/dev/null)'"
+    [ "$(cat "$rcfile" 2>/dev/null)" = "143" ] &&
+        ok "handlers: and its EXIT handler read the true status 143, not the flush's zero" ||
+        bad "handlers: the EXIT handler read '$(cat "$rcfile" 2>/dev/null)', wanted 143"
+    [ "$KILL_RC" = "143" ] && ok "handlers: and the leg exited 143" ||
+        bad "handlers: the leg exited ${KILL_RC}, wanted 143"
+}
+
+# A MEMBER THAT ENDS NORMALLY PUTS THE SHELL'S HANDLERS BACK BYTE FOR BYTE —
+# one with quotes in it, an ignored one, and none at all, as `trap -p` lists
+# them before the leg and after it.
+case_a_members_capture_puts_the_shells_own_handlers_back_byte_for_byte() {
+    CURRENT=case_a_members_capture_puts_the_shells_own_handlers_back_byte_for_byte
+    new_ledger traps-back
+    local dir="${WORK}/set-traps-back" before="${WORK}/traps-before" after="${WORK}/traps-after"
+    rm -f "$before" "$after"
+    plant_drive_set "$dir" 1_alpha:0 2_bravo:1
+    cat >"${WORK}/traps-back-prelude.sh" <<EOF
+trap ': "it'\''s" "a \"quoted\" handler" \$HOME' TERM
+trap '' HUP
+trap -p TERM INT HUP EXIT >"${before}"
+EOF
+    LEG_PRELUDE=". \"${WORK}/traps-back-prelude.sh\""
+    LEG_POSTLUDE="trap -p TERM INT HUP EXIT >\"${after}\""
+    run_leg "$dir"
+    LEG_PRELUDE=""
+    LEG_POSTLUDE=""
+    if [ ! -s "$before" ]; then
+        bad "the planted handlers were not listed before the leg: $(tr '\n' '|' <"$LEG_OUT")"
+        return
+    fi
+    grep -qF 'a \"quoted\" handler' "$before" ||
+        bad "the planted TERM handler is not the one with quotes: $(tr '\n' '|' <"$before")"
+    cmp -s "$before" "$after" &&
+        ok "the handlers after every member are the handlers before, byte for byte — quoted, ignored and absent" ||
+        bad "the handlers changed across the leg:
+      before: $(tr '\n' '|' <"$before")
+      after:  $(tr '\n' '|' <"${after}" 2>/dev/null)"
+    [ "$LEG_RC" = "1" ] && ok "and the leg's own status is still the red member's 1" ||
+        bad "the leg exited ${LEG_RC}, wanted 1"
+}
+
+# A LEG RUN IN A SUBSHELL DOES NOT BRING ITS PARENT'S HANDLERS TO LIFE. Bash
+# 5 lists a parent's handlers inside a subshell that has set no trap of its
+# own, though none of them runs there; a capture that saved that listing and
+# put it back would make the parent's handlers LIVE in the leg's shell. The
+# parent here is a planted shell whose EXIT and TERM handlers each append a
+# word to a file; the leg runs in a subshell of it, sets nothing first, drives
+# two members to their end, and then sends ITSELF a TERM. A TERM with no
+# handler of the leg's own is the signal's 143 and nothing else, so the file
+# must hold the parent's own `exit` and never a `term` or a second `exit`.
+case_a_leg_in_a_subshell_does_not_bring_its_parents_handlers_to_life() {
+    CURRENT=case_a_leg_in_a_subshell_does_not_bring_its_parents_handlers_to_life
+    new_ledger parent-traps
+    local dir="${WORK}/set-parent-traps" ran="${WORK}/parent-traps-ran" uv_rc=0 rc=0 got
+    rm -f "$ran"
+    plant_drive_set "$dir" 1_alpha:0 2_bravo:0
+    LEG_OUT="${WORK}/parent-traps.out"
+    # shellcheck disable=SC2016  # evaluated in the leg's own shell
+    LEG_POSTLUDE='kill -s TERM "$BASHPID"'
+    (
+        # shellcheck disable=SC2064  # the path is fixed when the trap is set
+        trap "printf 'exit\n' >>\"${ran}\"" EXIT
+        # shellcheck disable=SC2064
+        trap "printf 'term\n' >>\"${ran}\"; exit 143" TERM
+        rc=0
+        (run_leg_body) || rc=$?
+        printf 'leg %s\n' "$rc" >>"$ran"
+    ) >"$LEG_OUT" 2>&1 || rc=$?
+    LEG_POSTLUDE=""
+    got="$(tr '\n' ' ' <"$ran" 2>/dev/null || true)"
+    [ "$got" = "leg 143 exit " ] &&
+        ok "the leg's shell died of its TERM as a shell with no handler does, and the parent's handlers ran only in the parent" ||
+        bad "wanted 'leg 143 exit', the handlers wrote '${got}': $(tr '\n' '|' <"$LEG_OUT")"
 }
 
 case_a_could_not_look_drive_outranks_a_red_one_and_both_are_named() {
@@ -1647,9 +1947,11 @@ shard_taken() {
 }
 
 #: The leg's own plan line for shard k of S, as `<members> <predicted>`. Empty
-#: when the leg printed the round-robin arm instead.
+#: when the leg printed the round-robin arm instead. `k` is the 0-based index
+#: the leg BODY takes; the line prints it 1-based, as the `--shard k/N` flag
+#: gave it, so the pattern looks for k+1.
 shard_plan_numbers() {
-    sed -n "s|^  selftest shard $1/$2: \([0-9][0-9]*\) members, predicted \([0-9][0-9]*\) s .*|\1 \2|p" "$LEG_OUT"
+    sed -n "s|^  selftest shard $(($1 + 1))/$2: \([0-9][0-9]*\) members, predicted \([0-9][0-9]*\) s .*|\1 \2|p" "$LEG_OUT"
 }
 
 #: The planted cost of a set of member names, added up from the flat table. A
@@ -1856,6 +2158,253 @@ case_an_absent_durations_table_is_the_round_robin_and_says_so() {
         esac
     done
     ok "no table: three shards, every one of the nine members still taken, each one saying it read no table at ${gone}"
+}
+
+# --- the CI walls table, the plan line's k, and the walls rows ---------------
+#
+# WHAT THESE CASES DO NOT COVER, declared: whether the committed CI table is any
+# good (it is one green run on one runner label), and the fold's harvest of it —
+# that is `test_pm_fold.sh`'s, over a fixture of the real run's rows. What is
+# under drive here is the LEG: which table it balances over and says it read,
+# which k its line prints, and the rows it writes when asked.
+
+#: A PLANTED CI WALLS TABLE — the shape the fold's `walls` step writes: the
+#: runner label as `machine`, the run and the tree in `measured_at`.
+plant_ci_walls() {
+    local file="$1" spec name secs first=1
+    shift
+    {
+        printf '{\n'
+        printf '  "measured_at": "run:424242 tree:planted-by-test-selftest-leg",\n'
+        printf '  "machine": "PlantedRunner",\n'
+        printf '  "members": {\n'
+        for spec in "$@"; do
+            name="${spec%%:*}"
+            secs="${spec##*:}"
+            if [ "$first" = "1" ]; then first=0; else printf ',\n'; fi
+            printf '    "%s": %s' "$name" "$secs"
+        done
+        printf '\n  }\n}\n'
+    } >"$file"
+}
+
+case_the_plan_line_prints_the_flags_k_and_names_the_ci_table_first() {
+    CURRENT=case_the_plan_line_prints_the_flags_k_and_names_the_ci_table_first
+    local dir="${WORK}/set-citable" mac="${WORK}/ci-mac-durations.json" macflat="${WORK}/ci-mac-flat"
+    local ci="${WORK}/ci-walls.json" gone="${WORK}/no-such-ci-walls.json" line=""
+    # shellcheck disable=SC2086  # the specs word-split into arguments, by design
+    plant_drive_set "$dir" $LPT_SET
+    # shellcheck disable=SC2086
+    plant_durations "$mac" "$macflat" $LPT_TABLE
+    # shellcheck disable=SC2086
+    plant_ci_walls "$ci" $LPT_TABLE
+    rm -f "$gone"
+
+    # (1) BOTH TABLES: the CI table wins, and the line prints k as the flag
+    # gave it — the body's 0-based `0 2` is the flag's `--shard 1/2`.
+    new_ledger citable
+    LEG_DURATIONS="$mac"
+    LEG_WALLS_CI="$ci"
+    LEG_SHARD="0 2"
+    run_leg "$dir"
+    line=$(awk 'index($0, "selftest shard") { print; exit }' "$LEG_OUT")
+    case "$line" in
+    "  selftest shard 1/2: "*" members, predicted "*" s (LPT over ${ci} measured on PlantedRunner run 424242; 0 unmeasured at the median "*" s)") ;;
+    *)
+        bad "with both tables the line is not the CI table's, or does not print k=1 for --shard 1/2: ${line:-<no plan line>}"
+        LEG_SHARD=""
+        LEG_DURATIONS=""
+        LEG_WALLS_CI=""
+        return
+        ;;
+    esac
+    if grep -qF 'selftest shard 0/2' "$LEG_OUT"; then
+        bad "the leg still printed the 0-based k somewhere: $(grep -F 'shard 0/2' "$LEG_OUT" | tr '\n' '|')"
+        LEG_SHARD=""
+        LEG_DURATIONS=""
+        LEG_WALLS_CI=""
+        return
+    fi
+
+    # (2) NO CI TABLE: the Mac table stands in, and the line SAYS it does.
+    new_ledger citable-mac
+    LEG_WALLS_CI="$gone"
+    run_leg "$dir"
+    line=$(awk 'index($0, "selftest shard") { print; exit }' "$LEG_OUT")
+    case "$line" in
+    "  selftest shard 1/2: "*"(LPT over ${mac} measured on PlantedMachine — no CI walls table at ${gone}, so this table stands in; "*) ;;
+    *)
+        bad "with no CI table the line does not say the Mac table stands in: ${line:-<no plan line>}"
+        LEG_SHARD=""
+        LEG_DURATIONS=""
+        LEG_WALLS_CI=""
+        return
+        ;;
+    esac
+
+    # (3) NEITHER: the round-robin, and the line names BOTH absences.
+    new_ledger citable-none
+    LEG_DURATIONS="${WORK}/no-such-durations-table.json"
+    run_leg "$dir"
+    line=$(awk 'index($0, "selftest shard") { print; exit }' "$LEG_OUT")
+    LEG_SHARD=""
+    LEG_DURATIONS=""
+    LEG_WALLS_CI=""
+    case "$line" in
+    "  selftest shard 1/2: the index round-robin (no durations table at ${WORK}/no-such-durations-table.json and no CI walls table at ${gone} "*) ;;
+    *)
+        bad "with neither table the line does not name both absences: ${line:-<no plan line>}"
+        return
+        ;;
+    esac
+    ok "--shard 1/2 prints 1/2 in all three arms: the CI table named with its runner and run, the Mac table saying it stands in, the round-robin naming both absences"
+}
+
+#: The `member-walls/1` rows in a file, as `<member> <rc> <s> <part>` lines.
+walls_rows() {
+    [ -f "$1" ] || return 0
+    awk -F'\t' '$1 == "member-walls/1" && NF == 5 { print $2, $3, $4, $5 }' "$1"
+}
+
+case_every_member_writes_a_walls_row_when_asked_and_none_when_not() {
+    CURRENT=case_every_member_writes_a_walls_row_when_asked_and_none_when_not
+    local dir="${WORK}/set-walls" out="${WORK}/walls-unsharded.tsv" rows="" n="" missing="" bad_rows=""
+    local unset_t="" set_t=""
+    plant_drive_set "$dir" 1_alpha:0 2_bravo:1 3_charlie:0
+    rm -f "$out"
+
+    # UNSET FIRST: no file anywhere, and this is the transcript the set run
+    # must equal once the seconds are normalised.
+    new_ledger walls-unset
+    LEG_NO_REUSE=1
+    run_leg "$dir"
+    unset_t=$(sed 's/([0-9]*s)/(Ns)/' "$LEG_OUT")
+    if [ -e "$out" ]; then
+        bad "with DJB_MEMBER_WALLS_OUT unset a walls file appeared at ${out}"
+        LEG_NO_REUSE=""
+        return
+    fi
+
+    new_ledger walls-set
+    LEG_WALLS_OUT="$out"
+    run_leg "$dir"
+    set_t=$(sed 's/([0-9]*s)/(Ns)/' "$LEG_OUT")
+    LEG_WALLS_OUT=""
+    LEG_NO_REUSE=""
+    rows=$(walls_rows "$out")
+    for n in house-rules-engine 1_alpha 2_bravo 3_charlie; do
+        printf '%s\n' "$rows" | awk -v n="$n" '$1 == n { f = 1 } END { exit(f ? 0 : 1) }' || missing="${missing} ${n}"
+    done
+    if [ -n "$missing" ]; then
+        bad "no member-walls/1 row for:${missing} — the file held: $(tr '\t' ' ' <"$out" 2>/dev/null | tr '\n' '|')"
+        return
+    fi
+    bad_rows=$(printf '%s\n' "$rows" | awk '
+        $1 == "2_bravo" && $2 != "1" { print "2_bravo rc " $2 }
+        $1 != "2_bravo" && $2 != "0" { print $1 " rc " $2 }
+        $3 !~ /^[0-9]+$/ { print $1 " wall " $3 }
+        $4 != "1/1" { print $1 " part " $4 }
+    ' | tr '\n' ';')
+    if [ -n "$bad_rows" ] || [ "$(printf '%s\n' "$rows" | grep -c .)" != "4" ]; then
+        bad "the rows are not one per member with its own rc, seconds and 1/1: ${bad_rows} — $(tr '\t' ' ' <"$out" | tr '\n' '|')"
+        return
+    fi
+    if [ "$unset_t" != "$set_t" ]; then
+        bad "the transcript moved when the walls file was asked for — a bank's output must not
+    unset: $(printf '%s' "$unset_t" | tr '\n' '|')
+    set:   $(printf '%s' "$set_t" | tr '\n' '|')"
+        return
+    fi
+
+    # A SHARD'S ROWS carry the flag's k/N, and only the members it drove.
+    out="${WORK}/walls-shard.tsv"
+    rm -f "$out"
+    new_ledger walls-shard
+    LEG_NO_REUSE=1
+    LEG_WALLS_OUT="$out"
+    LEG_DURATIONS="${WORK}/no-such-durations-table.json"
+    LEG_SHARD="1 2"
+    run_leg "$dir"
+    LEG_SHARD=""
+    LEG_DURATIONS=""
+    LEG_WALLS_OUT=""
+    LEG_NO_REUSE=""
+    rows=$(walls_rows "$out")
+    if [ "$(printf '%s\n' "$rows" | awk '$4 != "2/2"' | grep -c . || true)" != "0" ] ||
+        [ "$(printf '%s\n' "$rows" | grep -c . || true)" != "$(shard_taken | awk 'END { print NR + 0 }')" ]; then
+        bad "shard 2/2's rows are not exactly the members it drove, each marked 2/2: $(tr '\t' ' ' <"$out" 2>/dev/null | tr '\n' '|') vs taken $(shard_taken | tr '\n' ' ')"
+        return
+    fi
+    ok "unsharded: one row per member (the engine included) with its rc and seconds and 1/1, no file and an identical transcript when unset; shard 2/2: $(printf '%s\n' "$rows" | grep -c .) row(s), every one 2/2"
+}
+
+case_a_reused_member_writes_reused_and_no_wall() {
+    CURRENT=case_a_reused_member_writes_reused_and_no_wall
+    local dir="${WORK}/set-walls-reuse" out="${WORK}/walls-reused.tsv" rows=""
+    plant_drive_set "$dir" 1_alpha:0 2_bravo:0
+    new_ledger walls-reuse
+    run_leg "$dir"
+    rm -f "$out"
+    LEG_WALLS_OUT="$out"
+    run_leg "$dir"
+    LEG_WALLS_OUT=""
+    if ! grep -q 'REUSED' "$LEG_OUT"; then
+        bad "the second run reused nothing, so this case has no subject: $(tr '\n' '|' <"$LEG_OUT")"
+        return
+    fi
+    rows=$(walls_rows "$out")
+    if printf '%s\n' "$rows" | awk '$1 == "1_alpha" && $2 == "reused" && $3 == "-" { a = 1 } $1 == "2_bravo" && $2 == "reused" && $3 == "-" { b = 1 } END { exit(a && b ? 0 : 1) }'; then
+        ok "both reused drives wrote \`reused\` and \`-\` — a wall that was never this run's is never written as one"
+    else
+        bad "a reused member did not write \`<name> reused -\`: $(tr '\t' ' ' <"$out" 2>/dev/null | tr '\n' '|')"
+    fi
+}
+
+case_a_new_drive_joins_at_the_median_and_is_measured_after_a_harvest() {
+    CURRENT=case_a_new_drive_joins_at_the_median_and_is_measured_after_a_harvest
+    local dir="${WORK}/set-newdrive" ci="${WORK}/newdrive-ci.json" out="${WORK}/newdrive-walls.tsv"
+    local line="" specs=""
+    plant_drive_set "$dir" 1_alpha:0 2_bravo:0 3_charlie:0 4_newcomer:0
+    # THE TABLE PREDATES THE NEWCOMER: it names every other member.
+    plant_ci_walls "$ci" house-rules-engine:20 1_alpha:100 2_bravo:60 3_charlie:40
+    new_ledger newdrive
+    LEG_NO_REUSE=1
+    LEG_WALLS_CI="$ci"
+    LEG_WALLS_OUT="$out"
+    rm -f "$out"
+    LEG_SHARD="0 1"
+    run_leg "$dir"
+    line=$(awk 'index($0, "selftest shard 1/1") { print; exit }' "$LEG_OUT")
+    case "$line" in
+    *"; 1 unmeasured at the median 50 s)") ;;
+    *)
+        bad "a drive absent from the table is not counted 1 unmeasured at the median of the rest (50 s): ${line:-<no plan line>}"
+        LEG_SHARD=""
+        LEG_WALLS_CI=""
+        LEG_WALLS_OUT=""
+        LEG_NO_REUSE=""
+        return
+        ;;
+    esac
+    # THE HARVEST, from the leg's own rows — the newcomer's included — and
+    # nothing typed: the next table is whatever this run wrote.
+    specs=$(walls_rows "$out" | awk '$2 == "0" { printf "%s:%s ", $1, $3 }')
+    # shellcheck disable=SC2086  # the specs word-split into arguments, by design
+    plant_ci_walls "$ci" $specs
+    run_leg "$dir"
+    line=$(awk 'index($0, "selftest shard 1/1") { print; exit }' "$LEG_OUT")
+    LEG_SHARD=""
+    LEG_WALLS_CI=""
+    LEG_WALLS_OUT=""
+    LEG_NO_REUSE=""
+    case "$line" in
+    *"; 0 unmeasured at the median "*) ;;
+    *)
+        bad "after a harvest carrying its row the newcomer is still unmeasured: ${line:-<no plan line>}"
+        return
+        ;;
+    esac
+    ok "the newcomer joined at the median (1 unmeasured, 50 s) with no list edited, and after the harvest of this run's own rows it is measured (0 unmeasured)"
 }
 
 # --- the engine's own verdict ------------------------------------------------
@@ -2574,8 +3123,54 @@ case_no_drawer_leaves_the_legs_transcript_byte_identical() {
 }
 
 
+# THE REGISTRATION'S ELSE ARM. scripts/check.sh decides this drive's mode once,
+# from whether the selftest unit is sharded, and exports the answer; a value a
+# hand exported on an UNSHARDED run used to ride straight through and turn the
+# drive whole behind a consult that was asked. The block is read out of
+# check.sh (between its `if [ -n "$SELFTEST_SHAPES_WHOLE_RUN" ]` and the `fi`)
+# and run in a subshell both ways: unsharded with the variable typed must unset
+# it with a line; sharded must export the shard's reason.
+case_a_hand_typed_whole_run_on_an_unsharded_run_is_unset_with_a_line() {
+    CURRENT="the shapes drive's registration: DJB_SELFTEST_SHAPES_WHOLE_RUN typed on an unsharded run"
+    local block="$WORK/whole-run-block.sh" said
+    awk '/^if \[ -n "\$SELFTEST_SHAPES_WHOLE_RUN" \]; then$/ { on = 1 } on { print } on && /^fi$/ { exit }' \
+        "$ROOT/scripts/check.sh" >"$block"
+    grep -q 'DJB_SELFTEST_SHAPES_WHOLE_RUN' "$block" ||
+        cannot_look "scripts/check.sh has no registration block exporting DJB_SELFTEST_SHAPES_WHOLE_RUN"
+    said=$(
+        SELFTEST_SHAPES_WHOLE_RUN=""
+        export DJB_SELFTEST_SHAPES_WHOLE_RUN=1
+        # shellcheck source=/dev/null
+        . "$block"
+        echo "after=${DJB_SELFTEST_SHAPES_WHOLE_RUN:-<unset>}"
+    )
+    case "$said" in
+    *"after=<unset>"*) ok "unsharded: the hand-typed value is unset" ;;
+    *) bad "unsharded: the hand-typed value was honoured — $(printf '%s' "$said" | tr '\n' '|')" ;;
+    esac
+    case "$said" in
+    *"UNSET"*"runs narrowed"*) ok "and a line says so: $(printf '%s\n' "$said" | sed -n 1p)" ;;
+    *) bad "no line says the value was unset — $(printf '%s' "$said" | tr '\n' '|')" ;;
+    esac
+    said=$(
+        SELFTEST_SHAPES_WHOLE_RUN="the selftest unit is sharded (--leg selftest --shard 1/6)"
+        unset DJB_SELFTEST_SHAPES_WHOLE_RUN
+        # shellcheck source=/dev/null
+        . "$block"
+        echo "after=${DJB_SELFTEST_SHAPES_WHOLE_RUN:-<unset>}"
+    )
+    case "$said" in
+    *"after=the selftest unit is sharded (--leg selftest --shard 1/6)"*) ok "sharded: the shard's reason is exported" ;;
+    *) bad "sharded: the shard's reason was not exported — $(printf '%s' "$said" | tr '\n' '|')" ;;
+    esac
+}
+
 run_case case_all_green_prints_one_line_per_drive_and_the_summary
 run_case case_two_red_drives_are_both_named_and_the_leg_is_exit_1
+run_case case_a_red_members_failed_lines_are_printed_beside_its_red
+run_case case_a_member_killed_mid_run_reaches_the_log_with_its_output_so_far
+run_case case_a_members_capture_puts_the_shells_own_handlers_back_byte_for_byte
+run_case case_a_leg_in_a_subshell_does_not_bring_its_parents_handlers_to_life
 run_case case_a_could_not_look_drive_outranks_a_red_one_and_both_are_named
 run_case case_a_red_engine_selftest_still_runs_every_drive_and_the_leg_is_exit_2
 run_case case_every_exit_in_the_leg_body_is_inside_a_drive_subshell
@@ -2598,6 +3193,10 @@ run_case case_no_reuse_runs_everything_and_banks
 run_case case_the_partition_balances_by_duration_and_names_the_table_it_read
 run_case case_every_member_is_in_exactly_one_shard_and_the_partition_is_deterministic
 run_case case_an_absent_durations_table_is_the_round_robin_and_says_so
+run_case case_the_plan_line_prints_the_flags_k_and_names_the_ci_table_first
+run_case case_every_member_writes_a_walls_row_when_asked_and_none_when_not
+run_case case_a_reused_member_writes_reused_and_no_wall
+run_case case_a_new_drive_joins_at_the_median_and_is_measured_after_a_harvest
 run_case case_the_engine_banks_on_its_inputs
 run_case case_a_moved_engine_input_refuses_the_reuse
 run_case case_an_unprintable_engine_scope_is_exit_2
@@ -2608,6 +3207,7 @@ run_case case_a_product_drive_in_the_drawer_runs_and_is_named_local
 run_case case_a_red_product_drive_is_named_and_the_leg_is_exit_1
 run_case case_a_drawer_drive_without_the_preamble_is_exit_2
 run_case case_no_drawer_leaves_the_legs_transcript_byte_identical
+run_case case_a_hand_typed_whole_run_on_an_unsharded_run_is_unset_with_a_line
 
 echo "test_selftest_leg: ${PASSED} passed · ${FAILED} failed"
 echo "           leg body: $(wc -l <"$EXTRACT" | tr -d ' ') line(s) between the sentinels into ${EXTRACT}"

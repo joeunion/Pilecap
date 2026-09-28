@@ -1,0 +1,4 @@
+
+# zzz_canary: rule 61's self-test plant — a tag where a digest belongs.
+x-zzz-canary-tag:
+  image: redis:7

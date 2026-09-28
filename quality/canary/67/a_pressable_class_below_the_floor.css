@@ -1,0 +1,7 @@
+/* Planted: a button class with its ring and no act floor. */
+button.zzz-chip {
+    padding: var(--space-1);
+}
+button.zzz-chip:focus-visible {
+    outline: var(--focus-ring);
+}

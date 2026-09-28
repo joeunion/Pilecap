@@ -1,0 +1,8 @@
+/* Every size a role; `normal` tracking and an inherited font are no size. */
+.zzz-note {
+    font-size: var(--type-facts);
+    letter-spacing: normal;
+}
+.zzz-field {
+    font: inherit;
+}

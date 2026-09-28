@@ -555,6 +555,58 @@ case_the_psql_client_is_the_compose_pin() {
     holds "the psql client is not the runbook's old hand-typed 16.10" "0" "$(docker_saw 'postgres:16.10')"
 }
 
+# THE MIGRATE ACT'S WALL. The migrate is the one act of a deploy whose length
+# is the schema's and not the script's, and the closing line `stage.sh` prints
+# carries it — so the release prints it, on its own line, under act 2 and
+# before act 3, as `migrate: <n>s`.
+case_the_migrate_act_prints_its_wall() {
+    fresh_deploy
+    drive "the migrate wall" 0 -- release "$DEPLOY/release.sh"
+    local at2 wall at3
+    at2="$(grep -n '^release: \[2/7\]' "$DRIVE_OUT" | sed -n '1s/:.*//p' || true)"
+    wall="$(grep -nE '^release: migrate: [0-9]+s$' "$DRIVE_OUT" | sed -n '1s/:.*//p' || true)"
+    at3="$(grep -n '^release: \[3/7\]' "$DRIVE_OUT" | sed -n '1s/:.*//p' || true)"
+    holds "the migrate wall is printed exactly once" "1" \
+        "$(grep -cE '^release: migrate: [0-9]+s$' "$DRIVE_OUT" || true)"
+    if [ -n "$at2" ] && [ -n "$wall" ] && [ -n "$at3" ] && [ "$at2" -lt "$wall" ] && [ "$wall" -lt "$at3" ]; then
+        echo "  ok       the migrate wall sits under act 2 (line ${wall}, between ${at2} and ${at3})"
+        PASSED=$((PASSED + 1))
+    else
+        echo "  FAILED   the migrate wall is not between act 2 and act 3 (act 2 ${at2:-never}, wall ${wall:-never}, act 3 ${at3:-never})"
+        FAILED=$((FAILED + 1))
+    fi
+    # A dry run migrated nothing, so it has no wall to print.
+    fresh_deploy
+    drive "the dry run has no migrate wall" 0 -- release "$DEPLOY/release.sh" --dry-run
+    says_not "release: migrate: "
+}
+
+# THE PSQL CLIENT CARRIES THE COMPOSE LINE'S DIGEST. The db service is pinned
+# `postgres:<version>@sha256:<64 hex>` (house rule 61), and a client pulled by
+# the tag alone is a client the registry may answer differently tomorrow.
+case_the_psql_client_carries_the_compose_digest() {
+    fresh_deploy
+    local digest="sha256:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    cat >"$DEPLOY/compose.yaml" <<YAML
+services:
+  db:
+    image: postgres:18.6@${digest}
+  web:
+    image: djb-web:tree-stub
+YAML
+    drive "psql client pinned by digest" 0 -- release "$DEPLOY/release.sh"
+    holds "the psql client is pulled by the compose line's digest" "1" \
+        "$(docker_saw "postgres:18.6@${digest}")"
+    fresh_deploy
+    cat >"$DEPLOY/compose.yaml" <<YAML
+services:
+  db:
+    image: postgres:18.6@${digest}
+YAML
+    drive "the dry run names the pinned client" 0 -- release "$DEPLOY/release.sh" --dry-run
+    says "psql client  postgres:18.6@${digest}"
+}
+
 # The project name comes from the env file, which is where
 # `provision.sh up` writes the ADOPTED name on a box.
 case_the_network_is_the_env_files_project() {
@@ -1492,6 +1544,8 @@ case_an_unreadable_postgres_pin_is_refused
 case_a_missing_apply_py_is_refused_before_the_first_act
 case_a_clean_release_performs_seven_acts_in_order
 case_the_psql_client_is_the_compose_pin
+case_the_migrate_act_prints_its_wall
+case_the_psql_client_carries_the_compose_digest
 case_the_network_is_the_env_files_project
 case_the_project_falls_back_to_the_derivation
 case_the_alerts_act_is_handed_the_sink_and_the_slot

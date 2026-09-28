@@ -1,0 +1,4 @@
+
+# zzz_canary: rule 61's self-test plant — a digest, from a registry nobody listed.
+x-zzz-canary-registry:
+  image: evil.example/redis@sha256:0000000000000000000000000000000000000000000000000000000000000061

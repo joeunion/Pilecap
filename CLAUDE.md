@@ -75,7 +75,9 @@ unless a typed `DJB_GATE_SANCTION` names who and why** — the sanction prints i
 the header and is recorded beside the verdict; records a verdict in the ledger
 keyed on the tree hash; pre-push consults the ledger and does not re-measure a
 green tree; the wired ritual forms are `pm_merge.sh --bank` and
-`pm_push.sh --bank`). **Exit 0 clean · 1 violations · 2 enforcement broken.** 2 outranks
+`pm_push.sh --bank` — and the trains road: `pm_push.sh --pr` from a `pm/*`
+branch (the PR's CI run is the one measurement), `pm_push.sh --ci-verdict` to
+bank it, then a plain push fast-forwards main honoured). **Exit 0 clean · 1 violations · 2 enforcement broken.** 2 outranks
 a pass: a dead canary, an unbound scope, an unknown flag are all 2 — a mistyped
 flag is never a silent full run. The semantics come from the house-rules engine
 (`python -m quality.gate`) and the gate inherits them. Legs and targets:

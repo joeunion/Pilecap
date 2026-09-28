@@ -425,6 +425,15 @@ anything is designed. Output is a friction log; every item a reproduction.
 For a backend-only product this stage designs the contract — resources, verbs,
 error bodies, the schema every door shares, which events the change emits —
 and the same rule holds: alternatives, and why they lost.
+**Before a product's first frontend rung, DESIGN is required, and its output is
+the pattern book** (owner, 2026-09-26): the drawer beside
+`docs/product/design/patterns.md` gains an entry, in the book's six-part form,
+for every element class that rung will draw, each naming the instrument file
+that measures it — landed in the same stage, red first, if it does not exist
+yet. House rule 63 refuses an entry whose instrument file is absent, and the
+scale rules beside it red every face until the product adopts the floor; the
+lead's DECOMPOSE refuses a frontend rung whose class has no entry
+(`references/dispatch-briefs.md` § Engineering lead).
 **3 GATE** *(owner, conditionally)* — only when the cycle needs a new component,
 changes a settled token, or introduces a new pattern. Otherwise it ships.
 **4 DECOMPOSE** *(engineering lead · `fable`)* — rungs, and **acceptance criteria

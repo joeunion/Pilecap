@@ -1,7 +1,7 @@
 # The gate, run by GitHub Actions on every pull request and every push to main.
 #
 # **CI does not have its own list of legs. CI ASKS THE GATE FOR THE LIST**
-# (`./scripts/check.sh --list-legs`) **and runs each unit with `--leg`. The only
+# (`./scripts/check.sh --list-legs --ci`) **and runs each unit with `--leg`. The only
 # number CI owns is how many runners split the suite.** That is the same
 # doctrine this file has always carried, one turn further out: it used to spell
 # the legs by hand and quietly omitted the house-rules engine entirely, so
@@ -113,13 +113,37 @@ on:
   pull_request:
   push:
     branches: [main]
+  # PROD, BY HAND, AND NOTHING ELSE. A dispatch runs `deploy-prod` alone: the
+  # gate's jobs stand down on it (their `if:`s say so), because a promotion is
+  # not a measurement — the tree it promotes was measured on its way to
+  # staging, and a second run over it would be a second measurement of one
+  # tree. The inputs reach the job as env, never as shell text.
+  workflow_dispatch:
+    inputs:
+      tree:
+        description: "The tree staging holds — line 1 of its TREE marker, tree-<12 hex> (the bare hex is accepted)"
+        required: true
+        type: string
+      sanction:
+        description: "<who>: <why> — who is promoting this tree to prod, and why"
+        required: true
+        type: string
 
 # A pull request that gets three pushes in five minutes should measure the last
 # tree, not all three. `main` is never cancelled: a push to main is a tree
 # somebody will cherry-pick from.
+#
+# A DISPATCH HAS ITS OWN GROUP. It runs on main's ref, and in one group a newly
+# queued run CANCELS the pending one even with cancel-in-progress off — so a
+# prod promotion queued behind a merge's gate would cancel the next merge's
+# pending gate, or be cancelled by it. AND A DISPATCH NEVER CANCELS ONE IN
+# FLIGHT: every dispatch shares that group, so a cancel keyed on the ref alone
+# would let a dispatch from any branch cancel a prod promotion from main
+# mid-act — deploy-prod's own job-level `cancel-in-progress: false` does not
+# reach this one.
 concurrency:
-  group: gate-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: gate-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'dispatch' || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -128,14 +152,20 @@ env:
   # Matches `.python-version` and the `requires-python` floor in pyproject.
   PYTHON_VERSION: "3.12"
   # THE ONE NUMBER THIS FILE OWNS, AND IT NAMES WHAT RE-DERIVES IT. How many
-  # runners a shardable unit is split across. Derived from the measurement, not
-  # chosen: pass 1 of the two-pass suite was 405 s on run 34748528964 at `-n 2`,
-  # so one runner's wall for a sharded unit is about
-  # `T(N) ≈ 2 × 405 × 1.1 / N + 150 s` — the two passes, a tenth for the split's
-  # imbalance, plus the runner's own ~150 s of checkout, uv and stack. Three is
-  # where that curve stops paying: N=3 is ~450 s, N=4 is ~370 s for a third more
-  # billed minutes. RE-DERIVE IT when the full gate's sharded unit's wall moves
-  # more than 20% from that 405 s, which is the trigger and the only one.
+  # runners the suite's unit is split across — the unit `--list-legs --ci`
+  # calls `N-capable`; the selftest unit's count is the listing's own, derived
+  # from the committed CI walls table, and is not this number. Derived from the
+  # measurement for ONE PASS, which is what a CI row now runs (the second whole
+  # pass is the nightly's): pass 1 on run 36282702383 was 248 / 262 / 180 s on
+  # three shards, so one pytest row's wall is about
+  # `T(N) ≈ Σpass1 × 1.1 / N + ~100 s` — the pass, a tenth for the split's
+  # imbalance, and the row's own checkout, uv, stack and collection (38 + 64 s
+  # measured). At N=3 that is ~6 min, UNDER the selftest pole (~8.4 min at
+  # its derived six shards), so a fourth pytest runner buys the push no wall at
+  # all — it only bills. RE-DERIVE IT when the heaviest pytest row's wall
+  # passes the heaviest selftest row's (then this is the pole), or when pass
+  # 1's sum moves more than 20% from those 690 s — the triggers, and the only
+  # ones.
   PYTEST_SHARDS: "3"
   # THE COMPOSE STACK'S ADDRESS AND CREDENTIALS, AND THEY ARE THE SOURCE, NOT A
   # COPY: the "start the stack" step below passes the two credentials straight
@@ -176,53 +206,26 @@ env:
   DATABASE_PASSWORD: djb  # pragma: allowlist secret — the published compose password, refused in production by config.settings.guards
   REDIS_URL: redis://127.0.0.1:6379/0
   CACHE_URL: redis://127.0.0.1:6379/1
-  # THE COMPOSE MinIO'S ADDRESS AND CREDENTIALS — the app side of the pair, and
-  # here for exactly the reason REDIS_URL is: the step below starts `minio`, and
-  # an object store the gate's own environment never names is a store the
-  # storage tests cannot dial. They could not dial it. Run 34748528964 ended
-  # `27 failed, 3283 passed, 9 skipped, 110 errors in 404.97s`, and all 110
-  # errors were `botocore.exceptions.NoCredentialsError` — out of
-  # `apps/files/tests/{test_api,test_workflows,test_doors_over_the_wire,
-  # test_presign_matrix,test_integrations}.py` and
-  # `apps/exports/tests/test_workflows.py` — boto3 finding no credentials
-  # anywhere, in the one environment that had a healthy MinIO on 9000.
-  #
-  # THESE FOUR ARE A COPY, AND COPY IS THE HONEST WORD — unlike the Postgres
-  # pair above, which the "start the stack" step passes straight into compose as
-  # POSTGRES_USER / POSTGRES_PASSWORD and which is therefore the SOURCE. Nothing
-  # passes these into compose: `compose.yaml`'s `minio` takes its root
-  # credentials from its own `${MINIO_ROOT_USER:-minioadmin}` defaults, so the
-  # value Django dials and the value the container is created with agree by
-  # being the same published constant, not by derivation. The drift that permits
-  # is small and real — change `compose.yaml`'s default and this block goes
-  # stale in silence. Making it a source is one line in the step below
-  # (`MINIO_ROOT_USER="$AWS_ACCESS_KEY_ID"`, the Postgres shape exactly), and
-  # that step belongs to the rung that owns the rest of this file; recorded here
-  # rather than reached for.
-  #
-  # The values are `.env.example`'s, unchanged, because that is the file a
-  # laptop copies: 9000 is the compose `minio`'s S3 API port (9001 is its
-  # console), and `us-east-1` is MinIO's own default, which MinIO ignores and
-  # boto3 insists on having named. `AWS_S3_REGION_NAME` is here because
-  # `config/settings/base.py` reads it from the environment —
-  # `env.str("AWS_S3_REGION_NAME", default="")` — and hands it to the boto3
-  # client as `region_name`; `config/settings/test.py` pins none of these three,
-  # so what is written here is what the suite dials with.
-  #
-  # AWS_STORAGE_BUCKET_NAME IS DELIBERATELY ABSENT, and for once not for
-  # DATABASE_NAME's reason. `config/settings/test.py` pins it to the empty
-  # string whatever the environment says — the ambient test world has no object
-  # storage on purpose — and a test that wants a bucket names one itself through
-  # the `settings` fixture (`apps/files/tests/conftest.py::bucket`, which
-  # derives it per checkout). A name here would be overridden and misleading.
-  AWS_S3_ENDPOINT_URL: http://127.0.0.1:9000
-  AWS_S3_REGION_NAME: us-east-1
-  AWS_ACCESS_KEY_ID: minioadmin  # pragma: allowlist secret — the published compose credential, worth nothing; the production refusal that would reject it is recorded in config/settings/guards.py as a named candidate, and recorded there as not landed
-  AWS_SECRET_ACCESS_KEY: minioadmin  # pragma: allowlist secret — the published compose credential, worth nothing; the production refusal that would reject it is recorded in config/settings/guards.py as a named candidate, and recorded there as not landed
+  # NO `AWS_*` KEY IS HERE, AND THAT IS THE DESIGN. The store the suite talks to
+  # has ONE authority: `config/settings/test.py` writes the compose MinIO's
+  # address, region and published pair as literals and pins the session token
+  # absent, so neither this block nor anything a later step exports can
+  # redirect the gate's S3 calls. This block used to carry the four as a copy,
+  # and the copy was the side an exporter could overwrite: the registry login
+  # below writes assumed STS keys into the job env over this block, and on the
+  # first CI attempt that credential reached the suite and every MinIO test
+  # answered `InvalidAccessKeyId`. The `ci-env` census (`scripts/docs_legs.sh`)
+  # refuses a second authority here, naming both, and house rule 62 holds every
+  # `run:` step after an exporter to pin the exported names or say why.
+  # AWS_STORAGE_BUCKET_NAME is absent for its own older reason: the test
+  # settings pin it empty and a test that wants a bucket names one itself.
 
 jobs:
   derive:
     name: derive
+    # A DISPATCH IS A PROMOTION, NOT A MEASUREMENT (the `on:` block says why);
+    # with derive down, `legs`, `images` and `local` stand down behind it.
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     # WHAT TO RUN, ASKED RATHER THAN TYPED. This job's whole output is the
@@ -237,15 +240,37 @@ jobs:
     # remembered list at that moment would be running the hand list this whole
     # design exists to delete, at exactly the moment the gate said the list was
     # wrong. `set -euo pipefail` and a bare invocation is the whole mechanism.
+    #
+    # ON A PUSH TO MAIN IT ASKS ONE QUESTION FIRST: did a pull request's run
+    # already measure this tree green? (`gate_ci_consult`, the consult step
+    # below.) Yes → an empty matrix, `legs` skipped by its `if:`, and `verdict`
+    # names the run that measured it: one measurement per tree. Anything else
+    # → the full matrix, exactly as if nothing had been asked.
     outputs:
       matrix: ${{ steps.units.outputs.matrix }}
       seed: ${{ steps.units.outputs.seed }}
+      honoured: ${{ steps.consult.outputs.honoured }}
+      honoured_attempt: ${{ steps.consult.outputs.attempt }}
+      honoured_tree: ${{ steps.consult.outputs.tree }}
+    # THE WORKFLOW'S `contents: read` PLUS THE TWO READS THE CONSULT SPENDS,
+    # and this is the only job that holds them: `pull-requests: read` to ask
+    # which pull requests carry the pushed commit, `actions: read` to list
+    # their runs and download a run's record. Neither can write anything.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v5
         with:
           # The listing itself needs no history, but the base of a proposed
           # change must resolve on every row below, and the rows check out the
           # same way. Kept here so the two jobs' checkouts do not differ.
+          #
+          # AND THE CONSULT NEEDS IT: the record it judges names the pull
+          # request's head commit, which must be in THIS checkout for its
+          # measured tree and its ancestry to be read — a shallow clone answers
+          # "commit unknown" and every push to main would re-measure.
           fetch-depth: 0
           # AND THE TAGS, for the same "do not differ" reason. `fetch-depth: 0`
           # fetches every commit and NO tag object; the drives and the image
@@ -254,55 +279,137 @@ jobs:
           # not. See the legs job's checkout for the measurement.
           fetch-tags: true
 
-      - name: ask the gate what its units are
-        id: units
-        # THE LISTING IS ASKED BARE, ON A PULL REQUEST TOO, AND THAT IS A
-        # DECLARED GAP rather than an oversight. The listing takes no arguments
-        # at all — `--list-legs <anything>` is exit 2 by design, so that a
-        # mistyped modifier is never answered with a smaller listing — which
-        # means it cannot yet be handed the proposed change's base and cannot
-        # print how many items the scope selected. The units and their shards do
-        # not depend on the scope, so the matrix is right either way; what is
-        # missing is the `selected=<n>` a reader would like on the row. The
-        # NARROWING itself is not missing: every row below carries
-        # `--pr --base <sha>` on a pull request.
+      - name: the consult — did a pull request's run already measure this tree
+        id: consult
+        # PUSHES ONLY: a pull request's run IS a measurement, and there is
+        # nothing earlier for it to honour.
+        #
+        # `gate_ci_consult` (scripts/gate_ledger.sh) prints exactly one line and
+        # ALWAYS exits 0: `consult: honoured run=<id> attempt=<n> tree=<t>` when
+        # a completed pull_request run of this workflow, for the pushed commit
+        # or a pull request GitHub associates with it, published a green, whole,
+        # fresh record whose tree is THIS checkout's measured tree — judged by
+        # the same fetch and judge `pm_push.sh --ci-verdict` uses; otherwise
+        # `consult: measure — <why>`. It never refuses, because measuring is
+        # the safe answer: a tree the fallback bank pushed has no record and is
+        # simply measured here.
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PUSH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          . ./scripts/gate_ledger.sh
+          answer="${RUNNER_TEMP:-/tmp}/consult.txt"
+          gate_ci_consult "$PUSH_SHA" >"$answer"
+          line="$(sed -n 1p "$answer")"
+          echo "$line"
+          case "$line" in
+            "consult: honoured "*)
+              run="$(printf '%s\n' "$line" | sed -n 's/.* run=\([0-9][0-9]*\) .*/\1/p')"
+              attempt="$(printf '%s\n' "$line" | sed -n 's/.* attempt=\([0-9][0-9]*\) .*/\1/p')"
+              tree="$(printf '%s\n' "$line" | sed -n 's/.* tree=\([0-9a-f]\{40\}\)$/\1/p')"
+              if [ -z "$run" ] || [ -z "$attempt" ] || [ -z "$tree" ]; then
+                echo "::warning::the consult's honour line did not parse — measuring in full"
+                exit 0
+              fi
+              {
+                echo "honoured=${run}"
+                echo "attempt=${attempt}"
+                echo "tree=${tree}"
+              } >>"$GITHUB_OUTPUT"
+              ;;
+            *) echo "  the full matrix runs" ;;
+          esac
+
+      - name: ask the gate what its units are
+        id: units
+        # `--list-legs --ci`, THE LISTING'S ONE MODIFIER, AND NOTHING ELSE. It
+        # prints the same units in the same order as the bare listing with two
+        # answers CI needs and the bare table does not carry: a `shards` column
+        # that is a COUNT where the gate can derive one — the selftest count,
+        # `ceil(Σ walls / max(heaviest member, 300 s))` over the committed CI
+        # walls table the fold harvests — and a FIFTH column, `passes`, which is
+        # `1` on the unit that runs the whole suite: CI rows ride one pass and
+        # the second whole pass is the nightly's (ADR gate-1, as re-ruled).
+        #
+        # THE ROWS ARE THE LISTING'S COLUMNS, READ, and nothing in this block
+        # names a unit: an INTEGER in `shards` is that many rows `k/<integer>`;
+        # `N-capable` is PYTEST_SHARDS rows (the one number this file owns, for
+        # the unit whose split has its own table — and for the selftest unit on
+        # a tree with no walls table at all, where the listing honestly says
+        # "CI must supply the count" rather than inventing one); `0` is one row.
+        # Every row carries `passes`. `--passes 1` is legal only beside a
+        # `--shard`, so a one-pass mark on an indivisible unit is exit 2 here,
+        # never a row the gate would refuse at the leg.
+        #
+        # STILL A DECLARED GAP: the listing cannot be handed the proposed
+        # change's base, so a row carries no `selected=<n>`. The NARROWING is
+        # not missing: a non-train pull request's rows carry `--pr --base`.
+        #
+        # AND ON A PUSH THE CONSULT'S ANSWER COMES FIRST: a tree a pull
+        # request's run already measured green is honoured with an EMPTY
+        # matrix, and `legs` is skipped by its own `if:`.
+        env:
+          HONOURED: ${{ steps.consult.outputs.honoured }}
+          HONOURED_ATTEMPT: ${{ steps.consult.outputs.attempt }}
+          HONOURED_TREE: ${{ steps.consult.outputs.tree }}
+        run: |
+          set -euo pipefail
+          if [ -n "${HONOURED:-}" ]; then
+            echo "matrix=[]" >>"$GITHUB_OUTPUT"
+            echo "honoured: tree ${HONOURED_TREE} was measured green by run ${HONOURED} (attempt ${HONOURED_ATTEMPT}) — no row runs, and legs is skipped by its if:"
+            exit 0
+          fi
           # The workflow-level `env:` block is exported into every step, so the
           # one hand-typed number is read here rather than copied into a second
-          # place that could disagree with it.
+          # place that could disagree with it — and refused if it is not one.
           SHARDS="$PYTEST_SHARDS"
-          # REDIRECTED, NEVER PIPED. The gate refuses a piped stdout (it would
-          # replace its exit status with the reader's) and the exit status here
-          # is the job's.
-          ./scripts/check.sh --list-legs > units.tsv
-          cat units.tsv
-          # ONE ROW PER RUNNER. A unit the listing calls `N-capable` expands to
-          # SHARDS rows carrying `k/N`; every other unit is one row carrying no
-          # shard at all. Nothing in this block names a unit: it reads the
-          # `shards` column, which is the listing's own answer to "does this
-          # unit's body take a k/N".
+          case "$SHARDS" in
+            "" | *[!0-9]* | 0*) echo "::error::PYTEST_SHARDS is '${SHARDS}', not a positive count"; exit 2 ;;
+          esac
+          # REDIRECTED, NEVER PIPED, and OUTSIDE THE CHECKOUT. The gate refuses
+          # a piped stdout (it would replace its exit status with the reader's)
+          # and the exit status here is the job's.
+          listing="${RUNNER_TEMP:-/tmp}/units.tsv"
+          ./scripts/check.sh --list-legs --ci >"$listing"
+          cat "$listing"
           matrix='[]'
-          while IFS=$'\t' read -r unit needs shards _legs; do
+          while IFS=$'\t' read -r unit needs shards _legs passes || [ -n "${unit:-}" ]; do
             [ -n "$unit" ] || continue
-            if [ "$shards" = "N-capable" ]; then
+            case "$shards" in
+              0) n=0 ;;
+              N-capable) n="$SHARDS" ;;
+              "" | *[!0-9]* | 0*) echo "::error::unit '${unit}' has shards '${shards}' — neither 0, N-capable nor a count"; exit 2 ;;
+              *) n="$shards" ;;
+            esac
+            case "$passes" in
+              "" | 1) ;;
+              *) echo "::error::unit '${unit}' has passes '${passes}' — the listing marks one pass with 1 or nothing"; exit 2 ;;
+            esac
+            if [ -n "$passes" ] && [ "$n" = "0" ]; then
+              echo "::error::unit '${unit}' is marked one pass and the listing says it cannot shard — --passes 1 needs a --shard"
+              exit 2
+            fi
+            if [ "$n" = "0" ]; then
+              matrix="$(printf '%s' "$matrix" | jq -c --arg u "$unit" --arg n "$needs" --arg p "$passes" \
+                '. + [{unit: $u, needs: $n, shard: "", passes: $p}]')"
+            else
               k=1
-              while [ "$k" -le "$SHARDS" ]; do
-                matrix="$(printf '%s' "$matrix" | jq -c --arg u "$unit" --arg n "$needs" --arg s "${k}/${SHARDS}" \
-                  '. + [{unit: $u, needs: $n, shard: $s}]')"
+              while [ "$k" -le "$n" ]; do
+                matrix="$(printf '%s' "$matrix" | jq -c --arg u "$unit" --arg n "$needs" --arg s "${k}/${n}" --arg p "$passes" \
+                  '. + [{unit: $u, needs: $n, shard: $s, passes: $p}]')"
                 k=$((k + 1))
               done
-            else
-              matrix="$(printf '%s' "$matrix" | jq -c --arg u "$unit" --arg n "$needs" \
-                '. + [{unit: $u, needs: $n, shard: ""}]')"
             fi
-          done <units.tsv
+          done <"$listing"
           if [ "$(printf '%s' "$matrix" | jq -r 'length')" -lt 1 ]; then
             echo "::error::the listing produced no units — refusing to run a gate of nothing"
             exit 2
           fi
           echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
-          printf '%s' "$matrix" | jq -r '.[] | "  row: \(.unit) \(.shard)"'
+          printf '%s' "$matrix" | jq -r '.[] | "  row: \(.unit) \(.shard)\(if .passes != "" then " passes=" + .passes else "" end)"'
           # ONE SEED FOR THE WHOLE RUN, MINTED ONCE HERE. Every shard of one run
           # has to split the SAME collection order — the split is over a
           # collection and the collection order is the seed's — so a seed minted
@@ -316,6 +423,10 @@ jobs:
   legs:
     name: legs (${{ matrix.unit }}${{ matrix.shard && format(', {0}', matrix.shard) || '' }})
     needs: derive
+    # SKIPPED ON AN EMPTY MATRIX, which derive emits for exactly one reason —
+    # the consult honoured this tree — since a listing of no units is exit 2
+    # there. `verdict` tells the two kinds of skipped apart.
+    if: needs.derive.outputs.matrix != '[]'
     runs-on: ubuntu-latest
 
     # ONE ROW PER UNIT, AND THE ROW NEVER DECIDES ANYTHING. Every row runs the
@@ -397,6 +508,26 @@ jobs:
           origin_main=no
           if git rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then origin_main=yes; fi
           echo "runner shape: HEAD ${head_state}; local main: ${local_main}; origin/main: ${origin_main}; tags: $(git tag -l | grep -c . || true)"
+
+      - name: this row's name, for its artifacts
+        id: row
+        # AN ARTIFACT NAME CANNOT CARRY A `/`, and a shard is `k/N`. So the
+        # name is derived here, once, from the two matrix values, and the walls
+        # upload below reads it: `member-walls-<unit>` on an indivisible row,
+        # `member-walls-<unit>-<k>-of-<N>` on a shard. `scripts/pm_fold.sh`'s
+        # walls step downloads every `member-walls*` artifact of a run, so the
+        # prefix is the contract and the rest only has to be unique per row.
+        env:
+          UNIT: ${{ matrix.unit }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          name="member-walls-${UNIT}"
+          if [ -n "${SHARD:-}" ]; then
+            name="${name}-${SHARD%%/*}-of-${SHARD#*/}"
+          fi
+          echo "walls_artifact=${name}" >>"$GITHUB_OUTPUT"
+          echo "this row's walls artifact: ${name}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -507,6 +638,12 @@ jobs:
         # No teardown step: the runner is ephemeral and is destroyed with the
         # job. A laptop tears down with `deploy/teardown.sh`; here there is
         # nothing to tear down that outlives the next minute.
+        env:
+          # Pinned empty (house rule 62): `docker compose` pulls with the
+          # registry login's docker config, never with the exported keys.
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
         run: |
           POSTGRES_USER="$DATABASE_USER" \
           POSTGRES_PASSWORD="$DATABASE_PASSWORD" \
@@ -572,27 +709,60 @@ jobs:
         # The variable is empty on a push, which is what makes the branch a
         # property of the event rather than of an `if:` somebody has to keep
         # right.
+        #
+        # `--passes 1` ONLY WHERE THE ROW CARRIES IT — the listing's `passes`
+        # column, on the unit that runs the whole suite.
+        #
+        # AND A TRAIN RUNS WHOLE. A pull request whose head is a `pm/*` branch
+        # is a train on the CI road (`scripts/pm_push.sh --pr`), and its run is
+        # the ONE measurement the push to main will honour — a narrowed run
+        # vouches for no tree — so its rows carry no `--pr --base`.
+        #
+        # THE WALLS, WRITTEN BY THE GATE ITSELF: `DJB_MEMBER_WALLS_OUT` names a
+        # file OUTSIDE the checkout (the checkout is the measured tree), the
+        # selftest leg appends one `member-walls/1` row per member it runs, and
+        # the upload step below publishes it. Every row gets the variable; only
+        # a unit with members writes to it.
         env:
           UNIT: ${{ matrix.unit }}
           SHARD: ${{ matrix.shard }}
+          PASSES: ${{ matrix.passes }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REF: ${{ github.head_ref }}
           DJB_GATE_PYTEST_SEED: ${{ needs.derive.outputs.seed }}
-          # THE COMPOSE STORE'S CREDENTIAL, RE-PINNED. The AWS login above exports
-          # its assumed STS credentials into the job env for every later step,
-          # over the workflow `env:`; the gate dials the compose MinIO, not AWS.
-          # MinIO was created from compose.yaml's `${MINIO_ROOT_USER:-minioadmin}`
-          # default (nothing here sets it), which is the literal below. Literal,
-          # not `${{ env.… }}`: that context already holds the exported STS key.
-          AWS_ACCESS_KEY_ID: minioadmin  # pragma: allowlist secret — the published compose credential, as in the workflow env above
-          AWS_SECRET_ACCESS_KEY: minioadmin  # pragma: allowlist secret — the published compose credential, as in the workflow env above
+          DJB_MEMBER_WALLS_OUT: ${{ runner.temp }}/member-walls/walls.tsv
+          # THE EXPORTED CREDENTIAL, PINNED EMPTY (house rule 62). The AWS login
+          # above writes its assumed STS credentials into the job env for every
+          # later step; the gate needs no cloud credential at all — the store
+          # it dials is the compose MinIO, and `config/settings/test.py` is the
+          # one authority for that address and pair. Empty is a pin.
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
           AWS_SESSION_TOKEN: ""
         run: |
           set -euo pipefail
           args=()
           [ -z "${SHARD:-}" ] || args+=(--shard "$SHARD")
+          [ -z "${PASSES:-}" ] || args+=(--passes "$PASSES")
+          case "${PR_HEAD_REF:-}" in
+            pm/?*) PR_BASE="" ;;
+          esac
           [ -z "${PR_BASE:-}" ] || args+=(--pr --base "$PR_BASE")
+          mkdir -p "${DJB_MEMBER_WALLS_OUT%/*}"
           echo "-- ./scripts/check.sh --leg $UNIT ${args[*]-}"
           ./scripts/check.sh --leg "$UNIT" ${args[@]+"${args[@]}"}
+
+      - name: publish this row's member walls
+        # `if: always()`: a red shard's walls are still walls, and the harvest
+        # reads only a green, complete run's anyway. Nothing to publish on a
+        # row whose unit has no members, and that is not a warning.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.row.outputs.walls_artifact }}
+          path: ${{ runner.temp }}/member-walls/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: the stack, when something failed
         # DIAGNOSTICS, NOT A LEG. It asserts nothing, it can fail nothing, and
@@ -604,6 +774,10 @@ jobs:
         # instrument could not look. `--no-color` because these logs are read
         # in a browser, not a terminal.
         if: failure()
+        env:
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
         run: |
           docker compose ps
           docker compose logs --no-color --tail=200 db redis temporal
@@ -614,8 +788,9 @@ jobs:
     # `always()` IS WHAT MAKES THIS A VERDICT RATHER THAN A SUMMARY. Without it
     # a cancelled or failed row would SKIP this job, and a skipped required
     # check is not a red one — it is a check that never reported, which branch
-    # protection and a reader both mistake for "nothing to see".
-    if: always()
+    # protection and a reader both mistake for "nothing to see". A DISPATCH is
+    # the one exception: it measured nothing, and a verdict over nothing is red.
+    if: always() && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     # THE ONE CHECK ANYTHING ELSE MAY DEPEND ON. The rows are a matrix, and a
@@ -629,40 +804,167 @@ jobs:
     # protection lives in the repository's settings; a workflow file cannot
     # assert what is required. The rung that landed this said so in its report
     # and named who must set it.
+    #
+    # `contents: read` AND NOTHING ELSE. This job used to hold `actions: read`
+    # to list the run's jobs for a reader of a red verdict; the two read grants
+    # now sit on the consult's job alone, and the run's own page lists its red
+    # rows by name.
     permissions:
       contents: read
-      actions: read
 
     steps:
-      - name: which rows were not success
-        # READ OUT OF THE RUN, not out of `needs`. `needs.legs.result` collapses
-        # every row into one word, which is the right input for the decision
-        # below and the wrong output for a person: a reader of a red verdict
-        # needs the ROW. This step asserts nothing — the next one decides.
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh api --paginate \
-            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
-            --jq '.jobs[] | select(.conclusion != null and .conclusion != "success") | "  not success: \(.name) — \(.conclusion)"' \
-            || echo "  (the run's jobs could not be listed — the decision below is unaffected)"
-
       - name: the verdict
-        # PASSES IFF BOTH NEEDS SUCCEEDED. A matrix result is `success` only
-        # when every row succeeded, so this is the whole gate's verdict in two
-        # comparisons — and it is a comparison rather than an implicit `needs:`
-        # because `always()` above means this job runs whatever happened.
+        # PASSES IFF DERIVE SUCCEEDED AND THE ROWS EITHER ALL SUCCEEDED OR WERE
+        # SKIPPED BECAUSE THE CONSULT HONOURED THIS TREE. A matrix result is
+        # `success` only when every row succeeded; `skipped` is two different
+        # facts — an honour, which names its run, or nothing having run at all,
+        # which is red: a gate of nothing is not a verdict. It is a comparison
+        # rather than an implicit `needs:` because `always()` above means this
+        # job runs whatever happened.
+        env:
+          DERIVE_RESULT: ${{ needs.derive.result }}
+          LEGS_RESULT: ${{ needs.legs.result }}
+          HONOURED: ${{ needs.derive.outputs.honoured }}
+          HONOURED_ATTEMPT: ${{ needs.derive.outputs.honoured_attempt }}
+          HONOURED_TREE: ${{ needs.derive.outputs.honoured_tree }}
         run: |
           set -euo pipefail
-          echo "derive: ${{ needs.derive.result }}"
-          echo "rows:   ${{ needs.legs.result }}"
-          if [ "${{ needs.derive.result }}" = "success" ] && [ "${{ needs.legs.result }}" = "success" ]; then
-            echo "ok: every unit of the gate ran and passed"
-          else
-            echo "::error::the gate did not pass — see the rows named above"
+          echo "derive: ${DERIVE_RESULT}"
+          echo "rows:   ${LEGS_RESULT}"
+          if [ "$DERIVE_RESULT" != "success" ]; then
+            echo "::error::derive did not succeed — the gate did not pass"
             exit 1
           fi
+          if [ "$LEGS_RESULT" = "success" ]; then
+            echo "ok: every unit of the gate ran and passed"
+            exit 0
+          fi
+          if [ "$LEGS_RESULT" = "skipped" ] && [ -n "${HONOURED:-}" ]; then
+            echo "ok: tree ${HONOURED_TREE} measured green by run ${HONOURED} (attempt ${HONOURED_ATTEMPT}) — honoured, nothing re-measured"
+            exit 0
+          fi
+          if [ "$LEGS_RESULT" = "skipped" ]; then
+            echo "::error::no row ran and nothing honoured this tree — a gate of nothing is not a verdict"
+            exit 1
+          fi
+          echo "::error::the gate did not pass — see the red rows on this run's page"
+          exit 1
+
+  gate-verdict:
+    name: gate-verdict
+    # THE RUN'S ONE MEASUREMENT, AS ONE RECORD. `./scripts/pm_push.sh
+    # --ci-verdict <run id>` downloads this job's artifact and banks the `ci:`
+    # row the pre-push honours, and a push to main's `derive` consults the same
+    # record (`gate_ci_consult`) before it measures anything. The grammar, its
+    # writer, its reader and every refusal the reader applies live once, in
+    # `scripts/gate_ledger.sh` § "the CI VERDICT" — this job CALLS the writer
+    # (`gate_ci_record_line`), so a record this job can publish is a record the
+    # reader can parse, and a field out of grammar is a red step, not a line.
+    #
+    # `needs:` EVERY JOB THE RECORD SPEAKS FOR, and `if: always()` for the
+    # reason `verdict` carries it: a red or cancelled run must publish the
+    # record that SAYS so (`rc=1`), never skip and leave a reader to reach back
+    # to an older green. `images` is in it because an image that does not build
+    # is a tree that does not ship.
+    #
+    # WHAT IT NEVER DOES: push, or write anything but the artifact.
+    # `contents: read`; the row is written on the PM's machine.
+    needs: [derive, legs, images]
+    # NOT on a dispatch: it measured nothing, and a record of it would be a red
+    # line for a tree nobody measured in this run.
+    if: always() && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # THE HEAD COMMIT MUST RESOLVE HERE: on a pull request the checkout
+          # is GitHub's merge, and the record names the PR's head beside it —
+          # the step warns when the head's measured tree is not the checkout's.
+          fetch-depth: 0
+
+      - name: the record (schema=gate-verdict/1)
+        id: record
+        # THE TREE IS THE MEASURED TREE — `gate_measured_tree`, the reduction
+        # every ledger row keys on — never `HEAD^{tree}`. On a pull request it
+        # is the tree of GitHub's MERGE and `commit=` is the PR's head: when
+        # main moved under the PR the two differ and the reader refuses, which
+        # is the right answer. `attempt=` is this attempt's, and the artifact's
+        # name carries it (`gate_ci_artifact_name`), so a re-run never leaves a
+        # reader holding an older attempt's green.
+        #
+        # `scope=whole` on a train's head (`pm/*`) and on a push — the rows ran
+        # unnarrowed; `pr` on any other pull request, whose rows carried
+        # `--pr --base` and vouch for no tree.
+        #
+        # AN HONOURED PUSH WRITES NO RECORD. Its rows never ran, so it measured
+        # nothing; the tree's record is the pull request run's, which the
+        # consult already judged. A line here claiming `run=<this run>` would be
+        # a record of a measurement that did not happen.
+        env:
+          DERIVE_RESULT: ${{ needs.derive.result }}
+          LEGS_RESULT: ${{ needs.legs.result }}
+          IMAGES_RESULT: ${{ needs.images.result }}
+          MATRIX: ${{ needs.derive.outputs.matrix }}
+          HONOURED: ${{ needs.derive.outputs.honoured }}
+          HONOURED_ATTEMPT: ${{ needs.derive.outputs.honoured_attempt }}
+          HONOURED_TREE: ${{ needs.derive.outputs.honoured_tree }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          . ./scripts/gate_ledger.sh
+          if [ -n "${HONOURED:-}" ]; then
+            echo "record: none — this run measured nothing; tree ${HONOURED_TREE} was honoured from run ${HONOURED} (attempt ${HONOURED_ATTEMPT}), whose record is the verdict"
+            exit 0
+          fi
+          out="${RUNNER_TEMP:-/tmp}/gate-verdict"
+          mkdir -p "$out"
+          tree="$(gate_measured_tree)"
+          rc=1
+          if [ "$DERIVE_RESULT" = "success" ] && [ "$LEGS_RESULT" = "success" ] && [ "$IMAGES_RESULT" = "success" ]; then
+            rc=0
+          fi
+          # THE SAME TEST THE `legs` ROWS MADE: a pm/* head ran whole.
+          scope=whole
+          case "${PR_HEAD_REF:-}" in
+            pm/?*) ;;
+            *) [ -z "${PR_BASE:-}" ] || scope="pr" ;;
+          esac
+          # THE UNITS THE MATRIX RAN, `/1` where the row was handed one pass —
+          # read out of derive's own output, so nothing here names a unit. No
+          # matrix (derive failed) is `none` and rc=1: the record still says so.
+          legs="$(printf '%s' "${MATRIX:-[]}" | jq -r '[.[] | .unit + (if .passes == "1" then "/1" else "" end)] | unique | join(",")' 2>/dev/null || true)"
+          if [ -z "$legs" ]; then
+            legs=none
+            rc=1
+          fi
+          headtree="$(gate_measured_tree_of "$HEAD_SHA" 2>/dev/null || true)"
+          if [ "$headtree" != "$tree" ]; then
+            echo "::warning::the measured tree ${tree} is not ${HEAD_SHA}'s (${headtree:-unreadable}) — main moved under this pull request; the reader will refuse this record"
+          fi
+          line="$(gate_ci_record_line "$HEAD_SHA" "$tree" "$legs" "$PYTEST_SHARDS" "$scope" "$rc" "$RUN_ID" "$RUN_ATTEMPT")"
+          printf '%s\n' "$line" >"${out}/${GATE_CI_RECORD}"
+          echo "artifact=$(gate_ci_artifact_name "$RUN_ATTEMPT")" >>"$GITHUB_OUTPUT"
+          echo "$line"
+          echo "  derive=${DERIVE_RESULT} legs=${LEGS_RESULT} images=${IMAGES_RESULT}"
+
+      - name: publish the record
+        # `always()` so a red record is published as surely as a green one;
+        # the name is the record step's own (`gate_ci_artifact_name`), handed
+        # over only once the record is on disk — so an honoured push, which
+        # wrote none, publishes nothing rather than an empty artifact.
+        if: always() && steps.record.outputs.artifact != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.record.outputs.artifact }}
+          path: ${{ runner.temp }}/gate-verdict/
+          if-no-files-found: error
+          retention-days: 14
 
   local:
     name: local
@@ -835,6 +1137,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: is this tag already in the registry
+        # creds: asks ECR, with the push role, whether both images are already under this tag
         # THE BANK BUILDS THIS IMAGE NOW (ADR deploy-4a), on a verifier box,
         # from the tree its own composed verdict has just passed. So by the
         # time this job runs, the tag it is about to build usually EXISTS — and
@@ -890,6 +1193,7 @@ jobs:
       - uses: docker/setup-qemu-action@v3
 
       - name: build web and worker — ONE build, two architectures
+        # creds: pushes both images to ECR and composes their refs with the push role
         if: steps.have.outputs.have != 'true'
         # `--push` when there is a registry, `--load` is not available for a
         # multi-arch build (the local image store holds one architecture), so a
@@ -920,6 +1224,7 @@ jobs:
           done
 
       - name: the manifest carries BOTH architectures
+        # creds: reads the pushed index and its digest back from ECR with the push role
         # THE ASSERTION THAT MAKES "MULTI-ARCH" A FACT RATHER THAN A FLAG. A
         # `--platform` typo, a builder that quietly fell back to the default
         # driver, or a base image with no arm64 variant all produce a perfectly
@@ -943,6 +1248,7 @@ jobs:
           done
 
       - name: the images run as a non-root user
+        # creds: pulls the pushed images back from ECR with the push role before running them
         # SKIPPED WHEN THE TAG WAS ALREADY THERE, with the build. This step
         # RUNS the image on the runner, and a runner cannot run an image it has
         # no architecture for; more to the point, an image this job did not
@@ -972,3 +1278,288 @@ jobs:
             fi
             test "$(docker run --rm --entrypoint id "$ref" -u)" = "10001"
           done
+
+  deploy-staging:
+    name: deploy-staging
+    # A MERGE TO MAIN GOES TO STAGING, BY THE ONE DEPLOY SCRIPT. `deploy/
+    # stage.sh` is what a laptop runs; this job adds a trigger and a credential
+    # and nothing else (ADR deploy-4 (f): promotion is neither a re-tag nor a
+    # rebuild). `needs: [verdict, images]` — a tree the gate has not passed has
+    # no image, and an image that did not build is nothing to pull. On an
+    # honoured push the rows never ran, `verdict` says so green, and `images`
+    # finds the tag the bank built: this job then deploys the tree that pull
+    # request measured.
+    #
+    # IT SKIPS WITH A NOTICE, NEVER A RED, when the product's variables name no
+    # stage box (`DJB_STAGE_TARGET`) or no deploy role (`AWS_DEPLOY_ROLE_ARN`):
+    # a clone of the template with no box stays green, and the notice says
+    # which variable is missing. The variables and the role's trust are
+    # `docs/runbooks/deploy.md` § "Deploying from CI". A job-level `if:` on the
+    # variables would skip silently, so the first STEP decides and every later
+    # step asks its answer.
+    #
+    # NO GITHUB ENVIRONMENT IS DECLARED. A job with `environment: <name>` is
+    # issued an OIDC token whose `sub` is `repo:<owner>/<repo>:environment:
+    # <name>`, and the deploy role's trust admits `…:ref:refs/heads/main`; a
+    # product that adds an environment (for its protection rules) adds that
+    # `…:environment:<name>` subject to the trust in the same change.
+    needs: [verdict, images]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # One staging deploy at a time; a newer merge's deploy waits, never
+    # cancels a deploy mid-act.
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: is there a stage to deploy to
+        id: target
+        env:
+          TARGET: ${{ vars.DJB_STAGE_TARGET }}
+          ROLE: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set -uo pipefail
+          missing=""
+          [ -n "${TARGET:-}" ] || missing="${missing} DJB_STAGE_TARGET"
+          [ -n "${ROLE:-}" ] || missing="${missing} AWS_DEPLOY_ROLE_ARN"
+          if [ -n "$missing" ]; then
+            echo "::notice::deploy-staging skipped — this repository sets no${missing} variable, so there is no stage box to deploy to (docs/runbooks/deploy.md § Deploying from CI names them)"
+            echo "deploy=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "stage target: ${TARGET}"
+          echo "deploy=true" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        if: steps.target.outputs.deploy == 'true'
+        with:
+          # THE WHOLE HISTORY: stage.sh diffs the tree the box holds against
+          # this one to key its acts, and that older tree must be here.
+          fetch-depth: 0
+
+      - name: assume the deploy role
+        if: steps.target.outputs.deploy == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: stage this tree (deploy/stage.sh --env staging)
+        id: stage
+        if: steps.target.outputs.deploy == 'true'
+        # creds: stage.sh asks the registry for this tree's digests with the deploy role before any act
+        #
+        # WHAT THIS STEP ASSUMES, SAID BECAUSE IT IS NOT BUILT: `stage.sh`
+        # reaches the box over PLAIN SSH, as `DJB_STAGE_TARGET` names it, and a
+        # hosted runner holds no key for it — the runner-to-box transport
+        # (Session Manager with an ephemeral key, scoped by the box's
+        # `Project=<namespace>` tag) is a proposal in the runbook, not a road.
+        # Until a product builds that road, a product that sets the variables
+        # gets a red step naming the ssh refusal, which is the honest answer.
+        #
+        # THE EXIT STATUS IS stage.sh's (0 live or nothing to deploy · 1 an
+        # act ran and failed · 2 refused, nothing touched). Its output goes to
+        # a file and is printed whole — redirected, never piped — so the
+        # closing line `stage: <tag> live in <n>s (migrate <m>s)` can be
+        # carried onto the one `stage-verdict:` line this job ends on.
+        env:
+          TARGET: ${{ vars.DJB_STAGE_TARGET }}
+          DJB_DEPLOY_NAMESPACE: ${{ vars.DJB_DEPLOY_NAMESPACE }}
+          DJB_IMAGE_REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
+        run: |
+          set -uo pipefail
+          log="${RUNNER_TEMP:-/tmp}/stage-staging.log"
+          rc=0
+          ./deploy/stage.sh "$TARGET" --env staging >"$log" 2>&1 || rc=$?
+          cat "$log"
+          closing="$(awk '/^stage: tree-[0-9a-f]+ live in [0-9]+s / { l = $0 } END { print l }' "$log")"
+          verdict="stage-verdict: rc=${rc} ${closing:-no closing line — nothing went live (a refusal, a failed act, or a docs-only delta)}"
+          echo "$verdict"
+          [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "$verdict" >>"$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+  deploy-prod:
+    name: deploy-prod
+    # STAGING'S TREE TO PROD, BY DISPATCH, BY THE SAME SCRIPT. `deploy/stage.sh
+    # --env prod` holds the four teeth — the sanction's `<who>: <why>` shape,
+    # staging's `LIVE` marker naming this tree (written only after staging's
+    # own readyz answered, never at the ship), staging's readyz answering 200,
+    # and the nightly leak proof green and no older than 24 h — and refuses
+    # (exit 2, nothing touched) naming every red one. This job only hands it
+    # the inputs: the tree staging HOLDS checked out (a docs-only merge leaves
+    # staging on an older tree than main's head, so the dispatch ref's head is
+    # the wrong tree), and the latest `nightly-leak-proof` artifact downloaded.
+    #
+    # NO `needs:`: the gate's jobs stand down on a dispatch (see `on:`), and
+    # the tree was measured on its way to staging. THE REGISTRY TAG IS THE
+    # RECORD: CI tags no tree its verdict did not pass (ADR deploy-4 (b)), and
+    # stage.sh refuses a tree whose image the registry lacks. And the teeth
+    # that run are the PROMOTED TREE'S OWN stage.sh — the checkout below is
+    # that tree — so a tree older than the prod gate fails safe, refusing the
+    # unknown `--sanction` flag.
+    #
+    # ITS GRANTS: `contents: read`, `id-token: write` for the deploy role, and
+    # `actions: read` for ONE reason — downloading the nightly-proof run's
+    # artifact with the job's own token. No secret is read.
+    #
+    # NO GITHUB ENVIRONMENT IS DECLARED, and deploy-staging's paragraph is the
+    # whole argument: a product that wants an environment's reviewers on prod
+    # adds `environment: <name>` HERE and the `…:environment:<name>` subject to
+    # the deploy role's trust in the same change, or the role refuses the job.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    steps:
+      - name: is there a prod to promote to
+        id: target
+        # A DISPATCH IS A REQUEST, SO AN UNSET VARIABLE IS A REFUSAL, NOT A
+        # SKIP: somebody asked for prod, and a green run that promoted nothing
+        # would read as done. And prod is promoted from main's own workflow —
+        # the deploy role's trust names that ref, and a branch's copy of this
+        # file is not the one that was reviewed.
+        env:
+          PROD: ${{ vars.DJB_PROD_TARGET }}
+          STAGE: ${{ vars.DJB_STAGE_TARGET }}
+          ROLE: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          REF: ${{ github.ref }}
+        run: |
+          set -uo pipefail
+          missing=""
+          [ -n "${PROD:-}" ] || missing="${missing} DJB_PROD_TARGET"
+          [ -n "${STAGE:-}" ] || missing="${missing} DJB_STAGE_TARGET"
+          [ -n "${ROLE:-}" ] || missing="${missing} AWS_DEPLOY_ROLE_ARN"
+          if [ -n "$missing" ]; then
+            echo "::error::deploy-prod refused — this repository sets no${missing} variable (docs/runbooks/deploy.md § Deploying from CI); nothing was promoted"
+            exit 2
+          fi
+          if [ "${REF:-}" != "refs/heads/main" ]; then
+            echo "::error::deploy-prod refused — dispatched from ${REF:-<no ref>}; prod is promoted from main's workflow only; nothing was promoted"
+            exit 2
+          fi
+          echo "prod target: ${PROD}   (staging read from ${STAGE})"
+
+      - uses: actions/checkout@v5
+        with:
+          # THE WHOLE HISTORY: the tree staging holds is usually not the head,
+          # and stage.sh diffs the prod box's tree against it.
+          fetch-depth: 0
+
+      - name: the tree staging holds, checked out
+        id: tree
+        # THE INPUT IS OPERATOR TEXT, so it is read from env and judged before
+        # it touches git: `tree-<12..40 hex>` or the bare hex, nothing else.
+        # The newest commit on origin/main whose tree begins with it is checked
+        # out — any commit carrying that tree carries the same bytes — and the
+        # tag `deploy/provision.sh image-tag` derives from the checkout must be
+        # the tag asked for. A tree main never held is a refusal: prod takes
+        # only what reached main.
+        env:
+          TREE: ${{ inputs.tree }}
+        run: |
+          set -euo pipefail
+          want="${TREE#tree-}"
+          case "$want" in
+            "" | *[!0-9a-f]*)
+              # The refusal does not echo the input: operator text on a
+              # `::error::` line could carry a newline and a second command.
+              echo "::error::the tree input is not tree-<hex> (${#TREE} characters) — line 1 of staging's TREE marker; nothing was promoted"
+              exit 2
+              ;;
+          esac
+          if [ "${#want}" -lt 12 ] || [ "${#want}" -gt 40 ]; then
+            echo "::error::the tree input tree-${want} carries ${#want} hex digits; a tree tag carries 12 (up to 40 accepted); nothing was promoted"
+            exit 2
+          fi
+          trees="${RUNNER_TEMP:-/tmp}/main-trees.txt"
+          git log --format='%H %T' refs/remotes/origin/main >"$trees"
+          commit="$(awk -v w="$want" 'index($2, w) == 1 { print $1; exit }' "$trees")"
+          if [ -z "$commit" ]; then
+            echo "::error::no commit on origin/main carries tree ${want} — prod promotes only a tree main held; nothing was promoted"
+            exit 2
+          fi
+          git checkout -q --detach "$commit"
+          tag="$(./deploy/provision.sh image-tag)"
+          if [ "$tag" != "tree-${want:0:12}" ]; then
+            echo "::error::checked out ${commit}, whose tag reads '${tag}', not tree-${want:0:12}; nothing was promoted"
+            exit 2
+          fi
+          echo "promoting ${tag} — commit ${commit}"
+          echo "tag=${tag}" >>"$GITHUB_OUTPUT"
+          echo "commit=${commit}" >>"$GITHUB_OUTPUT"
+
+      - name: the latest nightly leak proof (nightly-leak-proof)
+        id: nightly
+        # THE NEWEST COMPLETED `nightly-proof.yml` RUN ON MAIN, whatever its
+        # conclusion — a red or stale night is for stage.sh's tooth to refuse
+        # BY NAME, never for this step to hide by picking an older green one.
+        # No completed run → an empty directory argument, which the tooth
+        # reads as `nightly:none`; an artifact that will not download (it
+        # expires after 14 days) → an empty directory, which it reads as
+        # unreadable. GitHub not answering is exit 2 here: could not look.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          dir="${RUNNER_TEMP:-/tmp}/nightly-leak-proof"
+          rm -rf "$dir"
+          if ! run="$(gh run list --workflow nightly-proof.yml --branch main --status completed --limit 1 --json databaseId --jq '.[0].databaseId // ""')"; then
+            echo "::error::could not ask GitHub for the latest nightly-proof run — the nightly tooth cannot be read; nothing was promoted"
+            exit 2
+          fi
+          if [ -z "$run" ]; then
+            echo "nightly: no completed nightly-proof run on main — handed on as none"
+            echo "dir=" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p "$dir"
+          if ! gh run download "$run" --name nightly-leak-proof --dir "$dir"; then
+            echo "::warning::run ${run}'s nightly-leak-proof artifact would not download — handed on empty, which the tooth refuses as unreadable"
+          fi
+          echo "nightly: run ${run} -> ${dir}"
+          echo "dir=${dir}" >>"$GITHUB_OUTPUT"
+
+      - name: assume the deploy role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: promote the tree staging holds (deploy/stage.sh --env prod)
+        id: promote
+        # creds: stage.sh asks the registry for the promoted tree's digests with the deploy role before any act
+        #
+        # THE SAME TRANSPORT ASSUMPTION AS deploy-staging's stage step: plain
+        # ssh to both boxes, which a hosted runner cannot make until a product
+        # builds the road. The staging box is only READ (its TREE and its
+        # readyz); every red tooth is named in one exit-2 refusal before the
+        # prod box is contacted.
+        env:
+          PROD: ${{ vars.DJB_PROD_TARGET }}
+          STAGE: ${{ vars.DJB_STAGE_TARGET }}
+          SANCTION: ${{ inputs.sanction }}
+          NIGHTLY_DIR: ${{ steps.nightly.outputs.dir }}
+          DJB_DEPLOY_NAMESPACE: ${{ vars.DJB_DEPLOY_NAMESPACE }}
+          DJB_IMAGE_REGISTRY: ${{ vars.DJB_IMAGE_REGISTRY }}
+        run: |
+          set -uo pipefail
+          log="${RUNNER_TEMP:-/tmp}/stage-prod.log"
+          rc=0
+          ./deploy/stage.sh "$PROD" --env prod --sanction "$SANCTION" --staging "$STAGE" --nightly "$NIGHTLY_DIR" >"$log" 2>&1 || rc=$?
+          cat "$log"
+          closing="$(awk '/^stage: tree-[0-9a-f]+ live in [0-9]+s / { l = $0 } END { print l }' "$log")"
+          verdict="stage-verdict: rc=${rc} ${closing:-no closing line — nothing went live (a refusal, a failed act, or a docs-only delta)}"
+          echo "$verdict"
+          [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "$verdict" >>"$GITHUB_STEP_SUMMARY"
+          exit "$rc"

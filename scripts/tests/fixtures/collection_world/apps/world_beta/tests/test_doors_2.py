@@ -1,5 +1,7 @@
 """A fixture-world module. Collected by the drives; never run by the suite."""
 
+OPENAPI_READER = "get_openapi_schema("  # openapi_document_readers
+
 DOOR_PAIR = ("rest", "mcp")
 
 

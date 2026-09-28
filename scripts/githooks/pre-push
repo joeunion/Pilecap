@@ -117,11 +117,15 @@ fi
 # for and the line is skipped.
 PUSHED_TREES=""
 PUSHED_REFS=0
+# THE DESTINATION REFS, kept for the CI-intent wall below: an intent vouches
+# for a push whose EVERY ref is a train branch, and only this loop sees them.
+PUSHED_TO=""
 ZERO=0000000000000000000000000000000000000000
-while read -r local_ref local_sha _remote_ref _remote_sha; do
+while read -r local_ref local_sha remote_ref _remote_sha; do
     [ -n "${local_sha:-}" ] || continue
     case "$local_sha" in "$ZERO" | "") continue ;; esac
     PUSHED_REFS=$((PUSHED_REFS + 1))
+    PUSHED_TO="${PUSHED_TO}${PUSHED_TO:+ }${remote_ref:-<none>}"
     # THE PUSHED TREE IS READ IN THE MEASURED FORM, NOT RAW. What this
     # loop collects is compared, below, against `$TREE` — which is
     # `gate_measured_tree`, the checkout's tree with every DECLARED derived
@@ -156,6 +160,40 @@ while read -r local_ref local_sha _remote_ref _remote_sha; do
 done
 
 TREE=$(gate_measured_tree || true)
+
+# --- A CI INTENT, DECLARED — AND WHERE IT IS NEVER READ ----------------------
+#
+# `scripts/pm_push.sh --pr` pushes a `pm/*` train branch with NO local verdict:
+# the pull request's CI run is the measurement, and `--ci-verdict` banks the
+# row afterwards. It says so with `DJB_PUSH_INTENT=ci` on the one push it
+# makes, after writing an INTENT row for the tree (`gate_ledger_intent_record`).
+# The declaration is honoured for a push whose EVERY destination ref is
+# `refs/heads/pm/*` and for nothing else — the refs are what git hands this
+# hook, so this is the place that can tell a train branch from main. On a push
+# naming any other ref (main above all) the declaration is IGNORED, and says
+# so on its own line, BEFORE the ordinary lookup decides: an intent never
+# vouches for main, and a verdict row for the tree still does exactly what it
+# always did. An unknown value is ignored the same way — never silently.
+INTENT_CI=0
+if [ -n "${DJB_PUSH_INTENT:-}" ]; then
+    if [ "${DJB_PUSH_INTENT}" != "ci" ]; then
+        echo "pre-push: DJB_PUSH_INTENT='${DJB_PUSH_INTENT}' ignored — the one intent this hook reads is 'ci'"
+    elif [ "$PUSHED_REFS" -eq 0 ]; then
+        echo "pre-push: DJB_PUSH_INTENT=ci ignored — no ref is being pushed, so there is no train branch to vouch for"
+    else
+        INTENT_CI=1
+        for r in $PUSHED_TO; do
+            case "$r" in
+            refs/heads/pm/?*) ;;
+            *)
+                INTENT_CI=0
+                echo "pre-push: DJB_PUSH_INTENT=ci ignored — the push names ${r}, and an intent vouches for refs/heads/pm/* only, never for main; the ordinary lookup decides"
+                break
+                ;;
+            esac
+        done
+    fi
+fi
 
 if [ "$PUSHED_REFS" -eq 0 ]; then
     # NO REFS IS NOT A PUSH. A hook invoked by hand, or a push that is entirely
@@ -212,6 +250,26 @@ else
         fi
     done
     GATE_REASON="the pushed tree is this checkout's tree and has no verdict"
+fi
+
+# --- THE CI-INTENT WALL -----------------------------------------------------
+#
+# REACHED ONLY HERE, for the verifier-box exemption's reason: everything above
+# has honoured a verdict or refused a tree that is not this checkout's, so what
+# is left is an UNMEASURED tree that IS this checkout's. For a train-branch
+# push that declared `ci` (the block above), an intent row for exactly that
+# tree, fresh, stands in for the measurement — the pull request's run is it —
+# and NOTHING IS BANKED: the row is written by `--ci-verdict` from the run's
+# record, never here. Without the row, the declaration buys nothing and the
+# ordinary wall measures.
+if [ "$INTENT_CI" -eq 1 ] && [ "$PUSHED_REFS" -gt 0 ]; then
+    intent_line=""
+    if intent_line=$(gate_ledger_intent_lookup "$TREE" </dev/null) && [ -n "$intent_line" ]; then
+        wall ci-intent "$TREE"
+        echo "pre-push: unmeasured tree ${TREE} leaves for a TRAIN BRANCH (${PUSHED_TO}) on a CI intent — the pull request's run is the measurement and --ci-verdict banks its row; no verdict is banked here"
+        exit 0
+    fi
+    echo "pre-push: DJB_PUSH_INTENT=ci declared and no fresh intent row names tree ${TREE:-<unreadable>} — measuring"
 fi
 
 # --- THE VERIFIER-BOX EXEMPTION ----------------------------------------------

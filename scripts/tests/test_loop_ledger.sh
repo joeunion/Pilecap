@@ -1516,9 +1516,15 @@ case_the_local_loop_really_is_one_pass() {
     local n
     n=$(grep -cE '^[[:space:]]*uv run pytest' "$ROOT/scripts/test.sh")
     is "$n" "1" "the number of pytest invocations in test.sh"
-    CURRENT="the full gate's two passes are still the full gate's"
+    CURRENT="the full gate's two passes are still the full gate's, and the grants pass is the third"
+    # THREE SEEDED INVOCATIONS, ALL IN THE FULL GATE'S pytest-x2 LEG: pass 1,
+    # pass 2, and the grants pass (`gate_grants_pass`) — none of them a `--loop`
+    # pass, which is what `passes=1` above is about. The grants pass is named
+    # by the line that carries it, so a fourth seeded pass anywhere still reds.
     n=$(grep -cE '^[[:space:]]*\./scripts/test\.sh .*--randomly-seed="\$PYTEST_SEED"' "$ROOT/scripts/check.sh")
-    is "$n" "2" "the number of seeded whole-suite passes (the pytest-x2 leg)"
+    is "$n" "3" "the number of seeded whole-suite passes (the pytest-x2 leg: two passes and the grants pass)"
+    n=$(awk '/^gate_grants_pass\(\) \{/ { on = 1 } on && /^[[:space:]]*\.\/scripts\/test\.sh .*--randomly-seed="\$PYTEST_SEED"/ { c++ } on && /^\}$/ { on = 0 } END { print c + 0 }' "$ROOT/scripts/check.sh")
+    is "$n" "1" "the seeded passes inside gate_grants_pass"
 }
 
 # --- the wiring, and the superseded sentence ---------------------------------
@@ -2464,6 +2470,11 @@ case_a_run_that_rewrites_a_path_the_key_reads_names_it() {
     is "$REWRITES" "$REWRITE_PATH" "the carried re-take is named with nothing written"
 
     CURRENT="and once the author moves those bytes, the memory no longer matches"
+    # THE RUN ABOVE REACHED ITS BANK'S QUESTION (it was refused), so the bank
+    # removed its snapshot, stamp and end mark, as check.sh does; a snapshot
+    # left standing would be the record of a run that never asked, and the
+    # next snapshot would remember the author's edit as that run's.
+    rm -f "$REWRITE_SNAP" "${REWRITE_SNAP}.stamp" "${REWRITE_SNAP}.end"
     printf 'an author edit\n' >"$REPO/$REWRITE_PATH"
     in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" || cannot_look "loop_tree_snapshot would not write"
     rewrites_in
@@ -2489,6 +2500,126 @@ case_a_run_that_rewrites_a_path_the_key_reads_names_it() {
     rm -f "$REWRITE_SNAP" "${REWRITE_SNAP}.stamp"
     rewrites_in
     is "$REWRITES_RC" "2" "the reader's status with no snapshot"
+}
+
+# THE RUN THAT NEVER ASKED. The memory above is written at the bank's question,
+# so a run that re-took the artefact and then went red, was interrupted or was
+# killed never wrote it, and the next run — starting on the re-take, reusing
+# the leg, writing nothing — banked the wrong tree. The snapshot a dead run
+# leaves standing is the record that it never asked, and the NEXT run's
+# snapshot asks for it: every path written between that run's stamp and its end
+# mark (the EXIT trap's) is remembered before the new snapshot is taken.
+case_an_unfinished_run_is_remembered_at_the_next_snapshot() {
+    local said
+    rewrite_checkout
+    CURRENT="run 1 re-takes the evidence and is interrupted before the bank's question"
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" >/dev/null || cannot_look "loop_tree_snapshot would not write"
+    rewrite_after_the_stamp "$REWRITE_PATH" "re-taken by run 1"
+    sleep 1
+    # THE EXIT TRAP'S CALL, made by hand: this is what an INT, a TERM, a HUP or
+    # a red leg leaves behind. The snapshot is NOT removed — the run never got
+    # to the line that removes it.
+    in_repo "$REPO" loop_tree_mark_end "$REWRITE_SNAP" 2>/dev/null || true
+    CURRENT="run 2 starts on those bytes and writes nothing"
+    said=$(in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" 2>&1) || cannot_look "loop_tree_snapshot would not write"
+    rewrites_in
+    is "$REWRITES_RC" "0" "the reader's status"
+    is "$REWRITES" "$REWRITE_PATH" "run 2's bank question names run 1's unremembered re-take"
+    case "$said" in
+    *"never reached its bank's question"*"$REWRITE_PATH"*) ok "the snapshot says it remembered it: $(printf '%s' "$said" | sed -n 1p)" ;;
+    *) bad "the snapshot did not say what it remembered — it said: '${said}'" ;;
+    esac
+
+    CURRENT="an author's edit AFTER the dead run's end is judged afresh, never remembered"
+    rewrite_checkout
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" >/dev/null || cannot_look "loop_tree_snapshot would not write"
+    sleep 1
+    in_repo "$REPO" loop_tree_mark_end "$REWRITE_SNAP" 2>/dev/null || true
+    rewrite_after_the_stamp "$REWRITE_PATH" "the author's fix, after the red run"
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" >/dev/null || cannot_look "loop_tree_snapshot would not write"
+    rewrites_in
+    is "$REWRITES" "" "the fix written after the end mark (none carried)"
+
+    CURRENT="a run killed with no end mark: the window runs to now, and the line says so"
+    rewrite_checkout
+    in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" >/dev/null || cannot_look "loop_tree_snapshot would not write"
+    rewrite_after_the_stamp "$REWRITE_PATH" "re-taken by a run that was SIGKILLed"
+    said=$(in_repo "$REPO" loop_tree_snapshot "$REWRITE_SNAP" 2>&1) || cannot_look "loop_tree_snapshot would not write"
+    rewrites_in
+    is "$REWRITES" "$REWRITE_PATH" "the killed run's re-take"
+    case "$said" in
+    *"NO END MARK"*) ok "the line names the missing end mark and what it costs" ;;
+    *) bad "a snapshot with no end mark said nothing about the window — it said: '${said}'" ;;
+    esac
+
+    CURRENT="check.sh leaves the end mark on every exit of a --loop that took a snapshot"
+    local n
+    n=$(grep -c 'loop_tree_mark_end "${LOOP_TREE_SNAPSHOT:-}"' "$ROOT/scripts/check.sh" || true)
+    if [ "${n:-0}" -ge 2 ]; then
+        ok "the snapshot's EXIT trap and the pytest leg's replacement trap both carry loop_tree_mark_end (${n} sites)"
+    else
+        bad "loop_tree_mark_end is wired at ${n:-0} site(s); the snapshot's trap and the pytest leg's trap both need it"
+    fi
+}
+
+# EVERY REWRITE OF THE LOOP'S STATE IS WRITE-THEN-`mv`. The ledgers are one
+# file per common git dir, shared by every worktree and appended without a
+# lock; the snapshot and its memory are per worktree. A truncating `>` onto any
+# of them opens a window in which a reader sees half a file, or an append lands
+# in bytes about to be overwritten. So: the ledger writers in
+# scripts/gate_ledger.sh only ever APPEND (`>>`) to a path a `*_path` function
+# resolved, and the snapshot and its memory go through `loop_tree__write`.
+# GREEN, ON THESE BYTES. The merge ritual asks whether a drive ran on the tree
+# being merged; the newest row by the clock answers a different question. A red
+# row on the tree and a green row on another tree are not it; a green row on
+# the tree, however old, is.
+case_a_drive_is_green_at_a_tree_only_by_its_exit_and_its_tree() {
+    local led="${WORK}/green-at-ledger" t="1111111111111111111111111111111111111111" o="2222222222222222222222222222222222222222" got rc
+    CURRENT="drive_ledger_green_at reads exit=0 AND tree=, never the clock"
+    printf 'v1 k1 drive 2026-09-27T09:00:00Z zzz_d exit=0 took=1 tree=%s parts=-\n' "$t" >"$led"
+    printf 'v1 k2 drive 2026-09-27T11:00:00Z zzz_d exit=1 took=1 tree=%s parts=-\n' "$t" >>"$led"
+    printf 'v1 k3 drive 2026-09-27T12:00:00Z zzz_d exit=0 took=1 tree=%s parts=-\n' "$o" >>"$led"
+    got=$(DJB_GATE_LEDGER="$led" drive_ledger_green_at zzz_d "$t") || got=""
+    is "$(printf '%s\n' "$got" | awk '{ print $2 }')" "k1" "the row it answers for the tree (the green one, older than a red and another tree's)"
+    rc=0
+    printf 'v1 k2 drive 2026-09-27T11:00:00Z zzz_d exit=1 took=1 tree=%s parts=-\n' "$t" >"$led"
+    printf 'v1 k3 drive 2026-09-27T12:00:00Z zzz_d exit=0 took=1 tree=%s parts=-\n' "$o" >>"$led"
+    DJB_GATE_LEDGER="$led" drive_ledger_green_at zzz_d "$t" >/dev/null || rc=$?
+    is "$rc" "1" "its exit when only a red row is on the tree and the green one is elsewhere"
+}
+
+case_every_ledger_rewrite_is_write_then_mv() {
+    local found
+    CURRENT="no ledger writer in scripts/gate_ledger.sh truncates the path it resolved"
+    found=$(awk '
+        /^[a-z_]+\(\) \{/ { fn = $1; sub(/\(\)/, "", fn); ledger = 0 }
+        /path=\$\((gate_ledger_path|loop_ledger_path|partition_ledger_path|gate_runs_path|gate_last_full_path)\)/ { ledger = 1 }
+        ledger && /[^>]>[ ]*"\$path"/ { print FILENAME ":" NR " " fn }
+    ' "$ROOT/scripts/gate_ledger.sh")
+    if [ -z "$found" ]; then
+        ok "every write to a resolved ledger path is an append"
+    else
+        bad "a ledger writer truncates: ${found}"
+    fi
+    CURRENT="the snapshot and its memory are written beside and moved into place"
+    for fn in loop_tree_snapshot loop_tree_remember loop_tree__unfinished; do
+        body=$(awk -v f="$fn" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && /^\}/ { exit }' "$ROOT/scripts/gate_ledger.sh")
+        if [ -z "$body" ]; then
+            bad "${fn} is not defined in scripts/gate_ledger.sh"
+        elif printf '%s\n' "$body" | grep -E '[^>]>[ ]*"\$(out|\{snap\}\.rewrites|\{out\})"' >/dev/null; then
+            bad "${fn} truncates its file in place"
+        elif printf '%s\n' "$body" | grep 'loop_tree__write' >/dev/null; then
+            ok "${fn} writes through loop_tree__write"
+        else
+            bad "${fn} does not write through loop_tree__write"
+        fi
+    done
+    CURRENT="and loop_tree__write is a sibling and one mv"
+    if awk '/^loop_tree__write\(\) \{/ { on = 1 } on && /mv -f "\$tmp" "\$out"/ { found = 1 } on && /^\}/ { exit } END { exit(found ? 0 : 1) }' "$ROOT/scripts/gate_ledger.sh"; then
+        ok "loop_tree__write renames its sibling into place"
+    else
+        bad "loop_tree__write does not rename a sibling into place"
+    fi
 }
 
 case_a_rewrite_the_leg_declares_is_subtracted_and_the_key_is_heads() {
@@ -2568,7 +2699,8 @@ case_the_bank_asks_before_the_key_re_derives() {
 
 # bank_memory_wiring <check.sh> — 0 when the bank REMEMBERS what it refused
 # (`loop_tree_remember` between the question and the snapshot's removal) and
-# that removal spares the memory: exactly the two files, nothing wider. Prints
+# that removal spares the memory: exactly the snapshot, its stamp and its end
+# mark, nothing wider. Prints
 # the first thing that is wrong.
 bank_memory_wiring() {
     awk '
@@ -2581,8 +2713,8 @@ bank_memory_wiring() {
             if (!rm) { print "the bank never removes the snapshot"; exit 1 }
             if (rem > rm) { print "the memory is written after the snapshot is removed"; exit 1 }
             sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
-            want = "rm -f \"$LOOP_TREE_SNAPSHOT\" \"${LOOP_TREE_SNAPSHOT}.stamp\""
-            if (line != want) { print "the removal is not exactly the two files — it reads: " line; exit 1 }
+            want = "rm -f \"$LOOP_TREE_SNAPSHOT\" \"${LOOP_TREE_SNAPSHOT}.stamp\" \"${LOOP_TREE_SNAPSHOT}.end\""
+            if (line != want) { print "the removal is not exactly the snapshot, its stamp and its end mark — it reads: " line; exit 1 }
         }
     ' "$1"
 }
@@ -2591,7 +2723,7 @@ case_the_bank_remembers_what_it_refused_and_its_rm_spares_the_memory() {
     CURRENT="check.sh wires loop_tree_remember at the refusal, and the bank's rm spares .rewrites"
     local why planted
     if why=$(bank_memory_wiring "$ROOT/scripts/check.sh"); then
-        ok "remember sits between the question and the rm, and the rm names exactly the snapshot and its stamp"
+        ok "remember sits between the question and the rm, and the rm names exactly the snapshot, its stamp and its end mark"
     else
         bad "the carried arm's memory is not wired, or is swept: ${why}"
     fi
@@ -3844,6 +3976,236 @@ plant_drive_row() {
     printf 'v1 %s drive 2026-09-18T00:00:00Z %s exit=0 took=7 tree=%s\n' \
         "$key" "$name" "$key" >>"$path"
     echo "  PLANT TOOK · drive row: key=${key} name=${name}"
+}
+
+# --- the CI VERDICT: the `ci:` proof, the record, the nightly reader ----------
+#
+# WHY THESE LIVE HERE. The `ci:` road adds a second GREEN form to the one field
+# `gate_ledger_lookup` reads as a condition on one pass, a record grammar with
+# a writer and a reader in this library, and the nightly record's reader — all
+# pure functions of a line and a file, so they are driven here beside the
+# acceptance form they extend. The fetch, the judge's `gh` half, the intent and
+# the consult need a fake `gh` and a pushed ref, and live in
+# `scripts/tests/test_pm_push.sh`.
+#
+# `does_not_cover`, declared: whether CI's jobs were honest (the record is the
+# run's claim); the `gh` seam (test_pm_push.sh's fake); a nightly record whose
+# free-text fields (`seed`, `pass1`, `pass2`, `map`) say something false — they
+# are required present and read no further.
+
+#: The run id the design names, as the fixtures' run — a decimal, no leading zero.
+CI_RUN_FIXTURE=36282702383
+
+case_a_ci_proof_is_a_green_form_and_the_writer_refuses_a_malformed_one() {
+    local tree before row
+    legs_checkout "ruff,mypy,pytest-x2,selftest"
+
+    CURRENT="R2.1 a one-pass row whose proof is ci:<run> rc=0 is honoured"
+    tree=$(sha40 ci-proof-green)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2/1,selftest" \
+        " waited=0 took=0 leak-proof=ci:${CI_RUN_FIXTURE} rc=0"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "0" "gate_has_green on a one-pass row with a green ci: proof"
+
+    CURRENT="R2.1 the same row at rc=1 is refused, and the note quotes it"
+    tree=$(sha40 ci-proof-red)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2/1,selftest" \
+        " waited=0 took=0 leak-proof=ci:${CI_RUN_FIXTURE} rc=1"
+    N=$((N + 1))
+    OUT="${WORK}/ci-proof-red${N}.log"
+    RC=0
+    (cd "$REPO" && gate_ledger_lookup "$tree") >"$OUT" 2>&1 || RC=$?
+    is "$RC" "1" "gate_ledger_lookup on a one-pass row whose ci: proof is red"
+    if grep -F "carries no green leak proof (leak-proof=ci:${CI_RUN_FIXTURE} rc=1)" "$OUT" >/dev/null; then
+        ok "the note names the red ci: proof"
+    else
+        bad "the note does not name the red ci: proof"
+    fi
+    OUT=""
+
+    CURRENT="R2.1 a ci: proof with a run id that is not a decimal is no proof"
+    tree=$(sha40 ci-proof-abc)
+    plant_full_row "$REPO" "$tree" "ruff,mypy,pytest-x2/1,selftest" \
+        " waited=0 took=0 leak-proof=ci:abc rc=0"
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "1" "gate_has_green on a ci:abc proof"
+
+    CURRENT="R2.1 the writer banks ci:<run> rc=0 as the row's last field"
+    tree=$(sha40 ci-proof-writer)
+    (cd "$REPO" && GATE_PYTEST_TOOK=0 GATE_RUN_LEAK_PROOF="ci:${CI_RUN_FIXTURE} rc=0" \
+        gate_ledger_record "$tree" "ruff,mypy,pytest-x2/1,selftest") ||
+        bad "the writer refused a well-formed ci: proof"
+    row=$(last_full_row "$REPO")
+    case "$row" in
+    *" leak-proof=ci:${CI_RUN_FIXTURE} rc=0") ok "the row ends with the ci: proof" ;;
+    *) bad "the row does not end with the ci: proof: ${row}" ;;
+    esac
+    RC=0
+    (cd "$REPO" && gate_has_green "$tree") 2>/dev/null || RC=$?
+    is "$RC" "0" "the lookup honours the row the writer just wrote"
+
+    CURRENT="R2.1 ci:abc, ci:0123 and a bare ci: are refused, write nothing, and name the grammar"
+    local badvalue
+    for badvalue in "ci:abc rc=0" "ci:0123 rc=0" "ci: rc=0" "ci:${CI_RUN_FIXTURE}" "ci:${CI_RUN_FIXTURE} rc=00"; do
+        before=$(full_row_count "$REPO")
+        N=$((N + 1))
+        OUT="${WORK}/ci-proof-bad${N}.log"
+        RC=0
+        (cd "$REPO" && GATE_RUN_LEAK_PROOF="$badvalue" \
+            gate_ledger_record "$tree" "ruff,pytest-x2/1") >"$OUT" 2>&1 || RC=$?
+        if [ "$RC" = "1" ] && [ "$(full_row_count "$REPO")" = "$before" ]; then
+            ok "'${badvalue}' → exit 1, nothing written"
+        else
+            bad "'${badvalue}' → exit ${RC}, rows ${before} → $(full_row_count "$REPO")"
+        fi
+        if grep -F "'ci:<run id> rc=<n>'" "$OUT" >/dev/null; then
+            ok "'${badvalue}' → the note spells the ci: grammar"
+        else
+            bad "'${badvalue}' → refused without the grammar sentence"
+        fi
+        OUT=""
+    done
+}
+
+case_the_ci_record_has_one_grammar_both_ends() {
+    local commit tree line parsed at field bad_line
+    commit=$(sha40 ci-record-commit)
+    tree=$(sha40 ci-record-tree)
+    at=20260927T120000Z
+
+    CURRENT="R2.2 the writer prints exactly the record"
+    RC=0
+    line=$(gate_ci_record_line "$commit" "$tree" "static,supply-chain,pytest-x2/1,selftest" 6 whole 0 "$CI_RUN_FIXTURE" 2 "$at") || RC=$?
+    is "$RC" "0" "gate_ci_record_line's status"
+    is "$line" "schema=gate-verdict/1 at=${at} commit=${commit} tree=${tree} legs=static,supply-chain,pytest-x2/1,selftest shards=6 scope=whole rc=0 run=${CI_RUN_FIXTURE} attempt=2 where=ci" "the record"
+
+    CURRENT="R2.2 with no stamp the writer stamps now, in the grammar"
+    line=$(gate_ci_record_line "$commit" "$tree" "static" 0 pr 1 "$CI_RUN_FIXTURE" 1) || line=""
+    if [[ $line =~ ^schema=gate-verdict/1\ at=[0-9]{8}T[0-9]{6}Z\ commit= ]]; then
+        ok "the default stamp is YYYYMMDDTHHMMSSZ"
+    else
+        bad "the default stamp is out of grammar: ${line}"
+    fi
+
+    CURRENT="R2.2 the parser round-trips the writer"
+    line=$(gate_ci_record_line "$commit" "$tree" "static,pytest-x2/1" 3 whole 0 "$CI_RUN_FIXTURE" 4 "$at") || line=""
+    RC=0
+    gate_ci_record_parse "$line" || RC=$?
+    is "$RC" "0" "gate_ci_record_parse's status on the writer's line"
+    parsed=$(gate_ci_record_line "${GATE_CI_REC_COMMIT:-}" "${GATE_CI_REC_TREE:-}" "${GATE_CI_REC_LEGS:-}" \
+        "${GATE_CI_REC_SHARDS:-}" "${GATE_CI_REC_SCOPE:-}" "${GATE_CI_REC_RC:-}" "${GATE_CI_REC_RUN:-}" \
+        "${GATE_CI_REC_ATTEMPT:-}" "${GATE_CI_REC_AT:-}") || parsed=""
+    if [ -n "$line" ] && [ "$parsed" = "$line" ]; then
+        ok "the line written back from the parsed fields is the line"
+    else
+        bad "the round trip is not the identity: wrote '${line}', read back '${parsed}'"
+    fi
+
+    CURRENT="R2.2 every field out of grammar is exit 2 from the parser"
+    for field in \
+        "schema=gate-verdict/1|schema=gate-verdict/2" \
+        "at=${at}|at=2026-09-27T12:00:00Z" \
+        "at=${at}|at=20261327T120000Z" \
+        "commit=${commit}|commit=${commit:0:39}" \
+        "tree=${tree}|tree=${tree}0" \
+        "legs=static,pytest-x2/1|legs=static,,pytest-x2" \
+        "legs=static,pytest-x2/1|legs=static,pytest-x2/2" \
+        "shards=3|shards=03" \
+        "scope=whole|scope=all" \
+        "rc=0|rc=00" \
+        "run=${CI_RUN_FIXTURE}|run=0${CI_RUN_FIXTURE}" \
+        "attempt=4|attempt=0" \
+        "where=ci|where=box" \
+        " where=ci| where=ci rc=0" \
+        " attempt=4| attempt=4 " \
+        "rc=0 |rc=0  "; do
+        bad_line=${line/"${field%%|*}"/"${field#*|}"}
+        RC=0
+        gate_ci_record_parse "$bad_line" || RC=$?
+        if [ "$bad_line" != "$line" ] && [ "$RC" = "2" ]; then
+            ok "'${field#*|}' → exit 2 (${GATE_CI_REC_WHY:-})"
+        else
+            bad "'${field#*|}' → exit ${RC} (the mutation applied: $([ "$bad_line" != "$line" ] && echo yes || echo no))"
+        fi
+    done
+    RC=0
+    gate_ci_record_parse "" || RC=$?
+    is "$RC" "2" "the parser's status on an empty line"
+
+    CURRENT="R2.2 the writer refuses what the reader would, and prints nothing"
+    N=$((N + 1))
+    OUT="${WORK}/ci-record-bad${N}.log"
+    RC=0
+    gate_ci_record_line "$commit" "$tree" "static" 3 whole 00 "$CI_RUN_FIXTURE" 1 >"$OUT" 2>"${OUT}.err" || RC=$?
+    is "$RC" "2" "gate_ci_record_line's status on rc=00"
+    is "$(wc -c <"$OUT" | tr -d ' ')" "0" "bytes the refused writer printed"
+    RC=0
+    gate_ci_record_line "$commit" "$tree" "static" 3 whole 0 >"$OUT" 2>"${OUT}.err" || RC=$?
+    is "$RC" "2" "gate_ci_record_line's status on six fields"
+    OUT=""
+}
+
+#: nightly_fixture <dir> <at> <rc> [<extra tokens>] — a leak_proof.txt.
+nightly_fixture() {
+    local dir=$1 at=$2 rc=$3 extra=${4:-}
+    mkdir -p "$dir"
+    printf 'schema=leak-proof/1 at=%s commit=%s tree=%s seed=4242 pass1=ok pass2=ok map=written rc=%s run=%s attempt=1 where=nightly%s\n' \
+        "$at" "$(sha40 nightly-commit)" "$(sha40 nightly-tree)" "$rc" "$CI_RUN_FIXTURE" "$extra" >"${dir}/leak_proof.txt"
+}
+
+case_the_nightly_reader_returns_three_forms_and_refuses_the_unreadable() {
+    local now fresh stale future d got tree12
+    now=$(date -u +%s)
+    fresh=$(gate_ci_stamp_of "$((now - 3600))") || fresh=""
+    stale=$(gate_ci_stamp_of "$((now - 2 * 86400))") || stale=""
+    future=$(gate_ci_stamp_of "$((now + 3600))") || future=""
+    tree12=$(sha40 nightly-tree | cut -c1-12)
+
+    CURRENT="R2.7 no artifact is nightly:none"
+    RC=0
+    got=$(gate_nightly_read "") || RC=$?
+    is "$RC" "0" "gate_nightly_read's status with no artifact"
+    is "$got" "nightly:none" "the form"
+
+    CURRENT="R2.7 a nightly within 24 h is nightly:<at> tree=<12> rc=<n>, green or red"
+    d="${WORK}/nightly-fresh"
+    nightly_fixture "$d" "$fresh" 0
+    is "$(gate_nightly_read "$d" || true)" "nightly:${fresh} tree=${tree12} rc=0" "the green form"
+    d="${WORK}/nightly-fresh-red"
+    nightly_fixture "$d" "$fresh" 1
+    is "$(gate_nightly_read "$d" || true)" "nightly:${fresh} tree=${tree12} rc=1" "the red form (report-only)"
+
+    CURRENT="R2.7 older than 24 h is nightly:stale:<at>"
+    d="${WORK}/nightly-stale"
+    nightly_fixture "$d" "$stale" 0
+    is "$(gate_nightly_read "$d" || true)" "nightly:stale:${stale}" "the stale form"
+
+    CURRENT="R2.7 unreadable is exit 2 naming why, never a form"
+    local name
+    for name in no-dir empty-dir garbage future twice unknown-field bad-hex; do
+        d="${WORK}/nightly-${name}"
+        case "$name" in
+        no-dir) : ;;
+        empty-dir) mkdir -p "$d" ;;
+        garbage) mkdir -p "$d" && echo "this is not a record" >"${d}/leak_proof.txt" ;;
+        future) nightly_fixture "$d" "$future" 0 ;;
+        twice) nightly_fixture "$d" "$fresh" 0 " rc=0" ;;
+        unknown-field) nightly_fixture "$d" "$fresh" 0 " colour=blue" ;;
+        bad-hex) nightly_fixture "$d" "$fresh" 0 && sed 's/ tree=[0-9a-f]* / tree=xyz /' "${d}/leak_proof.txt" >"${d}/t" && mv "${d}/t" "${d}/leak_proof.txt" ;;
+        esac
+        N=$((N + 1))
+        OUT="${WORK}/nightly-${name}${N}.log"
+        RC=0
+        gate_nightly_read "$d" >"$OUT" 2>"${OUT}.err" || RC=$?
+        if [ "$RC" = "2" ] && [ ! -s "$OUT" ] && grep -F "nightly: unreadable — " "${OUT}.err" >/dev/null; then
+            ok "${name} → exit 2, no form, and the reason: $(head -1 "${OUT}.err" | cut -c1-90)"
+        else
+            bad "${name} → exit ${RC}, stdout '$(cat "$OUT")'"
+        fi
+        OUT=""
+    done
 }
 
 case_a_drive_row_is_never_a_full_verdict() {
@@ -5256,6 +5618,9 @@ case_a_docs_only_commit_reuses_the_pytest_verdict_and_banks_a_reuse_row
 case_a_mixed_delta_measures_in_full
 case_a_dirty_tree_is_never_docs_only
 case_a_run_that_rewrites_a_path_the_key_reads_names_it
+case_an_unfinished_run_is_remembered_at_the_next_snapshot
+case_every_ledger_rewrite_is_write_then_mv
+case_a_drive_is_green_at_a_tree_only_by_its_exit_and_its_tree
 case_a_rewrite_the_leg_declares_is_subtracted_and_the_key_is_heads
 case_the_bank_asks_before_the_key_re_derives
 case_the_bank_remembers_what_it_refused_and_its_rm_spares_the_memory
@@ -5276,6 +5641,9 @@ case_a_banked_row_whose_legs_do_not_cover_this_gate_is_not_honoured
 case_a_checkout_with_no_gate_declares_no_leg_set_and_compares_nothing
 case_the_leak_proof_field_is_appended_last_or_the_row_is_refused
 case_a_one_pass_row_is_honoured_only_with_a_green_leak_proof
+case_a_ci_proof_is_a_green_form_and_the_writer_refuses_a_malformed_one
+case_the_ci_record_has_one_grammar_both_ends
+case_the_nightly_reader_returns_three_forms_and_refuses_the_unreadable
 case_a_drive_row_is_never_a_full_verdict
 case_the_machine_half_is_the_image_on_a_box_and_the_host_elsewhere
 case_a_reserved_drawer_path_is_judged_even_where_the_tree_has_none

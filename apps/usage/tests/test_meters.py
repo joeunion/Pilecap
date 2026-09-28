@@ -8,6 +8,9 @@ no threshold matches, and nobody notices until a customer's bill is short.
 
 from __future__ import annotations
 
+import importlib
+from pathlib import Path
+
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 
@@ -32,6 +35,21 @@ def test_a_real_meters_module_is_discovered_by_the_real_walk(declared_meter: str
     registry = declared_meters()
     assert declared_meter in registry.get("example", frozenset())
     assert check_meter(declared_meter) == declared_meter
+
+
+def test_a_planted_meters_module_is_invisible_to_every_other_worker(declared_meter: str) -> None:
+    """The plant is found by this process's walk and by nobody else's.
+
+    Every xdist worker runs out of one checkout, so a plant written into
+    `apps/example/` is a module every other worker's `declared_meters()` walks —
+    found by `find_spec`, removed by this fixture's teardown before
+    `import_module` reads it, and a test that only meant to record some usage
+    fails with `FileNotFoundError`. The shared tree is the one thing the workers
+    have in common, so it is the thing the plant must leave alone.
+    """
+    assert declared_meter in declared_meters().get("example", frozenset())
+    shared = Path(importlib.import_module("apps.example").__file__ or "").parent / "meters.py"
+    assert not shared.exists(), f"the plant is in the shared tree at {shared}"
 
 
 def test_a_meter_no_app_declares_is_refused(a_declared_meter: str) -> None:

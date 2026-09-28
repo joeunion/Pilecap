@@ -28,7 +28,7 @@ time: at queue time no run existed to wait in. This fix starts one.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 import pytest
@@ -388,15 +388,31 @@ def test_a_resolver_that_answers_something_else_is_ignored(tenant: Tenant) -> No
     assert tenant_quiet_window(tenant) is None
 
 
-def test_an_unknown_timezone_falls_back_to_utc_rather_than_raising(tenant: Tenant) -> None:
+def test_an_unknown_timezone_falls_back_to_utc_rather_than_raising(
+    tenant: Tenant, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """One bad string in a product's seam must not stop the tenant sending.
 
     The same fallback a preference row's own zone gets, through the same
     function — which is the point of `models.quiet_zone` being shared rather
     than copied.
+
+    The clock is this test's own. The window is `start <= local < end`, so a
+    window of 00:00–23:59 is open for the last minute of every UTC day, and a
+    test that read the real clock failed whenever it ran inside that minute.
+    Both instants below are fixed: one inside the window, and the end edge,
+    which is outside it — and outside it because the zone fell back to UTC:
+    the same instant read in a zone off UTC+0 lands mid-window.
     """
     window = QuietWindow(start=time(0, 0), end=time(23, 59), timezone="Mars/Olympus")
+
+    inside = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(timezone, "now", lambda: inside)
     assert window.is_quiet_at(timezone.now()) is True
+
+    at_the_end_edge = datetime(2026, 1, 15, 23, 59, tzinfo=UTC)
+    monkeypatch.setattr(timezone, "now", lambda: at_the_end_edge)
+    assert window.is_quiet_at(timezone.now()) is False
 
 
 # --- the queue-time/transport-edge asymmetry ---------------------------------------------------

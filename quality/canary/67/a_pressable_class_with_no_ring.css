@@ -1,0 +1,6 @@
+/* Planted: a pressable class a keyboard reaches and nobody can see. */
+.zzz-act {
+    cursor: pointer;
+    min-block-size: var(--act-min);
+    min-inline-size: var(--act-min);
+}

@@ -123,7 +123,7 @@ services:
     # deployment says exactly which build it proved; a development stack tracks
     # the major. The ratified decision is the MAJOR, and the pin follows the
     # latest minor — minors are the safe-by-policy kind.
-    image: postgres:18.6
+    image: postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -152,7 +152,7 @@ services:
       retries: 40
 
   redis:
-    image: redis:7.4.5
+    image: redis:7.4.5@sha256:90e7a336d044f1abc9e9dbc05d65566850896d11453bbd1dd0fb7e5059f0e8fb
     restart: unless-stopped
     logging: *default-logging
     # `--appendonly yes` because the channel layer and the cache both live here
@@ -193,7 +193,7 @@ services:
   # a box has no reason to, and the app reaches it by service name on the
   # project's own network. One less door to wall.
   meilisearch:
-    image: getmeili/meilisearch:v1.53.1
+    image: getmeili/meilisearch:v1.53.1@sha256:8d6643d86d71fad6ad3cba92cde7ccfce9e4d6c384bda67598eb553571c32431
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -226,7 +226,7 @@ services:
   # The UI is not here and not exposed (ADR deploy-2): one more door to wall
   # for a screen two people read; the ssh tunnel is the wall.
   temporal:
-    image: temporalio/auto-setup:1.29.0
+    image: temporalio/auto-setup:1.29.0@sha256:8940bfb5aed467458d50c365e420038bc334a44af77e8f4b5e2bfcd608ac7951
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -468,7 +468,7 @@ services:
   # nothing, and `zitadel` starts behind them. (`release.sh` touches neither: it
   # owns `web` and `worker` and passes `--no-deps`.)
   zitadel:
-    image: ghcr.io/zitadel/zitadel:v4.17.1
+    image: ghcr.io/zitadel/zitadel:v4.17.1@sha256:3ac6910685d48f32481f01f45e3e6215efe5a9df2c069591b481e9a101712db5
     restart: unless-stopped
     logging: *default-logging
     # `start`, not `start-from-init`: by the time this runs, the database, the
@@ -650,7 +650,7 @@ services:
   # database if it is absent, the `zitadel` role if it is absent, and the grants
   # that role then lives on. Everything after it connects as that role.
   zitadel-init:
-    image: ghcr.io/zitadel/zitadel:v4.17.1
+    image: ghcr.io/zitadel/zitadel:v4.17.1@sha256:3ac6910685d48f32481f01f45e3e6215efe5a9df2c069591b481e9a101712db5
     restart: "no"
     logging: *default-logging
     # No masterkey and no tlsMode: `zitadel init --help` on the pinned image
@@ -698,7 +698,7 @@ services:
   # the pair `start-from-init` used to pass into this phase — read off
   # `zitadel setup --help` in the pinned image, which takes both.
   zitadel-setup:
-    image: ghcr.io/zitadel/zitadel:v4.17.1
+    image: ghcr.io/zitadel/zitadel:v4.17.1@sha256:3ac6910685d48f32481f01f45e3e6215efe5a9df2c069591b481e9a101712db5
     restart: "no"
     logging: *default-logging
     command: setup --masterkeyFromEnv --tlsMode external
@@ -720,7 +720,7 @@ services:
   # are read from the sink; this file only has to make both exist and be
   # reachable by name.
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.140.0
+    image: otel/opentelemetry-collector-contrib:0.140.0@sha256:ffc818ee108d0b934fd14207fd87ff247c9b64f344ed349d0b66c166c18a2312
     restart: unless-stopped
     logging: *default-logging
     # TWO CONFIGS, MERGED LEFT TO RIGHT. The first is the pipeline, shared with
@@ -744,7 +744,7 @@ services:
       - clickstack
 
   clickstack:
-    image: docker.hyperdx.io/hyperdx/hyperdx-all-in-one:2.10.0
+    image: docker.hyperdx.io/hyperdx/hyperdx-all-in-one:2.10.0@sha256:a747cd94827b5a75913953d00dea1546430460fc36145b4197df5c6b067ccf2a
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -801,6 +801,8 @@ services:
     # because promotion is a re-pin and never a re-tag. BOTH halves required,
     # never defaulted — a floating default is the thing being removed, and a
     # guessed registry pulls somebody else's image and succeeds.
+    # pin-exception: the tree-hash tag names this build, and `release.sh` resolves it
+    # to the registry digest before any pull (ADR deploy-4 (d)).
     image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
     restart: unless-stopped
     logging: *default-logging
@@ -865,6 +867,8 @@ services:
 
   worker:
     # Pulled, never built — `web`'s paragraph above, same reason.
+    # pin-exception: the tree-hash tag names this build, and `release.sh` resolves it
+    # to the registry digest before any pull (ADR deploy-4 (d)).
     image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-worker:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
     restart: unless-stopped
     logging: *default-logging
@@ -919,6 +923,8 @@ services:
   # `up`ping a service that is a door rather than an organ — and then it says so
   # and exits instead of sitting in a restart loop.
   oneoff:
+    # pin-exception: the tree-hash tag names this build, and `release.sh` resolves it
+    # to the registry digest before any pull (ADR deploy-4 (d)).
     image: ${DJB_IMAGE_REGISTRY:?DJB_IMAGE_REGISTRY is required — deploy/provision.sh env-file writes it; it is the repository prefix, '<account>.dkr.ecr.<region>.amazonaws.com/<namespace>' or 'local' on a laptop}/djb-web:${DJB_IMAGE_TAG:?DJB_IMAGE_TAG is required — deploy/provision.sh env-file writes it; provision.sh up reconciles it to this tree}
     restart: "no"
     logging: *default-logging
@@ -939,7 +945,7 @@ services:
   # TLS. `.dev` is HSTS-preloaded, so every name here is HTTPS from birth and
   # there is no plain-HTTP era to redirect out of (ADR deploy-2).
   caddy:
-    image: caddy:2.10.2
+    image: caddy:2.10.2@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb
     restart: unless-stopped
     logging: *default-logging
     ports:
@@ -1002,7 +1008,7 @@ services:
     # Pinned to the patch, like every other image in this deployment: a prober
     # whose curl changes underneath a runbook makes the runbook a lie between
     # two performances of it.
-    image: curlimages/curl:8.11.1
+    image: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
     restart: unless-stopped
     logging: *default-logging
     entrypoint: ["/bin/sh", "/alerts/prober.sh"]

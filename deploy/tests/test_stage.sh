@@ -13,7 +13,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: deploy/stage.sh deploy/release.sh deploy/ship.sh deploy/provision.sh scripts/loop_tier.sh scripts/gate_refuse.sh
+# drives: deploy/stage.sh deploy/release.sh deploy/ship.sh deploy/provision.sh scripts/loop_tier.sh scripts/gate_refuse.sh scripts/gate_ledger.sh
 # cites: README.md
 # The drive for `deploy/stage.sh` — the KEYS, which is the whole of what that
 # script adds over typing its five acts by hand.
@@ -106,6 +106,7 @@ command -v git >/dev/null 2>&1 || cannot_look "no git on PATH — every case bui
 [ -f deploy/stage.sh ] || cannot_look "deploy/stage.sh is not in this tree — there is nothing to drive"
 [ -f scripts/loop_tier.sh ] || cannot_look "scripts/loop_tier.sh is not in this tree — the docs-only short circuit calls its classifier and this drive copies it rather than modelling it"
 [ -f scripts/gate_refuse.sh ] || cannot_look "scripts/gate_refuse.sh is not in this tree — scripts/loop_tier.sh sources it beside itself and a scratch world without it dies on a missing file"
+[ -f scripts/gate_ledger.sh ] || cannot_look "scripts/gate_ledger.sh is not in this tree — the prod refusal reads its gate_nightly_read and this drive copies it rather than modelling it"
 
 ROOT="$PWD"
 SOURCE="$ROOT/deploy/stage.sh"
@@ -114,6 +115,7 @@ CLASSIFIER="$ROOT/scripts/loop_tier.sh"
 # carries that too: copying one half of a library pair is a world that dies on
 # a missing file rather than the world under drive.
 REFUSE_SEAM="$ROOT/scripts/gate_refuse.sh"
+LEDGER="$ROOT/scripts/gate_ledger.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/djb-stage-drive.XXXXXX")" || cannot_look "could not make a scratch directory"
 drive_require_scratch WORK "${WORK:-}"
@@ -141,6 +143,10 @@ SHIP_LOG=""
 STAGE_OUT=""
 STAGE_EXIT=0
 BOX_TAG=""
+STAGING_SSH_LOG=""
+# The staging box a promotion to prod reads. The stub ssh answers this
+# destination out of `<case>/staging/` and logs it apart from the prod box.
+STAGING_DEST="ec2-user@staging.invalid"
 
 # The registry's default answers. Build-once/promote-by-digest makes "the
 # registry has the image this tree names" a precondition of every stage, so an
@@ -155,18 +161,26 @@ fresh_world() {
     REPO="${CASE_DIR}/repo"
     SSH_LOG="${CASE_DIR}/ssh.log"
     SHIP_LOG="${CASE_DIR}/ship.log"
+    STAGING_SSH_LOG="${CASE_DIR}/staging-ssh.log"
     mkdir -p "${REPO}/deploy/observability/alerts" "${REPO}/apps/core/migrations" \
-        "${REPO}/scripts" "${CASE_DIR}/bin" "${CASE_DIR}/box"
+        "${REPO}/scripts" "${CASE_DIR}/bin" "${CASE_DIR}/box" "${CASE_DIR}/staging"
     # Created empty, so "nothing was sent to the box" is an empty file rather
     # than a missing one: an absent file and zero invocations read the same to
     # `wc`, and only one of them is the property being asserted.
     : >"$SSH_LOG"
     : >"$SHIP_LOG"
+    : >"$STAGING_SSH_LOG"
+    : >"${CASE_DIR}/staging/TREE"
+    : >"${CASE_DIR}/staging/LIVE"
 
     cp "$SOURCE" "${REPO}/deploy/stage.sh"
     chmod +x "${REPO}/deploy/stage.sh"
     cp "$CLASSIFIER" "${REPO}/scripts/loop_tier.sh"
     cp "$REFUSE_SEAM" "${REPO}/scripts/gate_refuse.sh"
+    # THE NIGHTLY READER IS THE LEDGER'S OWN, copied rather than modelled: the
+    # prod refusal reads `gate_nightly_read`, and a stub of it here would be
+    # this drive agreeing with itself about the three forms.
+    cp "$LEDGER" "${REPO}/scripts/gate_ledger.sh"
 
     # THE STUB provision.sh. `image-tag` is derived FROM GIT, the way the real
     # one derives it, because every key in the script under drive is a
@@ -217,10 +231,43 @@ SHIP
     # order — the log IS the sequence, which is what lets a case assert that
     # nothing after a failed act ran — and answers the two reads the script
     # makes.
+    #
+    # TWO BOXES, TWO LOGS. A promotion to prod reads the STAGING box (its
+    # `TREE` marker and its readyz) before it may touch the prod one, so the
+    # stub tells them apart by the destination and keeps a log for each: "the
+    # prod box was never contacted" is then an empty file, and the staging box
+    # answering anything but those two reads is exit 97 — a promotion that
+    # ACTED on staging is a defect this drive must see.
     cat >"${CASE_DIR}/bin/ssh" <<'SSH'
 #!/usr/bin/env bash
-# The last argument is the remote command; everything before it is ssh's own.
+# The last argument is the remote command; the one before it is the
+# destination; everything before that is ssh's own.
 cmd="${!#}"
+dest="${@: -2:1}"
+if [ -n "${DJB_DRIVE_STAGING_DEST:-}" ] && [ "$dest" = "$DJB_DRIVE_STAGING_DEST" ]; then
+    printf '%s\n' "$cmd" >>"$DJB_DRIVE_STAGING_SSH_LOG"
+    case "$cmd" in
+    cat*TREE*)
+        if [ -s "$DJB_DRIVE_STAGING_TREE" ]; then
+            cat "$DJB_DRIVE_STAGING_TREE"
+        else
+            echo "cat: no such file or directory" >&2
+            exit 1
+        fi
+        ;;
+    cat*LIVE*)
+        if [ -s "$DJB_DRIVE_STAGING_LIVE" ]; then
+            cat "$DJB_DRIVE_STAGING_LIVE"
+        else
+            echo "cat: no such file or directory" >&2
+            exit 1
+        fi
+        ;;
+    *readyz-prober*) printf '%s' "${DJB_DRIVE_STAGING_READYZ_CODE:-200}"; exit "${DJB_DRIVE_STAGING_READYZ_RC:-0}" ;;
+    *) echo "stub ssh: the STAGING box was asked to act: $cmd" >&2; exit 97 ;;
+    esac
+    exit 0
+fi
 printf '%s\n' "$cmd" >>"$DJB_DRIVE_SSH_LOG"
 case "$cmd" in
 cat*TREE*)
@@ -231,10 +278,24 @@ cat*TREE*)
         exit 1
     fi
     ;;
+# THE LIVE MARKER, as a file beside the box's TREE: withdrawn before an act
+# changes the box, written only after the readyz answers.
+rm\ -f*LIVE*) rm -f "$DJB_DRIVE_BOX_LIVE"; exit "${DJB_DRIVE_LIVE_RM_RC:-0}" ;;
+echo\ \'live\ *LIVE*)
+    line="${cmd#echo \'}"
+    printf '%s\n' "${line%%\'*}" >"$DJB_DRIVE_BOX_LIVE"
+    exit "${DJB_DRIVE_LIVE_RC:-0}"
+    ;;
 *secrets-fetch*) exit "${DJB_DRIVE_SECRETS_RC:-0}" ;;
 *"docker login"*) exit "${DJB_DRIVE_LOGIN_RC:-0}" ;;
 *provision.sh\ up*) exit "${DJB_DRIVE_UP_RC:-0}" ;;
-*release.sh*) exit "${DJB_DRIVE_RELEASE_RC:-0}" ;;
+*release.sh*)
+    # The release's own transcript, as the box cats it back. Its migrate wall
+    # is the line the closing line reads; a knob set EMPTY is a release that
+    # printed none.
+    printf '%s\n' "${DJB_DRIVE_RELEASE_OUT-release: migrate: 7s}"
+    exit "${DJB_DRIVE_RELEASE_RC:-0}"
+    ;;
 *readyz-prober*) printf '%s' "${DJB_DRIVE_READYZ_CODE:-200}"; exit "${DJB_DRIVE_READYZ_RC:-0}" ;;
 *) echo "stub ssh: unexpected remote command: $cmd" >&2; exit 97 ;;
 esac
@@ -285,6 +346,14 @@ stage() {
             DJB_DRIVE_REGISTRY="$DRIVE_REGISTRY" \
             DJB_DRIVE_DIGEST_WEB="${DIGEST_WEB_NOW-$DIGEST_A}" \
             DJB_DRIVE_DIGEST_WORKER="${DIGEST_WORKER_NOW-$DIGEST_B}" \
+            DJB_DRIVE_STAGING_DEST="$STAGING_DEST" \
+            DJB_DRIVE_STAGING_SSH_LOG="$STAGING_SSH_LOG" \
+            DJB_DRIVE_STAGING_TREE="${CASE_DIR}/staging/TREE" \
+            DJB_DRIVE_STAGING_LIVE="${CASE_DIR}/staging/LIVE" \
+            DJB_DRIVE_BOX_LIVE="${CASE_DIR}/box/LIVE" \
+            DJB_DRIVE_UP_RC="${UP_RC_NOW:-0}" \
+            DJB_DRIVE_STAGING_READYZ_CODE="${STAGING_READYZ_NOW-200}" \
+            DJB_DRIVE_RELEASE_OUT="${RELEASE_OUT_NOW-release: migrate: 7s}" \
             DJB_DEPLOY_NAMESPACE=drivens \
             ./deploy/stage.sh "$@"
     ) >"$STAGE_OUT" 2>&1
@@ -543,6 +612,7 @@ case_a_failed_act_stops_the_sequence_naming_itself() {
             DJB_DRIVE_SSH_LOG="$SSH_LOG" \
             DJB_DRIVE_SHIP_LOG="$SHIP_LOG" \
             DJB_DRIVE_BOX_TREE="${CASE_DIR}/box/TREE" \
+            DJB_DRIVE_BOX_LIVE="${CASE_DIR}/box/LIVE" \
             DJB_DRIVE_REGISTRY="$DRIVE_REGISTRY" \
             DJB_DRIVE_DIGEST_WEB="$DIGEST_A" \
             DJB_DRIVE_DIGEST_WORKER="$DIGEST_B" \
@@ -628,6 +698,437 @@ case_the_docs_only_classes_are_the_classifiers_and_not_a_list() {
     act_says "5/6" release "ran: alerts (deploy/observability/ moved)"
 }
 
+# =============================================================================
+# The walls, and the promotion to prod
+# =============================================================================
+
+# The closing line, read back whole: `stage: <tag> live in <n>s (migrate <m>)`.
+# The total is a wall clock and so a pattern; the migrate half is the release's
+# own number, carried rather than re-measured, and so a literal.
+closing_says() {
+    local tag="$1" migrate="$2" line
+    line="$(tail -n 1 "$STAGE_OUT")"
+    # A HERE-STRING, NEVER `printf | grep -q`: under pipefail an early-exiting
+    # reader can SIGPIPE its producer and turn a match into a failure.
+    if grep -Eq "^stage: ${tag} live in [0-9]+s \\(migrate ${migrate}\\)\$" <<<"$line"; then
+        ok "closes on \"${line}\""
+    else
+        bad "the last line is \"${line}\", not \"stage: ${tag} live in <n>s (migrate ${migrate})\""
+    fi
+}
+
+case_the_closing_line_carries_both_walls() {
+    # --- the release ran, and its transcript carried the migrate wall ---------
+    fresh_world
+    printf 'second\n' >"${REPO}/apps/core/migrations/0002_more.py"
+    commit_plant "a migration"
+    local tag
+    tag="tree-$(git -C "$REPO" rev-parse --short=12 'HEAD^{tree}')"
+    RELEASE_OUT_NOW="release: migrate: 42s"
+    stage "the_closing_line_after_a_release" 0 ec2-user@box.invalid --env staging
+    unset RELEASE_OUT_NOW
+    closing_says "$tag" "42s"
+
+    # --- no release ran: the migrate half says so, never a zero --------------
+    fresh_world
+    printf 'code v2\n' >"${REPO}/apps/core/services.py"
+    commit_plant "ordinary code"
+    tag="tree-$(git -C "$REPO" rev-parse --short=12 'HEAD^{tree}')"
+    stage "the_closing_line_with_no_release" 0 ec2-user@box.invalid --env staging
+    closing_says "$tag" "skipped"
+
+    # --- the release ran and printed no wall: unmeasured, never invented ------
+    fresh_world
+    printf 'second\n' >"${REPO}/apps/core/migrations/0002_more.py"
+    commit_plant "a migration"
+    tag="tree-$(git -C "$REPO" rev-parse --short=12 'HEAD^{tree}')"
+    RELEASE_OUT_NOW=""
+    stage "the_closing_line_with_an_unmeasured_migrate" 0 ec2-user@box.invalid --env staging
+    unset RELEASE_OUT_NOW
+    closing_says "$tag" "unmeasured"
+}
+
+# The epoch → the leak-proof record's stamp. BSD `date -r` on the Mac, GNU
+# `date -d @` on a box; the reader under drive does the same.
+stamp_of() {
+    date -u -r "$1" +%Y%m%dT%H%M%SZ 2>/dev/null || date -u -d "@$1" +%Y%m%dT%H%M%SZ
+}
+
+# A downloaded `nightly-leak-proof` artifact, as the prod job would hand it:
+# `nightly_artifact <seconds ago> <rc>` writes `<case>/nightly/leak_proof.txt`.
+nightly_artifact() {
+    local ago="$1" rc="$2" at
+    at="$(stamp_of "$(($(date -u +%s) - ago))")"
+    mkdir -p "${CASE_DIR}/nightly"
+    printf 'schema=leak-proof/1 at=%s commit=%s tree=%s seed=4242 pass1=ok pass2=ok map=written rc=%s run=7 attempt=1 where=nightly\n' \
+        "$at" "$(printf 'c%.0s' $(seq 1 40))" "$(printf 'e%.0s' $(seq 1 40))" "$rc" >"${CASE_DIR}/nightly/leak_proof.txt"
+}
+
+# The staging box holds THIS tree (the case repo's HEAD), released.
+staging_holds_this_tree() {
+    {
+        printf 'tree-%s\n' "$(git -C "$REPO" rev-parse --short=12 'HEAD^{tree}')"
+        printf 'digest web %s\n' "$DIGEST_A"
+        printf 'digest worker %s\n' "$DIGEST_B"
+    } >"${CASE_DIR}/staging/TREE"
+    # …and PROVED it: the LIVE marker a stage writes only after its readyz.
+    printf 'live tree-%s 20260927T120000Z\n' "$(git -C "$REPO" rev-parse --short=12 'HEAD^{tree}')" >"${CASE_DIR}/staging/LIVE"
+}
+
+# A prod world whose four preconditions are ALL green: a migration to promote,
+# staging holding this tree and answering 200, a nightly an hour old and green.
+# Each refusal case below turns exactly one of them red.
+prod_world() {
+    fresh_world
+    printf 'second\n' >"${REPO}/apps/core/migrations/0002_more.py"
+    commit_plant "a migration"
+    staging_holds_this_tree
+    nightly_artifact 3600 0
+}
+
+SANCTION_OK="release-captain: promote the migration staging has served since this morning"
+
+# NOTHING TOUCHED: the prod box saw no command at all, the ship never ran, and
+# staging was only READ. The refusal is exit 2 before the prod box is contacted.
+prod_untouched() {
+    local n
+    n="$(grep -c . "$SSH_LOG" || true)"
+    if [ "$n" = "0" ]; then
+        ok "the prod box was never contacted"
+    else
+        bad "the prod box saw ${n} remote command(s): $(tr '\n' '|' <"$SSH_LOG")"
+    fi
+    ships 0
+    if grep -qvE "^cat .*/(TREE|LIVE)'$|readyz-prober" "$STAGING_SSH_LOG"; then
+        bad "the staging box was asked something other than its markers and its readyz: $(tr '\n' '|' <"$STAGING_SSH_LOG")"
+    else
+        ok "the staging box was only read"
+    fi
+}
+
+case_prod_refuses_without_a_sanction() {
+    # THE BARE FORM IS THE ONE THAT MATTERS MOST: `--env prod` and nothing else
+    # must not be a deploy to prod.
+    prod_world
+    stage "prod_bare" 2 ec2-user@prod.invalid --env prod
+    says "!! stage: REFUSED — a promotion to prod"
+    says "no sanction"
+    prod_untouched
+
+    # THE TEETH ARE NOT A SPELLING. Every environment that is not on the
+    # declared non-prod list is prod, so a capital letter, a longer word or a
+    # region suffix is refused exactly as `prod` is — never deployed bare.
+    local spelling
+    for spelling in PROD Production prod-eu; do
+        prod_world
+        stage "prod_bare_${spelling}" 2 ec2-user@prod.invalid --env "$spelling"
+        says "!! stage: REFUSED — a promotion to prod"
+        says "no sanction"
+        prod_untouched
+    done
+
+    prod_world
+    stage "prod_no_sanction" 2 ec2-user@prod.invalid --env prod \
+        --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "no sanction"
+    prod_untouched
+
+    prod_world
+    stage "prod_ill_formed_sanction" 2 ec2-user@prod.invalid --env prod \
+        --sanction "ship it" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "the sanction 'ship it' is not '<who>: <why>'"
+    prod_untouched
+
+    # A sanction is ONE line a human typed: a control character in either half
+    # (a newline smuggling a second line into the record, a tab, an escape) is
+    # refused, and so is a reason that is only whitespace.
+    local label bad_sanction
+    for label in newline_in_reason newline_in_who tab_in_reason blank_reason blank_who; do
+        case "$label" in
+        newline_in_reason) bad_sanction=$'release-captain: promote\nand something else' ;;
+        newline_in_who) bad_sanction=$'release\ncaptain: promote the staged tree' ;;
+        tab_in_reason) bad_sanction=$'release-captain: promote\tthe staged tree' ;;
+        blank_reason) bad_sanction='release-captain:    ' ;;
+        blank_who) bad_sanction='   : promote the staged tree' ;;
+        esac
+        prod_world
+        stage "prod_sanction_${label}" 2 ec2-user@prod.invalid --env prod \
+            --sanction "$bad_sanction" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+        case "$label" in
+        newline_in_reason | newline_in_who | tab_in_reason) says "the sanction carries a control character" ;;
+        *) says "is not '<who>: <why>'" ;;
+        esac
+        prod_untouched
+    done
+}
+
+case_prod_refuses_when_staging_is_not_this_tree() {
+    prod_world
+    local staged
+    staged="$(sed -n 1p "${CASE_DIR}/staging/TREE")"
+    # Staging holds the tree BEFORE this one: the promotion would ship bytes
+    # nobody staged.
+    printf 'code v2\n' >"${REPO}/apps/core/services.py"
+    commit_plant "a tree staging never saw"
+    local mine
+    mine="tree-$(git -C "$REPO" rev-parse --short=12 'HEAD^{tree}')"
+    stage "prod_staging_holds_another_tree" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "staging holds ${staged}, and this tree is ${mine}"
+    prod_untouched
+
+    prod_world
+    : >"${CASE_DIR}/staging/TREE"
+    : >"${CASE_DIR}/staging/LIVE"
+    stage "prod_staging_has_no_marker" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "staging cannot say which tree it holds"
+    prod_untouched
+
+    prod_world
+    stage "prod_no_staging_named" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --nightly "${CASE_DIR}/nightly"
+    says "no staging box named"
+    prod_untouched
+}
+
+case_prod_refuses_when_staging_does_not_answer() {
+    prod_world
+    STAGING_READYZ_NOW=503
+    stage "prod_staging_readyz_503" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    unset STAGING_READYZ_NOW
+    says "staging's readyz answered '503', not 200"
+    prod_untouched
+}
+
+case_prod_refuses_every_nightly_that_is_not_green_and_fresh() {
+    # --- red ------------------------------------------------------------------
+    prod_world
+    nightly_artifact 3600 1
+    stage "prod_nightly_red" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "the nightly leak proof is RED (rc=1)"
+    prod_untouched
+
+    # --- older than 24 h ------------------------------------------------------
+    prod_world
+    nightly_artifact $((2 * 86400)) 0
+    stage "prod_nightly_stale" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "the nightly leak proof is older than 24 h"
+    prod_untouched
+
+    # --- none: no artifact handed in ------------------------------------------
+    prod_world
+    stage "prod_nightly_none" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST"
+    says "there is no nightly leak proof (nightly:none)"
+    prod_untouched
+
+    # --- unreadable: a directory that holds no record -------------------------
+    prod_world
+    rm -f "${CASE_DIR}/nightly/leak_proof.txt"
+    stage "prod_nightly_unreadable" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "the nightly leak proof is unreadable"
+    says "holds no leak_proof.txt"
+    prod_untouched
+}
+
+case_prod_names_every_red_precondition_at_once() {
+    # One run, four causes: an operator fixes them all in one pass rather than
+    # discovering them one refusal at a time.
+    prod_world
+    : >"${CASE_DIR}/staging/TREE"
+    : >"${CASE_DIR}/staging/LIVE"
+    STAGING_READYZ_NOW=502
+    stage "prod_four_red" 2 ec2-user@prod.invalid --env prod --staging "$STAGING_DEST"
+    unset STAGING_READYZ_NOW
+    says "no sanction"
+    says "staging cannot say which tree it holds"
+    says "staging's readyz answered '502', not 200"
+    says "there is no nightly leak proof (nightly:none)"
+    says "4 of 4 preconditions are red"
+    prod_untouched
+}
+
+case_prod_proceeds_when_all_four_are_green() {
+    prod_world
+    local tag
+    tag="tree-$(git -C "$REPO" rev-parse --short=12 'HEAD^{tree}')"
+    stage "prod_all_green" 0 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "stage: prod gate  sanction  ${SANCTION_OK}"
+    says "stage: prod gate  staging   ${tag} on ${STAGING_DEST}, readyz 200"
+    says "stage: prod gate  nightly   nightly:"
+    act_says "5/6" release "ran: migrate+grants (a migration leaf moved)"
+    remote_has "release.sh"
+    ships 1
+    closing_says "$tag" "7s"
+}
+
+case_prod_reads_what_staging_proved_not_what_it_shipped() {
+    # STAGING'S TREE LINE 1 IS WRITTEN AT ACT 1, before pull, migrate, swap and
+    # readyz. So mid-deploy — or after a deploy that failed past act 1 — TREE
+    # names the new tree while the OLD containers still answer 200, and a tooth
+    # reading TREE would promote a tree staging never proved. The tooth reads
+    # the LIVE marker, which only a stage whose readyz answered 200 writes.
+    local mine older
+    # --- mid-act: TREE already says this tree, no LIVE marker yet -------------
+    prod_world
+    : >"${CASE_DIR}/staging/LIVE"
+    stage "prod_staging_mid_deploy" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "staging cannot say which tree it holds live"
+    prod_untouched
+
+    # --- TREE says this tree; LIVE still names the tree before it --------------
+    prod_world
+    older="$BOX_TAG"
+    printf 'live %s 20260927T100000Z\n' "$older" >"${CASE_DIR}/staging/LIVE"
+    mine="tree-$(git -C "$REPO" rev-parse --short=12 'HEAD^{tree}')"
+    stage "prod_staging_shipped_but_never_proved" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "staging holds ${older}, and this tree is ${mine}"
+    prod_untouched
+
+    # --- a marker that is not `live <tag> …` is not a proof --------------------
+    prod_world
+    printf 'garbage\n' >"${CASE_DIR}/staging/LIVE"
+    stage "prod_staging_live_unparseable" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "staging cannot say which tree it holds live"
+    prod_untouched
+}
+
+case_a_stage_withdraws_live_before_acting_and_writes_it_after_readyz() {
+    # THE WRITER'S HALF, driven through real stages of one box, and then handed
+    # to prod as the staging it would read.
+    local mine rm_at first_act live_at readyz_at
+    # --- a stage that FAILS past act 1 leaves no LIVE marker -------------------
+    fresh_world
+    printf 'live %s 20260927T090000Z\n' "$BOX_TAG" >"${CASE_DIR}/box/LIVE"
+    printf 'second\n' >"${REPO}/apps/core/migrations/0002_more.py"
+    commit_plant "a migration"
+    mine="tree-$(git -C "$REPO" rev-parse --short=12 'HEAD^{tree}')"
+    UP_RC_NOW=3
+    stage "staging_fails_at_up" 1 ec2-user@box.invalid --env staging
+    unset UP_RC_NOW
+    says "!! stage: STOPPED at act 4/6 — up (exit 3)."
+    remote_has "rm -f 'drivens/LIVE'"
+    if [ -e "${CASE_DIR}/box/LIVE" ]; then
+        bad "the failed stage left a LIVE marker: $(cat "${CASE_DIR}/box/LIVE")"
+    else
+        ok "the failed stage left no LIVE marker"
+    fi
+    rm_at="$(grep -n "rm -f 'drivens/LIVE'" "$SSH_LOG" | sed -n '1s/:.*//p' || true)"
+    first_act="$(grep -n 'secrets-fetch' "$SSH_LOG" | sed -n '1s/:.*//p' || true)"
+    if [ -n "$rm_at" ] && [ -n "$first_act" ] && [ "$rm_at" -lt "$first_act" ] &&
+        [ "$(grep -c . "$SHIP_LOG" || true)" = "1" ]; then
+        ok "the marker was withdrawn (remote ${rm_at}) before the acts that change the box (first on the box: ${first_act})"
+    else
+        bad "the marker was not withdrawn before the acts (rm ${rm_at:-never}, first act ${first_act:-never})"
+    fi
+    # …and a promotion reading that staging (the ship ran, so TREE says this
+    # tree; the old containers still answer 200) is REFUSED.
+    printf '%s\n' "$mine" >"${CASE_DIR}/staging/TREE"
+    : >"${CASE_DIR}/staging/LIVE"
+    nightly_artifact 3600 0
+    : >"$SSH_LOG"
+    : >"$SHIP_LOG"
+    stage "prod_after_a_failed_staging_deploy" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "staging cannot say which tree it holds live"
+    prod_untouched
+
+    # --- a stage whose readyz answers writes `live <this tag> <stamp>` ----------
+    fresh_world
+    printf 'second\n' >"${REPO}/apps/core/migrations/0002_more.py"
+    commit_plant "a migration"
+    mine="tree-$(git -C "$REPO" rev-parse --short=12 'HEAD^{tree}')"
+    stage "staging_goes_live" 0 ec2-user@box.invalid --env staging
+    if grep -qE "^live ${mine} [0-9]{8}T[0-9]{6}Z$" "${CASE_DIR}/box/LIVE" 2>/dev/null; then
+        ok "the LIVE marker names this tree: $(cat "${CASE_DIR}/box/LIVE")"
+    else
+        bad "no 'live ${mine} <stamp>' marker after a green stage (got: $(cat "${CASE_DIR}/box/LIVE" 2>/dev/null || echo absent))"
+    fi
+    live_at="$(grep -n "^echo 'live " "$SSH_LOG" | sed -n '1s/:.*//p' || true)"
+    readyz_at="$(grep -n 'readyz-prober' "$SSH_LOG" | sed -n '$s/:.*//p' || true)"
+    if [ -n "$live_at" ] && [ -n "$readyz_at" ] && [ "$live_at" -gt "$readyz_at" ]; then
+        ok "the marker was written (remote ${live_at}) after the readyz answered (remote ${readyz_at})"
+    else
+        bad "the marker was not written after the readyz (live ${live_at:-never}, readyz ${readyz_at:-never})"
+    fi
+    # …and THAT staging promotes.
+    staging_holds_this_tree
+    cp "${CASE_DIR}/box/LIVE" "${CASE_DIR}/staging/LIVE"
+    nightly_artifact 3600 0
+    : >"$SSH_LOG"
+    : >"$SHIP_LOG"
+    stage "prod_after_a_green_staging_deploy" 0 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    says "stage: prod gate  staging   ${mine} on ${STAGING_DEST}, readyz 200"
+
+    # --- a readyz that does not answer 200 writes nothing ----------------------
+    fresh_world
+    printf 'second\n' >"${REPO}/apps/core/migrations/0002_more.py"
+    commit_plant "a migration"
+    CURRENT="a_readyz_503_writes_no_live"
+    STAGE_OUT="${CASE_DIR}/readyz_503.log"
+    set +e
+    (
+        cd "$REPO" || exit 99
+        PATH="${CASE_DIR}/bin:$PATH" DJB_DRIVE_SSH_LOG="$SSH_LOG" DJB_DRIVE_SHIP_LOG="$SHIP_LOG" \
+            DJB_DRIVE_BOX_TREE="${CASE_DIR}/box/TREE" DJB_DRIVE_BOX_LIVE="${CASE_DIR}/box/LIVE" \
+            DJB_DRIVE_REGISTRY="$DRIVE_REGISTRY" DJB_DRIVE_DIGEST_WEB="$DIGEST_A" \
+            DJB_DRIVE_DIGEST_WORKER="$DIGEST_B" DJB_DRIVE_READYZ_CODE=503 DJB_DEPLOY_NAMESPACE=drivens \
+            ./deploy/stage.sh ec2-user@box.invalid --env staging
+    ) >"$STAGE_OUT" 2>&1
+    STAGE_EXIT=$?
+    set -e
+    if [ "$STAGE_EXIT" = "1" ]; then ok "a readyz of 503 is exit 1"; else bad "a readyz of 503 exited ${STAGE_EXIT}, wanted 1"; fi
+    if [ -e "${CASE_DIR}/box/LIVE" ]; then bad "a readyz of 503 left a LIVE marker"; else ok "a readyz of 503 left no LIVE marker"; fi
+}
+
+case_prod_refuses_a_tree_the_registry_does_not_hold() {
+    # THE TAG IS THE RECORD (ADR deploy-4 (b)): CI tags no tree its gate did not
+    # pass, so a tree with no digest in the registry is a tree no green verdict
+    # vouches for — refused at exit 2 with all four teeth green, before any act,
+    # the prod box read (its TREE marker) and never acted on.
+    local n
+    prod_world
+    DIGEST_WEB_NOW=""
+    stage "prod_tree_not_in_the_registry" 2 ec2-user@prod.invalid --env prod \
+        --sanction "$SANCTION_OK" --staging "$STAGING_DEST" --nightly "${CASE_DIR}/nightly"
+    unset DIGEST_WEB_NOW
+    says "stage: prod gate  sanction  ${SANCTION_OK}"
+    says "!! stage: REFUSED — the registry does not have this tree's web image"
+    ships 0
+    n="$(remote_count)"
+    if [ "$n" = "1" ] && grep -qE "^cat .*/TREE'$" "$SSH_LOG"; then
+        ok "the prod box was read once (its TREE marker) and acted on zero times"
+    else
+        bad "the prod box saw ${n} remote command(s): $(tr '\n' '|' <"$SSH_LOG")"
+    fi
+}
+
+case_the_prod_flags_mean_nothing_outside_prod() {
+    # The non-prod list is declared, and an environment on it is staged without
+    # the gate — the negative that keeps the inverted rule honest.
+    fresh_world
+    printf 'code v2\n' >"${REPO}/apps/core/services.py"
+    commit_plant "ordinary code"
+    stage "dev_is_on_the_non_prod_list" 0 ec2-user@box.invalid --env dev
+    says_not "prod gate"
+    says_not "REFUSED"
+
+    fresh_world
+    stage "a_sanction_on_staging" 2 ec2-user@box.invalid --env staging --sanction "$SANCTION_OK"
+    says "--sanction, --staging and --nightly are the prod gate's and mean nothing for --env staging"
+    ships 0
+}
+
 # --- run ----------------------------------------------------------------------
 
 case_each_act_is_keyed_on_its_own_input
@@ -639,6 +1140,17 @@ case_a_failed_act_stops_the_sequence_naming_itself
 case_it_refuses_a_piped_stdout_and_an_unknown_flag
 case_a_dry_run_reads_the_box_and_touches_nothing
 case_the_docs_only_classes_are_the_classifiers_and_not_a_list
+case_the_closing_line_carries_both_walls
+case_prod_refuses_without_a_sanction
+case_prod_refuses_when_staging_is_not_this_tree
+case_prod_refuses_when_staging_does_not_answer
+case_prod_refuses_every_nightly_that_is_not_green_and_fresh
+case_prod_names_every_red_precondition_at_once
+case_prod_proceeds_when_all_four_are_green
+case_prod_reads_what_staging_proved_not_what_it_shipped
+case_a_stage_withdraws_live_before_acting_and_writes_it_after_readyz
+case_prod_refuses_a_tree_the_registry_does_not_hold
+case_the_prod_flags_mean_nothing_outside_prod
 
 echo "test_stage: ${PASSED} passed · ${FAILED} failed"
 drive_finished

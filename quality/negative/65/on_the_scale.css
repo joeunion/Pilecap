@@ -1,0 +1,7 @@
+/* Every gap a step: zero, auto, a --space-* token, a negative step. */
+.zzz-row {
+    gap: var(--space-2);
+    padding: 0 var(--space-3);
+    margin: 0 auto;
+    margin-block-start: calc(-1 * var(--space-1));
+}

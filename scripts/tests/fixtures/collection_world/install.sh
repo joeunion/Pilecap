@@ -31,6 +31,18 @@
 # The count is never typed twice: `world_install` copies the glob and the
 # drive's `WORLD_TARGET` loops the same directory, so a sixth is one file.
 #
+# A TOKEN POPULATION GROWS WITHOUT GROWING THE WORLD. Most of the floors count
+# modules whose SOURCE carries a token (`DJB_REACH_TOKENS`,
+# `DJB_REACH_POPULATIONS`), so a member is one line — the token — in a module
+# that is ALREADY always-on (a doors or a lifecycle module). That moves no
+# selection and no item count, which keeps `WORLD_FLOOR`'s arithmetic and every
+# narrowed case's answer where they were. Paid again the day the door-registry
+# reach kind landed: `door_parity_census` 10 -> 14 and
+# `introspect_registry_readers` 4 -> 7 were re-derived, and
+# `openapi_document_readers` (18) and `mcp_catalogue_readers` (2) were new, so
+# the world grew those members the same way. A PATH population
+# (`apps_root_modules`, `lifecycle_registry_walkers`) still needs a file.
+#
 # WHAT THIS BUYS, and it is not the drives' own wall clock: it is the `apps/`
 # in their `# drives:` lines. A drive that does not read `apps/` is not
 # re-driven by a rung that only touched an app.

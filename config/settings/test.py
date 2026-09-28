@@ -188,6 +188,39 @@ EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 AWS_STORAGE_BUCKET_NAME = ""
 STORAGES = {**STORAGES, "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"}}
 
+# THE STORE UNDER TEST HAS ONE AUTHORITY, AND IT IS THIS FILE. A test that names
+# a bucket dials the compose MinIO, and that container was created with
+# `compose.yaml`'s published `minioadmin` pair on its published S3 port — so the
+# address, the region and the pair are written here as literals, whatever the
+# environment exports. `base` reads all four from the environment, and that is
+# the wrong source under test for two reasons: a checkout that never ran
+# `scripts/setup.sh` has no `.env` to supply them, and an EXPORTED credential —
+# a CI registry login's assumed STS keys, a laptop's AWS profile — would
+# silently redirect every S3 call the suite makes away from the store it is
+# aimed at. On CI that was every MinIO test answering `InvalidAccessKeyId`: the
+# role credential a registry login exported reached the suite. The CI workflow
+# therefore supplies none of these four; its `ci-env` census (`scripts/
+# docs_legs.sh`) refuses a second authority beside this one, naming both.
+#
+# THE SESSION TOKEN IS PINNED ABSENT, and each client ignores an exported one
+# for its own reason: `apps/files/storage.py::client` (and `apps/core/health.py`)
+# hand boto3 the key and secret explicitly, and boto3 then builds the credential
+# from those two alone, never consulting `AWS_SESSION_TOKEN` in the environment;
+# django-storages' `S3Storage` reads the `AWS_SESSION_TOKEN` SETTING first and
+# falls back to the environment only when the setting is missing — so it is set,
+# to `None`. `apps/files/tests/test_store_credential_belt.py` is the belt: it
+# exports a hostile credential and endpoint and proves every client the suite
+# can build still carries these, and that the pair still equals `compose.yaml`'s.
+#
+# `guards.py`'s boundary is untouched: this is the test world's value, published
+# and worth nothing, and what production does with the same string is recorded
+# there as a named candidate.
+AWS_S3_ENDPOINT_URL = "http://127.0.0.1:9000"
+AWS_S3_REGION_NAME = "us-east-1"
+AWS_ACCESS_KEY_ID = "minioadmin"  # pragma: allowlist secret — the published compose credential
+AWS_SECRET_ACCESS_KEY = "minioadmin"  # pragma: allowlist secret — the published compose credential
+AWS_SESSION_TOKEN: str | None = None
+
 # Nothing has run `collectstatic` in a test tree, and WhiteNoise warns once per
 # request about the directory that is therefore missing. Serving from the
 # finders is both quieter and more honest: a test that asks for a static file

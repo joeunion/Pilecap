@@ -1,3 +1,4 @@
+// patterns: template placeholder — words owned
 /**
  * THE ONE SCREEN. A total function from `SurfaceState` to markup.
  *
@@ -34,7 +35,7 @@ export function WelcomeScreen({ state, hat }: WelcomeScreenProps) {
                 fontFamily: "var(--font-body)",
             }}
         >
-            <h1 style={{ fontSize: "1.5rem", margin: `0 0 var(--space-3)`, color: "var(--ink)" }}>{C.title}</h1>
+            <h1 style={{ fontSize: "var(--type-title)", margin: `0 0 var(--space-3)`, color: "var(--ink)" }}>{C.title}</h1>
             <p style={{ color: "var(--muted)", margin: `0 0 var(--space-2)` }}>{C.placeholder}</p>
             <p style={{ color: "var(--muted)", margin: `0 0 var(--space-4)` }}>{C.parity}</p>
 
@@ -48,16 +49,16 @@ export function WelcomeScreen({ state, hat }: WelcomeScreenProps) {
                     marginBottom: "var(--space-4)",
                 }}
             >
-                <h2 style={{ fontSize: "0.8rem", textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--muted)", margin: `0 0 var(--space-1)` }}>
+                <h2 style={{ fontSize: "var(--type-label)", textTransform: "uppercase", letterSpacing: "var(--type-label-tracking)", color: "var(--muted)", margin: `0 0 var(--space-1)` }}>
                     {C.hatAsked}
                 </h2>
                 <p style={{ margin: `0 0 var(--space-2)`, fontFamily: "var(--font-mono)", color: "var(--ink)" }}>
                     {hat === null ? C.hatDefault : hat}
                 </p>
-                <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--muted)" }}>{C.hatNote}</p>
+                <p style={{ margin: 0, fontSize: "var(--type-facts)", color: "var(--muted)" }}>{C.hatNote}</p>
             </section>
 
-            <h2 style={{ fontSize: "1rem", margin: `0 0 var(--space-2)`, color: "var(--ink)" }}>{C.organizations}</h2>
+            <h2 style={{ fontSize: "var(--type-section)", margin: `0 0 var(--space-2)`, color: "var(--ink)" }}>{C.organizations}</h2>
             {renderState(state)}
         </main>
     );
@@ -158,10 +159,10 @@ function OrganizationList({ items }: { readonly items: readonly Organization[] }
                     }}
                 >
                     <span style={{ color: "var(--ink)", fontWeight: 600 }}>{organization.name}</span>{" "}
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.85rem", color: "var(--muted)" }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--type-facts)", color: "var(--muted)" }}>
                         {organization.slug}
                     </span>{" "}
-                    <span style={{ fontSize: "0.85rem", color: "var(--muted)" }}>
+                    <span style={{ fontSize: "var(--type-facts)", color: "var(--muted)" }}>
                         {C.columnDepth} {organization.depth}
                     </span>
                 </li>

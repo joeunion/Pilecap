@@ -1,0 +1,16 @@
+# zzz_canary: rule 62's self-test plant — the session token left to the exporter.
+name: zzz-canary
+on: [workflow_dispatch]
+jobs:
+  zzz_canary_job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::000000000000:role/zzz-canary
+          aws-region: us-east-1
+      - name: two of three pinned
+        env:
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+        run: echo "the session token still reaches this step"

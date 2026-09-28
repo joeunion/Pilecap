@@ -2086,10 +2086,17 @@ case_the_slot_wiring_in_check_sh() {
     else
         bad "${auto_hits} pytest invocation(s) still run -n auto — that leg claims every core whatever else is live"
     fi
-    if [ "$(grep -c 'test\.sh -n "\$GATE_SLOT_WORKERS"' "$gate")" = "4" ]; then
-        ok "all four pytest invocations run the slot's worker share"
+    # FIVE, NOT FOUR. The grants pass (the `grants-pass` block in check.sh) is
+    # a fifth pytest invocation — one pass connected as the least-privilege
+    # role — and it runs inside the full gate's pytest leg, under the slot that
+    # leg already holds. So it runs the slot's share by design: the same number
+    # as the passes beside it, never `-n auto` and never a second slot. A sixth
+    # invocation moves this pin with its own reason; a fifth that stops running
+    # the share reds it.
+    if [ "$(grep -c 'test\.sh -n "\$GATE_SLOT_WORKERS"' "$gate")" = "5" ]; then
+        ok "all five pytest invocations (the grants pass the fifth) run the slot's worker share"
     else
-        bad "$(grep -c 'test\.sh -n "\$GATE_SLOT_WORKERS"' "$gate") of the pytest invocations run the slot's share, wanted 4"
+        bad "$(grep -c 'test\.sh -n "\$GATE_SLOT_WORKERS"' "$gate") of the pytest invocations run the slot's share, wanted 5 (the grants pass is the fifth)"
     fi
 }
 

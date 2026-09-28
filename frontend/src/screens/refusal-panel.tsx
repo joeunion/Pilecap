@@ -1,3 +1,4 @@
+// patterns: §15
 /**
  * THE ONE REFUSAL RENDERER.
  *
@@ -55,7 +56,7 @@ export function RefusalPanel({ refusal, words, act }: RefusalPanelProps) {
                 <div role="alert" style={panelStyle}>
                     <p style={{ margin: `0 0 var(--space-1)`, color: "var(--ink)", fontWeight: 600 }}>{words.label}</p>
                     <p style={{ margin: `0 0 var(--space-2)`, color: "var(--ink)" }}>{refusal.refusal.detail}</p>
-                    <p style={{ margin: `0 0 var(--space-2)`, fontFamily: "var(--font-mono)", fontSize: "0.85rem", color: "var(--muted)" }}>
+                    <p style={{ margin: `0 0 var(--space-2)`, fontFamily: "var(--font-mono)", fontSize: "var(--type-facts)", color: "var(--muted)" }}>
                         {refusal.refusal.code}
                     </p>
                     <Remedies remedies={refusal.refusal.remedies} heading={words.remedies} />
@@ -67,7 +68,7 @@ export function RefusalPanel({ refusal, words, act }: RefusalPanelProps) {
                 <div role="alert" style={panelStyle}>
                     <p style={{ margin: `0 0 var(--space-1)`, color: "var(--ink)", fontWeight: 600 }}>{words.label}</p>
                     <p style={{ margin: `0 0 var(--space-2)`, color: "var(--ink)" }}>{refusal.detail}</p>
-                    <p style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: "0.85rem", color: "var(--muted)" }}>
+                    <p style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: "var(--type-facts)", color: "var(--muted)" }}>
                         {refusal.code}
                     </p>
                     <Act act={act} />
@@ -103,12 +104,12 @@ function Remedies({ remedies, heading }: { readonly remedies: WireRemedy[] | und
     if (remedies === undefined || remedies.length === 0) return null;
     return (
         <>
-            <p style={{ margin: `0 0 var(--space-1)`, fontSize: "0.85rem", color: "var(--muted)" }}>{heading}</p>
+            <p style={{ margin: `0 0 var(--space-1)`, fontSize: "var(--type-facts)", color: "var(--muted)" }}>{heading}</p>
             <ul style={{ margin: 0, paddingLeft: "var(--space-3)", color: "var(--ink)" }}>
                 {remedies.map((remedy) => (
                     <li key={`${remedy.destination}:${remedy.label}`}>
                         {remedy.label}{" "}
-                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.8rem", color: "var(--muted)" }}>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--type-label)", color: "var(--muted)" }}>
                             {remedy.destination}
                         </span>
                     </li>

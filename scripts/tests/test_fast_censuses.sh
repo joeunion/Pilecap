@@ -11,7 +11,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: deploy/iam/verifier_bootstrap.sh deploy/policy_summary.py deploy/provision.sh docs/product scripts/archaeology_lib.sh scripts/check.sh scripts/docs_legs.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/goalpost_scan.py scripts/loop_health.py scripts/publish.sh scripts/queue_index.py scripts/secrets_scan.sh scripts/tests/test_publish.sh scripts/tests/test_verifier_image.sh
+# drives: .github/workflows/ci.yml config/settings/test.py deploy/iam/verifier_bootstrap.sh deploy/policy_summary.py deploy/provision.sh docs/product scripts/archaeology_lib.sh scripts/check.sh scripts/docs_legs.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/goalpost_scan.py scripts/loop_health.py scripts/publish.sh scripts/queue_index.py scripts/secrets_scan.sh scripts/tests/test_publish.sh scripts/tests/test_verifier_image.sh
 # The drive for the four `--fast` census bodies in `scripts/docs_legs.sh`:
 # `adr-census`, `dangling-docs`, `loop-names` and `ci-env`.
 #
@@ -777,8 +777,8 @@ case_a_test_settings_pin_of_a_supplied_key_reds() {
     CURRENT=case_a_test_settings_pin_of_a_supplied_key_reds
     # THE MIRROR LENS. A key the workflow supplies that the test settings then
     # pin is an `env:` line doing nothing at all, while every criterion about
-    # the block passes. Today's tree is the NEGATIVE — the one pinned name is
-    # the one the workflow deliberately does not supply — so the case plants.
+    # the block passes. This world is the OLDER shape (the workflow supplies,
+    # the test settings pin only the bucket), so the case plants a pin.
     local dir="${WORK}/cienv-pin-$$-$RANDOM"
     drive_require_scratch dir "${dir:-}"
     ci_world "$dir"
@@ -798,6 +798,105 @@ case_a_test_settings_pin_of_a_supplied_key_reds() {
         ok "exit 0 — the bucket name is pinned and deliberately absent from the workflow"
     else
         bad "exit $RC, want 0 — this is the shape the platform's own tree is in"
+        show_out
+    fi
+}
+
+# THE ONE-AUTHORITY SHAPE — the platform's own tree since the store credential
+# moved: the test settings pin the store's endpoint, region and published pair
+# (and the session token absent), the workflow env carries no AWS_ key, and the
+# step after a credential exporter clears the three exported names with `""`.
+ci_world_one_authority() {
+    local dir=$1
+    ci_world "$dir"
+    cat >"$dir/config/settings/test.py" <<'PY'
+AWS_STORAGE_BUCKET_NAME = ""
+AWS_S3_ENDPOINT_URL = "http://127.0.0.1:9000"
+AWS_S3_REGION_NAME = "us-east-1"
+AWS_ACCESS_KEY_ID = "minioadmin"
+AWS_SECRET_ACCESS_KEY = "minioadmin"  # pragma: allowlist secret — the published compose credential
+AWS_SESSION_TOKEN: str | None = None
+PY
+    cat >"$dir/.github/workflows/ci.yml" <<'YML'
+name: gate
+on: [push]
+env:
+  DATABASE_URL: postgres://x
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+      - name: the gate
+        env:
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
+        run: ./scripts/check.sh
+YML
+}
+
+case_one_authority_is_clean_and_an_empty_pin_is_no_supply() {
+    CURRENT=case_one_authority_is_clean_and_an_empty_pin_is_no_supply
+    local dir="${WORK}/cienv-one-$$-$RANDOM"
+    drive_require_scratch dir "${dir:-}"
+    ci_world_one_authority "$dir"
+    run_ci_env "$dir"
+    if [ "$RC" = "0" ] && ! grep -q "VIOLATION" "$RUN_OUT" &&
+        grep -q "cleared: AWS_SESSION_TOKEN at .github/workflows/ci.yml:14" "$RUN_OUT" &&
+        [ "$(grep -c '^  exempt: ' "$RUN_OUT")" = "4" ]; then
+        ok "exit 0 — the four population names are pinned by the test settings, and the step's empty pins are printed as clearings, not supplies"
+    else
+        bad "exit $RC, want 0 with four exemptions and the clearings printed"
+        show_out
+    fi
+}
+
+case_a_second_authority_planted_back_names_both_file_lines() {
+    CURRENT=case_a_second_authority_planted_back_names_both_file_lines
+    local dir="${WORK}/cienv-two-$$-$RANDOM"
+    drive_require_scratch dir "${dir:-}"
+    ci_world_one_authority "$dir"
+    # THE PLANT IS THE ENDPOINT, back in the workflow env — the digit-class name,
+    # and the one whose second authority would redirect every S3 call.
+    sed 's|^  DATABASE_URL: postgres://x$|  DATABASE_URL: postgres://x\
+  AWS_S3_ENDPOINT_URL: http://127.0.0.1:9000|' "$dir/.github/workflows/ci.yml" >"$dir/ci.tmp"
+    mv "$dir/ci.tmp" "$dir/.github/workflows/ci.yml"
+    run_ci_env "$dir"
+    if [ "$RC" = "1" ] &&
+        grep -q "AWS_S3_ENDPOINT_URL has TWO authorities — config/settings/test.py:2 and .github/workflows/ci.yml:5" "$RUN_OUT"; then
+        ok "exit 1 naming both authorities as file:line"
+    else
+        bad "exit $RC, want 1 naming config/settings/test.py:2 and .github/workflows/ci.yml:5"
+        show_out
+    fi
+
+    CURRENT="${CURRENT} (and an EMPTY value planted there instead is a clearing, silent)"
+    ci_world_one_authority "$dir"
+    sed 's|^  DATABASE_URL: postgres://x$|  DATABASE_URL: postgres://x\
+  AWS_S3_ENDPOINT_URL: ""|' "$dir/.github/workflows/ci.yml" >"$dir/ci.tmp"
+    mv "$dir/ci.tmp" "$dir/.github/workflows/ci.yml"
+    run_ci_env "$dir"
+    if [ "$RC" = "0" ] && ! grep -q "VIOLATION" "$RUN_OUT"; then
+        ok "exit 0 — an empty value decides nothing about the store, so it is no second authority"
+    else
+        bad "exit $RC, want 0 — an empty pin is not a supply"
+        show_out
+    fi
+}
+
+case_the_platforms_own_tree_has_one_authority() {
+    CURRENT=case_the_platforms_own_tree_has_one_authority
+    RUN_OUT="${WORK}/cienv-own-$$-$RANDOM.log"
+    set +e
+    (cd "$ROOT" && docs_ci_env_leg) >"$RUN_OUT" 2>&1
+    RC=$?
+    set -e
+    if [ "$RC" = "0" ] && ! grep -q "VIOLATION" "$RUN_OUT" &&
+        [ "$(grep -c '^  exempt: ' "$RUN_OUT")" -ge 4 ]; then
+        ok "exit 0 on this tree — the store's names are the test settings' alone"
+    else
+        bad "exit $RC on this tree, want 0 with every population name exempt by the pin"
         show_out
     fi
 }
@@ -982,6 +1081,9 @@ case_a_missing_aws_key_in_ci_env_reds_fast
 case_no_workflow_file_is_a_printed_skip
 case_a_secrets_valued_key_satisfies_the_census
 case_a_test_settings_pin_of_a_supplied_key_reds
+case_one_authority_is_clean_and_an_empty_pin_is_no_supply
+case_a_second_authority_planted_back_names_both_file_lines
+case_the_platforms_own_tree_has_one_authority
 case_an_unparsable_workflow_is_exit_2
 case_an_empty_population_is_exit_2
 case_all_four_legs_are_wired_into_the_fast_tier

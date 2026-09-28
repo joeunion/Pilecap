@@ -22,7 +22,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: quality/partition.yaml scripts/archaeology_lib.sh scripts/divergence_census.sh scripts/gate_refuse.sh
-# cites: scripts/pm_fold.sh docs/product/build-contract.md scripts/queue_cited.sh scripts/kill_mine.sh scripts/sweep.sh scripts/check.sh scripts/publish.sh scripts/tests/test_gate_lease.sh scripts/tests/test_publish.sh scripts/tests/drive_preamble.sh TEMPLATE_VERSION docs/product/instruments.md docs/product/architecture.md apps/core/roles.py apps/core/api/frozen_families.py pyproject.toml docs/product/queue.md apps/core/services.py quality/gate.py scripts/local/template-base scripts/local/legs
+# cites: .github/workflows .github/workflows/ci.yml .github/workflows/nightly-proof.yml scripts/pm_fold.sh docs/product/build-contract.md docs/product/design docs/product/design/patterns.md docs/product/design/patterns.local.md scripts/queue_cited.sh scripts/kill_mine.sh scripts/sweep.sh scripts/check.sh scripts/publish.sh scripts/tests/test_gate_lease.sh scripts/tests/test_publish.sh scripts/tests/drive_preamble.sh TEMPLATE_VERSION docs/product/instruments.md docs/product/architecture.md apps/core/roles.py apps/core/api/frozen_families.py pyproject.toml docs/product/queue.md apps/core/services.py quality/gate.py scripts/local/template-base scripts/local/legs
 # The refusal-and-property drive for `scripts/divergence_census.sh`.
 #
 # Exit: 0 every case held · 1 a case did not hold · 2 COULD NOT LOOK (no git, a
@@ -156,7 +156,17 @@ build_repo() {
     printf '# the product'"'"'s own app\n' >"$d/apps/zzz_product_app/models.py"
     printf '# queue — the product'"'"'s ledger\n' >"$d/docs/product/queue.md"
     printf '# the build contract\n' >"$d/docs/product/build-contract.md"
+    # The pattern book, template-owned, so an edit to it can be compared with
+    # the base; its drawer is written by a case below and is never in the base.
+    mkdir -p "$d/docs/product/design"
+    printf '# the pattern book\n' >"$d/docs/product/design/patterns.md"
     printf '[project]\n' >"$d/pyproject.toml"
+    # The template's two workflows, so an edit to either is a divergence the
+    # base can be compared with; a product's own workflow is written by a
+    # case below and is never in the base.
+    mkdir -p "$d/.github/workflows"
+    printf 'name: ci\n' >"$d/.github/workflows/ci.yml"
+    printf 'name: nightly-proof\n' >"$d/.github/workflows/nightly-proof.yml"
     (
         cd "$d"
         git init -q -b main
@@ -632,6 +642,83 @@ silent_case "the shared roles file" "apps/core/roles.py" append
 silent_case "the shared frozen families" "apps/core/api/frozen_families.py" append
 silent_case "a shared dependency manifest" "pyproject.toml" append
 silent_case "a ledger" "docs/product/queue.md" append
+
+# --- the template ships TWO workflows, and the second one is the template's too
+# The nightly leak proof (`nightly-proof.yml`) arrived after the census's
+# workflow arm was written, and the arm read every workflow but `ci.yml` as the
+# product's — so a product's edit to the template's nightly was silent. Both
+# directions: the template's workflow edited is a divergence, a product's own
+# workflow beside it is not.
+for wf in ci.yml nightly-proof.yml; do
+    printf '# our tweak\n' >>"$REPO/.github/workflows/$wf"
+    commit_all "edit the template's $wf"
+    run "$REPO"
+    if [ "$RC" = 1 ] && grep -q "divergence: .github/workflows/$wf" "$OUT"; then
+        ok "the template's .github/workflows/$wf edited is a divergence — the template ships it"
+    else
+        bad "template workflow $wf edited: exit $RC, want 1 naming .github/workflows/$wf"
+        sed 's/^/         /' "$OUT"
+    fi
+    gitq "$REPO" checkout -q "$BASE" -- ".github/workflows/$wf"
+    commit_all "undo"
+done
+silent_case "a product's own workflow" ".github/workflows/zzz_product.yml" create
+
+# --- the pattern book is the template's; its drawer is the product's --------
+# The book's own header says template-owned, and the census's standing-document
+# arm listed six files and sent every other ledger-directory path to the product —
+# so a product's edit to the book was silent. Both directions, as the workflows
+# above: the book edited is a divergence, the drawer beside it is not.
+printf '# our entry, written into the template'"'"'s book\n' >>"$REPO/docs/product/design/patterns.md"
+commit_all "edit the template's pattern book"
+run "$REPO"
+if [ "$RC" = 1 ] && grep -q "divergence: docs/product/design/patterns.md" "$OUT"; then
+    ok "the template's pattern book edited is a divergence — the template owns it"
+else
+    bad "pattern book edited: exit $RC, want 1 naming docs/product/design/patterns.md"
+    sed 's/^/         /' "$OUT"
+fi
+gitq "$REPO" checkout -q "$BASE" -- docs/product/design/patterns.md
+commit_all "undo"
+silent_case "the pattern book's drawer" "docs/product/design/patterns.local.md" create
+
+# --- a SECOND file in the design directory is the template's too -----------
+# The publish census ships `docs/product/design/*` by ONE GLOB (R9), so a
+# second file the template adds beside the book ships the day it lands. If
+# this census named the book alone, that file would ship as the template's
+# and be owned here as the product's — an edit to it silent. So the design
+# arm is the same glob, and a second design file planted in the base and then
+# edited is a divergence, named; the owned count carries it.
+#
+# THE PATH IS ASSEMBLED, NEVER SPELLED: this drive ships, and the dangling-docs
+# census reads every whole docs path a shipped file spells — a plant name that
+# exists only inside this drive's throwaway repository would be a pointer at
+# nothing in the tree it ships in.
+DESIGN_DIR=docs/product/design
+SECOND_DESIGN="$DESIGN_DIR/zzz_notes.md"
+printf '# a second design file the template ships\n' >"$REPO/$SECOND_DESIGN"
+commit_all "the template grows a second design file"
+# The base moves to the commit that carries the file — the template's release
+# that grew it — and moves back after, so every later case compares against
+# the fixture's own base exactly as before.
+export DJB_TEMPLATE_BASE
+DJB_TEMPLATE_BASE=$(git -C "$REPO" rev-parse HEAD)
+run "$REPO"
+OWNED_DESIGN=$(sed -n 's/^census: owned=\([0-9]*\).*/\1/p' "$OUT")
+printf '# our edit to it\n' >>"$REPO/$SECOND_DESIGN"
+commit_all "edit the second design file"
+run "$REPO"
+if [ "$RC" = 1 ] && grep -q "divergence: $SECOND_DESIGN" "$OUT" &&
+    [ "$OWNED_DESIGN" = "$((OWNED_BASE + 1))" ]; then
+    ok "a second design file is the template's — edited, it is a divergence (owned $OWNED_BASE → $OWNED_DESIGN)"
+else
+    bad "second design file edited: exit $RC, owned $OWNED_BASE → ${OWNED_DESIGN:-?}, want 1 naming $SECOND_DESIGN and +1"
+    sed 's/^/         /' "$OUT"
+fi
+gitq "$REPO" rm -q "$SECOND_DESIGN"
+commit_all "undo"
+DJB_TEMPLATE_BASE="$BASE"
+silent_case "the pattern book's drawer, beside a second design file" "docs/product/design/patterns.local.md" create
 
 # --- and the platform app IS template-owned, which is the other half --------
 printf '# our patch to the platform app\n' >>"$REPO/apps/core/services.py"

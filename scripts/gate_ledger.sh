@@ -469,11 +469,112 @@ gate_measured_tree() {
 # loop_tree_snapshot <file> — write this checkout's dirty set, `<hash>\t<path>`
 # per line (`-` for a path that is absent), to <file>, and stamp <file>.stamp
 # with the moment it was taken. Exit 1 when git could not answer.
+#
+# THE RE-TAKE IS REMEMBERED HERE, NOT ONLY AT THE BANK. The memory below
+# (`loop_tree_remember`) used to be written only when a run reached the bank's
+# question — so a run that re-took the artefact and was then interrupted, went
+# red or was killed left the re-take unremembered, and the NEXT run, starting on
+# those bytes, could reuse the leg, write nothing, and bank a tree no HEAD
+# carries. Every run that reaches the bank's question removes its snapshot; so a
+# snapshot still standing when the next run starts IS the record of a run that
+# never got there, and this function asks it the question that run never asked
+# (`loop_tree__unfinished`) before it is overwritten.
+#
+# WRITTEN BESIDE AND RENAMED INTO PLACE (`loop_tree__write`), like every other
+# rewrite of the loop's state: a reader never sees half a snapshot.
 loop_tree_snapshot() {
     local out=$1 set
+    loop_tree__unfinished "$out"
     set=$(loop_tree__dirty_set) || return 1
+    loop_tree__hash_set "$set" | loop_tree__write "$out" || return 1
+    rm -f "${out}.end"
     : >"${out}.stamp" || return 1
-    loop_tree__hash_set "$set" >"$out" || return 1
+}
+
+# loop_tree__write <file> — stdin into <file> through a sibling and one `mv`, so
+# the file is the old bytes or the new ones and never neither. Exit 1 (and the
+# old file untouched) when the sibling could not be written or moved.
+loop_tree__write() {
+    local out=$1 tmp="${1}.write.$$"
+    if cat >"$tmp" && mv -f "$tmp" "$out"; then
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# loop_tree_mark_end <snapshot-file> — stamp <file>.end with the moment this
+# run ended, when it ends WITHOUT reaching the bank's question (which removes
+# the snapshot, making this a no-op). Called from the `--loop`'s EXIT trap, so a
+# red leg, an INT, a TERM and a HUP all leave it; a SIGKILL cannot, and
+# `loop_tree__unfinished` says so when it finds a snapshot with no end.
+loop_tree_mark_end() {
+    [ -n "${1:-}" ] && [ -e "$1" ] && [ -e "${1}.stamp" ] || return 0
+    : >"${1}.end" 2>/dev/null || true
+}
+
+# loop_tree__unfinished <snapshot-file> — when a previous run's snapshot is
+# still standing, remember every path it WROTE: dirty now, written after its
+# stamp and — when it left an end mark — not after its end. One line says what
+# was found. Returns 0 always: a memory that could not be written costs a
+# re-measure, never a run.
+#
+# THE WINDOW IS WHAT KEEPS A HAND EDIT OUT. An author who fixes a red run's
+# finding after it ended writes AFTER its end mark, so the fix is judged afresh
+# by the run that follows, not remembered as the dead run's re-take. With no
+# end mark (the run was SIGKILLed) the window has no far edge, and the line
+# says that everything written since its start is remembered — the refusal's
+# own remedies (commit, restore, change the bytes) clear any of it.
+loop_tree__unfinished() {
+    local snap=$1 nowset p kept="" n=0 derived d covered hashes shown
+    [ -e "$snap" ] && [ -e "${snap}.stamp" ] || return 0
+    nowset=$(loop_tree__dirty_set) || return 0
+    derived=$(gate__derived_tree_paths "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" 2>/dev/null) || derived=""
+    while IFS= read -r p; do
+        [ -n "$p" ] && [ -e "$p" ] || continue
+        [ -n "$(find "$p" -prune -newer "${snap}.stamp" 2>/dev/null)" ] || continue
+        if [ -e "${snap}.end" ] && [ -n "$(find "$p" -prune -newer "${snap}.end" 2>/dev/null)" ]; then
+            continue
+        fi
+        covered=0
+        while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            if gate_docs_only_covers "$d" "$p"; then
+                covered=1
+                break
+            fi
+        done <<EOF
+$derived
+EOF
+        [ "$covered" = 1 ] && continue
+        kept="${kept}${p}
+"
+        n=$((n + 1))
+    done <<EOF
+$nowset
+EOF
+    if [ "$n" = 0 ]; then
+        echo "  loop snapshot: the previous --loop here never reached its bank's question; it wrote no path the key reads"
+        return 0
+    fi
+    hashes=$(loop_tree__hash_set "$kept") || return 0
+    {
+        if [ -r "${snap}.rewrites" ]; then
+            awk -F '\t' 'NR == FNR { now[$2] = 1; next } !($2 in now)' \
+                <(printf '%s\n' "$hashes") "${snap}.rewrites"
+        fi
+        printf '%s\n' "$hashes"
+    } | awk 'NF' | loop_tree__write "${snap}.rewrites" || return 0
+    shown=$(printf '%s' "$kept" | tr '\n' ' ')
+    echo "  loop snapshot: the previous --loop here never reached its bank's question (red, interrupted or"
+    echo "                 killed) and wrote ${n} path(s) the key reads — REMEMBERED, so a run on those"
+    echo "                 bytes is refused as their carrier: ${shown% }"
+    if [ ! -e "${snap}.end" ]; then
+        echo "                 It left NO END MARK (a SIGKILL), so the window runs to now and an edit"
+        echo "                 of yours since it started is remembered with it — commit it, restore it,"
+        echo "                 or change its bytes, and it is judged afresh."
+    fi
+    return 0
 }
 
 # loop_tree__dirty_set → every path that differs from HEAD in the working tree:
@@ -588,7 +689,7 @@ loop_tree_refusal() {
         while IFS="$tab" read -r p arm; do
             [ -n "$p" ] || continue
             case "$arm" in
-            carried) echo "     ${p} — carried from a refused run: it still holds the bytes an earlier --loop refused" ;;
+            carried) echo "     ${p} — carried from a refused run, or from one that never reached its bank's question: it still holds the bytes an earlier --loop wrote" ;;
             *) echo "     ${p} — changed during this run" ;;
             esac
         done <<EOF
@@ -618,7 +719,40 @@ loop_tree_remember() {
         rm -f "${snap}.rewrites"
         return 0
     fi
-    loop_tree__hash_set "$2" >"${snap}.rewrites"
+    loop_tree__hash_set "$2" | loop_tree__write "${snap}.rewrites"
+}
+
+# loop_ledger_tree_row <tree> [box] → the most recent loop row measured at
+# <tree> (`tree=<tree>`), exit 0; 1 when none (or no ledger). With `box`, only a
+# row a verifier box banked and `verifier_box.sh` harvested home (` box=<id>`).
+#
+# A CONSULT BY TREE, AND WHO MAY ASK IT. The loop's own consult is by KEY, and
+# the key carries the environment the run measured in — a verifier box's image —
+# so a laptop can never derive a box's key and never hit its row. Two readers
+# ask the narrower question instead, and neither re-measures anything: a laptop
+# `--loop` (which is refused there) asks whether a BOX already measured these
+# exact bytes, and the merge ritual asks whether the branch's head was measured
+# at all. Both print the row they found; neither writes one.
+loop_ledger_tree_row() {
+    local tree=$1 want=${2:-} path
+    [ -n "$tree" ] || return 1
+    path=$(loop_ledger_path) || return 1
+    [ -r "$path" ] || return 1
+    awk -v t="tree=${tree}" -v want="$want" '
+        $3 == "loop" {
+            hit = 0
+            for (i = 5; i <= NF; i++) if ($i == t) hit = 1
+            if (hit && (want == "" || index($0, " box="))) last = $0
+        }
+        END { if (last == "") exit 1; print last }
+    ' "$path"
+}
+
+# loop_row_box <row> — the ` box=<id>` value of a harvested row, or nothing.
+loop_row_box() {
+    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^box=/) { sub(/^box=/, "", $i); v = $i } } END { if (v != "") print v }' <<EOF
+$1
+EOF
 }
 
 # gate_measured_tree_of <tree-ish> — THE SAME KEY, ASKED OF A REF.
@@ -755,9 +889,22 @@ gate_ledger_cost_fields() {
 #
 #: Set by `scripts/pm_push.sh` beside `GATE_RUN_SANCTION` when a bank ran its
 #: pytest shards at one pass: `acceptance:<box-id> rc=<n>` — the box that ran
-#: the whole-suite two-pass proof, and the status it exited. EMPTY means no
-#: field at all, which is what every row written before this existed says, and
-#: what every two-pass run goes on saying.
+#: the whole-suite two-pass proof, and the status it exited — or, on the CI
+#: road, `ci:<run id> rc=<n>`: the pull-request run whose `gate-verdict` record
+#: `pm_push.sh --ci-verdict` read (every unit of the gate, the suite sharded at
+#: one pass; the whole-suite second pass behind it is the nightly's). The
+#: reader honours `ci:` GREEN ONLY, exactly as it honours `acceptance:`. EMPTY
+#: means no field at all, which is what every row written before this existed
+#: says, and what every two-pass run goes on saying.
+#:
+#: AND THE THIRD SOURCE, `pm_push.sh --bank --on-boxes N --leak-proof nightly`:
+#: the latest nightly's record in the form `gate_nightly_read` prints —
+#: `nightly:<at> tree=<12 hex> rc=<n>` · `nightly:stale:<at>` · `nightly:none`.
+#: The reader honours EVERY nightly form (report-only, the consumer's owner's
+#: ruling for their bank): the row says which night stood behind it, or that
+#: none did, and the TEETH are at prod, whose deploy refuses without a green
+#: nightly no older than 24 h. A note says so whenever a non-green form is
+#: honoured, so it is never silent.
 GATE_RUN_LEAK_PROOF=""
 
 # gate_ledger_proof_field → the field on stdout (leading space), or nothing.
@@ -769,7 +916,7 @@ gate_ledger_proof_field() {
     # a writer that accepted `rc=00` would bank a row whose green the reader
     # then read as red, and the two would disagree about a row neither had any
     # way to flag. One grammar, refused at the only end that can still fix it.
-    local proof re='^acceptance:[A-Za-z0-9-]+ (rc=0|rc=[1-9][0-9]*)$'
+    local proof re='^((acceptance:[A-Za-z0-9-]+|ci:[1-9][0-9]*) (rc=0|rc=[1-9][0-9]*)|nightly:[0-9]{8}T[0-9]{6}Z tree=[0-9a-f]{12} (rc=0|rc=[1-9][0-9]*)|nightly:stale:[0-9]{8}T[0-9]{6}Z|nightly:none)$'
     # Newlines would make one row into two — stripped here exactly as the
     # sanction's are, and in the same place, for the same reason.
     proof=$(printf '%s' "${GATE_RUN_LEAK_PROOF:-}" | tr '\n' ' ')
@@ -782,7 +929,11 @@ gate_ledger_proof_field() {
     if [[ ! $proof =~ $re ]]; then
         echo "note: GATE_RUN_LEAK_PROOF is set and will not parse, so NO ROW was written." >&2
         echo "  The grammar is 'acceptance:<box-id> rc=<n>' — the box that ran the" >&2
-        echo "  whole-suite two-pass leak proof, and the status it exited. A row" >&2
+        echo "  whole-suite two-pass leak proof, and the status it exited — or" >&2
+        echo "  'ci:<run id> rc=<n>', the pull-request CI run whose gate-verdict record" >&2
+        echo "  pm_push.sh --ci-verdict read (a decimal run id, no leading zero) — or one" >&2
+        echo "  of the three nightly forms: 'nightly:<at> tree=<12 hex> rc=<n>'," >&2
+        echo "  'nightly:stale:<at>', 'nightly:none'. A row" >&2
         echo "  carrying a leak-proof field nothing can read would be honoured as a row" >&2
         echo "  carrying none, which is a weaker claim than the run meant to bank." >&2
         echo "  Got: leak-proof=${proof}" >&2
@@ -919,6 +1070,11 @@ gate_full_legs() {
     printf '%s' "$GATE_FULL_LEGS_MEMO"
 }
 
+#: THE ONE UNIT THAT MAY RUN A SINGLE PASS, named once: `gate_ledger_lookup`
+#: honours `<it>/1` only beside a green proof, and the CI record's reader
+#: (`gate_ci_legs_expand`) accepts `/1` on this unit and on no other.
+GATE_ONEPASS_UNIT=pytest-x2
+
 # gate_ledger_lookup <tree> → most recent matching line on stdout, exit 0;
 # exit 1 when the tree has no verdict.
 #
@@ -986,10 +1142,18 @@ gate_full_legs() {
 gate_ledger_lookup() {
     local tree=$1 path line required leg rowlegs
     local proof member covered onepass unsanctioned proofgreen proofused
-    local proofre='^acceptance:[A-Za-z0-9-]+ rc=0$'
+    # TWO GREEN FORMS AND NO THIRD: the acceptance box's whole-suite two-pass
+    # run, and a CI run whose record `pm_push.sh --ci-verdict` judged whole,
+    # green and of this tree. Anything else — a red `rc=`, a form this line
+    # does not spell — is no proof, and the note below says which it was.
+    local proofre='^(acceptance:[A-Za-z0-9-]+|ci:[1-9][0-9]*) rc=0$'
+    # AND THE NIGHTLY'S THREE FORMS, EVERY ONE HONOURED — report-only: the
+    # second whole pass is the nightly's, the row names which night (or none),
+    # and prod's deploy is where a red, stale or absent nightly refuses.
+    local nightlyre='^(nightly:[0-9]{8}T[0-9]{6}Z tree=[0-9a-f]{12} rc=(0|[1-9][0-9]*)|nightly:stale:[0-9]{8}T[0-9]{6}Z|nightly:none)$'
     # The one unit ADR gate-1's amendment lets run a single pass, named rather
     # than pattern-matched: the proof is a pytest run and vouches for pytest.
-    local onepass_unit=pytest-x2
+    local onepass_unit=$GATE_ONEPASS_UNIT
     path=$(gate_ledger_path) || return 1
     [ -f "$path" ] || return 1
     line=$(grep -F " $tree full " "$path" | grep "^$GATE_LEDGER_SCHEMA " | tail -1)
@@ -1008,6 +1172,16 @@ gate_ledger_lookup() {
         proofgreen=0
         if [[ $proof =~ $proofre ]]; then
             proofgreen=1
+        elif [[ $proof =~ $nightlyre ]]; then
+            proofgreen=1
+            case "$proof" in
+            *" rc=0") ;;
+            *)
+                echo "note: leak-proof=${proof} is honoured REPORT-ONLY: the row's one-pass suite" >&2
+                echo "  rests on no green nightly. The deploy to prod refuses without one no" >&2
+                echo "  older than 24 h; this push does not." >&2
+                ;;
+            esac
         fi
         proofused=0
         for leg in $(printf '%s' "$required" | tr ',' ' '); do
@@ -1045,7 +1219,8 @@ gate_ledger_lookup() {
             if [ "$onepass" -eq 1 ]; then
                 echo "  declared set — missing '${leg}' — the row ran ONE pass and carries no green leak proof (leak-proof=${proof:-none})." >&2
                 echo "  The second pass is the leak proof; on a sharded bank it runs on the" >&2
-                echo "  acceptance box and the row names it. Not honoured — measuring." >&2
+                echo "  acceptance box and the row names it, and on the CI road the row names" >&2
+                echo "  the green run (ci:<run id> rc=0). Not honoured — measuring." >&2
             elif [ "$unsanctioned" -eq 1 ]; then
                 echo "  declared set — missing '${leg}' — the row ran ONE pass of a leg that is not '${onepass_unit}', and one pass is sanctioned for that unit alone (leak-proof=${proof:-none})." >&2
                 echo "  The acceptance box's proof is a whole-suite two-pass pytest run; it" >&2
@@ -1065,6 +1240,784 @@ gate_ledger_lookup() {
 
 # gate_has_green <tree> → exit 0 iff a full green run measured this tree.
 gate_has_green() { gate_ledger_lookup "$1" >/dev/null; }
+
+# ---- the CI VERDICT: the record, its reader, the intent, the consult --------
+#
+# WHAT IT IS. A train goes `pm_push.sh --pr` → the pull request's CI run →
+# `pm_push.sh --ci-verdict` → plain `pm_push.sh`, and the CI run is the ONE
+# measurement: `.github/workflows/ci.yml` runs every unit of the gate — the
+# suite sharded at one pass, exactly as a bank's shards run it — and its last
+# job publishes ONE line, the RECORD:
+#
+#   schema=gate-verdict/1 at=<YYYYMMDDTHHMMSSZ> commit=<40 hex> tree=<40 hex>
+#     legs=<unit[/1],...> shards=<n> scope=<whole|pr> rc=<n> run=<id>
+#     attempt=<n> where=ci
+#
+#   at       when the record was written, UTC; every age below runs from here
+#   commit   the pull request's HEAD commit (a push event: the pushed commit)
+#   tree     THE MEASURED TREE of the runner's checkout (`gate_measured_tree`,
+#            the key every row here keys on) — on a pull request that is
+#            GitHub's merge of the PR into its base, so it equals the head's
+#            measured tree exactly when the branch already contains its base
+#   legs     the UNITS the run's matrix ran, `/1` on the one handed one pass;
+#            the reader expands them through THIS checkout's listing
+#   shards   how many runners the N-capable units were split across
+#   scope    `whole`, or `pr` when the rows ran narrowed — which vouches for no
+#            tree and is refused
+#   rc       0 exactly when every job the verdict needs succeeded
+#   run      the run id; attempt — WHICH attempt of it wrote this record
+#
+# THE ONE GRAMMAR HAS TWO ENDS AND BOTH ARE HERE: `gate_ci_record_line` writes
+# it (the CI job calls it) and `gate_ci_record_parse` reads it (the reader and
+# the consult call it), and the writer refuses anything the reader would —
+# the argument `gate_ledger_proof_field` makes for `rc=00`, one level up.
+#
+# THE LATEST ATTEMPT IS THE ONE READ (principle 16: a re-run is at-least-once).
+# A re-run of a run keeps the run id and bumps the attempt, and the artifact
+# name CARRIES the attempt (`gate_ci_artifact_name`), so the reader asks `gh`
+# which attempt is the latest, downloads THAT attempt's record, and refuses a
+# record whose `attempt=` disagrees. The consumer's reader took the first
+# same-named artifact and read a stale attempt's green; this is the belt.
+#
+# THE REFUSALS, EACH BEFORE A ROW EXISTS (`gate_ci_fetch` and
+# `gate_ci_record_judge`): no `gh` · `gh` failing · the run not completed · no
+# artifact for the latest attempt · a record that will not parse · a `run=` or
+# `attempt=` that is not the run and attempt asked · `scope=pr` · `rc≠0` ·
+# stamped more than GATE_CI_SKEW s in the future · older than GATE_CI_MAX_AGE ·
+# a commit this checkout lacks · a tree that is not that commit's measured tree
+# · a commit that is neither HEAD nor its ancestor · legs this checkout's
+# listing cannot expand or that do not cover `gate_full_legs`.
+#
+# WHAT IT DOES NOT COVER, declared:
+#   * the legs as they ran on the runner are CI's claim; the reader expands the
+#     UNITS through today's listing here, so a unit whose composition changed
+#     between the run and now is read with today's composition;
+#   * an artifact GitHub served wrong — the store is trusted as `gh` is;
+#   * whether the run's jobs were honest — a runner's `--leg` is the authority
+#     exactly as a bank box's is.
+
+#: The workflow whose pull-request runs measure a train.
+GATE_CI_WORKFLOW="${DJB_CI_WORKFLOW:-ci.yml}"
+#: The artifact's name PREFIX; the name is `<prefix>-<attempt>`.
+GATE_CI_ARTIFACT="gate-verdict"
+#: The one file inside it.
+GATE_CI_RECORD="gate_verdict.txt"
+GATE_CI_SCHEMA="gate-verdict/1"
+#: A record older than this is not a verdict about today's tree.
+GATE_CI_MAX_AGE=86400
+#: How far in the future a stamp may sit before the clock is the thing wrong.
+GATE_CI_SKEW=600
+
+# gate_ci_artifact_name <attempt> — the artifact one attempt of a run publishes.
+gate_ci_artifact_name() { printf '%s-%s\n' "$GATE_CI_ARTIFACT" "$1"; }
+
+# gate_ci_epoch <YYYYMMDDTHHMMSSZ> → seconds since the epoch, or exit 1.
+#
+# BSD `date -j -f` on the Mac, GNU `date -d` on a runner or a box; and the
+# answer is formatted BACK and compared, because BSD normalises an impossible
+# stamp (month 13) into a real one rather than refusing it — a stamp that does
+# not survive the round trip is not a time.
+gate_ci_epoch() {
+    local s=${1:-} e back
+    [[ $s =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})Z$ ]] || return 1
+    e=$(date -u -j -f '%Y%m%dT%H%M%SZ' "$s" +%s 2>/dev/null) ||
+        e=$(date -u -d "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}" +%s 2>/dev/null) ||
+        return 1
+    [[ $e =~ ^[0-9]+$ ]] || return 1
+    back=$(gate_ci_stamp_of "$e") || return 1
+    [ "$back" = "$s" ] || return 1
+    printf '%s\n' "$e"
+}
+
+# gate_ci_stamp_of <epoch> → the record's stamp for that second.
+gate_ci_stamp_of() {
+    date -u -r "$1" +%Y%m%dT%H%M%SZ 2>/dev/null || date -u -d "@$1" +%Y%m%dT%H%M%SZ 2>/dev/null
+}
+
+# gate_ci_record_line <commit> <tree> <legs> <shards> <scope> <rc> <run>
+#   <attempt> [<at>] — THE RECORD, one line on stdout, exit 0; exit 2 and
+#   nothing on stdout when any field is out of the reader's grammar (the reason
+#   on stderr). `<at>` defaults to now.
+gate_ci_record_line() {
+    local at line
+    if [ "$#" -ne 8 ] && [ "$#" -ne 9 ]; then
+        echo "note: gate_ci_record_line takes 8 fields and an optional stamp; got $#." >&2
+        return 2
+    fi
+    at=${9:-$(date -u +%Y%m%dT%H%M%SZ)}
+    line="schema=${GATE_CI_SCHEMA} at=${at} commit=$1 tree=$2 legs=$3 shards=$4 scope=$5 rc=$6 run=$7 attempt=$8 where=ci"
+    if ! gate_ci_record_parse "$line"; then
+        echo "note: the CI record would not parse, so NONE was written: ${GATE_CI_REC_WHY}" >&2
+        return 2
+    fi
+    printf '%s\n' "$line"
+}
+
+# gate_ci_record_parse <line> — exit 0 with the globals below set; exit 2 with
+# GATE_CI_REC_WHY naming the first field out of grammar.
+#
+# EXACTLY ELEVEN FIELDS, IN THE WRITER'S ORDER, ONE SPACE APART. A parser that
+# took fields by name would accept a record carrying two `rc=` and read
+# whichever it met first; one that tolerated a tab would disagree with the
+# writer about what a field is. The round trip — parse, then write the parsed
+# fields back — is the identity, and that is the test.
+GATE_CI_REC_AT="" GATE_CI_REC_COMMIT="" GATE_CI_REC_TREE="" GATE_CI_REC_LEGS=""
+GATE_CI_REC_SHARDS="" GATE_CI_REC_SCOPE="" GATE_CI_REC_RC="" GATE_CI_REC_RUN=""
+GATE_CI_REC_ATTEMPT="" GATE_CI_REC_EPOCH="" GATE_CI_REC_WHY=""
+gate_ci_record_parse() {
+    local line=${1:-} i tok name value
+    local -a toks
+    local names="schema at commit tree legs shards scope rc run attempt where"
+    GATE_CI_REC_AT="" GATE_CI_REC_COMMIT="" GATE_CI_REC_TREE="" GATE_CI_REC_LEGS=""
+    GATE_CI_REC_SHARDS="" GATE_CI_REC_SCOPE="" GATE_CI_REC_RC="" GATE_CI_REC_RUN=""
+    GATE_CI_REC_ATTEMPT="" GATE_CI_REC_EPOCH="" GATE_CI_REC_WHY=""
+    case "$line" in
+    *$'\t'* | *$'\n'* | *$'\r'* | "" | " "* | *" " | *"  "*)
+        GATE_CI_REC_WHY="the line is empty or is not eleven fields one space apart"
+        return 2
+        ;;
+    esac
+    read -r -a toks <<<"$line"
+    if [ "${#toks[@]}" -ne 11 ]; then
+        GATE_CI_REC_WHY="${#toks[@]} fields where the grammar has 11 (${names})"
+        return 2
+    fi
+    i=0
+    for name in $names; do
+        tok=${toks[$i]}
+        i=$((i + 1))
+        case "$tok" in
+        "${name}="*) value=${tok#"${name}="} ;;
+        *)
+            GATE_CI_REC_WHY="field ${i} is '${tok}' where the grammar has '${name}='"
+            return 2
+            ;;
+        esac
+        case "$name" in
+        schema) [ "$value" = "$GATE_CI_SCHEMA" ] || { GATE_CI_REC_WHY="schema='${value}', not ${GATE_CI_SCHEMA}"; return 2; } ;;
+        at)
+            GATE_CI_REC_EPOCH=$(gate_ci_epoch "$value") || { GATE_CI_REC_WHY="at='${value}' is not a UTC YYYYMMDDTHHMMSSZ stamp"; return 2; }
+            GATE_CI_REC_AT=$value
+            ;;
+        commit) [[ $value =~ ^[0-9a-f]{40}$ ]] || { GATE_CI_REC_WHY="commit='${value}' is not 40 hex"; return 2; }; GATE_CI_REC_COMMIT=$value ;;
+        tree) [[ $value =~ ^[0-9a-f]{40}$ ]] || { GATE_CI_REC_WHY="tree='${value}' is not 40 hex"; return 2; }; GATE_CI_REC_TREE=$value ;;
+        legs) [[ $value =~ ^[A-Za-z0-9:_.-]+(/1)?(,[A-Za-z0-9:_.-]+(/1)?)*$ ]] || { GATE_CI_REC_WHY="legs='${value}' is not a comma list of units, each optionally '/1'"; return 2; }; GATE_CI_REC_LEGS=$value ;;
+        shards) [[ $value =~ ^(0|[1-9][0-9]*)$ ]] || { GATE_CI_REC_WHY="shards='${value}' is not a decimal"; return 2; }; GATE_CI_REC_SHARDS=$value ;;
+        scope) [[ $value =~ ^(whole|pr)$ ]] || { GATE_CI_REC_WHY="scope='${value}' is neither whole nor pr"; return 2; }; GATE_CI_REC_SCOPE=$value ;;
+        rc) [[ $value =~ ^(0|[1-9][0-9]*)$ ]] || { GATE_CI_REC_WHY="rc='${value}' is not a decimal with no leading zero"; return 2; }; GATE_CI_REC_RC=$value ;;
+        run) [[ $value =~ ^[1-9][0-9]*$ ]] || { GATE_CI_REC_WHY="run='${value}' is not a run id"; return 2; }; GATE_CI_REC_RUN=$value ;;
+        attempt) [[ $value =~ ^[1-9][0-9]*$ ]] || { GATE_CI_REC_WHY="attempt='${value}' is not an attempt number"; return 2; }; GATE_CI_REC_ATTEMPT=$value ;;
+        where) [ "$value" = "ci" ] || { GATE_CI_REC_WHY="where='${value}', not ci"; return 2; } ;;
+        esac
+    done
+    return 0
+}
+
+# gate_ci_fetch <run id> <sink dir> — the LATEST attempt's record, downloaded.
+# Stdout: the attempt number, exit 0; the record is then at
+# `<sink>/record-<run id>/gate_verdict.txt`. On anything else stdout is the
+# REASON and the exit says which class: 1 the run answered and has no verdict
+# to read (not completed, no artifact, an artifact with no record), 2 the
+# reader could not look (no `gh`, `gh` failing, an answer it cannot read).
+# Called in a substitution, so the reason travels on stdout, never a global.
+gate_ci_fetch() {
+    local runid=$1 sink=$2 view st attempt name dlerr rec
+    if ! command -v gh >/dev/null 2>&1; then
+        printf '%s\n' "no \`gh\` on PATH — the record is a workflow artifact and \`gh\` is its one reader"
+        return 2
+    fi
+    mkdir -p "$sink" || {
+        printf '%s\n' "could not make ${sink} to download the record into"
+        return 2
+    }
+    if ! view=$(gh run view "$runid" --json status,attempt --jq '"\(.status) \(.attempt)"' \
+        2>"${sink}/gh-run-view-${runid}.err" </dev/null); then
+        printf '%s\n' "\`gh run view ${runid}\` did not answer (${sink}/gh-run-view-${runid}.err) — no such run, or gh is failing"
+        return 2
+    fi
+    st=${view%% *}
+    attempt=${view##* }
+    if ! [[ $attempt =~ ^[1-9][0-9]*$ ]] || [ -z "$st" ]; then
+        printf '%s\n' "\`gh run view ${runid}\` answered '${view}', which names no status and attempt"
+        return 2
+    fi
+    if [ "$st" != "completed" ]; then
+        printf '%s\n' "run ${runid} has not completed (status '${st}', attempt ${attempt}) — its record is written by the run's last job"
+        return 1
+    fi
+    name=$(gate_ci_artifact_name "$attempt")
+    rm -rf "${sink}/record-${runid}"
+    if ! gh run download "$runid" --name "$name" --dir "${sink}/record-${runid}" \
+        >"${sink}/gh-run-download-${runid}.log" 2>&1 </dev/null; then
+        dlerr=$(cat "${sink}/gh-run-download-${runid}.log" 2>/dev/null || true)
+        case "$dlerr" in
+        *"no valid artifacts found"* | *"no artifact matches"*)
+            printf '%s\n' "run ${runid} attempt ${attempt} (the latest) carries no ${name} artifact — a run that published no record measured nothing this reader can see"
+            return 1
+            ;;
+        esac
+        printf '%s\n' "\`gh run download ${runid} --name ${name}\` failed for a reason that is not a missing artifact (${sink}/gh-run-download-${runid}.log)"
+        return 2
+    fi
+    rec="${sink}/record-${runid}/${GATE_CI_RECORD}"
+    if [ ! -s "$rec" ]; then
+        printf '%s\n' "run ${runid}'s ${name} artifact is present and holds no ${GATE_CI_RECORD}"
+        return 1
+    fi
+    printf '%s\n' "$attempt"
+}
+
+# gate_ci_legs_expand <legs> <listing file> — the record's UNITS expanded
+# through this checkout's `--list-legs` (column 4), comma-joined on stdout,
+# the one-pass unit's suite leg spelled `<leg>/1`. Exit 1 with the REASON on
+# stdout when a unit is not in the listing or `/1` sits on a unit that is not
+# GATE_ONEPASS_UNIT — one pass is sanctioned for that unit alone.
+gate_ci_legs_expand() {
+    local legs=$1 listing=$2 item unit one members m out="" seen=","
+    for item in $(printf '%s' "$legs" | tr ',' ' '); do
+        unit=${item%/1}
+        one=0
+        [ "$unit" = "$item" ] || one=1
+        members=$(awk -F'\t' -v u="$unit" '$1 == u { v = $4 } END { print v }' "$listing")
+        if [ -z "$members" ]; then
+            printf '%s\n' "the record names unit '${unit}', which this checkout's listing does not declare"
+            return 1
+        fi
+        if [ "$one" = "1" ]; then
+            case ",${members}," in
+            *",${GATE_ONEPASS_UNIT},"*) ;;
+            *)
+                printf '%s\n' "the record ran unit '${unit}' at one pass, and one pass is sanctioned for ${GATE_ONEPASS_UNIT} alone"
+                return 1
+                ;;
+            esac
+        fi
+        for m in $(printf '%s' "$members" | tr ',' ' '); do
+            [ "$one" = "1" ] && [ "$m" = "$GATE_ONEPASS_UNIT" ] && m="${GATE_ONEPASS_UNIT}/1"
+            case "$seen" in *",${m},"*) continue ;; esac
+            seen="${seen}${m},"
+            out="${out}${out:+,}${m}"
+        done
+    done
+    printf '%s\n' "$out"
+}
+
+# gate_ci_record_judge <record line> <run id> <attempt> <listing file> — every
+# refusal a parsed record can earn, in the order a reader can act on them.
+# Stdout: the EXPANDED legs, exit 0. Otherwise the reason on stdout, exit 1.
+# Run in THIS checkout (the commit, the tree and the ancestry are read here).
+gate_ci_record_judge() {
+    local line=$1 runid=$2 attempt=$3 listing=$4 now age derived expanded required leg
+    if ! gate_ci_record_parse "$line"; then
+        printf '%s\n' "run ${runid}'s record will not parse (${GATE_CI_REC_WHY}) — an unreadable record banked would be a guess: ${line:-<empty>}"
+        return 1
+    fi
+    if [ "$GATE_CI_REC_RUN" != "$runid" ]; then
+        printf '%s\n' "run ${runid}'s record names run=${GATE_CI_REC_RUN} — a record for another run is not this run's verdict"
+        return 1
+    fi
+    if [ "$GATE_CI_REC_ATTEMPT" != "$attempt" ]; then
+        printf '%s\n' "run ${runid}'s latest attempt is ${attempt} and its record says attempt=${GATE_CI_REC_ATTEMPT} — a record from another attempt is not the latest verdict"
+        return 1
+    fi
+    if [ "$GATE_CI_REC_SCOPE" != "whole" ]; then
+        printf '%s\n' "run ${runid} ran NARROWED (scope=${GATE_CI_REC_SCOPE}) — a narrowed run vouches for no tree"
+        return 1
+    fi
+    if [ "$GATE_CI_REC_RC" != "0" ]; then
+        printf '%s\n' "run ${runid} attempt ${attempt} is RED (rc=${GATE_CI_REC_RC}) — a red run is not a verdict"
+        return 1
+    fi
+    now=$(date -u +%s)
+    age=$((now - GATE_CI_REC_EPOCH))
+    if [ "$((-age))" -gt "$GATE_CI_SKEW" ]; then
+        printf '%s\n' "run ${runid}'s record is stamped IN THE FUTURE — at=${GATE_CI_REC_AT}, $((-age)) s ahead of this clock (the skew allowed is ${GATE_CI_SKEW} s)"
+        return 1
+    fi
+    if [ "$age" -gt "$GATE_CI_MAX_AGE" ]; then
+        printf '%s\n' "run ${runid}'s record is OLDER THAN 24 h — at=${GATE_CI_REC_AT}, $((age / 3600)) h ago; re-run it or push again"
+        return 1
+    fi
+    if ! git cat-file -e "${GATE_CI_REC_COMMIT}^{commit}" 2>/dev/null; then
+        printf '%s\n' "run ${runid} measured commit ${GATE_CI_REC_COMMIT:0:12}, which this checkout does not have — fetch it first"
+        return 1
+    fi
+    derived=$(gate_measured_tree_of "$GATE_CI_REC_COMMIT" 2>/dev/null) || derived=""
+    if [ "$derived" != "$GATE_CI_REC_TREE" ]; then
+        printf '%s\n' "run ${runid} measured tree ${GATE_CI_REC_TREE:0:12}, and commit ${GATE_CI_REC_COMMIT:0:12}'s measured tree is ${derived:0:12} — the run measured bytes the commit does not carry (main moved under the pull request: fold main in and push again)"
+        return 1
+    fi
+    if ! git merge-base --is-ancestor "$GATE_CI_REC_COMMIT" HEAD 2>/dev/null; then
+        printf '%s\n' "run ${runid} measured ${GATE_CI_REC_COMMIT:0:12}, which is neither HEAD nor an ancestor of it — a row for a tree this line of history does not contain would misattribute it"
+        return 1
+    fi
+    if ! expanded=$(gate_ci_legs_expand "$GATE_CI_REC_LEGS" "$listing"); then
+        printf '%s\n' "$expanded"
+        return 1
+    fi
+    required=$(gate_full_legs)
+    for leg in $(printf '%s' "$required" | tr ',' ' '); do
+        case ",${expanded}," in
+        *",${leg},"*) continue ;;
+        *",${leg}/1,"*) [ "$leg" = "$GATE_ONEPASS_UNIT" ] && continue ;;
+        esac
+        printf '%s\n' "run ${runid}'s units do not cover this gate's full leg set — missing '${leg}' (units: ${GATE_CI_REC_LEGS})"
+        return 1
+    done
+    printf '%s\n' "$expanded"
+}
+
+# gate_ci_listing <file> — this checkout's `--list-legs`, REDIRECTED to a file
+# and never captured through a pipe (the gate refuses a piped stdout). Exit
+# non-zero when the listing will not answer.
+gate_ci_listing() {
+    if command -v gate_list_legs >/dev/null 2>&1; then
+        gate_list_legs >"$1" 2>/dev/null
+    else
+        ./scripts/check.sh --list-legs >"$1" 2>/dev/null </dev/null
+    fi
+    [ -s "$1" ]
+}
+
+# ---- the CI INTENT row --------------------------------------------------------
+#
+# `pm_push.sh --pr` pushes a `pm/*` train branch with NO local verdict: the
+# pull request's CI run is the measurement, and `--ci-verdict` writes the row
+# afterwards. Before the push it appends ONE line here, and the line is
+# deliberately NOT a verdict:
+#
+#   intent=ci run=pending tree=<40 hex> commit=<40 hex> branch=<pm/...>
+#     at=<YYYYMMDDTHHMMSSZ> epoch=<n> sanction=<the typed sanction, last>
+#
+# It starts `intent=`, never `v1 `, and carries `tree=<hash>` rather than
+# ` <hash> full `, so `gate_ledger_lookup` (`^v1 ` rows by ` <tree> full `), the
+# docs-only walk and the drive-row readers never take it for anything of theirs.
+#
+# ITS ONE READER IS `scripts/githooks/pre-push`, and the honour is the HOOK's:
+# the hook sees the pushed REFS, so it honours an intent only for a push whose
+# every ref is `refs/heads/pm/*`, with `DJB_PUSH_INTENT=ci` in its environment
+# (which `pm_push.sh --pr` exports on the one push it makes) and a row here for
+# exactly the pushed tree, no older than GATE_INTENT_MAX_AGE. `gate_has_green`
+# is NOT widened: an intent never vouches for main, and the function every
+# other wall asks stays a question about verdicts.
+#: How long an intent row stands in for a verdict at the pre-push, in seconds.
+GATE_INTENT_MAX_AGE="${DJB_GATE_INTENT_MAX_AGE:-900}"
+
+# gate_ledger_intent_record <tree> <commit> <branch> <sanction> — one line,
+# appended. Exit 1 (nothing written) on any field that would not parse.
+gate_ledger_intent_record() {
+    local tree=$1 commit=$2 branch=$3 sanction path now
+    sanction=$(printf '%s' "${4:-}" | tr '\n' ' ')
+    [[ $tree =~ ^[0-9a-f]{40}$ ]] && [[ $commit =~ ^[0-9a-f]{40}$ ]] || return 1
+    case "$branch" in pm/?*) ;; *) return 1 ;; esac
+    case "$branch" in *[[:space:]]*) return 1 ;; esac
+    [[ $sanction =~ ^[^:]+:\ .+$ ]] || return 1
+    path=$(gate_ledger_path) || return 1
+    now=$(date -u +%s)
+    printf 'intent=ci run=pending tree=%s commit=%s branch=%s at=%s epoch=%s sanction=%s\n' \
+        "$tree" "$commit" "$branch" "$(gate_ci_stamp_of "$now")" "$now" "$sanction" >>"$path"
+}
+
+# gate_ledger_intent_lookup <tree> → the newest intent row for this tree on
+# stdout, exit 0, when it is within the window; exit 1 otherwise, with a note
+# on stderr when a row exists and is outside it.
+gate_ledger_intent_lookup() {
+    local tree=$1 path line epoch now age
+    path=$(gate_ledger_path 2>/dev/null) || return 1
+    [ -f "$path" ] || return 1
+    line=$(grep -F " tree=${tree} " "$path" | grep '^intent=ci run=pending ' | tail -1) || true
+    [ -n "$line" ] || return 1
+    epoch=$(printf '%s\n' "$line" | sed -n 's/.* epoch=\([0-9][0-9]*\) .*/\1/p')
+    [ -n "$epoch" ] || return 1
+    now=$(date -u +%s)
+    age=$((now - epoch))
+    if [ "$age" -lt "-${GATE_CI_SKEW}" ] || [ "$age" -gt "$GATE_INTENT_MAX_AGE" ]; then
+        echo "note: the CI intent row for tree ${tree} is ${age} s old (the window is ${GATE_INTENT_MAX_AGE} s) — not honoured." >&2
+        return 1
+    fi
+    printf '%s\n' "$line"
+}
+
+# ---- the PUSH-TO-MAIN CONSULT: pay once -----------------------------------
+#
+# gate_ci_consult <sha> — CI's `derive` job asks it on a push to main: did a
+# pull-request run already measure THIS tree green? Exactly one line on stdout,
+# one of three forms, and ALWAYS exit 0:
+#
+#   consult: honoured run=<id> attempt=<n> tree=<t>
+#   consult: measure — <why>                    (tree mismatch, stale, scope=pr,
+#                                                red, no candidate, …)
+#   consult: measure — could not look (<why>)
+#
+# IT NEVER REFUSES, because measuring is the safe answer: a tree pushed by the
+# fallback bank has no CI record and is simply measured again. And it is NEVER
+# `honoured` for a record `--ci-verdict` would refuse — the same fetch and the
+# same judge — plus the one question only a push-to-main can ask: the record's
+# tree is THIS checkout's measured tree (a GitHub merge commit over a moved
+# main has new bytes and is measured; one whose tree equals it is the same
+# bytes, and honoured).
+#
+# CANDIDATES: the completed `pull_request` runs of GATE_CI_WORKFLOW whose head is
+# the pushed sha, and those of every pull request GitHub associates with it —
+# newest run id first. The first that judges green and matches the tree wins;
+# with none, the NEWEST candidate's reason is the line (it is the one a reader
+# can act on).
+#
+# DOES NOT COVER: the GitHub API's rate limit (a refusal there is could-not-look,
+# which measures); a pull request GitHub does not associate with the commit
+# (measured); a checkout too shallow to hold the pull request's head commit
+# (`commit unknown` — measured; `derive` must fetch deep enough to see it).
+GATE_CI_CONSULT_RUN=""
+gate_ci_consult() {
+    local sha=${1:-} sink mytree heads h runs id listing out rc first="" attempt verdict line
+    GATE_CI_CONSULT_RUN=""
+    if ! [[ $sha =~ ^[0-9a-f]{40}$ ]]; then
+        echo "consult: measure — could not look (the consult takes a 40-hex sha; got '${sha}')"
+        return 0
+    fi
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "consult: measure — could not look (no \`gh\` on PATH)"
+        return 0
+    fi
+    sink=$(mktemp -d "${TMPDIR:-/tmp}/djb-ci-consult.XXXXXX") || {
+        echo "consult: measure — could not look (no scratch directory)"
+        return 0
+    }
+    if ! mytree=$(gate_measured_tree 2>/dev/null) || [ -z "$mytree" ]; then
+        echo "consult: measure — could not look (this checkout's measured tree would not read)"
+        return 0
+    fi
+    if ! heads=$(gh api "repos/{owner}/{repo}/commits/${sha}/pulls" --jq '.[].head.sha' \
+        2>"${sink}/gh-api-pulls.err" </dev/null); then
+        echo "consult: measure — could not look (\`gh api\` for the pull requests of ${sha:0:12} did not answer: ${sink}/gh-api-pulls.err)"
+        return 0
+    fi
+    runs=""
+    for h in $sha $heads; do
+        [[ $h =~ ^[0-9a-f]{40}$ ]] || continue
+        if ! out=$(gh api "repos/{owner}/{repo}/actions/workflows/${GATE_CI_WORKFLOW}/runs?event=pull_request&status=completed&head_sha=${h}" \
+            --jq '.workflow_runs[].id' 2>"${sink}/gh-api-runs.err" </dev/null); then
+            echo "consult: measure — could not look (\`gh api\` for the runs of ${h:0:12} did not answer: ${sink}/gh-api-runs.err)"
+            return 0
+        fi
+        runs="${runs} ${out}"
+    done
+    runs=$(printf '%s\n' $runs | awk '/^[1-9][0-9]*$/ && !($0 in s) { s[$0] = 1; print }' | sort -rn)
+    if [ -z "$runs" ]; then
+        echo "consult: measure — no candidate (no completed pull_request run of ${GATE_CI_WORKFLOW} for ${sha:0:12} or a pull request associated with it)"
+        return 0
+    fi
+    listing="${sink}/listlegs.tsv"
+    if ! gate_ci_listing "$listing"; then
+        echo "consult: measure — could not look (./scripts/check.sh --list-legs would not answer; the record's units cannot be read without it)"
+        return 0
+    fi
+    for id in $runs; do
+        rc=0
+        attempt=$(gate_ci_fetch "$id" "$sink") || rc=$?
+        if [ "$rc" != "0" ]; then
+            if [ "$rc" = "2" ]; then
+                [ -n "$first" ] || first="could not look (${attempt})"
+            else
+                [ -n "$first" ] || first="$attempt"
+            fi
+            continue
+        fi
+        rc=0
+        line=$(awk 'NF { print; exit }' "${sink}/record-${id}/${GATE_CI_RECORD}")
+        verdict=$(gate_ci_record_judge "$line" "$id" "$attempt" "$listing") || rc=$?
+        if [ "$rc" != "0" ]; then
+            [ -n "$first" ] || first="$verdict"
+            continue
+        fi
+        # The judge ran in a substitution; its parse is re-read HERE, where the
+        # globals survive, and it cannot fail on a line the judge just passed.
+        gate_ci_record_parse "$line" || continue
+        if [ "$GATE_CI_REC_TREE" != "$mytree" ]; then
+            [ -n "$first" ] || first="run ${id} measured tree ${GATE_CI_REC_TREE:0:12} and this checkout measures ${mytree:0:12} — the pushed bytes are not the bytes the run measured"
+            continue
+        fi
+        GATE_CI_CONSULT_RUN=$id
+        echo "consult: honoured run=${id} attempt=${attempt} tree=${mytree}"
+        return 0
+    done
+    echo "consult: measure — ${first}"
+    return 0
+}
+
+# ---- the NIGHTLY LEAK PROOF, read ----------------------------------------------
+#
+# gate_nightly_read [<artifact dir>] — the nightly workflow's `leak_proof.txt`:
+#
+#   schema=leak-proof/1 at=<YYYYMMDDTHHMMSSZ> commit=<40 hex> tree=<40 hex>
+#     seed=<n> pass1=<…> pass2=<…> map=<…> rc=<n> run=<id> attempt=<n>
+#     where=nightly
+#
+# read into the one form a bank row carries, on stdout, exit 0:
+#
+#   nightly:<at> tree=<12 hex> rc=<n>    a nightly no older than 24 h (any rc —
+#                                        report-only; the teeth are at prod)
+#   nightly:stale:<at>                   one older than GATE_CI_MAX_AGE
+#   nightly:none                         no artifact (an empty argument)
+#
+# UNREADABLE IS NOT NONE: a directory that was handed in and holds no record,
+# or a record that will not parse, or a stamp in the future, is exit 2 with the
+# reason on stderr — the caller asked about an artifact that exists, and
+# "there was none" would be a lie about it.
+gate_nightly_read() {
+    local dir=${1:-} rec line tok name value now age epoch
+    local -a toks
+    local schema="" at="" commit="" tree="" seed="" pass1="" pass2="" map="" rc="" run="" attempt="" where=""
+    if [ -z "$dir" ]; then
+        echo "nightly:none"
+        return 0
+    fi
+    rec="${dir}/leak_proof.txt"
+    if [ ! -d "$dir" ]; then
+        echo "nightly: unreadable — ${dir} is not a directory" >&2
+        return 2
+    fi
+    if [ ! -s "$rec" ]; then
+        echo "nightly: unreadable — ${dir} holds no leak_proof.txt (or an empty one)" >&2
+        return 2
+    fi
+    line=$(awk 'NF { print; exit }' "$rec")
+    # AN ARRAY, NEVER AN UNQUOTED WORD LIST: a token carrying `*` would glob.
+    read -r -a toks <<<"$line"
+    for tok in ${toks[@]+"${toks[@]}"}; do
+        case "$tok" in *=*) ;; *)
+            echo "nightly: unreadable — '${tok}' is not name=value: ${line}" >&2
+            return 2
+            ;;
+        esac
+        name=${tok%%=*}
+        value=${tok#*=}
+        case "$name" in
+        schema | at | commit | tree | seed | pass1 | pass2 | map | rc | run | attempt | where)
+            if [ -n "${!name}" ]; then
+                echo "nightly: unreadable — '${name}=' appears twice: ${line}" >&2
+                return 2
+            fi
+            printf -v "$name" '%s' "$value"
+            ;;
+        *)
+            echo "nightly: unreadable — '${name}=' is not a field of leak-proof/1: ${line}" >&2
+            return 2
+            ;;
+        esac
+    done
+    if [ "$schema" != "leak-proof/1" ] || [ "$where" != "nightly" ] ||
+        ! [[ $commit =~ ^[0-9a-f]{40}$ ]] || ! [[ $tree =~ ^[0-9a-f]{40}$ ]] ||
+        ! [[ $rc =~ ^(0|[1-9][0-9]*)$ ]] || ! [[ $run =~ ^[1-9][0-9]*$ ]] ||
+        ! [[ $attempt =~ ^[1-9][0-9]*$ ]] || [ -z "$seed" ] || [ -z "$pass1" ] ||
+        [ -z "$pass2" ] || [ -z "$map" ] || ! epoch=$(gate_ci_epoch "$at"); then
+        echo "nightly: unreadable — the record is not leak-proof/1 (schema, stamp, hex, rc, run, attempt, where or a missing field): ${line}" >&2
+        return 2
+    fi
+    now=$(date -u +%s)
+    age=$((now - epoch))
+    if [ "$((-age))" -gt "$GATE_CI_SKEW" ]; then
+        echo "nightly: unreadable — at=${at} is $((-age)) s in the future of this clock" >&2
+        return 2
+    fi
+    if [ "$age" -gt "$GATE_CI_MAX_AGE" ]; then
+        echo "nightly:stale:${at}"
+        return 0
+    fi
+    echo "nightly:${at} tree=${tree:0:12} rc=${rc}"
+}
+
+# ---- the NIGHTLY LEAK PROOF, written, fetched and composed ------------------
+#
+# THE ONE WRITER of the grammar `gate_nightly_read` reads, and the two callers
+# that turn a workflow artifact into something a bank row or the fold can use.
+# `scripts/pm_push.sh --proof` is the writer's one caller: on the nightly
+# runner (`where=nightly`, the run and attempt GitHub named) and on a bank's
+# acceptance box (`where=acceptance run=0 attempt=0` — no workflow run, so the
+# two decimals say "none" in the grammar's own alphabet rather than leaving a
+# field out: both places write THE SAME FIELD SET, which is what lets one
+# function be both).
+#
+#: The workflow whose scheduled and dispatched runs write the record.
+GATE_NIGHTLY_WORKFLOW="nightly-proof.yml"
+#: The artifact it publishes, and the record inside it (the map rides beside it).
+GATE_NIGHTLY_ARTIFACT="nightly-leak-proof"
+GATE_NIGHTLY_RECORD="leak_proof.txt"
+GATE_NIGHTLY_SCHEMA="leak-proof/1"
+#: The branch whose runs are read — the default branch, where `schedule:` runs.
+GATE_NIGHTLY_BRANCH="main"
+#: The `gh` the fetch runs. A caller with its own seam (the fold's FOLD_GH)
+#: sets this; nothing reads it from the environment.
+GATE_NIGHTLY_GH="gh"
+
+# gate_nightly_line <at> <commit> <tree> <seed> <pass1> <pass2> <map> <rc>
+#   <run> <attempt> <where> — the record, one line on stdout, exit 0; exit 2
+#   and nothing on stdout when a field is out of grammar (the reason on stderr).
+#
+# `pass1=` `pass2=` `map=` are a decimal exit status or `-` (the step did not
+# run: a collection that failed runs neither pass, a red pass 1 writes no map).
+# `rc=` is the proof's own verdict: 0 both passes green, 1 a pass red, 2 the
+# proof could not look (it never reached a pass). A `where=nightly` record
+# names a real run (`run=`/`attempt=` from 1); any other `where=` writes 0 0.
+gate_nightly_line() {
+    local line re_st='^(0|[1-9][0-9]*|-)$' re_dec='^(0|[1-9][0-9]*)$'
+    if [ "$#" -ne 11 ]; then
+        echo "note: gate_nightly_line takes 11 fields; got $#." >&2
+        return 2
+    fi
+    if ! gate_ci_epoch "$1" >/dev/null ||
+        ! [[ $2 =~ ^[0-9a-f]{40}$ ]] || ! [[ $3 =~ ^[0-9a-f]{40}$ ]] ||
+        ! [[ $4 =~ ^[0-9]+$ ]] || ! [[ $5 =~ $re_st ]] || ! [[ $6 =~ $re_st ]] ||
+        ! [[ $7 =~ $re_st ]] || ! [[ $8 =~ ^[012]$ ]] ||
+        ! [[ $9 =~ $re_dec ]] || ! [[ ${10} =~ $re_dec ]] ||
+        ! [[ ${11} =~ ^(nightly|acceptance)$ ]]; then
+        echo "note: the leak-proof record would not parse, so NONE was written:" >&2
+        echo "  at=$1 commit=$2 tree=$3 seed=$4 pass1=$5 pass2=$6 map=$7 rc=$8 run=$9 attempt=${10} where=${11}" >&2
+        return 2
+    fi
+    if [ "${11}" = "nightly" ] && { [ "$9" = "0" ] || [ "${10}" = "0" ]; }; then
+        echo "note: a where=nightly record names the workflow run that wrote it; run=$9 attempt=${10} name none." >&2
+        return 2
+    fi
+    line="schema=${GATE_NIGHTLY_SCHEMA} at=$1 commit=$2 tree=$3 seed=$4 pass1=$5 pass2=$6 map=$7 rc=$8 run=$9 attempt=${10} where=${11}"
+    printf '%s\n' "$line"
+}
+
+# gate_nightly_fetch <sink> — the LATEST completed nightly run on
+# GATE_NIGHTLY_BRANCH, its artifact downloaded to `<sink>/nightly-<run>`.
+# Stdout: `<run> <attempt> <dir>`, exit 0. Otherwise stdout is the REASON and
+# the exit says which class: 1 there is no nightly to read (no completed run,
+# no artifact, a record from an earlier attempt), 2 could not look (no `gh`,
+# `gh` failing, an answer it cannot read). `gate_ci_fetch`'s shape, for the
+# nightly's one fixed artifact name.
+#
+# THE LATEST, NEVER THE LATEST GREEN: the nightly is a report, and a red last
+# night is the thing to say — a reader that walked back to an older green would
+# print a green over the run that went red.
+gate_nightly_fetch() {
+    local sink=$1 gh=$GATE_NIGHTLY_GH run view st attempt dir rec recattempt dlerr
+    if ! command -v "$gh" >/dev/null 2>&1; then
+        printf '%s\n' "no \`${gh}\` on PATH — the nightly's record is a workflow artifact and \`gh\` is its one reader"
+        return 2
+    fi
+    mkdir -p "$sink" || {
+        printf '%s\n' "could not make ${sink} to download the record into"
+        return 2
+    }
+    if ! run=$("$gh" run list --workflow "$GATE_NIGHTLY_WORKFLOW" --branch "$GATE_NIGHTLY_BRANCH" \
+        --status completed --limit 1 --json databaseId --jq '.[0].databaseId // empty' \
+        2>"${sink}/gh-nightly-list.err" </dev/null); then
+        printf '%s\n' "\`gh run list --workflow ${GATE_NIGHTLY_WORKFLOW}\` did not answer (${sink}/gh-nightly-list.err)"
+        return 2
+    fi
+    if [ -z "$run" ]; then
+        printf '%s\n' "no completed ${GATE_NIGHTLY_WORKFLOW} run on ${GATE_NIGHTLY_BRANCH}"
+        return 1
+    fi
+    if ! [[ $run =~ ^[1-9][0-9]*$ ]]; then
+        printf '%s\n' "\`gh run list\` answered '${run}', which is not a run id"
+        return 2
+    fi
+    if ! view=$("$gh" run view "$run" --json status,attempt --jq '"\(.status) \(.attempt)"' \
+        2>"${sink}/gh-nightly-view.err" </dev/null); then
+        printf '%s\n' "\`gh run view ${run}\` did not answer (${sink}/gh-nightly-view.err)"
+        return 2
+    fi
+    st=${view%% *}
+    attempt=${view##* }
+    if ! [[ $attempt =~ ^[1-9][0-9]*$ ]] || [ "$st" != "completed" ]; then
+        printf '%s\n' "\`gh run view ${run}\` answered '${view}', not a completed run and its attempt"
+        return 2
+    fi
+    dir="${sink}/nightly-${run}"
+    rm -rf "$dir"
+    if ! "$gh" run download "$run" --name "$GATE_NIGHTLY_ARTIFACT" --dir "$dir" \
+        >"${sink}/gh-nightly-download.log" 2>&1 </dev/null; then
+        dlerr=$(cat "${sink}/gh-nightly-download.log" 2>/dev/null || true)
+        case "$dlerr" in
+        *"no valid artifacts found"* | *"no artifact matches"*)
+            printf '%s\n' "nightly run ${run} (attempt ${attempt}) carries no ${GATE_NIGHTLY_ARTIFACT} artifact"
+            return 1
+            ;;
+        esac
+        printf '%s\n' "\`gh run download ${run} --name ${GATE_NIGHTLY_ARTIFACT}\` failed for a reason that is not a missing artifact (${sink}/gh-nightly-download.log)"
+        return 2
+    fi
+    rec="${dir}/${GATE_NIGHTLY_RECORD}"
+    # THE LATEST ATTEMPT'S RECORD OR NONE. The artifact name carries no attempt,
+    # so the record's own `attempt=` is what says whose it is — the consumer's
+    # N2257 (a reader that took an earlier attempt's green) is refused here.
+    recattempt=$(awk 'NF { for (i = 1; i <= NF; i++) if ($i ~ /^attempt=/) { sub(/^attempt=/, "", $i); print $i; exit } exit }' "$rec" 2>/dev/null || true)
+    if [ -s "$rec" ] && [ "$recattempt" != "$attempt" ]; then
+        printf '%s\n' "nightly run ${run}'s record says attempt=${recattempt:-<none>} and the latest attempt is ${attempt} — an earlier attempt's record is not the run's"
+        return 1
+    fi
+    printf '%s %s %s\n' "$run" "$attempt" "$dir"
+}
+
+# gate_nightly_source <sink> [<bank tree>] — what a bank row's `leak-proof=` field carries
+# under `--leak-proof nightly`, on stdout line 1 (one of the three forms
+# `gate_nightly_read` prints), and ONE human line on stdout line 2: the source
+# line the bank prints, in one of FOUR forms —
+#
+#   leak-proof: nightly run <id> attempt <n> green — <form>
+#     … and, when the night measured ANOTHER tree than the bank's:
+#     … green — <form> (measured <the night's 12 hex>, not this bank's <12 hex>: report-only)
+#   WARNING: leak-proof: the latest nightly (run <id>) is RED (rc=<n>) — <form> …
+#   WARNING: leak-proof: the latest nightly (run <id>) is older than 24 h — <form> …
+#   WARNING: leak-proof: no nightly leak proof (<why>) — nightly:none …
+#
+# ALWAYS EXIT 0: the bank honours every form (report-only) and the TEETH are at
+# prod, which refuses without a green nightly ≤ 24 h. So a nightly nobody could
+# read — no gh, gh failing, a record that will not parse — is `nightly:none`
+# with the reason in the warning: nothing stands behind the row, and the line
+# says why rather than claiming there was never a run.
+gate_nightly_source() {
+    local sink=$1 bank=${2:-} got rc=0 run attempt dir form why teeth ntree note=""
+    teeth="report-only: this bank is honoured; the deploy to prod refuses without a green nightly ≤ 24 h"
+    got=$(gate_nightly_fetch "$sink") || rc=$?
+    if [ "$rc" != "0" ]; then
+        if [ "$rc" = "2" ]; then why="could not look: ${got}"; else why=$got; fi
+        printf '%s\n' "nightly:none"
+        printf '%s\n' "WARNING: leak-proof: no nightly leak proof (${why}) — nightly:none; ${teeth}"
+        return 0
+    fi
+    run=${got%% *}
+    attempt=${got#* }
+    attempt=${attempt%% *}
+    dir=${got#* * }
+    rc=0
+    form=$(gate_nightly_read "$dir" 2>"${sink}/nightly-read.err") || rc=$?
+    if [ "$rc" != "0" ] || [ -z "$form" ]; then
+        why=$(tr '\n' ' ' <"${sink}/nightly-read.err" 2>/dev/null || true)
+        printf '%s\n' "nightly:none"
+        printf '%s\n' "WARNING: leak-proof: no nightly leak proof (run ${run}'s record is unreadable: ${why% }) — nightly:none; ${teeth}"
+        return 0
+    fi
+    case "$form" in
+    nightly:stale:*)
+        printf '%s\n' "$form"
+        printf '%s\n' "WARNING: leak-proof: the latest nightly (run ${run}, attempt ${attempt}) is older than 24 h — ${form}; ${teeth}"
+        ;;
+    *" rc=0")
+        # GREEN ON ANOTHER TREE IS NOT PLAIN GREEN. The night measured main as
+        # it stood last night; the bank keys on its own tree. The row keeps the
+        # night's `tree=` (what was measured), and the line says the two differ.
+        ntree=${form#* tree=}
+        ntree=${ntree%% *}
+        if [ -n "$bank" ] && [ "$ntree" != "${bank:0:12}" ]; then
+            note=" (measured ${ntree}, not this bank's ${bank:0:12}: report-only)"
+        fi
+        printf '%s\n' "$form"
+        printf '%s\n' "leak-proof: nightly run ${run} attempt ${attempt} green — ${form}${note}"
+        ;;
+    *)
+        printf '%s\n' "$form"
+        printf '%s\n' "WARNING: leak-proof: the latest nightly (run ${run}, attempt ${attempt}) is RED (${form##* }) — ${form}; ${teeth}"
+        ;;
+    esac
+    return 0
+}
 
 # ---- the DOCS-ONLY push path ------------------------------------------------
 #
@@ -2372,6 +3325,32 @@ drive_ledger_last_for() {
     line=$(awk -v n="$name" '$1 == "v1" && $3 == "drive" && $5 == n { last = $0 } END { if (last != "") print last }' "$path")
     [ -n "$line" ] || return 1
     printf '%s\n' "$line"
+}
+
+# drive_ledger_green_at <name> <tree> → the most recent GREEN (`exit=0`) drive
+# row for this drive measured at <tree> (`tree=<tree>`), exit 0; 1 when none.
+#
+# NOT `drive_ledger_last_for`, whose question is "what did this drive last
+# key on" (the miss attributor's): the newest row by the clock says nothing
+# about whether the drive ran on THESE bytes, or ran green — a red run on
+# another tree after a loop would read as "ran", and the drives a loop ran
+# green on this exact tree would read as "not" when an older row sorts later.
+drive_ledger_green_at() {
+    local name=$1 tree=$2 path
+    [ -n "$name" ] && [ -n "$tree" ] || return 1
+    path=$(gate_ledger_path) || return 1
+    [ -f "$path" ] || return 1
+    awk -v n="$name" -v t="tree=${tree}" '
+        $1 == "v1" && $3 == "drive" && $5 == n {
+            green = 0; here = 0
+            for (i = 6; i <= NF; i++) {
+                if ($i == "exit=0") green = 1
+                if ($i == t) here = 1
+            }
+            if (green && here) last = $0
+        }
+        END { if (last == "") exit 1; print last }
+    ' "$path"
 }
 
 # drive_row_parts <row> — the `parts=` field's value, or nothing.

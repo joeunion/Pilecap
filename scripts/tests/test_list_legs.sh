@@ -11,7 +11,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: .github/workflows/ci.yml apps/conftest.py config/ docs/product/build-contract.md quality/ scripts/check.sh scripts/loop_tier.sh scripts/test.sh scripts/tests/fixtures/collection_world/ scripts/tests/test_loop_scope.sh scripts/tests/test_selftest_leg.sh scripts/verify_start.sh
+# drives: .github/workflows/ci.yml apps/conftest.py config/ docs/product/build-contract.md quality/ scripts/check.sh scripts/gate_member_durations.ci.json scripts/loop_tier.sh scripts/test.sh scripts/tests/fixtures/collection_world/ scripts/tests/test_loop_scope.sh scripts/tests/test_selftest_leg.sh scripts/verify_start.sh
 # cites: scripts/tests/test_shard_census.sh scripts/pytest_durations.json apps/example/services.py scripts/local
 # The drive for the gate's UNIT TABLE and for `./scripts/check.sh --list-legs`.
 #
@@ -1236,6 +1236,190 @@ case_list_legs_with_an_argument_is_exit_2() {
         ok "exit 2: $(sed -n 1p "${WORK}/arg.out")"
     else
         bad "exit ${rc} — a mistyped modifier was answered with something"
+    fi
+}
+
+# --- `--list-legs --ci`: the count CI multiplies by, derived ------------------
+#
+# WHAT IS UNDER DRIVE: the listing's one modifier. The SAME units in the SAME
+# order as the bare listing, one more column (`passes`), and a selftest shard
+# COUNT that is `ceil(sum / max(heaviest, 300 s))` over the table and the
+# population the selftest leg's own partition reads — asserted here against this
+# drive's own arithmetic over the committed table, and again over two planted
+# tables whose counts differ, so a count that stopped reading the table cannot
+# stay green by coincidence. NOT covered: whether the committed table is any
+# good (one green CI run) — `test_shard_census.sh` asks only that it is about
+# this population.
+
+#: expected_ci_count <table> <population-file> — the drive's own arithmetic:
+#: unmeasured members at the median of the measured ones, then
+#: ceil(sum / max(heaviest, 300)).
+expected_ci_count() {
+    python3 - "$1" "$2" <<'PYCOUNT'
+import json, math, sys
+table = json.load(open(sys.argv[1]))["members"]
+pop = [line.strip() for line in open(sys.argv[2]) if line.strip()]
+measured = sorted(table[m] for m in pop if m in table)
+if not measured:
+    med = 0
+elif len(measured) % 2:
+    med = measured[len(measured) // 2]
+else:
+    med = (measured[len(measured) // 2 - 1] + measured[len(measured) // 2]) // 2
+w = [table.get(m, med) for m in pop]
+print(max(1, math.ceil(sum(w) / max(max(w), 300))))
+PYCOUNT
+}
+
+#: The selftest population, as the leg walks it: the engine, then every drive
+#: the listing's `selftest` row composes.
+listing_population() {
+    awk -F'\t' '$1 == "selftest" { n = split($4, m, ","); for (i = 1; i <= n; i++) print (m[i] == "selftest" ? "house-rules-engine" : m[i]) }' "$1"
+}
+
+#: plant_all_walls <file> <population-file> <secs> [<member> <secs>] — a CI
+#: walls table naming every member at <secs>, one optionally overridden.
+plant_all_walls() {
+    python3 - "$@" <<'PYPLANT'
+import json, sys
+out, popf, secs = sys.argv[1], sys.argv[2], int(sys.argv[3])
+pop = [line.strip() for line in open(popf) if line.strip()]
+members = {m: secs for m in pop}
+if len(sys.argv) > 5:
+    members[sys.argv[4]] = int(sys.argv[5])
+json.dump({"measured_at": "run:1 tree:planted-by-test-list-legs", "machine": "PlantedRunner",
+           "members": dict(sorted(members.items()))}, open(out, "w"), indent=2)
+PYPLANT
+}
+
+case_list_legs_ci_derives_the_selftest_count_and_carries_passes() {
+    local ci="${WORK}/listing-ci.out" rc=0 bare_units ci_units bad_rows="" want got pop="${WORK}/ci-pop"
+    local plant="${WORK}/planted-ci-walls.json" planted="${WORK}/listing-ci-planted.out" p
+    CURRENT="--list-legs --ci exits 0"
+    run_listing_here
+    if [ "$LIST_RC" != "0" ]; then
+        bad "the bare listing exits ${LIST_RC}, so there is nothing to compare --ci against"
+        return 0
+    fi
+    (cd "$ROOT" && ./scripts/check.sh --list-legs --ci) >"$ci" 2>&1 || rc=$?
+    if [ "$rc" != "0" ]; then
+        bad "exit ${rc}: $(sed -n 1p "$ci")"
+        return 0
+    fi
+    ok "exit 0"
+
+    CURRENT="the same units, in the same order, five TAB columns each"
+    bare_units=$(cut -f1 "$LIST_OUT" | tr '\n' ' ')
+    ci_units=$(cut -f1 "$ci" | tr '\n' ' ')
+    if [ "$bare_units" != "$ci_units" ]; then
+        bad "the units differ
+    bare: ${bare_units}
+    --ci: ${ci_units}"
+        return 0
+    fi
+    bad_rows=$(awk -F'\t' 'NF != 5 { print $1 " has " NF " field(s)" }' "$ci" | tr '\n' ';')
+    if [ -n "$bad_rows" ]; then
+        bad "$bad_rows"
+        return 0
+    fi
+    ok "${ci_units}— five fields each"
+
+    CURRENT="needs and composed-of are the bare listing's, byte for byte"
+    if [ "$(cut -f1,2,4 "$LIST_OUT")" = "$(cut -f1,2,4 "$ci")" ]; then
+        ok "columns 1, 2 and 4 identical"
+    else
+        bad "a unit's needs or composed-of moved under --ci"
+    fi
+
+    CURRENT="selftest's shards is the count derived from the committed CI table"
+    listing_population "$LIST_OUT" >"$pop"
+    if [ ! -f "${ROOT}/scripts/gate_member_durations.ci.json" ]; then
+        bad "there is no scripts/gate_member_durations.ci.json to derive the count from"
+        return 0
+    fi
+    want=$(expected_ci_count "${ROOT}/scripts/gate_member_durations.ci.json" "$pop")
+    got=$(awk -F'\t' '$1 == "selftest" { print $3 }' "$ci")
+    holds_or_bad "selftest shards" "$want" "$got" "ceil(sum/max(heaviest,300)) over $(grep -c . "$pop") members"
+
+    CURRENT="pytest-x2 is N-capable with passes 1; every other unit is 0 and empty"
+    bad_rows=$(awk -F'\t' '
+        $1 == "pytest-x2" { if ($3 != "N-capable" || $5 != "1") print "pytest-x2: " $3 "/" $5; next }
+        $1 == "selftest" { if ($5 != "") print "selftest passes " $5; next }
+        { if ($3 != "0" || $5 != "") print $1 ": " $3 "/" $5 }
+    ' "$ci" | tr '\n' ';')
+    if [ -z "$bad_rows" ]; then
+        ok "pytest-x2 N-capable/1, the rest 0/empty"
+    else
+        bad "$bad_rows"
+    fi
+
+    CURRENT="the count moves with the table it reads"
+    for p in "100" "100 house-rules-engine 5000"; do
+        # shellcheck disable=SC2086  # the plant's arguments word-split by design
+        plant_all_walls "$plant" "$pop" $p
+        rc=0
+        (cd "$ROOT" && DJB_GATE_MEMBER_WALLS_CI="$plant" ./scripts/check.sh --list-legs --ci) >"$planted" 2>&1 || rc=$?
+        want=$(expected_ci_count "$plant" "$pop")
+        got=$(awk -F'\t' '$1 == "selftest" { print $3 }' "$planted")
+        holds_or_bad "planted '${p}' (exit ${rc})" "$want" "$got" "the count follows the planted walls"
+    done
+
+    CURRENT="any other word after --list-legs is exit 2, --ci included in the wrong place"
+    for p in "--x" "--ci --x" "zzz --ci"; do
+        rc=0
+        # shellcheck disable=SC2086  # the words split into arguments by design
+        (cd "$ROOT" && ./scripts/check.sh --list-legs $p) >"${WORK}/listing-ci-bad.out" 2>&1 || rc=$?
+        if [ "$rc" = "2" ]; then
+            ok "--list-legs ${p}: exit 2 — $(sed -n 1p "${WORK}/listing-ci-bad.out")"
+        else
+            bad "--list-legs ${p} exited ${rc}"
+        fi
+    done
+}
+
+#: holds_or_bad <label> <want> <got> <why> — one assertion, both numbers named.
+holds_or_bad() {
+    if [ -n "$3" ] && [ "$2" = "$3" ]; then
+        ok "$1 = $3 ($4)"
+    else
+        bad "$1: wanted ${2:-<nothing>}, got ${3:-<nothing>} ($4)"
+    fi
+}
+
+case_a_dry_sharded_selftest_prints_its_plan_with_the_flags_k() {
+    # A dry `--leg selftest --shard k/N` prints the plan line a real one would,
+    # k as the flag typed it, naming the CI table — and the N lines add up to
+    # the whole population exactly once.
+    local k N=6 out="${WORK}/dry-selftest-shard.out" rc line members=0 predicted=0 n s total_members
+    CURRENT="every shard k of ${N} prints 'selftest shard k/${N}' over the CI table"
+    run_listing_here
+    [ -d "$DRY_CLONE" ] || cannot_look "the dry clone ${DRY_CLONE} is not built — this case has no checkout to run in"
+    for k in 1 2 3 4 5 6; do
+        rc=0
+        (
+            cd "$DRY_CLONE" &&
+                DJB_GATE_LEGS_DRY=1 \
+                    DJB_GATE_LEASE_DIR="${WORK}/lease" \
+                    ./scripts/check.sh --leg selftest --shard "${k}/${N}"
+        ) >"$out" 2>&1 || rc=$?
+        line=$(awk 'index($0, "  selftest shard ") == 1 { print; exit }' "$out")
+        case "$line" in
+        "  selftest shard ${k}/${N}: "*" members, predicted "*" s (LPT over scripts/gate_member_durations.ci.json measured on "*) ;;
+        *)
+            bad "shard ${k}/${N} (exit ${rc}) printed: ${line:-<no plan line>}"
+            return 0
+            ;;
+        esac
+        n=$(printf '%s\n' "$line" | sed -n 's/.*: \([0-9]*\) members, predicted \([0-9]*\) s .*/\1/p')
+        s=$(printf '%s\n' "$line" | sed -n 's/.*: \([0-9]*\) members, predicted \([0-9]*\) s .*/\2/p')
+        members=$((members + n))
+        predicted=$((predicted + s))
+    done
+    total_members=$(awk -F'\t' '$1 == "selftest" { print split($4, m, ",") }' "$LISTING_HERE_OUT")
+    if [ "$members" = "$total_members" ]; then
+        ok "k printed as typed on all ${N}; ${members} members across them = the population; ${predicted} s predicted in all"
+    else
+        bad "the ${N} shards hold ${members} member(s) and the population is ${total_members}"
     fi
 }
 
@@ -2907,8 +3091,17 @@ collect_ids_read() {
     # module(s))`) was one grep away from being in the bank's own log. A
     # could-not-look that points at a file the reader cannot reach is a
     # could-not-look nobody can act on.
+    #
+    # AND PYTEST'S OWN `ERROR:` LINE TRAVELS WITH IT, because the tail alone
+    # missed it once more: a `UsageError` is written to stderr BEFORE the node
+    # ids reach stdout, so it is the FIRST line of the transcript and five
+    # lines of tail showed only node ids and `57 tests collected` — the bank
+    # read COULD NOT LOOK with the cause (an always-on floor the world no
+    # longer met) sitting unprinted at the top of a file on a dead box.
     if [ "$rc" != "0" ]; then
-        cannot_look "a --collect-only exited ${rc} (see ${out}) — its last lines:
+        cannot_look "a --collect-only exited ${rc} (see ${out}) — pytest's own error line(s):
+$(grep -E '^(ERROR|E  |INTERNALERROR)' "$out" 2>/dev/null | head -5)
+its last lines:
 $(grep -v '^[[:space:]]*$' "$out" 2>/dev/null | tail -5)"
     fi
     [ -s "$out" ] ||
@@ -3576,6 +3769,7 @@ case_list_legs_needs_no_venv_no_docker_and_is_fast
 case_a_disagreeing_pin_does_not_reach_the_listing
 case_list_legs_precedes_the_lease
 case_list_legs_with_an_argument_is_exit_2
+case_list_legs_ci_derives_the_selftest_count_and_carries_passes
 case_an_unknown_flag_is_still_exit_2_with_the_same_sentence
 case_the_usage_header_names_the_listing
 case_every_drive_is_in_exactly_one_drives_unit
@@ -3599,6 +3793,7 @@ case_passes_1_runs_one_pass_and_says_so
 case_passes_outside_a_shard_or_malformed_is_exit_2
 case_composed_of_names_the_pass_count
 case_list_legs_carries_no_pass_count
+case_a_dry_sharded_selftest_prints_its_plan_with_the_flags_k
 case_a_shard_forces_the_partition_to_measure_and_banks_nothing
 case_an_empty_fixture_world_is_could_not_look
 case_the_shards_partition_the_collection_for_three_n_and_two_seeds

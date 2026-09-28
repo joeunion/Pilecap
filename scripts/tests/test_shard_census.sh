@@ -11,7 +11,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: apps/ scripts/check.sh scripts/pytest_durations.json
+# drives: apps/ scripts/check.sh scripts/gate_member_durations.ci.json scripts/pm_fold.sh scripts/pytest_durations.json
 # cites: scripts/tests/test_list_legs.sh scripts/tests/fixtures/collection_world/
 # The drive for THE ONE SHARD-CENSUS QUESTION WHOSE SUBJECT IS THE REAL TREE.
 #
@@ -233,10 +233,110 @@ case_the_durations_file_is_derived_and_regenerable() {
     fi
 }
 
+# THE SELFTEST HALF OF THE SAME QUESTION. `scripts/gate_member_durations.ci.json`
+# is what the selftest partition balances by and what `--list-legs --ci` derives
+# the selftest shard count from. It is HARVESTED, never typed — the fold's
+# `walls` step writes it from a green CI run's own shard lines — so the question
+# here is the durations file's: is it still about this population, and does it
+# say whose walls these are. The same half-coverage floor, for the same reason:
+# a new drive sits at the median until the next green run is harvested, which
+# is legal; a table that names almost nothing of the population is not.
+case_the_ci_walls_table_is_about_this_selftest_population() {
+    local f="${ROOT}/scripts/gate_member_durations.ci.json" listing="${WORK}/listing.tsv" pop="${WORK}/selftest-pop"
+    local rc=0 members named stale pct
+    CURRENT="scripts/gate_member_durations.ci.json is in the tree and says whose walls it holds"
+    if [ ! -f "$f" ]; then
+        bad "scripts/gate_member_durations.ci.json is not in this tree — the selftest partition falls back to the Mac table"
+        return 0
+    fi
+    if python3 - "$f" <<'PYMETA'; then
+import json, re, sys
+d = json.load(open(sys.argv[1]))
+assert re.fullmatch(r"run:[0-9]+ tree:[0-9a-f]{40}", d["measured_at"]), d["measured_at"]
+assert d["machine"], "no machine"
+assert d["members"] and all(isinstance(v, int) for v in d["members"].values())
+PYMETA
+        ok "parses; measured_at names a run and a tree, machine names the runner"
+    else
+        bad "it does not parse, or its measured_at is not 'run:<id> tree:<40 hex>', or it names no machine"
+        return 0
+    fi
+
+    CURRENT="it names at least ${DURATIONS_COVERAGE_FLOOR}% of the selftest population, and no member the population lacks"
+    (cd "$ROOT" && ./scripts/check.sh --list-legs) >"$listing" 2>&1 || rc=$?
+    [ "$rc" = "0" ] || cannot_look "./scripts/check.sh --list-legs exited ${rc} — there is no selftest population to compare the table with"
+    awk -F'\t' '$1 == "selftest" { n = split($4, m, ","); for (i = 1; i <= n; i++) print (m[i] == "selftest" ? "house-rules-engine" : m[i]) }' "$listing" >"$pop"
+    members=$(grep -c . "$pop" || true)
+    [ "${members:-0}" -gt 0 ] || cannot_look "the listing's selftest row composes no member"
+    named=$(python3 -c "import json,sys; t=json.load(open(sys.argv[1]))['members']; p=[l.strip() for l in open(sys.argv[2]) if l.strip()]; print(sum(1 for m in p if m in t))" "$f" "$pop")
+    stale=$(python3 -c "import json,sys; t=json.load(open(sys.argv[1]))['members']; p={l.strip() for l in open(sys.argv[2]) if l.strip()}; print(' '.join(sorted(m for m in t if m not in p)))" "$f" "$pop")
+    pct=$((named * 100 / members))
+    if [ "$pct" -lt "$DURATIONS_COVERAGE_FLOOR" ]; then
+        bad "it names ${named} of ${members} member(s) (${pct}%) — it is no longer about this population. Re-harvest: ./scripts/pm_fold.sh --only walls"
+    elif [ -n "$stale" ]; then
+        bad "it names member(s) the population no longer has: ${stale} — re-harvest after the next green run: ./scripts/pm_fold.sh --only walls"
+    else
+        ok "${named} of ${members} member(s) (${pct}%), none stale"
+    fi
+
+    CURRENT="and the step that rewrites it is the fold's, named where it is read"
+    if grep -q '^FOLD_WALLS_PATH=.scripts/gate_member_durations.ci.json.$' "${ROOT}/scripts/pm_fold.sh" &&
+        grep -q 'scripts/gate_member_durations.ci.json' "${ROOT}/scripts/check.sh"; then
+        ok "pm_fold.sh's walls step writes it; check.sh's partition reads it"
+    else
+        bad "either the fold no longer writes it or the gate no longer reads it"
+    fi
+}
+
+# THE READER, NOT THE FILE. The table the fold writes is multi-line, and the
+# gate's reader (`always_on__read_durations`, scripts/check.sh) was
+# line-oriented: the same table written compactly on ONE line — a hand, or a
+# `json.dumps` with no indent — parsed as nothing, the reader returned 1, and
+# the partition line said there was no CI table at all. The case compacts the
+# committed table and asks the gate's own two functions, extracted from
+# check.sh and sourced in a subshell, to read both forms: the rows, the run and
+# the machine must come back identical.
+case_a_one_line_ci_walls_table_reads_as_the_same_table() {
+    local f="${ROOT}/scripts/gate_member_durations.ci.json" compact="${WORK}/ci-walls-compact.json"
+    local fns="${WORK}/walls-reader.sh" multi_out="${WORK}/walls-multi.out" one_out="${WORK}/walls-one.out" rc=0
+    CURRENT="a compact one-line CI walls table reads as the same table"
+    [ -f "$f" ] || cannot_look "scripts/gate_member_durations.ci.json is not in this tree"
+    python3 -c 'import json, sys; json.dump(json.load(open(sys.argv[1])), open(sys.argv[2], "w"), separators=(",", ":"))' \
+        "$f" "$compact" || cannot_look "python3 could not compact the committed table"
+    [ "$(grep -c . "$compact")" = "1" ] || cannot_look "the compacted table is not one line"
+    sed -n '/^always_on__read_durations() {/,/^}/p; /^always_on__json_lines() {/,/^}/p' \
+        "${ROOT}/scripts/check.sh" >"$fns"
+    grep -q '^always_on__read_durations() {' "$fns" ||
+        cannot_look "scripts/check.sh defines no always_on__read_durations — the reader is gone"
+    for form in multi one; do
+        local table="$f" out="$multi_out"
+        [ "$form" = "one" ] && table="$compact" && out="$one_out"
+        rc=0
+        (
+            # shellcheck source=/dev/null
+            . "$fns"
+            always_on__read_durations "$table" || exit 1
+            printf 'at=%s\nmachine=%s\n' "$ALWAYS_ON_MEASURED_AT" "$ALWAYS_ON_MACHINE"
+            LC_ALL=C sort "$ALWAYS_ON_TABLE"
+        ) >"$out" 2>&1 || rc=$?
+        if [ "$rc" != "0" ]; then
+            bad "the ${form}-line form was NOT READ (exit ${rc}) — the partition would say there is no CI table"
+            return 0
+        fi
+    done
+    if cmp -s "$multi_out" "$one_out"; then
+        ok "both forms read $(($(grep -c . "$one_out") - 2)) member(s), $(sed -n 1p "$one_out"), $(sed -n 2p "$one_out")"
+    else
+        bad "the one-line form read differently: $(diff "$multi_out" "$one_out" | sed -n 1,4p | tr '\n' ' ')"
+    fi
+}
+
 # --- the run ------------------------------------------------------------------
 
 case_the_durations_file_covers_the_collection_it_balances
 case_the_durations_file_is_derived_and_regenerable
+case_the_ci_walls_table_is_about_this_selftest_population
+case_a_one_line_ci_walls_table_reads_as_the_same_table
 
 echo "test_shard_census: ${PASSED} passed · ${FAILED} failed"
 drive_finished

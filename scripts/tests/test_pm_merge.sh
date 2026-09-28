@@ -31,7 +31,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: .gitattributes CHANGELOG.md scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/pm_fold.sh scripts/pm_merge.sh scripts/queue_cited.sh scripts/sweep.sh scripts/tests/test_pm_fold.sh scripts/tests/test_sweep.sh
+# drives: .gitattributes CHANGELOG.md scripts/check.sh scripts/db.sh scripts/docs_legs.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/kill_mine.sh scripts/pm_fold.sh scripts/pm_merge.sh scripts/queue_cited.sh scripts/sweep.sh scripts/tests/test_pm_fold.sh scripts/tests/test_sweep.sh
 # The drive for `scripts/pm_merge.sh` — the refusals, the exit propagation and
 # the proof of merge.
 #
@@ -669,6 +669,107 @@ case_a_clean_merge_prints_the_proof_line() {
     holds "clean merge: the gate ran once, with --fast" "--fast" "$(cat "$GATE_LOG")"
 }
 
+# --- the merge's two consults: the loop row, and the drives that declare it ----
+#
+# WHAT THE MERGE CAN SAY WITHOUT MEASURING. A rung's last boundary is one box
+# `--loop`, and its row comes home with the box's `wait`; the merge prints
+# whether the branch head's tree has one (HIT/MISS, the key, the box). And a
+# merge's files are declared by shell drives the `--loop` does not run: the
+# merge prints which declaring drives ran since that loop row and which did
+# not, so a drive the wave meets only at the bank is named at the merge. The
+# ledgers are this scratch repository's own (the common git dir), planted with
+# rows in the writers' own grammar; the library is THIS tree's, copied in.
+consult_repo() {
+    fresh_repo
+    cp "$PWD/scripts/gate_ledger.sh" "$REPO/scripts/gate_ledger.sh"
+    cp "$GATE_REFUSE_SRC" "$REPO/scripts/gate_refuse.sh"
+    mkdir -p "$REPO/scripts/tests"
+    {
+        echo '#!/usr/bin/env bash'
+        echo '# drives: safe.txt'
+        echo 'exit 0'
+    } >"$REPO/scripts/tests/test_zzz_merged.sh"
+    git -C "$REPO" add scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/test_zzz_merged.sh
+    git -C "$REPO" commit -q -m "the ledger library and a drive that declares safe.txt"
+}
+
+case_the_merge_names_the_loop_row_and_the_drives_that_have_not_run() {
+    local tree other="0000000000000000000000000000000000000000" key="loop-v1:$(printf 'a%.0s' $(seq 1 64))"
+    # THE QUIET DIRECTION: after the loop row, the drive ran RED on this tree and
+    # GREEN on another. Neither measured the merged bytes green — NOT on it.
+    consult_repo
+    tree="$(git -C "$REPO" rev-parse 'safe^{tree}')"
+    printf 'loop-v1 %s loop 2026-09-27T10:00:00Z caller=unstated scope=mode=fast passes=1 tree=%s env=x box=i-zzzbox\n' \
+        "$key" "$tree" >>"$REPO/.git/djb-loop-verdicts"
+    {
+        printf 'v1 drive-v1:zzz1 drive 2026-09-27T11:00:00Z zzz_merged exit=1 took=1 tree=%s parts=-\n' "$tree"
+        printf 'v1 drive-v1:zzz2 drive 2026-09-27T11:05:00Z zzz_merged exit=0 took=1 tree=%s parts=-\n' "$other"
+    } >>"$REPO/.git/djb-gate-verdicts"
+    drive "the merge's consults (a box row; the drive red here, green elsewhere, both after it)" 0 -- in_repo ./scripts/pm_merge.sh safe
+    says "loop consult: HIT — tree ${tree} (safe's head) key ${key} box=i-zzzbox banked 2026-09-27T10:00:00Z"
+    # A ROW ON THESE BYTES THAT IS NOT GREEN IS RED, whoever wrote it, and it
+    # reads as the warning it is — never folded in with the structural misses.
+    says "drives: 1 declare this merge's files — ran green on the branch head's tree (${tree}): none; red or absent on it: zzz_merged; not recorded by any loop: none"
+    says "!! drives red or absent on these bytes that a loop records: zzz_merged — a finding"
+    holds "the consults change nothing: the gate still ran once, with --fast" "--fast" "$(cat "$GATE_LOG")"
+
+    # THE LOUD DIRECTION: the drive ran GREEN on exactly this tree, banked
+    # BEFORE the loop row by the clock (the loop's own always-on drives are
+    # this shape) — it ran on these bytes.
+    consult_repo
+    tree="$(git -C "$REPO" rev-parse 'safe^{tree}')"
+    printf 'loop-v1 %s loop 2026-09-27T10:00:00Z caller=unstated scope=mode=fast passes=1 tree=%s env=x box=i-zzzbox\n' \
+        "$key" "$tree" >>"$REPO/.git/djb-loop-verdicts"
+    printf 'v1 drive-v1:zzz drive 2026-09-27T09:59:00Z zzz_merged exit=0 took=1 tree=%s parts=-\n' \
+        "$tree" >>"$REPO/.git/djb-gate-verdicts"
+    drive "the merge's consults (the drive green on this tree, before the loop row)" 0 -- in_repo ./scripts/pm_merge.sh safe
+    says "drives: 1 declare this merge's files — ran green on the branch head's tree (${tree}): zzz_merged; red or absent on it: none; not recorded by any loop: none"
+    says_not "!! drives red or absent"
+
+    # AND NO LOOP ROW AT ALL is a MISS, said.
+    consult_repo
+    tree="$(git -C "$REPO" rev-parse 'safe^{tree}')"
+    drive "the merge's consults (no loop row at all)" 0 -- in_repo ./scripts/pm_merge.sh safe
+    says "loop consult: MISS — no loop row names tree ${tree} (safe's head); the verifier's consult re-measures"
+    # NO ROW ANYWHERE: nothing shows a loop records it, so it is information.
+    says "drives: 1 declare this merge's files — ran green on the branch head's tree (${tree}): none; red or absent on it: none; not recorded by any loop: zzz_merged"
+    says "not recorded by any loop (1): no --loop runs them, so they meet these files first at the bank — information, not a finding"
+    says_not "!! drives red or absent"
+}
+
+# THE SPLIT, BY THE LEDGERS' OWN WRITERS. Drive rows are written by the loop's
+# always-on leg (on the loop's tree) and by a bank's selftest leg (on the bank's
+# tree). A drive green on a tree a LOOP row names is one a loop records — its
+# absence on these bytes is the warning. A drive green only on a tree no loop
+# row names is full-only — its absence is structural, and says so.
+case_the_merge_splits_unrecorded_drives_from_red_or_absent_ones() {
+    local tree loopt="1111111111111111111111111111111111111111" bankt="2222222222222222222222222222222222222222"
+    local key="loop-v1:$(printf 'b%.0s' $(seq 1 64))"
+    # A LOOP RECORDS IT: green on another tree a loop measured, nothing here.
+    consult_repo
+    tree="$(git -C "$REPO" rev-parse 'safe^{tree}')"
+    printf 'loop-v1 %s loop 2026-09-27T08:00:00Z caller=unstated scope=mode=fast passes=1 tree=%s env=x\n' \
+        "$key" "$loopt" >>"$REPO/.git/djb-loop-verdicts"
+    printf 'v1 drive-v1:zzz drive 2026-09-27T08:00:00Z zzz_merged exit=0 took=1 tree=%s parts=-\n' \
+        "$loopt" >>"$REPO/.git/djb-gate-verdicts"
+    drive "the merge's drives line (a drive a loop records, absent on these bytes)" 0 -- in_repo ./scripts/pm_merge.sh safe
+    says "drives: 1 declare this merge's files — ran green on the branch head's tree (${tree}): none; red or absent on it: zzz_merged; not recorded by any loop: none"
+    says "!! drives red or absent on these bytes that a loop records: zzz_merged — a finding; run them on a box before the bank"
+    says_not "information, not a finding"
+
+    # FULL-ONLY: green at a bank's tree no loop row names, nothing here.
+    consult_repo
+    tree="$(git -C "$REPO" rev-parse 'safe^{tree}')"
+    printf 'loop-v1 %s loop 2026-09-27T08:00:00Z caller=unstated scope=mode=fast passes=1 tree=%s env=x\n' \
+        "$key" "$loopt" >>"$REPO/.git/djb-loop-verdicts"
+    printf 'v1 drive-v1:zzz drive 2026-09-27T08:00:00Z zzz_merged exit=0 took=1 tree=%s parts=-\n' \
+        "$bankt" >>"$REPO/.git/djb-gate-verdicts"
+    drive "the merge's drives line (a full-only drive, green only at a bank)" 0 -- in_repo ./scripts/pm_merge.sh safe
+    says "drives: 1 declare this merge's files — ran green on the branch head's tree (${tree}): none; red or absent on it: none; not recorded by any loop: zzz_merged"
+    says "not recorded by any loop (1): no --loop runs them, so they meet these files first at the bank — information, not a finding"
+    says_not "!! drives red or absent"
+}
+
 # --- the CHANGELOG's merge driver ---------------------------------------------
 #
 # WHAT IS UNDER TEST HERE IS `.gitattributes`, NOT `pm_merge.sh`. The wrapper is
@@ -1053,6 +1154,8 @@ case_the_escape_itself_is_still_caught
 case_the_real_script_refuses_a_foreign_checkout
 case_a_conflicting_merge_surfaces_the_conflict
 case_a_clean_merge_prints_the_proof_line
+case_the_merge_names_the_loop_row_and_the_drives_that_have_not_run
+case_the_merge_splits_unrecorded_drives_from_red_or_absent_ones
 case_two_appends_to_the_changelog_merge_clean
 case_without_the_attribute_the_same_two_appends_conflict
 case_the_union_is_a_merge_driver_and_not_a_judge

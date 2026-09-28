@@ -1,0 +1,13 @@
+# zzz_canary: rule 62's self-test plant — a run step that inherits the credential.
+name: zzz-canary
+on: [workflow_dispatch]
+jobs:
+  zzz_canary_job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::000000000000:role/zzz-canary
+          aws-region: us-east-1
+      - name: a run with no env
+        run: echo "this step holds whatever the exporter wrote"

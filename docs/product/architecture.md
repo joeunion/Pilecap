@@ -1365,6 +1365,38 @@ extra. *Trigger to revisit:* the first bank at N ≥ 7 where the composed wall
 is the acceptance box by more than 60 s — then the proof box's size is the
 next rung, not this ADR.
 
+**Amended 2026-09-27 (P23, v2.3.0 — PROPOSED by the PM; the owner signs).** *Which
+principle bends:* gate-1's own "two passes on one machine" a second time, and
+this ADR's 2026-09-18 amendment's "the row is not written until the proof is
+in": on the **CI road** (`pm_push.sh --pr` → the pull request's run →
+`--ci-verdict` → a plain push honoured), the sharded `pytest-x2` unit runs
+**one** pass and **no acceptance box runs at all** — the whole-suite two-pass
+leak proof under one seed is **the nightly's** (`.github/workflows/nightly-proof.yml`,
+`pm_push.sh --proof`, one runner, unsharded, a record `gate_nightly_read`
+reads), and the teeth move to the production deploy, which refuses without a
+green nightly no older than 24 h. *Why the default is insufficient now:* the
+PR run is the ONE measurement a train pays (the owner's ruling 2026-09-26:
+"pay the bank once"); an acceptance box inside CI is a fourth run kind on
+billed minutes per train, while one nightly measures every tree of the day
+once and the class it catches — a leak only a different shard's test trips —
+is not a class that must be caught before a push when prod cannot deploy
+without it. *Alternatives:* two passes per shard (rejected — a within-shard
+proof only, `build-contract.md` § SHARDED); an acceptance box per PR run
+(rejected — the cost above, and the wall); no whole-suite pass at all
+(rejected — the leak class is real, twice measured). *Risk:* a cross-shard
+leak reaches main and is caught within a night rather than before the push;
+what bounds it is prod's refusal and `pm_push.sh --bank --leak-proof nightly`
+printing the night's form (green, red, older than 24 h, none) at the top of
+every bank's transcript — every form honoured report-only there, because the
+teeth are at prod. *Decision:* on the CI road the second whole pass is the
+nightly's record; a box bank keeps `--leak-proof acceptance` as its default
+and the 2026-09-18 amendment's rule for it (a one-pass row with no proof is not
+honoured) stands unchanged. *Reversal:* set the deploy-prod job to require
+the acceptance form, or restore an acceptance box to the PR workflow (one job,
+`ci.yml`); the nightly keeps running either way. *Trigger to revisit:* the
+first red nightly on a tree a green PR run pushed to main — then the class is
+live at CI scale and the question is whether the PR run buys the proof back.
+
 **The envelope is measured, never vibed** (ADR perf-1). A reusable
 seeded-scale harness lives in `perf/` — measurement territory beside
 `quality/`, not an app, and outside the suite's `testpaths`, so neither gate
@@ -2358,6 +2390,204 @@ merged); a rename reads as a deletion plus an addition; and a divergence inside
 a product-owned file is invisible by construction, which is the partition
 working rather than a hole.
 
+61. **Every compose image is pinned by the digest of a multi-arch index**
+(P23 B-RIDERS; the v2.2.1 hotfix's rider). Every `image:` in `compose.yaml`
+and `deploy/compose.yaml` carries `@sha256:<64 hex>` from a registry on the
+rule's own declared `allow_registries`, or a `# pin-exception: <reason>` on the
+line or in the comment block directly above it; an interpolated reference can
+only be valved, and its reason names what resolves it to a digest. A tag is a
+pointer somebody else moves — the withdrawal of one broke every clone at once —
+and a pin the rule cannot see is a pin nobody re-checks. Declared blind spots:
+**whether a pinned digest is an index at all** is a registry question
+(`docker buildx imagetools inspect`) a static scan cannot ask — the pinning
+change transcribes the inspection per image and every re-pin owes the same
+transcript (the re-pin road itself is a P23 design question, not this rule's);
+a digest the publisher never published fails at pull, not here; only the two
+stacks in the `compose` kind's roots are read (`deploy/observability/alerts/
+compose.sink.yaml` is outside it, by declaration); a flow-style image mapping on
+one line is unseen; a valve's reason is checked for length only.
+
+62. **An exported credential reaches only the steps that asked for it**
+(P23 B-RIDERS; the lead's § 2 (f) — `config/settings/test.py` is the one
+authority for the store credential). In a GitHub Actions workflow, every `run:`
+step after a credential exporter in the same job (a `uses:` step on the rule's
+declared `exporters`) sets each of the rule's `exported_names` in its OWN `env:`
+— an empty value is a pin — or carries `# creds: <reason>`. A role assumed for
+one pull otherwise rides the job environment into every later step, including
+the one that runs the suite. Declared blind spots: an exporter not on the list
+(another cloud's login, a composite or reusable workflow, a `run:` step writing
+`$GITHUB_ENV`) is not an exporter here — the list grows by a visible diff; a
+`uses:` step after an exporter is not judged (the registry login after the role
+is the deliberate case); names beyond the declared three are not required
+pinned; job-level `env:` does not count because the exporter writes over it;
+what a valve claims is taken on its word.
+
+63. **A pattern entry names an instrument that exists, and no face is drawn
+with no entry** (P23 B-FE-A + its +1F; the owner's front-end standards ruling of 2026-09-26). Every
+entry in the pattern book — `docs/product/design/patterns.md` and a product's
+`patterns.local.md` drawer beside it — is in the six-part form (Shape · Words ·
+Placement · States · Ruling · Instrument, each opening with its bold label), and
+its Instrument paragraph names in backticks at least one repository file that
+exists; every row of the book's instrument index resolves; every motion-ledger
+row is four fields with a `--motion-<name>` token. **A pattern whose instrument
+does not exist cannot fail, so it is not a pattern yet.** And every module under
+`frontend/src/screens/` and `frontend/src/components/` declares the section it
+draws (`// patterns: §N`, two named forms) in its first twelve lines, naming a
+section that is an entry — the scaffold's two screens are the first declarers.
+Declared blind spots: **whether the instrument measures what the entry says** —
+the check proves the file exists, never that it asserts the pattern (the mirror
+pass's and the verifier's question, exactly as `instruments.md`'s census checks
+a citation's shape and not its truth); whether every element class a product
+draws has an entry is the engineering lead's DECOMPOSE refusal, not this rule's;
+a path not in backticks, with no directory segment or no suffix, is not read as
+an instrument; the scales (§ 26) and the mirror pass (§ 27) are headings, not
+entries, so a face can never declare them.
+
+64. **Every size names a type role** (P23 B-FE-A; the generic front-end
+instruments are house rules that red a product until it adopts the floor —
+owner 2026-09-26). Every `font-size`, `letter-spacing` and `font` shorthand
+under `frontend/src/`, in a stylesheet or an inline style literal, names a
+`var(--type-…)` role; only the CSS-wide keywords and `letter-spacing: normal`
+stand alone; no size, tracking or role is a half pixel. Declared blind spots:
+**which role a seat spends** is the book's entry and review's question — any
+role satisfies the rule; a value computed at run time (a variable, a ternary,
+a `${…}` template) and a style object built by a helper or spread from another
+file are not judged; a fallback inside the role passes on the role; CSS nesting
+is read flat; `font-weight`, `line-height` and `font-family` are the type roles'
+to carry, not this rule's; and **a `.css` finding cannot be valved** (rule 53's
+declared seam gap — the remedy there is a role), which holds for 65–69 too.
+
+65. **Every gap is on the spacing scale** (P23 B-FE-A). Every `gap`,
+`row-gap`, `column-gap`, `padding` and `margin` — every side and logical twin
+of the last two included — under `frontend/src/` is made only of steps: `0`,
+`auto`, a CSS-wide keyword, or a `var(--space-…)` token, alone or inside
+`calc()`/`min()`/`max()`/`clamp()` beside unitless numbers. Declared blind
+spots: which step a seat spends (the book's); geometry that is not spacing —
+`inset`, `top`, a width, a height, a border, a radius, `outline-offset`; values
+computed at run time; CSS nesting read flat; and **whether the steps themselves
+are a scale** — eleven arbitrary `--space-*` values pass this rule, and the
+book's § 26 entry and review hold that.
+
+66. **Every motion is on the ledger** (P23 B-FE-A). Every `transition`,
+`animation` and their duration, delay and timing-function longhands under
+`frontend/src/` names a `var(--motion-…)` token and carries no raw time or
+easing outside it; and the `--motion-*` tokens declared under
+`frontend/src/tokens/` equal, by name, the rows of every fenced `motion-ledger`
+block in the book and the product's drawer — a token off the ledger and a
+ledger row with no token are both findings. Declared blind spots: **what moves
+and whether it should** — the ledger's rows are the rulings; motion from script
+(the Web Animations API, a library, a `requestAnimationFrame` loop) is not a
+declaration and is invisible; `@keyframes` bodies are not judged, the animation
+naming them is; reduced motion is not checked here — the mirror pass's line 8
+captures it rendered; a ledger row with no token is reported at the tokens
+layer's first stylesheet.
+
+67. **One focus ring, and the act floor** (P23 B-FE-A). Every pressable under
+`frontend/src/` — an `a`, `button`, `summary` or pressable `[role]` a stylesheet
+styles or a screen renders as a host element, and every class written on one,
+given `cursor: pointer`, or put on one by a screen — has a `:focus-visible` rule
+naming the ONE ring token, `var(--focus-ring)`; and every pressable class
+consumes `var(--act-min)` in a rule of its own — the act floor's static half.
+Declared blind spots: **the measured box** — a class consuming `--act-min` in a
+`max-width`, or in a rule the cascade overrides, passes, and whether the target
+really measures 44 × 44 at the phone width is a rendered fact (Tier C); which
+ring on which ground (a second ring is named in the book and added in the
+drawer); pressability from script — an `onClick` on a `div`, a `tabIndex`, a
+host element decided at run time, a `className` built by a helper — is not
+derived, and `:where(…)`/`:is(…)` are not unpacked, so a ring written only
+through them is not credited.
+
+68. **Nothing is disabled** (P23 B-FE-B; the book's § 4, the act vocabulary).
+Nothing under `frontend/src/` disables a control: no `disabled` or
+`aria-disabled` attribute on a JSX element, no `disabled` key in an object
+literal or a props type, no `.disabled =` assignment, no
+`setAttribute`/`toggleAttribute` of `disabled`, and no stylesheet selector
+naming `:disabled`, `[disabled]` or `[aria-disabled]`. **An act the role may
+not take is absent; an act at work says its verb's progressive and stays
+pressable; an act that cannot run yet is answered by the server's refusal.**
+Declared blind spots: a switch built at run time — a props object assembled by
+a helper, a spread carrying `disabled`, an attribute name computed from a
+variable; a third-party component that disables itself internally (the rule
+reads this tree's source, not a package's); `readonly`/`readOnly` and `inert`
+are not judged; JSX text holding an apostrophe can hide the rest of its line
+from the shared scanner (its declared trade); whether the absent act, the
+progressive and the refusal are actually drawn instead is the book's and the
+mirror pass's.
+
+69. **No toast, spinner or shimmer** (P23 B-FE-B; the book's § 17 — an outcome
+is a band under the head; loading is still shapes at the content's heights).
+In a script: no identifier whose words include `toast`, `toaster`, `snackbar`,
+`spinner` or `shimmer` (nor `CircularProgress`, `ActivityIndicator`), no import
+from a package that names one or from the named toast and loader libraries, and
+no `className` literal from the class family; in a stylesheet: no class
+selector and no `@keyframes` name whose words include those, `spin` or
+`loader`. Declared blind spots: **the families are words** — a toast or a
+spinner under a name carrying none of them (`Notice`, `Busy`, `Progress`, a
+library's `Loading`, an `animate-pulse` utility) is not seen, and a name that
+happens to carry one for another reason is a finding for the valve; motion from
+script and an inline SVG spinner with no family word are invisible; a class
+assembled by a helper or a `${…}` part is not read.
+
+70. **One dialog primitive, and its foot carries no dismiss word** (P23
+B-FE-B; the book's § 1, the sheet). Only `frontend/src/primitives/dialog.tsx`
+draws a dialog — a `<dialog>` element, a `role` of `dialog` or `alertdialog`, a
+`createElement("dialog")` anywhere else under `frontend/src/` is a second sheet;
+and no dialog foot (the primitive's `foot={…}`, or a `<footer>` in a module that
+draws a dialog) carries Close, Cancel, Done or Dismiss in JSX text, a string
+literal or a copy key — the sheet's one dismiss is in its head. The primitive
+exists and draws a `<dialog>`. Declared blind spots: a dialog from a library
+under a component name (`<Modal>`, `<Sheet>`, `<Popover>`) whose host element
+is decided inside the package — a product that adopts one names it in the book
+and adds the rule in its drawer; a foot spelled another way (acts handed in
+through `children`, a `<div>` styled as a foot, a foot built by a helper); a
+dismiss word reached through a reference whose key is not named for it
+(`COPY.leave` holding "Cancel"); whether the head really carries exactly one
+dismiss is the primitive's own test.
+
+71. **The route table names every page** (P23 B-FE-B; the book's § 0).
+`frontend/src/screens/routes.ts` carries exactly one row for every route a
+`page.*` file under `frontend/src/app/` draws (route groups `(…)`, parallel
+slots `@…` and intercepting segments dropped; dynamic segments kept verbatim),
+no row for a route no page draws, and every row carries `path`, `job`,
+`primarySeat` and `operation` — `null` is an answer, an absent column is not.
+Declared blind spots: **whether the operation is real** — the column is read
+for its presence, not checked against the served document (the surface that
+follows it owns that census); whether the job is true and the seat is where the
+act really sits is the book's § 0 entry and the mirror pass's line 1; routes not
+drawn by a page (a `route.ts` handler, a rewrite, a redirect, a `pages/`
+directory, a `default.*` slot) are outside the population; a row built at run
+time is not read — a row is an object literal with a quoted `path:` in the
+table file.
+
+72. **Every label is a lexicon row** (P23 B-FE-B; the book's § 21, words on a
+surface). `frontend/src/copy/lexicon.ts` declares one `LEXICON` array of
+strings with no row twice; and every label a module under `frontend/src/copy/`
+writes — a string literal valued under a key named `label`, `act`, `title`,
+`heading` or `dismiss`, or a camel-cased key ending in `Label`, `Act`, `Title`
+or `Heading` — equals a lexicon row verbatim. Declared blind spots: a label
+under another key (`hatAsked`, a column heading named for its column) is
+outside the key grammar — a product that wants a key read names it with a
+label suffix; a label reached through a reference or composed at run time; a
+string inline in a face is outside `frontend/src/copy/` and is
+fe-conventions § 5's; **one word per thing is held only as far as the lexicon
+goes** — *Remove* beside *Delete* both pass, and the lexicon's own review is
+design's; a row nothing spends is not a finding.
+
+73. **No machine token in copy** (P23 B-FE-B). No string literal value in a
+module under `frontend/src/copy/` — the lexicon included — carries a machine
+token: a snake token (letters and digits joined by `_`), a hex id (thirty-two
+hex digits, or a UUID), or a kebab key (a lower-case run of three or more parts
+joined by `-` with no small joining word, or ending in a machine suffix — `-id`,
+`-uuid`, `-key`, `-slug`, `-url`, `-uri`, `-code`, `-ref`, `-pk` — or a url-name
+action — `-list`, `-detail`, `-create`, `-update`, `-delete`). A literal in a
+key position and a module specifier are machine words by position and are not
+read. Declared blind spots: a two-part kebab key with no machine suffix
+(`due-date`) reads as an English compound; camel-cased identifiers
+(`invoiceId`) are not tokens here, since a proper name (`iPhone`) has the same
+shape; a ternary's first branch is read as a key and skipped; **a token the
+server sends** — a refusal's code, a remedy's destination — is rendered
+verbatim by design and is the refusal notice's (§ 15), not a copy string;
+strings outside `frontend/src/copy/` are fe-conventions § 5's.
 
 ## App map — data portability
 

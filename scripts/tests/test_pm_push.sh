@@ -31,8 +31,8 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: .github/workflows/ci.yml deploy/provision.sh deploy/verifier/bake.sh scripts/check.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks/pre-push scripts/kill_mine.sh scripts/pm_fold.sh scripts/pm_push.sh scripts/queue_cited.sh scripts/sweep.sh scripts/test_impact.json scripts/test_impact.py scripts/tests/drive_preamble.sh scripts/tests/test_pm_push.sh scripts/tests/test_verifier_box.sh scripts/verifier_box.sh
-# cites: uv.lock scripts/local/legs
+# drives: .github/workflows/ci.yml deploy/provision.sh deploy/verifier/bake.sh scripts/check.sh scripts/db.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/githooks scripts/kill_mine.sh scripts/pm_fold.sh scripts/pm_push.sh scripts/queue_cited.sh scripts/sweep.sh scripts/test_impact.json scripts/test_impact.py scripts/tests/drive_preamble.sh scripts/tests/test_pm_push.sh scripts/tests/test_verifier_box.sh scripts/verifier_box.sh
+# cites: uv.lock scripts/local/legs scripts/test.sh
 # A CITATION, NOT A SUBJECT: the docs-only cases below NAME `uv.lock`, because
 # the declared list rules it OUT and the refusal that says so is the assertion.
 # This drive never opens it, and declaring it as a subject would re-drive every
@@ -958,6 +958,14 @@ harvest-drives)
     htree="${2:-}"
     printf '%s\t%s\n' "$id" "$htree" >>"$REC/harvest.calls"
     lbl="$(cat "$REC/label-of.${id}" 2>/dev/null || echo unknown)"
+    # A BOX RECLAIMED BEFORE ITS ROWS CAME HOME. The real subcommand goes
+    # through `refuse_if_reclaimed` like every other one, so the news is the
+    # wrapper's own `box reclaimed` line and ssh's 255 behind it.
+    if [ -f "$REC/harvest.rc.${lbl}" ]; then
+        echo "box reclaimed (spot) ${id} status instance-terminated-no-capacity: not enough capacity" >&2
+        echo "!! verifier_box: the box was reclaimed by AWS mid-flight." >&2
+        exit "$(cat "$REC/harvest.rc.${lbl}")"
+    fi
     hn=0
     halready=0
     if [ -f "$REC/boxledger.${lbl}" ]; then
@@ -2536,8 +2544,10 @@ case_the_acceptance_box_is_outside_the_verdict() {
     DRIVE_OUT="${REC}/up.calls"
     says "bank-${tree8}-acceptance"
     DRIVE_OUT="${REC}/run.calls"
-    says "--cov-context=test"
-    says "scripts/test_impact.py write"
+    # ITS BODY IS `--proof` (the leak proof's one function), which runs the
+    # contexts pass and the map writer — asserted by running it, in
+    # `case_proof_is_one_function_the_box_and_the_runner_both_call`.
+    says "./scripts/pm_push.sh --proof --where acceptance"
     # THE CHECKOUT PATH IS DERIVED AND NEVER SPELLED. `deploy/verifier/bake.sh`
     # is the ONE place it is written down, and `test_verifier_box.sh`'s census
     # reds any other file that spells it — correctly: a literal here is a
@@ -2702,53 +2712,29 @@ case_the_plan_hands_passes_1_only_when_a_proof_box_exists() {
 
 case_the_acceptance_command_mints_one_seed_and_writes_a_proof() {
     CURRENT=case_the_acceptance_command_mints_one_seed_and_writes_a_proof
-    local cmd seeds
+    local cmd
 
     fresh_world acceptance_proof_argv
     run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
     exited 0
     # THE ARGV STRING THE BOX'S SHELL IS HANDED, read out of the stub's own
     # record. Everything past it is `scripts/verifier_box.sh`'s and the box's.
-    cmd="$(grep -F -- 'test_impact.py write' "${REC}/run.calls" || true)"
+    cmd="$(grep -F -- '--proof' "${REC}/run.calls" || true)"
     DRIVE_OUT="${REC}/run.calls"
     if [ -z "$cmd" ]; then
         bad "no acceptance command was recorded at all"
         return
     fi
-    # ONE SEED, MINTED ON THE BOX, ON BOTH PASSES. Two occurrences of ONE
-    # variable — not two literals and not two mintings: with different orders
-    # a red pass 2 means "order or state, cannot tell", which is not a leak
-    # proof, and it would be banked as if it were.
-    seeds="$(printf '%s\n' "$cmd" | grep -o -- '--randomly-seed=[^ ]*' | LC_ALL=C sort -u | grep -c . || true)"
-    holds "distinct --randomly-seed= spellings in the command" "1" "${seeds:-0}"
-    holds "passes carrying that seed" "2" \
-        "$(printf '%s\n' "$cmd" | grep -o -- '--randomly-seed=' | grep -c . || true)"
-    says "SEED="
-    says "-n 16"
-    says "proof.txt"
-    says "pass1="
-    says "pass2="
-    says "map="
-    # BOTH PASSES UNDER `set +e`, EACH WRITING ITS OWN rc, and the command
-    # still exits 0 — the wrapper's status stays "the command ran" and the
-    # three statuses travel home as data.
-    says "P1=\$?"
-    says "P2=\$?"
-    says "set +e"
-    says "exit 0"
-    # THE MAP WRITER ONLY AFTER A GREEN PASS 1. A map inverted out of a
-    # coverage database a red pass abandoned is a projection of half a run.
-    if printf '%s\n' "$cmd" | grep -F 'if [ "${P1}" = 0 ]; then .venv/bin/python scripts/test_impact.py write' >/dev/null; then
-        ok "the map writer is guarded on a green pass 1"
-    else
-        bad "the map writer is not guarded on pass 1's own status"
-    fi
-    # AND THE SUMMARY LINE CARRIES ALL THREE STATUSES.
-    if printf '%s\n' "$cmd" | grep -F 'rc1=${P1} rc2=${P2} map=${MAP}' >/dev/null; then
-        ok "the box's summary line names pass 1, pass 2 and the map separately"
-    else
-        bad "the summary line does not carry rc1= rc2= map="
-    fi
+    # THE BODY IS `--proof`, CALLED — never a second spelling of it. The seed,
+    # the two passes, the guard on the map writer and the record are the
+    # function's, and `case_proof_is_one_function_the_box_and_the_runner_both_call`
+    # asserts them by running it.
+    says "./scripts/pm_push.sh --proof --where acceptance --workers 16 --out \$HOME/verify/"
+    says_not "test_impact.py write"
+    says_not "--randomly-seed="
+    # A RED PROOF COMES HOME AS DATA: the command maps --proof's 1 to 0 and
+    # passes 2 (could not look) through.
+    says 'r=$?; [ "${r}" != 1 ] || r=0; exit ${r}'
     # THE CHECKOUT PATH IS STILL DERIVED AND NEVER SPELLED.
     says "$(bake_checkout_path)"
 }
@@ -3709,6 +3695,1008 @@ case_ci_skips_a_present_tag_and_builds_an_absent_one() {
     fi
 }
 
+# =============================================================================
+# THE CI ROAD — --pr, --ci-verdict, the intent wall, the consult
+# =============================================================================
+#
+# WHAT IS DRIVEN. `pm_push.sh --pr` (a train branch pushed on an INTENT row, the
+# pre-push hook's `ci-intent` wall), `pm_push.sh --ci-verdict` (every refusal a
+# record can earn, the latest-attempt rule, the green row), the plain push that
+# then fast-forwards main on that row, and `gate_ci_consult` (CI's push-to-main
+# question). EVERY `gh` HERE IS A FAKE on the world's PATH, answering from
+# per-case fixtures and recording its argv: no case reaches GitHub, and the one
+# case with no `gh` at all runs on a PATH built of symlinks that holds none.
+#
+# `does_not_cover`, declared: the real `gh` (its flags and JSON are asserted
+# only as the fake models them — the first live run of R-CI-1 is that seam's
+# proof); GitHub's merge ref (a record's `tree` is planted, never measured by a
+# runner); the workflow that writes the record (R-CI-1's `ci.yml` drive).
+
+#: The units a whole CI run names: every unit of this tree's listing, `/1` on
+#: the one that carries the suite (PLAN_SUITE_LEG, this drive's own reading of
+#: the listing) — derived, never typed.
+CI_UNITS="$(awk -F'\t' -v s="$PLAN_SUITE_LEG" 'NF >= 4 { u = $1; if (index("," $4 ",", "," s ",")) u = u "/1"; printf "%s%s", (n++ ? "," : ""), u } END { print "" }' "$REAL_LISTING")"
+[ -n "$CI_UNITS" ] || cannot_look "the real listing names no units for a CI record"
+CI_RUN=36282702383
+GH=""
+CV_RUNNER=""
+CV_N=0
+
+#: A PATH with no `gh` on it, built of symlinks — the whole PATH, not a prefix.
+NOGH_BIN="${WORK}/nogh-bin"
+mkdir -p "$NOGH_BIN"
+for _c in bash git mktemp sed awk grep cat rm mkdir tr date dirname basename \
+    head tail sort cut wc cp mv chmod env uname ls readlink tee; do
+    _p="$(command -v "$_c" 2>/dev/null || true)"
+    [ -n "$_p" ] || cannot_look "no ${_c} on PATH to build the gh-less PATH from"
+    ln -sf "$_p" "${NOGH_BIN}/${_c}"
+done
+unset _c _p
+
+# cv_world <name> — fresh_world, plus a fake `gh`, a runner that puts it first
+# on PATH, `main` pushed to the world's origin, and a train branch `pm/train`
+# one commit ahead of it. The hook is NOT wired; `cv_wire_hook` wires it.
+cv_world() {
+    fresh_world "$1"
+    GH="${REC}/gh"
+    mkdir -p "$GH" "$W/bin"
+    sed -e "s|__GH__|${GH}|g" >"$W/bin/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+# A FAKE gh. It records every argv and answers from fixtures; it has no network.
+GH="__GH__"
+printf '%s\n' "$*" >>"$GH/calls"
+case "${1:-} ${2:-}" in
+"run list")
+    if [ -f "$GH/list.rc" ]; then
+        echo "HTTP 502: the API is down" >&2
+        exit "$(cat "$GH/list.rc")"
+    fi
+    cat "$GH/list.out" 2>/dev/null
+    exit 0
+    ;;
+"run view")
+    [ -f "$GH/view-$3" ] || {
+        echo "could not find any workflow run with ID $3" >&2
+        exit 1
+    }
+    cat "$GH/view-$3"
+    exit 0
+    ;;
+"run download")
+    id=$3
+    shift 3
+    name="" dir=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --name) name=$2; shift ;;
+        --dir) dir=$2; shift ;;
+        esac
+        shift
+    done
+    if [ -f "$GH/download-$id.rc" ]; then
+        echo "HTTP 500: the artifact store failed" >&2
+        exit "$(cat "$GH/download-$id.rc")"
+    fi
+    [ -d "$GH/art-$id/$name" ] || {
+        echo "no valid artifacts found to download" >&2
+        exit 1
+    }
+    mkdir -p "$dir"
+    cp "$GH/art-$id/$name/"* "$dir/"
+    exit 0
+    ;;
+"api "*)
+    if [ -f "$GH/api.rc" ]; then
+        echo "HTTP 403: API rate limit exceeded" >&2
+        exit 1
+    fi
+    case "$2" in
+    */pulls) cat "$GH/pulls.out" 2>/dev/null; exit 0 ;;
+    *head_sha=*) cat "$GH/runs-${2##*head_sha=}.out" 2>/dev/null; exit 0 ;;
+    esac
+    ;;
+esac
+echo "fake gh: no fixture for: $*" >&2
+exit 1
+FAKEGH
+    chmod +x "$W/bin/gh"
+    CV_RUNNER="$W/run-cv.sh"
+    {
+        echo '#!/usr/bin/env bash'
+        echo "cd \"${REPO}\" || exit 2"
+        echo "export DJB_GATE_LEDGER=\"${LEDGER}\""
+        echo "export TMPDIR=\"${W}/tmp\""
+        echo "export DJB_GATE_LEASE_DIR=\"${W}/lease\""
+        echo "export PATH=\"\${DJB_DRIVE_PATH:-${W}/bin:\$PATH}\""
+        echo 'exec ./scripts/pm_push.sh "$@"'
+    } >"$CV_RUNNER"
+    chmod +x "$CV_RUNNER"
+    git -C "$REPO" push -q origin main
+    git -C "$REPO" switch -q -c pm/train
+    echo "train" >"$REPO/train.txt"
+    git -C "$REPO" add train.txt
+    git -C "$REPO" commit -q -m "the train"
+}
+
+# cv_wire_hook — the world's pushes now run the real pre-push hook, whose
+# measuring arm execs the world's STUB gate (it records its argv; a bare call
+# records an empty line, which `gate_bare_calls` counts).
+cv_wire_hook() { git -C "$REPO" config core.hooksPath scripts/githooks; }
+
+gate_bare_calls() {
+    [ -f "${REC}/gate.calls" ] || {
+        echo 0
+        return 0
+    }
+    grep -vc -- '--list-legs' "${REC}/gate.calls" || true
+}
+
+cv_run() {
+    CV_N=$((CV_N + 1))
+    DRIVE_OUT="${W}/cv-${CV_N}.log"
+    set +e
+    "$CV_RUNNER" "$@" >"$DRIVE_OUT" 2>&1
+    DRIVE_EXIT=$?
+    set -e
+}
+
+head_sha() { git -C "$REPO" rev-parse HEAD; }
+
+# gh_run <id> <status> <attempt> · gh_record <id> <attempt> <line>
+gh_run() { printf '%s %s\n' "$2" "$3" >"${GH}/view-$1"; }
+gh_record() {
+    local d
+    # A LIBRARY WITH NO ARTIFACT NAMER CANNOT HAVE A RECORD PLANTED FOR IT —
+    # a FAILED line, never a drive killed by `set -u` before the next case.
+    if ! command -v gate_ci_artifact_name >/dev/null 2>&1 || [ -z "${GATE_CI_RECORD:-}" ]; then
+        bad "scripts/gate_ledger.sh names no CI artifact or record — nothing can be planted"
+        return 0
+    fi
+    d="${GH}/art-$1/$(gate_ci_artifact_name "$2")"
+    mkdir -p "$d"
+    printf '%s\n' "$3" >"${d}/${GATE_CI_RECORD}"
+}
+gh_reset() {
+    rm -rf "$GH"
+    mkdir -p "$GH"
+}
+
+# ci_rec <commit> <tree> <rc> <attempt> [<scope>] [<at>] [<legs>] — a record
+# for run CI_RUN, written by THE writer (`gate_ci_record_line`), so a fixture
+# can never be a line the grammar would refuse unless a case plants one raw.
+ci_rec() {
+    gate_ci_record_line "$1" "$2" "${7:-$CI_UNITS}" 3 "${5:-whole}" "$3" "$CI_RUN" "$4" ${6:+"$6"}
+}
+
+stamp_from_now() { gate_ci_stamp_of "$(($(date -u +%s) + $1))"; }
+
+# The ledger's FULL rows, counted — "no row" is a number.
+full_rows() {
+    [ -f "$LEDGER" ] || {
+        echo 0
+        return 0
+    }
+    grep -c ' full ' "$LEDGER" || true
+}
+
+case_ci_verdict_refuses_each_cause_with_exit_2_and_no_row() {
+    CURRENT=case_ci_verdict_refuses_each_cause_with_exit_2_and_no_row
+    local commit tree side empty unknown label
+    cv_world cv_refusals
+    commit="$(head_sha)"
+    tree="$(repo_tree)"
+    side="$(git -C "$REPO" commit-tree "${tree}" -m "a root with the same bytes, off this line")"
+    empty="$(git -C "$REPO" hash-object -t tree /dev/null)"
+    unknown="$(printf '%040d' 0 | tr 0 c)"
+
+    # refused <label> <sentence> [<run id>] — one refusal, asserted three ways.
+    refused() {
+        CURRENT="ci-verdict refuses: $1"
+        cv_run --ci-verdict ${3-"$CI_RUN"}
+        exited 2
+        says "THE CI RECORD CANNOT BE BANKED: "
+        says "$2"
+        says "No row was written and nothing was pushed."
+        holds "full rows in the ledger" "0" "$(full_rows)"
+        unset DJB_DRIVE_PATH
+        gh_reset
+    }
+
+    export DJB_DRIVE_PATH="${NOGH_BIN}"
+    refused "no gh" "no \`gh\` on PATH"
+
+    printf '1\n' >"${GH}/list.rc"
+    refused "gh failing" "\`gh run list\` did not answer" ""
+
+    : >"${GH}/list.out"
+    refused "no completed run on the branch" "no completed run of ci.yml on pm/train" ""
+
+    refused "no such run" "\`gh run view ${CI_RUN}\` did not answer"
+
+    gh_run "$CI_RUN" in_progress 1
+    refused "not completed" "has not completed (status 'in_progress'"
+
+    gh_run "$CI_RUN" completed 1
+    refused "no artifact" "attempt 1 (the latest) carries no gate-verdict-1 artifact"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1)"
+    printf '1\n' >"${GH}/download-${CI_RUN}.rc"
+    refused "a download that failed otherwise" "failed for a reason that is not a missing artifact"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "schema=gate-verdict/1 at=yesterday rc=0"
+    refused "unparsable" "record will not parse"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(gate_ci_record_line "$commit" "$tree" "$CI_UNITS" 3 whole 0 999 1)"
+    refused "a record for another run" "record names run=999"
+
+    gh_run "$CI_RUN" completed 2
+    gh_record "$CI_RUN" 2 "$(ci_rec "$commit" "$tree" 0 1)"
+    refused "a record from another attempt" "latest attempt is 2 and its record says attempt=1"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1 pr)"
+    refused "scope=pr" "ran NARROWED (scope=pr)"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 1 1)"
+    refused "red" "is RED (rc=1)"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1 whole "$(stamp_from_now 3600)")"
+    refused "stamped in the future" "stamped IN THE FUTURE"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1 whole "$(stamp_from_now -172800)")"
+    refused "older than 24 h" "OLDER THAN 24 h"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$unknown" "$tree" 0 1)"
+    refused "a commit this checkout lacks" "which this checkout does not have"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$empty" 0 1)"
+    refused "a tree that is not the commit's" "the run measured bytes the commit does not carry"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$side" "$tree" 0 1)"
+    refused "not an ancestor of HEAD" "neither HEAD nor an ancestor of it"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1 whole "" "${CI_UNITS%,*}")"
+    refused "legs short of gate_full_legs" "do not cover this gate's full leg set — missing"
+
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1 whole "" "${CI_UNITS},no-such-unit")"
+    refused "a unit this listing does not declare" "names unit 'no-such-unit', which this checkout's listing does not declare"
+    unset -f refused
+}
+
+case_ci_verdict_reads_the_latest_attempt_and_banks_one_honoured_row() {
+    CURRENT=case_ci_verdict_reads_the_latest_attempt_and_banks_one_honoured_row
+    local commit tree row looked
+    cv_world cv_attempts
+    commit="$(head_sha)"
+    tree="$(repo_tree)"
+
+    CURRENT="attempt 1 green, attempt 2 red → refused on the latest"
+    gh_run "$CI_RUN" completed 2
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1)"
+    gh_record "$CI_RUN" 2 "$(ci_rec "$commit" "$tree" 1 2)"
+    cv_run --ci-verdict "$CI_RUN"
+    exited 2
+    says "is RED (rc=1)"
+    holds "full rows" "0" "$(full_rows)"
+    gh_reset
+
+    CURRENT="attempt 1 red, attempt 2 green → the row is attempt 2's"
+    gh_run "$CI_RUN" completed 2
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 1 1)"
+    gh_record "$CI_RUN" 2 "$(ci_rec "$commit" "$tree" 0 2)"
+    cv_run --ci-verdict "$CI_RUN"
+    exited 0
+    says "verdict banked for tree ${tree}"
+    holds "full rows" "1" "$(full_rows)"
+    row="$(grep ' full ' "$LEDGER" | tail -1)" || row=""
+    DRIVE_OUT="$LEDGER"
+    says " ${tree} full "
+    says "caller=pm-bank sanction=ci-verdict run=${CI_RUN} attempt=2 "
+    if printf '%s\n' "$row" | grep -E " leak-proof=ci:${CI_RUN} rc=0$" >/dev/null; then
+        ok "the row's last field is leak-proof=ci:${CI_RUN} rc=0"
+    else
+        bad "the row does not end with the ci: proof: ${row}"
+    fi
+    DRIVE_OUT="${GH}/calls"
+    says "--name $(gate_ci_artifact_name 2)"
+    says_not "--name $(gate_ci_artifact_name 1)"
+    looked="$(cd "$REPO" && DJB_GATE_LEDGER="$LEDGER" bash -c '. scripts/gate_ledger.sh && gate_ledger_lookup "$1"' _ "$tree" 2>/dev/null || true)"
+    holds "gate_ledger_lookup honours the row" "$row" "$looked"
+    gh_reset
+
+    CURRENT="no run id → the latest completed run on the branch, asked of gh"
+    : >"$LEDGER"
+    printf '%s\n' "$CI_RUN" >"${GH}/list.out"
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1)"
+    cv_run --ci-verdict
+    exited 0
+    says "(the latest completed ci.yml run on pm/train)"
+    holds "full rows" "1" "$(full_rows)"
+    DRIVE_OUT="${GH}/calls"
+    says "run list --workflow ci.yml --branch pm/train --status completed"
+
+    CURRENT="a run id that is not a decimal is refused at the argument"
+    cv_run --ci-verdict 12ab
+    exited 2
+    says "--ci-verdict takes a run id"
+}
+
+case_pr_pushes_a_train_branch_on_an_intent_and_the_wall_says_so() {
+    CURRENT=case_pr_pushes_a_train_branch_on_an_intent_and_the_wall_says_so
+    local tree sha intent now
+    cv_world cv_pr
+    cv_wire_hook
+
+    CURRENT="--pr off a pm/* branch is exit 2, nothing pushed"
+    git -C "$REPO" switch -q main
+    export DJB_GATE_SANCTION="drive: the train road"
+    cv_run --pr
+    exited 2
+    says "--pr pushes a TRAIN branch, and this checkout is on 'main'"
+    holds "pm/* refs on origin" "0" "$(git -C "$W/origin" for-each-ref refs/heads/pm | awk 'END { print NR + 0 }')"
+    holds "ledger lines" "0" "$(count_lines "$LEDGER")"
+    git -C "$REPO" switch -q pm/train
+
+    CURRENT="--pr on a dirty tree is exit 2, nothing folded, nothing pushed"
+    echo "dirty" >"$REPO/dirty.txt"
+    cv_run --pr
+    exited 2
+    says "has uncommitted changes"
+    holds "fold runs" "0" "$(count_lines "${REC}/fold.calls")"
+    holds "pm/* refs on origin" "0" "$(git -C "$W/origin" for-each-ref refs/heads/pm | awk 'END { print NR + 0 }')"
+    rm -f "$REPO/dirty.txt"
+
+    CURRENT="--pr without a typed sanction is exit 2, nothing pushed"
+    unset DJB_GATE_SANCTION
+    cv_run --pr
+    exited 2
+    says "takes a typed sanction"
+    export DJB_GATE_SANCTION="no colon here"
+    cv_run --pr
+    exited 2
+    says "takes a typed sanction"
+    holds "pm/* refs on origin" "0" "$(git -C "$W/origin" for-each-ref refs/heads/pm | awk 'END { print NR + 0 }')"
+    holds "ledger lines" "0" "$(count_lines "$LEDGER")"
+
+    CURRENT="--pr on pm/train folds, writes the intent, prints the road, and the wall is ci-intent"
+    export DJB_GATE_SANCTION="drive: the train road"
+    : >"${REC}/gate.calls"
+    cv_run --pr
+    exited 0
+    tree="$(repo_tree)"
+    sha="$(head_sha)"
+    holds "fold runs" "1" "$(count_lines "${REC}/fold.calls")"
+    says "gh pr create --base main --head pm/train"
+    says "./scripts/pm_push.sh --ci-verdict [<run id>]"
+    says "./scripts/pm_push.sh   (on pm/train: fast-forwards main to the measured commit)"
+    says "pre-push: wall ci-intent ${tree}"
+    says_not "pre-push: wall measuring"
+    holds "the hook's bare gate runs" "0" "$(gate_bare_calls)"
+    holds "origin's pm/train" "$sha" "$(git -C "$W/origin" rev-parse refs/heads/pm/train 2>/dev/null || echo none)"
+    holds "full rows (the intent is not a verdict)" "0" "$(full_rows)"
+    intent="$(grep '^intent=ci ' "$LEDGER" | tail -1)" || intent=""
+    case "$intent" in
+    "intent=ci run=pending tree=${tree} commit=${sha} branch=pm/train at="*" sanction=drive: the train road")
+        ok "one intent row naming the tree, the commit, the branch and the sanction" ;;
+    *) bad "the intent row is not the grammar: ${intent:-<none>}" ;;
+    esac
+
+    CURRENT="--pr --no-fold is honoured and says so"
+    echo "two" >"$REPO/train.txt"
+    git -C "$REPO" commit -q -am "the train, again"
+    cv_run --pr --no-fold
+    exited 0
+    says "--no-fold — THE DERIVED FILES WERE NOT REGENERATED"
+    holds "fold runs" "1" "$(count_lines "${REC}/fold.calls")"
+    says "pre-push: wall ci-intent $(repo_tree)"
+
+    CURRENT="DJB_PUSH_INTENT=ci on a push to main is ignored, with a line, and the lookup decides"
+    sha="$(head_sha)"
+    tree="$(repo_tree)"
+    DRIVE_OUT="${W}/hook-intent-main.log"
+    set +e
+    printf 'refs/heads/pm/train %s refs/heads/main %s\n' "$sha" "0000000000000000000000000000000000000000" |
+        (cd "$REPO" && DJB_PUSH_INTENT=ci DJB_GATE_LEDGER="$LEDGER" ./scripts/githooks/pre-push origin "$W/origin") \
+            >"$DRIVE_OUT" 2>&1
+    DRIVE_EXIT=$?
+    set -e
+    says "DJB_PUSH_INTENT=ci ignored — the push names refs/heads/main"
+    says "pre-push: wall measuring ${tree}"
+    says_not "wall ci-intent"
+
+    CURRENT="an intent row older than the window is not honoured"
+    now=$(date -u +%s)
+    printf 'intent=ci run=pending tree=%s commit=%s branch=pm/train at=%s epoch=%s sanction=drive: old\n' \
+        "$tree" "$sha" "$(gate_ci_stamp_of $((now - 5000)))" "$((now - 5000))" >"$LEDGER"
+    DRIVE_OUT="${W}/hook-intent-stale.log"
+    set +e
+    printf 'refs/heads/pm/train %s refs/heads/pm/train %s\n' "$sha" "0000000000000000000000000000000000000000" |
+        (cd "$REPO" && DJB_PUSH_INTENT=ci DJB_GATE_LEDGER="$LEDGER" ./scripts/githooks/pre-push origin "$W/origin") \
+            >"$DRIVE_OUT" 2>&1
+    DRIVE_EXIT=$?
+    set -e
+    says "(the window is 900 s) — not honoured."
+    says "pre-push: wall measuring ${tree}"
+    says_not "wall ci-intent"
+    unset DJB_GATE_SANCTION
+}
+
+case_after_the_ci_row_a_plain_push_is_honoured_and_a_merge_over_a_moved_main_is_not() {
+    CURRENT=case_after_the_ci_row_a_plain_push_is_honoured_and_a_merge_over_a_moved_main_is_not
+    local tree commit
+    cv_world cv_ff
+    cv_wire_hook
+    commit="$(head_sha)"
+    tree="$(repo_tree)"
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1)"
+    cv_run --ci-verdict "$CI_RUN"
+    exited 0
+
+    CURRENT="the plain push of the measured commit is honoured by the tree key"
+    : >"${REC}/gate.calls"
+    cv_run
+    exited 0
+    says "pre-push: wall honoured ${tree}"
+    holds "the hook's bare gate runs" "0" "$(gate_bare_calls)"
+    holds "origin's main" "$commit" "$(git -C "$W/origin" rev-parse refs/heads/main)"
+
+    CURRENT="a merge commit over a moved main is a new tree, and not honoured"
+    cv_world cv_moved
+    commit="$(head_sha)"
+    tree="$(repo_tree)"
+    git -C "$REPO" switch -q main
+    echo "moved" >"$REPO/moved.txt"
+    git -C "$REPO" add moved.txt
+    git -C "$REPO" commit -q -m "main moved under the train"
+    git -C "$REPO" push -q origin main
+    cv_wire_hook
+    git -C "$REPO" switch -q pm/train
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1)"
+    cv_run --ci-verdict "$CI_RUN"
+    exited 0
+    git -C "$REPO" switch -q main
+    git -C "$REPO" merge -q --no-ff -m "merge the train over the moved main" pm/train
+    : >"${REC}/gate.calls"
+    cv_run
+    says "pre-push: wall measuring $(repo_tree)"
+    says_not "wall honoured"
+    if [ "$(repo_tree)" != "$tree" ]; then
+        ok "the merge's tree is not the measured tree"
+    else
+        bad "the merge's tree equals the measured one — the world did not move main"
+    fi
+    holds "the hook's bare gate runs" "1" "$(gate_bare_calls)"
+}
+
+consult_run() {
+    CV_N=$((CV_N + 1))
+    DRIVE_OUT="${W}/consult-${CV_N}.log"
+    set +e
+    (cd "$REPO" && PATH="${DJB_DRIVE_PATH:-$W/bin:$PATH}" DJB_GATE_LEDGER="$LEDGER" TMPDIR="$W/tmp" \
+        bash -c '. scripts/gate_ledger.sh && gate_ci_consult "$1"' _ "$1") >"$DRIVE_OUT" 2>&1
+    DRIVE_EXIT=$?
+    set -e
+}
+
+# consulted <label> <sha> <wanted line prefix> — exit 0, ONE consult line, its form.
+consulted() {
+    CURRENT="consult: $1"
+    consult_run "$2"
+    exited 0
+    holds "consult lines" "1" "$(grep -c '^consult: ' "$DRIVE_OUT" || true)"
+    says "$3"
+    case "$3" in
+    "consult: honoured"*) ;;
+    *) says_not "consult: honoured" ;;
+    esac
+    unset DJB_DRIVE_PATH
+    gh_reset
+}
+
+case_the_consult_honours_one_green_whole_record_of_this_tree_and_measures_everything_else() {
+    CURRENT=case_the_consult_honours_one_green_whole_record_of_this_tree_and_measures_everything_else
+    local t tree merge moved
+    cv_world cv_consult
+    t="$(head_sha)"
+    tree="$(repo_tree)"
+
+    printf '%s\n' "$CI_RUN" >"${GH}/runs-${t}.out"
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$t" "$tree" 0 1)"
+    consulted "the pushed sha's own green run" "$t" "consult: honoured run=${CI_RUN} attempt=1 tree=${tree}"
+
+    printf '%s\n' "$CI_RUN" >"${GH}/runs-${t}.out"
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$t" "$tree" 0 1 whole "$(stamp_from_now -172800)")"
+    consulted "stale" "$t" "consult: measure — run ${CI_RUN}'s record is OLDER THAN 24 h"
+
+    printf '%s\n' "$CI_RUN" >"${GH}/runs-${t}.out"
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$t" "$tree" 0 1 pr)"
+    consulted "scope=pr" "$t" "consult: measure — run ${CI_RUN} ran NARROWED (scope=pr)"
+
+    printf '%s\n' "$CI_RUN" >"${GH}/runs-${t}.out"
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$t" "$tree" 1 1)"
+    consulted "red" "$t" "consult: measure — run ${CI_RUN} attempt 1 is RED (rc=1)"
+
+    printf '%s\n' "$CI_RUN" >"${GH}/runs-${t}.out"
+    gh_run "$CI_RUN" completed 2
+    gh_record "$CI_RUN" 2 "$(ci_rec "$t" "$tree" 0 1)"
+    consulted "a record from another attempt (an R2.3 refusal)" "$t" "consult: measure — run ${CI_RUN}'s latest attempt is 2"
+
+    consulted "no candidate" "$t" "consult: measure — no candidate"
+
+    : >"${GH}/api.rc"
+    consulted "the API refusing" "$t" "consult: measure — could not look ("
+
+    export DJB_DRIVE_PATH="${NOGH_BIN}"
+    consulted "no gh" "$t" "consult: measure — could not look (no \`gh\` on PATH)"
+
+    # A GITHUB MERGE COMMIT WHOSE TREE IS THE MEASURED TREE: main did not move,
+    # so the merge carries the same bytes — honoured through the pull request
+    # GitHub associates with it. Same bytes, same verdict: the tree key working.
+    git -C "$REPO" switch -q main
+    git -C "$REPO" merge -q --no-ff -m "the pull request, merged" pm/train
+    merge="$(head_sha)"
+    printf '%s\n' "$t" >"${GH}/pulls.out"
+    printf '%s\n' "$CI_RUN" >"${GH}/runs-${t}.out"
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$t" "$tree" 0 1)"
+    consulted "a merge commit of the same bytes, via its pull request" "$merge" "consult: honoured run=${CI_RUN} attempt=1 tree=${tree}"
+
+    # AND ONE OVER A MOVED MAIN: new bytes, the record's tree is not this
+    # checkout's, so it measures.
+    echo "moved" >"$REPO/moved.txt"
+    git -C "$REPO" add moved.txt
+    git -C "$REPO" commit -q -m "main moved"
+    moved="$(head_sha)"
+    printf '%s\n' "$t" >"${GH}/pulls.out"
+    printf '%s\n' "$CI_RUN" >"${GH}/runs-${t}.out"
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$t" "$tree" 0 1)"
+    consulted "tree mismatch" "$moved" "consult: measure — run ${CI_RUN} measured tree ${tree:0:12} and this checkout measures"
+}
+
+# A ROW THE LEDGER'S OWN READER REFUSES, AFTER IT WAS WRITTEN. The world's copy
+# of the library is given a `gate_ledger_lookup` that refuses (the plant), and
+# its ledger already holds an OLDER verdict for the same tree. The refused row
+# must come back out — the ledger byte-identical to before, so the older
+# verdict is again its tree's newest row — and the footer must be true. When
+# something else landed after the row, nothing is removed and the footer says
+# the row STANDS.
+case_a_row_the_lookup_refuses_is_removed_and_the_footer_is_true() {
+    CURRENT=case_a_row_the_lookup_refuses_is_removed_and_the_footer_is_true
+    local commit tree good looked
+    cv_world cv_lookup_refuses
+    printf '\n%s\n' \
+        'gate_ledger_lookup() {' \
+        '    echo "note: PLANTED — this world'"'"'s reader refuses every row" >&2' \
+        '    [ -z "${DJB_DRIVE_LEDGER_INTRUDER:-}" ] || printf "%s\n" "$DJB_DRIVE_LEDGER_INTRUDER" >>"$(gate_ledger_path)"' \
+        '    return 1' \
+        '}' >>"$REPO/scripts/gate_ledger.sh"
+    git -C "$REPO" commit -q -am "a world whose ledger reader refuses"
+    commit="$(head_sha)"
+    tree="$(repo_tree)"
+    good="v1 ${tree} full 2026-09-27T00:00:00Z ${WORLD_FULL_LEGS} caller=pm-bank"
+    printf '%s\n' "$good" >"$LEDGER"
+    cp "$LEDGER" "${W}/ledger.before"
+    gh_run "$CI_RUN" completed 1
+    gh_record "$CI_RUN" 1 "$(ci_rec "$commit" "$tree" 0 1)"
+
+    CURRENT="the lookup refuses the row just written → the row is removed, the footer is true"
+    cv_run --ci-verdict "$CI_RUN"
+    exited 2
+    says "PLANTED — this world's reader refuses every row"
+    says "the row was written and gate_ledger_lookup refuses it"
+    says "the row was REMOVED, and the ledger holds exactly what it held before this run"
+    says "No row was written and nothing was pushed."
+    if cmp -s "${W}/ledger.before" "$LEDGER"; then
+        ok "the ledger is byte-identical to before the run"
+    else
+        bad "the ledger changed: $(tr '\n' '|' <"$LEDGER" | cut -c1-300)"
+    fi
+    looked="$(cd "$REPO" && DJB_GATE_LEDGER="$LEDGER" bash -c '. "$1" && gate_ledger_lookup "$2"' _ "$ROOT/scripts/gate_ledger.sh" "$tree" 2>/dev/null || true)"
+    holds "the real reader's answer for the tree (the older verdict, newest again)" "$good" "$looked"
+
+    CURRENT="another line landed after the row → nothing is removed, and the footer says the row STANDS"
+    export DJB_DRIVE_LEDGER_INTRUDER="v1 intruder full 2026-09-27T00:00:00Z ruff caller=unstated"
+    cv_run --ci-verdict "$CI_RUN"
+    unset DJB_DRIVE_LEDGER_INTRUDER
+    exited 2
+    says "nothing was removed; the refused row STANDS"
+    says "A REFUSED ROW STANDS in the ledger"
+    says_not "No row was written"
+    holds "ledger lines (the older verdict, the refused row, the intruder)" "3" "$(count_lines "$LEDGER")"
+}
+
+# =============================================================================
+# THE LEAK PROOF GOES NIGHTLY — `--proof`, `--leak-proof nightly`, the prose,
+# the homing count, and `--pr` with nothing new
+# =============================================================================
+#
+# WHAT THESE PROVE. `--proof` is the acceptance body as ONE function, run here
+# against stub `scripts/test.sh` and a stub map writer (never the real suite —
+# that is the verifier box's `--proof` run and the nightly's own); the bank's
+# `--leak-proof nightly` reads the latest night through a FAKE `gh` (no network)
+# and launches no acceptance box; a pass-2-only red names candidates, never a
+# cause; a homing a reclaim ate is said, per box, with a count.
+#
+# DOES NOT COVER: the workflow itself (it cannot be dispatched before it is on
+# main — its live proof is the PM's); GitHub's artifact store beyond what the
+# fake models.
+
+# proof_world <name> — a fresh world whose checkout carries a stub suite: a
+# `scripts/test.sh` that records its argv and answers from `$REC/{collect,
+# pass1,pass2}.rc`, and a stub `.venv/bin/python` that writes a map to the
+# `--out` it is handed. Untracked on purpose: `--proof` needs no clean tree.
+proof_world() {
+    fresh_world "$1"
+    mkdir -p "$REPO/.venv/bin"
+    sed -e "s|__REC__|${REC}|g" >"$REPO/scripts/test.sh" <<'STUB'
+#!/usr/bin/env bash
+# A STUB SUITE. It records every argv and answers from per-case fixtures.
+REC="__REC__"
+printf '%s\n' "$*" >>"$REC/test.calls"
+case " $* " in
+*" --collect-only "*)
+    [ ! -f "$REC/collect.rc" ] || exit "$(cat "$REC/collect.rc")"
+    echo "apps/x/tests/test_a.py::test_one"
+    exit 0
+    ;;
+*" --cov-context=test "*)
+    [ -z "${COVERAGE_FILE:-}" ] || echo "coverage" >"$COVERAGE_FILE"
+    exit "$(cat "$REC/pass1.rc" 2>/dev/null || echo 0)"
+    ;;
+esac
+exit "$(cat "$REC/pass2.rc" 2>/dev/null || echo 0)"
+STUB
+    sed -e "s|__REC__|${REC}|g" >"$REPO/.venv/bin/python" <<'STUB'
+#!/usr/bin/env bash
+# A STUB MAP WRITER: `scripts/test_impact.py write … --out <file>`.
+REC="__REC__"
+printf '%s\n' "$*" >>"$REC/map.calls"
+out=""
+while [ "$#" -gt 0 ]; do
+    [ "$1" != "--out" ] || out="$2"
+    shift
+done
+printf '%s\n' '{"generated": {"at": "2026-09-27T00:00:00+00:00", "pytest": 1, "tree": "tree:proofproof12"}, "tests": {}, "unmapped": {}}' >"$out"
+exit "$(cat "$REC/map.rc" 2>/dev/null || echo 0)"
+STUB
+    chmod +x "$REPO/scripts/test.sh" "$REPO/.venv/bin/python"
+}
+
+# field_names <record file> — the record's field NAMES, in order, one line.
+field_names() {
+    awk 'NF { for (i = 1; i <= NF; i++) { n = $i; sub(/=.*/, "", n); printf "%s%s", (i > 1 ? " " : ""), n } print ""; exit }' "$1" 2>/dev/null || true
+}
+# field_of <record file> <name> — that field's value, or nothing.
+field_of() {
+    awk -v k="$2" 'NF { for (i = 1; i <= NF; i++) { n = index($i, "="); if (n && substr($i, 1, n - 1) == k) { print substr($i, n + 1); exit } } exit }' "$1" 2>/dev/null || true
+}
+
+case_proof_is_one_function_the_box_and_the_runner_both_call() {
+    CURRENT=case_proof_is_one_function_the_box_and_the_runner_both_call
+    local out tree form cmd home aout names_nightly names_box calls seeds
+
+    proof_world proof_green
+    out="${W}/proof-out"
+    tree="$(cd "$REPO" && . scripts/gate_ledger.sh && gate_measured_tree)"
+    run_bank --proof --where nightly --run 77 --attempt 1 --seed 424242 --workers 3 --out "$out"
+    exited 0
+    says "leak proof: GREEN - pass 1 and pass 2 both passed under seed 424242"
+    # TWO PASSES UNDER ONE SEED, pass 1 with contexts, and the collection first.
+    calls="${REC}/test.calls"
+    holds "suite invocations (collect, pass 1, pass 2)" "3" "$(count_lines "$calls")"
+    seeds="$(grep -o -- '--randomly-seed=[0-9]*' "$calls" 2>/dev/null | LC_ALL=C sort -u | tr '\n' ' ' || true)"
+    holds "one seed on both passes" "--randomly-seed=424242 " "$seeds"
+    holds "passes carrying it" "2" "$(grep -c -- '--randomly-seed=424242' "$calls" || true)"
+    holds "pass 1 carries the coverage contexts" "1" "$(grep -c -- '--cov-context=test' "$calls" || true)"
+    holds "both passes at the typed workers" "2" "$(grep -c -- '-n 3 ' "$calls" || true)"
+    holds "the map writer ran once, after the green pass 1" "1" "$(count_lines "${REC}/map.calls")"
+    # THE RECORD, IN THE GRAMMAR, READ BY THE READER A BANK USES.
+    DRIVE_OUT="${out}/leak_proof.txt"
+    holds "the record's fields" "schema at commit tree seed pass1 pass2 map rc run attempt where" \
+        "$(field_names "${out}/leak_proof.txt")"
+    holds "map= on a green pass 1" "0" "$(field_of "${out}/leak_proof.txt" map)"
+    holds "tree= is the checkout's measured tree" "$tree" "$(field_of "${out}/leak_proof.txt" tree)"
+    form="$(cd "$REPO" && bash -c '. scripts/gate_ledger.sh && gate_nightly_read "$1"' _ "$out" 2>/dev/null || true)"
+    case "$form" in
+    "nightly:"*" tree=${tree:0:12} rc=0") ok "gate_nightly_read reads it: ${form}" ;;
+    *) bad "gate_nightly_read does not read it as a green night: '${form}'" ;;
+    esac
+    if [ -s "${out}/test_impact.json" ]; then ok "the map is in --out"; else bad "no map in --out"; fi
+    holds "the checkout's own map is untouched" "" "$(git -C "$REPO" status --porcelain -- scripts/test_impact.json)"
+    names_nightly="$(field_names "${out}/leak_proof.txt")"
+
+    # THE BOX'S COMMAND, RUN — the SAME function. The bank's own remote string
+    # is read out of a bank's record, pointed at this checkout instead of the
+    # box's, and executed; its record carries the same field set.
+    fresh_world proof_box_cmd
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    cmd="$(grep -F -- '--proof' "${REC}/run.calls" 2>/dev/null | cut -f2- | sed 's/^-- //' || true)"
+    proof_world proof_box_run
+    home="${W}/home"
+    mkdir -p "$home"
+    cmd="${cmd/$(bake_checkout_path)/$REPO}"
+    DRIVE_OUT="${W}/box-cmd.log"
+    set +e
+    (HOME="$home" DJB_GATE_LEDGER="$LEDGER" TMPDIR="${W}/tmp" bash -c "$cmd") >"$DRIVE_OUT" 2>&1
+    DRIVE_EXIT=$?
+    set -e
+    exited 0
+    aout="$(find "${home}/verify" -name leak_proof.txt 2>/dev/null | head -n 1 || true)"
+    names_box="$(field_names "${aout:-/nonexistent}")"
+    holds "the box's record has the runner's field set" "$names_nightly" "$names_box"
+    holds "and says where it ran" "acceptance" "$(field_of "${aout:-/nonexistent}" where)"
+    says "acceptance: pass1 (contexts)"
+
+    # A PASS-2-ONLY RED: exit 1, the record says so, and the prose names
+    # candidates — the replay is this function under that seed.
+    proof_world proof_pass2_red
+    printf '1\n' >"${REC}/pass2.rc"
+    run_bank --proof --seed 8675309 --workers 3 --out "${W}/p2"
+    exited 1
+    says "pass 2 red after a green pass 1 — candidate causes: state pass 1 left behind, the wall clock, test order; replay: ./scripts/pm_push.sh --proof --seed 8675309 --workers 3"
+    holds "rc= on a red pass 2" "1" "$(field_of "${W}/p2/leak_proof.txt" rc)"
+    holds "pass2= on a red pass 2" "1" "$(field_of "${W}/p2/leak_proof.txt" pass2)"
+
+    # A RED PASS 1 WRITES NO MAP (map=2), and pass 2 still runs.
+    proof_world proof_pass1_red
+    printf '1\n' >"${REC}/pass1.rc"
+    run_bank --proof --seed 5 --out "${W}/p1"
+    exited 1
+    holds "map= after a red pass 1" "2" "$(field_of "${W}/p1/leak_proof.txt" map)"
+    holds "the map writer never ran" "0" "$(count_lines "${REC}/map.calls")"
+    holds "both passes still ran" "3" "$(count_lines "${REC}/test.calls")"
+    if [ -e "${W}/p1/test_impact.json" ]; then bad "a map was written after a red pass 1"; else ok "no map after a red pass 1"; fi
+
+    # A COLLECTION THAT FAILED IS COULD-NOT-LOOK, AND STILL A RECORD.
+    proof_world proof_collect_red
+    printf '4\n' >"${REC}/collect.rc"
+    run_bank --proof --seed 5 --out "${W}/pc"
+    exited 2
+    holds "rc= when neither pass ran" "2" "$(field_of "${W}/pc/leak_proof.txt" rc)"
+    holds "pass1= when it never ran" "-" "$(field_of "${W}/pc/leak_proof.txt" pass1)"
+
+    # THE REFUSALS, each before anything runs.
+    proof_world proof_refusals
+    run_bank --proof --out "$REPO/inside"
+    exited 2
+    says "is inside"
+    run_bank --proof --where nightly
+    exited 2
+    says "names the workflow run that is writing it"
+    run_bank --proof --bogus
+    exited 2
+    says "--proof takes --out, --seed, --workers, --where, --run and --attempt"
+    holds "the suite never ran on a refusal" "0" "$(count_lines "${REC}/test.calls")"
+}
+
+# nightly_world <name> — cv_world's fake gh and runner, on main.
+nightly_world() {
+    cv_world "$1"
+    git -C "$REPO" switch -q main
+}
+
+# nightly_plant <form> — the latest nightly as the fake gh serves it:
+# green · red · stale · none (no run) · noart (a run with no artifact) · fail.
+NIGHTLY_RUN=555
+nightly_plant() {
+    local d at rc=0 commit tree
+    gh_reset
+    case "$1" in
+    none)
+        : >"${GH}/list.out"
+        return 0
+        ;;
+    fail)
+        printf '1\n' >"${GH}/list.rc"
+        return 0
+        ;;
+    esac
+    printf '%s\n' "$NIGHTLY_RUN" >"${GH}/list.out"
+    gh_run "$NIGHTLY_RUN" completed 1
+    [ "$1" != "noart" ] || return 0
+    at="$(stamp_from_now -3600)"
+    [ "$1" != "stale" ] || at="$(stamp_from_now -172800)"
+    [ "$1" != "red" ] || rc=1
+    commit="$(head_sha)"
+    tree="$(repo_tree)"
+    # A NIGHT MEASURED ON ANOTHER TREE: the empty tree, which no bank keys on.
+    [ "$1" != "foreign" ] || tree="$(git -C "$REPO" hash-object -t tree /dev/null)"
+    d="${GH}/art-${NIGHTLY_RUN}/nightly-leak-proof"
+    mkdir -p "$d"
+    gate_nightly_line "$at" "$commit" "$tree" 99 0 "$rc" 0 "$rc" "$NIGHTLY_RUN" 1 nightly >"${d}/leak_proof.txt"
+    printf '%s\n' '{"generated": {}, "tests": {}, "unmapped": {}}' >"${d}/test_impact.json"
+}
+
+# count_matching -- <fixed string> <file> — matching lines, 0 when the file is
+# absent (a bank that ran no `run` at all writes no record of one).
+count_matching() {
+    local n
+    n="$(grep -cF -- "$2" "$3" 2>/dev/null || true)"
+    printf '%s\n' "${n:-0}"
+}
+
+source_lines() {
+    grep -cE '^(leak-proof: nightly |WARNING: leak-proof: )' "$DRIVE_OUT" || true
+}
+
+case_leak_proof_nightly_reads_the_night_and_launches_no_box() {
+    CURRENT=case_leak_proof_nightly_reads_the_night_and_launches_no_box
+    local form row want looked tree ntree
+
+    for form in green foreign red stale none noart fail; do
+        CURRENT="--leak-proof nightly, the night ${form}"
+        nightly_world "nightly_${form}"
+        nightly_plant "$form"
+        tree="$(repo_tree)"
+        cv_run --bank --no-fold --on-boxes "$PLAN_BOXES" --leak-proof nightly
+        exited 0
+        holds "source lines printed" "1" "$(source_lines)"
+        case "$form" in
+        green)
+            says "leak-proof: nightly run ${NIGHTLY_RUN} attempt 1 green — nightly:"
+            says_not "not this bank's"
+            want="nightly:[0-9]{8}T[0-9]{6}Z tree=${tree:0:12} rc=0"
+            ;;
+        foreign)
+            # GREEN ON ANOTHER TREE IS SAID, never composed as plain green;
+            # the row keeps the night's own tree=.
+            ntree="$(git -C "$REPO" hash-object -t tree /dev/null)"
+            says "leak-proof: nightly run ${NIGHTLY_RUN} attempt 1 green — nightly:"
+            says " tree=${ntree:0:12} rc=0 (measured ${ntree:0:12}, not this bank's ${tree:0:12}: report-only)"
+            want="nightly:[0-9]{8}T[0-9]{6}Z tree=${ntree:0:12} rc=0"
+            ;;
+        red)
+            says "WARNING: leak-proof: the latest nightly (run ${NIGHTLY_RUN}, attempt 1) is RED (rc=1)"
+            want="nightly:[0-9]{8}T[0-9]{6}Z tree=${tree:0:12} rc=1"
+            ;;
+        stale)
+            says "WARNING: leak-proof: the latest nightly (run ${NIGHTLY_RUN}, attempt 1) is older than 24 h"
+            want="nightly:stale:[0-9]{8}T[0-9]{6}Z"
+            ;;
+        none)
+            says "WARNING: leak-proof: no nightly leak proof (no completed nightly-proof.yml run on main)"
+            want="nightly:none"
+            ;;
+        noart)
+            says "WARNING: leak-proof: no nightly leak proof (nightly run ${NIGHTLY_RUN} (attempt 1) carries no nightly-leak-proof artifact)"
+            want="nightly:none"
+            ;;
+        fail)
+            says "WARNING: leak-proof: no nightly leak proof (could not look:"
+            want="nightly:none"
+            ;;
+        esac
+        # NO ACCEPTANCE BOX: not brought up, and no `--proof` handed to any box.
+        holds "acceptance ups" "0" "$(awk -F'\t' '$1 == "acceptance" { n++ } END { print n + 0 }' "${REC}/up.calls")"
+        holds "boxes brought up (the plan's, and no more)" "$PLAN_BOXES" "$(count_lines "${REC}/up.calls")"
+        holds "--proof commands sent to a box" "0" "$(count_matching -- '--proof' "${REC}/run.calls")"
+        says "acceptance: no box — --leak-proof nightly"
+        # THE ROW CARRIES THE FORM, AND THE HOOK'S LOOKUP HONOURS IT.
+        row="$(grep ' full ' "$LEDGER" 2>/dev/null | tail -1 || true)"
+        if printf '%s\n' "$row" | grep -E " leak-proof=${want}\$" >/dev/null; then
+            ok "the row's field is the nightly's form (${row##* leak-proof=})"
+        else
+            bad "the row does not end with leak-proof=${want}: ${row:-<no row>}"
+        fi
+        if [ -n "$row" ] && case ",$(printf '%s\n' "$row" | awk '{ print $5 }')," in *",${PLAN_SUITE_LEG}/1,"*) true ;; *) false ;; esac; then
+            ok "the suite ran one pass (${PLAN_SUITE_LEG}/1 in the legs)"
+        else
+            bad "the row's legs do not name ${PLAN_SUITE_LEG}/1: ${row}"
+        fi
+        looked="$(cd "$REPO" && DJB_GATE_LEDGER="$LEDGER" bash -c '. scripts/gate_ledger.sh && gate_ledger_lookup "$1"' _ "$tree" 2>/dev/null || true)"
+        holds "gate_ledger_lookup honours the row" "$row" "$looked"
+        assert_mac_measured_nothing
+    done
+
+    CURRENT="--leak-proof outside --bank --on-boxes, or an unknown source, is exit 2"
+    nightly_world nightly_refusals
+    cv_run --bank --no-fold --leak-proof nightly
+    exited 2
+    says "--leak-proof is only meaningful with --bank --on-boxes N"
+    cv_run --leak-proof nightly
+    exited 2
+    says "--leak-proof is only meaningful with --bank --on-boxes N"
+    cv_run --bank --no-fold --on-boxes "$PLAN_BOXES" --leak-proof tuesday
+    exited 2
+    says "--leak-proof takes nightly or acceptance, got 'tuesday'"
+    cv_run --bank --no-fold --on-boxes "$PLAN_BOXES" --leak-proof
+    exited 2
+    says "--leak-proof takes a source"
+    holds "boxes brought up by a refusal" "0" "$(count_lines "${REC}/up.calls")"
+    holds "rows written by a refusal" "0" "$(full_rows)"
+
+    CURRENT="--leak-proof acceptance is today's bank, box and all"
+    nightly_world nightly_acceptance
+    cv_run --bank --no-fold --on-boxes "$PLAN_BOXES" --leak-proof acceptance
+    exited 0
+    holds "acceptance ups" "1" "$(awk -F'\t' '$1 == "acceptance" { n++ } END { print n + 0 }' "${REC}/up.calls")"
+    holds "source lines printed" "0" "$(source_lines)"
+    DRIVE_OUT="$LEDGER"
+    says "leak-proof=acceptance:"
+}
+
+case_a_pass_2_only_red_names_candidate_causes_never_one() {
+    CURRENT=case_a_pass_2_only_red_names_candidate_causes_never_one
+    fresh_world pass2_prose
+    gate_nightly_line "$(stamp_from_now -60)" "$(head_sha)" "$(repo_tree)" 8675309 0 1 0 1 0 0 acceptance \
+        >"${REC}/accept.proof"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 1
+    holds "verdict rows" "0" "$(ledger_rows)"
+    says "pass 2 red after a green pass 1 — candidate causes: state pass 1 left behind, the wall clock, test order; replay: ./scripts/pm_push.sh --proof --seed 8675309 --workers 16"
+    # NO LINE ASSERTS ONE CAUSE.
+    says_not "and nothing else"
+    says_not "a red pass 2 is state pass 1 left behind"
+    assert_mac_measured_nothing
+}
+
+case_a_homing_a_reclaim_ate_is_lost_per_box_and_counted() {
+    CURRENT=case_a_homing_a_reclaim_ate_is_lost_per_box_and_counted
+    fresh_world homing_reclaimed
+    printf '255\n' >"${REC}/harvest.rc.${PLAN_FLAT1}"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    holds "verdict rows (a lost homing decides nothing)" "1" "$(ledger_rows)"
+    says "drive rows from ${PLAN_FLAT1}: LOST (instance-terminated-no-capacity: not enough capacity) — the next bank re-drives them"
+    says "drive rows homed: $((PLAN_BOXES - 1))/${PLAN_BOXES} boxes"
+
+    CURRENT="a homing that failed with no reclaim says the exit it saw"
+    fresh_world homing_failed
+    printf '1\n' >"${REC}/harvest.rc.${PLAN_FLAT2}"
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    says "drive rows homed: $((PLAN_BOXES - 1))/${PLAN_BOXES} boxes"
+
+    CURRENT="every box homed is counted too"
+    fresh_world homing_all
+    run_bank --bank --no-fold --on-boxes "$PLAN_BOXES"
+    exited 0
+    says "drive rows homed: ${PLAN_BOXES}/${PLAN_BOXES} boxes"
+    says_not ": LOST ("
+}
+
+case_pr_with_nothing_new_exits_0_before_the_hook() {
+    CURRENT=case_pr_with_nothing_new_exits_0_before_the_hook
+    local sha intents
+    cv_world pr_up_to_date
+    cv_wire_hook
+    export DJB_GATE_SANCTION="drive: the train road"
+    cv_run --pr
+    exited 0
+    sha="$(head_sha)"
+    holds "origin's pm/train after the first push" "$sha" "$(git -C "$W/origin" rev-parse refs/heads/pm/train 2>/dev/null || echo none)"
+    intents="$(grep -c '^intent=ci ' "$LEDGER" || true)"
+
+    CURRENT="the same --pr again: the remote already has it — exit 0, no intent, no push, no gate"
+    : >"${REC}/gate.calls"
+    cv_run --pr
+    exited 0
+    says "pm/train is already at ${sha} — nothing to push."
+    says_not "pre-push:"
+    holds "the hook's bare gate runs" "0" "$(gate_bare_calls)"
+    holds "intent rows (no second one)" "$intents" "$(grep -c '^intent=ci ' "$LEDGER" || true)"
+    unset DJB_GATE_SANCTION
+}
+
 # --- run ----------------------------------------------------------------------
 
 derive_the_plan_from_the_real_listing
@@ -3768,6 +4756,17 @@ case_a_lying_tag_builds_nothing_and_the_bank_stands
 case_a_failed_push_is_printed_and_the_row_still_stands
 case_no_registry_coordinate_is_printed_and_nothing_is_built
 case_ci_skips_a_present_tag_and_builds_an_absent_one
+case_ci_verdict_refuses_each_cause_with_exit_2_and_no_row
+case_ci_verdict_reads_the_latest_attempt_and_banks_one_honoured_row
+case_pr_pushes_a_train_branch_on_an_intent_and_the_wall_says_so
+case_after_the_ci_row_a_plain_push_is_honoured_and_a_merge_over_a_moved_main_is_not
+case_the_consult_honours_one_green_whole_record_of_this_tree_and_measures_everything_else
+case_a_row_the_lookup_refuses_is_removed_and_the_footer_is_true
+case_proof_is_one_function_the_box_and_the_runner_both_call
+case_leak_proof_nightly_reads_the_night_and_launches_no_box
+case_a_pass_2_only_red_names_candidate_causes_never_one
+case_a_homing_a_reclaim_ate_is_lost_per_box_and_counted
+case_pr_with_nothing_new_exits_0_before_the_hook
 
 # >>> summary: passed and failed, separately >>>
 echo ""

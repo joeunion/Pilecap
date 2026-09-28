@@ -1935,6 +1935,12 @@ box_run() {
             DJB_LOOP_HERE="$3"
             export DJB_LOOP_HERE
         fi
+        # THE LEDGER THE GUARD CONSULTS IS THE CASE'S, NEVER THE REAL ONE: off a
+        # box the guard first asks the loop ledger whether a BOX measured this
+        # tree, and the real ledger is shared by every worktree — a box row for
+        # this checkout's tree there would turn the refusal below into a hit.
+        DJB_LOOP_LEDGER="${BOX_LEDGER:-${WORK}/no-loop-ledger-here}"
+        export DJB_LOOP_LEDGER
         . "$BOX_BODY"
         printf 'PERMITTED because=[%s]\n' "$LOOP_HERE_BECAUSE"
     ) >"$BOX_OUT" 2>&1 || BOX_RC=$?
@@ -2022,6 +2028,54 @@ case_a_loop_that_is_not_on_a_box_refuses_and_prints_the_recipe() {
     ok "--fast, --census and the full mode pass through the guard untouched and set no reason"
 }
 
+# A BOX MAY ALREADY HAVE MEASURED THESE BYTES. `verifier_box.sh wait` brings a
+# green box loop's row home with ` box=<id>`; off a box, the guard asks the loop
+# ledger for a BOX row at this checkout's measured tree before it refuses, and a
+# hit is exit 0 naming the row. A row with no ` box=` (this machine's own, under
+# a valve) is not a box's and the refusal stands; DJB_LOOP_NO_CACHE never
+# consults.
+case_a_laptop_loop_on_bytes_a_box_measured_prints_the_hit() {
+    CURRENT="the laptop's consult by tree"
+    OUT=""
+    if ! box_extract; then
+        bad "scripts/check.sh has no loop-here fence"
+        return
+    fi
+    local absent="${WORK}/no-such-marker-anywhere" tree key
+    rm -rf "$absent"
+    tree=$( (. scripts/gate_ledger.sh >/dev/null 2>&1 && gate_measured_tree) 2>/dev/null) || tree=""
+    [ -n "$tree" ] || cannot_look "gate_measured_tree would not answer in ${ROOT}"
+    key="loop-v1:$(printf 'b%.0s' $(seq 1 64))"
+    BOX_LEDGER="${WORK}/box-ledger-hit"
+    printf 'loop-v1 %s loop 2026-09-27T10:00:00Z caller=unstated scope=mode=fast passes=1 tree=%s env=x box=i-zzzbox\n' \
+        "$key" "$tree" >"$BOX_LEDGER"
+    box_run "--loop" "$absent" ""
+    is "$BOX_RC" "0" "the exit off a box, over bytes a box measured"
+    box_says "ok: --loop VERDICT HELD BY A BOX"
+    box_says "  box    i-zzzbox  banked 2026-09-27T10:00:00Z"
+    box_says "  key    ${key}"
+    if grep -qF 'REFUSING a --loop' "$BOX_OUT"; then
+        bad "a hit still printed the refusal"
+    else
+        ok "a hit prints no refusal"
+    fi
+
+    CURRENT="a row with no box= is not a box's"
+    BOX_LEDGER="${WORK}/box-ledger-local"
+    printf 'loop-v1 %s loop 2026-09-27T10:00:00Z caller=unstated scope=mode=fast passes=1 tree=%s env=x\n' \
+        "$key" "$tree" >"$BOX_LEDGER"
+    box_run "--loop" "$absent" ""
+    is "$BOX_RC" "2" "the exit over a row this machine banked"
+    box_says "REFUSING a --loop on a machine that is not a verifier box"
+
+    CURRENT="DJB_LOOP_NO_CACHE never consults"
+    BOX_LEDGER="${WORK}/box-ledger-hit"
+    DJB_LOOP_NO_CACHE=1 box_run "--loop" "$absent" ""
+    is "$BOX_RC" "2" "the exit with DJB_LOOP_NO_CACHE over a box row"
+    box_says "REFUSING a --loop on a machine that is not a verifier box"
+    BOX_LEDGER=""
+}
+
 case_the_box_guard_is_wired_above_everything_it_would_cost() {
     # A GUARD THAT QUEUED FOR AN HOUR AND THEN SAID NO would be an expensive way
     # to learn about a missing marker. It has to sit above the lease, the lock,
@@ -2093,6 +2147,7 @@ case_the_measurement_writes_a_file_its_own_reader_can_read
 case_the_measurement_flag_belongs_to_the_full_mode_alone
 case_every_registered_drive_member_resolves_to_a_file
 case_a_loop_that_is_not_on_a_box_refuses_and_prints_the_recipe
+case_a_laptop_loop_on_bytes_a_box_measured_prints_the_hit
 case_the_box_guard_is_wired_above_everything_it_would_cost
 
 echo "test_loop_tier: ${PASSED} passed · ${FAILED} failed"

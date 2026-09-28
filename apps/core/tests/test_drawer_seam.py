@@ -116,7 +116,9 @@ def test_the_scope_kinds_the_engine_reads_are_the_union() -> None:
         kinds = _GATE._scope_kinds()
     finally:
         _swap(_GATE, "LOCAL_DOC", saved)
-    assert set(kinds) == {"py", "js", "ledgers"}, sorted(kinds)
+    # The template's four (`compose` and `workflows` are rules 61's and 62's
+    # subjects) plus the drawer's one; the clashing `py` is not a fifth.
+    assert set(kinds) == {"py", "js", "compose", "workflows", "ledgers"}, sorted(kinds)
     assert _WORLDS.kind_roots({"kind": "ledgers"}, kinds) == ["docs"]
     assert _WORLDS.kind_roots({"kind": "py"}, kinds) == ["apps", "config"]
 

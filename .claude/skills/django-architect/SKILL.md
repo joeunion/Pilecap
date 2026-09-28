@@ -309,6 +309,22 @@ declared shadow: `references/client-layer.md`. A rung touching the client layer 
 briefed from there, and points the builder at
 `.claude/skills/fe-conventions/SKILL.md` for the how.
 
+**§E+ — a face is drawn from its pattern-book entry, never from the criteria's
+prose.** **The DESIGN stage is required before a product's first frontend rung,
+and the lead's DECOMPOSE refuses a frontend rung whose element class has no
+entry.** Every element class a client rung draws has an entry in
+`docs/product/design/patterns.md` or the product's drawer beside it — shape ·
+words · placement · states · ruling · instrument — and the rung's criteria cite
+that entry by section and its instrument by file, copied from the book's
+instrument index. No entry is a DESIGN-stage gap, returned to DESIGN rather
+than decided in the criteria; house rule 63 holds every entry to an instrument
+that exists, rules 64–67 hold every stylesheet and inline style to the
+book's §26 (type roles, the spacing scale, the motion ledger, one focus ring
+and the act floor), and rules 68–73 hold its floor entries — nothing disabled
+(§4), no toast, spinner or shimmer (§13, §17), one dialog primitive and no
+dismiss word in its foot (§1), the route table against the pages (§0), every
+label a lexicon row and no machine token in copy (§21).
+
 ## F · Naming
 
 House rule **16**, as `architecture.md` numbers it, plus the shapes other

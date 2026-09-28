@@ -324,8 +324,12 @@ ownership_of() {
     # `.github/*` and `docs/product/*.md` are single bucket rules covering paths
     # the contract splits between the two owners.
     case "$p" in
-    # CI composes one workflow and the product may add its own beside it.
-    .github/workflows/ci.yml)
+    # The template ships TWO workflows and the product may add its own beside
+    # them: `ci.yml` (the gate, sharded) and `nightly-proof.yml` (the leak
+    # proof the bank no longer runs, and the map the fold harvests). An edit
+    # to either is the template's file drifting under a product; every other
+    # file under `.github/workflows/` is the product's.
+    .github/workflows/ci.yml | .github/workflows/nightly-proof.yml)
         OWNERSHIP=template
         return 0
         ;;
@@ -338,12 +342,19 @@ ownership_of() {
         OWNERSHIP=product
         return 0
         ;;
-    # The six standing documents the contract names, and no others: a product's
-    # own `architecture.md` is where it records its decisions AND its
-    # divergences, so it cannot be one.
+    # The six standing documents the contract names, and the design directory
+    # — and no others: a product's own `architecture.md` is where it records
+    # its decisions AND its divergences, so it cannot be one. The design
+    # directory is the SAME GLOB the publish census's R9 arm ships
+    # (`rules_for` in archaeology_lib.sh), so a second file the template adds
+    # beside the pattern book is the template's the day it lands, never a
+    # silent product file the publish census ships as SHIP. The drawer beside
+    # the book, `patterns.local.md`, never reaches this arm: the reserved
+    # drawer arm above matches it first, and it is the product's.
     docs/product/build-contract.md | docs/product/instruments.md | \
         docs/product/partition-closure.md | docs/product/publication-manifest.md | \
-        docs/product/api-editorial-standard.md | docs/product/scale-envelope.md)
+        docs/product/api-editorial-standard.md | docs/product/scale-envelope.md | \
+        docs/product/design/*)
         OWNERSHIP=template
         return 0
         ;;

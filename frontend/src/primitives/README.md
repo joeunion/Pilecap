@@ -1,11 +1,19 @@
-# `primitives/` — L1, and it is EMPTY on purpose
+# `primitives/` — L1, and it is ALMOST empty on purpose
 
-**Nothing lives here yet, and shipping something here would be the mistake.**
+**One primitive lives here, and a house rule put it here: `dialog.tsx`.**
+Shipping anything else here would be the mistake.
 
 This template ships a *system*, not a look. A component library shipped from
 here would be taste exported into every product built on it — the design strike
 that was called on exactly that proposal, and the reason this directory is a
-README and nothing else.
+README and one file.
+
+**The one file is the sheet** (`patterns.md` §1), and it is here because house
+rule 70 says only the dialog primitive draws a `<dialog>` or a
+`role="dialog"` — a rule about the one primitive needs the primitive to exist.
+Its shape is the book's floor (one head with the one dismiss, a body, a foot of
+acts only), drawn with the tokens alone; a product's look reaches it through
+the tokens and the drawer, never by a second dialog beside it.
 
 ## What belongs here when a product fills it
 

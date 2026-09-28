@@ -150,7 +150,7 @@ cd "$(dirname "$0")/../.."
 # AFTER the source, never before: the preamble assigns this variable 0 itself.
 DRIVE_OPTED_IN_TO_FINISH=1
 
-CASES="case_a_dirty_template_owned_path_is_could_not_look_on_rule_60 case_the_remote_declared_base_is_green case_the_file_declared_base_is_green_on_rules_51_and_60"
+CASES="case_a_dirty_template_owned_path_is_could_not_look_on_rule_60 case_the_remote_declared_base_is_green case_the_file_declared_base_is_green_on_rules_51_and_60 case_one_rule_that_could_not_look_is_named_could_not_look"
 MODE=narrowed
 MODE_WHY="the default: every --loop and every unsharded gate — the whole run is the sharded bank's (--leg selftest --shard k/N)"
 case "${1:-}" in
@@ -190,6 +190,7 @@ drive_require_scratch UPSTREAM "$UPSTREAM"
 
 PASS=0
 FAIL=0
+CNL=0
 ok() {
     PASS=$((PASS + 1))
     printf '   ok    %s\n' "$*"
@@ -197,6 +198,15 @@ ok() {
 bad() {
     FAIL=$((FAIL + 1))
     printf '   FAIL  %s\n' "$*"
+}
+# cnl — ONE RULE THE ENGINE COULD NOT LOOK AT, inside a run that judged the
+# rest. Neither a pass nor a finding about the world: a probe whose environment
+# was missing (a database, a stack) is not "a form collides with a file a
+# product has", and the drive's exit says which of the two it saw
+# (`shapes_verdict`).
+cnl() {
+    CNL=$((CNL + 1))
+    printf '   could not look  %s\n' "$*"
 }
 now() { date +%s; }
 
@@ -541,6 +551,14 @@ for rid, name, on, can, neg in floors:
         continue
     m = HEAD.match(line)
     if not m:
+        # A RULE THE ENGINE COULD NOT LOOK AT is its own verdict, never a BAD:
+        # the engine printed `— COULD NOT LOOK (<why>)` because a form could
+        # not be judged here, and calling that a failed form would name a cause
+        # (a collision with the product's tree) nothing proved.
+        k = re.search(r" — (COULD NOT LOOK \(.*\))", line)
+        if k:
+            print(f"CNL\t{rid}\t{k.group(1)}")
+            continue
         print(f"BAD\t{rid}\tnot an ok line: {line}")
         continue
     a, b, c, d = (int(x) for x in m.groups())
@@ -570,6 +588,7 @@ PY
         case "$verdict" in
         OK) ok "$label: rule $rid — $what" ;;
         BAD) bad "$label: rule $rid — $what" ;;
+        CNL) cnl "$label: rule $rid — $what" ;;
         *) bad "$label: the rule-line judge printed a row with no verdict: '$verdict $rid $what'" ;;
         esac
     done <"$judged"
@@ -614,11 +633,16 @@ case_the_remote_declared_base_is_green() {
             ok "W-C-remote: the run is the whole run, not a narrowed one"
         fi
         every_rule_asserts W-C-remote
-        refusals=$(grep -cE 'PLANT REFUSED|CANARY DEAD|FALSE-POSITIVE|COULD NOT LOOK|POPULATION SHORT|ENFORCEMENT BROKEN' "$OUT" || true)
+        refusals=$(grep -cE 'PLANT REFUSED|CANARY DEAD|FALSE-POSITIVE|POPULATION SHORT' "$OUT" || true)
         if [ "$refusals" = 0 ]; then
-            ok "W-C-remote: no plant refused, no canary dead, no negative fired, nothing unjudged, nothing broken"
+            ok "W-C-remote: no plant refused, no canary dead, no negative fired"
         else
             bad "W-C-remote: $refusals refusal line(s)"
+        fi
+        # COULD NOT LOOK and the ENFORCEMENT BROKEN block it lands in are the
+        # per-rule `could not look` tally's, above — counted there, not here.
+        if [ "$CNL" = 0 ] && grep -qE 'COULD NOT LOOK|ENFORCEMENT BROKEN' "$OUT"; then
+            bad "W-C-remote: the transcript says COULD NOT LOOK / ENFORCEMENT BROKEN and no rule line carries it"
         fi
         if grep -qF '$(' "$OUT"; then bad "W-C-remote: the transcript carries the literal \$( — a derivation printed as notation"; else ok "W-C-remote: no literal \$( anywhere in the transcript"; fi
         if has_line "selftest clean: every canary fired, every negative stayed silent · 1 form not producible on this shape."; then
@@ -663,12 +687,69 @@ case_the_file_declared_base_is_green_on_rules_51_and_60() {
     [ "$FAIL" = "$before" ] || sed 's/^/         /' "$OUT"
 }
 
+# shapes_verdict <fail> <could-not-look> — the drive's exit, from its two
+# tallies: 1 when a form was JUDGED and failed (whatever else could not look),
+# 2 when nothing failed and at least one rule could not be looked at, 0 clean.
+# Printed as one line so scripts/check.sh's registration, which reads the exit,
+# and a reader of the transcript see the same answer.
+shapes_verdict() {
+    if [ "$1" -gt 0 ]; then
+        echo "   verdict: RED — ${1} judged assertion(s) failed${2:+ (and ${2} rule(s) could not be looked at)}"
+        return 1
+    fi
+    if [ "$2" -gt 0 ]; then
+        echo "   verdict: COULD NOT LOOK — ${2} rule(s) could not be judged in this world; nothing judged failed"
+        return 2
+    fi
+    return 0
+}
+
+# THE JUDGE'S OWN DRIVE: a planted transcript in which one rule could not look
+# and the rest are ok. It must come back `could not look` for that rule, no
+# FAIL, and the verdict 2 — never a FAIL naming a collision. Run in a subshell
+# so its tallies are its own.
+case_one_rule_that_could_not_look_is_named_could_not_look() {
+    echo "-- the judge: one rule that could not look inside a judged whole run"
+    local floors="$WORK/cnl-floors.txt" out="$WORK/cnl-transcript.log" said rc=0
+    printf 'floor\t51\t%s\ton\t%s\t%s\nfloor\t60\t%s\ton\t%s\t%s\n' \
+        "$NAME51" "$CAN51" "$NEG51" "$NAME60" "$CAN60" "$NEG60" >"$floors"
+    {
+        echo "  rule 51 $NAME51: canaries $CAN51/$CAN51 · negatives $NEG51/$NEG51 — ok"
+        echo "  rule 60 $NAME60: canaries 0/$CAN60 · negatives 0/$NEG60 — COULD NOT LOOK (the probe's database would not open in this world)"
+    } >"$out"
+    said=$(
+        PASS=0 FAIL=0 CNL=0
+        FLOORS=$floors OUT=$out
+        every_rule_asserts planted
+        shapes_verdict "$FAIL" "$CNL" || echo "exit=$?"
+        echo "tally pass=$PASS fail=$FAIL cnl=$CNL"
+    ) || rc=$?
+    case "$said" in
+    *"could not look  planted: rule 60 — COULD NOT LOOK (the probe's database would not open in this world)"*) ok "the rule's line says could not look, with the engine's cause" ;;
+    *) bad "the could-not-look rule was not named could not look — the judge said: $(printf '%s' "$said" | tr '\n' '|')" ;;
+    esac
+    case "$said" in
+    *"tally pass=1 fail=0 cnl=1"*) ok "one ok, no FAIL, one could-not-look" ;;
+    *) bad "the tally is not 1 ok / 0 FAIL / 1 could-not-look — $(printf '%s' "$said" | tr '\n' '|')" ;;
+    esac
+    case "$said" in
+    *"exit=2"*) ok "the verdict is 2 (could not look), never 1 (a judged red)" ;;
+    *) bad "the verdict is not 2 — $(printf '%s' "$said" | tr '\n' '|')" ;;
+    esac
+    case "$said" in
+    *"collides"*) bad "the judge names a collision for a rule that could not look" ;;
+    *) ok "no line names a collision" ;;
+    esac
+}
+
 echo "   mode: $MODE — $MODE_WHY"
 case_the_remote_declared_base_is_green
 case_the_file_declared_base_is_green_on_rules_51_and_60
+case_one_rule_that_could_not_look_is_named_could_not_look
 
 echo ""
-echo "== $PASS passed · $FAIL failed"
+echo "== $PASS passed · $FAIL failed · $CNL could not look"
 drive_finished
-[ "$FAIL" -eq 0 ] || exit 1
-exit 0
+VERDICT_RC=0
+shapes_verdict "$FAIL" "$CNL" || VERDICT_RC=$?
+exit "$VERDICT_RC"

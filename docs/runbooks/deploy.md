@@ -589,7 +589,22 @@ aws iam create-open-id-connect-provider \
 # 4 · the push role. SHORT-LIVED BY CONSTRUCTION — CI assumes it for the length
 #     of one job and nothing durable holds a registry credential. The trust
 #     policy names THIS repository and no other; widening `sub` to `repo:*` is
-#     how somebody else's fork pushes into your registry.
+#     how somebody else's fork pushes into your registry. AND IT REACHES ONLY
+#     THE STEPS THAT ASKED: the credential action writes the role's keys into
+#     the job's environment for every later step, so every later `run:` step
+#     pins the three exported names or says why it keeps them (house rule 62).
+#
+#     TWO `sub` SPELLINGS, BOTH FOR THIS ONE REPOSITORY. GitHub's token names
+#     the repository either by name (`repo:<owner>/<repo>:…`) or by name AND
+#     numeric id (`repo:<owner>@<owner id>/<repo>@<repo id>:…`), depending on
+#     how the subject is spelled for the repository (read it back first:
+#     `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`) — and a
+#     trust policy that admits only one spelling answers `Not authorized to
+#     perform sts:AssumeRoleWithWebIdentity` the day the other arrives. Both
+#     are transcribed from a live CI role's trust policy, not typed from
+#     memory. The ids are `gh api repos/<owner>/<repo> --jq '.owner.id, .id'`.
+#     Neither spelling widens the trust: each still names exactly one
+#     repository.
 OIDC_ARN="arn:aws:iam::$ACCOUNT:oidc-provider/token.actions.githubusercontent.com"
 cat > /tmp/djb-ci-trust.json <<JSON
 {"Version": "2012-10-17", "Statement": [{
@@ -598,7 +613,10 @@ cat > /tmp/djb-ci-trust.json <<JSON
   "Action": "sts:AssumeRoleWithWebIdentity",
   "Condition": {
     "StringEquals": {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com"},
-    "StringLike": {"token.actions.githubusercontent.com:sub": "repo:<owner>/<repo>:*"}
+    "StringLike": {"token.actions.githubusercontent.com:sub": [
+      "repo:<owner>/<repo>:*",
+      "repo:<owner>@<owner id>/<repo>@<repo id>:*"
+    ]}
   }}]}
 JSON
 aws iam create-role --role-name "$DJB_DEPLOY_NAMESPACE-ci-images" \
@@ -1454,6 +1472,150 @@ rule-28 finding, not a slow day.
 curl -s "https://$DJB_ENV.example.invalid/api/v1/widgets/" -H "Authorization: Bearer $TOKEN"
 docker compose -f deploy/compose.yaml logs worker --tail 50
 ```
+
+---
+
+## Deploying from CI — staging on every merge, prod by dispatch
+
+**WHAT EXISTS, AND WHAT DOES NOT.** `deploy/stage.sh` is the one deploy
+script, run by hand from a checkout or by the two CI jobs described below
+(`deploy-staging`, `deploy-prod`), which are in `.github/workflows/ci.yml`;
+`deploy/tests/test_ci_derive.sh` parses them and runs their shell against a
+stub `stage.sh`. What is NOT built is the runner-to-box transport (Session
+Manager with an ephemeral key, in the role's permissions below): `stage.sh`
+reaches a box with plain `ssh`, and a hosted runner holds no key for it — so
+a product that sets the variables gets a red step naming the ssh refusal
+until it builds that road. The jobs skip with a notice (staging) or refuse
+(prod) when the variables are unset.
+
+**Everything above is the hand walk, and it stays the recovery.** This part is
+the same acts run by the forge: `deploy/stage.sh` is the one deploy script, so
+CI adds a trigger and a credential and nothing else. A deploy from CI and a
+deploy from a laptop run the same six acts in the same order against the same
+`TREE` marker — ADR deploy-4 (f): promotion is neither a re-tag nor a rebuild.
+
+**The two jobs** (`.github/workflows/ci.yml` is the authority for their exact
+spelling; what follows is what they are for):
+
+- **`deploy-staging`** — `needs: [verdict, images]`, runs only on a push to
+  `main`, and SKIPS WITH A NOTICE unless the product's variables name a stage
+  target and a deploy role, so a clone of the template with no box stays green.
+  It assumes the deploy role by OIDC and runs
+  `deploy/stage.sh <stage target> --env staging`: pull by digest, migrate (the
+  release act, its wall printed as `migrate: <n>s`), recreate, readyz. Its last
+  line is the measure: `stage: <tree tag> live in <n>s (migrate <m>s)` —
+  `(migrate skipped)` when no release act ran, `(migrate unmeasured)` when one
+  ran and printed no wall, never a zero nobody measured.
+- **`deploy-prod`** — `workflow_dispatch` with two inputs, `tree` and
+  `sanction`. It runs the SAME script as
+  `deploy/stage.sh <prod target> --env prod --sanction "<who>: <why>"
+  --staging <stage target> --nightly <dir>`, where `<dir>` is the downloaded
+  `nightly-leak-proof` artifact. It checks out the tree `tree` names (the tree
+  staging holds, which a docs-only merge leaves behind main's head) and runs
+  THAT tree's own `stage.sh`, so the teeth are the promoted tree's: a tree
+  older than the prod gate fails safe, refusing the unknown `--sanction`.
+  **Four teeth, all read before the prod box is
+  contacted, every red one named in a single exit-2 refusal:** the sanction
+  has the `<who>: <why>` shape; staging's `LIVE` marker (`live <tree tag>
+  <at>`, which `stage.sh` withdraws before any act that changes a box and
+  writes only after act 6's readyz answered 200 — never `TREE` line 1, which
+  the ship writes at act 1) names this tree; staging's
+  readyz answers 200 (probed from inside its `readyz-prober`, as act 6
+  probes); and the nightly leak proof, read by `gate_nightly_read` in
+  `scripts/gate_ledger.sh`, is green and no older than 24 h — `nightly:none`,
+  `nightly:stale:<at>`, a non-zero `rc=` and an unreadable record are each a
+  refusal. Staging is only READ; nothing is touched anywhere on a refusal.
+  **The registry tag is the record** that the tree passed the gate: CI tags
+  no tree its verdict did not pass (ADR deploy-4 (b)), and `stage.sh` refuses
+  a tree whose image the registry does not hold, so no separate verdict check
+  is made. A staging box deployed before the `LIVE` marker existed has none,
+  and prod refuses it until one re-stage (readyz only, when nothing moved)
+  writes it.
+  **Prod is every environment NOT on the declared non-prod list**
+  (`DJB_NONPROD_ENVIRONMENTS`, space-separated; default `staging stage dev
+  development test qa local`, matched exactly), so `PROD`, `Production` and
+  `prod-eu` are gated exactly as `prod` is. The sanction is one printable line:
+  a control character in either half, or a half that is whitespace only, is a
+  refusal. `--sanction`, `--staging` and `--nightly` are refused for an
+  environment on the non-prod list, so a sanction typed at staging is never
+  mistaken for one that was checked.
+
+**The product's variables — VARIABLES, NOT SECRETS, the same argument as step
+6: they are coordinates.** Placeholders; the job reads them with `vars.`:
+
+```bash
+gh variable set DJB_STAGE_TARGET  --body "<ssh destination of the stage box, e.g. ec2-user@<stage host>>"
+gh variable set DJB_PROD_TARGET   --body "<ssh destination of the prod box>"
+gh variable set AWS_DEPLOY_ROLE_ARN --body "arn:aws:iam::<account>:role/<namespace>-ci-deploy"
+gh variable set DJB_DEPLOY_NAMESPACE --body "<namespace>"
+# DJB_IMAGE_REGISTRY and AWS_REGION are step 6's and are read as they are.
+```
+
+**The deploy role, and its OIDC trust.** A SECOND role beside step 4's push
+role, never a widening of it: the push role writes images, this one deploys
+them, and a credential that can do both is the credential a leaked job log
+would most like to find. What the runner side of `stage.sh` needs is small —
+the box does its own secrets fetch and its own registry login as ITS instance
+role (step 19), so the deploy role reads the registry (`provision.sh
+image-digest`) and opens the transport to the boxes, and nothing else.
+
+The trust names THIS repository in both `sub` spellings (step 4's argument,
+transcribed from the same live role, not typed from memory) and narrows each
+to the refs that deploy: `main` for staging, and the GitHub environment the
+prod job declares, if it declares one (a job with `environment: <name>` is
+issued a token whose `sub` is `…:environment:<name>`, and a trust that admits
+only the ref form refuses it):
+
+```json
+{"Version": "2012-10-17", "Statement": [{
+  "Effect": "Allow",
+  "Principal": {"Federated": "arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com"},
+  "Action": "sts:AssumeRoleWithWebIdentity",
+  "Condition": {
+    "StringEquals": {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com"},
+    "StringLike": {"token.actions.githubusercontent.com:sub": [
+      "repo:<owner>/<repo>:ref:refs/heads/main",
+      "repo:<owner>@<owner id>/<repo>@<repo id>:ref:refs/heads/main",
+      "repo:<owner>/<repo>:environment:<prod environment>",
+      "repo:<owner>@<owner id>/<repo>@<repo id>:environment:<prod environment>"
+    ]}
+  }}]}
+```
+
+Its permissions, in placeholders — read the two repositories, and reach the
+boxes through Session Manager with an ephemeral key rather than a key stored
+in the forge (the verifier boxes' transport, and its argument: no listening
+port, no durable private key). The instance condition is the tag
+`provision.sh` puts on every box it launches (`Project=<namespace>`), so the
+role reaches this deployment's boxes and no other product's in the account:
+
+```json
+{"Version": "2012-10-17", "Statement": [
+  {"Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*"},
+  {"Effect": "Allow",
+   "Action": ["ecr:BatchGetImage", "ecr:DescribeImages"],
+   "Resource": ["arn:aws:ecr:<region>:<account>:repository/<namespace>/djb-web",
+                "arn:aws:ecr:<region>:<account>:repository/<namespace>/djb-worker"]},
+  {"Effect": "Allow",
+   "Action": ["ssm:StartSession", "ec2-instance-connect:SendSSHPublicKey"],
+   "Resource": "arn:aws:ec2:<region>:<account>:instance/*",
+   "Condition": {"StringEquals": {"aws:ResourceTag/Project": "<namespace>"}}},
+  {"Effect": "Allow", "Action": "ssm:StartSession",
+   "Resource": "arn:aws:ssm:<region>::document/AWS-StartSSHSession"}]}
+```
+
+**What a product proves, and what the template proves.** The template has no
+prod box and, until an owner points the variables at one, no stage box; so it
+proves what can be proven without one, by drives with a fake box: the job
+graph (`deploy/tests/test_ci_derive.sh` parses `ci.yml`), every prod refusal and the one green
+promotion (`deploy/tests/test_stage.sh`), the closing line with both walls
+(the same drive), and the migrate wall and the release acts
+(`deploy/tests/test_release.sh`). **Staging live is proven only when an owner
+sets the stage variables** — then a push to `main` shows `deploy-staging`
+ending on the closing line, and merge → staging live is measured from the push
+event to that line. **Prod is proven only by a product**: its first dispatch,
+against its own prod box, with a green nightly and staging serving the tree.
+A product that has not done that has a refusal drive, not a prod deploy.
 
 ---
 

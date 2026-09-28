@@ -61,6 +61,16 @@
 #                               lock, no slot: it reads this file and the unit
 #                               declarations in it and prints. See THE UNIT
 #                               TABLE, AND `--list-legs` below.
+#   ./scripts/check.sh --list-legs --ci
+#                               the SAME units in the same order with a FIFTH
+#                               column, `passes`, and a `shards` column CI can
+#                               multiply by: `selftest` carries the shard COUNT
+#                               derived from the committed CI walls table
+#                               (ceil(sum / max(heaviest, 300 s))), `pytest-x2`
+#                               carries `N-capable` and passes `1`. `--ci` is the
+#                               ONE modifier the listing takes; any other word
+#                               after `--list-legs` is exit 2. The bare listing
+#                               is byte-identical with or without this form.
 #   ./scripts/check.sh --leg <unit> [--shard k/N] [--passes 1] [--store-durations]
 #                               ONE UNIT of the full gate: its legs announced
 #                               and run in the full gate's own order, nothing
@@ -253,6 +263,9 @@ GATE_CENSUS=""
 #: Set by `--list-legs`. A MODE, and the only one that runs no leg at all: it
 #: prints the unit table and exits. See THE UNIT TABLE, AND `--list-legs` below.
 GATE_LIST_LEGS=""
+#: Set by `--list-legs --ci`. The listing's ONE modifier: the same units with the
+#: CI shard count and a `passes` column. See `gate_list_legs_ci` below.
+GATE_LIST_LEGS_CI=""
 #: Set by `--leg <unit>`. A MODE, and the only one that runs a SUBSET of the
 #: full gate's legs. It normalises to `MODE="--leg"` rather than to the full
 #: mode, which is what keeps a unit run out of the sanction block, out of the
@@ -374,6 +387,14 @@ case "$MODE" in
     ;;
 --list-legs)
     GATE_LIST_LEGS=1
+    # `--ci` IS THE LISTING'S ONE MODIFIER, consumed here and nowhere else. Any
+    # other word after `--list-legs` still reaches the extra-arguments refusal
+    # below (exit 2): a mistyped modifier is never a smaller listing, and the
+    # bare listing — which the bank reads — is not touched by this arm at all.
+    if [ "${2:-}" = "--ci" ]; then
+        GATE_LIST_LEGS_CI=1
+        shift || true
+    fi
     ;;
 --leg)
     # The unit is the NEXT word and it is taken here rather than in the modifier
@@ -920,6 +941,32 @@ if [ "$MODE" = "--loop" ]; then
     elif [ -n "${DJB_LOOP_HERE:-}" ]; then
         LOOP_HERE_BECAUSE="DJB_LOOP_HERE=${DJB_LOOP_HERE}"
     else
+        # A BOX MAY ALREADY HAVE MEASURED THESE BYTES, AND THEN THERE IS NOTHING
+        # TO REFUSE. `verifier_box.sh wait` harvests a green box loop's row into
+        # this checkout's (shared) loop ledger with ` box=<id>`; the key a box
+        # banks carries the box image's environment, so this machine can never
+        # derive it — the question asked here is the narrower one, by TREE
+        # (`loop_ledger_tree_row`, scripts/gate_ledger.sh): did a box bank a
+        # green --loop over exactly the bytes this checkout holds? A hit is
+        # exit 0 and prints the row; a miss is the refusal below, unchanged.
+        # `--mine` and DJB_LOOP_NO_CACHE never consult, as everywhere else.
+        if [ -z "${GATE_MINE:-}" ] && [ -z "${DJB_LOOP_NO_CACHE:-}" ] && [ -r scripts/gate_ledger.sh ]; then
+            # shellcheck source=scripts/gate_ledger.sh
+            . scripts/gate_ledger.sh
+            LOOP_BOX_TREE=$(gate_measured_tree 2>/dev/null || true)
+            if [ -n "$LOOP_BOX_TREE" ] && LOOP_BOX_ROW=$(loop_ledger_tree_row "$LOOP_BOX_TREE" box); then
+                echo "ok: --loop VERDICT HELD BY A BOX — nothing was measured here, and nothing needed to be."
+                echo "  tree   ${LOOP_BOX_TREE}  (this checkout's measured tree)"
+                echo "  key    $(printf '%s\n' "$LOOP_BOX_ROW" | awk '{ print $2 }')  (the box's: tree + the box image's environment + the scope it derived)"
+                echo "  box    $(loop_row_box "$LOOP_BOX_ROW")  banked $(printf '%s\n' "$LOOP_BOX_ROW" | awk '{ print $4 }')"
+                echo "  banked ${LOOP_BOX_ROW}"
+                echo "  A verifier box ran a complete green --loop over EXACTLY these bytes and"
+                echo "  its row came home with the box's wait. This machine does not re-derive"
+                echo "  the box's key (its environment is not the box's) and measures nothing."
+                echo "  Force a re-measure on a box: DJB_LOOP_NO_CACHE=1 through the recipe."
+                exit 0
+            fi
+        fi
         echo "!! REFUSING a --loop on a machine that is not a verifier box." >&2
         echo "   The per-rung gate is the loop's highest-volume run and this box carries" >&2
         echo "   every one of them at once. A member measured at 3 s on a quiet machine" >&2
@@ -1175,12 +1222,13 @@ T_MODE_START=$(date +%s)
 # ran, and a leg the full gate never announces is one no verdict row names.
 # selftest_registered_drives — the drive names, in the order this leg walks them.
 #
-# TWO DIRECTORIES, AND THE SECOND ONE IS ONE PATH WIDE ON PURPOSE. Every drive
-# under `scripts/tests/` is registered here, and so is exactly one under
+# TWO DIRECTORIES, AND THE SECOND ONE IS NAMED PATHS WIDE ON PURPOSE. Every
+# drive under `scripts/tests/` is registered here, and so are exactly two under
 # `deploy/tests/`: `test_stage.sh`, which is the first deploy-layer drive to
 # carry `drive_preamble.sh` and therefore the first one this leg can run
 # without the hazard the blind-spot block below still declares for its
-# siblings. The widening is a NAMED PATH and not a `deploy/tests/` glob,
+# siblings, and `test_ci_derive.sh`, the workflow's drive, which was born
+# carrying it. Each widening is a NAMED PATH and not a `deploy/tests/` glob,
 # because the reason the other deploy drives are out has not expired: they do
 # not source the preamble, and this leg runs inside the pre-push hook.
 #
@@ -1271,6 +1319,7 @@ selftest_registered_drives() {
             print (with_path == "" ? name : name "\t" path)
         }
         /^\.\/deploy\/tests\/test_stage\.sh$/ { print (with_path == "" ? "stage" : "stage\tdeploy/tests/test_stage.sh") }
+        /^\.\/deploy\/tests\/test_ci_derive\.sh$/ { print (with_path == "" ? "ci_derive" : "ci_derive\tdeploy/tests/test_ci_derive.sh") }
     ' scripts/check.sh)
     [ -z "$template" ] || printf '%s\n' "$template"
     # THE NAMES THIS FILE ALREADY CARRIES, taken from what was just printed
@@ -2314,12 +2363,26 @@ ALWAYS_ON_MACHINE=""
 # could never be taken. The leg PRINTS the absence and runs the declared half
 # alone. What IS a refusal is a file that parses and names a member this gate
 # does not have — see `always_on_leg` below.
+#
+# THE SHAPE OF THE FILE IS NOT THE READER'S TO ASSUME. The parser below is
+# line-oriented — one key per line, the shape `gate_member_durations_write` and
+# the fold's `walls` step both write — and a table in any OTHER legal JSON
+# shape (a compact one-line table a hand or a `json.dumps` wrote) used to parse
+# as NOTHING: the members arm never matched, the reader returned 1, and the
+# line said there was no table at all. So the file is first re-broken at its
+# own structure (`always_on__json_lines`) and the one parser reads that, which
+# makes every whitespace arrangement of one table the same table.
 always_on__read_durations() {
-    local path=$1 parsed
+    local path=$1 parsed lines
     ALWAYS_ON_MEASURED_AT=""
     ALWAYS_ON_MACHINE=""
     [ -r "$path" ] || return 1
     ALWAYS_ON_TABLE=$(mktemp "${TMPDIR:-/tmp}/djb-always-on-table.XXXXXX") || return 1
+    lines=$(mktemp "${TMPDIR:-/tmp}/djb-always-on-lines.XXXXXX") || return 1
+    if ! always_on__json_lines "$path" >"$lines"; then
+        rm -f "$lines"
+        return 1
+    fi
     parsed=$(awk '
         function value(line,   v) {
             v = line
@@ -2337,7 +2400,11 @@ always_on__read_durations() {
             secs = seg; sub(/^[^:]*:[[:space:]]*/, "", secs)
             print "mb " name " " secs
         }
-    ' "$path") || return 1
+    ' "$lines") || {
+        rm -f "$lines"
+        return 1
+    }
+    rm -f "$lines"
     # AN EOF READER, NEVER A PIPE INTO AN EARLY-EXIT awk — the class
     # `scripts/tests/test_pipefail_readers.sh` censuses across this whole
     # population. The producer here could not fill a pipe buffer, and a census
@@ -2353,6 +2420,34 @@ EOF
     printf '%s\n' "$parsed" | awk '$1 == "mb" { print $2, $3 }' >"$ALWAYS_ON_TABLE"
     [ -s "$ALWAYS_ON_TABLE" ] || return 1
     return 0
+}
+
+# always_on__json_lines <path> — the file, re-broken at its JSON structure: a
+# newline after every `{` and `,` and before every `}` that sits OUTSIDE a
+# string, and every existing newline kept. A multi-line table comes out with a
+# few blank lines more and nothing else moved; a one-line table comes out in the
+# shape the reader above parses. The string test is what keeps a `,` inside a
+# quoted value (a machine label, a reason) from splitting it. Reads to EOF.
+always_on__json_lines() {
+    awk '
+        {
+            out = ""
+            n = length($0)
+            for (i = 1; i <= n; i++) {
+                c = substr($0, i, 1)
+                if (instr) {
+                    out = out c
+                    if (esc) { esc = 0 } else if (c == "\\") { esc = 1 } else if (c == "\"") { instr = 0 }
+                    continue
+                }
+                if (c == "\"") { instr = 1; out = out c; continue }
+                if (c == "{" || c == ",") { out = out c "\n"; continue }
+                if (c == "}") { out = out "\n" c; continue }
+                out = out c
+            }
+            print out
+        }
+    ' "$1"
 }
 
 # always_on__recorded <name> — the seconds recorded for it, or nothing.
@@ -2919,6 +3014,283 @@ gate_member_durations_write() {
 }
 # <<< member-durations <<<
 
+# >>> selftest-walls >>>
+# THE SELFTEST PARTITION'S TABLE, ITS POPULATION AND ITS ARITHMETIC — in THIS
+# fence, and not in the selftest leg's, because two readers need them and one
+# of them runs long before the leg is defined: `--list-legs --ci` derives the
+# selftest shard COUNT from the same table, the same population and the same
+# sums the leg's own plan line prints, and it exits above the lease. One
+# population reader, one table choice, one LPT — so the count CI is handed and
+# the partition every shard computes can never be two different answers.
+#
+# THE TABLE, CHOSEN IN ONE PLACE, AND THE LINE SAYS WHICH:
+#
+#   scripts/gate_member_durations.ci.json   the CI walls: every selftest member's
+#                                           wall as a green CI run on main
+#                                           measured it, harvested by the fold's
+#                                           `walls` step from the shards' own
+#                                           `drive <member>: exit <rc> (<s>s)`
+#                                           lines. Never typed. PREFERRED —
+#                                           CI's shards and the bank's boxes are
+#                                           both sharded runs on Linux runners,
+#                                           and the Mac's narrowed walls were
+#                                           wrong for both (the baseline run's
+#                                           "balanced" shards ran 281/1140/1162 s).
+#   scripts/gate_member_durations.json      the Mac table `--store-durations`
+#                                           writes — the always-on leg's own
+#                                           measurement, which this file never
+#                                           writes to. The FALLBACK, said on the
+#                                           line, when there is no CI table.
+#   neither                                 the index round-robin, said.
+#
+# `DJB_GATE_MEMBER_WALLS_CI` is the seam a drive plants a CI table through, as
+# `DJB_GATE_MEMBER_DURATIONS` is the Mac table's.
+selftest_walls_ci_path() {
+    printf '%s\n' "${DJB_GATE_MEMBER_WALLS_CI:-scripts/gate_member_durations.ci.json}"
+}
+
+#: Filled by `selftest_walls_choose`: which table was read (`ci`, `mac`, or
+#: empty for none), its path, and — for a CI table — the run it was harvested
+#: from, parsed out of its `measured_at`.
+SELFTEST_WALLS_KIND=""
+SELFTEST_WALLS_PATH=""
+SELFTEST_WALLS_RUN=""
+
+# selftest_walls_choose — read the preferred table into ALWAYS_ON_TABLE through
+# the always-on reader (one parser, never a second). 0 a table was read, 1 none.
+selftest_walls_choose() {
+    local ci="" mac=""
+    SELFTEST_WALLS_KIND=""
+    SELFTEST_WALLS_PATH=""
+    SELFTEST_WALLS_RUN=""
+    ci=$(selftest_walls_ci_path)
+    if always_on__read_durations "$ci"; then
+        SELFTEST_WALLS_KIND=ci
+        SELFTEST_WALLS_PATH=$ci
+        SELFTEST_WALLS_RUN=$(printf '%s\n' "${ALWAYS_ON_MEASURED_AT:-}" | sed -n 's/.*run:\([0-9][0-9]*\).*/\1/p')
+        return 0
+    fi
+    mac=$(always_on_durations_path)
+    if always_on__read_durations "$mac"; then
+        SELFTEST_WALLS_KIND=mac
+        SELFTEST_WALLS_PATH=$mac
+        return 0
+    fi
+    return 1
+}
+
+# selftest_shard_population — every member this leg is about to walk, in the
+# order it walks them: the engine first, then the drives.
+#
+# IT IS THE LEG'S OWN TWO BRANCHES, IN ONE PLACE. The real branch is the
+# registry (`selftest_registered_drives`, which already carries the product's
+# drawer as `local:<name>`); the scratch branch is the planted directory the
+# leg's own drive hands it, and the drawer runs BESIDE that set — which is
+# exactly what `selftest_scratch_drives` followed by `selftest_local_drives`
+# does in the leg. A population that disagreed with the walk would be a
+# partition naming members nobody runs, so it is derived from the same two
+# readers rather than from a third.
+selftest_shard_population() {
+    local d="" name="" rows=""
+    printf '%s\n' house-rules-engine
+    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
+        for d in "$DJB_SELFTEST_DRIVES_DIR"/test_*.sh; do
+            [ -f "$d" ] || continue
+            name=${d##*/}
+            name=${name#test_}
+            printf '%s\n' "${name%.sh}"
+        done
+    fi
+    command -v selftest_registered_drives >/dev/null 2>&1 || return 0
+    rows=$(selftest_registered_drives) || return 1
+    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
+        # THE DRAWER ONLY. The planted set stands in for this file's own drives;
+        # the registry's non-`local:` names are those, and printing them here
+        # would put a member in the partition that the scratch branch never
+        # walks.
+        printf '%s\n' "$rows" | awk '/^local:/ { print }'
+        return 0
+    fi
+    printf '%s\n' "$rows"
+}
+
+# selftest_walls_lpt <table> <population-file> <S> — the partition, as lines:
+# `map <member> <shard>` (0-based), `shard <t> <members> <load> <unmeasured>`
+# per shard, and one `meta <median> <total> <heaviest> <members>`.
+#
+# THE PARTITION, IN ONE awk OVER TWO FILES: the measured table first, the
+# population second. Bash 3.2 has no associative arrays and no `sort -k` by a
+# numeric column that keeps the input order on a tie, so the sort is an
+# insertion sort over forty items inside the same pass that assigns them.
+selftest_walls_lpt() {
+    awk -v n="$3" '
+        FNR == NR { secs[$1] = $2 + 0; next }
+        { cnt++; name[cnt] = $1 }
+        END {
+            # THE MEDIAN OF THE ROWS THAT EXIST, and the population it is taken
+            # over is THIS leg`s members — not every row in the file. A table
+            # naming members this gate no longer has would otherwise move the
+            # guess for the members it does have.
+            m = 0
+            for (j = 1; j <= cnt; j++) {
+                if (name[j] in secs) { m++; v[m] = secs[name[j]] }
+            }
+            for (a = 2; a <= m; a++) {
+                x = v[a]
+                b = a - 1
+                while (b >= 1 && v[b] > x) { v[b + 1] = v[b]; b-- }
+                v[b + 1] = x
+            }
+            med = 0
+            if (m == 1) { med = v[1] }
+            else if (m > 1) {
+                if (m % 2) { med = v[(m + 1) / 2] }
+                else { med = int((v[m / 2] + v[m / 2 + 1]) / 2) }
+            }
+            heaviest = 0
+            total = 0
+            for (j = 1; j <= cnt; j++) {
+                if (name[j] in secs) { w[j] = secs[name[j]]; meas[j] = 1 }
+                else { w[j] = med; meas[j] = 0 }
+                total += w[j]
+                if (w[j] > heaviest) { heaviest = w[j] }
+            }
+            for (t = 0; t < n; t++) { load[t] = 0; count[t] = 0; guessed[t] = 0 }
+            # LPT: the heaviest unassigned member, into the lightest shard.
+            # Both ties go to the LOWEST index, which is what makes this
+            # deterministic rather than merely balanced.
+            for (r = 1; r <= cnt; r++) {
+                best = 0
+                for (j = 1; j <= cnt; j++) {
+                    if (taken[j]) { continue }
+                    if (best == 0 || w[j] > w[best]) { best = j }
+                }
+                if (best == 0) { break }
+                taken[best] = 1
+                s = 0
+                for (t = 1; t < n; t++) { if (load[t] < load[s]) { s = t } }
+                load[s] += w[best]
+                count[s]++
+                if (!meas[best]) { guessed[s]++ }
+                print "map", name[best], s
+            }
+            for (t = 0; t < n; t++) {
+                print "shard", t, count[t], load[t], guessed[t]
+            }
+            print "meta", med, total, heaviest, cnt
+        }
+    ' "$1" "$2"
+}
+
+#: The per-job fixed cost below which one more shard buys less wall than it
+#: bills: 300 s is ~4-5x the measured job overhead on the baseline CI run (job
+#: wall minus leg wall, 60-86 s, median 65 s). The floor of the divisor, so a
+#: population of small members is never split into more shards than pay.
+SELFTEST_SHARD_FLOOR_S=300
+
+# selftest_ci_shard_count — the selftest shard COUNT CI should ask for,
+# `S = ceil(sum / max(heaviest member, 300 s))`, over the table
+# `selftest_walls_choose` picks and the population the leg walks: the heaviest
+# indivisible member is the pole no split can beat, so more shards than
+# sum/heaviest buy nothing. Prints the integer; 1 (and nothing) when there is
+# no table to derive it from.
+selftest_ci_shard_count() {
+    local pop="" plan="" meta=""
+    selftest_walls_choose || return 1
+    pop=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-count-pop.XXXXXX") || return 1
+    selftest_shard_population >"$pop" || true
+    if [ ! -s "$pop" ]; then
+        rm -f "$pop"
+        return 1
+    fi
+    plan=$(selftest_walls_lpt "$ALWAYS_ON_TABLE" "$pop" 1) || plan=""
+    rm -f "$pop"
+    meta=$(printf '%s\n' "$plan" | awk '$1 == "meta" { print $3, $4 }')
+    [ -n "$meta" ] || return 1
+    printf '%s\n' "$meta" | awk -v floor="$SELFTEST_SHARD_FLOOR_S" '
+        { d = ($2 > floor ? $2 : floor); s = int($1 / d); if (s * d < $1) { s++ } if (s < 1) { s = 1 } print s }
+    '
+}
+
+# gate_member_walls_append <member> <rc|reused> <secs|-> — one
+# `member-walls/1<TAB><member><TAB><rc><TAB><s><TAB><k>/<N>` row appended to
+# `$DJB_MEMBER_WALLS_OUT`, when it is set, and nothing at all when it is not
+# (so a bank's transcript and every file it writes are byte-identical to a run
+# that never heard of it). `<k>/<N>` is the flag's own 1-based pair, `1/1` on
+# an unsharded run. A REUSED member writes `reused` and `-`: its wall was
+# somebody else's measurement, and the fold's harvest refuses a table built
+# from one.
+gate_member_walls_append() {
+    [ -n "${DJB_MEMBER_WALLS_OUT:-}" ] || return 0
+    local part="1/1"
+    if [ -n "${SELFTEST_SHARD_N:-}" ]; then
+        part="$((SELFTEST_SHARD_K + 1))/${SELFTEST_SHARD_N}"
+    fi
+    printf 'member-walls/1\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$part" >>"$DJB_MEMBER_WALLS_OUT" || {
+        echo "  member-walls: could not append ${1}'s row to ${DJB_MEMBER_WALLS_OUT} — the harvest will find this run incomplete and leave the committed table standing"
+        return 0
+    }
+    return 0
+}
+
+# selftest_shard_plan <k> <S> — fill `SELFTEST_SHARD_MAP` and print the one line
+# per shard this leg promises. `<k>` is 0-based, as this function's callers
+# hold it; the LINE prints it 1-based, the flag's own grammar, so
+# `--shard 1/6` reads back as `shard 1/6` and never as `shard 0/6`. Never a
+# refusal: every arm that cannot balance says so and leaves the map empty,
+# which is the round-robin.
+selftest_shard_plan() {
+    local k=$1 n=$2 shown="" pop="" plan="" mapf="" row="" med="" machine="" source="" ci=""
+    shown=$((k + 1))
+    SELFTEST_SHARD_MAP=""
+    if ! command -v selftest_walls_choose >/dev/null 2>&1 ||
+        ! command -v always_on__read_durations >/dev/null 2>&1; then
+        echo "  selftest shard ${shown}/${n}: the index round-robin (the durations reader is not in this shell; house-rules-engine runs in shard 1)"
+        return 0
+    fi
+    if ! selftest_walls_choose; then
+        echo "  selftest shard ${shown}/${n}: the index round-robin (no durations table at $(always_on_durations_path) and no CI walls table at $(selftest_walls_ci_path) — each file is a HINT and its absence means unmeasured, never a refusal; house-rules-engine runs in shard 1)"
+        return 0
+    fi
+    machine=${ALWAYS_ON_MACHINE:-unstated}
+    pop=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-shard-pop.XXXXXX") || pop=""
+    plan=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-shard-plan.XXXXXX") || plan=""
+    mapf=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-shard-map.XXXXXX") || mapf=""
+    if [ -z "$pop" ] || [ -z "$plan" ] || [ -z "$mapf" ]; then
+        echo "  selftest shard ${shown}/${n}: the index round-robin (no scratch file for the partition; house-rules-engine runs in shard 1)"
+        return 0
+    fi
+    selftest_shard_population >"$pop" || true
+    if [ ! -s "$pop" ]; then
+        echo "  selftest shard ${shown}/${n}: the index round-robin (the member population would not derive; house-rules-engine runs in shard 1)"
+        return 0
+    fi
+    selftest_walls_lpt "$ALWAYS_ON_TABLE" "$pop" "$n" >"$plan"
+    awk '$1 == "map" { print $2, $3 }' "$plan" >"$mapf"
+    if [ ! -s "$mapf" ]; then
+        echo "  selftest shard ${shown}/${n}: the index round-robin (the partition came back empty; house-rules-engine runs in shard 1)"
+        return 0
+    fi
+    SELFTEST_SHARD_MAP="$mapf"
+    med=$(awk '$1 == "meta" { print $2 }' "$plan")
+    row=$(awk -v k="$k" '$1 == "shard" && $2 == k { print $3, $4, $5 }' "$plan")
+    # THE LINE SAYS WHICH TABLE IT READ, AND WHOSE CLOCK IT IS, and that is not
+    # decoration: the Mac table is the always-on leg's measurement (`sweep`
+    # 395 s there, ~45 s on a box), so a shard predicting from it may be
+    # predicting somebody else's machine. The CI table names the runner label
+    # and the run it was harvested from; the Mac table, standing in, says that
+    # it is standing in.
+    if [ "$SELFTEST_WALLS_KIND" = "ci" ]; then
+        source="measured on ${machine}${SELFTEST_WALLS_RUN:+ run ${SELFTEST_WALLS_RUN}}"
+    else
+        ci=$(selftest_walls_ci_path)
+        source="measured on ${machine} — no CI walls table at ${ci}, so this table stands in"
+    fi
+    echo "  selftest shard ${shown}/${n}: $(printf '%s' "$row" | awk '{print $1}') members, predicted $(printf '%s' "$row" | awk '{print $2}') s (LPT over ${SELFTEST_WALLS_PATH} ${source}; $(printf '%s' "$row" | awk '{print $3}') unmeasured at the median ${med} s)"
+    return 0
+}
+# <<< selftest-walls <<<
+
 # <<< always-on-leg <<<
 
 # gate_list_legs — validate the table against the file, then print it. Exit 0
@@ -3002,8 +3374,43 @@ EOF
             ;;
         esac
     done
+    if [ -n "${GATE_LIST_LEGS_CI:-}" ]; then
+        gate_list_legs_ci
+        return $?
+    fi
     printf '%s' "$GATE_UNIT_ROWS"
     return 0
+}
+
+# gate_list_legs_ci — the validated table again, as CI asks for it: the SAME
+# units in the SAME order, five TAB columns `unit needs shards legs passes`.
+#
+#   selftest    `shards` is the COUNT, derived: ceil(sum / max(heaviest, 300 s))
+#               over the table and population the leg's own partition reads
+#               (`selftest_ci_shard_count`). A typed count goes stale the day a
+#               drive joins; this one moves with the next harvest.
+#   pytest-x2   `shards` stays `N-capable` — CI's own PYTEST_SHARDS is the
+#               multiplier, and the suite's split has its own table — and
+#               `passes` is `1`: CI rows ride one pass, the second whole pass is
+#               the nightly's.
+#   the rest    `shards` as declared (`0`) and `passes` empty.
+#
+# NO TABLE AT ALL — neither the CI walls nor the Mac table — and the selftest
+# count cannot be derived: the row then carries the unit's own declaration,
+# `N-capable`, which is the honest answer ("CI must supply the count") rather
+# than an invented integer.
+gate_list_legs_ci() {
+    local count=""
+    count=$(selftest_ci_shard_count 2>/dev/null) || count=""
+    case "$count" in
+    "" | *[!0-9]*) count="N-capable" ;;
+    esac
+    printf '%s' "$GATE_UNIT_ROWS" | awk -F'\t' -v OFS='\t' -v count="$count" '
+        NF == 0 { next }
+        $1 == "selftest" { print $1, $2, count, $4, ""; next }
+        $1 == "pytest-x2" { print $1, $2, "N-capable", $4, "1"; next }
+        { print $1, $2, $3, $4, "" }
+    '
 }
 
 if [ -n "$GATE_LIST_LEGS" ]; then
@@ -3817,6 +4224,12 @@ if [ "$MODE" = "--loop" ]; then
     else
         LOOP_TREE_SNAPSHOT=""
     fi
+    # THE END MARK, ON EVERY EXIT THAT DOES NOT REACH THE BANK'S QUESTION. A
+    # run that never asks leaves its snapshot standing, and the next run's
+    # snapshot remembers what this one wrote between its stamp and this mark
+    # (`loop_tree__unfinished`, scripts/gate_ledger.sh). The pytest leg's own
+    # EXIT trap below carries the same call, because it replaces this one.
+    trap 'loop_tree_mark_end "${LOOP_TREE_SNAPSHOT:-}"' EXIT
     LOOP_LEDGER_TREE=$(gate_measured_tree || true)
     # IN THIS SHELL, NOT IN A SUBSTITUTION, and that is the whole reason this
     # line exists on its own. `loop_ledger_key` computes the fingerprint too,
@@ -4029,6 +4442,13 @@ gate_run_body() {
     gate_leg_in_unit "$1" || return 0
     if [ -n "${DJB_GATE_LEGS_DRY:-}" ]; then
         echo "  leg: $1 (DJB_GATE_LEGS_DRY — announced, body not run)"
+        # A SHARD'S PLAN IS PART OF WHAT IS ANNOUNCED. The partition is decided
+        # before any member runs, from the committed table alone, so a dry
+        # `--leg selftest --shard k/N` can print the exact line a real one
+        # would — the prediction a reader sizes a run by, without the run.
+        if [ "$1" = "selftest" ] && [ "${GATE_LEG_UNIT:-}" = "selftest" ] && [ -n "${GATE_SHARD_K:-}" ]; then
+            selftest_shard_plan "$((GATE_SHARD_K - 1))" "${GATE_SHARD_N}"
+        fi
         return 0
     fi
     "$2"
@@ -4968,7 +5388,7 @@ if [ "$MODE" = "--loop" ]; then
         echo "          verdict was measured. Force a re-measure with DJB_LOOP_NO_CACHE=1."
         PYTEST_RC=0
     else
-        trap 'heartbeat_stop; gate_slot_release' EXIT
+        trap 'heartbeat_stop; gate_slot_release; loop_tree_mark_end "${LOOP_TREE_SNAPSHOT:-}"' EXIT
         gate_refuse_reset
         set +e
         gate_slot_acquire loop
@@ -5313,7 +5733,7 @@ EOF
             # below spares it on purpose — widening it forgets every refusal.
             [ "$LOOP_TREE_MOVED_RC" != "0" ] ||
                 loop_tree_remember "$LOOP_TREE_SNAPSHOT" "$(printf '%s\n' "$LOOP_TREE_MOVED" | cut -f1)" || true
-            rm -f "$LOOP_TREE_SNAPSHOT" "${LOOP_TREE_SNAPSHOT}.stamp"
+            rm -f "$LOOP_TREE_SNAPSHOT" "${LOOP_TREE_SNAPSHOT}.stamp" "${LOOP_TREE_SNAPSHOT}.end"
         else
             LOOP_TREE_MOVED_RC=2
         fi
@@ -6078,6 +6498,289 @@ pytest_x2_passes() {
     return 0
 }
 
+# >>> grants-pass >>>
+# THE BELT, WORN BY THE SUITE. House rule 20 reads the source for an append-only
+# write and the runtime belt refuses an instance `.save()`; the THIRD belt is
+# the database grant (deploy/grants.sql.py: the app role loses UPDATE and DELETE
+# on every append-only table), and until this pass the suite never ran under it
+# — so a service writing `Model.objects.filter(...).update(...)` on a ledger
+# was neither refused nor seen anywhere before production. This pass runs the
+# same flags the passes above carried, once more, connected as a least-privilege
+# role holding exactly the deployment's grants, so that write is an error
+# Postgres returns at the wire.
+#
+# THE ROLE AND ITS TEMPLATE ARE THIS RUN'S. `gate_grants_db prepare` creates a
+# LOGIN role (`GATE_GRANTS_ROLE`, CREATEDB so it can clone its own test
+# databases), clones this checkout's migrated template (or migrates a fresh one)
+# into `<DATABASE_NAME>_grants`, applies `grants.sql.py`'s own rendering to it,
+# and makes the role that database's owner; `teardown` drops it. What the
+# deployment's role never holds and this one must: TRUNCATE and sequence UPDATE,
+# because pytest-django's per-test flush is a TRUNCATE — declared, below.
+#
+# WHAT IT JUDGES, AND WHAT IT CANNOT. RED only for a failure the grant itself
+# produced on an append-only table (`permission denied for table <member>`),
+# naming the table and the tests. Every other failure in this pass is a test
+# that needs a privilege no application role holds (DDL: `isolate_apps`
+# tables, `MigrationExecutor`) — PRINTED, counted, and not a verdict about the
+# tree, because pass 1 ran the same tests green as the owner. Declared blind
+# spots: a service that TRUNCATEs a ledger (granted here for the flush); a write
+# the suite never drives.
+#
+# WHERE IT RUNS: every full-gate pytest leg — the bank's boxes and a bare full
+# gate — except `--store-durations` (a measurement), `--pr` (a narrowed run)
+# and CI (the bank's; `DJB_GATE_GRANTS_PASS=1` runs it anywhere, `=0` skips it
+# with a line).
+GATE_GRANTS_ROLE="${DJB_GATE_GRANTS_ROLE:-djb_grants_pass}"
+GATE_GRANTS_SECRET="djb-grants-pass" # pragma: allowlist secret
+
+# gate_grants_db prepare|teardown [<template>] — the role and the grants template.
+# prepare prints `template=<name> ledgers=<n>:<tables>` and exits 0, or prints
+# the reason and exits 2.
+gate_grants_db() {
+    local src=""
+    if [ "$1" = "prepare" ] && command -v db_template_name >/dev/null 2>&1; then
+        src="$(db_template_name 2>/dev/null || true)"
+        if [ -n "$src" ] && ! db_exists "$src" >/dev/null 2>&1; then
+            src=""
+        fi
+    fi
+    DJB_GRANTS_ACTION="$1" DJB_GRANTS_TEMPLATE="${2:-}" DJB_GRANTS_SOURCE="$src" \
+        DJB_GRANTS_ROLE="$GATE_GRANTS_ROLE" DJB_GRANTS_SECRET="$GATE_GRANTS_SECRET" \
+        DJANGO_SETTINGS_MODULE=config.settings.test PYTHONDONTWRITEBYTECODE=1 \
+        uv run python - <<'PY'
+import importlib.util
+import os
+import subprocess
+import sys
+
+import django
+
+django.setup()
+import psycopg
+from django.conf import settings
+from psycopg import sql
+
+db = settings.DATABASES["default"]
+# ONE LINE, NOT A BLOCK: a `}` at column one ends this function for every
+# reader that extracts it by its closing brace (the drives do).
+admin = dict(user=db["USER"], password=db["PASSWORD"], host=db["HOST"] or "127.0.0.1", port=db["PORT"] or 5432)
+action = os.environ["DJB_GRANTS_ACTION"]
+role = os.environ["DJB_GRANTS_ROLE"]
+template = os.environ.get("DJB_GRANTS_TEMPLATE") or f"{db['NAME']}_grants"
+
+
+def say(line: str) -> None:
+    print(line, flush=True)
+
+
+try:
+    with psycopg.connect(dbname="postgres", autocommit=True, **admin) as conn:
+        conn.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(template))
+        )
+        if action == "teardown":
+            say(f"dropped={template}")
+            sys.exit(0)
+        exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
+        verb = "ALTER" if exists else "CREATE"
+        conn.execute(
+            sql.SQL(verb + " ROLE {} LOGIN CREATEDB NOSUPERUSER PASSWORD {}").format(
+                sql.Identifier(role), sql.Literal(os.environ["DJB_GRANTS_SECRET"])
+            )
+        )
+        source = os.environ.get("DJB_GRANTS_SOURCE", "")
+        if source:
+            conn.execute(
+                sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
+                    sql.Identifier(template), sql.Identifier(source)
+                )
+            )
+        else:
+            conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(template)))
+    if not source:
+        env = dict(os.environ, DATABASE_NAME=template)
+        done = subprocess.run(
+            [sys.executable, "manage.py", "migrate", "--noinput"],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        if done.returncode != 0:
+            say(f"the grants template would not migrate: {done.stderr.strip().splitlines()[-1:]}")
+            sys.exit(2)
+    spec = importlib.util.spec_from_file_location("grants_sql", "deploy/grants.sql.py")
+    grants = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(grants)
+    tables = grants.append_only_tables()
+    if not tables:
+        say("grants.sql.py found no append-only table — there is nothing for this pass to wear")
+        sys.exit(2)
+    with psycopg.connect(dbname=template, autocommit=True, **admin) as conn:
+        conn.execute(grants.render(role=role, tables=tables))
+        ident = sql.Identifier(role)
+        # THE TEST HARNESS'S OWN NEEDS, and nothing the deployment's role has.
+        # Every table that is NOT a ledger is handed to the role outright (with
+        # its sequences), and the schema's CREATE with it: the suite builds and
+        # alters tables of its own (`isolate_apps`, `MigrationExecutor`) and
+        # flushes with TRUNCATE, and a pass that died of those would say nothing
+        # about the one thing it is for. The ledgers stay the owner's, with
+        # exactly the deployment's grants plus TRUNCATE (the flush).
+        rows = conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+        ).fetchall()
+        for (name,) in rows:
+            if name not in tables:
+                conn.execute(
+                    sql.SQL("ALTER TABLE {} OWNER TO {}").format(sql.Identifier(name), ident)
+                )
+        conn.execute(sql.SQL("GRANT CREATE ON SCHEMA public TO {}").format(ident))
+        conn.execute(sql.SQL("GRANT TRUNCATE ON ALL TABLES IN SCHEMA public TO {}").format(ident))
+        conn.execute(sql.SQL("GRANT UPDATE ON ALL SEQUENCES IN SCHEMA public TO {}").format(ident))
+        conn.execute(
+            sql.SQL("ALTER DATABASE {} OWNER TO {}").format(sql.Identifier(template), ident)
+        )
+    say(f"template={template} ledgers={len(tables)}:{','.join(tables)} from={source or 'migrate'}")
+except psycopg.Error as exc:
+    say(f"postgres refused: {str(exc).strip().splitlines()[0]}")
+    sys.exit(2)
+PY
+}
+
+# gate_grants_pass <flags and paths the passes carried…> — 0 green or not run ·
+# 1 the grant refused an append-only write · 2 could not look.
+gate_grants_pass() {
+    local prep template ledgers out rc=0 arg denied tests other judged
+    local -a args=()
+    case "${DJB_GATE_GRANTS_PASS:-}" in
+    0 | off | no)
+        echo "  grants pass: NOT run — DJB_GATE_GRANTS_PASS=${DJB_GATE_GRANTS_PASS} was typed"
+        return 0
+        ;;
+    esac
+    if [ -n "${GATE_STORE_DURATIONS:-}" ] || [ -n "${GATE_PR:-}" ]; then
+        echo "  grants pass: NOT run — ${GATE_STORE_DURATIONS:+--store-durations is a measurement}${GATE_PR:+--pr is a narrowed run}"
+        return 0
+    fi
+    if [ -n "${CI:-}" ] && [ -z "${DJB_GATE_GRANTS_PASS:-}" ]; then
+        echo "  grants pass: NOT run on CI — it is the bank's (DJB_GATE_GRANTS_PASS=1 runs it here)"
+        return 0
+    fi
+    # The counts directory is the two passes' reconciliation, not this one's.
+    for arg in "$@"; do
+        case "$arg" in --djb-scope-counts=*) ;; *) args+=("$arg") ;; esac
+    done
+    prep=$(gate_grants_db prepare 2>&1) || {
+        echo "!! the grants pass COULD NOT LOOK — the least-privilege role or its template" >&2
+        echo "   could not be made: $(printf '%s\n' "$prep" | tail -n 1)" >&2
+        return 2
+    }
+    # AN EOF READER, NEVER A PIPE INTO AN EARLY-EXIT awk (the pipefail census).
+    prep=$(awk '/^template=/ { print; exit }' <<EOF
+$prep
+EOF
+)
+    template=$(printf '%s\n' "$prep" | awk '{ sub(/^template=/, "", $1); print $1 }')
+    ledgers=$(printf '%s\n' "$prep" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ledgers=/) { sub(/^ledgers=[0-9]+:/, "", $i); print $i } }')
+    [ -n "$template" ] && [ -n "$ledgers" ] || {
+        echo "!! the grants pass COULD NOT LOOK — the template step printed no template" >&2
+        return 2
+    }
+    echo "  grants pass: one pytest pass connected as ${GATE_GRANTS_ROLE} — deploy/grants.sql.py's grants,"
+    echo "               UPDATE and DELETE revoked on: ${ledgers//,/, }"
+    echo "               (${prep#* })"
+    out=$(mktemp "${TMPDIR:-/tmp}/djb-grants-pass.XXXXXX")
+    set +e
+    DATABASE_USER="$GATE_GRANTS_ROLE" DATABASE_PASSWORD="$GATE_GRANTS_SECRET" \
+        DJB_TEST_DB_TEMPLATE="$template" \
+        ./scripts/test.sh -n "$GATE_SLOT_WORKERS" --randomly-seed="$PYTEST_SEED" ${args[@]+"${args[@]}"} >"$out" 2>&1
+    rc=$?
+    set -e
+    cat "$out"
+    gate_grants_db teardown "$template" >/dev/null 2>&1 || true
+    case "$rc" in
+    0)
+        rm -f "$out"
+        echo "  grants pass: green — no path the suite drives updated or deleted a row of ${ledgers//,/, }"
+        return 0
+        ;;
+    3 | 4 | 5)
+        rm -f "$out"
+        echo "!! the grants pass DID NOT RUN THE SUITE (pytest exit ${rc}) — could not look." >&2
+        return 2
+        ;;
+    esac
+    # THE BELT'S OWN WORDS, ON A LEDGER, FROM A PATH THAT IS NOT A TEST'S.
+    # psycopg carries Postgres's sentence (`permission denied for table <t>`)
+    # into the failure. It is the belt firing only when <t> is a declared
+    # ledger AND the innermost `apps/` frame above it in that failure's
+    # traceback is product code — a test module or a conftest that clears or
+    # rewrites a ledger to set up its own world is the suite's business, not a
+    # path the product runs, and is listed with every other privilege failure.
+    # A ledger refusal with NO `apps/` frame to judge is counted as product —
+    # the direction of the doubt is red.
+    judged=$(awk -v tables=",${ledgers}," '
+        # THE CALLER, BESIDE THE HELPER. The innermost apps/ frame is often a
+        # shared helper in another app (a platform module a service calls);
+        # the frame that CALLED into that app from product code is kept too,
+        # so the line names both: the helper that issued the write, and the
+        # product path that reached it.
+        function app(f,   a) { split(f, a, "/"); return a[2] }
+        function istest(f) { return (f ~ /\/tests\// || f ~ /conftest\.py:/ || f ~ /^apps\/test_[^\/]*:/) }
+        function see(f) {
+            if (frame != "" && !istest(frame) && app(frame) != app(f)) caller = frame
+            frame = f
+        }
+        /^___+ .+ ___+$/ { sect = $0; gsub(/^_+ | _+$/, "", sect); frame = ""; caller = ""; next }
+        match($0, /^apps\/[^ :]+\.py:[0-9]+/) { see(substr($0, RSTART, RLENGTH)); next }
+        # THE SAME FRAME IN A LOGGED TRACEBACK (a door that answered 500 and
+        # logged why): `File "<root>/apps/x/y.py", line N`.
+        match($0, /File "[^"]*\/apps\/[^"]+\.py", line [0-9]+/) {
+            f = substr($0, RSTART, RLENGTH)
+            sub(/^File "[^"]*\/apps\//, "apps/", f)
+            sub(/", line /, ":", f)
+            see(f)
+            next
+        }
+        # A CHAINED FAILURE PRINTS THE DRIVER TRACEBACK FIRST (no apps/
+        # frame at all) and the CALLER TRACEBACK after it, so the frame judged
+        # is the last apps/ frame any traceback in the section put above a denial.
+        match($0, /permission denied for table [A-Za-z0-9_]+/) {
+            t = substr($0, RSTART + 28, RLENGTH - 28)
+            if (!index(tables, "," t ",")) next
+            ledger[sect] = t
+            if (frame != "") { where[sect] = frame; by[sect] = caller }
+        }
+        END {
+            for (k in ledger) {
+                f = where[k]
+                if (f != "" && (f ~ /\/tests\// || f ~ /conftest\.py:/ || f ~ /^apps\/test_[^\/]*:/))
+                    print "TEST\t" k "\t" ledger[k] " (from " f ")"
+                else
+                    print "PROD\t" k "\t" ledger[k] " via " (f == "" ? "no apps/ frame in its traceback" : f) (by[k] != "" ? " (called from " by[k] ")" : "")
+            }
+        }
+    ' "$out" | LC_ALL=C sort)
+    tests=$(awk '/^=+ short test summary info =+$/ { on = 1; next } on && /^=/ { on = 0 } on && /^(FAILED|ERROR) / { print "     " $0 }' "$out")
+    rm -f "$out"
+    denied=$(printf '%s\n' "$judged" | awk -F'\t' '$1 == "PROD" { print "     " $2 " — " $3 }')
+    if [ -n "$denied" ]; then
+        echo "" >&2
+        echo "!! THE GRANTS PASS IS RED: the least-privilege role was REFUSED an UPDATE or" >&2
+        echo "   DELETE on an append-only table, from product code the suite drives (house" >&2
+        echo "   rule 20's third belt). Pass 1 ran the same tests as the owner and they" >&2
+        echo "   passed. Each test, the ledger, the innermost apps/ frame, and the product" >&2
+        echo "   frame in another app that called into it when there is one:" >&2
+        printf '%s\n' "$denied" >&2
+        return 1
+    fi
+    other=$(printf '%s\n' "$tests" | grep -c . || true)
+    echo "  grants pass: no product path wrote to a ledger. ${other} test(s) failed on a privilege"
+    echo "               the suite itself needs (a test's own ledger write, a flush after one) —"
+    echo "               NOT a verdict about the tree: pass 1 ran them green as the owner."
+    printf '%s\n' "$judged" | awk -F'\t' '$1 == "TEST" { print "               test-owned ledger write: " $2 " — " $3 }'
+    printf '%s\n' "$tests"
+    return 0
+}
+# <<< grants-pass <<<
+
 # THE SEED CAN BE TYPED IN, AND THE REASON IS THE SHARD. Minted here, every
 # shard of one CI run would collect in a DIFFERENT random order, and
 # `pytest-split`'s partition is over a collection — so the N shards would be
@@ -6274,6 +6977,17 @@ X2_PASS_ARGS="${PARTITION_TARGETS}${GATE_SPLIT_ARGS:+ ${GATE_SPLIT_ARGS}}${GATE_
 set +e
 # shellcheck disable=SC2086
 pytest_x2_passes $X2_PASS_ARGS
+TEST_RC=$?
+set -e
+case "$TEST_RC" in
+0) ;;
+2) exit 2 ;;
+*) exit 1 ;;
+esac
+# THE THIRD BELT, WORN BY THE SUITE — after green passes, on the same flags.
+set +e
+# shellcheck disable=SC2086
+gate_grants_pass $X2_PASS_ARGS
 TEST_RC=$?
 set -e
 case "$TEST_RC" in
@@ -6644,8 +7358,10 @@ selftest_tally_reset() {
     SELFTEST_RED=0
     SELFTEST_CANNOT=0
     SELFTEST_RED_NAMES=""
+    SELFTEST_RED_FAILED=""
     SELFTEST_CANNOT_NAMES=""
     SELFTEST_MEMBER=""
+    SELFTEST_MEMBER_OUT=""
     SELFTEST_MEMBER_T0=0
     SELFTEST_BLOCK_RC=0
     SELFTEST_MEMBER_KEY=""
@@ -6966,6 +7682,7 @@ selftest_drive_consult() {
     row=$(drive_ledger_lookup "$SELFTEST_MEMBER_KEY") || row=""
     if [ -n "$row" ]; then
         echo "  drive ${name}: REUSED from ${SELFTEST_MEMBER_KEY} (banked $(printf '%s\n' "$row" | awk '{print $4}')) machine=${SELFTEST_MEMBER_MACHINE:-unstated}"
+        gate_member_walls_append "$name" reused -
         SELFTEST_GREEN=$((SELFTEST_GREEN + 1))
         return 1
     fi
@@ -7020,9 +7737,12 @@ selftest_drive_consult() {
 # above the perfect split, at any S.
 #
 # THE WEIGHTS ARE READ, NEVER GUESSED, AND THE FILE IS A HINT. They come out of
-# `scripts/gate_member_durations.json` through the SAME reader the always-on leg
-# uses (`always_on__read_durations`) — one measurement, one parser, no second
-# table. A member the file does not name takes the MEDIAN of the rows that do
+# the CI walls table `scripts/gate_member_durations.ci.json` — harvested by the
+# fold from a green CI run's own shard lines, never typed — or, when there is
+# none, out of `scripts/gate_member_durations.json`, and the line says which
+# (`selftest_walls_choose`, in the `selftest-walls` fence). Either is read
+# through the SAME reader the always-on leg uses (`always_on__read_durations`)
+# — one parser, no second one. A member the file does not name takes the MEDIAN of the rows that do
 # exist for this population, which is the cheapest honest guess and is stated on
 # the leg's own line. NO FILE AT ALL IS NOT A REFUSAL: absence means unmeasured,
 # the leg says so and falls back to the index round-robin this block shipped
@@ -7051,147 +7771,11 @@ SELFTEST_DRIVE_INDEX=0
 #: when there was no table to balance over (the round-robin fallback below).
 SELFTEST_SHARD_MAP=""
 
-# selftest_shard_population — every member this leg is about to walk, in the
-# order it walks them: the engine first, then the drives.
-#
-# IT IS THE LEG'S OWN TWO BRANCHES, IN ONE PLACE. The real branch is the
-# registry (`selftest_registered_drives`, which already carries the product's
-# drawer as `local:<name>`); the scratch branch is the planted directory the
-# leg's own drive hands it, and the drawer runs BESIDE that set — which is
-# exactly what `selftest_scratch_drives` followed by `selftest_local_drives`
-# does one screen down. A population that disagreed with the walk would be a
-# partition naming members nobody runs, so it is derived from the same two
-# readers rather than from a third.
-selftest_shard_population() {
-    local d="" name="" rows=""
-    printf '%s\n' house-rules-engine
-    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
-        for d in "$DJB_SELFTEST_DRIVES_DIR"/test_*.sh; do
-            [ -f "$d" ] || continue
-            name=${d##*/}
-            name=${name#test_}
-            printf '%s\n' "${name%.sh}"
-        done
-    fi
-    command -v selftest_registered_drives >/dev/null 2>&1 || return 0
-    rows=$(selftest_registered_drives) || return 1
-    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
-        # THE DRAWER ONLY. The planted set stands in for this file's own drives;
-        # the registry's non-`local:` names are those, and printing them here
-        # would put a member in the partition that the scratch branch never
-        # walks.
-        printf '%s\n' "$rows" | awk '/^local:/ { print }'
-        return 0
-    fi
-    printf '%s\n' "$rows"
-}
-
-# selftest_shard_plan <k> <S> — fill `SELFTEST_SHARD_MAP` and print the one line
-# per shard this leg promises. Never a refusal: every arm that cannot balance
-# says so and leaves the map empty, which is the round-robin.
-selftest_shard_plan() {
-    local k=$1 n=$2 path="" pop="" plan="" mapf="" row="" med="" machine=""
-    SELFTEST_SHARD_MAP=""
-    if ! command -v always_on__read_durations >/dev/null 2>&1 ||
-        ! command -v always_on_durations_path >/dev/null 2>&1; then
-        echo "  selftest shard ${k}/${n}: the index round-robin (the durations reader is not in this shell; house-rules-engine runs in shard 0)"
-        return 0
-    fi
-    path=$(always_on_durations_path)
-    if ! always_on__read_durations "$path"; then
-        echo "  selftest shard ${k}/${n}: the index round-robin (no durations table at ${path} — the file is a HINT and its absence means unmeasured, never a refusal; house-rules-engine runs in shard 0)"
-        return 0
-    fi
-    machine=${ALWAYS_ON_MACHINE:-unstated}
-    pop=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-shard-pop.XXXXXX") || pop=""
-    plan=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-shard-plan.XXXXXX") || plan=""
-    mapf=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-shard-map.XXXXXX") || mapf=""
-    if [ -z "$pop" ] || [ -z "$plan" ] || [ -z "$mapf" ]; then
-        echo "  selftest shard ${k}/${n}: the index round-robin (no scratch file for the partition; house-rules-engine runs in shard 0)"
-        return 0
-    fi
-    selftest_shard_population >"$pop" || true
-    if [ ! -s "$pop" ]; then
-        echo "  selftest shard ${k}/${n}: the index round-robin (the member population would not derive; house-rules-engine runs in shard 0)"
-        return 0
-    fi
-    # THE PARTITION, IN ONE awk OVER TWO FILES: the measured table first, the
-    # population second. Bash 3.2 has no associative arrays and no `sort -k` by
-    # a numeric column that keeps the input order on a tie, so the sort is an
-    # insertion sort over forty items inside the same pass that assigns them.
-    awk -v n="$n" '
-        FNR == NR { secs[$1] = $2 + 0; next }
-        { cnt++; name[cnt] = $1 }
-        END {
-            # THE MEDIAN OF THE ROWS THAT EXIST, and the population it is taken
-            # over is THIS leg`s members — not every row in the file. A table
-            # naming members this gate no longer has would otherwise move the
-            # guess for the members it does have.
-            m = 0
-            for (j = 1; j <= cnt; j++) {
-                if (name[j] in secs) { m++; v[m] = secs[name[j]] }
-            }
-            for (a = 2; a <= m; a++) {
-                x = v[a]
-                b = a - 1
-                while (b >= 1 && v[b] > x) { v[b + 1] = v[b]; b-- }
-                v[b + 1] = x
-            }
-            med = 0
-            if (m == 1) { med = v[1] }
-            else if (m > 1) {
-                if (m % 2) { med = v[(m + 1) / 2] }
-                else { med = int((v[m / 2] + v[m / 2 + 1]) / 2) }
-            }
-            heaviest = 0
-            total = 0
-            for (j = 1; j <= cnt; j++) {
-                if (name[j] in secs) { w[j] = secs[name[j]]; meas[j] = 1 }
-                else { w[j] = med; meas[j] = 0 }
-                total += w[j]
-                if (w[j] > heaviest) { heaviest = w[j] }
-            }
-            for (t = 0; t < n; t++) { load[t] = 0; count[t] = 0; guessed[t] = 0 }
-            # LPT: the heaviest unassigned member, into the lightest shard.
-            # Both ties go to the LOWEST index, which is what makes this
-            # deterministic rather than merely balanced.
-            for (r = 1; r <= cnt; r++) {
-                best = 0
-                for (j = 1; j <= cnt; j++) {
-                    if (taken[j]) { continue }
-                    if (best == 0 || w[j] > w[best]) { best = j }
-                }
-                if (best == 0) { break }
-                taken[best] = 1
-                s = 0
-                for (t = 1; t < n; t++) { if (load[t] < load[s]) { s = t } }
-                load[s] += w[best]
-                count[s]++
-                if (!meas[best]) { guessed[s]++ }
-                print "map", name[best], s
-            }
-            for (t = 0; t < n; t++) {
-                print "shard", t, count[t], load[t], guessed[t]
-            }
-            print "meta", med, total, heaviest, cnt
-        }
-    ' "$ALWAYS_ON_TABLE" "$pop" >"$plan"
-    awk '$1 == "map" { print $2, $3 }' "$plan" >"$mapf"
-    if [ ! -s "$mapf" ]; then
-        echo "  selftest shard ${k}/${n}: the index round-robin (the partition came back empty; house-rules-engine runs in shard 0)"
-        return 0
-    fi
-    SELFTEST_SHARD_MAP="$mapf"
-    med=$(awk '$1 == "meta" { print $2 }' "$plan")
-    row=$(awk -v k="$k" '$1 == "shard" && $2 == k { print $3, $4, $5 }' "$plan")
-    # THE LINE SAYS WHICH TABLE IT READ, and that is not decoration: the file
-    # committed today was measured on a Mac (`sweep` 395 s there, 45 s on a
-    # box), so a shard predicting 400 s may be predicting somebody else's
-    # machine. A reader comparing the prediction against the wall needs to know
-    # whose clock the prediction came from.
-    echo "  selftest shard ${k}/${n}: $(printf '%s' "$row" | awk '{print $1}') members, predicted $(printf '%s' "$row" | awk '{print $2}') s (LPT over ${path} measured on ${machine}; $(printf '%s' "$row" | awk '{print $3}') unmeasured at the median ${med} s)"
-    return 0
-}
+# THE POPULATION, THE TABLE CHOICE, THE LPT AND THE PLAN LINE LIVE IN THE
+# `selftest-walls` fence (inside the always-on fence): `--list-legs --ci`
+# derives the shard count from the same three before this leg is ever defined,
+# and a dry `--leg selftest --shard k/N` prints the plan line without calling
+# this function at all. What stays here is the walk over the map it fills.
 
 # selftest_shard_takes <member> — 0 to run it, 1 to skip. It INCREMENTS the drive
 # index, so it is called exactly once per member and only from member_begin.
@@ -7209,7 +7793,7 @@ selftest_shard_takes() {
             # between the plan and the walk. Shard 0 takes it, EVERY shard
             # computes the same partition so exactly one of them does, and the
             # line is printed by all of them so the arithmetic is readable.
-            echo "  drive $1: not named by the partition (the population moved under the leg) — shard 0 takes it"
+            echo "  drive $1: not named by the partition (the population moved under the leg) — shard 1 takes it"
             assigned=0
         fi
         [ "$assigned" = "$SELFTEST_SHARD_K" ]
@@ -7226,7 +7810,7 @@ selftest_member_begin() {
     if ! selftest_shard_takes "$1"; then
         # PRINTED, NEVER SILENT: a shard that said nothing about what it did not
         # run is a shard nobody can add up.
-        echo "  drive $1: not in shard ${SELFTEST_SHARD_K}/${SELFTEST_SHARD_N}"
+        echo "  drive $1: not in shard $((SELFTEST_SHARD_K + 1))/${SELFTEST_SHARD_N}"
         return 1
     fi
     SELFTEST_MEMBER="$1"
@@ -7236,14 +7820,197 @@ selftest_member_begin() {
     # — the split is by index over the registered order and a reuse must not
     # renumber it.
     selftest_drive_consult "$1" || return 1
+    selftest_member_capture_open
     return 0
+}
+
+# --- A RED MEMBER'S OWN FAILED LINES, BESIDE ITS NAME ------------------------
+#
+# WHY. A member streams its whole transcript into this leg — hundreds of lines
+# for the big drives — and the verdict is read at the END of the log: a box's
+# `wait` prints the last forty lines, a CI shard log is read from its tail. So
+# the one line a reader met was the composed `!! RED: <drive>`, and the case
+# that went red was hundreds of lines above it, unnamed where the verdict is
+# read. Measured on a bank: its selftest shard's `wait` log said only
+# `!! RED: pm_fold`; a CI shard log said only `!! RED: sweep`.
+#
+# SO EACH MEMBER'S OUTPUT LANDS IN A FILE, IS PRINTED WHOLE WHEN IT ENDS, and a
+# red member's `FAILED` lines — the drives' own grammar, `FAILED <case> — <why>`
+# from every `bad()` in `scripts/tests/` — are kept and printed again beside the
+# composed RED, at most ten per member, with the count of the rest. The same
+# shape the always-on leg already has (`always_on__run` runs its member to a
+# file and replays it), so one leg does not stream while its sibling captures.
+#
+# TO A FILE, NEVER THROUGH A PIPE. A `tee` would put a pipe on every drive's
+# stdout — the thing this gate refuses of itself, and a shape several subjects
+# refuse by name — to buy a stream. The redirect is `exec`, on this shell, so
+# every block between `begin` and `end` is captured without one of them being
+# edited; stderr joins stdout in the file so a block's `see above` still has its
+# above, in order.
+#
+# WHAT IT COSTS, DECLARED: a member no longer STREAMS. A reader watching the leg
+# sees each member's transcript arrive whole when that member ends — a drive of
+# several minutes is silent for its length — and a member's stderr reaches the
+# leg's stdout. The trade is the house-rules leg's (`gate_leg_house_rules`,
+# WHAT IT COSTS): the verdict readable where it is read outranks a transcript
+# that arrives sooner. The two saved descriptors (7 and 8) are inherited by the
+# member's children for its length; they are duplicates of the leg's own stdout
+# and stderr, which every child already holds as 1 and 2.
+#
+# A SCRATCH FILE THAT CANNOT BE MADE IS NOT A CAPTURE: the member streams as it
+# always did and a red one says its FAILED lines are only above.
+SELFTEST_MEMBER_OUT=""
+SELFTEST_RED_FAILED=""
+SELFTEST_FAILED_CAP=10
+
+#
+# A MEMBER KILLED MID-RUN STILL REACHES THE LOG. A TERM from the gate's own
+# trap, a CI timeout or a Spot interruption ends the leg with the capture open,
+# and without this its transcript stayed in the scratch file and never reached
+# the log — where the stream used to show exactly where a drive stopped — and
+# the killing trap's own words landed in the capture too. So while a capture is
+# open, TERM, INT, HUP and EXIT each run `selftest_member_capture_killed`
+# FIRST (descriptors back, the member named, its output so far, the file gone,
+# the shell's own handlers put back) and then whatever the shell already had on
+# that signal. A signal with no handler keeps its meaning — exit 128+n — and a
+# signal the shell IGNORES is left alone, ignored. The saved handlers are put
+# back when the member ends normally too.
+#
+# A SUBSHELL'S `trap -p` LISTS ITS PARENT'S HANDLERS, WHICH DO NOT RUN THERE.
+# Measured on the box's bash (5.2): inside `( … )`, before the subshell sets any
+# trap of its own, `trap -p` prints the parent's EXIT and TERM handlers, and
+# reinstalling that text makes the parent's handler LIVE in the subshell — a
+# drive's EXIT epilogue then ran at the end of every leg it drove. Any `trap`
+# command in the subshell drops the inherited listing, so one is issued first,
+# on a signal nothing here traps (URG), and put back as it was: in the shell
+# that owns its traps it changes nothing. (macOS's bash 3.2 lists nothing
+# inherited; the same line is a no-op there.)
+SELFTEST_TRAPS_SAVED=""
+
+# selftest__trap_cmd <`trap -p` output> — the command part of it, or nothing.
+# `trap -p` prints `trap -- '<handler>' <SIG>` quoted for re-input, so the
+# shell's own parser splits it and the handler is the third word, whatever
+# quotes it carries.
+selftest__trap_cmd() {
+    [ -n "$1" ] || return 0
+    eval "set -- $1"
+    printf '%s' "${3:-}"
+}
+
+selftest_member_capture_open() {
+    SELFTEST_MEMBER_OUT=$(mktemp "${TMPDIR:-/tmp}/djb-selftest-member.XXXXXX") || SELFTEST_MEMBER_OUT=""
+    [ -n "$SELFTEST_MEMBER_OUT" ] || return 0
+    local sig prior cmd urg
+    urg=$(trap -p URG)
+    trap - URG
+    [ -z "$urg" ] || eval "$urg"
+    SELFTEST_TRAPS_SAVED=""
+    for sig in TERM INT HUP EXIT; do
+        prior=$(trap -p "$sig")
+        cmd=$(selftest__trap_cmd "$prior")
+        if [ -n "$prior" ] && [ -z "$cmd" ]; then
+            # IGNORED, and it stays ignored: nothing is killed by it.
+            continue
+        fi
+        SELFTEST_TRAPS_SAVED="${SELFTEST_TRAPS_SAVED}${prior:-trap - ${sig}}
+"
+        if [ -z "$cmd" ]; then
+            case "$sig" in
+            TERM) cmd="exit 143" ;;
+            INT) cmd="exit 130" ;;
+            HUP) cmd="exit 129" ;;
+            EXIT) cmd=":" ;;
+            esac
+        fi
+        # THE STATUS IS CARRIED ACROSS, because the gate's own EXIT handler
+        # opens with `RC=$?` and would otherwise read the flush's zero. It is
+        # re-set by `(exit N) && :` and never a bare `(exit N)`: this gate runs
+        # under errexit, a trap runs under it even when the leg was called
+        # inside an `||`, and a bare non-zero `(exit N)` then ends the shell
+        # THERE — measured in this leg's drive, the prior TERM handler never
+        # ran; in the gate that handler is `gate_run_killed`, the kill note. A
+        # command before `&&` is exempt from errexit, and the list's status is
+        # still N when the prior handler starts.
+        # SC2064 is the warning for a double-quoted trap string, which expands
+        # when the trap is SET: that is the point here — the prior handler's
+        # text is composed in now, while `\$?` and the saved status stay
+        # escaped so they are read when the trap RUNS.
+        # shellcheck disable=SC2064
+        trap "_SELFTEST_TRAP_RC=\$?; selftest_member_capture_killed; (exit \$_SELFTEST_TRAP_RC) && :; ${cmd}" "$sig"
+    done
+    exec 7>&1 8>&2
+    exec >"$SELFTEST_MEMBER_OUT" 2>&1
+}
+
+# selftest__traps_restore — the shell's own handlers back, exactly as saved.
+selftest__traps_restore() {
+    [ -n "$SELFTEST_TRAPS_SAVED" ] || return 0
+    eval "$SELFTEST_TRAPS_SAVED"
+    SELFTEST_TRAPS_SAVED=""
+}
+
+# selftest_member_capture_killed — the kill path: the leg's descriptors back,
+# the member named with its seconds, its output so far, the scratch file gone,
+# the shell's own handlers back (so a prior handler that does NOT exit leaves
+# the leg as it found it). A no-op once the capture is closed, so the EXIT half
+# after a TERM says nothing twice.
+selftest_member_capture_killed() {
+    [ -n "$SELFTEST_MEMBER_OUT" ] || return 0
+    local f=$SELFTEST_MEMBER_OUT
+    SELFTEST_MEMBER_OUT=""
+    exec 1>&7 2>&8 7>&- 8>&-
+    selftest__traps_restore
+    echo "  drive ${SELFTEST_MEMBER}: killed after $(($(date +%s) - SELFTEST_MEMBER_T0))s — its output so far:"
+    cat "$f" 2>/dev/null || true
+    rm -f "$f"
+}
+
+# selftest_member_capture_close — restore the leg's own descriptors and its own
+# handlers, and print the member's transcript whole, where it would have
+# streamed.
+selftest_member_capture_close() {
+    [ -n "$SELFTEST_MEMBER_OUT" ] || return 0
+    exec 1>&7 2>&8 7>&- 8>&-
+    selftest__traps_restore
+    cat "$SELFTEST_MEMBER_OUT"
+}
+
+# selftest_member_failed_keep <member> — the red member's FAILED lines, capped,
+# appended to the digest `selftest_compose` prints beside the RED. Read with
+# awk to EOF, never `grep | head`: an early reader under this gate's pipefail
+# is the SIGPIPE shape `test_pipefail_readers.sh` counts.
+selftest_member_failed_keep() {
+    local member=$1 kept
+    if [ -z "$SELFTEST_MEMBER_OUT" ] || [ ! -r "$SELFTEST_MEMBER_OUT" ]; then
+        SELFTEST_RED_FAILED="${SELFTEST_RED_FAILED}   ${member}: its output was not captured — its FAILED lines are only above
+"
+        return 0
+    fi
+    kept=$(awk -v m="$member" -v cap="$SELFTEST_FAILED_CAP" '
+        /^[[:space:]]*FAILED[[:space:]]/ {
+            n++
+            if (n <= cap) { line = $0; sub(/^[[:space:]]+/, "", line); keep = keep "     " line "\n" }
+        }
+        END {
+            if (n == 0) { printf "   %s: printed no FAILED line — read its own output above\n", m; exit }
+            printf "   %s: %d FAILED line(s)%s\n%s", m, n, (n > cap ? ", the first " cap " below" : ""), keep
+            if (n > cap) printf "     ... and %d more FAILED line(s), above in its own output\n", n - cap
+        }' "$SELFTEST_MEMBER_OUT")
+    SELFTEST_RED_FAILED="${SELFTEST_RED_FAILED}${kept}
+"
 }
 
 selftest_member_end() {
     _SELFTEST_RC="$1"
     _SELFTEST_OUTRANK="${2:-}"
     _SELFTEST_TOOK=$(($(date +%s) - SELFTEST_MEMBER_T0))
+    selftest_member_capture_close
     echo "  drive ${SELFTEST_MEMBER}: exit ${_SELFTEST_RC} (${_SELFTEST_TOOK}s)"
+    # THE SAME FACT, AS A ROW, WHEN A CALLER ASKED FOR ONE — the engine member
+    # included, since it ends here too. `DJB_MEMBER_WALLS_OUT` unset writes
+    # nothing and prints nothing; set, it is what CI uploads per shard and what
+    # the fold's `walls` step harvests into the CI walls table.
+    gate_member_walls_append "$SELFTEST_MEMBER" "$_SELFTEST_RC" "$_SELFTEST_TOOK"
     # THE SECONDS GO WHERE EVERY OTHER MEMBER'S SECONDS GO. A drive is a member
     # of the gate exactly as a leg is, and the `--loop` always-on set is derived
     # from one file covering both — see the `member-durations` fence. A REUSED
@@ -7275,7 +8042,10 @@ selftest_member_end() {
     else
         SELFTEST_RED=$((SELFTEST_RED + 1))
         SELFTEST_RED_NAMES="${SELFTEST_RED_NAMES} ${SELFTEST_MEMBER}"
+        selftest_member_failed_keep "$SELFTEST_MEMBER"
     fi
+    [ -z "$SELFTEST_MEMBER_OUT" ] || rm -f "$SELFTEST_MEMBER_OUT"
+    SELFTEST_MEMBER_OUT=""
 }
 
 # >>> local-drives >>>
@@ -7391,6 +8161,7 @@ selftest_compose() {
         echo "!! COULD NOT LOOK:${SELFTEST_CANNOT_NAMES}" >&2
         if [ "$SELFTEST_RED" -gt 0 ]; then
             echo "!! and RED:${SELFTEST_RED_NAMES}" >&2
+            printf '%s' "$SELFTEST_RED_FAILED" >&2
         fi
         echo "   2 outranks 1: a driver that could not run its cases has not cleared" >&2
         echo "   them, whatever the rest of the set did. Read the FIRST name above" >&2
@@ -7400,6 +8171,7 @@ selftest_compose() {
     fi
     if [ "$SELFTEST_RED" -gt 0 ]; then
         echo "!! RED:${SELFTEST_RED_NAMES}" >&2
+        printf '%s' "$SELFTEST_RED_FAILED" >&2
         echo "   Every drive ran and every red is named above — that is what this leg" >&2
         echo "   is for. Read the FIRST one first: a red drive can leave state a later" >&2
         echo "   drive trips on, so a later name can be a secondary." >&2
@@ -7440,7 +8212,7 @@ selftest_drives_leg() {
         fi
         SELFTEST_SHARD_K=$1
         SELFTEST_SHARD_N=$2
-        echo "  shard ${SELFTEST_SHARD_K}/${SELFTEST_SHARD_N} of the registered drive order"
+        echo "  shard $((SELFTEST_SHARD_K + 1))/${SELFTEST_SHARD_N} of the registered drive order"
         echo "  (the order is this file's own ./scripts/tests/test_<name>.sh lines;"
         echo "   the partition below is duration-balanced, not by index)"
         selftest_shard_plan "$SELFTEST_SHARD_K" "$SELFTEST_SHARD_N"
@@ -8946,6 +9718,13 @@ SELFTEST_BLOCK_RC=0
 # does.
 if [ -n "$SELFTEST_SHAPES_WHOLE_RUN" ]; then
     export DJB_SELFTEST_SHAPES_WHOLE_RUN="$SELFTEST_SHAPES_WHOLE_RUN"
+elif [ -n "${DJB_SELFTEST_SHAPES_WHOLE_RUN:-}" ]; then
+    # THE MODE IS DECIDED ABOVE AND ONLY THERE. A value exported by hand on an
+    # unsharded run would turn the drive whole behind a consult that WAS asked
+    # (the skip is set only for a shard), so a banked green could stand in for
+    # a whole run nobody sharded. It is unset, and the line says so.
+    echo "  selftest_shapes: DJB_SELFTEST_SHAPES_WHOLE_RUN='${DJB_SELFTEST_SHAPES_WHOLE_RUN}' was set by hand on an unsharded run — UNSET; the whole run is a shard's (--leg selftest --shard k/N), so this runs narrowed"
+    unset DJB_SELFTEST_SHAPES_WHOLE_RUN
 fi
 set +e
 ./scripts/tests/test_selftest_shapes.sh
@@ -8956,10 +9735,11 @@ if [ "$SELFTEST_SHAPES_DRIVE_RC" = "2" ]; then
     echo "   A driver that could not run its cases has not cleared them." >&2
     exit 2
 elif [ "$SELFTEST_SHAPES_DRIVE_RC" != "0" ]; then
-    echo "!! the engine's self-test does not hold on a consumer-shaped tree: a form" >&2
-    echo "   collides with a file a product has, or a control fires on a declared" >&2
-    echo "   base. Silent from inside this green gate — the template's own tree is the" >&2
-    echo "   one shape where neither can happen — and exit 2 at every product's bank." >&2
+    echo "!! the engine's self-test is RED on a consumer-shaped tree: each FAIL line" >&2
+    echo "   above names the rule and what was judged. A rule the engine could not look" >&2
+    echo "   at is its own line (\`could not look\`) and its own exit (2), never this one." >&2
+    echo "   Silent from inside this green gate — the template's own tree is the one" >&2
+    echo "   shape where it cannot happen — and exit 2 at every product's bank." >&2
     exit "$SELFTEST_SHAPES_DRIVE_RC"
 fi
 # <<< drive: selftest_shapes <<<
@@ -9061,6 +9841,45 @@ elif [ "$STAGE_DRIVE_RC" != "0" ]; then
     exit "$STAGE_DRIVE_RC"
 fi
 # <<< drive: stage <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin ci_derive; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: ci_derive >>>
+# THE WORKFLOW'S OWN SHELL, DRIVEN. `.github/workflows/ci.yml` decides what a
+# tree's one measurement is made of — derive expands `--list-legs --ci` into the
+# matrix, the record job writes the line `pm_push.sh --ci-verdict` banks, and a
+# push to main consults that record before it measures anything — and every way
+# that shell can be wrong is silent from a green run: a selftest split by the
+# pytest count, a suite run twice on every shard, a record naming a tree nobody
+# measured, a push that re-measures what a pull request already measured green.
+# The drive reads each `run:` block out of the workflow and executes it in a
+# scratch world under a clean environment; the second deploy-layer member of
+# this leg, for the reason the first one is: it sources `drive_preamble.sh`.
+#
+# It creates nothing outside its own scratch directory: `scripts/check.sh` and `gh` are
+# stubs, the record and the consult run a COPY of `scripts/gate_ledger.sh` in a
+# throwaway git repository. No docker, no database, no network; git, bash, jq
+# and the checkout's python.
+set +e
+./deploy/tests/test_ci_derive.sh
+CI_DERIVE_DRIVE_RC=$?
+set -e
+if [ "$CI_DERIVE_DRIVE_RC" = "2" ]; then
+    echo "!! the workflow drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$CI_DERIVE_DRIVE_RC" != "0" ]; then
+    echo "!! the workflow no longer measures a tree once as the gate's own listing" >&2
+    echo "   says, or no longer records that measurement in the grammar the push" >&2
+    echo "   reads, or no longer honours it once on main. Every one of those is" >&2
+    echo "   silent from inside a green CI run." >&2
+    exit "$CI_DERIVE_DRIVE_RC"
+fi
+# <<< drive: ci_derive <<<
 ) || SELFTEST_BLOCK_RC=$?
 selftest_member_end "$SELFTEST_BLOCK_RC"
 fi

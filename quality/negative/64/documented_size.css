@@ -1,0 +1,5 @@
+/* A stylesheet explaining the rule quotes the defect: `font-size: 13.5px` is
+   what rule 64 refuses. The comment is documentation, not a declaration. */
+.zzz-body {
+    font-size: var(--type-body);
+}

@@ -115,8 +115,14 @@ rules_for() {
     "$_cy"/EXAMPLE-cycle-plan.md | "$_cy"/README.md) hit="$hit R8S" ;;
     "$_cy"/* | docs/product/archive/* | docs/product/retro/* | docs/product/drafts/* | docs/product/proposals/* | docs/product/pm-handoff-*.md) hit="$hit R8" ;;
     esac
+    # R9's LAST ARM IS A GLOB — the design directory, the pattern book's home.
+    # R8's clause names the class, never the instance: the book ships, and its
+    # drawer beside it is the product's and the template never tracks it, so
+    # there is nothing here for a glob to swallow that a filename would have
+    # kept out, and one glob cannot double-match. A NEW directory under
+    # docs/product/ is still unplaced (exit 2) until somebody decides it.
     case "$p" in
-    docs/product/adrs-ingredients.md | docs/product/api-editorial-standard.md | docs/product/architecture.md | docs/product/build-contract.md | docs/product/operating-protocol.md | docs/product/partition-closure.md | docs/product/scale-envelope.md | docs/product/publication-manifest.md) hit="$hit R9" ;;
+    docs/product/adrs-ingredients.md | docs/product/api-editorial-standard.md | docs/product/architecture.md | docs/product/build-contract.md | docs/product/operating-protocol.md | docs/product/partition-closure.md | docs/product/scale-envelope.md | docs/product/publication-manifest.md | docs/product/design/*) hit="$hit R9" ;;
     esac
     case "$p" in
     docs/product/skeletons/*) hit="$hit R10" ;;

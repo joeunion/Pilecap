@@ -3073,6 +3073,39 @@ cmd_loop() {
    A gate launched now would measure what the image was baked with and bank a
    verdict about it. Nothing was launched."
 
+    # AND THE BOX'S TREE AGAINST THIS CHECKOUT'S. The check above asks the box
+    # whether it agrees with ITSELF — its worktree against the main it was last
+    # pushed — and a box that took an earlier push agrees with itself
+    # perfectly. After a fold or one more commit here, `loop` measured that
+    # earlier tree, banked it, and `wait` printed it as banked: a green verdict
+    # about bytes this checkout no longer holds, under a key nobody's consult
+    # will ever hit.
+    #
+    # IT REFUSES; IT DOES NOT PUSH FOR YOU, and the header's contract is why.
+    # `push` is the one subcommand that moves a tree, runs this checkout's
+    # pre-push vouch and pays the tunnel for the pack; `loop` is a detach that
+    # returns in seconds and names the tree it measures. A `loop` that pushed
+    # would be a slow, side-effecting `loop` whose vouch refusal or dead tunnel
+    # reached the operator under the wrong name — and a caller who meant to
+    # measure what is ALREADY on the box (a verifier re-running a box it did
+    # not push to) would have it replaced unasked. So the refusal names both
+    # trees and the one command, and nothing was launched.
+    #
+    # HEAD's TREE, the one `push` sends and the one its own agreement line
+    # prints (`sync_box_worktree`). Uncommitted edits here are not on the box
+    # either way; a push sends commits.
+    local here_tree
+    here_tree="$(git -C "$ROOT" rev-parse "HEAD^{tree}" 2>/dev/null || true)"
+    [ -n "$here_tree" ] ||
+        die "could not read this checkout's HEAD tree, so there is nothing to hold the box's
+   ${box_head_tree} up against. Nothing was launched."
+    [ "$box_head_tree" = "$here_tree" ] ||
+        die "the box holds ${box_head_tree:0:12}, HEAD measures ${here_tree:0:12} — push first:
+   scripts/verifier_box.sh push ${id}
+   The box is standing on an earlier push. A gate launched now would bank a
+   verdict about THAT tree and wait would print it as this checkout's. Nothing
+   was launched."
+
     # THE REDIRECT IS ON THE BOX AND THE GATE IS NEVER PIPED: the gate refuses a
     # piped stdout, and its exit status is the verdict, so it is written to its
     # own file rather than carried back over a connection that can drop.
@@ -3302,9 +3335,45 @@ cmd_wait() {
     done
     rc="$(ssh_to "$id" "cat ~/verify/${rung}/${name}.rc 2>/dev/null || echo 2" | tr -d '\r' | tail -n 1)"
     echo "--- last 40 lines of ~/verify/${rung}/${name}.log ---"
-    ssh_to "$id" "tail -n 40 ~/verify/${rung}/${name}.log 2>/dev/null || true" || true
+    # AND EVERY RED BLOCK THE TAIL CANNOT REACH, in the same session. A leg that
+    # composes a red prints `!! RED: <members>` and, beneath it, each red
+    # member's own FAILED lines — and then the gate goes on printing: the
+    # leg's fixed blind-spot block, the gate's NOT-run list, the banked line.
+    # With two red members the first one's cases sit above the forty lines this
+    # prints, which is the window a bank's `wait-*.log` is read from.
+    #
+    # THE READER IS HERE, NOT A MOVED DIGEST IN THE GATE. Moving the digest
+    # below the blind-spot block would buy room at the end of ONE leg and lose
+    # it again to whatever the gate prints after that leg — the tail's window
+    # is this command's, so this command reads what falls outside it.
+    #
+    # A BLOCK is the `!! RED:` (or `!! and RED:`) line and the indented lines
+    # under it, up to the first line that is not indented. Blocks that START
+    # inside the tail are not printed twice, and a block that runs INTO the tail
+    # stops where the tail begins. Awk is handed the file twice — the first pass
+    # counts its lines, the second prints — so it is two passes and never a
+    # pipe, and `|| true` after both readers means nothing here can change the
+    # exit status, which is the gate's.
+    ssh_to "$id" "tail -n 40 ~/verify/${rung}/${name}.log 2>/dev/null || true; awk 'NR == FNR { n = NR; next } FNR > n - 40 { exit } /^!! (and )?RED:/ { if (!said) { print \"--- every RED block above those forty lines ---\"; said = 1 } on = 1; print; next } on && /^ / { print; next } { on = 0 }' ~/verify/${rung}/${name}.log ~/verify/${rung}/${name}.log 2>/dev/null || true" || true
     echo "--- gate exit ${rc} ---"
     case "$rc" in '' | *[!0-9]*) die "the box did not record an exit status for '${name}'" ;; esac
+    # A GREEN RUN'S ROW COMES HOME WITH THE WAIT. The box's verdict lives in the
+    # box's ledger, and a consult anywhere else — the verifier's, the merge
+    # ritual's, a laptop's `--loop` — can only honour a row that is in THIS
+    # checkout's ledger. So a wait that ends green runs `harvest` itself, in a
+    # subshell: a harvest that cannot (a `leg` or `run` log, a red run, a
+    # `--mine` that banked nothing) prints one line and NEVER changes the exit
+    # status, which is the gate's own — the reason `harvest` was kept a
+    # separate command, kept.
+    if [ "$rc" = "0" ]; then
+        local harvested hrc=0
+        harvested=$( (cmd_harvest "$id" "$name") 2>&1) || hrc=$?
+        if [ "$hrc" = "0" ]; then
+            printf '%s\n' "$harvested"
+        else
+            echo "wait: no loop row came home — $(printf '%s\n' "$harvested" | sed -n 's/^!! verifier_box: //p' | sed -n 1p)"
+        fi
+    fi
     exit "$rc"
 }
 

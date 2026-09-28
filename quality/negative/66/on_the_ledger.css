@@ -1,0 +1,11 @@
+/* A moment on the ledger: its token declared, spent, and ruled on (the
+   ledger row is this form's second file). `none` moves nothing. */
+:root {
+    --motion-zzz-arrive: 180ms ease-out;
+}
+.zzz-arrive {
+    transition: opacity var(--motion-zzz-arrive);
+}
+.zzz-still {
+    transition: none;
+}

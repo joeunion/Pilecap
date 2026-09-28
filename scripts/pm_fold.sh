@@ -50,7 +50,7 @@ esac
 # script's exit guard, its dirty-path rule and its census.
 #
 #   --only <steps>   a comma-joined subset of the step names, which are a
-#                    CLOSED list: contract|schema|secrets|budgets (steps a-d),
+#                    CLOSED list: contract|schema|secrets|budgets|walls|map (a-f),
 #                    plus whatever `scripts/local/fold.d/` declares (see THE
 #                    PRODUCT'S DRAWER below). An unknown name is exit 2, never a
 #                    silently smaller fold.
@@ -268,11 +268,11 @@ refuse() {
 }
 
 # --- THE STEP NAMES, A CLOSED LIST -------------------------------------------
-# Four names for the four steps, in the order they run. TYPED here for the same
+# Five names for the five steps, in the order they run. TYPED here for the same
 # reason `DERIVED_PATHS` is typed: a computed list is a list that grows whenever
 # something misbehaves, and the whole value of `--only` is that a name it does
 # not recognise is exit 2 rather than a silently smaller fold.
-FOLD_STEP_NAMES='contract schema secrets budgets'
+FOLD_STEP_NAMES='contract schema secrets budgets walls map'
 FOLD_ONLY=""
 FOLD_NO_COMMIT=""
 
@@ -299,8 +299,8 @@ THE FOLD. Regenerate this checkout's derived files and commit exactly those.
                                               working tree, staging nothing
   ./scripts/pm_fold.sh --help
 
-<steps> is a comma-joined subset of a CLOSED list: the four template steps, in
-order — contract, schema, secrets, budgets — plus every step this checkout's
+<steps> is a comma-joined subset of a CLOSED list: the six template steps, in
+order — contract, schema, secrets, budgets, walls, map — plus every step this checkout's
 scripts/local/fold.d/ declares, which run after them in name order. An unknown
 name is exit 2, and the refusal prints both halves.
 
@@ -473,7 +473,7 @@ if [ -d "$FOLD_LOCAL_DIR" ]; then
         case " ${FOLD_STEP_NAMES} " in
         *" ${_fold_local_name} "*)
             refuse "${_fold_local_rel} takes the name of one of this fold's own steps." \
-                "The template's four are ${FOLD_STEP_NAMES}, and a local step that shadowed" \
+                "The template's own are ${FOLD_STEP_NAMES}, and a local step that shadowed" \
                 "one would make --only ambiguous and could silently replace a step this" \
                 "file's header calls the tree's only legal writer. Rename the local step." \
                 "Nothing was regenerated and nothing was committed."
@@ -629,6 +629,12 @@ fi
 #                                            reached from live_scan on every
 #                                            ordinary engine run, and by
 #                                            quality/hotpath_probe.py.
+#   scripts/gate_member_durations.ci.json    the CI walls table, written by step
+#                                            (e) from a green CI run's own shard
+#                                            lines. Read by scripts/check.sh's
+#                                            selftest partition
+#                                            (`selftest_walls_choose`) and by
+#                                            `--list-legs --ci`'s shard count.
 #   scripts/test_impact.json                 the acceptance map. Read by
 #                                            scripts/loop_tier.sh
 #                                            (LOOP_SCOPE_MAP_PATH) for the
@@ -671,9 +677,9 @@ fi
 #                                            regenerates it and it is invisible to
 #                                            the census by construction.
 #
-# THESE FIVE ARE A FIXED LITERAL, and the header's third blind spot is why: a
+# THESE SIX ARE A FIXED LITERAL, and the header's third blind spot is why: a
 # computed list grows whenever a generator misbehaves, which is the one thing
-# clause 2 exists to catch. They are the TEMPLATE's five, and a sixth one of
+# clause 2 exists to catch. They are the TEMPLATE's six, and a seventh one of
 # the template's own is a human edit here.
 #
 # AND THEY STAY TYPED FOR THE SECOND REASON TOO, the map included: a
@@ -692,7 +698,8 @@ DERIVED_PATHS='frontend/openapi.json
 frontend/src/api/generated/schema.d.ts
 .secrets.baseline
 quality/budgets.yaml
-scripts/test_impact.json'
+scripts/test_impact.json
+scripts/gate_member_durations.ci.json'
 
 # --- THE ABSORBED LIST, TYPED, AND A STRICT SUBSET OF THE ONE ABOVE ----------
 #
@@ -1389,6 +1396,534 @@ else
 fi
 echo ""
 
+# --- (e) walls: the CI walls table the selftest partition balances over ------
+#
+# WHAT IT HARVESTS. Every selftest shard of a CI run prints one line per member
+# it drove — `drive <member>: exit <rc> (<s>s)` — and, when CI hands it
+# `DJB_MEMBER_WALLS_OUT`, writes the same fact as a `member-walls/1` row. This
+# step takes the LATEST GREEN, COMPLETE CI run on main, reads those rows (the
+# run's `member-walls*` artifacts when it uploaded any, its log otherwise), and
+# writes `scripts/gate_member_durations.ci.json`: one wall per member, the
+# runner label as `machine`, the run id and the tree as `measured_at`. The
+# selftest partition prefers that table to the Mac's (`selftest_walls_choose`
+# in scripts/check.sh), and `--list-legs --ci` derives the shard count from it.
+#
+# A HINT, NEVER A PARTIAL TABLE, AND NEVER A REFUSAL. The table is a
+# measurement of somebody else's run, so this step's worst outcome is "the
+# committed table stands": every reason not to write it prints ONE line and
+# leaves the fold's exit exactly as the other steps left it.
+#
+#   walls: NOT harvested — <why>          the run was read and is not a table:
+#                                         a member in two shards, a member of
+#                                         the population with no row, a row for
+#                                         a member the population does not have,
+#                                         any rc other than 0, a REUSED row (its
+#                                         wall was never this run's), or a run
+#                                         that does not say whose walls they are.
+#   walls: could not look (<why>) — the committed table stands
+#                                         no gh, gh failing, no green run.
+#
+# THE POPULATION IS THE GATE'S OWN: `./scripts/check.sh --list-legs`'s
+# `selftest` row, whose composed-of is the leg and then every drive it walks —
+# the leg's own self-test member is `house-rules-engine` wherever a member is
+# named, so that is what the leg name maps to here. A closed population, never
+# the harvest's own say-so: a run that lost a member is incomplete, not smaller.
+#
+# SEAMS, for the drive and for the one-time production of the table:
+#   DJB_FOLD_WALLS_DIR         a directory already holding the harvest (`*.walls`
+#                              files of `member-walls/1` rows, one per shard, and
+#                              a `run.meta` of `run=` `machine=` `tree=` lines) —
+#                              gh is not asked.
+#   DJB_FOLD_WALLS_POPULATION  a file of member names, one per line, in place of
+#                              the listing (a fixture repository has no gate).
+#   DJB_FOLD_WALLS_RUN         the run id to read, in place of "the latest green".
+#   DJB_FOLD_GH                the gh to run (a stub, or a path that is absent).
+#
+# WHAT IT DOES NOT COVER: whether the walls are representative (one run, one
+# runner, whatever else that runner was doing); a run whose log lines were
+# reworded (it reads nothing, and says NOT harvested — the population is
+# missing); churn — a harvest writes only when bytes move, and if every train
+# moves it the remedy is rounding, not skipping.
+FOLD_GH="${DJB_FOLD_GH:-gh}"
+FOLD_WALLS_PATH='scripts/gate_member_durations.ci.json'
+
+# fold_walls_population — the member names, one per line; 1 when they cannot
+# be had.
+fold_walls_population() {
+    if [ -n "${DJB_FOLD_WALLS_POPULATION:-}" ]; then
+        [ -r "$DJB_FOLD_WALLS_POPULATION" ] || return 1
+        grep -v '^$' "$DJB_FOLD_WALLS_POPULATION"
+        return 0
+    fi
+    # TO A FILE, NEVER A `$( )`: the gate refuses a piped stdout (exit 2), and a
+    # command substitution IS a pipe — the listing's own reader in
+    # `scripts/pm_push.sh` redirects for the same reason.
+    "$ROOT/scripts/check.sh" --list-legs >"$FOLD_WORK/walls-listing.tsv" 2>/dev/null || return 1
+    awk -F'\t' '
+        $1 == "selftest" {
+            n = split($4, m, ",")
+            for (i = 1; i <= n; i++) {
+                if (m[i] == "selftest") { print "house-rules-engine" } else { print m[i] }
+            }
+            found = 1
+        }
+        END { exit(found ? 0 : 1) }
+    ' "$FOLD_WORK/walls-listing.tsv"
+}
+
+# fold_walls_fetch <dir> — fill <dir> with the harvest from gh. On failure it
+# prints the reason on stdout and returns 1 (could not look) or 3 (read, and not
+# harvestable).
+fold_walls_fetch() {
+    local dir=$1 run="" view="" status="" conclusion="" sha="" tree="" labels=""
+    if ! command -v "$FOLD_GH" >/dev/null 2>&1; then
+        echo "no ${FOLD_GH} on PATH"
+        return 1
+    fi
+    run=${DJB_FOLD_WALLS_RUN:-}
+    if [ -z "$run" ]; then
+        # `--branch=main` NAMES GITHUB'S BRANCH, NOT A LOCAL REF: the run list
+        # is the remote's record, and this step reads nothing from this
+        # checkout's refs but the commit the run names (and asks gh for its
+        # tree when that commit is not here).
+        run=$("$FOLD_GH" run list --workflow ci.yml --branch=main --event push --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>"$dir/gh.err") || {
+            echo "gh run list failed: $(head -n 1 "$dir/gh.err")"
+            return 1
+        }
+        if [ -z "$run" ]; then
+            echo "no green CI run on main"
+            return 1
+        fi
+    fi
+    case "$run" in
+    *[!0-9]*)
+        echo "the run id '${run}' is not a number"
+        return 1
+        ;;
+    esac
+    view=$("$FOLD_GH" run view "$run" --json status,conclusion,headSha \
+        --jq '"\(.status) \(.conclusion) \(.headSha)"' 2>"$dir/gh.err") || {
+        echo "gh run view ${run} failed: $(head -n 1 "$dir/gh.err")"
+        return 1
+    }
+    status=$(printf '%s\n' "$view" | awk '{print $1}')
+    conclusion=$(printf '%s\n' "$view" | awk '{print $2}')
+    sha=$(printf '%s\n' "$view" | awk '{print $3}')
+    if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+        echo "run ${run} is ${status}/${conclusion}, not a green completed run"
+        return 3
+    fi
+    tree=$(git rev-parse --verify --quiet "${sha}^{tree}" 2>/dev/null) ||
+        tree=$("$FOLD_GH" api "repos/{owner}/{repo}/git/commits/${sha}" --jq '.tree.sha' 2>"$dir/gh.err") || {
+        echo "the tree of ${sha} could not be read: $(head -n 1 "$dir/gh.err")"
+        return 1
+    }
+    labels=$("$FOLD_GH" api "repos/{owner}/{repo}/actions/runs/${run}/jobs?per_page=100" \
+        --jq '.jobs[] | select(.name | startswith("legs (selftest")) | .labels | join(",")' 2>"$dir/gh.err") || {
+        echo "gh api could not list run ${run}'s jobs: $(head -n 1 "$dir/gh.err")"
+        return 1
+    }
+    labels=$(printf '%s\n' "$labels" | grep -v '^$' | LC_ALL=C sort -u | tr '\n' '+' | sed 's/+$//')
+    {
+        echo "run=${run}"
+        echo "machine=${labels}"
+        echo "tree=${tree}"
+    } >"$dir/run.meta"
+    # THE ARTIFACTS FIRST — the rows the shards wrote themselves — and the log
+    # when there are none (every run before CI uploaded them, the baseline
+    # included). Both land as the same `member-walls/1` rows.
+    mkdir -p "$dir/artifacts"
+    if "$FOLD_GH" run download "$run" --pattern 'member-walls*' --dir "$dir/artifacts" >/dev/null 2>&1 &&
+        [ -n "$(find "$dir/artifacts" -type f 2>/dev/null)" ]; then
+        find "$dir/artifacts" -type f | LC_ALL=C sort | while IFS= read -r _wf; do cat "$_wf"; done |
+            grep '^member-walls/1	' >"$dir/artifacts.walls" || true
+        return 0
+    fi
+    "$FOLD_GH" run view "$run" --log >"$dir/run.log" 2>"$dir/gh.err" || {
+        echo "gh run view ${run} --log failed: $(head -n 1 "$dir/gh.err")"
+        return 1
+    }
+    # `<job>\t<step>\t<timestamp> <content>`, the job named by ci.yml's matrix
+    # (`legs (selftest, k/N)`, or `legs (selftest)` unsharded). Only a line whose
+    # CONTENT is exactly the leg's own member line counts: a drive's nested
+    # output is indented further and is not a member of this run.
+    awk -F'\t' '
+        $1 ~ /^legs \(selftest(, [0-9]+\/[0-9]+)?\)$/ {
+            part = "1/1"
+            if (match($1, /[0-9]+\/[0-9]+/)) { part = substr($1, RSTART, RLENGTH) }
+            c = $3
+            sub(/^[0-9][0-9TZ:.+-]* /, "", c)
+            if (c ~ /^  drive [A-Za-z0-9_:-]+: exit [0-9]+ \([0-9]+s\)$/) {
+                split(c, w, " ")
+                name = w[2]; sub(/:$/, "", name)
+                secs = w[5]; gsub(/[()s]/, "", secs)
+                printf "member-walls/1\t%s\t%s\t%s\t%s\n", name, w[4], secs, part
+            } else if (c ~ /^  drive [A-Za-z0-9_:-]+: REUSED /) {
+                split(c, w, " ")
+                name = w[2]; sub(/:$/, "", name)
+                printf "member-walls/1\t%s\treused\t-\t%s\n", name, part
+            }
+        }
+    ' "$dir/run.log" >"$dir/log.walls"
+    # AN HONOURED PUSH RAN NO SELFTEST SHARD, AND ITS LOG SAYS WHICH RUN DID.
+    # A push whose tree a pull request's run already measured green is
+    # honoured by derive (`honoured: tree <t> was measured green by run <id>`,
+    # .github/workflows/ci.yml) and runs no `legs` job at all — so its log
+    # carries no member line and uploads no walls, and a harvest of it could
+    # only ever refuse. The run that measured the tree is the one the line
+    # names; the step follows it ONCE (a followed run that is itself honoured is
+    # a record nobody wrote, and is harvested as it stands).
+    local honoured
+    if [ ! -s "$dir/log.walls" ] && [ -z "${FOLD_WALLS_FOLLOWED:-}" ]; then
+        honoured=$(sed -n 's/.*honoured: tree [0-9a-f]* was measured green by run \([0-9][0-9]*\).*/\1/p' "$dir/run.log" | sed -n 1p)
+        if [ -n "$honoured" ]; then
+            printf 'the push run %s ran no selftest shard — derive honoured its tree by run %s, which measured it; followed\n' \
+                "$run" "$honoured" >"$dir/follow.note"
+            rm -rf "$dir/artifacts" "$dir/artifacts.walls" "$dir/log.walls" "$dir/run.log"
+            FOLD_WALLS_FOLLOWED=1 DJB_FOLD_WALLS_RUN="$honoured" fold_walls_fetch "$dir"
+            return $?
+        fi
+    fi
+    return 0
+}
+
+# fold_walls_rows <dir> — every `*.walls` file's rows, the files in name order
+# (a glob, never `find`: the order a directory lists in is the filesystem's, and
+# a refusal naming `sweep(2/3,1/3)` on one machine and `(1/3,2/3)` on another is
+# a sentence nobody can grep for).
+fold_walls_rows() {
+    local f
+    for f in "$1"/*.walls; do
+        [ -f "$f" ] || continue
+        cat "$f"
+    done
+}
+
+# fold_walls_write <dir> <population-file> <out> — validate the harvest and
+# write the table. Prints `walls: …` and returns 0 written, 3 not harvested.
+fold_walls_write() {
+    local dir=$1 pop=$2 out=$3 run="" machine="" tree="" why=""
+    # EOF READERS OVER THE FILE, never a pipe into an early-exit reader — the
+    # class `scripts/tests/test_pipefail_readers.sh` censuses.
+    run=$(awk '/^run=/ { sub(/^run=/, ""); print; exit }' "$dir/run.meta" 2>/dev/null) || run=""
+    machine=$(awk '/^machine=/ { sub(/^machine=/, ""); print; exit }' "$dir/run.meta" 2>/dev/null) || machine=""
+    tree=$(awk '/^tree=/ { sub(/^tree=/, ""); print; exit }' "$dir/run.meta" 2>/dev/null) || tree=""
+    [ -n "$run" ] && [ -n "$machine" ] && [ -n "$tree" ] ||
+        why="the harvest does not say whose walls they are (run.meta needs run=, machine= and tree=)"
+    if [ -z "$why" ]; then
+        why=$(fold_walls_rows "$dir" | awk -F'\t' -v popf="$pop" '
+            BEGIN { while ((getline p < popf) > 0) { if (p != "") { want[p] = 1 } } }
+            NF == 0 { next }
+            $1 != "member-walls/1" || NF != 5 { bad = bad " unparsable:" NR; next }
+            {
+                if ($3 == "reused") { reused = reused " " $2 }
+                else if ($3 != "0") { red = red " " $2 "(exit " $3 ")" }
+                else if ($4 !~ /^[0-9]+$/) { bad = bad " " $2 "(wall " $4 ")" }
+                if ($2 in seen) { twice = twice " " $2 "(" seen[$2] "," $5 ")" }
+                seen[$2] = $5
+                if (!($2 in want)) { extra = extra " " $2 }
+            }
+            END {
+                for (p in want) { if (!(p in seen)) { missing = missing " " p } }
+                w = ""
+                if (twice != "") { w = w "; in two shards:" twice }
+                if (missing != "") { w = w "; missing against the population:" missing }
+                if (extra != "") { w = w "; not a member of the population:" extra }
+                if (red != "") { w = w "; not green:" red }
+                if (reused != "") { w = w "; reused (never this run'"'"'s wall):" reused }
+                if (bad != "") { w = w "; malformed:" bad }
+                sub(/^; /, "", w)
+                print w
+            }
+        ')
+    fi
+    if [ -n "$why" ]; then
+        echo "  walls: NOT harvested — ${why}"
+        echo "         ${FOLD_WALLS_PATH} unchanged (a hint, never a partial table)."
+        return 3
+    fi
+    {
+        printf '{\n'
+        # `run:` AND `tree:` ARE PART OF THE VALUE, for the committed Mac table's
+        # measured reason: a bare 40-hex value is what the secrets scanner reads
+        # as a credential, and JSON has no comment to hang a pragma on.
+        printf '  "measured_at": "run:%s tree:%s",\n' "$run" "$tree"
+        printf '  "machine": "%s",\n' "$machine"
+        printf '  "members": {\n'
+        fold_walls_rows "$dir" | awk -F'\t' 'NF == 5 { print $2 "\t" $4 }' |
+            LC_ALL=C sort | awk -F'\t' '
+            { name[NR] = $1; secs[NR] = $2 }
+            END { for (i = 1; i <= NR; i++) { printf "    \"%s\": %s%s\n", name[i], secs[i], (i < NR ? "," : "") } }
+        '
+        printf '  }\n'
+        printf '}\n'
+    } >"$dir/table.json"
+    if [ -f "$out" ] && cmp -s "$dir/table.json" "$out"; then
+        echo "  walls: harvested run ${run} ($(grep -c '^    "' "$dir/table.json") members, ${machine}, tree ${tree}) — the committed table already says exactly this"
+        return 0
+    fi
+    cp "$dir/table.json" "$out"
+    echo "  walls: harvested run ${run} ($(grep -c '^    "' "$dir/table.json") members, ${machine}, tree ${tree}) -> ${FOLD_WALLS_PATH}"
+    return 0
+}
+
+echo "== (e) walls · the latest green CI run on main -> ${FOLD_WALLS_PATH}"
+if ! fold_step_selected walls; then
+    step_skipped "--only ${FOLD_ONLY} does not name this step"
+elif [ ! -x "$ROOT/scripts/check.sh" ] && [ -z "${DJB_FOLD_WALLS_POPULATION:-}" ]; then
+    step_skipped "no scripts/check.sh in this checkout — there is no selftest population to harvest walls for"
+else
+    STEPS_RUN=$((STEPS_RUN + 1))
+    FOLD_WALLS_DIR="$FOLD_WORK/walls"
+    mkdir -p "$FOLD_WALLS_DIR"
+    FOLD_WALLS_WHY=""
+    FOLD_WALLS_RC=0
+    if [ -n "${DJB_FOLD_WALLS_DIR:-}" ]; then
+        if [ -d "$DJB_FOLD_WALLS_DIR" ]; then
+            cp "$DJB_FOLD_WALLS_DIR"/* "$FOLD_WALLS_DIR"/ 2>/dev/null || true
+        else
+            FOLD_WALLS_WHY="DJB_FOLD_WALLS_DIR=${DJB_FOLD_WALLS_DIR} is not a directory"
+            FOLD_WALLS_RC=1
+        fi
+    else
+        FOLD_WALLS_WHY=$(fold_walls_fetch "$FOLD_WALLS_DIR") || FOLD_WALLS_RC=$?
+    fi
+    if [ -s "$FOLD_WALLS_DIR/follow.note" ]; then
+        echo "  walls: $(cat "$FOLD_WALLS_DIR/follow.note")"
+    fi
+    if [ "$FOLD_WALLS_RC" = "1" ]; then
+        echo "  walls: could not look (${FOLD_WALLS_WHY}) — the committed table stands"
+    elif [ "$FOLD_WALLS_RC" = "3" ]; then
+        echo "  walls: NOT harvested — ${FOLD_WALLS_WHY}"
+        echo "         ${FOLD_WALLS_PATH} unchanged (a hint, never a partial table)."
+    elif ! fold_walls_population >"$FOLD_WALLS_DIR/population" || [ ! -s "$FOLD_WALLS_DIR/population" ]; then
+        echo "  walls: could not look (the selftest population would not derive from ./scripts/check.sh --list-legs) — the committed table stands"
+    else
+        fold_walls_write "$FOLD_WALLS_DIR" "$FOLD_WALLS_DIR/population" "$ROOT/$FOLD_WALLS_PATH" || true
+    fi
+fi
+echo ""
+
+# --- (f) map: the latest nightly's test-impact map ---------------------------
+#
+# WHAT IT HARVESTS. `.github/workflows/nightly-proof.yml` runs the leak proof
+# (`scripts/pm_push.sh --proof`) on main every night and publishes the
+# `nightly-leak-proof` artifact: `leak_proof.txt` (the record, grammar owned by
+# `scripts/gate_ledger.sh`) and, on a green pass 1, `test_impact.json` — the map
+# the loop's closure scope reads (`scripts/loop_tier.sh`, LOOP_SCOPE_MAP_PATH).
+# Since the leak proof went nightly a bank under `--leak-proof nightly` launches
+# no acceptance box, so nothing else writes the map: this step takes the LATEST
+# completed nightly and, when it is green, no older than 24 h and carries a map,
+# writes `scripts/test_impact.json` from it and commits it with the fold.
+#
+# RED, STALE OR NONE → UNCHANGED, AND SAID. The map is a hint: a stale one
+# costs the loop a narrower scope, never a verdict. So every reason not to
+# write it prints ONE line naming the reason and the fold's exit is exactly
+# what the other steps left it:
+#
+#   map: harvested nightly run <id> (<at>, tree <12>) -> scripts/test_impact.json
+#   map: NOT harvested — the latest nightly (run <id>) is red (<form>) …
+#   map: NOT harvested — the latest nightly (run <id>) is older than 24 h …
+#   map: NOT harvested — nightly run <id> is green and published no map (map=<n>) …
+#   map: none — <why> — scripts/test_impact.json unchanged
+#   map: could not look (<why>) — scripts/test_impact.json unchanged
+#
+# THE LATEST, NEVER THE LATEST GREEN: a red night is the thing to say, and a
+# walk back to an older green would print a harvest over the run that failed.
+# One fetcher and one reader — `gate_nightly_fetch` and `gate_nightly_read` in
+# `scripts/gate_ledger.sh`, the same two a bank's `--leak-proof nightly` calls.
+#
+# A MAP A BANK ALREADY WROTE WINS. `scripts/test_impact.json` is the one
+# ABSORBED path: an acceptance box writes it into the working tree and the fold
+# commits it. When it arrives here already dirty it is THIS tree's measurement
+# and last night's is older — so the step says so and replaces nothing.
+#
+# SEAMS: DJB_FOLD_MAP_DIR — a directory already holding the artifact
+# (`leak_proof.txt`, and `test_impact.json` when the night wrote one); gh is not
+# asked. DJB_FOLD_GH — the gh the fetch runs (shared with step (e)).
+#
+# WHAT IT DOES NOT COVER: whether last night's map describes today's tree (the
+# map names its own tree in its `generated` block, and the loop reads it as a
+# hint); an artifact GitHub served wrong.
+FOLD_MAP_PATH='scripts/test_impact.json'
+FOLD_MAP_HARVESTED=0
+FOLD_MAP_ABSORBED=0
+FOLD_MAP_PRUNED=0
+
+# fold_map_prune — drop every map entry this checkout no longer COLLECTS.
+#
+# WHY THE FOLD DOES IT. A test the map names and the collection does not hold
+# (renamed, parametrized, deleted since the map was measured) is a stale entry;
+# the loop's reader now names it and runs its module whole
+# (`_impact_selection`, apps/conftest.py) instead of killing every worker, and
+# this is the other half: the committed map stops naming it. Whatever the map
+# step above decided — harvested, absorbed, unchanged — the map that is about
+# to be committed is pruned against THIS tree's collection.
+#
+# THE COLLECTION IS pytest's OWN (`--collect-only -q`, read by the map writer's
+# own `read_collected`, and the file is re-rendered by its own `render`, both
+# imported from scripts/test_impact.py — one reader and one writer, never a
+# second). `DJB_FOLD_MAP_COLLECTED` names a collection already taken, so a drive
+# needs no suite. A collection that failed is `could not prune`, and the map
+# stands as it was.
+#
+#   map: pruned <n> ids no longer collected — <ids> -> scripts/test_impact.json
+#   map: every entry is collected (<n>) — nothing pruned
+#   map: could not prune (<why>) — scripts/test_impact.json as it stands
+fold_map_prune() {
+    local collected="${DJB_FOLD_MAP_COLLECTED:-}" rc=0 said
+    [ -f "$ROOT/$FOLD_MAP_PATH" ] || return 0
+    if [ ! -f "$ROOT/scripts/test_impact.py" ]; then
+        echo "  map: could not prune (no scripts/test_impact.py to read a collection with) — ${FOLD_MAP_PATH} as it stands"
+        return 0
+    fi
+    if [ -z "$collected" ]; then
+        collected="$FOLD_WORK/map-collected.txt"
+        if ! command -v "$FOLD_UV" >/dev/null 2>&1; then
+            echo "  map: could not prune (no ${FOLD_UV} on PATH to collect with) — ${FOLD_MAP_PATH} as it stands"
+            return 0
+        fi
+        (cd "$ROOT" && "$FOLD_UV" run pytest --collect-only -q -p no:randomly) >"$collected" 2>&1 || rc=$?
+        if [ "$rc" != "0" ]; then
+            echo "  map: could not prune (the collection exited ${rc}: $(grep -m1 -E 'Error|error' "$collected" || echo 'no error line')) — ${FOLD_MAP_PATH} as it stands"
+            return 0
+        fi
+    fi
+    # NO BYTECODE: importing the writer must write nothing into the tree the
+    # fold's own footprint census is about to judge (measured: a `__pycache__`
+    # beside scripts/test_impact.py was the fold's own stray).
+    said=$(cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 python3 - "$FOLD_MAP_PATH" "$collected" 2>&1 <<'PY'
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("test_impact", "scripts/test_impact.py")
+if spec is None or spec.loader is None:
+    print("could not prune (scripts/test_impact.py would not load)")
+    sys.exit(0)
+ti = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ti)
+path, collected_path = sys.argv[1], sys.argv[2]
+try:
+    collected = set(ti.read_collected(collected_path))
+except ti.CannotLook as exc:
+    print(f"could not prune ({str(exc).splitlines()[0]})")
+    sys.exit(0)
+doc = json.load(open(path, encoding="utf-8"))
+stale = sorted(n for n in doc["tests"] if n not in collected)
+if not stale:
+    print(f"every entry is collected ({len(doc['tests'])}) — nothing pruned")
+    sys.exit(0)
+for nodeid in stale:
+    del doc["tests"][nodeid]
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(ti.render(doc))
+shown = ", ".join(stale[:5]) + (f" (+{len(stale) - 5} more)" if len(stale) > 5 else "")
+print(f"pruned {len(stale)} ids no longer collected — {shown} -> {path}")
+PY
+) || said="could not prune (python3 exited $?)"
+    case "$said" in
+    "could not prune"*) echo "  map: ${said} — ${FOLD_MAP_PATH} as it stands" ;;
+    pruned*)
+        # AN EOF READER, NEVER A PIPE INTO AN EARLY-EXIT awk (the pipefail census).
+        FOLD_MAP_PRUNED=$(awk '{ print $2; exit }' <<EOF
+$said
+EOF
+)
+        echo "  map: ${said}"
+        ;;
+    *) echo "  map: ${said}" ;;
+    esac
+    return 0
+}
+
+echo "== (f) map · the latest nightly's test-impact map -> ${FOLD_MAP_PATH}"
+if ! fold_step_selected map; then
+    step_skipped "--only ${FOLD_ONLY} does not name this step"
+elif [ ! -f "$ROOT/$FOLD_MAP_PATH" ]; then
+    step_skipped "no ${FOLD_MAP_PATH} in this checkout — there is no map to keep current"
+else
+    STEPS_RUN=$((STEPS_RUN + 1))
+    FOLD_MAP_DIR=""
+    FOLD_MAP_RUN="(given)"
+    FOLD_MAP_WHY=""
+    FOLD_MAP_RC=0
+    if [ -n "$(git status --porcelain -- "$FOLD_MAP_PATH")" ]; then
+        FOLD_MAP_RC=9
+    elif [ -n "${DJB_FOLD_MAP_DIR:-}" ]; then
+        if [ -d "$DJB_FOLD_MAP_DIR" ]; then
+            FOLD_MAP_DIR="$DJB_FOLD_MAP_DIR"
+        else
+            FOLD_MAP_WHY="DJB_FOLD_MAP_DIR=${DJB_FOLD_MAP_DIR} is not a directory"
+            FOLD_MAP_RC=2
+        fi
+    else
+        FOLD_MAP_WHY=$(bash -c '
+            set -uo pipefail
+            . "$1" >/dev/null 2>&1 || { echo "scripts/gate_ledger.sh would not load"; exit 2; }
+            GATE_NIGHTLY_GH="$2"
+            gate_nightly_fetch "$3"
+        ' _ "$FOLD_DECL_READER" "$FOLD_GH" "$FOLD_WORK/map") || FOLD_MAP_RC=$?
+        if [ "$FOLD_MAP_RC" = "0" ]; then
+            FOLD_MAP_RUN="${FOLD_MAP_WHY%% *}"
+            FOLD_MAP_DIR="${FOLD_MAP_WHY#* * }"
+            FOLD_MAP_WHY=""
+        fi
+    fi
+    FOLD_MAP_FORM=""
+    if [ "$FOLD_MAP_RC" = "0" ]; then
+        FOLD_MAP_FORM=$(bash -c '
+            set -uo pipefail
+            . "$1" >/dev/null 2>&1 || { echo "scripts/gate_ledger.sh would not load" >&2; exit 2; }
+            gate_nightly_read "$2"
+        ' _ "$FOLD_DECL_READER" "$FOLD_MAP_DIR" 2>"$FOLD_WORK/map-read.err") || FOLD_MAP_RC=$?
+        [ "$FOLD_MAP_RC" = "0" ] || FOLD_MAP_WHY="the record is unreadable: $(tr '\n' ' ' <"$FOLD_WORK/map-read.err")"
+    fi
+    case "$FOLD_MAP_RC" in
+    9)
+        FOLD_MAP_ABSORBED=1
+        echo "  map: ${FOLD_MAP_PATH} is already modified in this working tree — a bank's"
+        echo "       acceptance box wrote it, and this tree's own measurement outranks last"
+        echo "       night's. Absorbed as it stands; nothing was fetched."
+        ;;
+    1) echo "  map: none — ${FOLD_MAP_WHY} — ${FOLD_MAP_PATH} unchanged" ;;
+    0)
+        FOLD_MAP_MAPRC=$(awk 'NF { for (i = 1; i <= NF; i++) if ($i ~ /^map=/) { sub(/^map=/, "", $i); print $i; exit } exit }' "$FOLD_MAP_DIR/leak_proof.txt")
+        case "$FOLD_MAP_FORM" in
+        nightly:stale:*)
+            echo "  map: NOT harvested — the latest nightly (run ${FOLD_MAP_RUN}) is older than 24 h (${FOLD_MAP_FORM})"
+            echo "       — ${FOLD_MAP_PATH} unchanged."
+            ;;
+        *" rc=0")
+            if [ "$FOLD_MAP_MAPRC" != "0" ] || [ ! -s "$FOLD_MAP_DIR/test_impact.json" ]; then
+                echo "  map: NOT harvested — nightly run ${FOLD_MAP_RUN} is green and published no map (map=${FOLD_MAP_MAPRC:-?})"
+                echo "       — ${FOLD_MAP_PATH} unchanged."
+            elif ! command -v python3 >/dev/null 2>&1 ||
+                ! python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); sys.exit(0 if isinstance(d, dict) and isinstance(d.get("tests"), dict) and "generated" in d else 1)' \
+                    "$FOLD_MAP_DIR/test_impact.json" 2>/dev/null; then
+                echo "  map: could not look (nightly run ${FOLD_MAP_RUN}'s test_impact.json is not a map python3 can read) — ${FOLD_MAP_PATH} unchanged"
+            elif cmp -s "$FOLD_MAP_DIR/test_impact.json" "$ROOT/$FOLD_MAP_PATH"; then
+                echo "  map: harvested nightly run ${FOLD_MAP_RUN} (${FOLD_MAP_FORM}) — the committed map already says exactly this"
+            else
+                cp "$FOLD_MAP_DIR/test_impact.json" "$ROOT/$FOLD_MAP_PATH"
+                FOLD_MAP_HARVESTED=1
+                echo "  map: harvested nightly run ${FOLD_MAP_RUN} (${FOLD_MAP_FORM}) -> ${FOLD_MAP_PATH}"
+            fi
+            ;;
+        *)
+            echo "  map: NOT harvested — the latest nightly (run ${FOLD_MAP_RUN}) is red (${FOLD_MAP_FORM})"
+            echo "       — ${FOLD_MAP_PATH} unchanged; a red night's map is half a measurement."
+            ;;
+        esac
+        ;;
+    *) echo "  map: could not look (${FOLD_MAP_WHY}) — ${FOLD_MAP_PATH} unchanged" ;;
+    esac
+    fold_map_prune
+fi
+echo ""
+
+
 # --- (local) the product's own steps, in name order --------------------------
 #
 # AFTER THE TEMPLATE'S FOUR, and the order is a contract rather than an
@@ -1596,6 +2131,7 @@ CONTRACT_CHANGED=0
 BASELINE_CHANGED=0
 BUDGETS_CHANGED=0
 MAP_CHANGED=0
+WALLS_CHANGED=0
 DECLARED_CHANGED=0
 while IFS= read -r p; do
     [ -n "$p" ] || continue
@@ -1610,6 +2146,7 @@ while IFS= read -r p; do
     # the wrong verb about the one path nobody can reproduce locally is worse
     # than a bare one.
     scripts/test_impact.json) MAP_CHANGED=1 ;;
+    scripts/gate_member_durations.ci.json) WALLS_CHANGED=1 ;;
     *)
         # A DECLARED PATH, and the subject must say so. Without this arm a fold
         # whose only change came from a declaration commits under the bare
@@ -1640,7 +2177,21 @@ if [ "$BUDGETS_CHANGED" = "1" ]; then
     SEP=" · "
 fi
 if [ "$MAP_CHANGED" = "1" ]; then
-    SUBJECT="${SUBJECT}${SEP}acceptance map absorbed"
+    # TWO WRITERS, TWO VERBS: a bank's acceptance box wrote the map into the
+    # working tree and this run ABSORBED it, or step (f) HARVESTED last night's.
+    # A THIRD, WHEN IT IS THE ONLY ONE: step (f)'s prune dropped ids the
+    # collection no longer holds from a map nobody else rewrote.
+    if [ "$FOLD_MAP_HARVESTED" = "1" ]; then
+        SUBJECT="${SUBJECT}${SEP}nightly map harvested"
+    elif [ "$FOLD_MAP_ABSORBED" = "0" ] && [ "$FOLD_MAP_PRUNED" != "0" ]; then
+        SUBJECT="${SUBJECT}${SEP}map pruned (${FOLD_MAP_PRUNED} ids no longer collected)"
+    else
+        SUBJECT="${SUBJECT}${SEP}acceptance map absorbed"
+    fi
+    SEP=" · "
+fi
+if [ "$WALLS_CHANGED" = "1" ]; then
+    SUBJECT="${SUBJECT}${SEP}CI walls harvested"
     SEP=" · "
 fi
 if [ "$DECLARED_CHANGED" != "0" ]; then
@@ -1663,7 +2214,8 @@ fi
     echo "commit was written by hand: the contract is the byte-pin's regeneration,"
     echo "the baseline is detect-secrets', and every budget number is a line the"
     echo "gate itself printed under \"a human may commit the lower number\". A"
-    echo "ceiling is never raised here."
+    echo "ceiling is never raised here. The CI walls table is a green CI run's own"
+    echo "shard lines, harvested whole or not at all."
 } >"$FOLD_WORK/message"
 
 echo ""
