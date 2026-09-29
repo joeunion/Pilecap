@@ -122,6 +122,7 @@ def test_every_door_selector_asks_or_says_why() -> None:
     assert set(population) == {
         "get_downloadable_version",
         "get_file",
+        "get_subject",
         "get_version",
         "list_files",
         "list_versions",
@@ -138,8 +139,12 @@ def test_every_door_selector_asks_or_says_why() -> None:
     # ...and every one of them asks in ITS OWN body, which is what the census
     # reads. A `get_` whose only ask is inside a callee is one neither the rule
     # nor a reader can see asking.
+    # A member that carries the valve says in its body why it asks nothing —
+    # `get_subject` answers REACH, the seam's question, for callers that each ask
+    # their own key first — and is held to that sentence rather than to a require.
     for name, function in sorted(population.items()):
-        assert "require(actor" in inspect.getsource(function), name
+        source = inspect.getsource(function)
+        assert "require(actor" in source or VALVE.search(source), name
 
 
 # --- 2 · the order: reach before capability -----------------------------------

@@ -1,3 +1,4 @@
+# collides: index — the remount restraint: a second mount under the name the key already records, which must stay silent
 
 
 # The restraint half of its clause: `urlpatterns` grew, and the census did

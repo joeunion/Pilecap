@@ -19,6 +19,10 @@ third exception: the push address book is its own table, a registration is not
 a fact about any message, and house rule 16's grammar puts the noun the news is
 about in the middle.
 
+**And two are about a RECIPIENT** — `comms.recipient.archived` and
+`comms.recipient.restored`, the contact book's archive road. The same argument:
+the contact is its own noun, and closing one is not a fact about any message.
+
 **`comms.message.complained` is the one exception and it is a deliberate one**
 (ADR comms-9, amended): a spam complaint is not a state the message reached at
 all — it is news about *consent*, arriving after a message that very much
@@ -142,6 +146,20 @@ DEVICE_REGISTERED = "comms.device.registered"
 #: above, for `comms.message.clicked`'s reason — a subscriber keeping a mirror
 #: of who is reachable filters on the name and never on a payload.
 DEVICE_RETIRED = "comms.device.retired"
+
+
+#: A contact left the working contact book (`archive_recipient`). **News about
+#: the address book, never about consent**: an archived contact is still sent
+#: to, and "stop contacting this person" is `comms.message.suppressed`'s wall,
+#: not this. Emitted once, on the transition — a second press keeps the first
+#: date and says nothing. The payload is `RecipientOut`, the row as it now
+#: stands, `archived_at` and `archived_by` included.
+RECIPIENT_ARCHIVED = "comms.recipient.archived"
+
+#: And back into it (`restore_recipient`), once, on the transition. Its own
+#: name for `comms.message.clicked`'s reason: a subscriber mirroring the
+#: contact book filters on the name, never on a payload.
+RECIPIENT_RESTORED = "comms.recipient.restored"
 
 
 #: The sender changed their mind before it went out. **Not a suppression

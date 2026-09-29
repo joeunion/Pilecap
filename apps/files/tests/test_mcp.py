@@ -15,7 +15,7 @@ uncommitted rows, and what is under test here is the tool. The wire is
 `test_doors_over_the_wire.py`'s subject.
 
 **This app takes no rule-17 exemption**, and the table below is where that is
-visible: eight routes, eight tools, nothing recorded in `rules.yaml`. The asymmetry
+visible: nine routes, nine tools, nothing recorded in `rules.yaml`. The asymmetry
 a reader expects — bytes, which cannot travel as a tool result — is not an
 asymmetry at all: they do not travel through the HTTP door either. Both doors hand
 out a signed place and neither hands out a stream.
@@ -66,6 +66,7 @@ TOOL_FOR_ROUTE: dict[str, str] = {
     "file-detail": "get_file",
     "file-create": "create_file",
     "file-archive": "archive_file",
+    "file-restore": "restore_file",
     "download_url-issue": "issue_download_url",
     "version-list": "list_versions",
     "version-add": "add_version",
@@ -152,6 +153,7 @@ def test_every_tool_says_what_its_route_says() -> None:
         "get_file": contract_of(api.retrieve_file),
         "create_file": contract_of(api.create_file_route),
         "archive_file": contract_of(api.archive_file_route),
+        "restore_file": contract_of(api.restore_file_route),
         "issue_download_url": contract_of(api.issue_download_url_route),
         "list_versions": contract_of(api.list_versions_route),
         "add_version": contract_of(api.add_version_route),

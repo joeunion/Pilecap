@@ -121,7 +121,7 @@ from ninja.pagination import PaginationBase
 from pydantic import Field
 
 from apps.core.exceptions import Invalid, InvalidCursor, NotFound
-from apps.core.schemas import ListPage
+from apps.core.schemas import ActsPage, ListPage
 
 #: What a caller is told when a cursor is signed, valid, and somebody else's.
 #: Spelled once here because every paginated door inherits it, and worded to
@@ -204,6 +204,9 @@ class CursorPage[T]:
     has_more: bool
     next_cursor: str | None
     count: int | None
+    #: The LIST's own acts (`core.verbs.page_acts`) — set only when the caller
+    #: handed `cursor_page` an actor, and `None` otherwise.
+    allowed_acts: tuple[str, ...] | None = None
 
 
 # --- the token ----------------------------------------------------------------
@@ -553,6 +556,7 @@ def cursor_page[M: DjangoModel](
     limit: int | None = ...,
     include_count: bool = ...,
     ordering: Sequence[str] | None = ...,
+    actor: Any = ...,
 ) -> CursorPage[M]: ...
 
 
@@ -565,6 +569,7 @@ def cursor_page[T](
     limit: int | None = ...,
     include_count: bool = ...,
     ordering: Sequence[str] | None = ...,
+    actor: Any = ...,
 ) -> CursorPage[T]: ...
 
 
@@ -576,6 +581,7 @@ def cursor_page(
     limit: int | None = None,
     include_count: bool = False,
     ordering: Sequence[str] | None = None,
+    actor: Any = None,
 ) -> CursorPage[Any]:
     """One page of `rows`, and the token that names the next one.
 
@@ -659,7 +665,18 @@ def cursor_page(
         # asked. Counted over `rows`, not over `narrowed`: a total that shrank
         # as you walked would not be a total.
         count = queryset.count() if queryset is not None else len(list(rows))
-    return CursorPage(items=items, has_more=has_more, next_cursor=next_cursor, count=count)
+    acts: tuple[str, ...] | None = None
+    if actor is not None:
+        # THE ACTS, for a family noun's list (`ActsPagination`, and an MCP twin
+        # that passes its actor): every item's `allowed_acts` and the list's own.
+        # Here, once, so both doors answer the same acts by construction.
+        from apps.core.verbs import page_acts, with_allowed_acts
+
+        with_allowed_acts(items, actor)
+        acts = page_acts(actor, queryset.model) if queryset is not None else ()
+    return CursorPage(
+        items=items, has_more=has_more, next_cursor=next_cursor, count=count, allowed_acts=acts
+    )
 
 
 # --- the REST door -------------------------------------------------------------
@@ -764,6 +781,51 @@ class CursorPagination(PaginationBase):
         if declared is None:
             return CursorPagination.SEQUENCE_ORDERING
         return tuple(declared)
+
+
+class ActsPagination(CursorPagination):
+    """`CursorPagination` for a family noun's list: every item's acts, and the list's.
+
+        @router.get("/", response=list[WidgetOut], url_name="widget-list")
+        @paginate(ActsPagination)
+        def list_widgets_route(request, ...): ...
+
+    The envelope gains `allowed_acts` (the LIST's — `create` when the actor may,
+    at the hat) and every item's `allowed_acts` is set before the `Out` reads it
+    (`core.verbs.with_allowed_acts`), so a face draws the create act, the empty
+    state's door and each row's acts from the server's answer. The MCP twin
+    passes its actor to `cursor_page` and answers an `ActsPage` — the same seam,
+    so the two doors cannot disagree about who may do what.
+    """
+
+    class Output(ActsPage):
+        """The envelope plus the list's own acts. See `core.schemas.ActsPage`."""
+
+    def paginate_queryset(
+        self,
+        queryset: QuerySet[DjangoModel],
+        pagination: Any,
+        request: HttpRequest,
+        **params: Any,
+    ) -> Any:
+        from apps.core.actor import actor_from_request
+
+        page = cursor_page(
+            queryset,
+            tenant=getattr(request, "tenant", None),
+            cursor=pagination.cursor,
+            limit=pagination.limit or self.limit,
+            include_count=pagination.include_count,
+            ordering=None if isinstance(queryset, QuerySet) else self.sequence_ordering(queryset),
+            actor=actor_from_request(request),
+        )
+        return {
+            self.items_attribute: page.items,
+            "has_more": page.has_more,
+            "next_cursor": page.next_cursor,
+            "count": page.count,
+            "allowed_acts": list(page.allowed_acts or ()),
+        }
 
 
 # --- the one predicate three instruments read (ADR core-24) --------------------

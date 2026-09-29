@@ -123,6 +123,27 @@ they reject: `references/boundaries.md`. **The app-map table the lead owns**, it
 worked example and the delta a rung brief carries:
 `references/app-map-and-adr.md`.
 
+**A6 — A new platform app touches five pinned shared surfaces, and DECOMPOSE
+assigns each before the rung goes out.** Registration is by discovery, but the
+template pins its own census in five places a new `apps/<label>/` collides
+with, and three new apps in one wave found all five the hard way (P24 W2):
+(1) house rule **32**'s `scope.allowed_label_paths` in `quality/rules.yaml` —
+a mounted `/<label>/` is refused as an app label until the entry with its
+reason exists; (2) `apps/core/api/frozen_families.py::FROZEN_FAMILIES` — the
+app's router tag is a scope family, pinned by `accounts/tests/test_scopes.py`;
+(3) `quality/partition.yaml` `platform_apps` — an app in neither partition is
+"NEVER BEEN MEASURED" to rules **42/54**, and its refusal codes are classed as
+a product's by the partitioned refusal pin; (4) house rule **41**'s example
+census and the budget rows (`rung_tidy --budgets`) — every schema field an
+`example(...)`, every new subject a ceiling; (5) the typed refusal table
+(`core/tests/test_refusal_status.py`) if the app registers a template code.
+*Why:* each is a one-line edit in a file the wave's core rung owns, and an
+app rung that discovers it at step zero stops for a ruling. *Assigned:* the
+`FROZEN_FAMILIES` line and the budget rows land in the app's own door commit;
+the label entry, the partition entry and the typed table are the wave's core
+owner's, cherry-picked by the app rungs. *Enforced:* the `@template_shape`
+census (B-CORE-3b) refuses an app under `apps/` that is in neither partition.
+
 ## B · Shape
 
 **B1 — Every app has the canonical file set, and each file has one job.**

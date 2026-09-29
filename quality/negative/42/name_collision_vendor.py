@@ -1,3 +1,4 @@
+# collides: deactivate_user — the same vendor function on the silent side; the shared name is the shape the qualified census must not mistake for the service
 """The colliding name again, on the silent side.
 
 Same file as the canary's `vendor.py`: a vendor client function that is not a

@@ -89,7 +89,7 @@ from django.utils.html import format_html
 from ninja import NinjaAPI
 from ninja.openapi.docs import DocsBase
 
-from apps.core.exceptions import REFUSALS
+from apps.core.exceptions import REFUSALS, fill_noun
 from apps.core.idempotency import HEADER as IDEMPOTENCY_HEADER
 from apps.core.idempotency import REPLAYED_HEADER
 from apps.core.middleware import CORRELATION_ID_HEADER, REQUEST_ID_HEADER
@@ -111,6 +111,10 @@ CONTRACT_DIVIDER = "---"
 #: The attribute `@refuses` leaves on a view. Read by `declared_refusals` and by
 #: house rule 41's check; never read by anything that serves a request.
 REFUSALS_ATTR = "_djb_refusal_codes"
+
+#: The attribute `@also_refuses` leaves on a view: codes ADDED to whatever the
+#: route publishes otherwise (the derived set, or its `@refuses` set).
+ALSO_REFUSES_ATTR = "_djb_also_refusal_codes"
 
 #: Bound to a callable so `@refuses(...)` hands back the view it was given, with
 #: its signature intact — an untyped decorator over a route is a route mypy
@@ -600,10 +604,46 @@ def with_door_level(codes: Sequence[str], *, authenticated: bool) -> tuple[str, 
     return tuple(dict.fromkeys(code for code in (*codes, *earned) if code in REFUSALS))
 
 
+def also_refuses(*codes: str) -> Callable[[ViewT], ViewT]:
+    """Declare refusals this route ADDS to the set it would publish anyway.
+
+        @also_refuses("archive_blocked")    # under the archive route's decorator
+        def archive_widget_route(...): ...
+
+    **Composes; never replaces.** `@refuses` exists to CORRECT the shape
+    derivation, so declaring it replaces the derived set (the door-level codes
+    aside) and a route adding one new code had to re-type every other one it
+    answers. This is the other question — "the derivation is right, and this
+    route can also answer X" — so the published set is the derived one (or the
+    route's `@refuses` set, when it has one), plus these, plus the door's own.
+    A product publishing its own code writes one line and restates nothing.
+
+    Every code is checked against the refusal registry by house rule 41.
+    """
+
+    def decorate(view: ViewT) -> ViewT:
+        setattr(view, ALSO_REFUSES_ATTR, tuple(codes))
+        return view
+
+    return decorate
+
+
 def declared_refusals(view: Any) -> tuple[str, ...] | None:
     """What `@refuses` said, or `None` when the route did not say."""
     declared = getattr(view, REFUSALS_ATTR, None)
     return tuple(declared) if declared is not None else None
+
+
+def added_refusals(view: Any) -> tuple[str, ...]:
+    """What `@also_refuses` added, or `()`."""
+    return tuple(getattr(view, ALSO_REFUSES_ATTR, None) or ())
+
+
+def with_added(codes: Sequence[str], view: Any) -> tuple[str, ...]:
+    """`codes` plus the route's `@also_refuses` additions, registered ones only, in order."""
+    return tuple(
+        dict.fromkeys(code for code in (*codes, *added_refusals(view)) if code in REFUSALS)
+    )
 
 
 #: Read once at import so the derivation cannot name a code the registry does not
@@ -687,13 +727,38 @@ def derived_refusals(
     return tuple(dict.fromkeys(code for code in codes if code in REFUSALS))
 
 
-def refusal_response(codes: Sequence[str]) -> dict[str, Any]:
+def noun_of(url_name: str | None, path: str = "") -> str | None:
+    """The kind an operation answers for: its `url_name`'s, else its path's.
+
+    First the longest registered kind the `url_name`'s head is, or starts with
+    followed by `_` (`widget_policy-archive`; `widget_history-list` answers for
+    `widget`); else the first path parameter spelled `{<kind>_id}` (`version-add`
+    under `/files/{file_id}/…` answers for `file`) — the same kinds a raise
+    site's `noun` names. `None` when neither matches: the remedy is then
+    published with its `<noun>` slot unfilled, a template rather than a guess.
+    """
+    from apps.core.authz import kind_registry
+
+    kinds = list(kind_registry())
+    head = (url_name or "").split("-", 1)[0]
+    matches = [k for k in kinds if head == k or head.startswith(f"{k}_")]
+    if matches:
+        return max(matches, key=len)
+    for param in re.findall(r"\{(?:[a-z]+:)?([a-z][a-z0-9_]*)_id\}", path):
+        if param in kinds:
+            return str(param)
+    return None
+
+
+def refusal_response(codes: Sequence[str], *, noun: str | None = None) -> dict[str, Any]:
     """One status's response object, written out of the registry and nowhere else.
 
     The description is each code's own `fact` — what is TRUE, said to whoever is
     refused — followed by the remedies the registry composes for it, which are
-    the same remedies the wire body carries. Prose written here instead would be
-    the fourth copy of a sentence with one home.
+    the same remedies the wire body carries: a remedy whose destination leaves a
+    `<noun>` slot (`route:<noun>-archive`) is filled with the operation's kind
+    (`noun`), exactly as the raise site fills it from its own. Prose written
+    here instead would be the fourth copy of a sentence with one home.
     """
     parts: list[str] = []
     for code in codes:
@@ -701,7 +766,7 @@ def refusal_response(codes: Sequence[str]) -> dict[str, Any]:
         if refusal is None:  # pragma: no cover - rule 41 refuses this before it ships
             continue
         lines = [f"**`{code}`** — {refusal.fact}"]
-        lines += [f"- {r.label} (`{r.destination}`)" for r in refusal.remedies]
+        lines += [f"- {r.label} (`{r.destination}`)" for r in fill_noun(refusal.remedies, noun)]
         parts.append("\n".join(lines))
     return {
         # Machine-readable beside the prose, and load-bearing: house rule 41's
@@ -713,18 +778,19 @@ def refusal_response(codes: Sequence[str]) -> dict[str, Any]:
         "content": {
             "application/json": {
                 "schema": {"$ref": "#/components/schemas/Refusal"},
-                "example": _refusal_example(codes[0] if codes else "error"),
+                "example": _refusal_example(codes[0] if codes else "error", noun),
             }
         },
     }
 
 
-def _refusal_example(code: str) -> dict[str, Any]:
+def _refusal_example(code: str, noun: str | None = None) -> dict[str, Any]:
     refusal = REFUSALS.get(code)
     body: dict[str, Any] = {"detail": "The request could not be completed.", "code": code}
     if refusal is not None:
         body["remedies"] = [
-            {"label": r.label, "destination": r.destination} for r in refusal.remedies
+            {"label": r.label, "destination": r.destination}
+            for r in fill_noun(refusal.remedies, noun)
         ]
     return body
 

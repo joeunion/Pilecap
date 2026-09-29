@@ -11,6 +11,15 @@ so a PM can tell an obsolete clause from a load-bearing one.
   development brief, and for the surveyor's queue rows — those are the two
   roles whose job *is* to write.)
 - **"Every claim names the file that proves it."** Turns opinions into findings.
+- **"A criterion that names a mechanism quotes the `file:line` the writer read."**
+
+**Every agent's scratch files live under its own subdirectory** — `<scratchpad>/<rung-or-role>/` for the box wrapper, the logs, the probes — never at the scratchpad's root: the scratchpad is one directory per SESSION, shared by every sibling agent, and two agents dispatched in one message will write `vbox.sh` over each other (2026-09-28: a verifier pushed a sibling's tree onto its own box). The brief names the directory.
+  The PM's own miss, six times in one cycle (2026-09-27): a README "standard"
+  that did not exist, "shellcheck included" in a gate with no such leg, a note
+  a function never writes to stdout, a banner a rung's own files make
+  unreachable. A mechanism the writer cannot cite is a hypothesis, not a
+  criterion; the verifier's standing question stays — *was this criterion
+  checkable as written?* — and its answer is a finding against the criteria.
 - **"Prefer precision over completeness where they conflict."**
 - **State what is already decided and must not be re-argued.** A brief that omits
   the settled constraints gets them re-litigated, at full cost. Point at
@@ -109,7 +118,12 @@ was wrong, that is a finding against the criteria."* Through REST always,
 through MCP and sockets wherever the rung touches them — and the same
 capability through two doors where both exist, because the disagreement is the
 finding; through the browser, desktop and phone, where the product has one;
-plus one adjacent persona to catch what the primary path hides. And the
+plus one adjacent persona to catch what the primary path hides. **For a
+release or a merge note, the adjacent persona is the PRODUCT'S PM at the fold:
+read each actionable sentence as an instruction and plant it** — two of twelve
+notes written from the code were false as written (2026-09-27: "delete every
+`AWS_*` key" also deleted the pins a rule requires; "every other workflow is
+yours" named a template-owned file), and only the plant showed it. And the
 mirror lens, for every criterion over a stateful flow: *which state or
 population member did this criterion NOT drive?* — an undriven live path is a
 finding against the criteria.

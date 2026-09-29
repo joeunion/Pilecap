@@ -19,14 +19,14 @@ back would make every message list a copy of the customer's outgoing mail.
 from __future__ import annotations
 
 from datetime import datetime, time
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from ninja import FilterLookup, FilterSchema, Schema
 from pydantic import ConfigDict, Field
 
 from apps.comms.models import Category, Channel
-from apps.core.schemas import ListPage, StrictIn, example
+from apps.core.schemas import ActsOut, ActsPage, ArchivedOut, ListPage, StrictIn, example
 
 
 class MessageIn(StrictIn):
@@ -521,8 +521,9 @@ class RecipientPatch(StrictIn):
     """A partial correction: absent means "leave it alone", not "set it to null".
 
     Four fields, and the absences are still the design. `archived_at` is not
-    here — closing a contact is `POST .../archive/`, a verb, so the audit row
-    says what happened rather than which column moved — and neither is anything
+    here — closing a contact is `POST .../archive/` and reopening it
+    `POST .../restore/`, verbs, so the audit row says what happened rather than
+    which column moved — and neither is anything
     on the person's preferences, which is the consent surface and is only
     reachable through its own five verbs.
 
@@ -544,8 +545,28 @@ class RecipientFilter(FilterSchema):
     email: Annotated[str | None, FilterLookup(q="email__icontains")] = None
 
 
-class RecipientOut(Schema):
-    """One contact, as every door reports it."""
+#: Which cut of the contact book a list answers: the working book (`live`, the
+#: default), the closed contacts alone (`archived`), or both (`all`). One
+#: parameter with three values rather than a boolean, so "only the closed ones"
+#: is askable at all.
+RecipientShow = Literal["live", "archived", "all"]
+
+
+class RecipientOut(ArchivedOut, ActsOut):
+    """One contact, as every door reports it — and as `comms.recipient.archived`
+    and `comms.recipient.restored` carry it, less its `allowed_acts`.
+
+    `archived_at` and `archived_by` are inherited from `ArchivedOut`, never
+    re-declared: null unless the contact has been closed, and on the read shape
+    because "why is this person not in my list any more, and who closed them"
+    is the question they answer.
+
+    `allowed_acts` is inherited from `ActsOut`: the verbs THIS viewer may press
+    on this contact as it stands, set by `core.verbs.with_allowed_acts` on the
+    two viewer doors (a list page through `ActsPagination`, every other answer
+    for its one row). It describes the viewer, not the contact, so an event
+    payload never carries it — a subscriber is somebody else.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -556,16 +577,14 @@ class RecipientOut(Schema):
     #: and customers who never signed in — which is most of them.
     user_id: UUID | None = None
     organization_id: UUID
-    #: Null unless the contact has been closed. On the read shape because "why
-    #: is this person not in my list any more" is the question it answers.
-    archived_at: datetime | None = None
     created_at: datetime
     phone: str
     chat_handle: str
 
 
-class RecipientPage(ListPage):
-    """A page of contacts — the same envelope `@paginate` produces."""
+class RecipientPage(ActsPage):
+    """A page of contacts — the same envelope `@paginate(ActsPagination)` produces,
+    the list's own `allowed_acts` included."""
 
     items: list[RecipientOut]
 

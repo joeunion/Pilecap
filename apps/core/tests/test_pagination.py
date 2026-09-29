@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlencode
 
 import pytest
 from django.test import Client
@@ -67,6 +68,7 @@ from apps.core.services import create_organization, invite_member, root_organiza
 # the cross-COLLECTION claim below needs two lists that agree about everything a
 # cursor used to carry, and `example.Widget` beside `core.Invitation` is the
 # pair this tree actually has.
+from apps.example.models import Widget
 from apps.example.services import create_widget
 
 pytestmark = pytest.mark.django_db
@@ -795,6 +797,44 @@ def test_a_foreign_ordering_cursor_still_answers_invalid_cursor_on_the_wire(
     assert "different sort order" in json.dumps(body), body
 
 
+def _query_seeds(*, tenant: Tenant, owner: User) -> dict[str, dict[str, str]]:
+    """The REQUIRED query parameters a paginated list needs to answer at all, by route.
+
+    The twin of `_path_seeds` in `test_published_examples_at_the_door.py`. A list
+    read only through its subject (`/notes/?subject=<kind>:<id>`) refuses a
+    request with no subject before it reads the cursor, so driving it bare would
+    measure the missing parameter and never the cursor seam. Such a route is
+    driven WITH its seed; a paginated route with a required query parameter and
+    no row here fails the census by name rather than dropping out of it.
+    """
+    root = root_organization(tenant=tenant)
+    subject = create_widget(
+        tenant=tenant, actor=actor_for(user=owner, tenant=tenant, org=root), name="Subject"
+    )
+    return {
+        "/api/v1/notes/": {"subject": f"widget:{subject.pk}"},
+        "/api/v1/tag-links/": {"subject": f"widget:{subject.pk}"},
+    }
+
+
+#: The attachment kinds the seeded subject must take for `_query_seeds` to drive
+#: its routes — planted by the census for its own run until the worked example
+#: declares them (`Widget.attachments`).
+_SEEDED_ATTACHMENTS = ("notes", "tags")
+
+
+def _required_query(path: str) -> set[str]:
+    """The query parameters the live document marks required on `path`'s GET."""
+    from config.api import api as the_api
+
+    operation = the_api.get_openapi_schema()["paths"][path].get("get", {})
+    return {
+        str(one["name"])
+        for one in operation.get("parameters", [])
+        if one.get("in") == "query" and one.get("required")
+    }
+
+
 def _paginated_collection_routes() -> list[str]:
     """Every paginated operation the mount holds that a walk can be driven at.
 
@@ -821,7 +861,7 @@ def _paginated_collection_routes() -> list[str]:
 
 
 def test_every_paginated_route_refuses_a_cursor_from_another_collection(
-    api: Client, tenant: Tenant, owner: User
+    api: Client, tenant: Tenant, owner: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ONE DERIVED PASS: the seam is inherited, so every list inherits the refusal.
 
@@ -846,10 +886,28 @@ def test_every_paginated_route_refuses_a_cursor_from_another_collection(
         keys=["2026-08-23T09:30:00+00:00", "00000000-0000-0000-0000-000000000000"],
     )
 
+    # The seeded subject is a widget, and a widget takes an attachment only once
+    # the worked example declares it; until then the census plants the
+    # declaration for its own run. A no-op the day `Widget.attachments` names them.
+    declared = tuple(getattr(Widget, "attachments", ()) or ())
+    missing = tuple(kind for kind in _SEEDED_ATTACHMENTS if kind not in declared)
+    if missing:
+        monkeypatch.setattr(Widget, "attachments", (*declared, *missing), raising=False)
+    seeds = _query_seeds(tenant=tenant, owner=owner)
+
     routes = _paginated_collection_routes()
     obeyed: list[str] = []
     for path in routes:
-        answer = api.get(f"{path}?cursor={foreign}")
+        seeded = seeds.get(path, {})
+        unseeded = sorted(_required_query(path) - set(seeded))
+        if unseeded:
+            obeyed.append(
+                f"{path} requires {unseeded} and `_query_seeds` has no row for it, so "
+                "its cursor refusal cannot be driven"
+            )
+            continue
+        query = urlencode({**seeded, "cursor": foreign})
+        answer = api.get(f"{path}?{query}")
         body = json.loads(answer.content or b"{}")
         if answer.status_code != 400 or body.get("code") != "invalid_cursor":
             obeyed.append(f"{path} -> {answer.status_code} {body.get('code')!r}")

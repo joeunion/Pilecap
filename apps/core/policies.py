@@ -36,7 +36,11 @@ Two things it deliberately still does not do:
 
 from __future__ import annotations
 
-from apps.core.authz import Policy
+from typing import Any
+
+from apps.core.actor import Actor
+from apps.core.authz import Policy, holds, refuses_system
+from apps.core.models import Organization, is_org_scoped
 
 # **Empty, and it is a statement.** Every key `core` used to guard with the
 # administer predicate is a plain capability now: `organization.create/update/
@@ -48,6 +52,109 @@ from apps.core.authz import Policy
 # `core` keeps the dict so the discovery walk finds a shape it recognises and so
 # the first product predicate here is an addition rather than a new file.
 POLICIES: dict[str, Policy] = {}
+
+
+#: The capability that says "administers this node": renaming it. The template's
+#: `admin` role holds it (`*`) wherever its membership reaches, and `member`
+#: (`*.read`) never does. `may_archive` asks it rather than a role by value
+#: (house rule 54 (c)), and rather than `<kind>.archive` itself — that key has a
+#: predicate, so every declared role is offered it and the predicate is what
+#: narrows (`authz._attach_default_roles` clause 5); asking it back would narrow
+#: nothing.
+ADMINISTERS_THE_NODE = "organization.update"
+
+
+@refuses_system
+def may_archive(actor: Actor, obj: Any = None) -> bool:
+    """Archive and Restore are an ADMINISTRATOR's press, and the system is nobody's.
+
+    **The node's administration, asked at the noun's own node, inheriting
+    downward:** the actor must hold `organization.update` WHERE THE ROW LIVES —
+    an admin of the group archives a branch's row; a branch admin never
+    archives the group's; a member never archives at all, and is refused with
+    the key's own sentence. Restore is the same predicate: whoever may take a
+    row out of the book may put it back, and a restore a narrower role could
+    press would be a second, weaker door onto the same state.
+
+    Where the question is asked, and why it is never the hat:
+
+    * an `Organization` is its own node;
+    * an org-scoped noun is asked at its `organization`;
+    * a tenant-scoped noun names no branch, so it is asked at the tenant's
+      ROOT — a tenant-wide row is the root's to take out of the book, and
+      asking at the hat would let a branch admin archive rows the whole tenant
+      reads.
+
+    **`@refuses_system`**: the system actor gets THIS answer rather than the
+    exemption, and it holds nothing, so it is no — a workflow does not archive
+    a person's row on its own say-so. Fails closed on every unresolved half —
+    no object, a tenant with no root.
+
+    DOES NOT COVER — declared: this predicate is the CODE half, and `allows`
+    asks the data half first — the key itself must be in the actor's collection
+    at that node. A custom role therefore archives only when it holds BOTH
+    `<kind>.archive` (resp. `.restore`) AND `organization.update` there; either
+    alone is refused. It fails safe: a tenant that hands a role
+    `organization.update` has not thereby handed it archive.
+
+    A noun's app declares the pair once, in its own `policies.py`:
+
+        POLICIES = {"widget.archive": may_archive, "widget.restore": may_archive}
+    """
+    return _administers_where_it_lives(actor, obj)
+
+
+def _administers_where_it_lives(actor: Actor, obj: Any) -> bool:
+    """`organization.update` held at the node `obj` lives at. Fails closed."""
+    if obj is None:
+        return False
+    if isinstance(obj, Organization):
+        return holds(actor, ADMINISTERS_THE_NODE, at=obj)
+    if is_org_scoped(type(obj)):
+        branch = getattr(obj, "organization", None)
+        return isinstance(branch, Organization) and holds(actor, ADMINISTERS_THE_NODE, at=branch)
+    tenant = getattr(obj, "tenant", None)
+    if tenant is None:
+        return False
+    root = Organization.objects.for_tenant(tenant).filter(parent__isnull=True).first()
+    return root is not None and holds(actor, ADMINISTERS_THE_NODE, at=root)
+
+
+@refuses_system
+def may_move(actor: Actor, obj: Any = None) -> bool:
+    """Move is an ADMINISTRATOR's press at BOTH ends, and the system is nobody's.
+
+    The noun's service asks `<kind>.move` twice — once of the row (asked where
+    it lives now) and once of the destination `Organization` (asked there) —
+    the two-ends rule `move_organization` already keeps: a branch admin moves
+    a row within the branch, never out of it and never into a sibling. Each
+    question is `organization.update` at that node, `may_archive`'s reading.
+
+    **`@refuses_system`**: a workflow does not re-home a person's row on its own
+    say-so. DOES NOT COVER — declared: as `may_archive`'s — a custom role needs
+    `<kind>.move` in its collection as well as `organization.update`.
+
+        POLICIES = {"widget.move": may_move}
+    """
+    return _administers_where_it_lives(actor, obj)
+
+
+@refuses_system
+def may_merge(actor: Actor, obj: Any = None) -> bool:
+    """Merge is an ADMINISTRATOR's press on BOTH records, and the system is nobody's.
+
+    The noun's `merge_<noun>` asks `<kind>.merge` twice — of the loser and of
+    the survivor, each where it lives — so a merge reaching across two branches
+    needs administration at both. Each question is `organization.update` at that
+    node, `may_archive`'s reading: a merge archives the loser, and whoever may
+    not archive it may not merge it away either.
+
+    **`@refuses_system`**: a workflow does not fold a person's record into
+    another on its own say-so. DOES NOT COVER — declared: as `may_archive`'s.
+
+        POLICIES = {"widget.merge": may_merge}
+    """
+    return _administers_where_it_lives(actor, obj)
 
 
 # The three keys `core` renamed when the vocabulary became one shape, and the

@@ -2504,6 +2504,585 @@ def plant_namespace_line(rules: list[dict]) -> str:
     )
 
 
+# --- THE PLANT-COLLISION CENSUS: a plant never carries a name a real app serves
+#
+# A RULE THAT RESOLVES BY NAME JUDGES A PLANT AGAINST THE REAL TREE. Rule 42
+# keys a service by `(module, name)`; 43 and 49 redefine a real route or
+# service on purpose; 3 reads a URL name; 73 reads words. A plant named after
+# something a real app serves is therefore judged against the real site rather
+# than against itself — the canary inherits the real service's doors and goes
+# dead, or the negative inherits a real finding and goes loud — and the tree
+# that grows the name is never the tree the plant was written on. The census
+# asks, before anything is planted: does any plant carry a name the tree under
+# test serves? The plants are every fixture the plan names (`claimed_fixtures`,
+# `extra_files:` included — never a directory glob; a file no rule plants is
+# the orphan census's question) and every file under `scripts/tests/fixtures/`
+# (the drives' own plants, which no `rules.yaml` entry names). What the tree
+# serves is `manage.py introspect` — routes, URL names, tools, events,
+# workflows, activities, the one reader — plus an `@service` walk over
+# `apps/**/services.py`, because `introspect` has no services registry.
+#
+# A COLLISION THAT IS THE FORM UNDER TEST IS DECLARED ON THE PLANT, one line
+# per name, where a reviewer reading the plant sees it: `# collides: <name> —
+# <why>` (`// collides:` in TS/JS, `<!-- collides: … -->` in Markdown). A
+# declaration whose name no longer collides is refused as vacuous — the
+# `namespace_exempt` law above — so a real service renamed away cannot leave a
+# stale sentence behind.
+#
+# EXIT 2, NEVER A VIOLATION: an undeclared collision is a dead canary in
+# waiting, which is broken enforcement. And a tree the census cannot look at —
+# `introspect` would not run, a plant would not parse — is exit 2 naming why,
+# never a judgment on the half it could read.
+#
+# WHAT IT DOES NOT COVER, declared rather than discovered:
+#   * a plant colliding by SIGNATURE rather than by name — rule 42's bare-name
+#     fallback (`quality/checks.py`, the reach census's unqualified branch)
+#     resolves a call by its last segment, and a plant whose call shape matches
+#     a real service's is not a name this census reads;
+#   * a `.py-tpl` under `apps/core/management/app_template/` — scaffolding, not
+#     a plant, and no rule names it;
+#   * a name a PRODUCT's app serves on the TEMPLATE's tree — the census runs on
+#     the product's own tree too, where that app exists; coverage there, not a
+#     blind spot here;
+#   * a `mode: replace` plant over a real file where the replacement IS the real
+#     site (rule 45's `ping`) — declared on the plant, never exempted by mode;
+#   * the services half reads `@service` by decorator name over `services.py`
+#     modules only — a service defined elsewhere, or under another decorator
+#     name, is not in the served set until `introspect` carries a services
+#     registry (the honest closure; not built here).
+
+#: The declaration, on the plant. The comment marker is the file's own (`#`,
+#: `//`, `<!--`); the body is `<name> — <reason>`, the reason at least
+#: `MIN_REASON` characters, the dash the em dash every declaration here uses.
+PLANT_COLLIDES_RE = re.compile(r"(?:#|//|<!--)\s*collides:(?P<body>.*?)\s*(?:-->)?\s*$")
+PLANT_COLLIDES_BODY_RE = re.compile(r"^\s*(?P<name>[^\s—]+)\s+—\s+(?P<reason>\S.*?)\s*$")
+#: Rule 73's population and its neighbours: the fixtures whose names are WORDS
+#: in text rather than definitions, read by word (a word carrying `_` or `-`).
+PLANT_TEXT_WORD_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".md"})
+PLANT_TEXT_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+#: A dotted event name as a string literal, in any fixture.
+PLANT_EVENT_STRING_RE = re.compile(r"""["']([a-z_]+\.[a-z_]+\.[a-z_]+)["']""")
+#: The second population: the drives' own fixtures, which no rule names.
+DRIVE_FIXTURE_DIR = ROOT / "scripts" / "tests" / "fixtures"
+#: The sections of `manage.py introspect` the census reads; a missing one is
+#: could-not-look, never an empty table.
+PLANT_COLLISION_INTROSPECT_KEYS = ("routes", "urls", "tools", "events", "workflows", "activities")
+#: Every kind of name the real tree serves, in the order a refusal names them.
+SERVED_KINDS = ("service", "route", "url_name", "tool", "event", "workflow", "activity")
+#: Which served kinds a planted name of each kind can collide with. A function
+#: or a `name=` string may be any capability's name; a class is a workflow's; a
+#: dotted string is an event's; a word in text may be anything but an event
+#: (an event is dotted, and a word never is).
+_PLANT_KIND_REACH: dict[str, tuple[str, ...]] = {
+    "def": ("service", "route", "url_name", "tool", "workflow", "activity"),
+    "name=": ("service", "route", "url_name", "tool", "workflow", "activity"),
+    "class": ("workflow",),
+    "event": ("event",),
+    "word": ("service", "route", "url_name", "tool", "workflow", "activity"),
+}
+#: `introspect` reads the registries and opens no connection (measured: a
+#: `DATABASE_NAME` naming no database answers exit 0). A tree with no `.env`
+#: and nothing in the environment — the narrowed worlds `test_selftest_shapes.sh`
+#: builds are clones with no `.env` — has settings that refuse to configure at
+#: all, so the census names a database that does not exist rather than none: if
+#: `introspect` ever opens a connection, that is a loud could-not-look, never a
+#: read of somebody else's database.
+PLANT_COLLISION_NO_DATABASE = "plant_census_opens_no_connection"
+
+
+class PlantCollisionCouldNotLook(Exception):
+    """The census could not read one of its two halves; the message says which."""
+
+
+def _plant_rel(path: Path) -> str:
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _plant_decorator_names(node: object) -> set[str]:
+    import ast as _ast
+
+    names: set[str] = set()
+    for d in getattr(node, "decorator_list", []):
+        target = d.func if isinstance(d, _ast.Call) else d
+        if isinstance(target, _ast.Attribute):
+            names.add(target.attr)
+        elif isinstance(target, _ast.Name):
+            names.add(target.id)
+    return names
+
+
+_PLANT_AST_CACHE: dict[Path, object] = {}
+
+
+def _plant_real_ast(path: Path) -> object:
+    """A real module's AST, once per run; a real module that will not parse is could-not-look."""
+    import ast as _ast
+
+    if path not in _PLANT_AST_CACHE:
+        try:
+            _PLANT_AST_CACHE[path] = _ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+            raise PlantCollisionCouldNotLook(
+                f"the real module {_plant_rel(path)} could not be read or parsed ({exc})"
+            ) from exc
+    return _PLANT_AST_CACHE[path]
+
+
+def _plant_name_line(path: Path, name: str) -> int | None:
+    """The line `name` is defined or assigned on in `path` — top level first, then anywhere."""
+    import ast as _ast
+
+    tree = _plant_real_ast(path)
+
+    def defines(node: object) -> bool:
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+            return node.name == name
+        if isinstance(node, (_ast.Assign, _ast.AnnAssign)):
+            targets = node.targets if isinstance(node, _ast.Assign) else [node.target]
+            return any(isinstance(t, _ast.Name) and t.id == name for t in targets)
+        return False
+
+    for node in getattr(tree, "body", []):
+        if defines(node):
+            return int(node.lineno)
+    for node in _ast.walk(tree):  # type: ignore[arg-type]
+        if defines(node):
+            return int(node.lineno)  # type: ignore[attr-defined]
+    return None
+
+
+def _plant_dotted_site(dotted: str) -> str:
+    """`apps.x.y.name` as `apps/x/y.py:<line>`; anything not in this tree stays dotted."""
+    parts = dotted.split(".")
+    if not parts or parts[0] not in ("apps", "config"):
+        return dotted
+    for i in range(len(parts) - 1, 0, -1):
+        base = ROOT.joinpath(*parts[:i])
+        for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+            if candidate.is_file():
+                line = _plant_name_line(candidate, parts[i])
+                rel = _plant_rel(candidate)
+                return f"{rel}:{line}" if line else rel
+    return dotted
+
+
+def _plant_skip_real(path: Path) -> bool:
+    """Tests, migrations and the reserved probe app are never what the tree SERVES."""
+    return bool({"tests", "migrations", PROBE_APP} & set(path.relative_to(ROOT).parts))
+
+
+def plant_served_names() -> dict[str, dict[str, list[str]]]:
+    """What the tree under test serves: kind -> name -> its real sites (`file:line`).
+
+    `introspect` is RUN, never read from `.rung/introspect.json` — that file is
+    `rung_start.sh`'s snapshot of the tree it started on, and the census judges
+    the tree under test. Raises `PlantCollisionCouldNotLook` naming why.
+    """
+    import ast as _ast
+
+    served: dict[str, dict[str, list[str]]] = {kind: {} for kind in SERVED_KINDS}
+
+    def add(kind: str, name: str, site: str) -> None:
+        sites = served[kind].setdefault(name, [])
+        if site not in sites:
+            sites.append(site)
+
+    # -- the services half: `introspect` has no services registry --------------
+    for path in sorted(ROOT.glob("apps/**/services.py")):
+        if _plant_skip_real(path):
+            continue
+        for node in _ast.walk(_plant_real_ast(path)):  # type: ignore[arg-type]
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                if "service" in _plant_decorator_names(node):
+                    add("service", node.name, f"{_plant_rel(path)}:{node.lineno}")
+
+    # -- the introspect half: the one reader of routes, URLs, tools, events, workflows
+    env = dict(os.environ)
+    env.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.test")
+    if not (env.get("DATABASE_NAME") or env.get("DATABASE_URL")) and not (ROOT / ".env").is_file():
+        env["DATABASE_NAME"] = PLANT_COLLISION_NO_DATABASE
+    try:
+        proc = subprocess.run(
+            [sys.executable, "manage.py", "introspect"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=300,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PlantCollisionCouldNotLook(f"`manage.py introspect` did not run ({exc})") from exc
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout).strip().splitlines()[-3:]
+        raise PlantCollisionCouldNotLook(
+            f"`manage.py introspect` exited {proc.returncode}: {' | '.join(tail)}"
+        )
+    try:
+        intro = json.loads(proc.stdout)
+    except ValueError as exc:
+        raise PlantCollisionCouldNotLook(
+            f"`manage.py introspect` printed something that is not JSON ({exc})"
+        ) from exc
+    missing = [k for k in PLANT_COLLISION_INTROSPECT_KEYS if not isinstance(intro.get(k), list)]
+    if missing:
+        raise PlantCollisionCouldNotLook(
+            f"`manage.py introspect` carries no {', '.join(missing)} section — a missing "
+            "section is not an empty one"
+        )
+
+    def probe(dotted: str) -> bool:
+        return f".{PROBE_APP}." in f".{dotted}."
+
+    for r in intro["routes"]:
+        view = str(r.get("view") or "")
+        if probe(view):
+            continue
+        site = _plant_dotted_site(view)
+        add("route", view.rsplit(".", 1)[-1], site)
+        if r.get("name"):
+            add("url_name", str(r["name"]).split(":")[-1], site)
+    for u in intro["urls"]:
+        view = str(u.get("view") or "")
+        if u.get("name") and not probe(view):
+            add("url_name", str(u["name"]).split(":")[-1], _plant_dotted_site(view))
+    tool_sites: dict[str, str] = {}
+    for path in sorted(ROOT.glob("apps/**/mcp.py")):
+        if _plant_skip_real(path):
+            continue
+        for node in _ast.walk(_plant_real_ast(path)):  # type: ignore[arg-type]
+            if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                continue
+            for d in node.decorator_list:
+                if not isinstance(d, _ast.Call):
+                    continue
+                func = d.func
+                called = (
+                    func.attr
+                    if isinstance(func, _ast.Attribute)
+                    else func.id
+                    if isinstance(func, _ast.Name)
+                    else ""
+                )
+                if called != "tool":
+                    continue
+                named = next(
+                    (
+                        k.value.value
+                        for k in d.keywords
+                        if k.arg == "name"
+                        and isinstance(k.value, _ast.Constant)
+                        and isinstance(k.value.value, str)
+                    ),
+                    node.name,
+                )
+                tool_sites.setdefault(named, f"{_plant_rel(path)}:{node.lineno}")
+    for t in intro["tools"]:
+        name = str(t.get("name") or "")
+        if name:
+            add("tool", name, tool_sites.get(name, f"the MCP tool {name!r} (introspect)"))
+    for e in intro["events"]:
+        app, name = str(e.get("app") or ""), str(e.get("name") or "")
+        if not name or app == PROBE_APP:
+            continue
+        events_py = ROOT / "apps" / app / "events.py"
+        line = (
+            _plant_name_line(events_py, str(e.get("constant") or ""))
+            if events_py.is_file()
+            else None
+        )
+        add("event", name, f"{_plant_rel(events_py)}:{line}" if line else f"apps/{app}/events.py")
+    for w in intro["workflows"]:
+        definition = str(w.get("definition") or "")
+        if w.get("name") and not probe(definition):
+            add("workflow", str(w["name"]), _plant_dotted_site(definition))
+    for a in intro["activities"]:
+        function = str(a.get("function") or "")
+        if a.get("name") and not probe(function):
+            add("activity", str(a["name"]), _plant_dotted_site(function))
+    # A NAME THIS TREE SERVES IS NAMED BY THIS TREE'S SITE. A URL name ninja
+    # mounts appears twice (the route's view and ninja's own wrapper); the
+    # library's half is kept only where no site in this tree serves the name.
+    for table in served.values():
+        for name, sites in table.items():
+            ours = [s for s in sites if ".py" in s]
+            if ours:
+                table[name] = ours
+    return served
+
+
+def plant_collision_population(rules: list[dict]) -> list[Path]:
+    """Every plant the census reads: the plan's fixtures, then the drives' fixtures."""
+    planned = sorted(claimed_fixtures(rules))
+    drives = sorted(
+        p
+        for p in DRIVE_FIXTURE_DIR.rglob("*")
+        if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
+    )
+    return [*planned, *drives]
+
+
+def _plant_marker(path: Path) -> tuple[str, str]:
+    """The comment a declaration takes in this file: (opener, closer)."""
+    if path.suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs"):
+        return "//", ""
+    if path.suffix == ".md":
+        return "<!--", " -->"
+    return "#", ""
+
+
+def plant_declared_names(
+    path: Path,
+) -> tuple[list[tuple[str, str]], list[tuple[int, str, str]], list[str]]:
+    """One plant's (names it carries, its declarations, its malformed declarations).
+
+    Names are `(kind, name)`; a declaration is `(line, name, reason)`. The
+    declaration lines are blanked before the names are read, so a name that
+    appears ONLY in its own declaration collides with nothing (and is vacuous).
+    Raises `PlantCollisionCouldNotLook` on a file that will not decode or parse.
+    """
+    import ast as _ast
+    import textwrap as _textwrap
+
+    rel = _plant_rel(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PlantCollisionCouldNotLook(f"{rel}: the census could not read it ({exc})") from exc
+    declarations: list[tuple[int, str, str]] = []
+    malformed: list[str] = []
+    kept: list[str] = []
+    opener, closer = _plant_marker(path)
+    for lineno, line in enumerate(text.splitlines(), 1):
+        m = PLANT_COLLIDES_RE.search(line)
+        if not m:
+            kept.append(line)
+            continue
+        kept.append("")
+        body = PLANT_COLLIDES_BODY_RE.match(m.group("body"))
+        if not body:
+            malformed.append(
+                f"{rel}:{lineno}: the collision declaration reads {line.strip()!r}; the shape is "
+                f"`{opener} collides: <name> — <why the collision is the form under test>{closer}`"
+            )
+            continue
+        if len(body.group("reason")) < MIN_REASON:
+            malformed.append(
+                f"{rel}:{lineno}: the collision declaration for {body.group('name')} gives the "
+                f"reason {body.group('reason')!r}, too short to be one"
+            )
+            continue
+        declarations.append((lineno, body.group("name"), body.group("reason")))
+    stripped = "\n".join(kept) + "\n"
+    names: list[tuple[str, str]] = []
+    if path.suffix == ".py":
+        # A FRAGMENT IS STILL A PLANT. An `append` fixture may be a class-body
+        # fragment, indented for the class it lands in; it is read dedented,
+        # and a file that parses neither way is could-not-look, never skipped.
+        try:
+            tree = _ast.parse(_textwrap.dedent(stripped))
+        except SyntaxError as exc:
+            raise PlantCollisionCouldNotLook(
+                f"{rel}: the census could not parse it ({exc.msg}, line {exc.lineno}) — a plant "
+                "whose names cannot be read is never skipped"
+            ) from exc
+        for node in _ast.walk(tree):
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                names.append(("def", node.name))
+            elif isinstance(node, _ast.ClassDef):
+                names.append(("class", node.name))
+            elif isinstance(node, _ast.Call):
+                for k in node.keywords:
+                    if (
+                        k.arg in ("name", "url_name")
+                        and isinstance(k.value, _ast.Constant)
+                        and isinstance(k.value.value, str)
+                    ):
+                        names.append(("name=", k.value.value))
+    names.extend(("event", m.group(1)) for m in PLANT_EVENT_STRING_RE.finditer(stripped))
+    if path.suffix in PLANT_TEXT_WORD_SUFFIXES:
+        names.extend(
+            ("word", w)
+            for w in sorted(set(PLANT_TEXT_WORD_RE.findall(stripped)))
+            if "_" in w or "-" in w
+        )
+    return names, declarations, malformed
+
+
+def plant_collision_census(
+    plants: list[Path], served: dict[str, dict[str, list[str]]]
+) -> tuple[list[str], dict[str, int]]:
+    """Judge every plant's names against what the tree serves.
+
+    Returns (refusals, counts). Counts are per (plant, name): `names` collided,
+    `declared` of them carry their declaration, `undeclared` do not; `plants`
+    is how many files were read. Every refusal is exit 2 at the caller.
+    """
+    refusals: list[str] = []
+    counts = {"plants": 0, "names": 0, "declared": 0, "undeclared": 0}
+    for path in plants:
+        rel = _plant_rel(path)
+        try:
+            names, declarations, malformed = plant_declared_names(path)
+        except PlantCollisionCouldNotLook as exc:
+            refusals.append(f"PLANT COLLISION CENSUS COULD NOT LOOK — {exc}")
+            continue
+        counts["plants"] += 1
+        refusals.extend(f"PLANT COLLISION DECLARATION MALFORMED — {m}" for m in malformed)
+        hits: dict[str, list[str]] = {}
+        for kind, name in names:
+            for real_kind in _PLANT_KIND_REACH[kind]:
+                for site in served.get(real_kind, {}).get(name, []):
+                    hit = f"{real_kind} {name} = {site}"
+                    if hit not in hits.setdefault(name, []):
+                        hits[name].append(hit)
+        declared: dict[str, int] = {}
+        for lineno, name, _reason in declarations:
+            if name in declared:
+                refusals.append(
+                    f"PLANT COLLISION DECLARATION MALFORMED — {rel}:{lineno}: {name} is declared "
+                    f"twice (first at line {declared[name]}); one line per name"
+                )
+                continue
+            declared[name] = lineno
+            if name not in hits:
+                refusals.append(
+                    f"PLANT COLLISION DECLARATION VACUOUS — {rel}:{lineno} declares that it "
+                    f"collides on {name}, and nothing this tree serves is named {name}: a "
+                    "declaration that exempts nothing is vacuous — remove it (the real name was "
+                    "renamed away, or it never collided)"
+                )
+        opener, closer = _plant_marker(path)
+        for name in sorted(hits, key=lambda n: SERVED_KINDS.index(hits[n][0].split(" ", 1)[0])):
+            counts["names"] += 1
+            if name in declared:
+                counts["declared"] += 1
+                continue
+            counts["undeclared"] += 1
+            refusals.append(
+                f"PLANT COLLISION — {rel}: {'; '.join(hits[name])} — a plant carrying a name a "
+                "real app serves is judged against the real site, not against itself: a rule "
+                "that resolves by name reads the real one, and the canary goes dead (or the "
+                "negative goes loud) on the tree that grew the name. Rename the plant to a name "
+                "nothing serves, or, where the collision IS the form under test, declare it on "
+                f"the plant: `{opener} collides: {name} — <why the collision is the mechanism "
+                f"under test>{closer}`"
+            )
+    return refusals, counts
+
+
+def plant_collision_run(rules: list[dict] | None = None) -> tuple[list[str], str]:
+    """The census over this tree: (refusals, the head line). Every refusal is exit 2."""
+    started = time.monotonic()
+    try:
+        served = plant_served_names()
+    except PlantCollisionCouldNotLook as exc:
+        return (
+            [f"PLANT COLLISION CENSUS COULD NOT LOOK — {exc}; nothing was judged"],
+            f"plant collisions: COULD NOT LOOK — {exc}",
+        )
+    plants = plant_collision_population(RULES if rules is None else rules)
+    refusals, c = plant_collision_census(plants, served)
+    n_served = sum(len(v) for v in served.values())
+    return refusals, (
+        f"plant collisions: {c['names']} names · {c['declared']} declared · "
+        f"{c['undeclared']} undeclared — {c['plants']} of {len(plants)} plants and drive "
+        f"fixtures read against {n_served} served names (introspect + the @service walk), "
+        f"{time.monotonic() - started:.1f}s"
+    )
+
+
+def plant_collision_leg() -> None:
+    """The census's own canaries and negatives, over plants it builds and a served table it forges.
+
+    Every form is written into a scratch directory outside the tree and judged
+    against a forged served table, so nothing here depends on what any real app
+    serves — the names are the probe's own and nothing the example serves.
+    """
+    served: dict[str, dict[str, list[str]]] = {kind: {} for kind in SERVED_KINDS}
+    served["service"]["census_probe_served"] = ["apps/probe_forged/services.py:1"]
+    served["url_name"]["census-probe-served"] = ["apps/probe_forged/urls.py:1"]
+    reason = "the probe's own collision, declared because it is the form under test"
+    forms: list[tuple[str, str, str, str]] = [
+        # (kind, file name, text, what the refusal must carry — "" for a negative)
+        (
+            "canary",
+            "undeclared.py",
+            "@service\ndef census_probe_served():\n    return None\n",
+            "service census_probe_served = apps/probe_forged/services.py:1",
+        ),
+        (
+            "negative",
+            "declared.py",
+            f"# collides: census_probe_served — {reason}\n@service\n"
+            "def census_probe_served():\n    return None\n",
+            "",
+        ),
+        (
+            "canary",
+            "vacuous.py",
+            f"# collides: census_probe_unserved — {reason}\ndef census_probe_unserved():\n"
+            "    return None\n",
+            "VACUOUS",
+        ),
+        ("canary", "unparseable.py", "def census_probe_served(:\n", "COULD NOT LOOK"),
+        (
+            "canary",
+            "short_reason.py",
+            "# collides: census_probe_served — short\ndef census_probe_served():\n"
+            "    return None\n",
+            "too short",
+        ),
+        (
+            "canary",
+            "a_word.ts",
+            'export const line = "open census-probe-served now";\n',
+            "url_name census-probe-served",
+        ),
+        (
+            "negative",
+            "a_declared_word.ts",
+            f"// collides: census-probe-served — {reason}\n"
+            'export const line = "open census-probe-served now";\n',
+            "",
+        ),
+        (
+            "negative",
+            "a_declared_word.md",
+            f"<!-- collides: census-probe-served — {reason} -->\nopen census-probe-served now\n",
+            "",
+        ),
+    ]
+    fired = silent = 0
+    with tempfile.TemporaryDirectory(prefix="plant-collision-") as scratch:
+        for kind, name, text, want in forms:
+            path = Path(scratch) / name
+            path.write_text(text, encoding="utf-8")
+            refusals, counts = plant_collision_census([path], served)
+            if kind == "canary":
+                if any(want in r for r in refusals):
+                    fired += 1
+                else:
+                    broken.append(
+                        f"PLANT-COLLISION CANARY DEAD — the form {name} did not produce a refusal "
+                        f"carrying {want!r}: {refusals or 'nothing at all'}"
+                    )
+            elif refusals or counts["declared"] != 1:
+                broken.append(
+                    f"PLANT-COLLISION FALSE-POSITIVE REGRESSION — the declared form {name} was "
+                    f"refused or not counted declared ({counts}): {refusals}"
+                )
+            else:
+                silent += 1
+    say(
+        f"plant-collision census: its own forms — {fired} canaries fired · {silent} negatives "
+        "silent"
+    )
+
+
 def consistency() -> None:
     seam_consistency()
     for problem in _LOCAL_PROBLEMS:
@@ -3331,7 +3910,82 @@ def residence_leg() -> None:
         )
 
 
-def ratchet_leg() -> None:
+def ratchet_headroom(rule: dict, findings: list[Finding]) -> list[str]:
+    """Every class this rule records ABOVE the findings the tree holds in it.
+
+    THE HEADROOM CANARY, AND WHY IT IS NOT FREE. A ceiling above the count is a
+    backlog paid in the tree with its number left behind; the next finding in
+    that class is absorbed under it as a note, so a class that grew reads as a
+    class that held (rule 54's `workflows: 1 -> 0`, `quality/rules.yaml`, is the
+    measured case). The self-test once caught it by accident — its canaries were
+    read through the ratchet and one absorbed read as DEAD — and stopped
+    catching it when the self-test learned to read forms raw. So it is asked
+    here, of EVERY rule that declares `ratchets:`, through the one merged
+    ceiling the engine judges (`rule["ratchets"]`, the drawer's number already
+    added — `DRAWER_RATCHET_PARTS` says whose half is whose), never of one rule
+    by name. `findings` are the rule's raw findings on the unplanted tree.
+    """
+    rid = str(rule["id"])
+    have: dict[str, int] = {}
+    for finding in findings:
+        have[str(finding.klass)] = have.get(str(finding.klass), 0) + 1
+    out: list[str] = []
+    for klass, allowed in sorted((rule.get("ratchets") or {}).items()):
+        name = str(klass)
+        recorded = int(allowed)
+        count = have.get(name, 0)
+        if recorded <= count:
+            continue
+        parts = DRAWER_RATCHET_PARTS.get((rid, name))
+        split = f" (template {parts[0]} + drawer {parts[1]})" if parts else ""
+        out.append(
+            f"rule {rid} ratchet: class {name!r} is recorded at {recorded}{split} and this tree "
+            f"holds {count} — headroom: the next {recorded - count} finding(s) in the class "
+            "would be absorbed as notes, so a class that grew reads as one that held. Lower "
+            f"it to {count} in {ratchet_home(rid, name)} (the live scan's own note names the "
+            "number)"
+        )
+    return out
+
+
+def headroom_not_judged(shape: str, disabled: frozenset[str]) -> str:
+    """Why the headroom reader judges nothing on this run — '' on the template's own shape.
+
+    THE RECORDED ROWS ARE THE TEMPLATE'S, SO ONLY THE TEMPLATE'S TREE CAN BE
+    HELD TO THEM. A consumer's clone (a base declared through the `template`
+    remote, `scripts/local/template-base` or `DJB_TEMPLATE_BASE`) and a world
+    (`DJB_DISABLED_APPS`) both carry the template's numbers over a tree that is
+    not the one they were measured on: a product that paid a class down, or a
+    world whose app is gone, holds fewer findings than the template recorded,
+    and reading that as headroom would red the product's self-test for the
+    template's arithmetic. A template row above a product's count is the fold's
+    business, and the live scan's own note already names the number. `shape` is
+    `judged_shape()`'s sentence, read once at the self-test's head; a shape the
+    census could not give is the caller's could-not-look, never a skip.
+    """
+    why: list[str] = []
+    if not shape.startswith("none declared"):
+        why.append(f"a template base is declared — {shape}")
+    if disabled:
+        why.append(f"a world (DJB_DISABLED_APPS names {', '.join(sorted(disabled))})")
+    return " and ".join(why)
+
+
+def headroom_judgement(
+    rule: dict, findings: list[Finding], *, shape: str, disabled: frozenset[str]
+) -> tuple[list[str], str]:
+    """(the classes named as headroom, why nothing was judged) — the two pieces the tree loop uses.
+
+    The forged forms ask THIS, so a shaped run's silence is proven through the
+    same decision the tree's own loop takes, not asserted beside it.
+    """
+    skip = headroom_not_judged(shape, disabled)
+    if skip:
+        return [], skip
+    return ratchet_headroom(rule, findings), ""
+
+
+def ratchet_leg(shape: str) -> None:
     """The UNMEASURED branch, and proof that it fires for one shape only.
 
     THE SUBJECT IS `rules.yaml` DATA AND A LIST OF FINDINGS, so the forms are
@@ -3456,6 +4110,133 @@ def ratchet_leg() -> None:
         broken.append(
             f"RATCHET LEG SHORT — {fired} of 1 canary forms fired and {silent} of 4 "
             "negatives stayed silent; the lines above name which"
+        )
+
+    # -- THE HEADROOM CANARY, forged, then asked of every rule ----------------
+    # Forged first, so the reader is proven before its answer is believed: a
+    # class recorded above its count is named (the canary); a class at its
+    # count, one recorded at zero, and a raised row on a run that is not the
+    # template's own shape say nothing (the negatives). Every form goes through
+    # `headroom_judgement`, the decision the tree loop below takes.
+    head_fired = 0
+    head_silent = 0
+    template = "none declared (the template's own shape)"
+    forged = {"id": "63", "ratchets": {"instrument-missing": 5, "entry-form": 1, "book": 0}}
+    forged_findings = [_finding("docs/product/design/patterns.md", "entry-form")]
+    lines, _skip = headroom_judgement(forged, forged_findings, shape=template, disabled=frozenset())
+    if len(lines) == 1 and "'instrument-missing' is recorded at 5" in lines[0]:
+        head_fired += 1
+    else:
+        broken.append(
+            "HEADROOM CANARY DEAD — a class recorded at 5 over a tree holding 0 was not named "
+            f"exactly once (the reader said: {lines!r})"
+        )
+    remote = "v0.0.0-forged (from the 'template' remote, derived from TEMPLATE_VERSION)"
+    for what, rule, findings, on, disabled, says in (
+        (
+            "a class at its count",
+            {"id": "64", "ratchets": {"literal-size": 1}},
+            [_finding("frontend/src/zzz.css", "literal-size")],
+            template,
+            frozenset(),
+            "",
+        ),
+        (
+            "a class recorded at zero",
+            {"id": "64", "ratchets": {"half-pixel": 0}},
+            [],
+            template,
+            frozenset(),
+            "",
+        ),
+        (
+            "a raised row on a consumer's shape (a base declared through the remote)",
+            forged,
+            forged_findings,
+            remote,
+            frozenset(),
+            remote,
+        ),
+        (
+            "a raised row in a world (DJB_DISABLED_APPS set)",
+            forged,
+            forged_findings,
+            template,
+            frozenset({"search"}),
+            "DJB_DISABLED_APPS names search",
+        ),
+    ):
+        lines, skip = headroom_judgement(rule, findings, shape=on, disabled=disabled)
+        if lines:
+            broken.append(f"HEADROOM FALSE POSITIVE — {what} was named as headroom: {lines!r}")
+        elif says and says not in skip:
+            broken.append(
+                f"HEADROOM SKIP MUTE — {what} was not judged, and the reason did not name the "
+                f"shape ({says!r} is not in {skip!r})"
+            )
+        else:
+            head_silent += 1
+
+    say(
+        f"ratchet headroom: {head_fired} of 1 canary forms fired · {head_silent} of 4 "
+        "negatives stayed silent (a raised row named on the template's own shape; a row at "
+        "its count, one at zero, and a raised row on a consumer's shape or in a world say "
+        "nothing)"
+    )
+
+    # The tree, every rule that declares a class above zero: its raw findings
+    # (overrides applied, no ratchet), read once — ON THE TEMPLATE'S OWN SHAPE
+    # ONLY (`headroom_not_judged` says why). Anywhere else the leg says which
+    # shape in one line and judges nothing; a shape the census could not give
+    # is could-not-look. A rule that could not look says so and is not judged.
+    judged = 0
+    classes = 0
+    not_judged = headroom_not_judged(shape, DISABLED_APPS)
+    broken_shape = shape.startswith("could not be read") or "; the census could not look" in shape
+    if broken_shape:
+        broken.append(
+            f"RATCHET HEADROOM COULD NOT LOOK — the judged shape is {shape}, so nothing can "
+            "say whether this tree is the one the recorded rows were measured on"
+        )
+    elif not_judged:
+        say(
+            f"ratchet headroom: not judged on this shape — {not_judged}. The recorded rows are "
+            "the template's; a template row above a product's count is the fold's business, "
+            "and the live scan's own note names the number"
+        )
+    else:
+        for rule in RULES:
+            rid = str(rule["id"])
+            positive = {
+                str(k): int(v) for k, v in (rule.get("ratchets") or {}).items() if int(v) > 0
+            }
+            if not positive or not rule.get("enabled", True):
+                continue
+            kept, _targets, skip = run_rule(rule, floors=False, ratchets=False)
+            if skip:
+                say(f"  ratchet headroom: rule {rid} not judged — {skip}")
+                continue
+            judged += 1
+            measured = dict(rule)
+            measured["ratchets"] = positive
+            classes += len(positive)
+            # A RULE LINE, NOT AN ENFORCEMENT BREAK: a row above its count is a
+            # finding about THIS tree's number (exit 1, under `Violations:`
+            # with the rule's own trailer); only the reader's own forms dying
+            # is enforcement broken.
+            for line in ratchet_headroom(measured, kept):
+                violations.append(line)
+                violation_rule[line] = rid
+    if not not_judged and not broken_shape:
+        say(
+            f"ratchet headroom: {classes} class(es) recorded above zero across {judged} "
+            "rule(s), each judged against its count on this tree (every rule that declares "
+            "`ratchets:`, the drawer's number included)"
+        )
+    if head_fired != 1 or head_silent != 4:
+        broken.append(
+            f"RATCHET LEG SHORT — the headroom reader: {head_fired} of 1 canary forms fired "
+            f"and {head_silent} of 4 negatives stayed silent; the lines above name which"
         )
 
 
@@ -4742,7 +5523,10 @@ def selftest(only: list[str] | None = None) -> None:
     budget canary, not the trailer or cli censuses. It says so on its own line
     before the first plant, because a narrowed green is a claim about the named
     rules and is never the gate's verdict. The selftest leg runs the engine with
-    no arguments, so the gate never takes this arm.
+    no arguments, so the gate never takes this arm. The ONE census a narrowed
+    run does take is the plant-collision census at the head: it judges the
+    plants before any is planted, and a collision is the cause a narrowed run's
+    SHORT count would otherwise leave unnamed.
     """
     # Read the tree's migration leaves BEFORE anything is planted into it, and
     # stop if any placeholder could not be resolved: a self-test that guessed a
@@ -4760,11 +5544,21 @@ def selftest(only: list[str] | None = None) -> None:
 
     # WHICH SHAPE THIS RUN JUDGES, said before the first plant: rule 60's
     # controls read differently on a tree that declares a template base.
-    say(f"selftest: template base — {judged_shape()}")
+    shape = judged_shape()
+    say(f"selftest: template base — {shape}")
     # THE PLANT CENSUS'S COUNTS, once, derived from the plan this run judges:
     # `consistency()` already refused any outside plant (exit 2, nothing
     # planted), so the last number is 0 on every run that reaches this line.
     say(plant_namespace_line(RULES))
+    # THE PLANT-COLLISION CENSUS, before the first plant and on a NARROWED run
+    # too: a plant carrying a name the tree serves dies as a SHORT count with
+    # nothing naming the cause, and a narrowed run of the rule it plants for is
+    # exactly where somebody goes to find out why. Exit 2, nothing planted.
+    collision_refusals, collision_line = plant_collision_run()
+    say(collision_line)
+    if collision_refusals:
+        broken.extend(collision_refusals)
+        return
 
     narrowed = narrowed_ids(only) if only else []
     if narrowed:
@@ -4778,8 +5572,9 @@ def selftest(only: list[str] | None = None) -> None:
 
     if not narrowed:
         residence_leg()
-        ratchet_leg()
+        ratchet_leg(shape)
         namespace_leg()
+        plant_collision_leg()
         declaration_leg()
         drawers_leg()
 
@@ -7707,7 +8502,7 @@ def live_scan(diff_ref: str | None, *, terse: bool = False) -> None:
 GRAMMAR = (
     "quality.gate takes --selftest [--rule <id>]..., --selftest-inputs, --diff <ref>, "
     "--fold-map <previous rules.yaml> [<template rules.yaml>] [--template-tree <dir>], "
-    "--terse, --explain [<id>] or --rules"
+    "--terse, --explain [<id>], --rules or --plant-collisions"
 )
 
 
@@ -7729,6 +8524,8 @@ def main(argv: list[str]) -> int:
             mode = "inputs"
         elif arg == "--terse":
             terse = True
+        elif arg == "--plant-collisions":
+            mode = "plant-collisions"
         elif arg == "--rules":
             mode = "listing"
         elif arg == "--explain":
@@ -7826,6 +8623,26 @@ def main(argv: list[str]) -> int:
         # collided. A reader that refused to answer there would be a reader
         # nobody could use on the only day they need it.
         return fold_map(str(fold_map_previous), fold_map_template, fold_map_template_tree)
+
+    if mode == "plant-collisions":
+        # THE PLANT-COLLISION CENSUS ALONE — the `--loop` leg's whole body, and
+        # the self-test's head line run without the self-test. It reads the
+        # plants and the tree under test and plants nothing; a tree carrying a
+        # dead run's plants is refused first, because those plants would read
+        # as names the tree serves. Exit 2 on any refusal (an undeclared
+        # collision is a dead canary in waiting), 0 otherwise.
+        refuse_stale_plants()
+        if not broken:
+            collision_refusals, collision_line = plant_collision_run()
+            say(collision_line)
+            broken.extend(collision_refusals)
+        if broken:
+            say("ENFORCEMENT BROKEN (exit 2 — outranks any pass):")
+            for b in broken:
+                say(f"  !! {b}")
+            return 2
+        say("plant collisions: clean — every colliding name is declared on its plant.")
+        return 0
 
     # BEFORE ANYTHING MEASURES ANYTHING. A tree carrying a dead run's fixtures
     # is a tree every leg below would read wrongly, and the failure is silent in

@@ -440,6 +440,13 @@ ignore_imports = [
     # `core.tests -> example -> workflows`. The exemption is for the test
     # modules only; `apps/core` itself still imports nothing above it.
     "apps.core.tests.* -> apps.example.*",
+    # And `workflows`' own tests drive the worked example's services for the same
+    # reason — a real `@service` starting a real run. Since `Widget` takes tags,
+    # `example.duplicate_widget` carries a source's words across through the tags
+    # app's own service, which emits on the spine: `workflows.tests -> example ->
+    # tags -> events`. The exemption is for the test modules only; `apps/workflows`
+    # itself still imports no sibling.
+    "apps.workflows.tests.* -> apps.example.*",
     # `core`'s bridge test proves the whole point of the bridge: that a `core`
     # service can reach `emit` without importing the app that provides it. The
     # proof has to name the app the production code does not.

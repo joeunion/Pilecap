@@ -1,0 +1,54 @@
+"""The version adoption's own test — copied with the adoption, and green on the copy.
+
+Every line is fenced `golden: version`, so a product that copies the version
+blocks onto its own noun gets this file too, with the one rename applied. It
+builds its rows by hand: the noun's create is the product's own business.
+"""
+
+# golden: version begin
+import json
+from typing import Any
+
+import pytest
+from django.test import Client
+
+from apps.accounts.models import User
+from apps.core.models import Organization, Tenant
+from apps.example.models import Widget
+
+pytestmark = pytest.mark.django_db
+
+WIDGETS_URL = "/api/v1/widgets/"
+JSON = "application/json"
+
+
+def _body(response: Any) -> dict[str, Any]:
+    parsed: dict[str, Any] = json.loads(response.content)
+    return parsed
+
+
+def test_an_edit_names_the_version_it_read_and_a_late_one_is_refused(
+    api: Client, tenant: Tenant, root_org: Organization, owner: User
+) -> None:
+    widget = Widget.objects.create(tenant=tenant, organization=root_org, owner=owner, name="v1")
+    url = f"{WIDGETS_URL}{widget.pk}/"
+    api.force_login(owner)
+    read = _body(api.get(url))
+
+    unversioned = api.patch(url, {"name": "no version"}, content_type=JSON)
+    assert unversioned.status_code == 422, unversioned.content
+    assert "version" in _body(unversioned)["errors"]
+
+    saved = api.patch(url, {"name": "v2", "version": read["version"]}, content_type=JSON)
+    assert saved.status_code == 200, saved.content
+    assert _body(saved)["version"] > read["version"]
+
+    late = api.patch(url, {"name": "late", "version": read["version"]}, content_type=JSON)
+    assert late.status_code == 409, late.content
+    assert _body(late)["code"] == "stale_version"
+    assert _body(late)["current_version"] == _body(saved)["version"]
+    widget.refresh_from_db()
+    assert widget.name == "v2"
+
+
+# golden: version end

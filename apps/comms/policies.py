@@ -34,9 +34,11 @@ invisible in `introspect`.
 file used to answer "how much authority does this person have" by reading a role
 by value off the membership row, which is a second opinion about a role no
 tenant can edit (rule 54 (c), architect §C7). The predicate is gone and the keys
-it guarded — archiving a contact, the templates, the delivery policies and
-consent — are held by `admin`'s `*` pattern and by `owner`, which is the same
-answer said once instead of twice. Nothing a caller can see moved:
+it guarded — the templates, the delivery policies and consent — are held by
+`admin`'s `*` pattern and by `owner`, which is the same answer said once instead
+of twice. Archiving and restoring a contact left that list when `Recipient`
+became `Archivable`: they are the family's keys now, asked by
+`core.policies.may_archive` at the contact's own node. Nothing a caller can see moved:
 `tests/test_authz_sweep.py` measures every cell of this app's matrix against the
 baseline and 0 of them did.
 
@@ -65,6 +67,7 @@ from apps.core.actor import Actor
 from apps.core.authz import Policy, membership_for
 from apps.core.log import get_logger
 from apps.core.models import Tenant
+from apps.core.policies import may_archive
 
 log = get_logger("apps.comms.policies")
 
@@ -222,10 +225,18 @@ POLICIES: dict[str, Policy] = {
     # the privileged one and why it is not a consent decision.
     "device.create": can_keep_devices,
     "device.retire": can_keep_devices,
+    # The contact book's archive road. `Recipient` is `Archivable`, so both keys
+    # are DERIVED; the predicate is the family's one — the node's
+    # administration (`organization.update`) asked where the contact lives, and
+    # `@refuses_system`, so a workflow never closes a person's contact on its
+    # own say-so. Without this pair the system actor would keep the exemption
+    # every other key has, and the default roles would answer alone.
+    "recipient.archive": may_archive,
+    "recipient.restore": may_archive,
     #
-    # **And SEVEN keys are no longer here at all**, where `can_administer` — a
+    # **And SIX keys are no longer here at all**, where `can_administer` — a
     # rank comparison on the membership row — used to sit:
-    # `recipient.archive`, `message_template.create`, `message_template.retire`,
+    # `message_template.create`, `message_template.retire`,
     # `delivery_policy.create`, `delivery_policy.retire` and
     # `channel_preference.update` (`preference.set` renames onto that last one).
     # "Only an owner or an admin" is what `admin`'s `*` pattern and `owner`'s
@@ -249,6 +260,10 @@ ACTION_PROSE: dict[str, str] = {
     "recipient.create": "You may not add contacts to this organization.",
     "recipient.update": "You may not change this organization's contacts.",
     "recipient.archive": "You may not archive this organization's contacts.",
+    # The derived sentence would say "this recipient"; every door of this app
+    # says "contact", so the pair keeps the word the archive sentence already
+    # published.
+    "recipient.restore": "You may not restore this organization's contacts.",
     "device.create": "You may not register devices for this organization's contacts.",
     "device.retire": "You may not retire devices for this organization's contacts.",
     "channel_preference.update": "You may not change what a contact has agreed to receive.",

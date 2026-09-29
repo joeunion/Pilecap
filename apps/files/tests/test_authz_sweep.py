@@ -210,11 +210,17 @@ def test_the_apps_authorization_matrix_equals_the_baseline(tree: World) -> None:
     accepted: Mapping[str, str] = document["accepted_deltas"]
 
     assert sorted(expected) == sorted(KEYS), sorted(expected)
-    # The exception list is READ, never inferred, and it is small and one shape:
-    # four keys, one row class, one actor. A delta list that had started
-    # absorbing whatever moved would show up here as a count nobody chose.
-    assert len(accepted) == 4, sorted(accepted)
-    assert {name.split("/", 1)[1] for name in accepted} == {"sibling_branch/admin_at_a"}
+    # The exception list is READ, never inferred, and it is small and two shapes:
+    # four keys at one row class for one actor (the sweep's narrowing), and the
+    # archive key with no row for the two actors who held it (the archive road's
+    # predicate, which fails closed without a document). A delta list that had
+    # started absorbing whatever moved would show up here as a count nobody chose.
+    assert len(accepted) == 6, sorted(accepted)
+    assert {name.split("/", 1)[1] for name in accepted} == {
+        "sibling_branch/admin_at_a",
+        "no_row/admin_at_a",
+        "no_row/owner",
+    }
     cells = sum(len(actors) for rows in expected.values() for actors in rows.values())
     assert cells == len(KEYS) * 6 * len(ACTORS) == 108, cells
 
@@ -353,4 +359,8 @@ def test_what_a_member_may_do_is_still_the_transitional_residue(tree: World) -> 
     words = vocabulary()
     assert "member" in words["file.create"].default_roles
     assert "member" in words["file.replace"].default_roles
-    assert "member" not in words["file.archive"].default_roles
+    # The archive pair is a PREDICATE-bearing key now (`may_archive`), and the
+    # vocabulary offers such a key to every role and lets the predicate decide —
+    # so a member is refused by `may_archive`, not by the role column. The
+    # matrix above is what proves the refusal cell by cell.
+    assert words["file.archive"].predicate is words["file.restore"].predicate

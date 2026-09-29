@@ -139,6 +139,7 @@ from apps.core.selectors import (
     list_invitations,
     list_memberships,
     list_organizations,
+    list_organizations_where,
     list_permissions,
     list_roles,
 )
@@ -943,7 +944,7 @@ register_refusal(
     ),
     fact=(
         "The call does not match the shape this tool accepts. No tool body ran, "
-        "nothing was read and nothing was written. `errors` names each argument and "
+        "nothing was read and nothing was written. The answer names each argument and "
         "what is wrong with it, in the names you sent, including any name that is not "
         "one of this tool's arguments: unknown arguments are refused rather than "
         "ignored, so a misspelling can never look like a success."
@@ -1446,14 +1447,16 @@ def register_tenancy_tools(server: MCPServer[Any]) -> None:
         cursor: str | None = None,
         limit: int | None = None,
         include_count: bool = False,
+        can: str | None = None,
     ) -> OrganizationPage:
         with tool_call(ctx) as acting:
+            actor = acting.actor()
             rows: models.QuerySet[Organization] = OrganizationFilter(name=name, depth=depth).filter(
-                list_organizations(
-                    tenant=acting.tenant, org=acting_org(acting), actor=acting.actor()
-                )
+                list_organizations(tenant=acting.tenant, org=acting_org(acting), actor=actor)
             )
             rows = searched(rows, q, fields=ORGANIZATION_SEARCH_FIELDS)
+            if can is not None:
+                rows = list_organizations_where(rows, actor=actor, can=can)
             rows = ordered_by(rows, ordering, allowed=ORGANIZATION_ORDERING, default="path")
             page = cursor_page(
                 rows,

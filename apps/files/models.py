@@ -23,13 +23,13 @@ discouraged.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from django.conf import settings
 from django.db import models
 
 from apps.core.lifecycle import Lifecycle, LifecycleKind
-from apps.core.models import OrgScopedModel
+from apps.core.models import Archivable, OrgScopedModel
 
 #: The longest key this app builds, with room to spare. A key is
 #: `t/<uuid>/f/<uuid>/v/<n>` — 85 characters at a four-digit version — and S3's
@@ -63,7 +63,7 @@ SHA256_LENGTH = 64
 PENDING_UPLOAD_TTL_HOURS = 24
 
 
-class StoredFile(OrgScopedModel):
+class StoredFile(OrgScopedModel, Archivable):
     """One document: what it is called, what it is for, and which version is current.
 
     **Org-scoped**: a file belongs to the part of the tenant that
@@ -96,6 +96,10 @@ class StoredFile(OrgScopedModel):
     #: is the DOCUMENT. `StoredFile` is what this codebase calls the row because
     #: `File` is a builtin; `file` is what the product calls the thing.
     authz_kind: ClassVar[str] = "file"
+    #: Where an act's door is mounted when its `url_name` is not `file-<verb>`:
+    #: replacing a document IS adding a version (`POST /files/{id}/versions/`,
+    #: asking `file.replace`), so `allowed_acts` offers `replace` there.
+    act_doors: ClassVar[dict[str, str]] = {"replace": "version-add"}
 
     #: ADR core-13, and the honest kind rather than the comfortable one.
     #:
@@ -183,23 +187,52 @@ class StoredFile(OrgScopedModel):
         related_name="uploaded_files",
     )
 
-    #: Soft delete. Null means live; a timestamp means archived, and the
-    #: objects are still in the bucket until purge lands — see `lifecycle`.
-    archived_at = models.DateTimeField(null=True, blank=True)
+    # `archived_at` and `archived_by` are `Archivable`'s two columns and are not
+    # re-declared here: the mixin is the one owner of the archive's shape. Null
+    # means live; a date means archived — and the objects are still in the
+    # bucket until purge lands (see `lifecycle`).
+
+    #: **The attach subject** — the row this document is filed AGAINST, if any.
+    #: A polymorphic pointer, `(kind, id)`, and deliberately not a foreign key
+    #: per noun: this app cannot know a product's nouns, and a link table per
+    #: noun would be a model, a migration and a route set every time one adopts
+    #: files. The price is declared rather than hidden — the database will not
+    #: stop an orphan — and it is paid for at the READ: a document is listed by
+    #: its subject only after `core.verbs.resolve_subject` has resolved that
+    #: subject for the caller, so a pointer to a row nobody can reach is
+    #: unreachable, never wrong. Blank and null for a document filed against
+    #: nothing, which is every document filed before these columns existed
+    #: (expand-only). The kind is blank rather than null because Django keeps one
+    #: empty value per string column, and the wire says `null` for both.
+    subject_kind = models.CharField(max_length=64, blank=True, default="")
+    subject_id = models.UUIDField(null=True, blank=True)
 
     class Meta(OrgScopedModel.Meta):
         verbose_name = "stored file"
         verbose_name_plural = "stored files"
-        # NO `indexes` HERE, deliberately. `TenantScopedModel.Meta` declares the
-        # tenant-leading recency composite (ADR core-11) and Django does NOT
-        # merge `Meta.indexes` down an inheritance chain — a concrete model that
-        # declares its own SHADOWS the inherited one. House rule 37 is the
-        # tripwire over exactly that hole; the way to stay on the right side of
-        # it is to not declare `indexes` at all unless this table needs one, and
-        # then to re-add the recency index by hand in the same breath.
+        # Django does NOT merge `Meta.indexes` down an inheritance chain — a
+        # concrete model that declares its own SHADOWS the inherited one — so the
+        # tenant-leading recency composite (ADR core-11, house rule 37) is
+        # re-added here by hand, under the name the base gives it, in the same
+        # breath as the one index this table needs of its own: the subject read
+        # (`?subject=<kind>:<id>`), tenant-leading like every read here.
+        indexes: ClassVar[Any] = [
+            models.Index(fields=["tenant", "-created_at"], name="%(class)s_recency"),
+            models.Index(
+                fields=["tenant", "subject_kind", "subject_id"],
+                name="storedfile_subject",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.filename} (v{self.current_version})"
+
+    @property
+    def subject(self) -> str | None:
+        """The subject as the wire spells it — `<kind>:<id>` — or `None`. Derived, never stored."""
+        if not self.subject_kind or self.subject_id is None:
+            return None
+        return f"{self.subject_kind}:{self.subject_id}"
 
 
 class FileVersion(OrgScopedModel):

@@ -92,6 +92,7 @@ from apps.core.selectors import (
     list_invitations,
     list_memberships,
     list_organizations,
+    list_organizations_where,
     list_permissions,
     list_roles,
 )
@@ -298,6 +299,7 @@ def list_organizations_route(
     filters: Query[OrganizationFilter],
     q: str | None = None,
     ordering: str = "path",
+    can: str | None = None,
 ) -> QuerySet[Organization]:
     """List organizations
 
@@ -314,6 +316,12 @@ def list_organizations_route(
     `invalid` and the response lists what you may sort by. Walk it with
     `?cursor=` and `?limit=`.
 
+    Ask `can` with a permission key — `?can=widget.move` — and the list keeps
+    only the organizations where you may do that: the destinations a move can
+    reach, or any other "where may I" question, answered by the same rules a
+    write is judged by. A key this product does not have is rejected with
+    `invalid` naming `can`, never answered with an empty list.
+
     The default sort is `path`, which returns the list in tree order — every
     organization after the one it hangs from — so you can build a tree from a
     single response without a second request.
@@ -324,8 +332,9 @@ def list_organizations_route(
 
     Refusals you can get here:
 
-    * `400 invalid` — `?ordering=` named a field this list does not accept, or
-      a filter value was malformed. The response says what you may sort by.
+    * `400 invalid` — `?ordering=` named a field this list does not accept, a
+      filter value was malformed, or `?can=` named a permission this product
+      does not have. The response names the parameter.
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `403 forbidden` — your role here does not let you read organizations. A role
@@ -345,6 +354,8 @@ def list_organizations_route(
     )
     organizations = filters.filter(organizations)
     organizations = searched(organizations, q, fields=ORGANIZATION_SEARCH_FIELDS)
+    if can is not None:
+        organizations = list_organizations_where(organizations, actor=actor, can=can)
     return ordered_by(organizations, ordering, allowed=ORGANIZATION_ORDERING, default="path")
 
 

@@ -59,7 +59,17 @@ JSON = "application/json"
 # deltas for the roles on the chain. It is paid ONCE per actor instance
 # whatever the number of `require`s (the PR0 memo), so a route that asked
 # twice would still be +3 and not +6.
-LIST_QUERY_BUDGET = 10
+#
+# **+4 for `allowed_acts`**, through the family's page (`ActsPagination`,
+# `core.verbs.with_allowed_acts`): ONE query attaching every row's node, and the
+# actor's collection read again — three reads — because the paginator resolves
+# its own actor from the request rather than reusing the route's, so the memo
+# the route's `widget.read` filled is not the one the acts ask. The seam's
+# page-level `create` shares that second memo — and since `membership_for`
+# reads the actor's memo too, the list's `create` predicate (`_is_member`) costs
+# no read of its own (14 → 13). A fixed cost per request, never per row, which
+# is the property this pin exists for.
+LIST_QUERY_BUDGET = 13
 
 
 def _body(response: Any) -> dict[str, Any]:
@@ -129,7 +139,9 @@ def test_the_list_is_paginated(
     response = api.get(LIST_URL)
     assert response.status_code == 200
     body = _body(response)
-    assert set(body) == {"items", "has_more", "next_cursor", "count"}
+    # `allowed_acts` is the LIST's own acts (`create` where the actor may) —
+    # the family's page (`ActsPagination`), not a widening of the cursor's cut.
+    assert set(body) == {"items", "has_more", "next_cursor", "count", "allowed_acts"}
     assert body["has_more"] is False
     assert body["next_cursor"] is None
     assert body["count"] is None
@@ -232,7 +244,7 @@ def test_update_goes_through_the_service(
     api.force_login(owner)
     response = api.patch(
         f"{LIST_URL}{widget.pk}/",
-        data=json.dumps({"name": "After"}),
+        data=json.dumps({"name": "After", "version": widget.version}),
         content_type=JSON,
     )
     assert response.status_code == 200, response.content
@@ -324,16 +336,26 @@ def test_a_bad_token_is_refused(api: Client, tenant: Tenant, owner: User) -> Non
     assert api.get(LIST_URL, headers={"authorization": "Bearer nonsense"}).status_code == 401
 
 
+# The same budget at five rows and at fifty — the page's size, rows carrying
+# `allowed_acts`, `version`, `organization_name` and `owner_name`: every one is
+# read off the row the page already selected, so none of them costs a query.
+@pytest.mark.parametrize("rows", [5, 10, 50])
 def test_list_query_count_does_not_grow_with_rows(
-    api: Client, tenant: Tenant, owner: User, django_assert_num_queries: Any, owner_actor: Actor
+    api: Client,
+    tenant: Tenant,
+    owner: User,
+    django_assert_num_queries: Any,
+    owner_actor: Actor,
+    rows: int,
 ) -> None:
-    for index in range(10):
+    for index in range(rows):
         create_widget(tenant=tenant, actor=owner_actor, name=f"Widget {index}")
     api.force_login(owner)
     with django_assert_num_queries(LIST_QUERY_BUDGET):
         response = api.get(LIST_URL)
     assert response.status_code == 200
-    assert len(_body(response)["items"]) == 10
+    assert len(_body(response)["items"]) == rows
+    assert all(item["allowed_acts"] for item in _body(response)["items"])
 
 
 def test_the_openapi_document_and_the_docs_page_are_served(api: Client) -> None:
@@ -420,7 +442,7 @@ def test_a_member_cannot_rename_another_members_widget(
 
     response = api.patch(
         f"{LIST_URL}{theirs.pk}/",
-        data=json.dumps({"name": "After"}),
+        data=json.dumps({"name": "After", "version": theirs.version}),
         content_type=JSON,
     )
     assert response.status_code == 403, response.content

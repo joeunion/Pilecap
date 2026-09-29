@@ -33,7 +33,6 @@ import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 from django.db import models
-from django.test.utils import isolate_apps
 
 from apps.core.actor import Actor
 from apps.core.authz import (
@@ -61,6 +60,7 @@ from apps.core.management.commands.rename_permission import (
     declared_renames,
 )
 from apps.core.models import BaseModel
+from apps.core.tests.isolation import isolated_apps
 
 #: **This module is a census over OTHER apps' declarations, and it says so here
 #: so that nothing has to name it.** Every name below is a declaration module
@@ -184,7 +184,7 @@ def test_a_third_party_model_is_outside_the_population_by_module() -> None:
         assert model.__module__.startswith("apps."), model._meta.label
 
 
-@isolate_apps("apps.core")
+@isolated_apps("apps.core")
 def test_a_kind_collision_is_refused_at_import() -> None:
     """Two models, one kind: the vocabulary cannot be derived, so nothing starts.
 
@@ -212,7 +212,7 @@ def test_a_kind_collision_is_refused_at_import() -> None:
     assert "widget" in message
 
 
-@isolate_apps("apps.core")
+@isolated_apps("apps.core")
 def test_an_authz_kind_of_naming_a_non_cascade_fk_is_refused() -> None:
     """A child is authorized under its aggregate only when it DIES with it.
 
@@ -239,7 +239,7 @@ def test_an_authz_kind_of_naming_a_non_cascade_fk_is_refused() -> None:
     assert "CASCADE" in str(caught.value)
 
 
-@isolate_apps("apps.core")
+@isolated_apps("apps.core")
 def test_a_cascade_child_is_authorized_under_its_parents_kind() -> None:
     """The right form, beside the refusal, so the refusal is not the only shape shown."""
 
@@ -260,7 +260,7 @@ def test_a_cascade_child_is_authorized_under_its_parents_kind() -> None:
     assert registry["aggregate"] is Aggregate
 
 
-@isolate_apps("apps.core")
+@isolated_apps("apps.core")
 def test_an_opt_out_without_a_reason_is_refused() -> None:
     """`authz_kind = None` is a claim; a claim with no sentence is not reviewable."""
 
@@ -276,7 +276,7 @@ def test_an_opt_out_without_a_reason_is_refused() -> None:
     assert "authz_kind_reason" in str(caught.value)
 
 
-@isolate_apps("apps.core")
+@isolated_apps("apps.core")
 def test_an_opt_out_with_a_reason_leaves_the_registry() -> None:
     class Internal(BaseModel):
         authz_kind = None
@@ -297,7 +297,11 @@ def test_every_kind_carries_its_four_verbs_with_sentences() -> None:
     words = vocabulary()
     derived = {action for action, permission in words.items() if permission.decided_by == "derived"}
 
-    assert len(derived) == 4 * len(kind_registry())
+    # Four per kind, plus each family verb a kind's markers derive (`Archivable`
+    # → `archive`, `restore`) — read off the same roads the vocabulary reads.
+    from apps.core.authz import family_verbs
+
+    assert len(derived) == sum(4 + len(family_verbs(model)) for model in kind_registry().values())
 
     for kind in kind_registry():
         for verb in CRUD:

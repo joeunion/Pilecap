@@ -100,6 +100,8 @@ def main() -> int:
                         idempotent_methods=mount.IDEMPOTENT_METHODS,
                         paginated=bool(getattr(view, "_ninja_is_paginated", False)),
                     )
+                # `@also_refuses` adds to either branch, as `config/api.py` does.
+                codes = docs.with_added(codes, view)
                 owed = set(codes)
                 if authenticated:
                     # The one response `_document_operation` adds outside the

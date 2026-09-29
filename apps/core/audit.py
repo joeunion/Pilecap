@@ -318,6 +318,19 @@ class AuditEntry(TenantScopedModel):
                 name="auditentry_platform_created",
                 condition=models.Q(tenant__isnull=True),
             ),
+            # The HISTORY card's read (`core.selectors.list_history`): "what
+            # happened to THIS row, newest first", one tenant at a time. Tenant-
+            # leading like every read here; `object_id` next, so a row's history
+            # is one contiguous range; ordered, so a page is an index walk with
+            # no sort. Partial because the population is: a sweep's row, a
+            # refused call's row and a platform row carry no `object_id`, and
+            # the history never reads them. Built CONCURRENTLY (migration 0019,
+            # non-atomic): the trail is the product's largest table.
+            models.Index(
+                fields=["tenant", "object_id", "-created_at"],
+                name="auditentry_object_history",
+                condition=models.Q(object_id__isnull=False),
+            ),
         ]
 
     def save(self, *args: Any, **kwargs: Any) -> None:

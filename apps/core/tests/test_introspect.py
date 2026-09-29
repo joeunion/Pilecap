@@ -14,8 +14,10 @@ from typing import Any
 import pytest
 from django.conf import settings
 from django.core.management import call_command
+from django.db import models
 
 from apps.core.management.commands.introspect import _redact
+from apps.core.tests.isolation import isolated_apps
 
 pytestmark = pytest.mark.django_db
 
@@ -630,35 +632,49 @@ def test_the_marker_key_is_present_and_names_the_three_declarations(
     reading the classes fails here rather than reporting a tree in which nobody
     declares anything.
 
-    THE BLIND SPOT, stated: this is pinned to today's three marker KINDS. A
-    fourth marker is one line in `_markers_payload` and one line here, and until
-    somebody writes both it is invisible — the discovery shape makes that cheap,
-    it does not make it automatic.
+    The KINDS are the three class declarations plus the noun-verb family's,
+    and the family's half is derived from `core.verbs.ROADS`
+    (`family_marker_names`, pinned below), so a road that joins the table is a
+    kind this census admits with no edit here.
+
+    THE BLIND SPOT, stated: a class declaration outside the family (a fourth
+    `append_only`-shaped flag) is still one line in `_markers_payload` and one
+    line here, and until somebody writes both it is invisible.
     """
+    from apps.core.management.commands.introspect import family_marker_names
+
+    kinds_allowed = {"append_only", "inherited_downward", "derive_org_from"} | set(
+        family_marker_names()
+    )
     models = payload["models"]
     assert models, "the models section is empty"
     for model in models:
         assert "markers" in model, f"{model['app']}.{model['name']} carries no `markers` key"
         assert isinstance(model["markers"], dict)
-        assert set(model["markers"]) <= {
-            "append_only",
-            "inherited_downward",
-            "derive_org_from",
-        }, model["markers"]
+        assert set(model["markers"]) <= kinds_allowed, model["markers"]
 
     declared = {
         f"{model['app']}.{model['name']}": model["markers"] for model in models if model["markers"]
     }
     kinds = {kind for markers in declared.values() for kind in markers}
-    assert kinds == {"append_only", "inherited_downward", "derive_org_from"}, (
+    # The family's kinds are OPT-IN per noun: whether any model declares one is
+    # the adopting app's business, so they are held by the agreement tests below
+    # (equalities against the registry) rather than by this floor.
+    assert kinds - set(family_marker_names()) == {
+        "append_only",
+        "inherited_downward",
+        "derive_org_from",
+    }, (
         f"the tree declares only {sorted(kinds)}. Each of the three marker kinds has "
         "at least one member on main — a kind with no members means the derivation "
         "has stopped reading that declaration, and a criterion about it is vacuous."
     )
-    # The three worked examples, by name, so a rename or a deletion is loud.
-    assert declared["core.AuditEntry"] == {"append_only": True}
-    assert declared["example.WidgetPolicy"] == {"inherited_downward": True}
-    assert declared["example.WidgetEntry"] == {"append_only": True, "derive_org_from": "widget"}
+    # The three worked examples, by name, so a rename or a deletion is loud. Read
+    # per key, so a noun that later adopts a family marker stays a worked example.
+    assert declared["core.AuditEntry"]["append_only"] is True
+    assert declared["example.WidgetPolicy"]["inherited_downward"] is True
+    assert declared["example.WidgetEntry"]["append_only"] is True
+    assert declared["example.WidgetEntry"]["derive_org_from"] == "widget"
 
 
 def test_the_marker_key_agrees_with_the_declarations_it_claims_to_read(
@@ -679,6 +695,96 @@ def test_the_marker_key_agrees_with_the_declarations_it_claims_to_read(
         if model["markers"].get("append_only")
     }
     assert reported == {model._meta.label for model in append_only_models()}
+
+
+def test_the_archivable_marker_agrees_with_the_registry(payload: dict[str, Any]) -> None:
+    """`archivable` is derived the same way: the population IS `archivable_models()`."""
+    from apps.core.models import archivable_models
+
+    reported = {
+        f"{model['app']}.{model['name']}"
+        for model in payload["models"]
+        if model["markers"].get("archivable")
+    }
+    assert reported == {model._meta.label for model in archivable_models()}
+
+
+@isolated_apps("apps.core", "apps.accounts")
+def test_a_planted_archivable_noun_reports_the_marker() -> None:
+    """The marker is read off the class — a planted noun shows `archivable: true`."""
+    from apps.core.management.commands.introspect import _markers_payload
+    from apps.core.models import Archivable, OrgScopedModel
+
+    class ZzzShelf(OrgScopedModel, Archivable):
+        label = models.CharField(max_length=10)
+
+        class Meta:
+            app_label = "core"
+
+    class ZzzPlain(OrgScopedModel):
+        label = models.CharField(max_length=10)
+
+        class Meta:
+            app_label = "core"
+
+    assert _markers_payload(ZzzShelf) == {"archivable": True}
+    assert _markers_payload(ZzzPlain) == {}
+
+
+def test_the_family_markers_are_the_roads_markers_and_the_values_they_read() -> None:
+    """Closed at both ends: every road's marker, plus the declarations a road reads.
+
+    Derived on the left, derived on the right: a road that joins `ROADS` joins
+    both sides at once, and a marker `introspect` reported that no road names —
+    or a road whose marker it stopped reporting — is the red.
+    """
+    from apps.core.management.commands.introspect import ROAD_DECLARATIONS, family_marker_names
+    from apps.core.verbs import ANY_MARKER, ROADS
+
+    road_markers = {road.marker for road in ROADS.values() if road.marker != ANY_MARKER}
+    assert {"archivable", "versioned", "movable", "bulk_verbs"} <= road_markers
+    assert set(family_marker_names()) == road_markers | {
+        "bulk_verbs",
+        "attachments",
+        "move_owner_field",
+    }
+    assert set(ROAD_DECLARATIONS) == {"bulk_verbs", "attachments", "move_owner_field"}
+
+
+def test_the_worked_example_declares_every_family_marker(payload: dict[str, Any]) -> None:
+    """`example.Widget` is the COMPLETE worked example: every family marker, read off `introspect`.
+
+    Derived on both sides — the family's markers from the roads and the
+    declarations they read, the widget's from the payload — so a road that joins
+    `core.verbs.ROADS` without an adoption on the worked example is the red.
+    """
+    from apps.core.management.commands.introspect import family_marker_names
+
+    widget = next(m for m in payload["models"] if f"{m['app']}.{m['name']}" == "example.Widget")
+    assert set(widget["markers"]) == set(family_marker_names()), widget["markers"]
+    assert widget["markers"]["attachments"] == ["notes", "tags", "files"]
+
+
+@isolated_apps("apps.core", "apps.accounts")
+def test_a_planted_family_noun_reports_every_road_marker_it_declares() -> None:
+    """A planted `Movable`, `Versioned`, bulk noun shows each marker, and the values."""
+    from apps.core.management.commands.introspect import _markers_payload
+    from apps.core.models import Movable, OrgScopedModel, Versioned
+
+    class ZzzCrate(OrgScopedModel, Movable, Versioned):
+        label = models.CharField(max_length=10)
+        bulk_verbs = ("move",)
+        move_owner_field = "label"
+
+        class Meta:
+            app_label = "core"
+
+    assert _markers_payload(ZzzCrate) == {
+        "bulk_verbs": ["move"],
+        "move_owner_field": "label",
+        "movable": True,
+        "versioned": True,
+    }
 
 
 def test_the_refusal_keys_a_criteria_writer_reads_are_present_and_populated(

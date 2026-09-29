@@ -46,7 +46,6 @@ from apps.core.authz import (
     policies,
     rank,
     refusal_sentence,
-    renamed_permissions,
     vocabulary,
     where_of,
 )
@@ -801,65 +800,41 @@ def test_every_retired_seam_says_it_is_deprecated() -> None:
 # --- P3.8 · the flat-product census -------------------------------------------
 
 
-def population_diff(
-    baseline: set[str], derived: set[str]
-) -> tuple[list[str], list[str], list[str]]:
-    """(added, removed, unexplained) between a baseline's keys and this tree's.
+def population_diff(baseline: set[str], derived: set[str]) -> tuple[list[str], list[str]]:
+    """(added, removed) between a baseline's keys and this tree's.
 
     One function so the census below and the planted case beside it compare
     populations the same way: a comparison written twice is a comparison that
     can disagree with itself, and the planted case exists precisely to prove
     this one can fire.
 
-    A REMOVED key is explained by a rename — `resolve_renamed` still answers the
-    old word — and unexplained otherwise. Growth is legal and printed.
+    A REMOVED key is the red, whatever the reason it left. The baseline is
+    re-derived in place (`test_flat_baseline_document.py` holds the document to
+    its writer on this tree), so a rename lands with a re-derivation in the
+    same change and there is nothing left for an excuse to excuse — the
+    rename table used to be consulted here and, once the document was current,
+    excused no key at all. Growth is legal and printed.
     """
-    added = sorted(derived - baseline)
-    removed = sorted(baseline - derived)
-    return added, removed, [key for key in removed if key not in renamed_permissions()]
+    return sorted(derived - baseline), sorted(baseline - derived)
 
 
-def test_a_key_that_left_the_vocabulary_is_a_red_unless_renamed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The planted removal, both directions. **The diff above could not fire.**
+def test_a_key_that_left_the_vocabulary_is_a_red() -> None:
+    """The planted removal. **The diff above could not fire.**
 
     The census used to ask the tree for exactly the keys the document listed,
     so `added` and `removed` were empty by construction — a check that
     returns the same value whether or not the thing exists. This is the case
     that says otherwise, and it needs no scratch tree: a key in the baseline's
     copy that this tree does not derive IS a key that left the vocabulary, which
-    is the shape the diff exists for.
-
-    Two directions, because the explanation is the whole point. Unrenamed, the
-    key is named in `unexplained` — the red a product meets when a sweep drops a
-    word its deployment still holds grants under. Renamed, it is silent: the old
-    word is an alias the resolver answers, and `manage.py rename_permission`
-    moves the rows.
+    is the shape the diff exists for — the red a product meets when a sweep
+    drops a word its deployment still holds grants under.
     """
-    from apps.core import authz
-    from apps.example import policies as example_policies
-
     derived = set(declared_action_keys()) | set(read_action_keys())
     departed = "gadget.polish"
     assert departed not in derived, "the planted key must be one this tree does not derive"
-    baseline = derived | {departed}
 
-    _added, removed, unexplained = population_diff(baseline, derived)
-    assert removed == [departed]
-    assert unexplained == [departed]
-
-    authz.reset_policies()
-    try:
-        monkeypatch.setattr(
-            example_policies, "RENAMED_PERMISSIONS", {departed: "widget.approve"}, raising=False
-        )
-        _added, removed, unexplained = population_diff(baseline, derived)
-        assert removed == [departed]
-        assert unexplained == []
-    finally:
-        monkeypatch.undo()
-        authz.reset_policies()
+    added, removed = population_diff(derived | {departed}, derived)
+    assert (added, removed) == ([], [departed])
 
 
 def test_the_flat_product_census_equals_the_baseline(db: None) -> None:
@@ -870,19 +845,20 @@ def test_the_flat_product_census_equals_the_baseline(db: None) -> None:
     with the command beside it — so this test compares two runs of one function
     rather than a run against somebody's reading of the old code.
 
-    **98 keys × 3 roles = 294 cells**, of which 38 end in `.read`.
-    The declared keys are the write population P3 pinned; the derived
-    `<kind>.read` keys are the population Phase R moves, and they are in the
-    document precisely so that "a product that customised nothing observes no
-    change" is a measurement rather than a claim. The counts are asserted so a
-    census that silently stopped deriving one half cannot pass.
+    **Every key × 3 roles**, both halves present: the declared keys are the
+    write population P3 pinned; the derived `<kind>.read` keys are the
+    population Phase R moves, and they are in the document precisely so that "a
+    product that customised nothing observes no change" is a measurement rather
+    than a claim. The document's SIZE is held by `test_flat_baseline_document.py`
+    — the writer-diff, which reds on any key the writer would add or drop — so
+    this test asserts equality and the shape of every cell, never a typed
+    number: a typed vocabulary count reds on every new key.
 
-    The numbers differ from the criterion's 95/285/36 and the reason is on the
-    tree rather than in the arithmetic: two keys an app DECLARES already end in
-    `.read`, and `declared_action_keys()` is 60 on `ae19beab` rather than the 59
-    the older document was derived from (P3 renamed three keys and added their
-    successors). **0 write cells moved** across the 56 keys both documents
-    share, which is the claim the re-derivation exists to make.
+    The document was re-derived in place on `e85a5057` by its header's own
+    command: 36 keys joined (the notes, tags and imports vocabularies, the
+    family's archive and restore keys, the renamed successors) and 17 left
+    (every one a pre-rename spelling), and **0 cells moved** across the 81 keys
+    both documents share, which is the claim a re-derivation exists to make.
     """
     from pathlib import Path
 
@@ -894,10 +870,10 @@ def test_the_flat_product_census_equals_the_baseline(db: None) -> None:
         (Path(settings.BASE_DIR) / "apps/core/tests/flat_product_baseline.json").read_text()
     )
     expected: dict[str, dict[str, bool]] = document["answers"]
-    assert len(expected) == 98, len(expected)
     reads = [key for key in expected if key.endswith(".read")]
-    assert len(reads) == 38, len(reads)
-    assert sum(len(cells) for cells in expected.values()) == 294
+    # Both halves are there — a census that stopped deriving either cannot pass.
+    assert reads and len(reads) < len(expected), (len(reads), len(expected))
+    assert sum(len(cells) for cells in expected.values()) == 3 * len(expected)
 
     _tenant, actors = flat_world()
     # **THE KEY SET IS DERIVED ON THIS TREE, never taken from the document.**
@@ -914,16 +890,15 @@ def test_the_flat_product_census_equals_the_baseline(db: None) -> None:
     # answers is silent about the one failure it cannot express: a key that left
     # the vocabulary. Its cells do not move — they stop existing — so the
     # comparison above would read green over a shrinking census. The key sets
-    # are compared first, and a REMOVED key that no app declared a rename for is
-    # the red; growth is legal and printed.
-    added, removed, unexplained = population_diff(set(expected), set(actual))
+    # are compared first, and a REMOVED key is the red; growth is legal and
+    # printed.
+    added, removed = population_diff(set(expected), set(actual))
     print(f"keys added: {added}")
-    print(f"keys removed: {removed}")
     # Non-vacuity is the sibling's, not an assertion here: a re-derived baseline
     # makes both lists empty and that is the healthy state, so a count asserted
     # here would be a fact about the calendar. What proves the diff can fire is
-    # `test_a_key_that_left_the_vocabulary_is_a_red_unless_renamed`.
-    assert unexplained == [], unexplained
+    # `test_a_key_that_left_the_vocabulary_is_a_red`.
+    assert removed == [], removed
 
     moved = [
         (key, role, expected[key][role], actual[key][role])

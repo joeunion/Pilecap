@@ -1843,6 +1843,9 @@ rules:
         - dead_letter
         - delete
         - disable
+        # The noun-verb family's save-as-new: `duplicate_<noun>`, over the seam
+        # that names it (`core.verbs.duplicate_row`).
+        - duplicate
         - emit
         - enqueue
         - ensure
@@ -1853,6 +1856,8 @@ rules:
         - invite
         - issue
         - mark
+        # The family's two-become-one: `merge_<noun>`, over `core.verbs.merge_rows`.
+        - merge
         - move
         - provision
         - purge
@@ -1876,6 +1881,14 @@ rules:
         - rename
         - replay
         - render
+        # The noun-verb family's second archive verb, PRE-DECLARED with the core
+        # seam that names it (`core.verbs.restore_row`, `restore_<noun>` on every
+        # archivable noun) — the `cancel` and `sync` entries' confirmer pattern.
+        # `archive` was already here; `restore` is its undo and no neighbour
+        # says it: `resume` restarts something paused, `revise` changes content,
+        # `unsuppress` lifts a suppression. `restore` puts an archived row back
+        # in the book, with nothing about it changed but the two archive columns.
+        - restore
         - resume
         - retire
         - revise
@@ -2013,7 +2026,10 @@ rules:
       `# api-version: <N>` marker line in a door module (diff layer). A class
       that LEAVES one `schemas.py` and ARRIVES, field for field identical, in
       another one in the same change has moved rather than been deleted, and is
-      not a wire change at all.
+      not a wire change at all. A field an `Out` inherits — from a base in the
+      same file, or from a base it imports from `apps/core/schemas.py` (every
+      class that module defines) — is a field it carries, so moving a field
+      into such a base is not a removal.
     check: null
     django_check_ids: [djb.E017]
     floor_proxy: count_routes
@@ -2105,7 +2121,7 @@ rules:
       clause does not; the trigger is the first commit that legitimately moves
       one app to v2 while another ships an accidental break.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 4, negatives: 3 }
+    selftest_floor: { canaries: 5, negatives: 4 }
     canaries:
       - { fixture: unpaired_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
           via: django, expect: { id: djb.E017, contains: thing-detail } }
@@ -2135,6 +2151,16 @@ rules:
         extra_files:
           - { fixture: diff_moved_out_arrival_retyped.py, plant_at: apps/realtime/schemas.py,
               mode: append }
+      # AN IMPORTED BASE THAT DOES NOT CARRY THE FIELD: `WorkflowRunOut.id` torn
+      # off while the class gains a real `apps.core.schemas` base (`ActsOut`)
+      # that declares no `id`. Resolving imported bases must never read "has a
+      # base" as "lost nothing". Planted where the move pair plants, for the
+      # same reason: the one tracked `schemas.py` holding exactly one `*Out`.
+      # MOVE-TRIGGER 2026-09-28: the day the probe scaffold carries a TRACKED
+      # `schemas.py` (the move pair's trigger) — a diff canary needs a module
+      # git already knows.
+      - { fixture: diff_field_into_unrelated_base.py, plant_at: apps/workflows/schemas.py,
+          mode: replace, via: diff, expect: { contains: "WorkflowRunOut.id was removed" } }
     negatives:
       - fixture: paired_route.py
         plant_at: apps/zzz_canary/api.py
@@ -2167,6 +2193,14 @@ rules:
         extra_files:
           - { fixture: diff_moved_out_arrival.py, plant_at: apps/realtime/schemas.py,
               mode: append }
+      # A FIELD MOVED INTO AN IMPORTED CORE BASE, silent — the adopters' shape
+      # (`archived_at` into `ArchivedOut`) that used to read as a REMOVAL and
+      # cost two `rule-17` valves: `WorkflowRunOut.id` leaves the body and
+      # arrives through `apps.core.schemas.ArchivedByOut`, same annotation.
+      # MOVE-TRIGGER 2026-09-28: with its canary above, the day the probe
+      # scaffold carries a tracked `schemas.py`.
+      - { fixture: diff_field_into_core_base.py, plant_at: apps/workflows/schemas.py,
+          mode: replace, via: diff, expect: { contains: WorkflowRunOut } }
 
   - id: "18"
     name: deterministic-workflow-ids
@@ -3922,6 +3956,33 @@ rules:
             one door serves every registered kind, so a new kind must add no
             URL. This is the valve doing exactly what it was written for: a name
             that was never a leak.
+        - label: imports
+          reason: >
+            A1's convention working, the way `exports` did: `apps/imports` is an
+            app named as the plural of its aggregate, and `an import` is a noun a
+            caller already has — they stage one, read its preview, apply it and
+            poll it. `/api/v1/imports/` is the URL a stranger would guess, and it
+            is the mirror of `/api/v1/exports/` beside it. The alternatives are
+            worse in the ways this rule cares about: `uploads` names the file, not
+            the run over it, and `import-runs` names our internal row rather than
+            the caller's word for what they asked for.
+        - label: notes
+          reason: >
+            A1's convention working: `apps/notes` is named as the plural of its
+            aggregate, and `a note` is a noun every caller already has — they
+            write one on a record and read the record's notes back.
+            `/api/v1/notes/?subject=` is the URL a stranger would guess. The
+            alternatives are worse: `comments` is a different product noun (a
+            thread, a reply) that a product may want for itself, and
+            `annotations` is a word nobody types.
+        - label: tags
+          reason: >
+            A1's convention working: `apps/tags` is named as the plural of its
+            aggregate, and `a tag` is a noun every caller already has — they make
+            one, put it on a record and filter by it. `/api/v1/tags/` is the URL a
+            stranger would guess. The alternatives are worse: `labels` collides
+            with this very rule's word for an app's name, and `categories` names
+            a hierarchy tags deliberately are not.
     floors:
       mounted_routers: 6
       app_labels: 6
@@ -5377,7 +5438,11 @@ rules:
       operations that read them.
       AND THE BLOCK IS TRUE OF THE CODE BENEATH IT: a route that narrows
       with `@refuses(...)` names every code something it calls directly can
-      raise, and publishes none that nothing it reaches can. An UNNARROWED route
+      raise — and, a second hop into `apps/core/verbs.py` only, every code the
+      family seam a service calls raises in its own body — and publishes none
+      that nothing it reaches can; `@also_refuses(...)` adds to either set.
+      A backticked `?name=` a contract documents is a query parameter the
+      route (or its noun's list, for a record's route pointing there) declares. An UNNARROWED route
       publishes the door-shape superset and is judged only where that superset
       cannot reach — a code the derivation can never produce is a code the
       document does not mention at all.
@@ -5475,7 +5540,7 @@ rules:
       # re-measures at merge rather than picking a number. The real fix is still
       # the one line in `core.api.docs._is_shape` the paragraph above names, and
       # it is still not a door rung's file.
-      undeclared_example_fields: 233  # ratcheted down 258 -> 233: `_is_shape` learned the array-of-$ref road, so 21 ninja-synthesised `Paged<X>.items` plus 4 other component arrays left the backlog for the components they point at; measured with apps.core.api.docs.example_census over the live document
+      undeclared_example_fields: 223  # ratcheted down 233 -> 223: the worked example declares its read shape's ids, timestamps and policy (its detail `Out` would otherwise have repeated eight undeclared fields); before that, 258 -> 233: `_is_shape` learned the array-of-$ref road, so 21 ninja-synthesised `Paged<X>.items` plus 4 other component arrays left the backlog for the components they point at; measured with apps.core.api.docs.example_census over the live document
       # THE DOCUMENT'S OWN TOP LEVEL — the census `djb.E042` holds by SET
       # EQUALITY, in both directions (`apps.core.checks.top_level_key_faults`).
       # Every entry is a key a client meets before it reads a route, and the
@@ -5564,6 +5629,12 @@ rules:
       # `@refuses(...)` blocks. A floor five below the truth is silent while
       # half of what it watches disappears.
       narrowed_routes: 3
+      # The second hop's two populations, each named: the seam module's
+      # functions (read off its AST — zero is a hop reading nothing) and the
+      # calls into them the walk followed (zero is a walk that stopped joining
+      # callers to the seam). Floored at 1 each; growth is free.
+      seam_functions: 1
+      seam_calls_followed: 1
       # its clause, and its two counts are floored for the same reason
       # `narrowed_routes` is: each one, at zero, is the clause watching nothing
       # and reading as clean. `privileged_role_words` is what
@@ -5620,10 +5691,23 @@ rules:
       its codes against the registry, not its aptness. WHETHER A DOCUMENTED CODE
       CAN ACTUALLY BE RAISED THERE was nobody's check until QB-R2; it is
       now `refusal_block_census`, and what that clause CANNOT see is three
-      things, narrowed from the old sentence: RESOLUTION DEPTH — one level, the
-      route body plus the functions it calls by a name this tree can resolve, so
-      a code raised two calls down is invisible in both directions (an
+      things, narrowed from the old sentence: RESOLUTION DEPTH — the route body
+      plus the functions it calls by a name this tree can resolve, plus ONE
+      second hop into `apps/core/verbs.py` alone (the codes each of that
+      module's top-level functions raises IN ITS OWN BODY, read off its AST and
+      joined to any caller by name — closed by the module, never a list), so a
+      code raised two calls down anywhere else, or three down inside
+      `core.verbs` (its `_refuse_merged` helper's `merged`, owed only by a
+      Mergeable noun's own routes), is invisible in both directions (an
       underclaim it will not report, and an overclaim it may report wrongly);
+      a finding only the second hop makes is its own class
+      (`seam_underclaim` / `seam_undocumented`), pinned at 0 — no ratchet row,
+      so the first such finding is a red (the backlog it found on the day it
+      landed was closed in the same change); THE DOCUMENTED-QUERY CENSUS reads backticked
+      `?name=` tokens only, sets aside a refusal bullet or a passage saying the
+      parameter is refused, and accepts the noun's list's declaration for a
+      record's route — prose that names a parameter in any other form is not
+      read;
       the ratchet and review bound that, and the `unresolved` count prints the
       part of the tree it could not read. CONDITIONAL REACHABILITY — a raise
       inside a branch nothing can enter is a raise as far as this walk is
@@ -5707,7 +5791,7 @@ rules:
       absent from the census and from the key list at once, the same
       deployment-shaped blindness rule 3's third clause records.
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 13, negatives: 8 }
+    selftest_floor: { canaries: 16, negatives: 10 }
     canaries:
       # (1) The ordinary miss, and the one the measurement found eleven of: a
       # route born with no docstring at all.
@@ -5810,6 +5894,31 @@ rules:
       # would be proving the check against a document nothing serves.
       - { fixture: undeclared_top_level_key.py, plant_at: config/api.py, mode: append,
           via: django, expect: { id: djb.E042, contains: x-canary-undeclared } }
+      # (14) THE SECOND HOP, `archived`: a narrowed block over a service whose
+      # write calls `core.verbs.require_live`. Invisible to a one-hop walk, which
+      # is how the worked example answered `archived` on four routes unpublished.
+      - fixture: seam_underclaim_route.py
+        plant_at: apps/zzz_canary/api.py
+        mode: create
+        expect: { contains: "polish_sprocket_route narrows its refusals with `@refuses(...)` and does not name 'archived'" }
+        extra_files:
+          - { fixture: seam_underclaim_service.py, plant_at: apps/zzz_canary/services.py,
+              mode: create }
+          - { fixture: probe_app_config.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (15) THE SECOND HOP, `archive_blocked`: an archive route narrowed without
+      # the code its service's `core.verbs.archive_row` raises.
+      - fixture: seam_archive_route.py
+        plant_at: apps/zzz_canary/api.py
+        mode: create
+        expect: { contains: "shelve_cog_route narrows its refusals with `@refuses(...)` and does not name 'archive_blocked'" }
+        extra_files:
+          - { fixture: seam_archive_service.py, plant_at: apps/zzz_canary/services.py,
+              mode: create }
+          - { fixture: probe_app_config.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # (16) THE DOCUMENTED QUERY: a contract naming `?nope=` on a route that
+      # declares no such parameter — the replace-all a human caught once.
+      - { fixture: undeclared_query_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
+          via: django, expect: { id: djb.E041, contains: "documents `?nope=`" } }
     negatives:
       # The right shape. A rule that fired here would be a tax on writing a route.
       - { fixture: documented_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
@@ -5878,6 +5987,20 @@ rules:
           - { fixture: backed_promise_service.py, plant_at: apps/zzz_canary/services.py,
               mode: create }
           - { fixture: probe_app_config.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # THE SECOND HOP'S DECLARED FORM: the same two seam-reaching routes with
+      # the family codes ADDED by `@also_refuses(...)`. Firing here would make a
+      # valve the only honest declaration of a seam refusal.
+      - fixture: seam_declared_route.py
+        plant_at: apps/zzz_canary/api.py
+        mode: create
+        extra_files:
+          - { fixture: seam_declared_service.py, plant_at: apps/zzz_canary/services.py,
+              mode: create }
+          - { fixture: probe_app_config.py, plant_at: apps/zzz_canary/apps.py, mode: create }
+      # A documented query the list really declares — `?show=` on a list taking
+      # `show`. Firing here would make documenting a parameter a finding.
+      - { fixture: declared_query_route.py, plant_at: apps/zzz_canary/api.py, mode: append,
+          via: django }
 
   - id: "42"
     name: every-service-is-reachable-through-a-door
@@ -7251,7 +7374,7 @@ rules:
       and the gate says so by measuring `operations_checked` rather than by
       claiming otherwise.
     # The recorded self-test population. Rising floor.
-    selftest_floor: { canaries: 2, negatives: 2 }
+    selftest_floor: { canaries: 3, negatives: 2 }
     canaries:
       # (i) THE CANARY CARRIES ITS OWN DISEASE. It registers its own refusal
       # code (`canary_unpublished`) and declares THAT — registered the way every
@@ -7287,6 +7410,12 @@ rules:
       - { fixture: a_paginated_route_declaring_an_unmapped_code.py,
           plant_at: apps/example/api.py, mode: append,
           expect: { contains: canary_probe_list_route } }
+      # (iii) THE SAME DROP THROUGH `@also_refuses`, the additive decorator: a
+      # code ADDED to the derived set is owed exactly as a declared one is, and
+      # the probe reads it the way `config/api.py` composes it.
+      - { fixture: a_route_adding_an_unmapped_code.py,
+          plant_at: apps/example/api.py, mode: append,
+          expect: { contains: canary_probe_added_route } }
     negatives:
       # A narrowed route whose every code the table can key. Firing here would
       # mean refusing `@refuses(...)` itself — the decorator the whole contract
@@ -7363,7 +7492,9 @@ rules:
       (generate_presigned_url, generate_presigned_post), reads an object's bytes
       (get_object, download_fileobj, download_file), or imports
       django.core.files.storage, whose default_storage STORAGES points at the
-      same bucket. A bucket has no tenancy: the key grammar and the prefix belt
+      same bucket. And no door (api.py, mcp.py, consumers.py) calls the seam's
+      own content read, `iter_object` — an activity's parser's, never a
+      door's. A bucket has no tenancy: the key grammar and the prefix belt
       in that one module are the whole of the isolation, and a second door has
       met neither.
     check: storage_client
@@ -7464,7 +7595,7 @@ rules:
       and rule 11's `extra_modules` stems are the one shape that assertion still
       cannot see .
     # The recorded self-test population (see the header). Rising floor.
-    selftest_floor: { canaries: 5, negatives: 5 }
+    selftest_floor: { canaries: 6, negatives: 6 }
     canaries:
       # (1) the shape the rule exists for, and the only one the F1 census pin
       # already saw: a domain app holding its own client, which is a second key
@@ -7489,6 +7620,12 @@ rules:
       # storage API, which reaches the same bucket with no boto3 and no setting.
       - { fixture: default_storage_in_activity.py, plant_at: apps/example/activities.py,
           mode: append, expect: { contains: django.core.files.storage } }
+      # (6) THE SEAM'S OWN CONTENT READ, FROM A DOOR: `iter_object` is the
+      # seam's public function for an ACTIVITY's parser; imported into a door it
+      # streams a stored document's bytes through Django to a caller. A bare
+      # name call, which the client-method clauses above cannot see.
+      - { fixture: content_read_in_door.py, plant_at: apps/example/api.py, mode: append,
+          expect: { contains: "reaches iter_object() from a door" } }
     negatives:
       # THE SEAM'S OWN PUBLIC API, called the legal way — and this is the
       # name-collision case on purpose: `delete_object` is BOTH a boto3 client
@@ -7524,6 +7661,11 @@ rules:
       # through a seam `core` may import, or the day the probe stops heading the
       # bucket itself.
       - { fixture: allowed_probe_import.py, plant_at: apps/core/health.py, mode: append }
+      # THE CONTENT READ WHERE IT BELONGS: an activity reading a file row by row
+      # through the seam (`apps/imports/activities.py`'s shape). Firing here
+      # would make the one legal reader of an object's bytes a finding.
+      - { fixture: content_read_in_activity.py, plant_at: apps/example/activities.py,
+          mode: append }
 
   - id: "49"
     name: audit-rows-conform-to-the-declared-shape
@@ -9894,7 +10036,25 @@ rules:
     # bind the READ, not this week's length of either list.
     # FOURTH POPULATION: the face modules (measured: 4 — two refusal panels,
     # the placeholder screen, the state seam).
-    floors: { books: 1, entries: 1, index_rows: 3, face_files: 1 }
+    # FIFTH: the ratchet keys below EQUAL the reader's finding classes
+    # (`quality/pattern_book.py::CLASSES`) — 1 when they do, 0 when a class has
+    # no key or a key no class, and 0 is this floor unbound (exit 2).
+    floors: { books: 1, entries: 1, index_rows: 3, face_files: 1, ratchet_classes_keyed: 1 }
+    # ONE KEY PER FINDING CLASS THE READER EMITS, EVERY ONE RECORDED 0 on the
+    # template's own tree (ADR gate-6: a recorded 0 is a measurement; an absent
+    # key is silence). A product folding a tree that draws faces its book has
+    # no entry for, or names instruments it has not landed, records its count
+    # per class in its drawer (`quality/local/rules.yaml`, `ratchets: {"63":
+    # {<class>: <n>}}`) at the fold, and ratchets it down by territory exactly
+    # as 64-71's classes are — the same drawer reader, never a second grammar.
+    ratchets:
+      book: 0
+      entry-form: 0
+      instrument-unnamed: 0
+      instrument-missing: 0
+      ledger-row: 0
+      face-undeclared: 0
+      face-section-missing: 0
     memo: { "no": "the check reads docs/product/design/ and then asks whether every file an entry names exists anywhere in the tree — frontend/, quality/, apps/ — and no scope kind's roots reach either, so a memo key built from them would replay a verdict about files it never hashed" }
     does_not_cover: >
       WHETHER THE INSTRUMENT MEASURES WHAT THE ENTRY SAYS. The check proves the
@@ -10627,6 +10787,804 @@ rules:
       # A SNAKE KEY IS A KEY; English compounds; an import; an index.
       - { fixture: plain_words_and_machine_keys.ts, plant_at: frontend/src/copy/zzz_canary/plain.ts,
           mode: create }
+
+  - id: "74"
+    name: noun-verb-roads
+    enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for"
+    # THE NOUN-VERB FAMILY'S ONE RULE, over ONE table. `apps.core.verbs.ROADS`
+    # names, per family verb, the marker a model declares and the routes that
+    # marker demands; the vocabulary derives its keys from the same table
+    # (`core.authz.family_verbs`), so the rule and the permissions cannot
+    # disagree about what a marker means. One rule with a table rather than a
+    # rule per verb: nine rules would be nine scopes, nine floors and nine
+    # writers of this file across the family's waves. Each verb that joins the
+    # family adds its row to ROADS and its canary here — archive is the first.
+    statement: >
+      A noun that declares a family marker carries the whole road the marker
+      demands (`apps.core.verbs.ROADS`). An archivable noun carries its whole
+      road: a `<noun>-archive` and a `<noun>-restore` route (each paired on the
+      machine door by rule 17's derivation from the same url_name), both keys
+      `<noun>.archive` and `<noun>.restore` in the vocabulary (derived, never
+      typed), each with a `@refuses_system` policy (`core.policies.may_archive`)
+      so the system actor is not waved through, every route that answers the
+      noun itself — its detail, its archive, its restore — answering an `Out`
+      that subclasses `ArchivedOut`, and its list taking `?show=`. A Movable
+      noun carries `<noun>-move` and `<noun>.move`. A Versioned noun carries
+      `<noun>-update`, and its update, move and merge bodies REQUIRE `version`
+      and answer it. A noun declaring `bulk_verbs` carries `<noun>-bulk` and the
+      single road of every verb it lists. A noun declaring any marker OTHER
+      than archivable carries `<noun>_history-list` (an archive-only noun's
+      history is the design's next verb, not this rule's). An archivable
+      noun's archive and restore routes take NO body. A Mergeable noun carries
+      `<noun>-merge`, its dry run `<noun>_merge-detail` and `<noun>.merge`, and
+      every foreign key into it is re-pointed by its owning app's
+      `merge_repointers.py` or listed in `merge_keeps` with its reason. A
+      Duplicable noun carries `<noun>-duplicate`, and every concrete editable
+      field is in its `Duplicate` declaration's `copies` or `resets`. Every
+      `IMPORTERS` key names a noun with a `<noun>-create` route. A noun that
+      lists `tags` in `attachments` answers `tags` on its detail. No model
+      carries an `archived_at` column without declaring `Archivable`. Read off
+      the live model registry and the live ninja mount; nothing is listed.
+    check: null
+    django_check_ids: [djb.E074]
+    floor_proxy: count_noun_roads
+    doc: { file: .claude/skills/django-conventions/SKILL.md, contains: "an archivable noun carries its whole road" }
+    valve:
+      none: "this rule reports only through the django system-check leg (manage.py check --tag djb), and those findings never pass through apply_overrides, so no comment anywhere suppresses one. A noun that should not carry a road does not declare its marker; a road the table demands wrongly is an edit to apps/core/verbs.py a reviewer reads"
+    scope: {}
+    # ROADS holds five roads (archive, version, move, bulk, history) since the
+    # family's second batch; the floor is the table's size, so a road dropped
+    # from the table is a floor failure. Measured on the tree that added it: ROADS held one road (archive) and the
+    # archivable population is the mixin alone — no noun has adopted it yet, and
+    # the floor holds from the day the mixin lands because the mixin is the
+    # population's root. Two floors, one per named population, so either one
+    # emptying is a floor failure rather than an arithmetic coincidence.
+    # Seven since the family's third batch added merge and duplicate.
+    floors: { roads: 7, marker_classes: 1 }
+    does_not_cover: >
+      WHETHER THE ROAD WORKS. The rule proves the routes exist, answer the
+      shape and take the parameter; that an archive actually hides the row, that
+      a restore puts it back and that a blocked archive names its blocker is each
+      adopting noun's own tests (and the golden-copy drive's copied test). A
+      NOUN THAT SHOULD ADOPT A MARKER AND NEVER DECLARES IT — the declaration IS
+      the population, so silence there is silence here. THE LIST ROUTE'S NAME:
+      `?show=` is demanded of a route named `<noun>-list` or its plural
+      (`s`, `es`, `y`→`ies`); a list mounted under any other url_name is not
+      seen. A ROUTE NAMED RIGHT THAT DOES THE WRONG THING — a `<noun>-restore`
+      whose view archives — is review's. THE MCP TWIN is rule 17's question,
+      and an app rule 17 exempts is exempt from the twin here too. THE HISTORY CLAUSE'S POPULATION IS DELIBERATELY NARROWER than "any
+      marker": an archive-only noun owes no history route — an archive-only
+      noun's history is the design's next verb, not this rule's; the first
+      other family verb it adopts brings the card (`core.verbs.
+      HISTORY_NOT_OWED_FOR`). THE VERSION CLAUSE reads requiredness off the
+      route's body schema; a body that takes `version` from a query parameter
+      or a header is not seen. THE POLICY CLAUSE proves a `@refuses_system`
+      predicate is DECLARED for both keys, not that it answers rightly. THE
+      NO-BODY CLAUSE sees a route named right that declares a body; a body
+      read by hand off `request.body` is not seen, and the twin's arguments are
+      rule 17's. THE MERGE CLAUSE asks which APP re-points a foreign key (an
+      app declaring `REPOINTERS[noun]`), not which of its foreign keys that
+      repointer moves; a polymorphic attachment (no foreign key at all) is the
+      `"*"` repointers' and their conformance test's. THE DUPLICATE CLAUSE
+      classifies fields; whether a copied foreign key names a row the copy's
+      organization can reach is the noun's service's. THE ATTACH CLAUSE reads
+      the detail route's answer for `tags` only — notes and files are read
+      through their own apps' doors by `subject`. THE BARE-COLUMN CLAUSE reads
+      a concrete field's NAME; a differently named hand-built archive column is
+      not seen.
+    selftest_floor: { canaries: 13, negatives: 3 }
+    # SELF-CONTAINED UNDER `--selftest --rule 74`: every form here that needs the
+    # probe's `api.py` or `mcp.py` plants its own base with `mode: default`
+    # first, which writes nothing when the whole corpus runs (rule 3's and rule
+    # 17's forms made both already) and is the base when this rule runs alone.
+    canaries:
+      # (1) THE HALF-BUILT NOUN: `Archivable` declared, the archive route drawn,
+      # the restore route missing. Planted into the gate's own probe app, like
+      # every django form — never `apps/example`, whose optional flag would take
+      # the rule's only way to fail with it.
+      - fixture: half_built_noun_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: canary_bin-restore }
+        extra_files:
+          - { fixture: probe_router.py, plant_at: apps/zzz_canary/api.py, mode: default }
+          - { fixture: half_built_noun_route.py, plant_at: apps/zzz_canary/api.py, mode: append }
+      # (2) THE ROAD WITH NO WAY TO LOOK: both routes and the right answer on
+      # each, and a list with no `?show=` — an archived row no reader can find.
+      - fixture: unfiltered_list_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: canary_crate-list }
+        extra_files:
+          - { fixture: probe_router.py, plant_at: apps/zzz_canary/api.py, mode: default }
+          - { fixture: unfiltered_list_routes.py, plant_at: apps/zzz_canary/api.py, mode: append }
+      # (3) THE SYSTEM WAVED THROUGH: an archivable noun whose app declared no
+      # `POLICIES` pair — its keys have no predicate, so `allows(system, …)`
+      # answers yes and a workflow may archive a person's row.
+      - fixture: no_system_policy_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: "`canary_vault.archive` has no policy" }
+      # (4) MOVE: a Movable noun with no move route.
+      - fixture: unmovable_road_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: canary_dolly-move }
+      # (5) UPDATE: a Versioned noun whose update body does not require
+      # `version` and whose answer carries none.
+      - fixture: unversioned_update_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: "`canary_card-update` takes CanaryCardPatch" }
+        extra_files:
+          - { fixture: probe_router.py, plant_at: apps/zzz_canary/api.py, mode: default }
+          - { fixture: unversioned_update_route.py, plant_at: apps/zzz_canary/api.py, mode: append }
+      # (6) BULK: `bulk_verbs` declared and no bulk route.
+      - fixture: bulk_without_route_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: canary_pallet-bulk }
+      # (7) HISTORY: a movable noun with its move road drawn and no history.
+      - fixture: historyless_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: canary_trolley_history-list }
+        extra_files:
+          - { fixture: probe_router.py, plant_at: apps/zzz_canary/api.py, mode: default }
+          - { fixture: historyless_route.py, plant_at: apps/zzz_canary/api.py, mode: append }
+      # (8) DUPLICATE: a `Duplicate` declaration that leaves one field unsaid.
+      - fixture: unclassified_duplicate_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: "zzz_canary.CanaryStencil.shade is neither copied nor reset" }
+      # (9) MERGE: a child pointing at a mergeable noun that nobody re-points or
+      # keeps — the FK census over the ORM's own relation registry.
+      - fixture: unrepointed_merge_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: "zzz_canary.CanaryLedgerLine.book points at" }
+      # (10) IMPORT: an `IMPORTERS` key for a noun with no create route.
+      - fixture: createless_importer.py
+        plant_at: apps/zzz_canary/importers.py
+        mode: create
+        via: django
+        expect: { id: djb.E074, contains: "`canary_ware-create`" }
+      # (11) ATTACH: a noun that takes tags whose record answers none.
+      - fixture: tagless_attach_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: "`canary_tote-detail` answers" }
+        extra_files:
+          - { fixture: probe_router.py, plant_at: apps/zzz_canary/api.py, mode: default }
+          - { fixture: tagless_attach_route.py, plant_at: apps/zzz_canary/api.py, mode: append }
+      # (12) BARE archived_at: a hand-built archive column, no mixin.
+      - fixture: bare_archived_at_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: "zzz_canary.CanaryShelfBare" }
+      # (13) NO-BODY: an archive road whose archive and restore require a body —
+      # the shape a bodiless press answers 422 to.
+      - fixture: bodied_archive_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074, contains: "`canary_hamper-archive` takes a body" }
+        extra_files:
+          - { fixture: probe_router.py, plant_at: apps/zzz_canary/api.py, mode: default }
+          - { fixture: bodied_archive_routes.py, plant_at: apps/zzz_canary/api.py, mode: append }
+    negatives:
+      # THE WHOLE ROAD: both routes, both twins (the probe's mirrored mcp.py),
+      # `ArchivedOut` on every answer that is the noun, `?show=` on the list.
+      - fixture: full_road_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074 }
+        extra_files:
+          - { fixture: probe_router.py, plant_at: apps/zzz_canary/api.py, mode: default }
+          - { fixture: full_road_routes.py, plant_at: apps/zzz_canary/api.py, mode: append }
+          - { fixture: probe_twins.py, plant_at: apps/zzz_canary/mcp.py, mode: default }
+          - { fixture: probe_policies.py, plant_at: apps/zzz_canary/policies.py, mode: default }
+          - { fixture: full_road_policies.py, plant_at: apps/zzz_canary/policies.py, mode: append }
+      # THE OTHER ROADS, WHOLE: a Movable, Versioned noun with `bulk_verbs`,
+      # its update and move requiring and answering `version`, its bulk route,
+      # the single road of the verb it bulks, and its paginated history.
+      - fixture: full_family_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074 }
+        extra_files:
+          - { fixture: probe_router.py, plant_at: apps/zzz_canary/api.py, mode: default }
+          - { fixture: full_family_routes.py, plant_at: apps/zzz_canary/api.py, mode: append }
+          - { fixture: probe_twins.py, plant_at: apps/zzz_canary/mcp.py, mode: default }
+      # THE MERGE AND DUPLICATE ROADS, WHOLE: a mergeable, duplicable,
+      # archivable noun whose one child is KEPT on the loser, every field
+      # classified, bodiless archive and restore, the merge and its dry run,
+      # the duplicate, the history, and the three policies.
+      - fixture: full_merge_model.py
+        plant_at: apps/zzz_canary/models.py
+        mode: append
+        via: django
+        expect: { id: djb.E074 }
+        extra_files:
+          - { fixture: probe_router.py, plant_at: apps/zzz_canary/api.py, mode: default }
+          - { fixture: full_merge_routes.py, plant_at: apps/zzz_canary/api.py, mode: append }
+          - { fixture: probe_twins.py, plant_at: apps/zzz_canary/mcp.py, mode: default }
+          - { fixture: probe_policies.py, plant_at: apps/zzz_canary/policies.py, mode: default }
+          - { fixture: full_merge_policies.py, plant_at: apps/zzz_canary/policies.py, mode: append }
+
+  - id: "75"
+    name: archivable-is-not-append-only
+    enabled: true
+    valve:
+      marker: "<comment> rule-75: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    # PROMOTED FROM THE CONSUMER'S DRAWER, with its three canaries and three
+    # negatives verbatim. An append-only row is a witnessed fact (house rule 20);
+    # archiving it takes it out of every read `for_tenant()` makes, which is a
+    # rewrite by another name. TWO HALVES, rule 20's shape exactly:
+    # `core.models.Archivable` refuses the class at definition
+    # (`__init_subclass__`) — the belt that needs the module imported — and this
+    # is the static half, which reads the source and fires without running it.
+    #
+    # BOTH POPULATIONS ARE DERIVED, never listed: `append_only = True` in a class
+    # body or a base that is; `archivable = True` in a class body, a base named
+    # `Archivable`, or a base that is archivable — resolved by class name to a
+    # fixed point over `apps/` (`quality.checks.declared_class_populations`,
+    # which rule 54's vocabulary census reads too).
+    statement: >
+      No model is both append-only and Archivable. A class under `apps/` whose
+      body declares `append_only = True`, or which names an append-only class as
+      a base, never also names `Archivable` (or an archivable class) as a base or
+      declares `archivable = True`. Both populations are derived from the tree
+      by class name to a fixed point; nothing is listed.
+    check: archivable_is_not_append_only
+    doc: { file: .claude/skills/django-conventions/SKILL.md, contains: "append-only and archivable are disjoint" }
+    scope: {}
+    floors:
+      # Measured on the tree that added it: 4 append-only classes and 1
+      # archivable class — the `Archivable` mixin itself, which declares
+      # `archivable: ClassVar[bool] = True` and is the population's root.
+      # Floored at 1 each: a scan that stopped reading class bodies reports 0 on
+      # both, and the archivable floor holds before any noun declares the mixin.
+      append_only_classes: 1
+      archivable_classes: 1
+    does_not_cover: >
+      A DECLARATION THE AST CANNOT SEE: a class built by `type(...)`, a base
+      bound to another name (`Base = Archivable; class X(Base)`), an attribute
+      set after the class body (`X.append_only = True`) — the runtime belt in
+      `core.models.Archivable.__init_subclass__` covers the class-built-by-name
+      cases the moment the module is imported, and nothing covers a setattr.
+      NAME RESOLUTION IS BY CLASS NAME, not by import: two modules defining one
+      class name are read as the union of both, which can accuse a bystander
+      (the loud direction, and a `# rule-75:` valve is the answer) and never
+      hides one. A MODEL THAT IS A LEDGER IN SPIRIT AND NEVER DECLARES
+      `append_only` — the declaration IS the population, so silence there is
+      silence here. WHETHER A NOUN SHOULD BE ARCHIVABLE AT ALL is the adopting
+      app's decision, not this rule's. FILES OUTSIDE `apps/` are not read.
+    selftest_floor: { canaries: 3, negatives: 3 }
+    # RESIDENCE: every form plants into the gate's own scaffold,
+    # `apps/zzz_canary/models.py` (made and removed by the self-test). Never
+    # `apps/example`: it declares `optional = True`, so a deployment that left
+    # the worked example out would leave this rule unable to fail at all.
+    canaries:
+      # (1) THE BARE DEFECT — both declarations on one class body.
+      - { fixture: both_on_one_class.py, plant_at: apps/zzz_canary/models.py, mode: create,
+          expect: { contains: "ZzzArchivedLedger" } }
+      # (2) THE INHERITED LEDGER — the append-only promise arrives through a base
+      # declared in ANOTHER APP (`AuditEntry`, `apps/core/audit.py`, rule 20's own
+      # ledger), and the mixin is added beside it. A rule that read only the
+      # class's own body, or only the file it was planted in, would pass this.
+      - { fixture: inherited_ledger_archived.py, plant_at: apps/zzz_canary/models.py,
+          mode: create, expect: { contains: "ZzzArchivedAuditEntry" } }
+      # (3) THE HAND-WRITTEN DECLARATION — `archivable = True` without the mixin.
+      - { fixture: declared_by_attribute.py, plant_at: apps/zzz_canary/models.py,
+          mode: create, expect: { contains: "ZzzHandDeclared" } }
+    negatives:
+      # (1) an archivable noun that is not a ledger — the ordinary legal shape.
+      - { fixture: archivable_alone.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (2) a ledger that is not archivable — rule 20's worked shape.
+      - { fixture: append_only_alone.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (3) a base whose name merely CONTAINS the word: `ArchivableView` is not
+      # the mixin, and a substring match would accuse this ledger.
+      - { fixture: name_contains_the_word.py, plant_at: apps/zzz_canary/models.py, mode: create }
+
+  - id: "76"
+    name: versioned-writes-move-updated-at
+    enabled: true
+    valve:
+      marker: "<comment> rule-76: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    # THE ONE WAY A DERIVED VERSION GOES STALE. `core.models.Versioned` has no
+    # column: its version is `updated_at` in integer microseconds
+    # (`core.concurrency.version_of`), and `auto_now` moves the stamp on every
+    # plain `save()`. Two writes do not move it — a `save(update_fields=[...])`
+    # that does not list it, and a queryset `.update(...)`, which never runs
+    # `auto_now` at all. Either changes the row and leaves its version, so an
+    # edit made against the old version is not refused: optimistic concurrency
+    # with a hole exactly where the write was.
+    #
+    # THE POPULATION IS DERIVED, never listed: `versioned = True` in a class body,
+    # a base named `Versioned`, or a base that is versioned — resolved by class
+    # name to a fixed point over `apps/` (`quality.checks.declared_marker_classes`,
+    # rule 75's resolver shape).
+    statement: >
+      A write to a Versioned model moves `updated_at`. Under `apps/` (tests and
+      migrations aside), a `save(update_fields=[...])` on a name holding a row of
+      a Versioned class lists "updated_at" in its literal field list, a queryset
+      `.update(...)` rooted at a Versioned class passes `updated_at=`, and a
+      `.bulk_update(...)` on one lists "updated_at". The population is derived
+      by class name to a fixed point; nothing is listed.
+    check: versioned_writes_move_updated_at
+    doc: { file: .claude/skills/django-conventions/SKILL.md, contains: "a versioned row's writes move `updated_at`" }
+    scope: {}
+    floors:
+      # Measured on the tree that added it: 1 versioned class — the `Versioned`
+      # mixin itself, the population's root; no noun has adopted it yet. A scan
+      # that stopped reading class bodies reports 0.
+      versioned_classes: 1
+    does_not_cover: >
+      A FIELD LIST THE AST CANNOT READ: `save(update_fields=fields)` with a
+      variable, a list built at run time, a `**kwargs` spread into `.update()` —
+      none is accused (the quiet direction; a service writes a literal). A ROW
+      HELD WHERE THE BINDING IS ILLEGIBLE: a dict value, a comprehension target,
+      `self` inside the model's own methods. A RAW SQL `UPDATE`. A CLOCK THAT
+      STEPS BACKWARDS between two locked writes (the version is the stamp, and
+      the stamp is the clock's). NAME RESOLUTION IS BY CLASS NAME, as rule 75's:
+      two modules defining one name are read as the union. FILES OUTSIDE `apps/`,
+      and every test and migration, are not read.
+    selftest_floor: { canaries: 2, negatives: 3 }
+    # RESIDENCE: every form plants into the gate's own scaffold,
+    # `apps/zzz_canary/models.py` (made and removed by the self-test) — never
+    # `apps/example`, whose optional flag would take the rule's only way to fail.
+    canaries:
+      # (1) the rename that forgot the stamp — `save(update_fields=["name"])`.
+      - { fixture: save_without_the_stamp.py, plant_at: apps/zzz_canary/models.py, mode: create,
+          expect: { contains: "ZzzVersionedNote" } }
+      # (2) the queryset update, which never runs `auto_now`.
+      - { fixture: queryset_update_without_the_stamp.py, plant_at: apps/zzz_canary/models.py,
+          mode: create, expect: { contains: "ZzzVersionedBin" } }
+    negatives:
+      # (1) the rename that lists the stamp.
+      - { fixture: save_with_the_stamp.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (2) the queryset update that sets it.
+      - { fixture: queryset_update_with_the_stamp.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # (3) the same two writes on a noun that never declared `Versioned`.
+      - { fixture: unversioned_noun.py, plant_at: apps/zzz_canary/models.py, mode: create }
+
+  # THE NOUN-VERB FAMILY'S FACE (rules 77-80) — the static half of the family's
+  # instruments, as house rules over source text (the design grammar's Tier A;
+  # the rendered half is the face census and focus road under
+  # frontend/src/screens/, the fe leg's). All four read ONE declaration per
+  # noun face, `frontend/src/screens/<noun>/road.ts`, and the one verb table,
+  # `frontend/src/screens/verbs.ts`; the verb table is read by
+  # `quality/runners/js_verb_table.py` and the wire by
+  # `quality/runners/js_verb_road.py`, which the other two import, so four
+  # runners cannot disagree about what the table or the wire says. They red a
+  # product until its faces adopt the family — the owner's ruling
+  # (2026-09-26): the generic instruments are house rules with canaries.
+  - id: "77"
+    name: js-a-noun-face-road-equals-its-wire
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      Every noun face — a directory under frontend/src/screens/ — that draws a
+      noun whose wire (frontend/openapi.json) serves a family verb door
+      declares its road once, in `road.ts`, and the road's verbs EQUAL the
+      noun's verb doors, both ways: no road verb without its door (an act the
+      server would not answer) and no door the road does not declare (a verb
+      the face forgot). The doors read are the operations whose operationId
+      names the verb and the noun — archive, restore, move, duplicate and
+      merge (POST), update (PATCH, the versioned Edit), the history list
+      (GET); import, where the imports app's stage operation takes the noun
+      as a `kind`; attach, where the noun's own detail read answers `tags` —
+      and the road's `bulk:` list equals the bulk door's verbs (its body's
+      discriminator), both ways. A wire noun with no face is counted,
+      and is not red: a capability on REST need not be on a screen.
+    runner:
+      argv: ["python3", "quality/runners/js_verb_road.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "house rule 77: every noun face's" }
+    valve:
+      marker: "<comment> rule-77: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    # TWO POPULATIONS, FLOORED SEPARATELY: the wire (a runner that stopped
+    # reading the document judges every road against nothing) and the roads (a
+    # runner that stopped finding them judges nothing). Measured on this tree:
+    # 1 document, 10 wire nouns, 2 face directories, 1 road, 9 nouns counted
+    # with no face.
+    floors: { files_scanned: 1, documents: 1, wire_nouns: 1, roads: 1 }
+    ratchets:
+      wire-missing: 0
+      road-missing: 0
+      road-without-door: 0
+      door-without-road: 0
+    does_not_cover: >
+      ATTACH WITHOUT TAGS: the attach door is read from the noun's detail
+      answering `tags`; a noun that takes notes or files and no tags answers
+      nothing on its detail that says so, and its attach door is not seen (a
+      road declaring attach for it reds as road-without-door — the loud
+      direction; a `# rule-77:` valve names it). WHICH ATTACH OWNERS a face
+      draws (notes, files, tags) is not compared, only that the noun takes
+      attachments. AN IMPORTER whose `kind` is not the noun's operationId noun
+      is read under its kind. A DOOR NAMED
+      OTHERWISE: an operation whose operationId does not follow the
+      `<verb>_<noun>_route` grammar (a rename route standing for update, as
+      organizations' does) is not read as a door. WHETHER THE FACE DRAWS WHAT
+      THE ROAD SAYS is the face census's (the fe leg); a road is taken at its
+      word here. A ROAD BUILT AT RUN TIME (a verbs array spread from another
+      module) is not read — a road is an object literal with quoted verbs. The
+      bulk noun is the operationId's plural made singular (`widgets` →
+      `widget`, `-ies` → `-y`); an irregular plural is read wrong.
+    selftest_floor: { canaries: 4, negatives: 2 }
+    canaries:
+      # (1) THE DOOR THE FACE FORGOT: a road for the organization noun (whose
+      # wire serves a move door, on every tree) declaring no verb.
+      - { fixture: a_road_missing_its_door.ts, plant_at: frontend/src/screens/zzz_canary/road.ts,
+          mode: create, expect: { contains: "serves a `move` door for `organization` and its road does not declare `move`" } }
+      # (2) THE ACT NO DOOR ANSWERS: the same road declaring merge.
+      - { fixture: a_road_naming_merge_with_no_door.ts, plant_at: frontend/src/screens/zzz_canary/road.ts,
+          mode: create, expect: { contains: "declares `merge` and `frontend/openapi.json` serves no `merge` door" } }
+      # (3) AN IMPORT NO IMPORTER TAKES: the organization road declaring import,
+      # a kind no importer declares on any tree.
+      - { fixture: a_road_naming_import_with_no_door.ts, plant_at: frontend/src/screens/zzz_canary/road.ts,
+          mode: create, expect: { contains: "declares `import` and `frontend/openapi.json` serves no `import` door for `organization`" } }
+      # (4) AN ATTACH ON A NOUN THAT TAKES NONE: the organization road declaring
+      # attach, whose detail answers no `tags` on any tree.
+      - { fixture: a_road_naming_attach_with_no_door.ts, plant_at: frontend/src/screens/zzz_canary/road.ts,
+          mode: create, expect: { contains: "declares `attach` and `frontend/openapi.json` serves no `attach` door for `organization`" } }
+    negatives:
+      - { fixture: a_road_equal_to_its_wire.ts, plant_at: frontend/src/screens/zzz_canary/road.ts, mode: create }
+      # IMPORT AND ATTACH AGREEING WITH THEIR DOORS: the worked widget's whole
+      # road, import and attach included — it reads the worked example's wire,
+      # the one noun on the template that an importer and the attach owners
+      # take (a product that removes the example re-points it to its own).
+      - { fixture: import_and_attach_equal_to_their_wire.ts, plant_at: frontend/src/screens/zzz_canary/road.ts, mode: create }
+
+  - id: "78"
+    name: js-family-acts-are-constructed-never-spelled
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      Under frontend/src/, a family act is constructed from the verb table and
+      never spelled: (a) no string-literal `data-act="<verb>"` outside
+      frontend/src/screens/verbs.ts; (b) no permission key `"<noun>.<verb>"`
+      (an object-less ask) outside the generated client; (c) no one-press
+      verb — one the same face undoes in one press, whose table row opens no
+      sheet — inside the dialog primitive, as its word, and merge's foot act
+      asked for only in a module that draws the dialog primitive; (d) no `order:` or `*-reverse` direction
+      in a stylesheet rule whose selector names `[data-seat`; (e) every width
+      media query (and `matchMedia` string) is `(width <= 40rem)` or its
+      complement `(width > 40rem)` — the book's one breakpoint in range syntax
+      — or the one other value a product's drawer records in a fenced
+      `breakpoints` block.
+    runner:
+      argv: ["python3", "quality/runners/js_verb_acts.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "house rule 78: a family act" }
+    valve:
+      marker: "<comment> rule-78: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding. A finding in a `.css` file cannot be valved (rule 53's declared seam gap): the remedy there is the range query, or an unreordered seat"
+    scope: {}
+    # The floors bind the SCAN — scripts, stylesheets, and the verb table the
+    # other questions read — never this week's count. Measured on this tree:
+    # 28 scripts, 2 stylesheets, 9 family verbs, 2 dialogs, 4 width queries.
+    floors: { files_scanned: 1, scripts: 1, stylesheets: 1, family_verbs: 1 }
+    ratchets:
+      hand-act: 0
+      objectless-ask: 0
+      leaving-in-dialog: 0
+      merge-outside-confirm: 0
+      seat-reordered: 0
+      breakpoint: 0
+    does_not_cover: >
+      LAYOUT (the design grammar's Tier C): clause (d) reads a selector that
+      NAMES `[data-seat`; a class on the seat's element that reorders it, a
+      `grid` placement, an absolute position, and the 44 px box are not read —
+      the rendered drive's. A PILL THAT SPLITS: that the pill wraps with its
+      name and never breaks mid-word is a rendered fact (a wrap depends on the
+      width, the font and the name); no static read sees it, and the face
+      census and the mirror pass's phone capture are where it is caught. AN
+      ACT BUILT AT RUN TIME (a `data-act` from a variable that is not the
+      table's, a permission key composed from parts) is not read. Clause (c)
+      reads the element between `<Dialog` and its closing tag in one module; a
+      one-press act rendered by a component another module draws inside the
+      dialog is not seen, and a dialog drawn through another name than the
+      primitive's is rule 70's. A width condition inside a CONTAINER query, and
+      a `min-`/`max-` query in a `.css` string built at run time, are not read.
+    selftest_floor: { canaries: 5, negatives: 2 }
+    canaries:
+      # (a) AN ACT SPELLED BY HAND.
+      - { fixture: a_hand_spelled_act.tsx, plant_at: frontend/src/screens/zzz_canary/hand-act.tsx,
+          mode: create, expect: { contains: "`data-act=\"archive\"` is spelled by hand" } }
+      # (b) AN OBJECT-LESS ASK — the consumer's paid lesson.
+      - { fixture: an_objectless_ask.ts, plant_at: frontend/src/screens/zzz_canary/ask.ts,
+          mode: create, expect: { contains: "`\"widget.archive\"` asks a permission with no object" } }
+      # (c) ARCHIVE IN A CONFIRM.
+      - { fixture: archive_in_a_confirm.tsx, plant_at: frontend/src/screens/zzz_canary/confirm.tsx,
+          mode: create, expect: { contains: "*Archive* sits inside the dialog primitive" } }
+      # (d) A SEAT REORDERED BY A STYLESHEET.
+      - { fixture: a_reordered_seat.css, plant_at: frontend/src/zzz_canary/verbs/seat.css,
+          mode: create, expect: { contains: "on a `[data-seat]` rule reorders the seat's acts" } }
+      # (e) A THIRD WIDTH — the book's own planted canary.
+      - { fixture: a_second_breakpoint.css, plant_at: frontend/src/zzz_canary/verbs/phone.css,
+          mode: create, expect: { contains: "`@media (max-width: 600px)` names a width that is not the one breakpoint" } }
+    negatives:
+      # MERGE IN THE CONFIRM: the one verb no press undoes, confirmed.
+      - { fixture: merge_in_the_confirm.tsx, plant_at: frontend/src/screens/zzz_canary/merge.tsx, mode: create }
+      # THE ONE BREAKPOINT AND ITS COMPLEMENT, in range syntax.
+      - { fixture: the_one_breakpoint.css, plant_at: frontend/src/zzz_canary/verbs/phone.css, mode: create }
+
+  - id: "79"
+    name: js-one-word-per-verb
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      For every noun whose wire (frontend/openapi.json) carries a family verb,
+      the noun's copy module (frontend/src/copy/**/<noun>.ts, the noun in kebab
+      case) spells no other word for that verb: archive's Delete · Remove ·
+      Trash · Retire · Deactivate · Discard · Hide · Unarchive · Recover and
+      move's Transfer · Reassign · Relocate and merge's Combine · Dedupe ·
+      Consolidate anywhere in it; duplicate's Copy · Clone, update's Modify ·
+      Update and history's Activity · Log · Audit · Timeline as a label or a
+      title. Every word the code's verb table spends — the product's word for
+      each verb, renamed once, product-wide, and each verb's way back — and
+      every phrase the drawer declares in a fenced `verb-words` block is lifted
+      out of a string before its words are read.
+    runner:
+      argv: ["python3", "quality/runners/js_verb_words.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "house rule 79: one word per verb" }
+    valve:
+      marker: "<comment> rule-79: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    # The floors bind the READ: the document the nouns come from and the copy
+    # modules the words are read in. Measured on this tree: 1 document, 1 copy
+    # module named for a wire noun (the worked widget's), 42 strings judged.
+    floors: { files_scanned: 1, documents: 1, copy_modules: 1 }
+    ratchets:
+      synonym: 0
+    does_not_cover: >
+      A WORD COMPOSED AT RUN TIME (a template literal with `${…}`, a string a
+      helper builds) and a word the SERVER sends (a refusal's sentence, a
+      history row's) are not read — the backend's and rule 73's. COPY OUTSIDE
+      THE NOUN'S MODULE: the lexicon, a shared module (the dialog's words), and
+      a screen's inline string are not a noun's copy and are not read here
+      (rule 72 holds labels to the lexicon). A NOUN WHOSE COPY MODULE IS NAMED
+      OTHERWISE than its wire noun is not read. A SYNONYM IN ANOTHER LANGUAGE,
+      or inflected (`Deleting`), is not in the lists; the lists are the design
+      grammar's, per verb, and grow by visible diff.
+    selftest_floor: { canaries: 2, negatives: 1 }
+    canaries:
+      # DELETE ON A NOUN THAT ARCHIVES (the file noun, on every tree).
+      - { fixture: a_synonym_in_the_copy.ts, plant_at: frontend/src/copy/zzz_canary/file.ts,
+          mode: create, expect: { contains: "*Delete* in the `file` copy is another word for `archive`" } }
+      # RELOCATE ON A NOUN THAT MOVES (the organization noun, on every tree),
+      # in a sentence rather than a label: move's list is red anywhere.
+      - { fixture: a_move_synonym_in_the_copy.ts, plant_at: frontend/src/copy/zzz_canary/organization.ts,
+          mode: create, expect: { contains: "*Relocate* in the `organization` copy is another word for `move`" } }
+    negatives:
+      # REMOVE TAG ⟨NAME⟩: a way back the table spends, not archive's synonym.
+      - { fixture: a_way_back_that_only_looks_like_one.ts, plant_at: frontend/src/copy/zzz_canary/file.ts,
+          mode: create }
+
+  - id: "80"
+    name: js-the-verb-table-equals-the-book
+    enabled: true
+    memo:
+      "no": "this rule MEASURES through an external runner subprocess under quality/runners/, and what
+        that instrument answers depends on the toolchain installed on this machine as much as on the
+        tree — a key made of blob shas cannot name the interpreter that answered"
+    kind: js
+    statement: >
+      frontend/src/screens/verbs.ts's `VERB_TABLE` equals the pattern book's
+      verb table (the fenced `verb-table` block in
+      docs/product/design/patterns.md §4, or a product's whole table in its
+      drawer's block, which then stands for the book's) row for row: the same
+      verbs in the same order, and per verb the same place in `record-acts`,
+      the same press (one · confirm · preview · none), the same weight, and the
+      same presence of each of the five forms — pressed, busy, state, refused,
+      way back. A ruling stays a token.
+    runner:
+      argv: ["python3", "quality/runners/js_verb_table.py"]
+    doc: { file: docs/product/design/patterns.md, contains: "house rule 80: `frontend/src/screens/verbs.ts` equals the verb table" }
+    valve:
+      marker: "<comment> rule-80: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    scope: {}
+    # TWO POPULATIONS, FLOORED SEPARATELY: the code's table and the book's. A
+    # runner that stopped finding either would compare nothing with nothing.
+    # Measured on this tree: 1 code table of 9 rows, 1 book table of 9 rows.
+    floors: { files_scanned: 1, code_tables: 1, code_rows: 1, book_tables: 1, book_rows: 1 }
+    ratchets:
+      table-missing: 0
+      table-row: 0
+      table-order: 0
+      table-cell: 0
+    does_not_cover: >
+      THE WORDS: the two tables' words are not compared — a product's word is
+      one lexicon line (rule 72) and a verb's synonyms are rule 79's; only the
+      forms' PRESENCE is. A ROW BUILT AT RUN TIME (spread from another array)
+      is not read; a row is an object literal in `VERB_TABLE` whose first key
+      is `verb`. THE PLACES a verb may be drawn (the table's `places`) and its
+      foot word are not in the book's table and are not compared — the face
+      census reads where an act is drawn. A book row with the wrong number of
+      cells is not read (and so reads as a missing row).
+    selftest_floor: { canaries: 2, negatives: 1 }
+    canaries:
+      # ARCHIVE RULED BEFORE MERGE: a drawer's whole table, reordered.
+      - { fixture: archive_ruled_before_merge.md, plant_at: docs/product/design/patterns.local.md,
+          mode: append, expect: { contains: "orders the verbs update · move · duplicate · merge · archive" } }
+      # A VERB WITH NO BUSY FORM on one side.
+      - { fixture: update_with_no_busy_form.md, plant_at: docs/product/design/patterns.local.md,
+          mode: append, expect: { contains: "`update` has busy form in `VERB_TABLE` and the book's verb table" } }
+    negatives:
+      - { fixture: the_same_table_in_a_drawer.md, plant_at: docs/product/design/patterns.local.md,
+          mode: append }
+
+  - id: "81"
+    name: archive-widenings-are-the-only-widenings
+    enabled: true
+    valve:
+      marker: "<comment> rule-81: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    # THE SILENT EMPTY ANSWER. `for_tenant()` leaves an archivable noun's
+    # archived rows out, so a hand filter on `archived_at` AFTER it —
+    # `.filter(archived_at__isnull=False)`, `.exclude(archived_at=None)` — asks
+    # for rows that were removed a step earlier and answers `[]` with no error
+    # (measured on the comms adoption: the hand-built archived cut returned
+    # nothing and nothing said so). `.archived_only()` and `.including_archived()`
+    # are the only roads, and this rule is what keeps them the only ones.
+    #
+    # A SOURCE RULE, not a rule-74 clause: rule 74 reports through the django
+    # system-check leg over registries and cannot see a queryset chain.
+    # THE POPULATION IS DERIVED: `archivable = True` in a class body, a base
+    # named `Archivable`, or an archivable base — rule 76's resolver shape.
+    statement: >
+      An archivable noun's archived rows are reached only through its
+      widenings. Under `apps/` (tests, migrations and `apps/core/models.py` —
+      where the widenings themselves live — aside), a `.filter(...)` or
+      `.exclude(...)` whose keyword names `archived_at` (or an `archived_at__`
+      lookup), on a queryset rooted at an archivable class, is refused naming
+      `.archived_only()` and `.including_archived()`. The class is resolved by
+      name to a fixed point; nothing is listed.
+    check: archive_widenings_are_the_only_widenings
+    doc: { file: .claude/skills/django-conventions/SKILL.md, contains: "the archive's widenings are the only widenings" }
+    scope: {}
+    floors:
+      # The archivable population's root is the mixin itself, so a scan that
+      # stopped reading class bodies reports 0. The SITE population was zero
+      # outside core on the tree that added this rule (one docstring mention) —
+      # the canaries are its floor.
+      archivable_classes: 1
+    does_not_cover: >
+      A LOOKUP THE AST CANNOT READ: a `Q(archived_at__isnull=False)` object, a
+      `**{"archived_at__isnull": False}` spread, a filter built in a helper that
+      is not a queryset-returning function in the same module. A RAW SQL
+      `WHERE archived_at`. A QUERYSET HELD WHERE THE BINDING IS ILLEGIBLE (rule
+      76's reading: a dict value, a comprehension target). NAME RESOLUTION IS
+      BY CLASS NAME, as rules 75 and 76 read it. A class carrying an
+      `archived_at` column WITHOUT declaring `Archivable` is rule 74's
+      bare-column clause, not this rule's.
+    selftest_floor: { canaries: 3, negatives: 2 }
+    # RESIDENCE: the worked example's selectors, where a list selector would
+    # write the trap — the criteria's own plant site — AND one form in the probe
+    # scaffold, an app no product removes, so a deployment without the optional
+    # example keeps a way for this rule to fail.
+    canaries:
+      - { fixture: hand_filter_in_the_scaffold.py, plant_at: apps/zzz_canary/models.py,
+          mode: create, expect: { contains: "on the archivable ZzzShelvedCrate81" } }
+      - { fixture: hand_filter_after_for_tenant.py, plant_at: apps/example/selectors.py,
+          mode: append, expect: { contains: "`.filter(archived_at__isnull=…)` on the archivable Widget" } }
+      - { fixture: hand_exclude_after_for_tenant.py, plant_at: apps/example/selectors.py,
+          mode: append, expect: { contains: "`.exclude(archived_at=…)` on the archivable Widget" } }
+    negatives:
+      # The two widenings, used as they are meant to be.
+      - { fixture: the_widenings.py, plant_at: apps/example/selectors.py, mode: append }
+      # The same filter on a class that never declared `Archivable`.
+      - { fixture: non_archivable_filter.py, plant_at: apps/example/selectors.py, mode: append }
+
+  - id: "82"
+    name: archivable-writes-require-live
+    enabled: true
+    valve:
+      marker: "<comment> rule-82: <reason>"
+      where: "on the flagged line itself, or in the contiguous comment block directly above it (never further away, and never across a non-comment line); a reason under 12 characters becomes its own finding"
+    # THE SILENT TRAP. An archived row answers its reads and refuses every write
+    # but its restore with `archived` — ONLY where the writing service calls
+    # `core.verbs.require_live`. A product adopting `Archivable` on a noun it
+    # already had keeps every write it already had, and none of them asks: each
+    # edits a row nobody can see in the book. No golden copy reaches those
+    # writes; this rule does.
+    statement: >
+      A `@service` in `apps/*/services.py` named for a keyword parameter
+      annotated by an archivable class — `<verb>_<param>(*, <param>: Noun)`, a
+      write ON that row — calls `require_live(...)` in its body, unless it is
+      the noun's `archive_<noun>` / `restore_<noun>` pair. The class is resolved
+      by name to a fixed point (rule 76's resolver); nothing is listed.
+    check: archivable_writes_require_live
+    doc: { file: .claude/skills/django-conventions/SKILL.md, contains: "every other write on an archivable row calls `require_live`" }
+    scope: {}
+    floors:
+      archivable_classes: 1
+      # The services the rule judges — named for an archivable row they take.
+      # 22 on the tree that added it; floored at 1 so a resolver that stopped
+      # pairing names with annotations reports 0 and fails.
+      archivable_services: 1
+    # BORN WITH A RATCHET OF 2 (the owner's acceptance, 2026-09-28): comms'
+    # consent verbs `suppress_recipient` / `unsuppress_recipient` write the
+    # consent ledger, never the contact, and are valved with that sentence in
+    # comms' own change, which lowers this to 0.
+    ratchets:
+      unguarded_write: 0
+    does_not_cover: >
+      A SERVICE THAT TAKES THE ID and reads the row itself — the annotation is
+      the population. A WRITE THROUGH A HELPER the service calls, which a
+      service that calls `require_live` in the helper instead of its own body
+      would be accused for (the loud direction; a `# rule-82:` valve names the
+      helper). A SERVICE NAMED FOR SOMETHING ELSE that writes the row it takes
+      as a reference (`send(*, recipient)` is read as writing a message, which
+      it does) — the name is the claim. THE POPULATION IS NARROWED ON PURPOSE:
+      the literal reading (any `@service` taking a keyword parameter annotated
+      by an archivable class) measured 9 on the tree that added this rule,
+      seven of them services that take the row as a reference and write
+      another row; the recorded mechanism is `<verb>_<param>(*, <param>:
+      Noun)`, the service named for the row it takes, which measured the 2 the
+      ratchet was set on. A write on the row from a service named otherwise is
+      review's. Whether `require_live` is called BEFORE
+      the write, or on the right row, is review's. NAME RESOLUTION IS BY CLASS
+      NAME, as rules 75 and 76 read it.
+    selftest_floor: { canaries: 3, negatives: 3 }
+    canaries:
+      # The scaffold's form: an archivable noun and a write on it, both in the
+      # probe app no product removes — so this rule can still fail without the
+      # optional worked example.
+      - fixture: unguarded_write_in_the_scaffold.py
+        plant_at: apps/zzz_canary/services.py
+        mode: create
+        expect: { contains: "relabel_bin takes a ZzzShelvedBin82" }
+        extra_files:
+          - { fixture: scaffold_model.py, plant_at: apps/zzz_canary/models.py, mode: create }
+      # A write on the worked example's archivable row that never asks.
+      - { fixture: unguarded_write.py, plant_at: apps/example/services.py, mode: append,
+          expect: { contains: "frob_widget takes a Widget" } }
+      # The same on a second archivable class, so the population is not one name.
+      - { fixture: unguarded_policy_write.py, plant_at: apps/example/services.py, mode: append,
+          expect: { contains: "retitle_widget_policy takes a WidgetPolicy" } }
+    negatives:
+      # The pair, by name.
+      - { fixture: the_pair_by_name.py, plant_at: apps/example/services.py, mode: append }
+      # A write that asks first.
+      - { fixture: guarded_write.py, plant_at: apps/example/services.py, mode: append }
+      # A service on a row of a class that is not archivable.
+      - { fixture: non_archivable_param.py, plant_at: apps/example/services.py, mode: append }
 
 # THE PEER-FORK MIGRATION PATH (rules 51-53, the redemption item for the
 # living-workaround finding of the FEEDBACK-2 survey). That finding recorded

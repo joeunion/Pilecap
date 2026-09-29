@@ -1,3 +1,4 @@
+# collides: ping — a replace-mode copy of the real MCP module: the tool it registers is the real one, minus the ceiling gate
 """Planted: `apps/core/mcp.py` with its tools and without its ceiling gate.
 
 THE REGRESSION FORM, and the reason it is a whole-file plant rather than an

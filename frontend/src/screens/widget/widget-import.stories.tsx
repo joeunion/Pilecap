@@ -1,0 +1,166 @@
+// golden: import begin
+"use client";
+// golden: import end
+
+/**
+ * EXAMPLE — the worked Widget import page's stories: the four
+ * `REQUIRED_STORY_EXPORTS` (`Empty` is *choose*, no run yet; `Ready` is the
+ * populated case, a run previewed), then the extras the page's entries name
+ * (§5: the page's states — `ImportChecking`, `ImportPreviewed`, `Importing`,
+ * `Imported`, `ImportRepeated`, `NothingToImport`, `RefusedImport`).
+ *
+ * EVERY PRESSABLE STORY GOES THROUGH `ImportWalk`, a stand-in for the route: it
+ * answers *Import* on a chosen file with the run checking, then previewed, and
+ * the apply with the run importing, then imported — each a short wait, as a
+ * poll of the run row would see it. The dev page fetches nothing.
+ */
+
+// golden: import begin
+import { useState } from "react";
+
+import type { SurfaceState, WireRefusal } from "@/screens/state";
+import { LATENCY_MS } from "@/screens/widget/widget-list.stories";
+import { type ImportPress, type ImportRow, type ImportRun, type ImportView, WidgetImport } from "@/screens/widget/widget-import";
+
+const RUN_ID = "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6fa1";
+
+function runOf(status: string, counts: ImportRun["counts"], applyWrites: number, appliedAt: string | null = null): ImportRun {
+    return {
+        id: RUN_ID,
+        kind: "widget",
+        status,
+        tenant_id: "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f00",
+        organization_id: "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f21",
+        file_version_id: null,
+        file_name: "widgets.csv",
+        digest: "5f2b9c1e",
+        requested_by_id: null,
+        applied_by_id: null,
+        idempotency_key: "",
+        counts,
+        apply_writes: applyWrites,
+        failure: {},
+        applied_at: appliedAt,
+        cancelled_at: null,
+        created_at: "2026-09-28T09:00:00.000Z",
+        updated_at: "2026-09-28T09:00:00.000Z",
+        expires_at: "2026-10-05T09:00:00.000Z",
+    };
+}
+
+const COUNTS = { create: 4, update: 1, unchanged: 2, refused: 1 };
+export const PREVIEWED = runOf("previewed", COUNTS, 5);
+
+/** The one refused row, by its number, with the server's sentence. */
+const REFUSED_ROWS: readonly ImportRow[] = [
+    {
+        id: "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6fb1",
+        run_id: RUN_ID,
+        organization_id: PREVIEWED.organization_id,
+        row_no: 3,
+        data: { external_ref: "CRM-0007", name: "", notes: "" },
+        outcome_preview: "refused",
+        outcome: "",
+        refusal: { code: "invalid", detail: "Name cannot be empty.", errors: { name: ["This field is required."] } },
+        object_id: null,
+    },
+];
+
+/** `import_invalid`: the file refused whole, before any row was judged. */
+const IMPORT_INVALID: WireRefusal = {
+    code: "import_invalid",
+    detail: "This file cannot be imported as it is. It is not a UTF-8 CSV file, or its header row does not name the columns this kind of import reads, or it has more rows than one import takes. Nothing was imported.",
+    remedies: [
+        { label: "Fix the file and stage it again", destination: "field:file_id" },
+        { label: "Read the columns this kind of import reads", destination: "docs:openapi" },
+    ],
+};
+
+/** `not_found` on the run read: the run is not here, or not this hat's. */
+const NOT_FOUND: WireRefusal = {
+    code: "not_found",
+    detail: "There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way.",
+    remedies: [{ label: "Check which organization you are wearing", destination: "header:X-Org" }],
+};
+
+/** The stand-in route: stages, polls, applies — each answer after the fixtures' wait. */
+function ImportWalk({ initial, refused = null }: { readonly initial: SurfaceState<ImportView>; readonly refused?: WireRefusal | null }) {
+    const [state, setState] = useState(initial);
+    const [busy, setBusy] = useState<"stage" | "apply" | null>(null);
+    const [notice, setNotice] = useState(refused === null ? null : { kind: "registry" as const, refusal: refused });
+    const press: ImportPress = {
+        busy,
+        refused: notice,
+        onStage: () => {
+            setBusy("stage");
+            setTimeout(() => {
+                setBusy(null);
+                setNotice(null);
+                setState({ kind: "ready", data: { run: runOf("checking", { create: 0, update: 0, unchanged: 0, refused: 0 }, 0), refusedRows: [] } });
+                setTimeout(() => setState({ kind: "ready", data: { run: PREVIEWED, refusedRows: REFUSED_ROWS } }), LATENCY_MS);
+            }, LATENCY_MS);
+        },
+        onApply: () => {
+            setBusy("apply");
+            setTimeout(() => {
+                setBusy(null);
+                setState({ kind: "ready", data: { run: runOf("imported", COUNTS, 5, "2026-09-28T09:05:00.000Z"), refusedRows: [] } });
+            }, LATENCY_MS);
+        },
+    };
+    return <WidgetImport state={state} press={press} />;
+}
+
+export function Loading() {
+    return <WidgetImport state={{ kind: "loading" }} />;
+}
+
+/** *choose*: no run yet — the file field, the columns, *Import*. */
+export function Empty() {
+    return <ImportWalk initial={{ kind: "empty" }} />;
+}
+
+export function Error() {
+    return <WidgetImport state={{ kind: "error", refusal: { kind: "registry", refusal: NOT_FOUND } }} />;
+}
+
+/** The populated case: a run previewed — the counts line, the refused row, *Import 5 widgets*. */
+export function Ready() {
+    return <ImportWalk initial={{ kind: "ready", data: { run: PREVIEWED, refusedRows: REFUSED_ROWS } }} />;
+}
+
+/** §5: the preview, the import's second look: one primary whose label carries the count. */
+export function ImportPreviewed() {
+    return <ImportWalk initial={{ kind: "ready", data: { run: PREVIEWED, refusedRows: REFUSED_ROWS } }} />;
+}
+
+/** §5 · §13: *Checking ⟨file⟩…*, still. */
+export function ImportChecking() {
+    return <WidgetImport state={{ kind: "ready", data: { run: runOf("checking", { create: 0, update: 0, unchanged: 0, refused: 0 }, 0), refusedRows: [] } }} />;
+}
+
+/** §5 · §13: the apply at work — the same button, *Importing…*, alive. */
+export function Importing() {
+    return <ImportWalk initial={{ kind: "ready", data: { run: runOf("importing", COUNTS, 5), refusedRows: [] } }} />;
+}
+
+/** §5 · §17: *Imported ⟨n⟩ widgets on ⟨day⟩.*, the list a link. */
+export function Imported() {
+    return <WidgetImport state={{ kind: "ready", data: { run: runOf("imported", COUNTS, 5, "2026-09-28T09:05:00.000Z"), refusedRows: [] } }} />;
+}
+
+/** §5 · §17: the same file again lands on its run — *This file was imported on ⟨day⟩.* */
+export function ImportRepeated() {
+    return <WidgetImport state={{ kind: "ready", data: { run: runOf("imported", COUNTS, 5, "2026-09-28T09:05:00.000Z"), refusedRows: [], repeated: true } }} />;
+}
+
+/** §5 · §14: the file had no rows — *Nothing to import in ⟨file⟩.*, no primary. */
+export function NothingToImport() {
+    return <ImportWalk initial={{ kind: "ready", data: { run: runOf("previewed", { create: 0, update: 0, unchanged: 0, refused: 0 }, 0), refusedRows: [] } }} />;
+}
+
+/** §5 · §15: the file refused whole — *Couldn't import* under the head, the file field and *Import* alive. */
+export function RefusedImport() {
+    return <ImportWalk initial={{ kind: "empty" }} refused={IMPORT_INVALID} />;
+}
+// golden: import end

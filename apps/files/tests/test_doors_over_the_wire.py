@@ -71,11 +71,14 @@ DOCUMENT_KEYS = frozenset(
         "current_version",
         "uploaded_by_id",
         "archived_at",
+        "archived_by",
+        "subject",
         "created_at",
         "updated_at",
+        "allowed_acts",
     }
 )
-PAGE_KEYS = frozenset({"items", "has_more", "next_cursor", "count"})
+PAGE_KEYS = frozenset({"items", "has_more", "next_cursor", "count", "allowed_acts"})
 DOWNLOAD_KEYS = frozenset(
     {
         "file_id",
@@ -601,3 +604,311 @@ async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
     # and its name is in its own error line. What must be absent is a signed
     # link, and a signed link is a URL.
     assert "http" not in said, "a URL was minted for a refused reader"
+
+
+# --- the archive road and the attach subject, over both doors -------------------
+
+ARCHIVE_URL = "/api/v1/files/{}/archive/"
+RESTORE_URL = "/api/v1/files/{}/restore/"
+
+
+def _canonical(body: dict[str, Any]) -> str:
+    """One rendering, key-sorted, so "byte-equal" is a string comparison.
+
+    An event's payload carries the spine's own schema version, `v`, beside the
+    `Out` it was built from (`events.emit` stamps it); that one key is the
+    envelope's, and it is asserted separately rather than compared here.
+    """
+    import json
+
+    return json.dumps({k: v for k, v in body.items() if k != "v"}, sort_keys=True)
+
+
+def _as_broadcast(body: dict[str, Any]) -> dict[str, Any]:
+    """A viewer door's body as an event carries it: without `allowed_acts`.
+
+    The acts answer ONE viewer and an event goes to every subscriber, so the one
+    per-viewer field is the only difference between the two, by contract.
+    """
+    return {k: v for k, v in body.items() if k != "allowed_acts"}
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_archive_and_restore_put_one_body_on_both_doors_and_the_spine(
+    bearer: str, seeded: tuple[StoredFile, FileVersion]
+) -> None:
+    """REST body == MCP `structuredContent` == the event's payload, for both verbs.
+
+    Each verb is pressed on one door and PRESSED AGAIN on the other: the repeat is
+    the idempotent no-op, so it answers the same row in the same state — which is
+    what lets the two doors be compared byte for byte, timestamps and archiver
+    included, rather than field by field with the moments excused.
+    """
+    from apps.core.asyncdb import run_db
+    from apps.events.models import Event
+    from config.asgi import build_application
+
+    document, _version = seeded
+    application = build_application()
+    credential = {"authorization": f"Bearer {bearer}"}
+    rest_headers = {**credential, "accept": JSON, "content-type": JSON}
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            archived_http = await client.post(
+                ARCHIVE_URL.format(document.pk), headers=rest_headers, json={}
+            )
+            headers = {**MCP_HEADERS, **credential}
+            await _initialize(client, headers, "files-archive-parity")
+            archived_mcp = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call",
+                    {"name": "archive_file", "arguments": {"file_id": str(document.pk)}},
+                    2,
+                ),
+            )
+            restored_mcp = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call",
+                    {"name": "restore_file", "arguments": {"file_id": str(document.pk)}},
+                    3,
+                ),
+            )
+            restored_http = await client.post(
+                RESTORE_URL.format(document.pk), headers=rest_headers, json={}
+            )
+
+    def payloads() -> dict[str, list[dict[str, Any]]]:
+        rows = Event.objects.filter(name__in=("files.file.archived", "files.file.restored"))
+        found: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            found.setdefault(row.name, []).append(row.payload)
+        return found
+
+    spine = await run_db(payloads)
+
+    assert archived_http.status_code == 200, archived_http.text
+    assert restored_http.status_code == 200, restored_http.text
+    rest_archived = archived_http.json()
+    mcp_archived = archived_mcp.json()["result"]["structuredContent"]
+    assert rest_archived["archived_at"] is not None
+    assert rest_archived["archived_by"] is not None
+    assert len(spine["files.file.archived"]) == 1, "the repeat on the other door emitted nothing"
+    assert _canonical(mcp_archived) == _canonical(rest_archived)
+    assert spine["files.file.archived"][0]["v"] == 1
+    assert "v" not in rest_archived
+    assert "allowed_acts" in rest_archived
+    assert "allowed_acts" not in spine["files.file.archived"][0]
+    assert _canonical(spine["files.file.archived"][0]) == _canonical(_as_broadcast(rest_archived))
+
+    rest_restored = restored_http.json()
+    mcp_restored = restored_mcp.json()["result"]["structuredContent"]
+    assert rest_restored["archived_at"] is None
+    assert len(spine["files.file.restored"]) == 1
+    assert _canonical(mcp_restored) == _canonical(rest_restored)
+    assert "allowed_acts" not in spine["files.file.restored"][0]
+    assert _canonical(spine["files.file.restored"][0]) == _canonical(_as_broadcast(rest_restored))
+
+
+@pytest.fixture
+def subject_widget(world: World, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A widget at the region that takes files, made in a SYNC fixture (see `bearer`)."""
+    from apps.example.models import Widget
+    from apps.example.services import create_widget
+
+    declared = getattr(Widget, "attachments", ())
+    monkeypatch.setattr(Widget, "attachments", (*declared, "files"), raising=False)
+    return create_widget(
+        tenant=world.tenant,
+        actor=actor_for(user=world.owner, tenant=world.tenant, org=world.region),
+        name="Region widget",
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_filing_against_a_subject_answers_one_shape_on_both_doors(
+    bearer: str, subject_widget: Any, world: World
+) -> None:
+    """`create_file(subject=…)` over REST and over MCP: one document shape, one landing.
+
+    Two filings are two documents, so the ids, the moments and the signed URLs
+    legitimately differ; everything else — the subject, the organization it
+    landed in (the widget's, not the hat's), the filer, the version's state — is
+    compared exactly. And both are listed by `?subject=` on both doors.
+    """
+    from config.asgi import build_application
+
+    application = build_application()
+    credential = {"authorization": f"Bearer {bearer}"}
+    subject = f"widget:{subject_widget.pk}"
+    body = {
+        "filename": "attached.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 10,
+        "subject": subject,
+    }
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.post(
+                LIST_URL, headers={**credential, "accept": JSON, "content-type": JSON}, json=body
+            )
+            headers = {**MCP_HEADERS, **credential}
+            await _initialize(client, headers, "files-subject-parity")
+            called = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc("tools/call", {"name": "create_file", "arguments": body}, 2),
+            )
+            listed_http = await client.get(
+                f"{LIST_URL}?subject={subject}", headers={**credential, "accept": JSON}
+            )
+            listed_mcp = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call", {"name": "list_files", "arguments": {"subject": subject}}, 3
+                ),
+            )
+
+    assert over_http.status_code == 201, over_http.text
+    answered = called.json()
+    assert "error" not in answered, answered
+    rest_file = over_http.json()["file"]
+    mcp_file = answered["result"]["structuredContent"]["file"]
+    assert set(mcp_file) == set(rest_file) == DOCUMENT_KEYS
+    moving = {"id", "created_at", "updated_at"}
+    for key in DOCUMENT_KEYS - moving:
+        assert mcp_file[key] == rest_file[key], f"the two doors disagree about {key}"
+    assert rest_file["organization_id"] == str(world.region.pk), "the subject's node, not the hat"
+    assert rest_file["subject"] == subject
+
+    expected = {rest_file["id"], mcp_file["id"]}
+    assert {row["id"] for row in listed_http.json()["items"]} == expected
+    mcp_page = listed_mcp.json()["result"]["structuredContent"]
+    assert {row["id"] for row in mcp_page["items"]} == expected
+
+
+# --- the acts: per viewer on the two viewer doors, never on the event ------------
+
+
+@pytest.fixture
+def region_document(recorded_workflow_starts: None, world: World, named_bucket: str) -> StoredFile:
+    """One document at the REGION, where an administrator and a member both stand."""
+    return create_file(
+        tenant=world.tenant,
+        actor=actor_for(user=world.owner, tenant=world.tenant, org=world.region),
+        filename="region-contract.pdf",
+        content_type="application/pdf",
+        size_bytes=1024,
+        purpose="contract",
+    ).file
+
+
+@pytest.fixture
+def two_viewers(region_document: StoredFile, world: World) -> tuple[str, str]:
+    """Two bearers at the region: its administrator and a plain member."""
+    tokens = []
+    for person, name in ((world.region_admin, "region-admin"), (world.plain_member, "member")):
+        _, plaintext = issue_token(
+            user=person,
+            tenant=world.tenant,
+            name=name,
+            scopes=["files:read", "files:write"],
+            actor=actor_for(user=person, tenant=world.tenant),
+        )
+        tokens.append(plaintext)
+    return tokens[0], tokens[1]
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_the_acts_answer_the_viewer_on_both_doors_and_never_ride_the_event(
+    two_viewers: tuple[str, str], region_document: StoredFile, world: World
+) -> None:
+    """The four doors of one document, compared by hand (the per-viewer contract).
+
+    * the SAME viewer reads one body on REST and on MCP — `allowed_acts` included;
+    * the archive's `Event.payload` is that body WITHOUT `allowed_acts` — an event
+      has no viewer, so the one field that answers a viewer never rides it;
+    * a SECOND viewer — a member at the same node — reads the same row with
+      different `allowed_acts` and every other key equal, so the payload is
+      equally true for both of them.
+
+    *Absent (the baseline):* the REST body has no `allowed_acts` at all.
+    """
+    from asgiref.sync import sync_to_async
+
+    from apps.events.models import Event
+    from config.asgi import build_application
+
+    admin, member = two_viewers
+    application = build_application()
+    url = DETAIL_URL.format(region_document.pk)
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            as_admin = {"authorization": f"Bearer {admin}", "accept": JSON}
+            as_member = {"authorization": f"Bearer {member}", "accept": JSON}
+            live_for_admin = await client.get(url, headers=as_admin)
+            listed_for_admin = await client.get(LIST_URL, headers=as_admin)
+            listed_for_member = await client.get(LIST_URL, headers=as_member)
+            # The press takes no body.
+            archived = await client.post(f"{url}archive/", headers=as_admin)
+            for_member = await client.get(url, headers=as_member)
+
+            headers = {**MCP_HEADERS, "authorization": f"Bearer {admin}"}
+            await _initialize(client, headers, "files-acts-parity")
+            called = await client.post(
+                MCP_URL,
+                headers=headers,
+                json=_rpc(
+                    "tools/call",
+                    {"name": "get_file", "arguments": {"file_id": str(region_document.pk)}},
+                    2,
+                ),
+            )
+            for_admin = await client.get(url, headers=as_admin)
+
+    assert live_for_admin.status_code == 200, live_for_admin.text
+    assert "archive" in live_for_admin.json()["allowed_acts"]
+    # The list: the administrator's row holds `archive`, the member's does not.
+    (admin_row,) = listed_for_admin.json()["items"]
+    (member_row,) = listed_for_member.json()["items"]
+    assert "archive" in admin_row["allowed_acts"], admin_row
+    assert "archive" not in member_row["allowed_acts"], member_row
+    assert "allowed_acts" in listed_for_admin.json()
+
+    assert archived.status_code == 200, archived.text
+    rest = archived.json()
+    assert "restore" in rest["allowed_acts"], rest
+    assert "archive" not in rest["allowed_acts"], rest
+
+    # (1) the same viewer, two doors: byte-equal, acts included.
+    answered = called.json()
+    assert "error" not in answered, answered
+    over_mcp = answered["result"]["structuredContent"]
+    assert for_admin.json() == over_mcp == rest
+
+    # (2) any viewer: the REST body minus the per-viewer field IS the payload.
+    payload = await sync_to_async(
+        lambda: Event.objects.for_tenant(world.tenant).get(name="files.file.archived").payload
+    )()
+    assert "allowed_acts" not in payload, payload
+    assert _canonical(_as_broadcast(rest)) == _canonical(payload)
+
+    # (3) a second viewer: every key equal but the acts.
+    other = for_member.json()
+    assert for_member.status_code == 200, for_member.text
+    assert other["allowed_acts"] != rest["allowed_acts"], other
+    assert "restore" not in other["allowed_acts"], other
+    assert _canonical(_as_broadcast(other)) == _canonical(payload)

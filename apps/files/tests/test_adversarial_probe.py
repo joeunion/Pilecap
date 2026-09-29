@@ -279,6 +279,7 @@ _ARGUMENTS: dict[str, Any] = {
     "content": b"bytes that must never reach another tenant's prefix",
     "body": io.BytesIO(b"a rewindable body"),
     "expires_in": 60,
+    "chunk": 1024,
 }
 
 #: Functions on the seam that take a tenant and a key but do not reach the store

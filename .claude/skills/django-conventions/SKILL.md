@@ -425,6 +425,12 @@ git add apps/example/migrations/0007_*.py apps/example/migrations/max_migration.
   one app — the PM's ordering failure. Stop, report, do not patch. A conflict
   in `max_migration.txt` (`django-linear-migrations`) is the same finding
   earlier; never hand-edit it.
+- **A non-atomic migration (`atomic = False`, e.g. `AddIndexConcurrently`) in
+  `core` needs the rewind step-over, and the step-over is LOUD**: a test that
+  rewinds `core` inside a transaction cannot run one, so every such migration is
+  listed in `_CONCURRENT_ABOVE_0018` (`apps/core/tests/test_roles_are_keys.py`),
+  and a new core migration reds `test_0018_is_on_the_one_line_to_the_leaf`
+  until it is.
 - **Data migrations are separate files**: `RunPython(forward, reverse)` with a
   real reverse (or `RunPython.noop` stated deliberately), using
   `apps.get_model(...)` — never importing the model class. Never edit a
@@ -516,3 +522,338 @@ If you find yourself typing one, stop.
 **Two gotchas, at the site they bite** — a ninja `resolve_` hook dying inside a
 `Page`, and mypy narrowing a subscripted expression across statements:
 `references/gotchas.md`.
+
+## 16 · Recipes — a family verb adopted on a noun
+
+Each noun-verb family verb is one adoption on the noun's own app, in one
+commit, over a seam `core` already ships. The worked example of each is on
+`Widget` in `apps/example`, **fenced `# golden: <verb> begin` / `# golden:
+<verb> end` around every block a product copies**, and
+`scripts/tests/test_golden_copy.sh --verb <verb>` copies exactly those blocks
+into a throwaway app with the one rename `Widget`→`Gadget` and proves they
+still build, check and pass. A block you copied that needed a hand edit beyond
+that rename is a finding against the example, not a step.
+
+**Four lines every recipe below shares** (and one about the fences themselves):
+
+- **A fragment two or more verbs share is fenced ONCE, with the verb list** —
+  `# golden: version move begin` … `# golden: version move end`: the drive
+  (`scripts/tests/test_golden_copy.sh`) reads a fence as a begin or an end for
+  every verb it names, so each verb's copy takes the block when ITS verb is in
+  the list. Use it for a block two or more verbs share (the noun's imports, its
+  class line, its detail route, a service body several copies need); a block
+  ONE verb owns keeps the single-verb form (`# golden: merge begin`). Fences of
+  different verbs may overlap but never nest within one verb, and a list names
+  only verbs the drive knows — the roads plus `attach` and `import` — or the
+  drive refuses it (exit 2) naming the word. The worked example lists the
+  verbs in their adoption order (archive, version, move, bulk, history,
+  duplicate, attach, merge, import), and a block belongs to its own verb and to
+  every verb after it.
+
+- **A fenced import block is followed by `# isort: split`** (`apps/example/api.py`,
+  `services.py`): the copy drops the lines outside the fence, and without the
+  split the formatter re-sorts the fenced imports into the unfenced ones and
+  the copy no longer matches its fence.
+- **The migration comes LAST, after the doors** — a marker on the model alone is
+  a set of `djb.E074` findings (the road it demands does not exist yet), and
+  `makemigrations` runs the system checks. So `makemigrations <app>` is each
+  recipe's final step; `--skip-checks` never appears in one.
+- **A refusal sentence carries no backticked key.** A registered `fact` (and a
+  `detail`) is read by a person: it says the fact in words — "the answer says
+  which version it has now" — and the key a machine branches on rides
+  `wire_extra`, never the sentence (`apps/core/tests/test_refusal_sentences.py`
+  reads the whole registry).
+- **A new TEMPLATE refusal code is typed into `PRE_RUNG_CODE_STATUS`**
+  (`apps/core/tests/test_refusal_status.py`) with its status, in the change
+  that registers it; a PRODUCT's code registers in its own app with `status=`
+  and needs no core edit (the pin partitions template apps by
+  `quality/partition.yaml`).
+- **`allowed_acts` lives on the two viewer doors only** — REST and MCP, which
+  rule 17 keeps equal. It is a fact about (row, viewer) and an event has no
+  viewer: every payload is built by `core.schemas.event_payload(out)` (the
+  `Out` minus `PER_VIEWER_FIELDS` at any depth — a nested `Out`'s acts too),
+  and `events.services.emit` refuses a payload carrying one at any depth. A noun names its own example with
+  `allowed_acts: list[str] = acts_field("update", "archive")`; an act is offered
+  only where its `<noun>-<verb>` door is mounted. A face re-reads the row after
+  a socket frame to learn what it may press now.
+
+### Adopt archive in one commit
+
+**An archivable noun carries its whole road** (house rule 74 reads it off
+`core.verbs.ROADS`); **append-only and archivable are disjoint** (house rule 75,
+and the mixin refuses the class at definition). In the noun's app, one commit:
+
+1. **The model** — `class Widget(OrgScopedModel, Archivable)`: the mixin AFTER
+   the scoped base (the reverse order is a `TypeError`); its migration — two
+   nullable columns, expand-only — is step 8, after the doors. `for_tenant()`
+   now hides archived rows everywhere; `.including_archived()` and
+   `.archived_only()` are the only widenings.
+   **Rule 81: the archive's widenings are the only widenings** — a hand
+   `.filter(archived_at__isnull=False)` after `for_tenant()` answers `[]` with
+   no error, because the rows it asks for were left out a step earlier.
+2. **The policy** — `POLICIES = {"widget.archive": may_archive, "widget.restore":
+   may_archive}` in the app's `policies.py` (`core.policies.may_archive`, which
+   refuses the system actor). The two keys are DERIVED; write no prose for them
+   unless the derived sentence is wrong.
+3. **The blockers, if a child holds the noun** — the CHILD app drops
+   `archive_blockers.py` exporting `BLOCKERS = {"widget": fn}` answering
+   `tuple[Blocker, ...]` (`core.blockers`); the parent never imports the child.
+4. **The service pair** — `archive_widget` / `restore_widget`, `@service`,
+   keyword-only `tenant`, `actor`, `widget`: `may_be_named` → `NotFound`,
+   `require(actor, "widget.archive", widget)`, then
+   `core.verbs.archive_row(tenant=…, actor=…, row=widget, noun="widget")` and
+   `emit()` the `<app>.<noun>.archived` event (declared in `events.py`) ONLY when
+   it answered `changed=True`. Restore mirrors it with `restore_row` and
+   `.restored`. Every OTHER write on the noun calls
+   `core.verbs.require_live(widget, noun="widget")` first (`archived`, 409).
+   **Rule 82: every other write on an archivable row calls `require_live`** — a
+   `<verb>_<param>(*, <param>: Noun)` service without it is refused, including
+   the writes the noun had before it adopted the mixin.
+5. **The schema** — `class WidgetOut(ArchivedOut)`; never re-declare the two
+   fields. The events carry `event_payload(WidgetOut.from_orm(widget))`.
+6. **The doors** — `POST /widgets/{id}/archive/` (`url_name="widget-archive"`)
+   and `/restore/` (`widget-restore`) **taking no body** (the press is the
+   whole request; rule 74 refuses a body there, and a bodiless press would
+   otherwise answer 422) and answering `WidgetOut`, each with
+   `@also_refuses("archive_blocked")` (restore: `"restore_blocked"`) — ADDED to
+   the derived set, never re-typing it (`@refuses` is the narrowing form, for a
+   route whose derivation is wrong) — a repeat answering 200; the list takes
+   `?show=live|archived|all` (default `live`, `archived` the one reader of
+   `archived_only()`); the detail widens with `including_archived()` so an
+   archived row answers read-only. The MCP twins `archive_widget` /
+   `restore_widget` call the same services (rule 17 derives their names).
+7. **The tests** — the pair over the wire on both doors (the parity module,
+   through `apps.core.tests.doors.assert_four_doors` with a SECOND viewer), a
+   blocked archive naming its blocker, a repeat press unchanged, a member
+   refused, the archived row read-only and every other write `archived`.
+8. **The migration** — `makemigrations <app>`, last.
+
+### Adopt version in one commit
+
+**A versioned row's writes move `updated_at`** (house rule 76) — the version
+IS that stamp, in integer microseconds (`core.concurrency.version_of`), with no
+column. Opt-in per noun; the noun that adopts it makes `version` REQUIRED on
+every write that edits it (house rule 74 reads the update body). One commit:
+
+1. **The model** — add `Versioned` (`core.models`) to the bases, after the
+   scoped base: `class Widget(OrgScopedModel, Archivable, Versioned)`. No
+   migration.
+2. **The schemas** — the `Out` adds `VersionedOut` to its bases (`version:
+   int`, read off the model's `version` property); the `Patch` inherits
+   `VersionedIn` instead of `StrictIn`, so a body without `version` is
+   `invalid_body` naming it.
+3. **The service** — lock, compare, write, and name the stamp:
+   `locked = …select_for_update().get(pk=widget.pk)`,
+   `core.concurrency.require_version(locked, version)` (a mismatch is
+   `stale_version`, 409, `current_version` beside the four keys), then
+   `locked.save(update_fields=[…, "updated_at"])`. A queryset `.update()` on
+   the noun passes `updated_at=now()`.
+4. **The doors** — the update route and its MCP twin take the same `Patch`,
+   and the route adds `@also_refuses("stale_version")` to its derived set.
+5. **The tests** — a stale save refused with the row unchanged and
+   `current_version` on the wire; the current one answering a NEW `version`.
+
+### Adopt move in one commit
+
+**A movable noun carries its move road** (house rule 74: `<noun>-move`, its
+twin, `<kind>.move` derived) and **its ledger stays where it was written** —
+`core.verbs.rehome` carries every MUTABLE row that derives its organization
+from the noun (`derive_org_from`) and refuses `move_blocked` over an
+APPEND-ONLY one. One commit:
+
+1. **The model** — add `Movable` after the scoped base; set
+   `move_owner_field = "owner"` if the owner is handed over too. No migration.
+2. **The policy** — `POLICIES["widget.move"] = may_move`
+   (`core.policies`, `@refuses_system`, asked at BOTH ends).
+3. **The service** — `move_widget(*, tenant, actor, widget, organization,
+   version)`: `may_be_named` on the row (`NotFound`), and the DESTINATION by the
+   hat's subtree path — `is_descendant_path(organization.path, actor.org.path)`
+   in this tenant, else `NotFound` (`may_be_named(actor, <Organization>)` is
+   always False: an organization names no `organization`); an `owner_id` on a
+   noun with no `move_owner_field` is refused by `rehome` (`invalid`),
+   `require(actor, "widget.move", widget)` and
+   `require(actor, "widget.move", organization)`, then
+   `widget, changed = core.verbs.rehome(widget, organization)`, and emit
+   `<app>.<noun>.moved` (naming both nodes) only when `changed`.
+4. **The schemas** — the body is `MoveIn` (`VersionedMoveIn` for a
+   `Versioned` noun); the `Out` adds `HomedOut` (`organization_name` — a
+   list answering it `select_related("organization")`s).
+5. **The doors** — `POST /widgets/{id}/move/` (`widget-move`,
+   `@also_refuses("move_blocked")`) and the MCP twin `move_widget`; the sheet's destinations are
+   `GET /organizations/?can=widget.move`, never a per-noun read.
+6. **The tests** — a move carrying a mutable child, a ledger blocking with
+   nothing moved, the same node unchanged, a destination outside the subtree
+   `not_found`, a member refused.
+
+### Adopt bulk in one commit
+
+**A noun declaring `bulk_verbs` carries `<noun>-bulk`** and the single road of
+every verb it lists (house rule 74). `core.bulk.run_bulk` loops the noun's OWN
+per-item services inside ONE transaction — each item a savepoint with its own
+audit row — and answers 200 with one result per id: `done`, `unchanged` (the
+road's `settled`, so a retry converges) or `refused` (the single call's body).
+A refusal rolls back its item alone; an unhandled exception rolls back the
+batch (a 500 the same `Idempotency-Key` retries). One contract on both doors.
+One commit:
+
+1. **The model** — `bulk_verbs: ClassVar[tuple[str, ...]] = ("archive",
+   "restore", "move")`.
+2. **The schemas** — the body is a discriminated union on `verb` of the core
+   `BulkArchiveIn` / `BulkRestoreIn` / `BulkMoveIn` the noun lists; the answer
+   `BulkOut`, its result's `item` narrowed to the noun's `Out`.
+3. **The door** — `POST /widgets/bulk/` (`widget-bulk`), calling `run_bulk`
+   from the door and never from inside a service of its own, `resolve=` through
+   `core.verbs.resolve_subject`; the MCP twin is `bulk_widgets` (rule 17).
+   An `Idempotency-Key` replays the whole answer.
+4. **The tests** — a partial batch in order (`done, refused, done`), a
+   sibling-branch id `not_found`, a replay answering the identical body.
+
+### Adopt history in one commit
+
+**A noun declaring any family marker beyond archive carries
+`<noun>_history-list`** (house rule 74). The card is a read over the audit
+trail `@service` already writes — no table, no migration
+(`core.selectors.list_history`, served by `auditentry_object_history`). One
+commit:
+
+1. **The door** — `GET /widgets/{id}/history/` (`widget_history-list`),
+   `@paginate(CursorPagination)` over
+   `list_history(tenant=…, actor=…, row=widget)`, answering
+   `list[HistoryEntryOut]`; the MCP twin `list_widget_history` answers a
+   `HistoryPage` through `cursor_page`.
+2. **The tests** — create, update, archive, restore read back as four rows
+   newest first, `changed_fields` naming what the update sent; a sibling
+   branch's row `not_found`.
+
+### Adopt duplicate in one commit
+
+**A duplicable noun carries `<noun>-duplicate`** (house rule 74) and **every
+concrete editable field is on one side** of its declaration (rule 74's
+duplicate clause, a closed question over `_meta.concrete_fields`). A duplicate
+IS a create. One commit:
+
+1. **The model** — add `Duplicable` after the scoped base and declare
+   `duplicate = Duplicate(copies=("notes", "policy"), resets=("name", "owner",
+   "onboarded_at", "external_ref"))` (`core.models`). **What the copy owns is
+   in `resets`**: a NOT NULL owner, and a name a uniqueness (name per owner)
+   would otherwise collide on, are reset — never copied — and the service
+   fills them. A CASCADE child named in `copies` copies too, an append-only
+   child never does (naming one is `ImproperlyConfigured`). **A duplicate
+   key's constraint is the model's, not the field's**: the noun's own `Meta`
+   declares `constraints = [..., duplicate_key_constraint()]` (`core.models`;
+   `core.E001` when it is missing) — a constraint a field added behind the
+   migration's back is one a fresh database could not migrate.
+2. **The service** — `duplicate_widget(*, tenant, actor, widget,
+   idempotency_key="")`: `may_be_named` on the source (`NotFound`),
+   `require_live(widget, …)`, `require(actor, "widget.create")` at the hat,
+   then `copy, created = core.verbs.duplicate_row(tenant=…, row=widget,
+   organization=actor.org, idempotency_key=…, fill={"owner": actor.user,
+   "name": f"Copy of {widget.name}"})` — every `fill` key must be in `resets`
+   (else `TypeError`), set BEFORE the copy's one save; the copy lands at the
+   acting hat and is `full_clean()`ed first, so a clash on a unique constraint
+   is `invalid` with nothing written, never a 500 (a clash over several fields
+   answers `__all__`; the service may say it as the field it is, as
+   `duplicate_widget` says `name`). Emit `<app>.<noun>.duplicated`
+   (`event_payload(...)`, which carries `duplicated_from_id`) only when
+   `created`. A repeated key answers the FIRST copy (the `(tenant,
+   duplicated_from, duplicate_key)` partial unique the mixin's key field
+   brings).
+3. **The doors** — `POST /widgets/{id}/duplicate/` (`widget-duplicate`) → 201
+   the copy's `Out`; the MCP twin `duplicate_widget`. `allowed_acts` offers
+   `duplicate` on a live row where the actor may create at the hat.
+4. **The tests** — copies carried, resets reset and filled (the presser owns
+   the copy), the copy at the hat, a ledger child not copied, a repeated key
+   answering the first copy, a clashing second copy `invalid`.
+5. **The migration** — `makemigrations <app>`, last.
+
+### Adopt merge in one commit
+
+**A mergeable noun is archivable first** (the mixin refuses the class
+otherwise) and carries `<noun>-merge`, its dry run `<noun>_merge-detail` and
+`<noun>.merge` (house rule 74); **every foreign key into it is re-pointed or
+kept** (rule 74's FK census). The loser survives as a tombstone: archived, with
+`merged_into` naming the survivor; its reads answer read-only, its writes
+refuse `merged`. One commit:
+
+1. **The model** — add `Mergeable` after `Archivable`; list every FK into the
+   noun that STAYS on the loser in `merge_keeps = {"entries": "an append-only
+   ledger stays where it was written"}` (reverse accessor, or
+   `app.Model.field` for a hidden one). Every other FK's owning app declares
+   `REPOINTERS[<noun>]` in its `merge_repointers.py`.
+2. **The policy** — `POLICIES["widget.merge"] = may_merge` (`core.policies`,
+   `@refuses_system`, asked of BOTH rows).
+3. **The service** — `merge_widget(*, tenant, actor, widget, into, version,
+   into_version)`: reach and `require(actor, "widget.merge", …)` on both, both
+   versions, then `outcome = core.verbs.merge_rows(tenant=…, actor=…,
+   loser=widget, into=into, noun="widget")` and emit `<app>.<noun>.merged`
+   (the survivor's payload, `loser_id`, and `repoints: [{title, left}]` from
+   `outcome.repoints` — the APPLY's answers, never the dry run's) only when
+   `outcome.changed`. The dry run is `core.verbs.merge_counts(...)`.
+4. **The doors** — `POST /widgets/{id}/merge/` (`widget-merge`, `MergeIn`,
+   `@also_refuses("merge_blocked", "merged")`) and
+   `GET /widgets/{id}/merge/?into=` (`widget_merge-detail`); the MCP twins.
+5. **The tests** — the repointed attachments, the tombstone read-only, a write
+   on the loser `merged` naming the survivor, a chain compressed, the same
+   pair again unchanged, a blocker with nothing written. A noun with a delete
+   service asks `core.verbs.require_no_merged_losers(row, noun=…)` before it
+   deletes and its route adds `merge_survivor` to `@also_refuses`: the losers'
+   tombstones name the survivor, and PROTECT would otherwise answer a generic
+   `conflict`.
+6. **The migration** — `makemigrations <app>`, last.
+
+**A repointer keeps seven promises** (`core.verbs.Repointer`'s docstring;
+`apps/core/tests/test_repointer_conformance.py` measures every `"*"` one):
+(1) `count` answers the rows that will LEAVE the loser (moved, or collapsed
+onto a pair the survivor holds) and `repoint` the rows that left — equal on an
+unmoved world; (2) `repoint` re-resolves BOTH rows for the actor, an
+unreachable one `NotFound` with nothing changed; (3) one `<app>.<kind>.moved`
+per moved row, a collapse emitting its own leaving event; (4) the population is
+tenant-wide (`for_tenant(t).including_archived()`, a rule-24 valve naming the
+merge's two-record authorization); (5) every moving write stamps `updated_at`;
+(6) the authorization is the merge's, the repointer's service `# door:`- and
+`# authz:`-valved saying so; (7) **a repointer is a no-op for a kind the noun
+does not take** — where the noun's `attachments` does not name the owner's
+word, `count` and `repoint` answer 0, never a refusal that stops the merge.
+Every `"*"` owner ships
+`tests/attach_specimen.py::attach(*, tenant, actor, subject)`.
+
+### Adopt import in one commit
+
+**An imported noun has a create road** (rule 74: every `IMPORTERS` key has a
+`<noun>-create` route) — an import applies the noun's OWN services, row by
+row. In the noun's app, one commit: an `importers.py` exporting
+`IMPORTERS = {"widget": Importer(row=WidgetRow, natural_key=…, apply=…)}`
+(`core.verbs.Importer`): `row` a `StrictIn` whose fields are the file's header,
+`natural_key(*, tenant, actor, row)` finding the existing row read-only AT
+`actor.org` — the run's hat, where the apply will look, so the preview's
+`update` is a promise the apply keeps — and `apply(*, tenant, actor, row)`
+finding its row by calling that same `natural_key`, then the noun's own
+create/update, answering `(obj, "created" | "updated" | "unchanged")`. The imports app finds it; nothing
+registers it. The tests drive one file through the import door.
+
+### Adopt attach in one commit
+
+**A noun takes notes, files and tags by declaring
+`attachments = ("notes", "files", "tags")`**; the rows live in the three owner
+apps, found by `(subject_kind, subject_id)`, and a noun listing `tags` answers
+`tags` on its detail (rule 74). **The landing law** (measured once across every
+owner by `apps/core/tests/test_attach_conformance.py`): an attachment lands at
+its SUBJECT's organization; a TENANT-WIDE subject has none, so it lands at the
+ACTING HAT — never the root, because visibility is down-only and a branch
+author could not read back a root-landed note (rule 55's root-only writes
+govern a tenant-wide ROW, never the org-scoped link). Two rulings follow from
+it, for the owners to carry:
+
+- **One per pair follows the landing.** A tenant-wide `(tag, subject)`
+  uniqueness answers `conflict` to a second hat attaching the same word — a
+  refusal that reveals a link the second hat cannot see, which is the
+  existence leak reach refusals exist to prevent (not-there and not-yours are
+  one answer). The pair is unique per hat: `(tag, subject, organization)`, and
+  a reader above two hats sees the word once per hat that said it.
+- **A merge does not re-land.** A repoint keeps each moved attachment's
+  organization when the survivor is tenant-wide (a repoint changes WHAT the row
+  is about, never WHO may read it — re-landing at the merging actor's hat would
+  widen a branch's private note to the tenant as a side effect nobody pressed);
+  for an org-scoped survivor the attachment moves to the survivor's
+  organization, where its subject lives.
+

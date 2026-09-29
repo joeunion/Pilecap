@@ -18,14 +18,18 @@ Two things live here and they are deliberately different shapes:
   scratch clone of the older tree rather than typed from a reading of it, and
   the test re-runs it here and compares.
 
-**Deriving `flat_product_baseline.json`** (the command its own header names):
+**Deriving `flat_product_baseline.json`** (the command its own header names),
+in place, on the tree whose answers it records:
 
 ```bash
-git worktree add <scratch> eb88c9db --detach
-cp apps/core/tests/permissions_world.py <scratch>/apps/core/tests/permissions_world.py
-cd <scratch> && ./scripts/setup.sh && uv run python manage.py shell -c \
-  "from apps.core.tests.permissions_world import write_flat_product_baseline as w; w('<out>')"
+uv run python manage.py shell -c \
+  "from apps.core.tests.permissions_world import write_flat_product_baseline as w; \
+   w('apps/core/tests/flat_product_baseline.json')"
 ```
+
+`apps/core/tests/test_flat_baseline_document.py` runs the same writer in-process
+and diffs its answer against the committed file, so a document its writer would
+no longer produce is a red naming the keys, and the remedy is this command.
 
 The writer writes the FILE rather than printing it, because `manage.py shell`
 prints a banner of its own on stdout and a redirect would bake it into the
@@ -65,14 +69,13 @@ PASSWORD = "census-pass-1234"  # pragma: allowlist secret
 #: The tree `flat_product_baseline.json` was derived on, and the command that
 #: derived it — carried INTO the document so the file says how to re-make
 #: itself. A baseline whose provenance lives only in a report is a baseline
-#: nobody re-derives.
-BASELINE_SHA = "ae19beab"
+#: nobody re-derives. Re-derived IN PLACE: the document records this tree's
+#: answers, and `test_flat_baseline_document.py` holds it to them.
+BASELINE_SHA = "e85a5057"
 BASELINE_COMMAND = (
-    "git worktree add <scratch> ae19beab --detach && "
-    "cp apps/core/tests/permissions_world.py <scratch>/apps/core/tests/ && "
-    "cd <scratch> && ./scripts/setup.sh && uv run python manage.py shell -c "
+    "uv run python manage.py shell -c "
     '"from apps.core.tests.permissions_world import write_flat_product_baseline as w; '
-    "w('<repo>/apps/core/tests/flat_product_baseline.json')\""
+    "w('apps/core/tests/flat_product_baseline.json')\""
 )
 
 

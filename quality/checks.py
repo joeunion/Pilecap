@@ -1684,7 +1684,52 @@ def ast_vocabulary(root: Path) -> set[str]:
     kinds = {k for k in model_kinds(root).values() if k}
     prose, renames, _unreadable, _declarations = declared_key_sites(root)
     derived = {f"{kind}.{verb}" for kind in kinds for verb in _CRUD_VERBS}
+    derived |= family_derived_keys(root)
     return derived | set(prose) | set(renames) | set(renames.values()) | set(_RESERVED_KEYS)
+
+
+#: `core.models.ARCHIVABLE_ATTR` and the mixin that sets it, re-derived — rule
+#: 75's resolver and this census read the same two names.
+_ARCHIVABLE_ATTR = "archivable"
+_ARCHIVABLE_MIXIN = "Archivable"
+
+#: `apps.core.verbs.ROADS`, re-derived: the verbs each family marker adds to its
+#: kind's derived keys. The runtime reads the table; this census reads the tree,
+#: and a marker joining the family joins both in the same commit.
+_FAMILY_MARKER_VERBS: dict[str, tuple[str, ...]] = {
+    _ARCHIVABLE_ATTR: ("archive", "restore"),
+    "movable": ("move",),
+    "mergeable": ("merge",),
+}
+
+#: The mixin that seeds each marker's population (rule 75's resolver shape).
+_FAMILY_MARKER_MIXINS: dict[str, str] = {
+    _ARCHIVABLE_ATTR: _ARCHIVABLE_MIXIN,
+    "movable": "Movable",
+    "mergeable": "Mergeable",
+}
+
+
+def family_derived_keys(root: Path) -> set[str]:
+    """`<kind>.<verb>` for every family verb a marked model's kind derives.
+
+    `apps.core.authz.family_verbs`, re-derived by AST: a model that declared
+    `Archivable` (itself or through a base) derives `<kind>.archive` and
+    `<kind>.restore` exactly as it derives its four CRUD keys.
+    """
+    kinds = model_kinds(root)
+    _sites, _append_only, archivable = declared_class_populations(root)
+    marked = {_ARCHIVABLE_ATTR: archivable}
+    for marker, mixin in _FAMILY_MARKER_MIXINS.items():
+        if marker not in marked:
+            marked[marker] = declared_marker_classes(root, marker, mixin)
+    keys: set[str] = set()
+    for marker, verbs in _FAMILY_MARKER_VERBS.items():
+        for name in marked[marker]:
+            kind = kinds.get(name)
+            if kind:
+                keys.update(f"{kind}.{verb}" for verb in verbs)
+    return keys
 
 
 def _asks(fn: ast.AST, constants: dict[str, str]) -> list[tuple[int, str | None, str]]:
@@ -2215,9 +2260,12 @@ def authz_vocabulary_shape(root: Path, rule: dict) -> CheckResult:
         owners.setdefault(kind, name)
     out.count("kinds", len(kindset))
     out.count("derived_keys", len(kindset) * len(_CRUD_VERBS))
+    family_keys = family_derived_keys(root)
 
     for action, (rel, line) in sorted(prose_sites.items()):
-        derived = action.split(".")[0] in kindset and action.split(".")[-1] in _CRUD_VERBS
+        derived = (
+            action.split(".")[0] in kindset and action.split(".")[-1] in _CRUD_VERBS
+        ) or action in family_keys
         if derived and len(action.split(".")) == 2:
             # A sentence override of a key the registry already derived. Legal,
             # and the whole point of `ACTION_PROSE` for a derived key.
@@ -2260,6 +2308,7 @@ def authz_vocabulary_shape(root: Path, rule: dict) -> CheckResult:
     # with its sentence, or name the one that exists.
     words = (
         {f"{kind}.{verb}" for kind in kindset for verb in _CRUD_VERBS}
+        | family_keys
         | set(prose_sites)
         | set(renames)
         | set(renames.values())
@@ -4571,6 +4620,389 @@ def append_only_model_names(root: Path) -> dict[str, str]:
     return found
 
 
+# --- rule 75's resolver: the two declared populations, by class name -------------
+#
+# `core.models.Archivable` sets `archivable = True`; `append_only = True` is
+# rule 20's declaration. Both are INHERITED, so the population is resolved by
+# class name to a fixed point over every `.py` under `apps/` — the same reading
+# the registry's attribute lookup makes, without running anything. Rule 54's
+# vocabulary census reads the archivable half too (an archivable kind derives
+# `archive` and `restore`), and rule 76 will read the same resolver for its own
+# marker; one resolver, so the three cannot come to disagree about who declared.
+
+
+def declared_class_populations(
+    root: Path,
+) -> tuple[dict[str, list[tuple[str, int]]], set[str], set[str]]:
+    """(definition sites by class name, append-only names, archivable names).
+
+    Sites are `(relative path, line)` per definition — two modules defining one
+    class name are read as the union of both, which can accuse a bystander (the
+    loud direction, and the rule's valve is the answer) and never hides one.
+    `Archivable` itself seeds the archivable population: it declares the marker
+    and is its root.
+    """
+    sites: dict[str, list[tuple[str, int]]] = {}
+    bases_of: dict[str, set[str]] = {}
+    append_only: set[str] = set()
+    archivable: set[str] = {_ARCHIVABLE_MIXIN}
+    for path in _py_files(root, "apps"):
+        tree = _parse(path)
+        if tree is None:
+            continue
+        rel = path.relative_to(root).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef) or node.name == "Meta":
+                continue
+            sites.setdefault(node.name, []).append((rel, node.lineno))
+            bases_of.setdefault(node.name, set()).update(_base_names(node))
+            if _class_attribute_is_true(node, _APPEND_ONLY_ATTR):
+                append_only.add(node.name)
+            if _class_attribute_is_true(node, _ARCHIVABLE_ATTR):
+                archivable.add(node.name)
+    changed = True
+    while changed:
+        changed = False
+        for name, bases in bases_of.items():
+            if name not in append_only and bases & append_only:
+                append_only.add(name)
+                changed = True
+            if name not in archivable and bases & archivable:
+                archivable.add(name)
+                changed = True
+    return sites, append_only & sites.keys(), archivable & sites.keys()
+
+
+def archivable_is_not_append_only(root: Path, rule: dict) -> CheckResult:
+    """Rule 75. No model is both append-only and `Archivable` (D8).
+
+    The static half of `core.models.Archivable.__init_subclass__`'s refusal:
+    it reads the source and fires without running it. Both populations are
+    derived from the tree by class name to a fixed point; nothing is listed.
+    """
+    out = CheckResult()
+    sites, append_only, archivable = declared_class_populations(root)
+    out.count("append_only_classes", len(append_only))
+    out.count("archivable_classes", len(archivable))
+    for name in sorted(append_only & archivable):
+        for rel, line in sites.get(name, []):
+            if _exempt(rule, rel):
+                continue
+            out.hit(
+                rel,
+                line,
+                f"{name} is both append-only (`append_only = True`, itself or through a "
+                "base) and `Archivable`. The two are disjoint (D8): an append-only row is "
+                "a witnessed fact and archiving one hides it from every read — a rewrite "
+                "by another name. Supersede a ledger row with a new one; archive a noun "
+                "that owns no ledger promise. `core.models.Archivable` refuses the same "
+                "shape at class definition; this is its static half.",
+            )
+    return out
+
+
+# --- rule 76: a versioned row's writes move `updated_at` ------------------------
+#
+# `core.models.Versioned` derives the optimistic-concurrency token from
+# `updated_at` (`core.concurrency.version_of`): no column, so nothing a service
+# could forget to bump — EXCEPT a write that leaves `updated_at` where it was.
+# `auto_now` moves it on a plain `save()`, but a `save(update_fields=[...])`
+# that does not list it writes the listed columns and leaves the stamp, and a
+# queryset `.update(...)` never touches `auto_now` at all. Either is a change
+# the next reader's version cannot see, so a stale edit made against the old
+# version sails through. The population is rule 75's resolver shape: declared
+# by class name to a fixed point, seeded by the mixin.
+
+_VERSIONED_ATTR = "versioned"
+_VERSIONED_MIXIN = "Versioned"
+_STAMP = "updated_at"
+
+
+def declared_marker_classes(root: Path, attr: str, mixin: str) -> set[str]:
+    """Every class under `apps/` that declares `attr = True`, itself or through a base.
+
+    The generic half of `declared_class_populations`: seeded by the mixin that
+    declares the marker, resolved by class name to a fixed point. Only names
+    with a definition site are returned.
+    """
+    bases_of: dict[str, set[str]] = {}
+    marked: set[str] = {mixin}
+    for path in _py_files(root, "apps"):
+        tree = _parse(path)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef) or node.name == "Meta":
+                continue
+            bases_of.setdefault(node.name, set()).update(_base_names(node))
+            if _class_attribute_is_true(node, attr):
+                marked.add(node.name)
+    changed = True
+    while changed:
+        changed = False
+        for name, bases in bases_of.items():
+            if name not in marked and bases & marked:
+                marked.add(name)
+                changed = True
+    return marked & bases_of.keys()
+
+
+def _literal_strings(node: ast.expr | None) -> list[str] | None:
+    """The strings of a literal list/tuple/set of string constants, else None."""
+    if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return None
+    out: list[str] = []
+    for element in node.elts:
+        if not (isinstance(element, ast.Constant) and isinstance(element.value, str)):
+            return None
+        out.append(element.value)
+    return out
+
+
+def _keyword(call: ast.Call, name: str) -> ast.expr | None:
+    for keyword in call.keywords:
+        if keyword.arg == name:
+            return keyword.value
+    return None
+
+
+def _row_names(tree: ast.Module, model: str) -> set[str]:
+    """Names that hold a row of `model`: bound from an expression naming it, or a
+    parameter annotated with it (`widget: Widget`) — the services' usual shape."""
+    names = set(_names_bound_to(tree, model))
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names |= {a.arg for a in _all_args(fn) if model in _annotation_names(a.annotation)}
+    return names
+
+
+def versioned_writes_move_updated_at(root: Path, rule: dict) -> CheckResult:
+    """Rule 76. A write to a `Versioned` row moves `updated_at`, the version's source.
+
+    Three shapes fire, each only when the source makes the columns legible:
+    `row.save(update_fields=[...])` with a LITERAL list lacking `"updated_at"`
+    on a name holding a row of a versioned class; a queryset `.update(...)`
+    rooted at a versioned class with no `updated_at=` keyword (a `**kwargs`
+    spread is unreadable and is not accused); `.bulk_update(objs, [...])` whose
+    literal field list lacks it. Tests and migrations are outside the scope.
+    """
+    out = CheckResult()
+    versioned = declared_marker_classes(root, _VERSIONED_ATTR, _VERSIONED_MIXIN)
+    out.count("versioned_classes", len(versioned))
+    models_only = sorted(versioned - {_VERSIONED_MIXIN})
+    for path in _py_files(root, "apps"):
+        tree = _parse(path)
+        if tree is None:
+            continue
+        rel = path.relative_to(root).as_posix()
+        if _exempt(rule, rel):
+            continue
+        text = _read(path)
+        for model in models_only:
+            if not re.search(rf"\b{re.escape(model)}\b", text):
+                continue
+            rows = _row_names(tree, model)
+            qs_names, helpers = _queryset_bindings(tree, model)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                method, receiver = node.func.attr, node.func.value
+                if method == "save" and isinstance(receiver, ast.Name) and receiver.id in rows:
+                    fields = _literal_strings(_keyword(node, "update_fields"))
+                    if fields is not None and _STAMP not in fields:
+                        out.hit(
+                            rel,
+                            node.lineno,
+                            f"`{receiver.id}.save(update_fields={fields!r})` writes a "
+                            f"`Versioned` {model} without moving `updated_at`, so its version "
+                            "(`core.concurrency.version_of`) does not change and an edit made "
+                            'against the old one is not refused — list `"updated_at"` too.',
+                        )
+                elif method in ("update", "bulk_update") and _queryset_rooted(
+                    receiver, model, qs_names, helpers
+                ):
+                    if method == "update":
+                        if any(k.arg is None for k in node.keywords):
+                            continue
+                        if _keyword(node, _STAMP) is not None or not node.keywords:
+                            continue
+                        out.hit(
+                            rel,
+                            node.lineno,
+                            f"a queryset `.update(...)` on the `Versioned` {model} names no "
+                            "`updated_at=` — `auto_now` does not run on a queryset update, so "
+                            "every row it changes keeps its old version. Add "
+                            "`updated_at=now()` (`apps.core.time.now`).",
+                        )
+                    else:
+                        listed = _keyword(node, "fields")
+                        if listed is None and len(node.args) > 1:
+                            listed = node.args[1]
+                        fields = _literal_strings(listed)
+                        if fields is not None and _STAMP not in fields:
+                            out.hit(
+                                rel,
+                                node.lineno,
+                                f"`bulk_update(..., {fields!r})` on the `Versioned` {model} "
+                                "leaves `updated_at` where it was — set it on each row and "
+                                'list `"updated_at"`.',
+                            )
+    return out
+
+
+# --- rules 81 and 82: the archive's two quiet traps -----------------------------
+#
+# Both populations are `declared_marker_classes(root, "archivable", "Archivable")`
+# — rule 76's resolver shape, by class name to a fixed point over `apps/`.
+
+_ARCHIVABLE_ATTR = "archivable"
+_ARCHIVABLE_MIXIN = "Archivable"
+_ARCHIVED_AT = "archived_at"
+#: The one module whose own widenings ARE the widenings (`including_archived`,
+#: `archived_only`), and so the one module rule 81 does not read.
+_WIDENINGS_MODULE = "apps/core/models.py"
+
+
+def _names_the_archive_column(call: ast.Call) -> str | None:
+    """The `archived_at` lookup a `.filter(...)` / `.exclude(...)` keyword spells, or None."""
+    for keyword in call.keywords:
+        if keyword.arg and (
+            keyword.arg == _ARCHIVED_AT or keyword.arg.startswith(f"{_ARCHIVED_AT}__")
+        ):
+            return keyword.arg
+    return None
+
+
+def archive_widenings_are_the_only_widenings(root: Path, rule: dict) -> CheckResult:
+    """Rule 81. An archivable noun's archived rows are reached only through its widenings.
+
+    `for_tenant()` leaves archived rows out, so a hand filter on `archived_at`
+    after it — `.filter(archived_at__isnull=False)`, `.exclude(archived_at=None)`
+    — answers `[]` with no error: the rows it asks for were removed a step
+    earlier. `.archived_only()` and `.including_archived()` are the only roads.
+    A `.filter(...)` / `.exclude(...)` whose keyword names `archived_at`, on a
+    queryset rooted at an archivable class, fires.
+    """
+    out = CheckResult()
+    archivable = declared_marker_classes(root, _ARCHIVABLE_ATTR, _ARCHIVABLE_MIXIN)
+    out.count("archivable_classes", len(archivable))
+    models_only = sorted(archivable - {_ARCHIVABLE_MIXIN})
+    for path in _py_files(root, "apps"):
+        rel = path.relative_to(root).as_posix()
+        if rel == _WIDENINGS_MODULE or _is_test_module(rel) or "/migrations/" in rel:
+            continue
+        if _exempt(rule, rel):
+            continue
+        text = _read(path)
+        if _ARCHIVED_AT not in text:
+            continue
+        tree = _parse(path)
+        if tree is None:
+            continue
+        out.count("files_read")
+        for model in models_only:
+            if not re.search(rf"\b{re.escape(model)}\b", text):
+                continue
+            qs_names, helpers = _queryset_bindings(tree, model)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr not in ("filter", "exclude"):
+                    continue
+                lookup = _names_the_archive_column(node)
+                if lookup is None:
+                    continue
+                if not _queryset_rooted(node.func.value, model, qs_names, helpers):
+                    continue
+                out.hit(
+                    rel,
+                    node.lineno,
+                    f"`.{node.func.attr}({lookup}=…)` on the archivable {model} — `for_tenant()` "
+                    "already left the archived rows out, so this answers nothing and says "
+                    "nothing. Ask with `.archived_only()` (the archived cut) or "
+                    "`.including_archived()` (both), the only widenings (house rule 81).",
+                )
+    return out
+
+
+def _service_functions(tree: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    return [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and "service" in _decorator_names(node)
+    ]
+
+
+def _calls_require_live(fn: ast.AST) -> bool:
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if name == "require_live":
+            return True
+    return False
+
+
+def archivable_writes_require_live(root: Path, rule: dict) -> CheckResult:
+    """Rule 82. A writing `@service` on an archivable noun calls `require_live`, or is the pair.
+
+    An archived row's writes other than its restore refuse `archived`
+    (`core.verbs.require_live`) — but only where the service calls it, so a
+    service that forgot edits a row nobody can see in the book. A `@service`
+    in `apps/*/services.py` named for a keyword parameter annotated by an
+    archivable class (by name) — `<verb>_<param>(*, <param>: Noun)`, a write ON
+    that row — that is not the `archive_`/`restore_` pair, and whose body calls
+    no `require_live(`, fires.
+    """
+    out = CheckResult()
+    archivable = declared_marker_classes(root, _ARCHIVABLE_ATTR, _ARCHIVABLE_MIXIN)
+    out.count("archivable_classes", len(archivable))
+    models_only = archivable - {_ARCHIVABLE_MIXIN}
+    for path in _py_files(root, "apps", named={"services.py"}):
+        rel = path.relative_to(root).as_posix()
+        if _is_test_module(rel) or _exempt(rule, rel):
+            continue
+        tree = _parse(path)
+        if tree is None:
+            continue
+        for fn in _service_functions(tree):
+            out.count("services_read")
+            # The row the service is ABOUT: a keyword parameter annotated by an
+            # archivable class whose NAME the service's own name ends with —
+            # `suppress_recipient(*, recipient: Recipient)`, `frob_widget(*,
+            # widget: Widget)`. A service that takes the row as a reference to
+            # write something else (`send(*, recipient)` writes a message,
+            # `create_widget(*, policy)` a widget) is not a write on it.
+            held = sorted(
+                {
+                    name
+                    for argument in fn.args.kwonlyargs
+                    if fn.name.endswith(f"_{argument.arg}")
+                    for name in _annotation_names(argument.annotation) & models_only
+                }
+            )
+            if not held:
+                continue
+            out.count("archivable_services")
+            if fn.name.startswith(("archive_", "restore_")):
+                continue
+            if _calls_require_live(fn):
+                continue
+            out.hit(
+                rel,
+                fn.lineno,
+                f"{fn.name} takes a {', '.join(held)} — archivable — and never calls "
+                "`require_live(...)`, so it writes an archived row in place: a change nobody "
+                "can see in the book. Call `core.verbs.require_live(row, noun=…)` before the "
+                "write, or record `# rule-82: <reason>` when this service writes something "
+                "that is not the row (house rule 82).",
+                klass="unguarded_write",
+            )
+    return out
+
+
 # : The queryset-level rewrites. A manager or queryset expression is the
 # : receiver, so the model's name is IN the receiver and the word-bounded match
 # : below finds it.
@@ -6525,37 +6957,108 @@ def _camel_suffix_pairs(model: str, stem: str) -> bool:
     return stem[0].isupper()
 
 
-def _out_fields_with_inheritance(path: Path) -> dict[str, dict[str, str]]:
-    """`_out_fields`, plus the fields an `Out` inherits from a sibling in the file.
+#: The one module whose classes a schema module's `Out` may inherit fields from
+#: ACROSS a file boundary: the family's shared bases (`ArchivedOut`, `ActsOut`,
+#: `HomedOut`, `VersionedOut`, …) live here, and an `Out` that moved a field
+#: into one of them has not removed it. Every class the module defines counts —
+#: derived from the module, never a list.
+_CORE_SCHEMAS = "apps/core/schemas.py"
+_CORE_SCHEMAS_MODULE = "apps.core.schemas"
+
+
+def _class_fields(tree: ast.Module) -> tuple[dict[str, dict[str, str]], dict[str, list[str]]]:
+    """({class: own annotated fields}, {class: its `ast.Name` bases}) for every class."""
+    fields: dict[str, dict[str, str]] = {}
+    bases: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        fields[node.name] = {
+            stmt.target.id: ast.unparse(stmt.annotation)
+            for stmt in node.body
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+        }
+        bases[node.name] = [b.id for b in node.bases if isinstance(b, ast.Name)]
+    return fields, bases
+
+
+def _resolve_fields(
+    name: str,
+    fields: dict[str, dict[str, str]],
+    bases: dict[str, list[str]],
+    imported: dict[str, dict[str, str]],
+    seen: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """A class's fields with every base it names merged beneath its own."""
+    if name in seen:
+        return {}
+    if name not in fields:
+        return dict(imported.get(name, {}))
+    merged: dict[str, str] = {}
+    for base in bases.get(name, []):
+        merged.update(_resolve_fields(base, fields, bases, imported, seen | {name}))
+    merged.update(fields[name])
+    return merged
+
+
+_CORE_FIELDS_CACHE: dict[str, dict[str, dict[str, str]]] = {}
+
+
+def _core_schema_fields(root: Path | None) -> dict[str, dict[str, str]]:
+    """{class: fields, inherited within the module} for every class core schemas define."""
+    if root is None:
+        return {}
+    key = str(root)
+    if key not in _CORE_FIELDS_CACHE:
+        tree = _parse(root / _CORE_SCHEMAS)
+        if tree is None:
+            _CORE_FIELDS_CACHE[key] = {}
+        else:
+            fields, bases = _class_fields(tree)
+            _CORE_FIELDS_CACHE[key] = {
+                name: _resolve_fields(name, fields, bases, {}) for name in fields
+            }
+    return _CORE_FIELDS_CACHE[key]
+
+
+def _out_fields_inherited(source: str, root: Path | None) -> dict[str, dict[str, str]]:
+    """`_out_fields`, with every base resolved — same-file, or imported from core's schemas.
+
+    A `class RecipientOut(ArchivedOut)` whose `archived_at` moved from its own
+    body into the imported base has not lost the field; reading only the class
+    body (or only same-file bases) called that a REMOVAL, and two adopters paid
+    a `# rule-17:` valve for it. A base imported from anywhere else is not
+    resolved (declared).
+    """
+    own = _out_fields(source)
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return own
+    fields, bases = _class_fields(tree)
+    core = _core_schema_fields(root)
+    imported: dict[str, dict[str, str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == _CORE_SCHEMAS_MODULE:
+            for alias in node.names:
+                if alias.name in core:
+                    imported[alias.asname or alias.name] = core[alias.name]
+    return {name: _resolve_fields(name, fields, bases, imported) for name in own}
+
+
+def _out_fields_with_inheritance(path: Path, root: Path | None = None) -> dict[str, dict[str, str]]:
+    """`_out_fields`, plus the fields an `Out` inherits from a sibling in the file
+    or from a base it imports from `apps/core/schemas.py`.
 
     A `class WidgetDetailOut(WidgetOut)` that adds two fields has declared every
     field `WidgetOut` declared. Reading only the class body would call that a
     violation, which is a false positive the negatives keep honest.
     """
-    source = _read(path)
-    own = _out_fields(source)
-    tree = _parse(path)
-    if tree is None:
-        return own
-    bases: dict[str, list[str]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name in own:
-            bases[node.name] = [b.id for b in node.bases if isinstance(b, ast.Name)]
-    resolved: dict[str, dict[str, str]] = {}
-
-    def fields_of(name: str, seen: frozenset[str]) -> dict[str, str]:
-        if name in resolved:
-            return resolved[name]
-        if name in seen or name not in own:
-            return {}
-        merged: dict[str, str] = {}
-        for base in bases.get(name, []):
-            merged.update(fields_of(base, seen | {name}))
-        merged.update(own[name])
-        resolved[name] = merged
-        return merged
-
-    return {name: fields_of(name, frozenset()) for name in own}
+    if root is None:
+        # The tree this module sits in: `apps/<x>/schemas.py` → the checkout.
+        parts = path.resolve().parts
+        root = Path(*parts[: parts.index("apps")]) if "apps" in parts else None
+    return _out_fields_inherited(_read(path), root)
 
 
 def _schema_modules(root: Path) -> list[Path]:
@@ -6887,8 +7390,10 @@ def diff_checks(root: Path, ref: str, rules_by_id: dict[str, dict]) -> dict[str,
     # that arrives elsewhere with a field removed or re-typed is a move AND a
     # break, and the message below says so instead of choosing one.
     schema_paths = [p for p in changed if p.startswith("apps/") and Path(p).name == "schemas.py"]
-    schema_before = {p: _out_fields(_ref_source(root, ref, p)) for p in schema_paths}
-    schema_after = {p: _out_fields(_read(root / p)) for p in schema_paths}
+    schema_before = {
+        p: _out_fields_inherited(_ref_source(root, ref, p), root) for p in schema_paths
+    }
+    schema_after = {p: _out_fields_inherited(_read(root / p), root) for p in schema_paths}
 
     def _arrivals(cls: str, source: str) -> list[tuple[str, dict[str, str]]]:
         """Every OTHER changed schemas.py this class newly appeared in."""
@@ -6961,8 +7466,8 @@ def diff_checks(root: Path, ref: str, rules_by_id: dict[str, dict]) -> dict[str,
         # rule 17 — a removed or re-typed field on an existing Out schema is a
         # breaking change; it blocks unless this same change adds a v2 router.
         if app and Path(path).name == "schemas.py":
-            old = schema_before.get(path, _out_fields(_ref_source(root, ref, path)))
-            new = schema_after.get(path, _out_fields(_read(root / path)))
+            old = schema_before.get(path, _out_fields_inherited(_ref_source(root, ref, path), root))
+            new = schema_after.get(path, _out_fields_inherited(_read(root / path), root))
             for cls, old_fields in old.items():
                 if cls not in new:
                     arrivals = _arrivals(cls, path)
@@ -8072,7 +8577,33 @@ def count_admin_classes(root: Path, rule: dict) -> CheckResult:
     return out
 
 
+def count_noun_roads(root: Path, rule: dict) -> CheckResult:
+    """Rule 74's floor: the roads it reads and the marker population it judges.
+
+    Two populations, each named, because they fail independently (rung-execution
+    §2: a floor names populations, not reach kinds). `roads` is the keys of
+    `apps/core/verbs.py`'s `ROADS` literal, read by AST — a table that emptied
+    would leave the check judging nothing. `marker_classes` is the archivable
+    population through rule 75's resolver, and it includes the `Archivable`
+    mixin itself (the population's root), so the floor holds from the day the
+    mixin lands, before any noun adopts it.
+    """
+    out = CheckResult()
+    tree = _parse(root / "apps/core/verbs.py")
+    for node in tree.body if tree is not None else []:
+        target = node.target if isinstance(node, ast.AnnAssign) else None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        value = getattr(node, "value", None)
+        if isinstance(target, ast.Name) and target.id == "ROADS" and isinstance(value, ast.Dict):
+            out.count("roads", len(value.keys))
+    _sites, _append_only, archivable = declared_class_populations(root)
+    out.count("marker_classes", len(archivable))
+    return out
+
+
 FLOOR_PROXIES = {
+    "count_noun_roads": count_noun_roads,
     "count_model_classes": count_model_classes,
     "count_routes": count_routes,
     "count_contract_surface": count_contract_surface,
@@ -8222,6 +8753,43 @@ def _function_in(root: Path, dotted: str, name: str) -> ast.AST | None:
                 return node
         return None
     return None
+
+
+def _added_refusals(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]:
+    """The codes a route's `@also_refuses(...)` ADDS to the set it publishes anyway."""
+    for dec in node.decorator_list:
+        if not isinstance(dec, ast.Call):
+            continue
+        target = dec.func
+        name = target.id if isinstance(target, ast.Name) else getattr(target, "attr", None)
+        if name == "also_refuses":
+            return tuple(
+                arg.value
+                for arg in dec.args
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            )
+    return ()
+
+
+# : The ONE module whose raises the reach follows a second hop into: the family
+# : seams every noun's service calls (`archive_row`, `require_live`, `rehome`,
+# : `merge_rows`, …). A noun's `@service` is one call below its route and the
+# : seam is one call below that, so a one-hop walk could never see the family's
+# : refusals and every adopter paid a `# rule-41:` valve for it. Closed by the
+# : module, never a list of function names.
+_SECOND_HOP_MODULE = "apps.core.verbs"
+
+
+def _second_hop_codes(root: Path, codes_by_class: dict[str, str]) -> dict[str, set[str]]:
+    """{function name: the codes it raises} for every top-level function of the seam module."""
+    tree = _parse(root.joinpath(*_SECOND_HOP_MODULE.split(".")).with_suffix(".py"))
+    if tree is None:
+        return {}
+    return {
+        node.name: _raised_codes(node, codes_by_class)
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
 
 
 def _route_decorators(
@@ -8492,6 +9060,38 @@ def _declares_the_valve(root: Path, dotted: str, node: ast.AST) -> bool:
     return any(_AUTHZ_VALVE in line for line in lines[start - 1 : end])
 
 
+def _seam_calls(
+    root: Path,
+    module: str,
+    callee: ast.AST,
+    cache: dict[str, tuple[dict[str, str], dict[str, str], set[str]]],
+) -> set[str]:
+    """The seam-module functions a callee calls by a name its own module imported."""
+    maps = cache.get(module)
+    if maps is None:
+        path = _module_file(root, module)
+        tree = _parse(path) if path is not None else None
+        if tree is None:
+            maps = ({}, {}, set())
+        else:
+            modules, symbols = _import_maps(root, tree, module)
+            local = {
+                node.name
+                for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            }
+            maps = (modules, symbols, local)
+        cache[module] = maps
+    modules, symbols, local = maps
+    return {
+        name
+        for owner, name in _resolved_calls(
+            callee, here=module, modules=modules, symbols=symbols, local=local
+        )
+        if owner == _SECOND_HOP_MODULE
+    }
+
+
 def refusal_block_census(root: Path, rule: dict) -> CheckResult:
     """Rule 41's and clauses: the published refusals against the code.
 
@@ -8502,6 +9102,8 @@ def refusal_block_census(root: Path, rule: dict) -> CheckResult:
     out = CheckResult()
     vocabulary = _door_shape_vocabulary(root)
     codes_by_class = _refusal_codes_by_class(root)
+    seam_codes = _second_hop_codes(root, codes_by_class)
+    callee_maps: dict[str, tuple[dict[str, str], dict[str, str], set[str]]] = {}
     policy_code = _policy_refusal_code(root, codes_by_class)
     role_words = _privileged_role_words(root)
     out.targets_matched["shape_codes"] = len(vocabulary)
@@ -8510,6 +9112,8 @@ def refusal_block_census(root: Path, rule: dict) -> CheckResult:
     out.targets_matched["routes_with_an_unresolved_callee"] = 0
     out.targets_matched["privileged_role_words"] = len(role_words)
     out.targets_matched["role_promising_routes"] = 0
+    out.targets_matched["seam_functions"] = len(seam_codes)
+    out.targets_matched["seam_calls_followed"] = 0
     divider = _module_constants(root, root / _CONTRACT_DIVIDER_SOURCE).get(
         "CONTRACT_DIVIDER", "---"
     )
@@ -8533,6 +9137,7 @@ def refusal_block_census(root: Path, rule: dict) -> CheckResult:
                 is_route, declared = _route_decorators(node)
                 if not is_route:
                     continue
+                added = set(_added_refusals(node))
                 out.count("censused_routes")
                 if declared is not None:
                     out.count("narrowed_routes")
@@ -8542,14 +9147,30 @@ def refusal_block_census(root: Path, rule: dict) -> CheckResult:
                 opaque = _dispatches_opaquely(node, modules=modules, symbols=symbols, local=local)
                 reachable = _raised_codes(node, codes_by_class)
                 authorizes = _calls_the_seam(node)
+                # What the family seam module raises, reached through a service
+                # (or the route itself). Kept apart so a finding it alone makes
+                # is its own class: the backlog the second hop found on the day
+                # it landed is measured and ratcheted separately, and can never
+                # pay for a one-hop underclaim.
+                via_seam: set[str] = set()
                 for module, name in sorted(calls):
+                    if module == _SECOND_HOP_MODULE and name in seam_codes:
+                        out.count("seam_calls_followed")
+                        via_seam |= seam_codes[name]
                     callee = _function_in(root, module, name)
                     if callee is None:
                         continue
                     out.count("callees_read")
                     reachable |= _raised_codes(callee, codes_by_class)
+                    # The second hop, into the family seam module only.
+                    for seam in _seam_calls(root, module, callee, callee_maps):
+                        if seam in seam_codes:
+                            out.count("seam_calls_followed")
+                            via_seam |= seam_codes[seam]
                     if _calls_the_seam(callee) or _declares_the_valve(root, module, callee):
                         authorizes = True
+                seam_only = via_seam - reachable
+                reachable |= via_seam
                 if opaque:
                     out.count("routes_with_an_unresolved_callee")
 
@@ -8578,8 +9199,10 @@ def refusal_block_census(root: Path, rule: dict) -> CheckResult:
                             klass="unbacked_promise",
                         )
 
-                published = set(declared) if declared is not None else None
+                published = set(declared) | added if declared is not None else None
                 for code in sorted(reachable):
+                    if code in added:
+                        continue
                     if published is not None:
                         if code in published:
                             continue
@@ -8592,7 +9215,7 @@ def refusal_block_census(root: Path, rule: dict) -> CheckResult:
                             f"branches on the document has no branch for {code!r} and will meet "
                             "one (house rule 41)",
                             root=root,
-                            klass="underclaim",
+                            klass="seam_underclaim" if code in seam_only else "underclaim",
                         )
                         continue
                     if code in vocabulary:
@@ -8603,9 +9226,10 @@ def refusal_block_census(root: Path, rule: dict) -> CheckResult:
                         f"{node.name} can answer {code!r} — something it calls directly raises "
                         "it — and the door-shape derivation can never produce that code, so the "
                         "document does not mention it anywhere. Narrow the route with "
-                        "`@refuses(...)` naming it (house rule 41)",
+                        "`@refuses(...)` naming it — or, when the derivation is right and "
+                        "this is one more, `@also_refuses(...)` (house rule 41)",
                         root=root,
-                        klass="undocumented",
+                        klass="seam_undocumented" if code in seam_only else "undocumented",
                     )
                 if published is None or opaque:
                     continue
@@ -9915,6 +10539,17 @@ SIGNING_METHODS = ("generate_presigned_url", "generate_presigned_post")
 # : calls), so a recogniser holding it would fire on the legal door.
 OBJECT_READ_METHODS = ("get_object", "download_fileobj", "download_file")
 
+# : The seam's OWN content read, `apps/files/storage.py::iter_object` — the one
+# : server-side read of an object's bytes the seam offers, and it offers it to an
+# : ACTIVITY's parser (an import reading a CSV row by row). Called from a door it
+# : streams a stored document's bytes through Django to a caller, which is the
+# : shape the whole seam exists to prevent. Its own name, so it is NOT in
+# : `OBJECT_READ_METHODS`: that tuple fires anywhere outside the seam, and this
+# : call is legal from an activity; it fires from a door file only, by bare name
+# : or attribute (`from apps.files.storage import iter_object`).
+SEAM_CONTENT_READS = ("iter_object",)
+_CONTENT_READ_DOORS = frozenset({"api.py", "mcp.py", "consumers.py"})
+
 # : The module every other module must go through, and never around.
 SEAM_MODULE = "apps.files.storage"
 SEAM_REL = SEAM_MODULE.replace(".", "/") + ".py"
@@ -9965,6 +10600,26 @@ def _calls_method(node: ast.AST, names: tuple[str, ...]) -> str | None:
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
         return node.func.attr if node.func.attr in names else None
     return None
+
+
+def _calls_by_name(node: ast.AST, names: tuple[str, ...]) -> str | None:
+    """The fenced seam function this node reaches, or `None`.
+
+    A call by bare name or as an attribute (`storage.iter_object(...)`), or the
+    import that binds it under any alias (`from apps.files.storage import
+    iter_object as read`) — an aliased bare call names nothing a recogniser can
+    read, so the import is where it is caught.
+    """
+    if isinstance(node, ast.ImportFrom) and node.module == SEAM_MODULE:
+        for alias in node.names:
+            if alias.name in names:
+                return alias.name
+        return None
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+    return name if name in names else None
 
 
 def storage_client(root: Path, rule: dict) -> CheckResult:
@@ -10065,6 +10720,20 @@ def storage_client(root: Path, rule: dict) -> CheckResult:
                         klass=STORAGE_KLASS,
                     )
                 continue
+            if Path(rel).name in _CONTENT_READ_DOORS and not may_import:
+                read = _calls_by_name(node, SEAM_CONTENT_READS)
+                if read:
+                    out.hit(
+                        rel,
+                        getattr(node, "lineno", 1),
+                        f"reaches {read}() from a door — the seam's content read is an "
+                        "activity's parser's, never a door's: from here a stored document's "
+                        "bytes travel through Django to a caller, which is what "
+                        f"{SEAM_REL}'s presigned URLs exist to prevent. Issue a download "
+                        "URL (apps.files.services), or read it in an activity",
+                        klass=STORAGE_KLASS,
+                    )
+                    continue
             method = _calls_method(node, OBJECT_READ_METHODS)
             if method:
                 if may_import:
@@ -11620,12 +12289,22 @@ def pattern_book_names_its_instruments(root: Path, rule: dict) -> CheckResult:
     found, counts = pattern_book.findings(root)
     for key, n in counts.items():
         out.count(key, n)
+    # THE RATCHET KEYS ARE THE READER'S CLASSES, one each. Counted only when the
+    # rule's `ratchets:` names exactly `pattern_book.CLASSES`, so a class the
+    # reader grows without a key (a backlog nobody could record) and a key with
+    # no class (a ceiling on nothing) both leave the floor unbound.
+    keyed = {str(key) for key in (rule.get("ratchets") or {})}
+    out.count("ratchet_classes_keyed", 1 if keyed == set(pattern_book.CLASSES) else 0)
     for finding in found:
         out.hit(finding.path, finding.line, finding.msg, klass=finding.klass)
     return out
 
 
 REGISTRY = {
+    "archivable_is_not_append_only": archivable_is_not_append_only,
+    "versioned_writes_move_updated_at": versioned_writes_move_updated_at,
+    "archive_widenings_are_the_only_widenings": archive_widenings_are_the_only_widenings,
+    "archivable_writes_require_live": archivable_writes_require_live,
     "socket_join_discipline": socket_join_discipline,
     "org_scoped_events_carry_their_branch": org_scoped_events_carry_their_branch,
     "auth_user_import": auth_user_import,

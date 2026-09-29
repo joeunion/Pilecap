@@ -27,6 +27,7 @@ the criteria say a raw create is legal until they land.
 from __future__ import annotations
 
 import inspect
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -215,15 +216,17 @@ def test_every_door_selector_asks_or_says_why() -> None:
     **The instrument answers something when the thing is absent**: the population
     is derived and asserted non-empty first, so a derivation that stopped finding
     selectors — a renamed module, a changed annotation style — reds here instead
-    of passing over an empty set. Five is what this app publishes today, and the
+    of passing over an empty set. Seven is what this app publishes today, and the
     names are asserted, so an added read has to arrive with its `actor`.
     """
     selectors = door_selectors()
     assert sorted(selectors) == [
         "get_governing_widget_policy",
         "get_widget",
+        "get_widget_policy",
         "list_widget_entries",
         "list_widget_policies",
+        "list_widget_tags",
         "list_widgets",
     ], sorted(selectors)
 
@@ -244,11 +247,15 @@ def test_every_door_selector_asks_or_says_why() -> None:
 
 
 def _list(kind: str) -> Callable[..., Any]:
-    return {
+    # Typed, because the three selectors no longer share one signature (the two
+    # archivable ones take `show`) and an unannotated dict joins them to
+    # `function`, which is not a `Callable[..., Any]` to mypy.
+    lists: dict[str, Callable[..., Any]] = {
         "widget": list_widgets,
         "widget_policy": list_widget_policies,
         "widget_entry": list_widget_entries,
-    }[kind]
+    }
+    return lists[kind]
 
 
 @pytest.mark.parametrize("kind", ["widget", "widget_policy", "widget_entry"])
@@ -526,7 +533,7 @@ def test_a_write_door_pays_the_read_once(
     api.force_login(reads.reader)
     response = api.patch(
         f"{LIST_URL}{mine.pk}/",
-        data='{"name": "Renamed"}',
+        data=json.dumps({"name": "Renamed", "version": mine.version}),
         content_type=JSON,
         headers={"X-Org": reads.a.slug},
     )

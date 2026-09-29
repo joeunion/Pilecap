@@ -37,8 +37,11 @@ platform_apps:
   - example
   - exports
   - files
+  - imports
+  - notes
   - realtime
   - search
+  - tags
   - usage
   - workflows
 
@@ -291,6 +294,16 @@ digest_sections:
       the discovered `consumers.py` websocket URL patterns — the route and its
       name. The fifth door had no section in the design's table.
     walks: [config.asgi]
+  - id: verbs
+    serializes: >-
+      the noun-verb family's hook population — per app label, the hook modules
+      it declares (`archive_blockers`, `restore_blockers`, `merge_repointers`,
+      `importers`, …), names only, read through `core.verbs.declared_hooks`. A
+      child app that drops a blocker against a platform noun changes what a
+      platform service answers, so the population is part of the key. The
+      functions' identities are deliberately NOT serialized: the module's
+      presence is the declaration, and its body is a C1 file already.
+    walks: [apps.core.verbs]
 
 # --- §3 · non-file inputs: the environment read-set ---------------------------
 

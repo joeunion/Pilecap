@@ -498,11 +498,21 @@ def emit(
     `enqueue_dispatch`, so a service that rolls back has emitted nothing and
     started nothing.
 
+    **A payload never carries a per-viewer field, at any depth** (`core.schemas.
+    PER_VIEWER_FIELDS`, derived from `ActsOut`): `allowed_acts` is what ONE
+    caller may press on the row, and an event is broadcast to every subscriber
+    and every socket listener — other viewers, all of them. A payload carrying
+    one is refused here, before anything is written, naming the key; the
+    emitting service builds its payload with `core.schemas.event_payload()`.
+    The spine is the one place this can be refused: a source rule cannot see a
+    key inside a dumped dict.
+
     # authz: an event is the product's own record of a write that has already
     # been authorised by the service making it; there is no separate permission
     # to say that something happened.
     """
     check_name(name)
+    _refuse_per_viewer_fields(name=name, payload=payload)
     chain = context.child_of_current()
     event = record_event(
         tenant=tenant,
@@ -517,6 +527,20 @@ def emit(
     )
     enqueue_dispatch(tenant=tenant, event_id=event.pk)
     return event
+
+
+def _refuse_per_viewer_fields(*, name: str, payload: dict[str, Any]) -> None:
+    """`ImproperlyConfigured` naming any per-viewer key the payload carries, at any depth."""
+    from apps.core.schemas import per_viewer_paths
+
+    carried = per_viewer_paths(payload)
+    if carried:
+        raise ImproperlyConfigured(
+            f"The payload of {name!r} carries {', '.join(repr(key) for key in carried)}, a "
+            "per-viewer field (`core.schemas.ActsOut`): what ONE caller may press, "
+            "broadcast to every subscriber. Build the payload with "
+            "`core.schemas.event_payload(out)`, which leaves every per-viewer field out."
+        )
 
 
 @service

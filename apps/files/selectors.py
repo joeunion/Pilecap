@@ -25,20 +25,37 @@ tension: archiving takes a document out of everybody's working set, and it does
 not un-say that the document exists to whoever holds a link to it, has an audit
 row naming it, or wants to know why their id stopped appearing. `list_files` is
 the working set; `get_file` is the record.
+
+**`StoredFile` is `Archivable`, so `for_tenant` already leaves an archived
+document out** — there is no hand-written `archived_at` filter anywhere below, and
+there must not be one: once the scoped read hides archived rows FIRST, a filter
+that also said "live" would silently answer live rows only for a read that meant
+to widen. The two widenings are the queryset's own — `including_archived()` for
+the record and `?show=all`, `archived_only()` for `?show=archived`, the one reader
+of the archived cut.
+
+**A document's subject is resolved before its documents are listed.**
+`?subject=<kind>:<id>` goes through `core.verbs.resolve_subject` first, so a
+pointer to a row this caller cannot reach answers `not_found` — the same answer
+as a row that does not exist — rather than an empty page. The database does not
+stop an orphaned pointer (the subject is polymorphic, never a foreign key); this
+is the read that makes one unreachable instead of wrong.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from apps.core.actor import Actor
 from apps.core.authz import require
-from apps.core.exceptions import NotFound
+from apps.core.exceptions import Invalid, NotFound
 from apps.core.models import ScopedQuerySet
+from apps.core.verbs import resolve_subject
 from apps.files.models import FileVersion, StoredFile
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from uuid import UUID
+    from django.db.models import Model
 
     from apps.core.models import Tenant
 
@@ -47,6 +64,73 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: version list and a document list ask the same word — which is the claim rule
 #: 54 (e) checks and `tests/test_authz_sweep.py` drives.
 READ = "file.read"
+
+#: The word a subject's noun lists in its `attachments` to accept documents.
+ATTACHMENT = "files"
+
+#: The three cuts of the list (`?show=`), and the default. `live` is the working
+#: set; `archived` is the one reader of `archived_only()`; `all` is both.
+SHOW_LIVE = "live"
+SHOW_ARCHIVED = "archived"
+SHOW_ALL = "all"
+SHOW_WORDS: tuple[str, ...] = (SHOW_LIVE, SHOW_ARCHIVED, SHOW_ALL)
+
+
+def _shown(rows: ScopedQuerySet[StoredFile], show: str) -> ScopedQuerySet[StoredFile]:
+    """The archive's cut of an already-scoped read, or `invalid` naming `show`."""
+    if show == SHOW_LIVE:
+        return rows
+    if show == SHOW_ARCHIVED:
+        return rows.archived_only()
+    if show == SHOW_ALL:
+        return rows.including_archived()
+    raise Invalid({"show": [f"`show` is one of: {', '.join(SHOW_WORDS)}; the default is live."]})
+
+
+def get_subject(*, actor: Actor, subject: str) -> Model:
+    """The row `<kind>:<id>` names, **if this caller could reach it**, and it takes files.
+
+    **Resolved FIRST, through `core.verbs.resolve_subject`** — the kind registry,
+    then `for_tenant` with archived rows included, then `visible_to` the acting
+    hat, then `may_be_named`. A subject in a sibling branch, one that does not
+    exist and a kind nobody registered are all `not_found`: one answer, because a
+    refusal that told them apart would confirm the row exists.
+
+    Only then is the kind asked whether it takes documents at all — a noun lists
+    `files` in its `attachments` declaration — and a kind that does not is
+    `invalid` naming `subject`. The order is the point: nothing about a row is
+    said to a caller who could not have reached it.
+
+    A value that is not `<kind>:<uuid>` is `invalid` naming `subject` before
+    anything is read.
+
+    **It asks no permission of its own, and says so.** What it answers is REACH
+    — could this caller have got to that row — which is the seam's question, not
+    a key this app owns; and every read it gates asks its own: `list_files` asks
+    `file.read` before it is called, `create_file` asks `file.create`.
+    """
+    # read-open: reach only (`resolve_subject`); the list and the filing that call
+    # this each ask their own key first, so an ask here would be a second question.
+    kind, _, raw_id = subject.partition(":")
+    try:
+        subject_id = UUID(raw_id)
+    except ValueError:
+        subject_id = None
+    if not kind or subject_id is None:
+        raise Invalid(
+            {"subject": ["A subject is `<kind>:<id>`, a record's kind and its id: `widget:<id>`."]}
+        )
+    row: Model = resolve_subject(actor, kind, subject_id)
+    if ATTACHMENT not in (getattr(type(row), "attachments", None) or ()):
+        raise Invalid(
+            {
+                "subject": [
+                    f"A `{kind}` does not take documents: its kind does not list `{ATTACHMENT}` "
+                    "among its attachments."
+                ]
+            }
+        )
+    return row
 
 
 def _visible(*, tenant: Tenant | None, org: Any) -> ScopedQuerySet[StoredFile]:
@@ -60,23 +144,33 @@ def _visible(*, tenant: Tenant | None, org: Any) -> ScopedQuerySet[StoredFile]:
     return (
         StoredFile.objects.for_tenant(tenant)
         .visible_to(org)
-        .select_related("organization", "uploaded_by")
+        .select_related("organization", "uploaded_by", "archived_by")
     )
 
 
 def list_files(
-    *, tenant: Tenant | None, org: Any = None, actor: Actor
+    *,
+    tenant: Tenant | None,
+    org: Any = None,
+    actor: Actor,
+    show: str = SHOW_LIVE,
+    subject: str | None = None,
 ) -> ScopedQuerySet[StoredFile]:
     """The live documents this hat may see, newest first by the caller's ordering.
 
-    `select_related("organization", "uploaded_by")` is the contract rather than an
-    optimisation: the read shape publishes the organization the document belongs
-    to and who filed it, so without it a page of fifty is a hundred and one
-    queries. `tests/test_api.py::LIST_QUERY_BUDGET` is what turns removing it into
-    a failure rather than a slow page.
+    `select_related("organization", "uploaded_by", "archived_by")` is the contract
+    rather than an optimisation: the read shape publishes the organization the
+    document belongs to, who filed it and who archived it, so without it a page of
+    fifty is a hundred and one queries or more. `tests/test_api.py::LIST_QUERY_BUDGET`
+    is what turns removing it into a failure rather than a slow page.
 
-    **Archived documents are absent.** See the module docstring: this is the
-    working set, and `get_file` is the record.
+    **Archived documents are absent by default** — `show="live"`, the working
+    set; `show="archived"` is the archived cut alone and `show="all"` both. Any
+    other word is `invalid` naming `show`.
+
+    **`subject`** (`<kind>:<id>`) narrows to the documents filed against one
+    record, and that record is resolved first (`get_subject`): unreachable is
+    `not_found`, never an empty page.
 
     **The read is a permission** (ADR core-27): `file.read` is asked once here,
     at the acting hat, and every door pays it by calling this function — §C6's
@@ -84,14 +178,19 @@ def list_files(
     24's `for_tenant(t).visible_to(org)` and is untouched.
     """
     require(actor, READ)
-    return _visible(tenant=tenant, org=org).filter(archived_at__isnull=True)
+    rows = _shown(_visible(tenant=tenant, org=org), show)
+    if subject is not None:
+        row = get_subject(actor=actor, subject=subject)
+        rows = rows.filter(subject_kind=subject.partition(":")[0], subject_id=row.pk)
+    return rows
 
 
 def get_file(*, tenant: Tenant | None, file_id: UUID, org: Any = None, actor: Actor) -> StoredFile:
     """One document this hat may see, archived or not, or `NotFound`.
 
-    Deliberately NOT built on `list_files`: an archived document is still a
-    document, and a caller holding its id — from an audit row, from an event
+    Deliberately NOT built on `list_files`, and widened with
+    `including_archived()`: an archived document is still a document (read-only),
+    and a caller holding its id — from an audit row, from an event
     payload, from a link somebody sent them — gets the record rather than a
     refusal that would read as "this never existed".
 
@@ -101,7 +200,7 @@ def get_file(*, tenant: Tenant | None, file_id: UUID, org: Any = None, actor: Ac
     gets as far as `file.read`, asked at the document's own node, where a
     `withhold` makes it `forbidden`.
     """
-    file = _visible(tenant=tenant, org=org).filter(pk=file_id).first()
+    file = _visible(tenant=tenant, org=org).including_archived().filter(pk=file_id).first()
     if file is None:
         raise NotFound()
     require(actor, READ, file)

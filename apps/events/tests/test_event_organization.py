@@ -32,6 +32,7 @@ import pytest
 from apps.core.actor import Actor, system_actor
 from apps.core.exceptions import Invalid
 from apps.core.models import Organization, Tenant
+from apps.core.schemas import event_payload
 from apps.core.services import create_organization, root_organization
 from apps.events import schemas, services
 from apps.events.models import Event
@@ -68,7 +69,9 @@ def _subject(*, tenant: Tenant, owner: Any, organization: Organization) -> dict[
     widget = Widget.objects.create(
         tenant=tenant, organization=organization, owner=owner, name="A widget"
     )
-    return dict(WidgetOut.from_orm(widget).model_dump(mode="json"))
+    # The row as every viewer sees it — `event_payload` leaves the per-viewer
+    # fields out, and `emit` refuses a payload that carries one.
+    return event_payload(WidgetOut.from_orm(widget))
 
 
 # --- The stamp ---------------------------------------------------------------

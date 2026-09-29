@@ -326,9 +326,10 @@ def test_a_document_left_with_no_version_at_all_is_archived_by_the_sweep(
 ) -> None:
     """The second half: a document with nothing behind it leaves the working set.
 
-    Through `archive_file` and not by writing the column here, so it is the same
-    soft archive a person performs at the door — the same fence against new
-    versions, the same `files.file.archived` on the spine, the same audit row.
+    Through `archive_emptied_file` and not by writing the column here: the same
+    row half a person's archive runs — the same fence against new versions, the
+    same `files.file.archived` on the spine — under its own audit action, because
+    a person's `archive_file` refuses the product acting for itself.
     """
     aged(make_version(file=stored_file, version=1, uploaded_by=owner), hours=WELL_PAST)
 
@@ -338,7 +339,7 @@ def test_a_document_left_with_no_version_at_all_is_archived_by_the_sweep(
     assert StoredFile.objects.get(pk=stored_file.pk).archived_at is not None
     assert (
         AuditEntry.objects.for_tenant(stored_file.tenant)
-        .filter(action="files.archive_file", object_id=stored_file.pk)
+        .filter(action="files.archive_emptied_file", object_id=stored_file.pk)
         .exists()
     )
 
@@ -444,8 +445,10 @@ def test_the_sweep_reaches_every_tenant_and_stays_inside_each_one(
     assert outcome.documents == 2
     assert StoredFile.objects.get(pk=stored_file.pk).archived_at is not None
     assert StoredFile.objects.get(pk=neighbour.pk).archived_at is not None
-    mine = AuditEntry.objects.for_tenant(stored_file.tenant).filter(action="files.archive_file")
-    theirs = AuditEntry.objects.for_tenant(other_tenant).filter(action="files.archive_file")
+    mine = AuditEntry.objects.for_tenant(stored_file.tenant).filter(
+        action="files.archive_emptied_file"
+    )
+    theirs = AuditEntry.objects.for_tenant(other_tenant).filter(action="files.archive_emptied_file")
     assert [row.object_id for row in mine] == [stored_file.pk]
     assert [row.object_id for row in theirs] == [neighbour.pk]
 

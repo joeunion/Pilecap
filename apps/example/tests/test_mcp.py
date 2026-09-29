@@ -67,6 +67,14 @@ pytestmark = pytest.mark.django_db
 # roles on the chain. The machine door pays exactly what the human door pays,
 # which is the point: a tool that asked a cheaper question would be a tool
 # answering a different one (rule 46).
+#
+# **+1 for `allowed_acts`** (`cursor_page(..., actor=actor)`): the seam's ONE
+# query attaching every row's node. The tool hands the seam the same actor its
+# `widget.read` already asked with, so the collection is memoized and the acts
+# cost nothing more — which the HTTP list, whose paginator resolves a second
+# actor, does not get (`test_api.py`'s pin says what that costs). The list's
+# `create` predicate (`_is_member`) reads the actor's memo through
+# `membership_for` too, so it adds nothing (5 → 4).
 LIST_QUERY_BUDGET = 4
 
 # The two doors this file compares, spelled once.
@@ -92,6 +100,22 @@ TOOL_FOR_ROUTE: dict[str, str] = {
     # door: `WidgetEntry` is append-only, so the capability does not exist to
     # be mirrored.
     "widget_entry-record": "record_widget_entry",
+    # Archive and restore, on both nouns: rule 74 demands the pair of routes and
+    # rule 17 derives each twin's name from its `url_name`.
+    "widget-archive": "archive_widget",
+    "widget-restore": "restore_widget",
+    "widget_policy-archive": "archive_widget_policy",
+    "widget_policy-restore": "restore_widget_policy",
+    # The rest of the family: a move and its twin, the batch over a selection
+    # (plural, because the selection is), and the history card.
+    "widget-move": "move_widget",
+    "widget-bulk": "bulk_widgets",
+    "widget_history-list": "list_widget_history",
+    # A copy, and a merge with its dry run: `widget_merge-detail` is the preview
+    # a person reads before confirming, so an agent reads the same numbers.
+    "widget-duplicate": "duplicate_widget",
+    "widget_merge-detail": "get_widget_merge",
+    "widget-merge": "merge_widget",
 }
 
 
@@ -293,7 +317,9 @@ def test_update_widget_changes_only_what_it_was_given(
 ) -> None:
     widget = create_widget(tenant=tenant, actor=owner_actor, name="Before", notes="keep")
 
-    out = tool("update_widget")(ctx=context_for(owner, tenant), widget_id=widget.pk, name="After")
+    out = tool("update_widget")(
+        ctx=context_for(owner, tenant), widget_id=widget.pk, version=widget.version, name="After"
+    )
     assert out.name == "After"
     assert out.notes == "keep"
 
@@ -315,7 +341,12 @@ def test_a_tool_authorizes_through_the_service_not_the_door(
     widget = create_widget(tenant=tenant, actor=owner_actor, name="Not yours")
 
     with pytest.raises(ToolError) as refused:
-        tool("update_widget")(ctx=context_for(member, tenant), widget_id=widget.pk, name="Mine now")
+        tool("update_widget")(
+            ctx=context_for(member, tenant),
+            widget_id=widget.pk,
+            version=widget.version,
+            name="Mine now",
+        )
     assert "forbidden" in str(refused.value)
 
 

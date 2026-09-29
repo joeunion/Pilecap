@@ -1,3 +1,4 @@
+# collides: announce_widget_onboarded — re-declares a name on the absence list on purpose, so the planted form arrives already exempt and must fire anyway
 
 
 @service

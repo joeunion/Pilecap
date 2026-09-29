@@ -329,10 +329,14 @@ def test_a_rate_limited_write_does_not_poison_its_key(
 def test_a_not_found_a_selector_decided_is_still_replayed(
     api: Client, owner: User, tenant: Tenant
 ) -> None:
-    """Through the real stack, so the negative is not only a stubbed one."""
+    """Through the real stack, so the negative is not only a stubbed one.
+
+    The body is valid for a `Versioned` noun so the refusal is the selector's,
+    not the schema's.
+    """
     api.force_login(owner)
     url = f"{LIST_URL}{uuid4()}/"
-    body = json.dumps({"name": "Ghost"})
+    body = json.dumps({"name": "Ghost", "version": 1})
 
     first = api.patch(url, data=body, content_type=JSON, headers={HEADER: "ghost"})
     assert first.status_code == 404, first.content

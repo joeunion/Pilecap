@@ -28,31 +28,86 @@ the same transaction's commit). Neither is a signal, and neither is a door's.
 
 from __future__ import annotations
 
+# golden: archive version move bulk history duplicate attach merge import begin
 import importlib
 import importlib.util
 from collections.abc import Callable
 from typing import Any, cast
 
-from django.utils import timezone
-
 from apps.core.actor import Actor
 from apps.core.authz import may_be_named, require
-from apps.core.exceptions import Invalid, NotFound, as_invalid
+from apps.core.exceptions import NotFound
 from apps.core.log import get_logger
-from apps.core.models import Organization, Tenant
+from apps.core.models import Tenant
+from apps.core.schemas import event_payload
 from apps.core.service import service
+from apps.core.verbs import archive_row, restore_row
+from apps.example.events import WIDGET_ARCHIVED, WIDGET_RESTORED
+from apps.example.models import Widget
+from apps.example.schemas import WidgetOut
+
+# golden: archive version move bulk history duplicate attach merge import end
+# isort: split
+# golden: version move bulk history duplicate attach merge import begin
+from apps.core.concurrency import require_version
+from apps.core.exceptions import as_invalid
+from apps.core.verbs import require_live
+from apps.example.events import WIDGET_UPDATED
+
+# golden: version move bulk history duplicate attach merge import end
+# isort: split
+# golden: move bulk history duplicate attach merge import begin
+from uuid import UUID
+
+from apps.accounts.models import User
+from apps.core.models import Membership, Organization, ancestor_paths, is_descendant_path
+from apps.core.verbs import rehome
+from apps.example.events import WIDGET_MOVED
+
+# golden: move bulk history duplicate attach merge import end
+# isort: split
+# golden: duplicate attach merge import begin
+from apps.core.exceptions import NON_FIELD_KEY, Invalid
+from apps.core.verbs import duplicate_row
+from apps.example.events import WIDGET_DUPLICATED
+
+# golden: duplicate attach merge import end
+# isort: split
+# golden: merge import begin
+from apps.core.verbs import merge_rows
+from apps.example.events import WIDGET_MERGED
+
+# golden: merge import end
+# isort: split
+# golden: attach merge import begin
+from apps.tags.selectors import list_tag_links
+from apps.tags.services import create_tag_link
+
+# golden: attach merge import end
+# isort: split
+# golden: import begin
+from apps.example.events import WIDGET_CREATED
+
+# golden: import end
+# isort: split
+from django.utils import timezone
+
+from apps.core.verbs import require_no_merged_losers
 from apps.example.events import (
-    WIDGET_CREATED,
     WIDGET_DELETED,
     WIDGET_ONBOARDED,
-    WIDGET_UPDATED,
+    WIDGET_POLICY_ARCHIVED,
+    WIDGET_POLICY_RESTORED,
 )
-from apps.example.models import Widget, WidgetEntry, WidgetPolicy
-from apps.example.schemas import WidgetOut
+from apps.example.models import WidgetEntry, WidgetPolicy
+from apps.example.schemas import WidgetPolicyOut
 from apps.example.types import WidgetOnboarding
 from apps.workflows.services import signal_workflow, start_workflow_on_commit, workflow_id
 
+# golden: archive version move bulk history duplicate attach merge import begin
 log = get_logger("apps.example.services")
+
+# golden: archive version move bulk history duplicate attach merge import end
 
 # What may appear un-redacted in this app's log lines and audit `input`
 # (`core.service`). An allow-list, not a blocklist: a widget's `notes` are the
@@ -60,11 +115,14 @@ log = get_logger("apps.example.services")
 # yes-or-no about a process rather than a fact about a person.
 LOG_KEYS: frozenset[str] = frozenset({"name", "approved"})
 
+# golden: archive version move bulk history duplicate attach merge import begin
 # Where the runtime registry lives, and the name `apps.events` fills in from its
 # `AppConfig.ready()`. Both are strings rather than an import on purpose — see
 # `_event_bus`.
 BRIDGE_MODULE = "apps.core.bridge"
 EMIT = "events.emit"
+
+# golden: archive version move bulk history duplicate attach merge import end
 
 # The signal `WidgetOnboardingWorkflow` waits on. Named here rather than
 # imported from `workflows.py`, because a `workflows.py` is a module that has to
@@ -75,6 +133,7 @@ EMIT = "events.emit"
 WIDGET_APPROVAL_SIGNAL = "approve"
 
 
+# golden: archive version move bulk history duplicate attach merge import begin
 def _event_bus() -> Callable[..., Any] | None:
     """`events.emit`, resolved at call time through `core.bridge`, or `None`.
 
@@ -144,7 +203,11 @@ def _publish(
     test — and a log line worth having in a tree where the bus is not mounted.
     """
     emit = _event_bus()
-    payload = {**(extra or {}), **WidgetOut.from_orm(widget).model_dump(mode="json")}
+    # NEVER a per-viewer field on an event: `allowed_acts` is what one caller may
+    # press, and a subscriber is somebody else. The payload is the row, built by
+    # the one helper that strips every per-viewer field at any depth.
+    row = event_payload(WidgetOut.from_orm(widget))
+    payload = {**(extra or {}), **row}
     if emit is None:
         # `event_name`, not `event`: structlog's own first argument is called
         # `event`, and a log line that shadows it is a `TypeError` at 2am.
@@ -160,14 +223,57 @@ def _publish(
 
 
 @service
+def archive_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
+    """Take a widget out of the book. **A repeat press changes nothing.**
+
+    Reachability first (not-there and not-yours are one answer), then the
+    capability at the row's own node (`widget.archive` is `may_archive`: an
+    administrator of the widget's branch, never the system), then the row half
+    `core.verbs.archive_row` owns: the row lock, the idempotent early return,
+    the blocker walk and the two columns. The event is said ONLY when this
+    press changed the row — a retried request answers the archived widget and
+    tells no subscriber a second time.
+    """
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    require(actor, "widget.archive", widget)
+    widget, changed = archive_row(tenant=tenant, actor=actor, row=widget, noun="widget")
+    if changed:
+        _publish(WIDGET_ARCHIVED, tenant=tenant, widget=widget, actor=actor)
+    return widget
+
+
+@service
+def restore_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
+    """Put an archived widget back in the book. **A repeat press changes nothing.**
+
+    The mirror of `archive_widget`, over `core.verbs.restore_row`: a live
+    widget comes back unchanged and says nothing; an archived one loses both
+    archive columns and `example.widget.restored` is said once.
+    """
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    require(actor, "widget.restore", widget)
+    widget, changed = restore_row(tenant=tenant, actor=actor, row=widget, noun="widget")
+    if changed:
+        _publish(WIDGET_RESTORED, tenant=tenant, widget=widget, actor=actor)
+    return widget
+
+
+# golden: archive version move bulk history duplicate attach merge end
+@service
 def create_widget(
     *,
     tenant: Tenant,
     actor: Actor,
     name: str,
     notes: str = "",
+    external_ref: str = "",
+    # golden: import end
     policy: WidgetPolicy | None = None,
+    # golden: import begin
 ) -> Widget:
+    # golden: import end
     """Create a widget in the part of the tenant the actor is acting as.
 
     The actor owns what they create, and the **hat** decides where it lands: a
@@ -183,10 +289,16 @@ def create_widget(
     this one is the *audited* one, because a refusal raised inside a `@service`
     carries `outcome=error` on the audit trail and a 404 raised at a door does
     not.
+
+    `external_ref` is the id the widget has in the system it came from — what
+    an import finds it by (`importers.py`); blank for a widget made here.
     """
+    # golden: import begin
     require(actor, "widget.create")
+    # golden: import end
     if policy is not None and not may_be_named(actor, policy):
         raise NotFound()
+    # golden: import begin
     if actor.user is None:
         # `widget.create` already refuses an actor with no membership, and the
         # system actor has no user to own a row. Stated rather than assumed,
@@ -205,12 +317,16 @@ def create_widget(
         owner_id=actor.user.pk,
         name=name.strip(),
         notes=notes,
+        external_ref=external_ref,
+        # golden: import end
         policy=policy,
+        # golden: import begin
     )
     with as_invalid():
         widget.full_clean()
     widget.save()
     _publish(WIDGET_CREATED, tenant=tenant, widget=widget, actor=actor)
+    # golden: import end
     # Onboarding waits for a person, so it is a workflow and not the rest of this
     # function. The start is registered on this transaction's commit: a create
     # that rolls back onboards nothing. The id is deterministic and derived from
@@ -225,9 +341,11 @@ def create_widget(
         org=actor.org,
         id=workflow_id(tenant=tenant, app="example", noun="widget", key=str(widget.pk)),
     )
+    # golden: import begin
     return widget
 
 
+# golden: import end
 @service
 def approve_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
     """Approve a widget that is waiting to finish onboarding. **Ends the wait.**
@@ -252,6 +370,8 @@ def approve_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
     conflicted, and a workflow that sets the same flag twice is in the state it
     was in after the first.
     """
+    # Every other write on the noun refuses `archived` first.
+    require_live(widget, noun="widget")
     require(actor, "widget.approve", widget)
     signal_workflow(
         tenant=tenant,
@@ -259,6 +379,21 @@ def approve_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
         workflow_id=workflow_id(tenant=tenant, app="example", noun="widget", key=str(widget.pk)),
         signal=WIDGET_APPROVAL_SIGNAL,
     )
+    # ONE `approved` line per widget, however many times it is pressed: the
+    # contract says a repeat changes nothing, and a second line would be a
+    # second approval on the ledger. The widget's row lock serializes two
+    # presses racing each other, so the second sees the first's line.
+    Widget.objects.for_tenant(tenant).visible_to(widget.organization).select_for_update().filter(
+        pk=widget.pk
+    ).first()
+    already = (
+        WidgetEntry.objects.for_tenant(tenant)
+        .visible_to(widget.organization)
+        .filter(widget=widget, kind=WidgetEntry.Kind.APPROVED)
+        .exists()
+    )
+    if already:
+        return widget
     # The ledger line the done-line drives, written **after** the signal landed
     # and inside the same transaction, so an approval that was refused by the
     # run leaves no line claiming it happened. It is not a second
@@ -277,22 +412,52 @@ def approve_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
     return widget
 
 
+# golden: version move bulk history duplicate attach merge import begin
+def _locked(*, tenant: Tenant, widget: Widget) -> Widget:
+    """The widget re-read under a row lock, archived or not — what every edit writes.
+
+    The comparison a versioned edit makes is against the row as it stands
+    while nobody else may write it, so two saves carrying the same version
+    serialize and the second is refused rather than both passing a check made
+    before either wrote. Archived rows are read too, so the refusal an archived
+    widget earns is `archived` and never a missing row. `of=("self",)` locks
+    the widget alone, not the owner and the node the read selects beside it.
+    """
+    return (
+        Widget.objects.for_tenant(tenant)
+        .including_archived()
+        .visible_to(widget.organization)
+        .select_related("owner", "organization", "archived_by")
+        .select_for_update(of=("self",))
+        .get(pk=widget.pk)
+    )
+
+
 @service
 def update_widget(
     *,
     tenant: Tenant,
     actor: Actor,
     widget: Widget,
+    version: int | None = None,
     name: str | None = None,
     notes: str | None = None,
+    # golden: version move bulk history duplicate attach merge import end
     policy: WidgetPolicy | None = None,
+    # golden: version move bulk history duplicate attach merge import begin
 ) -> Widget:
+    # golden: version move bulk history duplicate attach merge import end
     """Change a widget's editable fields. Nothing else writes to the table.
 
     Neither the tenant nor the organization is a field a caller may change:
     moving a row between tenants is a different operation with different rules,
-    and moving one between branches is `move_organization`'s job or a service a
-    product writes on purpose. It is not this one.
+    and moving one between branches is `move_widget`'s job. It is not this one.
+
+    **`version` is the version the caller read** (`Widget.version`), and both
+    doors require it: the widget is locked, and a version it no longer has is
+    `stale_version` naming the current one, with nothing written. `None` is for
+    a caller that never read the row through a door — the admin's form, an
+    importer applying a file — and keeps last-write-wins under the same lock.
 
     `policy` is `None` for "leave it alone", like every other field here — which
     means this service can attach a policy and swap one, and cannot clear one.
@@ -302,28 +467,252 @@ def update_widget(
     needs it. The row it is given has been through `may_be_named` at the door,
     exactly as `create_widget`'s has.
     """
-    require(actor, "widget.update", widget)
+    # golden: version move bulk history duplicate attach merge import begin
+    locked = _locked(tenant=tenant, widget=widget)
+    # Every other write on the noun refuses `archived` first.
+    require_live(locked, noun="widget")
+    require(actor, "widget.update", locked)
+    if version is not None:
+        require_version(locked, version)
+    # golden: version move bulk history duplicate attach merge import end
     if policy is not None and not may_be_named(actor, policy):
         raise NotFound()
+    # golden: version move bulk history duplicate attach merge import begin
     updated: list[str] = []
     if name is not None:
-        widget.name = name.strip()
+        locked.name = name.strip()
         updated.append("name")
     if notes is not None:
-        widget.notes = notes
+        locked.notes = notes
         updated.append("notes")
+    # golden: version move bulk history duplicate attach merge import end
     if policy is not None:
-        widget.policy = policy
+        locked.policy = policy
         updated.append("policy")
+    # golden: version move bulk history duplicate attach merge import begin
     if not updated:
-        return widget
+        return locked
     with as_invalid():
-        widget.full_clean()
-    widget.save(update_fields=[*updated, "updated_at"])
-    _publish(WIDGET_UPDATED, tenant=tenant, widget=widget, actor=actor)
-    return widget
+        locked.full_clean()
+    # `updated_at` is named, always: it IS the version (house rule 76).
+    locked.save(update_fields=[*updated, "updated_at"])
+    _publish(WIDGET_UPDATED, tenant=tenant, widget=locked, actor=actor)
+    return locked
 
 
+# golden: version end
+def _new_owner(*, tenant: Tenant, owner_id: UUID, organization: Organization) -> User:
+    """The person a move hands the widget to — one who belongs where it is going.
+
+    A widget's owner reads it through their own membership, and visibility
+    inherits downwards only, so the new owner must hold a membership at the
+    destination or on its ancestor chain; anybody else could never see the
+    widget they were handed. Anyone who does not is `not_found`, the answer an
+    id naming nobody gets.
+    """
+    held = (
+        Membership.objects.filter(
+            tenant=tenant,
+            user_id=owner_id,
+            organization__path__in=ancestor_paths(organization.path),
+        )
+        .select_related("user")
+        .first()
+    )
+    if held is None:
+        raise NotFound()
+    return held.user
+
+
+@service
+def move_widget(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    widget: Widget,
+    # reach: a destination is a NODE, and a node is its own reach — asked below
+    # as the hat's subtree, as `core.selectors.get_organization` reads it.
+    organization: Organization,
+    owner_id: UUID | None = None,
+    version: int | None = None,
+) -> Widget:
+    """Re-home a widget at another node, and hand it to another owner if one is named.
+
+    **Reach at both ends, then the capability at both ends**: the widget
+    must be one this hat could have named and the destination inside the hat's
+    subtree — either miss is `not_found`, never `forbidden` — and then
+    `widget.move` is asked of the widget where it lives and of the node it is
+    going to (`core.policies.may_move`: an administrator at each end, never the
+    system). A new owner must belong at the destination or above it.
+
+    `core.verbs.rehome` does the row half: the lock, the idempotent early
+    return (already there and already theirs → unchanged, no event), every
+    mutable row that derives its organization from the widget carried along,
+    and `move_blocked` over a ledger line (`WidgetEntry` is append-only, so a
+    widget with an entry stays where its ledger was written). The event names
+    both nodes: the row where it now is, and `from_organization_id`.
+    """
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    hat = actor.org
+    if hat is None or organization.tenant_id != tenant.pk:
+        raise NotFound()
+    if not is_descendant_path(organization.path, hat.path):
+        raise NotFound()
+    locked = _locked(tenant=tenant, widget=widget)
+    # Every other write on the noun refuses `archived` first.
+    require_live(locked, noun="widget")
+    require(actor, "widget.move", locked)
+    require(actor, "widget.move", organization)
+    if version is not None:
+        require_version(locked, version)
+    owner = (
+        None
+        if owner_id is None
+        else _new_owner(tenant=tenant, owner_id=owner_id, organization=organization)
+    )
+    left = locked.organization_id
+    moved, changed = rehome(locked, organization, owner=owner, noun="widget")
+    if changed:
+        _publish(
+            WIDGET_MOVED,
+            tenant=tenant,
+            widget=moved,
+            actor=actor,
+            extra={"from_organization_id": str(left)},
+        )
+    return cast(Widget, moved)
+
+
+# golden: move bulk history end
+@service
+def duplicate_widget(
+    *, tenant: Tenant, actor: Actor, widget: Widget, idempotency_key: str = ""
+) -> Widget:
+    """Make a new widget from this one, at the hat, owned by the person who pressed.
+
+    A duplicate IS a create: the capability asked is `widget.create` at the
+    acting hat, where the copy lands (ADR core-20), after reach on the source.
+    `Widget.duplicate` says what carries across (the notes, the policy) and
+    what starts again; the service FILLS what starts again that it decides —
+    the owner is the presser, the name `Copy of <name>` — and
+    `core.verbs.duplicate_row` sets both before the copy's one save. The ledger
+    never copies: it is the source's history, not the copy's.
+
+    **A repeated press with the same key answers the first copy** and says
+    nothing; a second copy under the same name for the same person is
+    `invalid` naming `name` (the name is unique per owner) with nothing written.
+    """
+    if not may_be_named(actor, widget):
+        raise NotFound()
+    # Every other write on the noun refuses `archived` first: a copy is made
+    # from a widget in the book.
+    require_live(widget, noun="widget")
+    require(actor, "widget.create")
+    if actor.user is None:
+        raise Invalid({"owner": ["A widget needs somebody to own it."]})
+    name = f"Copy of {widget.name}"
+    try:
+        copy, created = duplicate_row(
+            tenant=tenant,
+            row=widget,
+            organization=actor.org,
+            idempotency_key=idempotency_key,
+            fill={"owner": actor.user, "name": name},
+        )
+    except Invalid as refused:
+        # The one constraint over several fields a copy can meet is the name per
+        # owner, which the copy's validation reports object-wide: said here as
+        # the field it is, so a screen can point at it.
+        if NON_FIELD_KEY not in refused.errors:
+            raise
+        raise Invalid(
+            {"name": [f"You already have a widget called {name!r}. Rename it, then copy again."]}
+        ) from refused
+    if created:
+        # golden: duplicate end
+        # The words on the source come with it — a tag is how the widget is
+        # FOUND, so a copy that lost them would be lost itself. Notes and files
+        # are the source's own and stay with it. Archived words are left behind.
+        subject = f"widget:{copy.pk}"
+        for link in list_tag_links(tenant=tenant, actor=actor, subject=f"widget:{widget.pk}"):
+            if link.tag.archived_at is None:
+                create_tag_link(tenant=tenant, actor=actor, tag=link.tag, subject=subject)
+        # golden: duplicate begin
+        _publish(WIDGET_DUPLICATED, tenant=tenant, widget=copy, actor=actor)
+        # golden: duplicate attach merge import end
+        # A copy is onboarded like any widget made here: the same run a create
+        # starts, on this transaction's commit, under the id the copy implies.
+        start_workflow_on_commit(
+            workflow="WidgetOnboardingWorkflow",
+            arg=WidgetOnboarding(widget_id=str(copy.pk)),
+            tenant=tenant,
+            user=actor.user,
+            org=actor.org,
+            id=workflow_id(tenant=tenant, app="example", noun="widget", key=str(copy.pk)),
+        )
+        # golden: duplicate attach merge import begin
+    return cast(Widget, copy)
+
+
+# golden: duplicate attach end
+@service
+# rule-82: `merge_rows` refuses an archived or merged row itself, AFTER it has
+# answered a repeat of the same pair unchanged — a guard here would refuse the retry.
+def merge_widget(
+    *,
+    tenant: Tenant,
+    actor: Actor,
+    widget: Widget,
+    into: Widget,
+    version: int | None = None,
+    into_version: int | None = None,
+) -> Widget:
+    """Fold this widget into `into`, which survives. **Not undone.**
+
+    Reach on both rows, then `widget.merge` on both (an administrator of each
+    record's branch, never the system), then — unless this pair is already
+    merged, which answers the survivor unchanged — the versions both were read
+    at. `core.verbs.merge_rows` does the row half under a lock on both, in pk
+    order: every owning app's repointer moves ITS rows (notes, tags, files)
+    from the loser to the survivor, the ledger stays where it was written
+    (`Widget.merge_keeps`), and the loser is archived with `merged_into` naming
+    the survivor — it still reads, and every change to it is `merged`.
+
+    The event is the SURVIVOR's row, `loser_id`, and `repoints` — what each
+    owning app moved, as the apply counted it.
+    """
+    if not may_be_named(actor, widget) or not may_be_named(actor, into):
+        raise NotFound()
+    require(actor, "widget.merge", widget)
+    require(actor, "widget.merge", into)
+    first, second = sorted((widget, into), key=lambda row: str(row.pk))
+    locked = {row.pk: _locked(tenant=tenant, widget=row) for row in (first, second)}
+    loser, survivor = locked[widget.pk], locked[into.pk]
+    if loser.merged_into_id != survivor.pk:
+        if version is not None:
+            require_version(loser, version)
+        if into_version is not None:
+            require_version(survivor, into_version)
+    outcome = merge_rows(tenant=tenant, actor=actor, loser=loser, into=survivor, noun="widget")
+    if outcome.changed:
+        _publish(
+            WIDGET_MERGED,
+            tenant=tenant,
+            widget=outcome.survivor,
+            actor=actor,
+            extra={
+                "loser_id": str(loser.pk),
+                "repoints": [
+                    {"title": repointed.title, "left": repointed.left}
+                    for repointed in outcome.repoints
+                ],
+            },
+        )
+    return cast(Widget, outcome.survivor)
+
+
+# golden: merge import end
 @service
 def delete_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
     """Remove a widget.
@@ -335,8 +724,15 @@ def delete_widget(*, tenant: Tenant, actor: Actor, widget: Widget) -> Widget:
     Django clears `pk` on the instance after a delete, so it is put back: the
     object is detached and will not be saved again, and the id is the only part
     of it that still means anything.
+
+    A widget other widgets were merged into refuses `merge_survivor`, naming
+    the archive: their tombstones name it, and nothing is removed.
     """
+    # Every other write on the noun refuses `archived` first.
+    require_live(widget, noun="widget")
     require(actor, "widget.delete", widget)
+    # A survivor other widgets were merged into is held by their tombstones.
+    require_no_merged_losers(widget, noun="widget")
     deleted_id = widget.pk
     widget.delete()
     widget.id = deleted_id
@@ -356,7 +752,13 @@ def mark_widget_onboarded(*, tenant: Tenant, actor: Actor, widget: Widget) -> Wi
     a second call on an already-onboarded widget keeps the first timestamp rather
     than moving it. The retry that lands after a worker crash must not rewrite
     history, and the honest timestamp is the earlier one.
+
+    **An archived widget refuses `archived`**, like every other write on it: a
+    run that waited while somebody took the widget out of the book does not
+    mark it behind their back.
     """
+    # Every other write on the noun refuses `archived` first.
+    require_live(widget, noun="widget")
     require(actor, "widget.onboard", widget)
     if widget.onboarded_at is not None:
         return widget
@@ -375,7 +777,14 @@ def announce_widget_onboarded(
     a wait that can last a week: the mark happens immediately, the announcement
     only once somebody has approved — or once nobody has, which the payload says
     rather than hides.
+
+    **An archived widget refuses `archived`**: finishing its onboarding is a
+    change to a widget that is out of the book, and a subscriber told
+    "onboarded" about an archived widget is told something nobody reviewing
+    the book will see. The activity does not retry it (`activities.py`).
     """
+    # Every other write on the noun refuses `archived` first.
+    require_live(widget, noun="widget")
     require(actor, "widget.onboard", widget)
     _publish(
         WIDGET_ONBOARDED,
@@ -410,6 +819,46 @@ def create_widget_policy(
     with as_invalid():
         policy.full_clean()
     policy.save()
+    return policy
+
+
+def _publish_policy(name: str, *, tenant: Tenant, policy: WidgetPolicy, actor: Actor) -> None:
+    """Say a policy left the book or came back — `_publish`'s shape, for the policy's `Out`."""
+    emit = _event_bus()
+    if emit is None:
+        log.info("example.event.unpublished", event_name=name, policy_id=str(policy.pk))
+        return
+    payload = event_payload(WidgetPolicyOut.from_orm(policy))
+    emit(name=name, tenant=tenant, payload=payload, actor=actor)
+
+
+@service
+def archive_widget_policy(*, tenant: Tenant, actor: Actor, policy: WidgetPolicy) -> WidgetPolicy:
+    """Take a policy out of the book — refused while a live widget still names it.
+
+    `archive_row` asks every app's `archive_blockers.py`; this app's says a
+    policy named by a live widget is held, and the refusal is `archive_blocked`
+    naming the widgets' door. Nothing is written and nothing cascades. A repeat
+    press answers the archived policy and says nothing.
+    """
+    if not may_be_named(actor, policy):
+        raise NotFound()
+    require(actor, "widget_policy.archive", policy)
+    policy, changed = archive_row(tenant=tenant, actor=actor, row=policy, noun="widget_policy")
+    if changed:
+        _publish_policy(WIDGET_POLICY_ARCHIVED, tenant=tenant, policy=policy, actor=actor)
+    return policy
+
+
+@service
+def restore_widget_policy(*, tenant: Tenant, actor: Actor, policy: WidgetPolicy) -> WidgetPolicy:
+    """Put an archived policy back in the book, where it governs again."""
+    if not may_be_named(actor, policy):
+        raise NotFound()
+    require(actor, "widget_policy.restore", policy)
+    policy, changed = restore_row(tenant=tenant, actor=actor, row=policy, noun="widget_policy")
+    if changed:
+        _publish_policy(WIDGET_POLICY_RESTORED, tenant=tenant, policy=policy, actor=actor)
     return policy
 
 
@@ -487,6 +936,10 @@ def record_widget_entry(
     # Not-there before not-yours, as `core.revoke_membership` orders it.
     if not may_be_named(actor, widget):
         raise NotFound()
+    # Every other write on the noun refuses `archived` first. An archived
+    # widget's ledger is read-only with the rest of it: a line appended out of
+    # the book is a change nobody reviewing the book sees.
+    require_live(widget, noun="widget")
     require(actor, "widget_entry.record", widget)
     organization = widget.organization
     if organization_slug is not None:

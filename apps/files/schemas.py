@@ -34,10 +34,9 @@ from uuid import UUID
 from ninja import FilterLookup, FilterSchema, Schema
 from pydantic import ConfigDict, Field
 
-from apps.core.schemas import ListPage, StrictIn, example
+from apps.core.schemas import ActsOut, ActsPage, ArchivedOut, ListPage, StrictIn, example
 
 __all__ = [
-    "ArchiveIn",
     "ConfirmUploadIn",
     "DownloadUrlIn",
     "FileDownloadOut",
@@ -104,13 +103,23 @@ class FileVersionOut(Schema):
     created_at: datetime = Field(json_schema_extra=example("2026-08-24T09:30:00Z"))
 
 
-class StoredFileOut(Schema):
+class StoredFileOut(ArchivedOut, ActsOut):
     """One document, as `files.file.stored` and every read door report it.
 
     `current_version` is `0` until the first version finalizes. That is a real
     state, not a placeholder: a document whose only version is still pending has
     no current bytes, and a subscriber that sees `0` should read it as "nothing is
     downloadable yet" rather than as version one.
+
+    **`archived_at` and `archived_by` are inherited from `ArchivedOut`, never
+    re-declared** — every archivable noun publishes the one archive shape, and
+    house rule 74 reads the inheritance.
+
+    **`allowed_acts` is inherited from `ActsOut`** — the verbs the acting hat may
+    press on THIS document as it stands (an archived one offers `restore`; a member
+    is offered no `archive`), set by `core.verbs.with_allowed_acts` on both viewer
+    doors and never computed by a client. It answers one viewer, so it never rides
+    an event: every payload this app emits is dumped without it.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -136,9 +145,12 @@ class StoredFileOut(Schema):
         json_schema_extra=example("11111111-2222-4333-8444-555555555555"),
         description="Who filed the document.",
     )
-    archived_at: datetime | None = Field(
-        json_schema_extra=example(None),
-        description="When it was taken out of the working set. Null while it is live.",
+    subject: str | None = Field(
+        default=None,
+        json_schema_extra=example("widget:7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"),
+        description="The record this document is filed against, as `<kind>:<id>` — the same "
+        "spelling `subject` takes when filing and `?subject=` takes when listing. Null when it "
+        "is filed against nothing.",
     )
     created_at: datetime = Field(json_schema_extra=example("2026-08-24T09:30:00Z"))
     updated_at: datetime = Field(json_schema_extra=example("2026-08-24T09:31:12Z"))
@@ -285,6 +297,15 @@ class FileIn(StrictIn):
         json_schema_extra=example("upload"),
         description="Your own short label for why it exists — `contract`, `lab-result`, anything.",
     )
+    subject: str | None = Field(
+        default=None,
+        max_length=128,
+        # No record id is fair to publish as an example — every one would be refused
+        # `404` by the door it documents — so the example is the default: nothing.
+        json_schema_extra=example(None),
+        description="The record to file this document against, as `<kind>:<id>`. It lands in "
+        "that record's organization. Leave it out to file against nothing.",
+    )
 
 
 class VersionIn(StrictIn):
@@ -340,16 +361,6 @@ class DownloadUrlIn(StrictIn):
     )
 
 
-class ArchiveIn(StrictIn):
-    """What a client may send when archiving a document.
-
-    Empty on purpose, and a schema rather than no body at all: archiving takes a
-    reason the day somebody rules that it does, and a route that took no body would
-    make that a breaking change instead of an added optional field. Sending an
-    unknown field here is refused, which is what makes the emptiness a contract.
-    """
-
-
 class FileFilter(FilterSchema):
     """The narrowings a client may ask for, declared rather than improvised.
 
@@ -372,13 +383,15 @@ class FileFilter(FilterSchema):
     )
 
 
-class FilePage(ListPage):
+class FilePage(ActsPage):
     """One page of documents, in the envelope the HTTP list uses.
 
     The MCP tool returns a value rather than a response, so the same envelope has
     to be a schema it can declare — and it is deliberately the *same* envelope,
-    inherited from `core.schemas.ListPage`, because a machine client that has
-    learned to unwrap one list should not have to learn a second shape.
+    inherited from `core.schemas.ActsPage`, because a machine client that has
+    learned to unwrap one list should not have to learn a second shape. The page
+    carries the LIST's own `allowed_acts` (`create`, when the hat may file here)
+    beside every document's, exactly as the REST envelope does.
     """
 
     items: list[StoredFileOut]

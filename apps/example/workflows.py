@@ -60,6 +60,28 @@ FINISH_ACTIVITY = "mark_run_finished"
 RUN_COMPLETED = "completed"
 RUN_FAILED = "failed"
 
+# How far down a failure's cause chain the run row reads: the wrapper, the
+# activity's error, and the activity's own complaint.
+REASON_DEPTH = 3
+
+
+def _reason(failure: BaseException) -> str:
+    """The failure and what caused it, as one line for the run row's `error`.
+
+    Temporal wraps an activity's own error in an `ActivityError` whose message
+    is "Activity task failed" — true, and useless to whoever reads the row
+    later. Walking `__cause__` puts the activity's complaint there — for an
+    archived widget, `archived: …`. Bounded, because a cause chain is somebody
+    else's data structure; deterministic, because it reads nothing but the
+    exception it was handed.
+    """
+    said: list[str] = []
+    seen: BaseException | None = failure
+    while seen is not None and len(said) < REASON_DEPTH:
+        said.append(f"{type(seen).__name__}: {seen}")
+        seen = seen.__cause__
+    return " <- ".join(said)
+
 
 @workflow.defn(name="WidgetOnboardingWorkflow")
 class WidgetOnboardingWorkflow:
@@ -76,7 +98,7 @@ class WidgetOnboardingWorkflow:
             # The row says what happened, and then the run still fails. A
             # `WorkflowRun` left at `running` beside a Temporal execution that
             # ended is worse than no row at all: it is a row that lies.
-            await self._finish(status=RUN_FAILED, error=str(error))
+            await self._finish(status=RUN_FAILED, error=_reason(error))
             raise
         await self._finish(status=RUN_COMPLETED)
         return onboarded

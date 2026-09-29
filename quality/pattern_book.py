@@ -83,6 +83,22 @@ NAMED_DECLARATIONS: dict[str, str] = {
     "none — draws no face": "no_face_declarations",
 }
 
+#: EVERY FINDING CLASS THIS READER EMITS, and nothing else — the one list rule
+#: 63's `ratchets:` keys are compared against (ADR gate-6: a recorded 0 is a
+#: measurement, an absent key is silence). A product folding the template meets
+#: its backlog in exactly these classes, and records it in its drawer under the
+#: same names; a class added here without its key, or a key with no class, is
+#: the rule's `ratchet_classes_keyed` floor unbound (exit 2), never a quiet gap.
+CLASSES: tuple[str, ...] = (
+    "book",
+    "entry-form",
+    "instrument-unnamed",
+    "instrument-missing",
+    "ledger-row",
+    "face-undeclared",
+    "face-section-missing",
+)
+
 
 @dataclass
 class Entry:
@@ -218,6 +234,38 @@ def books(root: Path) -> list[tuple[str, str]]:
                 out.append((rel, path.read_text(encoding="utf-8")))
             except (OSError, UnicodeDecodeError):
                 out.append((rel, ""))
+    return out
+
+
+#: The book's other machine-read blocks, each a fenced block the reader
+#: returns line by line (book first, then the drawer): the verb table the
+#: family's faces transcribe (house rule 80), the words a product declares are
+#: not another verb's synonym (rule 79), and the one other breakpoint a
+#: product's drawer may record (rule 78's breakpoint clause).
+VERB_TABLE_FENCE = "```verb-table"
+VERB_WORDS_FENCE = "```verb-words"
+BREAKPOINTS_FENCE = "```breakpoints"
+
+
+def fenced_lines(root: Path, fence: str) -> list[tuple[str, int, str]]:
+    """(book, line, text) for every line of every `fence` block in the book and the drawer.
+
+    Blank lines and whole-line `#` comments are skipped, so a book can carry a
+    block's form as a comment with no row under it — the motion ledger's rule.
+    """
+    out: list[tuple[str, int, str]] = []
+    for rel, text in books(root):
+        inside = False
+        for number, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if not inside:
+                inside = stripped == fence
+                continue
+            if stripped.startswith("```"):
+                inside = False
+                continue
+            if stripped and not stripped.startswith("#"):
+                out.append((rel, number, stripped))
     return out
 
 

@@ -1,18 +1,8 @@
 {
   "_": "DERIVED, never typed. Every cell is `allows(actor, key, obj=None)` on a FLAT product: one tenant, one node, no Role, RolePermission or Grant row, one person per role. The test re-runs the same census on this tree and asserts equality; a moved answer prints (key, role, before, after).",
-  "_baseline": "db6521fa",
-  "_command": "uv run python manage.py shell -c \"from apps.core.tests.permissions_world import write_flat_product_baseline as w; w('apps/core/tests/flat_product_baseline.json')\" \u2014 re-derived in place on the batch's own tree (R1-F2.3), which IS the merge tree, rather than on a scratch clone of it",
+  "_baseline": "e85a5057",
+  "_command": "uv run python manage.py shell -c \"from apps.core.tests.permissions_world import write_flat_product_baseline as w; w('apps/core/tests/flat_product_baseline.json')\"",
   "answers": {
-    "accounts.user.deactivate": {
-      "admin": true,
-      "member": false,
-      "owner": true
-    },
-    "accounts.user.erase": {
-      "admin": true,
-      "member": false,
-      "owner": true
-    },
     "api_token.read": {
       "admin": true,
       "member": true,
@@ -83,12 +73,17 @@
       "member": false,
       "owner": true
     },
-    "device.read": {
+    "deployment.configure": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "device.create": {
       "admin": true,
       "member": true,
       "owner": true
     },
-    "device.register": {
+    "device.read": {
       "admin": true,
       "member": true,
       "owner": true
@@ -113,6 +108,11 @@
       "member": false,
       "owner": true
     },
+    "endpoint.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
     "endpoint.resume": {
       "admin": true,
       "member": false,
@@ -133,20 +133,20 @@
       "member": false,
       "owner": true
     },
+    "export.create": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
     "export.read": {
       "admin": true,
       "member": true,
       "owner": true
     },
-    "export.request": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
     "file.archive": {
-      "admin": true,
+      "admin": false,
       "member": false,
-      "owner": true
+      "owner": false
     },
     "file.create": {
       "admin": true,
@@ -163,10 +163,10 @@
       "member": true,
       "owner": true
     },
-    "file_version.read": {
-      "admin": true,
-      "member": true,
-      "owner": true
+    "file.restore": {
+      "admin": false,
+      "member": false,
+      "owner": false
     },
     "grant.read": {
       "admin": true,
@@ -183,10 +183,25 @@
       "member": true,
       "owner": true
     },
-    "identity_platform.configure": {
-      "admin": false,
-      "member": false,
-      "owner": false
+    "import.apply": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "import.cancel": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "import.create": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "import.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
     },
     "inbound_webhook.read": {
       "admin": true,
@@ -248,15 +263,15 @@
       "member": true,
       "owner": true
     },
+    "message_engagement.create": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
     "message_engagement.read": {
       "admin": true,
       "member": true,
       "owner": true
-    },
-    "message_engagement.record": {
-      "admin": false,
-      "member": false,
-      "owner": false
     },
     "message_template.create": {
       "admin": true,
@@ -272,6 +287,31 @@
       "admin": true,
       "member": false,
       "owner": true
+    },
+    "note.archive": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "note.create": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "note.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "note.restore": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "note.update": {
+      "admin": false,
+      "member": false,
+      "owner": false
     },
     "organization.create": {
       "admin": true,
@@ -298,15 +338,10 @@
       "member": true,
       "owner": true
     },
-    "preference.set": {
-      "admin": true,
-      "member": false,
-      "owner": true
-    },
     "recipient.archive": {
-      "admin": true,
+      "admin": false,
       "member": false,
-      "owner": true
+      "owner": false
     },
     "recipient.create": {
       "admin": true,
@@ -317,6 +352,11 @@
       "admin": true,
       "member": true,
       "owner": true
+    },
+    "recipient.restore": {
+      "admin": false,
+      "member": false,
+      "owner": false
     },
     "recipient.update": {
       "admin": true,
@@ -358,7 +398,7 @@
       "member": false,
       "owner": true
     },
-    "sso_identity.provision": {
+    "sso_identity.create": {
       "admin": true,
       "member": false,
       "owner": true
@@ -368,20 +408,60 @@
       "member": true,
       "owner": true
     },
-    "stored_file.read": {
-      "admin": true,
-      "member": true,
-      "owner": true
+    "suppression_surge.create": {
+      "admin": false,
+      "member": false,
+      "owner": false
     },
     "suppression_surge.read": {
       "admin": true,
       "member": true,
       "owner": true
     },
-    "suppression_surge.record": {
+    "tag.archive": {
       "admin": false,
       "member": false,
       "owner": false
+    },
+    "tag.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "tag.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "tag.restore": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "tag.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "tag_link.create": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "tag_link.delete": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "tag_link.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "tag_link.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
     },
     "tenant.read": {
       "admin": true,
@@ -393,14 +473,19 @@
       "member": false,
       "owner": true
     },
-    "usage.read_report": {
+    "usage_entry.read": {
       "admin": true,
       "member": true,
       "owner": true
     },
-    "usage_entry.read": {
+    "user.deactivate": {
       "admin": true,
-      "member": true,
+      "member": false,
+      "owner": true
+    },
+    "user.erase": {
+      "admin": true,
+      "member": false,
       "owner": true
     },
     "user.read": {
@@ -413,15 +498,15 @@
       "member": false,
       "owner": true
     },
-    "webhook_endpoint.read": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
     "widget.approve": {
       "admin": true,
       "member": false,
       "owner": true
+    },
+    "widget.archive": {
+      "admin": false,
+      "member": false,
+      "owner": false
     },
     "widget.create": {
       "admin": true,
@@ -433,6 +518,16 @@
       "member": false,
       "owner": true
     },
+    "widget.merge": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "widget.move": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
     "widget.onboard": {
       "admin": true,
       "member": false,
@@ -442,6 +537,11 @@
       "admin": true,
       "member": true,
       "owner": true
+    },
+    "widget.restore": {
+      "admin": false,
+      "member": false,
+      "owner": false
     },
     "widget.update": {
       "admin": true,
@@ -458,6 +558,11 @@
       "member": true,
       "owner": true
     },
+    "widget_policy.archive": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
     "widget_policy.create": {
       "admin": true,
       "member": false,
@@ -468,7 +573,12 @@
       "member": true,
       "owner": true
     },
-    "workflow.signal": {
+    "widget_policy.restore": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "workflow_run.cancel": {
       "admin": true,
       "member": true,
       "owner": true
@@ -478,17 +588,12 @@
       "member": true,
       "owner": true
     },
-    "workflowrun.cancel": {
+    "workflow_run.replay": {
       "admin": true,
       "member": true,
       "owner": true
     },
-    "workflowrun.read": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
-    "workflowrun.replay": {
+    "workflow_run.signal": {
       "admin": true,
       "member": true,
       "owner": true

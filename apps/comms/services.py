@@ -60,6 +60,8 @@ from apps.comms.events import (
     MESSAGE_QUEUED,
     MESSAGE_SENT,
     MESSAGE_SUPPRESSED,
+    RECIPIENT_ARCHIVED,
+    RECIPIENT_RESTORED,
     SUPPRESSION_RECOVERED,
     SUPPRESSION_SURGED,
     V,
@@ -79,7 +81,7 @@ from apps.comms.models import (
 )
 from apps.comms.policies import quiet_defer_seconds, tenant_quiet_window
 from apps.comms.providers import STATUS_VALUES, registered_channels
-from apps.comms.schemas import DeviceOut, MessageEngagementOut, MessageOut
+from apps.comms.schemas import DeviceOut, MessageEngagementOut, MessageOut, RecipientOut
 from apps.comms.selectors import (
     get_device_by_token_hash,
     get_message_by_provider_id,
@@ -100,6 +102,7 @@ from apps.core.log import get_logger
 from apps.core.models import Organization, Tenant
 from apps.core.service import service
 from apps.core.services import root_organization
+from apps.core.verbs import archive_row, require_live, restore_row
 from apps.events.services import emit
 from apps.workflows.services import signal_workflow, start_workflow_on_commit, workflow_id
 
@@ -2475,8 +2478,9 @@ def update_recipient(
     """Correct a contact's own details. **Four fields, and nothing else.**
 
     Not on the list, and not by omission: `archived_at` (that is
-    `archive_recipient`, a verb, so the audit row says what happened rather than
-    which column moved), `organization` (a contact does not change branch — that
+    `archive_recipient` / `restore_recipient`, verbs, so the audit row says what
+    happened rather than which column moved), `organization` (a contact does not
+    change branch — that
     is a different operation with different rules) and everything on the
     person's `ChannelPreference` rows, which is the consent surface and is only
     ever reached through the five verbs below.
@@ -2489,6 +2493,10 @@ def update_recipient(
     if not may_be_named(actor, recipient):
         raise NotFound()
     require(actor, "recipient.update", recipient)
+    # A closed contact is read-only until it is restored: `archived` (409),
+    # naming the restore. Consent is NOT gated here — suppressing an archived
+    # contact is still the one way to stop what a send would do.
+    require_live(recipient, noun="recipient")
     updated: list[str] = []
     if email is not None:
         recipient.email = str(email).strip().lower()
@@ -2525,8 +2533,10 @@ def archive_recipient(*, tenant: Tenant, actor: Actor, recipient: Recipient) -> 
     inside `send()` where no caller can reach around it. Two walls that could
     disagree would be one wall too many.
 
-    Idempotent: archiving an archived contact keeps the first timestamp, because
-    the honest answer to "when did we close this contact" is the earlier one.
+    Idempotent: archiving an archived contact keeps the first timestamp and the
+    first archiver, and emits nothing, because the honest answer to "when did we
+    close this contact" is the earlier one. The row half — the lock, the early
+    return, the two columns — is `core.verbs.archive_row`.
     """
     # REACHABILITY FIRST, then the capability. `require` is asked AT THE
     # NODE THE ROW NAMES since resolution landed, so asking it first turned a
@@ -2536,10 +2546,51 @@ def archive_recipient(*, tenant: Tenant, actor: Actor, recipient: Recipient) -> 
     if not may_be_named(actor, recipient):
         raise NotFound()
     require(actor, "recipient.archive", recipient)
-    if recipient.archived_at is not None:
-        return recipient
-    recipient.archived_at = timezone.now()
-    recipient.save(update_fields=["archived_at", "updated_at"])
+    recipient, changed = archive_row(tenant=tenant, actor=actor, row=recipient, noun="recipient")
+    if changed:
+        emit(
+            name=RECIPIENT_ARCHIVED,
+            tenant=tenant,
+            # Excluded by hand until core's `event_payload()` helper lands; an
+            # event payload never carries a per-viewer field — `allowed_acts` is
+            # what one caller may press, and a subscriber is somebody else.
+            payload=RecipientOut.from_orm(recipient).model_dump(
+                mode="json", exclude={"allowed_acts"}
+            ),
+            actor=actor,
+        )
+    return recipient
+
+
+@service
+def restore_recipient(*, tenant: Tenant, actor: Actor, recipient: Recipient) -> Recipient:
+    """Reopen a closed contact. It comes back into the contact book.
+
+    The mirror of `archive_recipient`, and the same press: whoever may close a
+    contact may reopen it (`core.policies.may_archive`, asked at the contact's
+    node). Idempotent — restoring a live contact answers it unchanged and
+    emits nothing — and both archive columns are cleared, because a live
+    contact carries neither.
+
+    Consent is untouched either way: a suppression recorded while the contact
+    was closed still stands after it is reopened.
+    """
+    if not may_be_named(actor, recipient):
+        raise NotFound()
+    require(actor, "recipient.restore", recipient)
+    recipient, changed = restore_row(tenant=tenant, actor=actor, row=recipient, noun="recipient")
+    if changed:
+        emit(
+            name=RECIPIENT_RESTORED,
+            tenant=tenant,
+            # Excluded by hand until core's `event_payload()` helper lands; an
+            # event payload never carries a per-viewer field — `allowed_acts` is
+            # what one caller may press, and a subscriber is somebody else.
+            payload=RecipientOut.from_orm(recipient).model_dump(
+                mode="json", exclude={"allowed_acts"}
+            ),
+            actor=actor,
+        )
     return recipient
 
 
@@ -2692,6 +2743,7 @@ def set_quiet_hours(
 
 
 @service
+# rule-82: writes the consent ledger, never the contact
 def suppress_recipient(
     *, tenant: Tenant, actor: Actor, recipient: Recipient, channel: str = Channel.EMAIL
 ) -> ChannelPreference:
@@ -2731,6 +2783,7 @@ def suppress_recipient(
 
 
 @service
+# rule-82: writes the consent ledger, never the contact
 def unsuppress_recipient(
     *, tenant: Tenant, actor: Actor, recipient: Recipient, channel: str = Channel.EMAIL
 ) -> ChannelPreference:

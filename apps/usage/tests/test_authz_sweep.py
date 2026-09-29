@@ -72,7 +72,9 @@ def test_the_apps_authorization_matrix_equals_the_baseline() -> None:
     renames = renamed_permissions()
     old_for = {new: old for old, new in renames.items()}
 
-    pinned = {key: baseline[old_for.get(key, key)] for key in APP_KEYS}
+    # The document is re-derived in place, so it names the NEW key; a document
+    # derived before the rename named only the old one.
+    pinned = {key: baseline.get(key) or baseline[old_for[key]] for key in APP_KEYS}
     assert len(pinned) == len(APP_KEYS) == 1, pinned
     assert old_for["usage_entry.read"] == "usage.read_report", old_for
 

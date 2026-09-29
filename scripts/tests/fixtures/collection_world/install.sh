@@ -28,8 +28,13 @@
 # did not cause. Measured, not reasoned: BOXBANK-22 red on exactly that, the
 # day `apps_root_modules` was re-derived 4 -> 5 and this directory still
 # shipped `apps_root/test_world_root_{one..four}.py` — so a FIFTH landed here.
+# Paid again at 5 -> 6, when `apps/test_absent_relative_imports.py` joined the
+# tree's population: `test_list_legs.sh`'s `--pr` case collects this world
+# under `--djb-scope-narrow` and read `apps_root_modules (floor 6, derived 5
+# module(s))` — so `test_world_root_six.py` landed here. The world's members
+# are `test_world_root_{one..six}.py`, one per unit of that floor.
 # The count is never typed twice: `world_install` copies the glob and the
-# drive's `WORLD_TARGET` loops the same directory, so a sixth is one file.
+# drive's `WORLD_TARGET` loops the same directory, so a seventh is one file.
 #
 # A TOKEN POPULATION GROWS WITHOUT GROWING THE WORLD. Most of the floors count
 # modules whose SOURCE carries a token (`DJB_REACH_TOKENS`,

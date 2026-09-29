@@ -320,7 +320,11 @@ def test_a_flipped_cell_is_red() -> None:
 
     world = build_sweep_world()
     actual = comms_census(sorted(expected), world.actors, world.rows)
-    assert moved_cells(flipped, actual) == [f"{key}/{role}/{state}"]
+    # The cells the document already confesses moved are moved against the copy
+    # too, so the flip is read against them: the flipped cell joins them, or —
+    # were it one of them — leaves them.
+    accepted = set(document["accepted_deltas"])
+    assert moved_cells(flipped, actual) == sorted(accepted ^ {f"{key}/{role}/{state}"})
 
 
 def test_every_accepted_delta_names_a_cell_that_actually_moved() -> None:

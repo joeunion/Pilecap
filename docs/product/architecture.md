@@ -1365,7 +1365,7 @@ extra. *Trigger to revisit:* the first bank at N ≥ 7 where the composed wall
 is the acceptance box by more than 60 s — then the proof box's size is the
 next rung, not this ADR.
 
-**Amended 2026-09-27 (P23, v2.3.0 — PROPOSED by the PM; the owner signs).** *Which
+**Amended 2026-09-27 (P23, v2.3.0 — SIGNED by the owner 2026-09-27 ("approval on gate01", recorded by the PM)).** *Which
 principle bends:* gate-1's own "two passes on one machine" a second time, and
 this ADR's 2026-09-18 amendment's "the row is not written until the proof is
 in": on the **CI road** (`pm_push.sh --pr` → the pull request's run →
@@ -1574,6 +1574,24 @@ readings coincide. A name that is neither an app nor a declared class is
 refused with the sentence it always had, now carrying the list of the classes
 that rule does declare.*
 
+*As built (P24 FE-2, and the fix that followed its first train): **a recorded
+class above its count is a violation, not a note.** Before it, the self-test
+read every rule's canaries with `ratchets=False` and the ratchet leg forged
+only one rule's shape, so a number recorded above a class's count was a note
+for every rule. The ratchet leg's one reader, `ratchet_headroom`, now judges
+every recorded row of every rule that declares `ratchets:` against the tree's
+count — on the template's own shape only: a row above its count is a red
+carried by the rule's own line and trailer (exit 1, since a tree disagreeing
+with its own declaration is a judged red and not a dead instrument), at-count
+and at-zero are silent; on any other shape — a declared base, a world — it
+judges nothing and prints one line naming the shape and why, because a
+template row above a product's count is the fold's business and the live
+scan's note already names the number; a shape the census cannot read is
+could-not-look, never a silent skip. The forged forms follow the same
+decision: a raised row named once on the template's shape, a raised row on a
+remote base or a world not named, and a skip that does not name its shape
+refused.*
+
 **ADR core-26 · `core` says what happened, through the bridge.** *Accepted
 2026-09-15 (P20, P4).* *Context*: `core` emitted no events at all. It sits
 BELOW `apps/events` in the layer contract (rule 7), so it may not import the app
@@ -1687,6 +1705,217 @@ leaf, silently. `REBASE_HEAD` is read before the markers are, and the command
 exits 2 saying so. *Trigger to revisit*: a squashed
 template migration (house rule 6's gap), or a product that wants the fold to
 run across every app at once rather than one app at a time.
+
+**ADR verbs-1 · every verb a noun needs is a mechanism it adopts, and the
+gate refuses the noun until it has the road.** *Accepted 2026-09-27 (P24,
+the noun-verb family; the owner: "let's do them all").* *Context*: the
+consumer built archive by hand across twelve apps — two fields, a migration, a
+service pair, two routes, two tools, an `Out`, a `?show=`, twenty-odd tests —
+and learned two rules late; move, import and merge were each invented per
+noun. The template's own first adoption by hand (WATCH-P24) reached green
+inside the app in ten minutes and never green as a whole: a new refusal code
+reds a table in `apps/core` a product may not edit. *Decision*: **one seam in
+`core`** — `core.verbs` (the declared markers per model, `allowed_acts(actor,
+row)` as the server's answer per row, `resolve_subject`), `core.blockers` (a
+closed walk over each app's `<verb>_blockers.py`), the refusal grammar with
+`wire_extra`, and a road table (`ROADS`) house rule 74 reads: a noun that
+declares a marker and lacks the marker's routes, keys, `Out` shape or
+parameter is refused at `manage.py check --tag djb`, never at the door. **Every
+member ships the same shape** — a mixin or a seam, the keyword-only service
+pair, both doors (rule 17 derives the twin), the face's road from the pattern
+book, a house rule with a canary, and a golden example on the scaffold noun a
+product copies (`# golden: <verb> begin|end`; the golden-copy drive copies,
+relocates, checks and drops it). *Rejected*: per-noun hand builds (the bill
+above, per app); a version on every update door (the settled row — a version
+column is a per-product decision; `Versioned` is opt-in and derived from
+`updated_at`); real FKs for attachments (½ session per noun and cannot mean
+"anything" — the subject is polymorphic and resolved at every write).
+*Consequences*: `apps/core` grows the family's seams once (the frozen-core
+reason stated per commit); a product's own refusal codes must be admitted by
+their declaration, not by the template's typed table (the second core
+batch's); the
+face census and the verb runners (rules 76–80) are the family's instruments.
+*Trigger to revisit*: the first product noun that needs a verb the family's
+shape cannot express without a second seam.
+
+**ADR archive-1 · a noun leaves the book one way, and the consumer's build is
+adopted where it can be.** *Accepted 2026-09-27 (P24 B-CORE-1).* *Context*:
+the consumer's `Archivable` — fields `archived_at`/`archived_by`, the manager
+hiding archived rows in `for_tenant()` with `.including_archived()` and
+`.archived_only()` as the only widenings, `ArchivedOut`, blockers by discovery,
+`@refuses_system` predicates and their rule — was built, driven and folded on
+a real product; the comms and files apps here carried two hand-built halves
+of the same idea that disagreed (no restore, no event, a `?archived=` bool).
+*Decision*: the consumer's mechanism, names kept, lifted into `core` as the
+family's first member: archived rows are hidden by the manager and never
+purged; `archive`/`restore` are a service pair that emits inside the
+transaction and refuses with `archive_blocked`/`restore_blocked`/`archived`
+(409, each naming its remedy); a system actor is refused by the predicate
+(`may_archive` asks `organization.update` at the node — rule 54 (c)'s form,
+the consumer's `may_administer` semantics — because the default roles offer
+every predicate-bearing key back, so asking `<kind>.archive` narrows nothing);
+`Archivable` and `append_only` are disjoint (rule 75); the two hand-built
+halves become the mixin in the same cycle (COMMS-A, FILES-A). *Consequences*:
+`?archived=` becomes `?show=` (a 400 naming `show` — a loud break the merge
+note carries at a MINOR, the owner's ruling); `for_tenant`'s hide is invisible
+to raw SQL and `_base_manager` reads (declared); a custom role holding
+`organization.update` can archive (declared cost). *Trigger to revisit*: a
+product that needs a purge (a data-safety act the family does not carry) or an
+archive that must not hide by default.
+
+**ADR verbs-2 · an event payload never carries a per-viewer field.** *Accepted
+2026-09-28 (P24 LEAD-W3 R1; built by B-CORE-3 under the owner's principle-20
+sanction, recorded in its commit).* *Context*: `allowed_acts` is a property of
+(row, viewer) — the vocabulary answers it per hat, and an event has no viewer.
+The family's first adopter put it on the `Out` and so into the outbox, and its
+verifier read the archiver's `["restore"]` in `archived` and the owner's five
+acts in `created`, broadcast to every member: a permission fact about one
+person published to the tenant, wrong for every other reader. The second
+adopter left it off for byte-equality with the outbox — a door disagreement,
+which is a finding. *Decision*: `allowed_acts` lives on the two viewer doors
+(REST and MCP, which rule 17 keeps equal) through `ActsOut`, the page-level
+`ActsPage` and `with_allowed_acts`; `Event.payload` is the `Out` minus
+`core.schemas.PER_VIEWER_FIELDS` (derived from `ActsOut`, never typed), built
+by `event_payload()`, which strips at any depth; and
+`apps/events/services.py::emit` refuses a payload carrying a per-viewer key at
+any depth, naming the path. **The refusal on the spine is the owner's
+principle-20 exception**: the spine is the one chokepoint through which every
+adopter's payload passes, a source rule cannot see into a dict a service
+dumped, and the alternative was per-engineer memory in every adopter — so a
+core rung was sanctioned one edit outside its territory. The webhook body and
+the socket frame carry the envelope; a frame is a signal to re-read, never a
+decision. The four-door measure, restated: for one viewer REST equals MCP; for
+any viewer `event_payload(REST)` equals `Event.payload`; a second viewer
+differs only in the per-viewer fields — `assert_four_doors` is the assertion
+every adopter's wire test calls, and it held only when driven through a second
+viewer (one person pressing both doors cannot see the difference). *Rejected*:
+the emitter's own acts in the payload (the broadcast above, and a wire break
+for every subscriber to undo); acts on an envelope beside a pure `Out` (the
+detail route has no envelope, so every detail door re-wraps — a break across
+five apps); `allowed_acts: list | None` with `null` meaning nobody asked (a
+subscriber cannot tell `null` from "you may do nothing", every `Out` widens,
+and the measure still needs the amendment). *Reversal cost*: stripping now and
+carrying later is additive — a key appears and no subscriber breaks; the other
+direction breaks every subscriber that read the key. *Trigger to revisit*: a
+subscriber that needs a viewer's acts in a broadcast — which is a
+per-subscriber door, not an event.
+
+**ADR merge-1 · the repointer contract, and the loser as a tombstone.**
+*Accepted 2026-09-28 (P24 LEAD-W3 R15 over the owner's tombstone ruling of
+2026-09-27; B-CORE-3's conformance test measures it over every attach owner;
+R-SEAMS-W5 closed the two seams its first consumer found).* *Context*: three
+attach owners implemented `Repointer` in one wave with three readings of its
+count — one counted three, moved two and collapsed one — and the seam's first
+mergeable consumer found a repointer that refused a noun without attachments,
+and a survivor whose delete surfaced the database's protect as `conflict`.
+*Decision*: **one contract, asserted once across every declared repointer**
+(`apps/core/tests/test_repointer_conformance.py`): `count(*, tenant, loser)`
+answers the rows that will LEAVE the loser — moved or collapsed — and
+`repoint(*, tenant, actor, loser, survivor)` the rows that left; the safety
+re-resolves both rows for the actor (`may_be_named`, `resolve_subject`), so
+an unreachable loser or survivor is `NotFound` with nothing moved; one
+`<app>.<noun>.moved` per moved row and the owner's own leaving event for a
+collapse (a duplicate link folds onto the survivor's and emits its `deleted`);
+`updated_at` stamped on every re-pointed row (rule 76's form now, so a later
+`Versioned` adoption changes nothing); a repointer for a kind the noun does
+not take is a no-op counted zero on every owner, so a mergeable noun without
+attachments merges. **The loser survives as a tombstone**: `Mergeable` requires
+`Archivable` and carries `merged_into` (a self-FK, `PROTECT`) — the merging
+person archives the loser, its reads answer 200 read-only with `merged_into`,
+its writes refuse `merged` (409) naming the survivor's door, a chain is
+compressed in the merge transaction so a loser is never two hops from its
+survivor, the survivor's aggregate reads that must include kept children widen
+with `Mergeable.lineage(survivor)`, and every foreign key into the noun is
+either re-pointed by its owning app's `merge_repointers.py` or declared kept on
+the loser in `merge_keeps` with its reason (an append-only ledger stays where
+it was written — rule 20) — rule 74's merge clause is that closed question over
+`_meta.related_objects`. Deleting a survivor that still carries merged losers
+refuses `merge_survivor` (409, both doors byte for byte, naming the noun's
+archive), where the protect surfaced as the wrong word. The dry run
+(`<noun>_merge-detail`, `?into=`) answers the sentence, the repoints by title
+and count, and the blockers, and writes nothing; the apply takes both versions
+where the noun is `Versioned`; locks are taken in pk order. **One `.moved`
+outbox row per moved attachment is kept** (the owner's question, answered
+KEEP): one event per merge carrying counts would leave an attachment's own
+webhook subscribers deaf to the repoint. *Rejected*: `count` answering
+`(moved, collapsed)` exactly (the honest split, but a signature change on a
+seam three merged apps already implement — reopened when a receipt needs the
+split); count equals moved (unknowable without the survivor); a separate
+redirect table (a second owner of a fact the loser row already carries,
+principle 9); a 3xx on the loser's detail (a client follows it silently and
+then writes to a row it did not name, and the MCP door has no redirect); an
+unmerge road (the merge is admin-only and confirmed on the face precisely
+because it is not undone, principle 6); a cross-noun merge. *Trigger to
+revisit*: a merge measured past the request budget, which becomes an
+import-shaped run; a receipt that needs moved and collapsed told apart.
+
+**ADR duplicate-1 · a duplicate is a create, filled before its one save, and
+its key constraint is the model's own.** *Accepted 2026-09-28 (P24 — the
+worked example's step-zero finding, ruled 16:59 and landed under a narrow core
+sanction; R-SEAMS-W5 for the constraint).* *Context*: the seam's first consumer
+could not use it — `duplicate_row` built the copy, set `copies` and saved once
+before the service could set anything, so a `resets` field that is NOT NULL
+(the owner) and a unique constraint over copied fields (the name per owner)
+were each a 500, and the planted stencil the seam was measured against carried
+neither; then a `Duplicable` noun declaring `Meta.constraints` could not
+migrate from scratch, because the key field's render made `CreateModel` create
+the constraint and the autodetector's `AddConstraint` failed on it — the worked
+example migrated only because its table already existed. *Decision*:
+`Duplicable` (`duplicated_from`, a self-FK that nulls when the source goes —
+lineage is a courtesy, not a claim — and `duplicate_key`) with
+`Duplicate(copies=…, resets=…)` closed over every concrete editable field
+(rule 74's duplicate clause); `duplicate_row(..., fill=)` takes a value for
+every key named in `resets`, refuses `TypeError` for one missing, and sets them
+on the copy before its one save; the copy's `full_clean()` runs under
+`as_invalid()` before the save, so a clash is `invalid` naming the field and
+never a 500; a duplicate IS a create — `<kind>.create` at the acting hat (ADR
+core-20's placement) plus `<kind>.read` on the source — so it lands at the
+presser's hat, owned by the presser, named as a copy, with the source's
+ledger left behind and its tags carried by the noun's own service calling the
+tags app's service inside its transaction; and **the key constraint is the
+model's own**, declared in its `Meta`, checked by the field rather than
+conjured by its render, and a duplicable noun that forgets the declaration
+fails `core.E001` before it can migrate. *Rejected*: a core hook for copying
+attachments (one consumer, principle 11); a `duplicate_blocked` code (a copy's
+refusals are `forbidden` and `invalid`); copying append-only children (a ledger
+is the source's history, not the copy's) or notes and files; a plant without
+the example's shape (the criteria finding — a seam is measured against the
+shape its first consumer has). *Trigger to revisit*: a product noun whose copy
+must carry an attachment kind other than tags.
+
+**ADR attach-1 · the landing law: an attachment lands at its subject's
+organization, and a tenant-wide subject lands it at the acting hat.**
+*Accepted 2026-09-28 (P24 LEAD-W3 R6, over the owner's polymorphic ruling of
+2026-09-27; the tags app moved to it; B-CORE-3's attach conformance measures
+every owner).* *Context*: attachments are polymorphic `(subject_kind,
+subject_id)` across three platform owners — notes, tags and the files app's
+stored file — resolved and authorized at every write; the first two owners
+disagreed on where a row lands for a tenant-wide subject: notes at the
+subject's node, tags at the tenant root, which only root hats can read.
+*Decision*: an attachment lands at its subject's organization; for a
+tenant-wide subject (a `TenantScopedModel`, such as a tag) it lands at the
+acting hat — down-only visibility decides it, because a branch author must be
+able to read back what they wrote, and rule 55's root-only writes govern the
+tenant-wide ROW, never the org-scoped link. The subject is resolved by
+`core.verbs.resolve_subject` (the kind registry, `for_tenant(t).including_archived()`,
+`visible_to`, `may_be_named`), and attachments are read only through their
+subject (`?subject=<kind>:<id>`, which resolves the subject first), so a
+dangling pointer is unreachable, never wrong. **The noun declares
+`attachments = ("notes", "files", "tags")` inside its golden fence**, so a
+product copies the declaration with the noun and the adopters' test plants —
+additive, never replacing — become no-ops the day it lands; a kind the subject
+does not declare is refused naming `subject`; a noun that lists tags answers
+`tags` on its detail (rule 74's attach clause; the detail door only, to spare
+a per-row query on lists). **Each owner ships `tests/attach_specimen.py::attach`**,
+the hook core's conformance test imports, so the law is measured once across
+every owner rather than asserted per app. *Rejected*: root landing (the reason
+above); real foreign keys per noun (half a session per noun, and a link table
+cannot mean "anything"); a conformance test per owner (three readings of one
+law). *Declared and booked*: the tenant-wide one-per-pair constraint against
+per-hat landing (a second branch pressing a word already on a tenant-wide
+subject answers `conflict` with no row and no event), and a merge re-landing
+links at the merging actor's hat. *Trigger to revisit*: universal homing —
+when the tenant-wide class dissolves, the second clause goes with it.
 
 ### Enforcement design ("fold it in")
 
@@ -2159,6 +2388,34 @@ population; writes, covered only transitively through the two import clauses;
 tests, outside the walk by construction; and a client obtained legally and then
 passed onward, caught at the call and not at the hand-off.
 
+**Amended 2026-09-27 (P24 — proposed by the PM; SIGNED by the owner 2026-09-28, "im ok with all").** *Which
+principle bends:* ADR files-2's "no read-the-bytes function on this module"
+(`apps/files/storage.py` § HOW BYTES COME BACK OUT), whose stated purpose is
+that bytes never travel through Django to a DOOR — a whole document through a
+web worker's memory to serve a response. *Why the default is insufficient
+now:* the import member (P24 § 2.B.7) validates and applies an uploaded CSV
+inside a Temporal ACTIVITY, chunk by chunk, and hands bytes to nothing but its
+own parser; the design says "streams the CSV" and the seam had no road for it,
+so the rung stopped (the builder refused a `# rule-48:` valve and a presigned
+fetch over raw HTTPS — both the second door the rule exists to stop).
+*Decision:* the seam module gains ONE server-side stream — `iter_object(*,
+tenant, key, chunk)`, `refuse_foreign_key` first, the same `get_object` walk
+`sha256_of` already makes, the body closed in `finally` — callable from an
+activity and never from a door; rule 48 is unchanged (the read stays inside
+the one module); the docstring's paragraph says bytes may reach an activity's
+parser and never a response. *Alternatives rejected:* a valve on a second
+`get_object` in `apps/imports` (a permission slip for the exact shape the rule
+stops); `presign_get` + an HTTP client from the activity (the rule's declared
+raw-HTTPS blind spot, worn on purpose); an upload road that bypasses the files
+app (a second key grammar). *Risk:* a door that finds `iter_object` and
+proxies — bounded by rule 48's population (`apps/*/api.py`, `mcp.py`,
+`consumers.py` may not call it; the canary is a door calling it) — that canary
+is the files owner's next rider. *Reversal:* delete the one function and the
+paragraph; the import member then needs the presigned road and its own
+amendment. *Trigger to revisit:* a second server-side consumer of bytes (a
+document renderer, a virus scan) — then the seam's stream is the pattern, not
+the exception.
+
 49. **The audit row names who and where, always** (ADR core-22; the row
 was owed here since the rule landed and is written now — the gap itself is
 the evidence for the numbered-list consistency check the queue carries).
@@ -2441,7 +2698,14 @@ a citation's shape and not its truth); whether every element class a product
 draws has an entry is the engineering lead's DECOMPOSE refusal, not this rule's;
 a path not in backticks, with no directory segment or no suffix, is not read as
 an instrument; the scales (§ 26) and the mirror pass (§ 27) are headings, not
-entries, so a face can never declare them.
+entries, so a face can never declare them. **A product's fold records its pattern-book
+findings as ratchet classes, per ADR gate-6** (P24 FE-2): the rule declares
+one class per finding class its runner emits — `book`, `entry-form`,
+`instrument-unnamed`, `instrument-missing`, `ledger-row`, `face-undeclared`,
+`face-section-missing` — each recorded `0` on the template, so a product
+folding after the tag records what it finds under its drawer's `ratchets:` and
+ratchets it down by territory exactly as rules 64–71 already do; a class the
+runner emits that no key covers is the ratchet leg's own dead.
 
 64. **Every size names a type role** (P23 B-FE-A; the generic front-end
 instruments are house rules that red a product until it adopts the floor —
@@ -2589,6 +2853,216 @@ server sends** — a refusal's code, a remedy's destination — is rendered
 verbatim by design and is the refusal notice's (§ 15), not a copy string;
 strings outside `frontend/src/copy/` are fe-conventions § 5's.
 
+74. **A noun that declares a family marker carries the whole road the marker
+demands** (P24 B-CORE-1; ADR verbs-1, the family's seam; `apps.core.verbs.ROADS`
+is the table). An archivable noun carries a `<noun>-archive` and a
+`<noun>-restore` route (each paired on the machine door by rule 17's derivation
+from the same url_name), both keys `<noun>.archive` and `<noun>.restore` in the
+vocabulary — derived, never typed — every route answering the noun itself (its
+detail, its archive, its restore) answering an `Out` that subclasses
+`ArchivedOut`, and its list taking `?show=`. Read off the live model registry
+and the live ninja mount; nothing is listed. It reports only through the django
+system-check leg (`manage.py check --tag djb`), so no comment suppresses it: a
+noun that should not carry a road does not declare its marker, and a road the
+table demands wrongly is an edit to `apps/core/verbs.py` a reviewer reads. The
+family's later markers (`Versioned`, `Movable`, bulk, history) add their roads
+to the same table as they land. Declared blind spots: **whether the road
+works** — the routes exist, answer the shape and take the parameter; that an
+archive hides the row, a restore puts it back and a blocked archive names its
+blocker is each adopting noun's own tests (and the golden-copy drive's copied
+test); a noun that should adopt a marker and never declares it (the
+declaration IS the population); the list route's name (`?show=` is demanded of
+`<noun>-list` or its plural; a list mounted under any other url_name is not
+seen); a route named right that does the wrong thing (review's); the MCP twin
+is rule 17's question, and an app rule 17 exempts is exempt here too.
+
+75. **No model is both append-only and Archivable** (P24 B-CORE-1; ADR
+archive-1 — the consumer's `Archivable` adopted verbatim where it could be; the
+django-architect skill's D8). A class under `apps/` whose body declares
+`append_only = True`, or which names an append-only class as a base, never
+also names `Archivable` (or an archivable class) as a base or declares
+`archivable = True`; both populations are derived from the tree by class name
+to a fixed point. A ledger row is never hidden and never restored — the two
+mixins answer different questions about a row's life, and a class carrying both
+would let `for_tenant` hide what rule 20 says can never change. The static rule
+ships with its runtime belt: `Archivable.__init_subclass__` refuses the pair
+and the wrong base order the moment the module is imported. Declared blind
+spots: a declaration the AST cannot see (a class built by `type(...)`, a base
+bound to another name, an attribute set after the class body — the belt covers
+the first two at import, nothing covers a setattr); name resolution is by class
+name, not by import, so two modules defining one name are read as their union
+(the loud direction; a `# rule-75:` valve is the answer); a model that is a
+ledger in spirit and never declares `append_only`; whether a noun should be
+archivable at all (the adopting app's decision); files outside `apps/`.
+
+76. **A write to a Versioned model moves `updated_at`** (P24 B-CORE-2; ADR
+verbs-1 — the version is derived from `updated_at` in integer microseconds, no
+column, no migration, and `require_version` refuses `stale_version` (409, the
+remedy `self:reread`, `current_version` in the extra) by comparing the stamp).
+Under `apps/` (tests and migrations aside) a `save(update_fields=[...])` on a
+name holding a row of a `Versioned` class lists `"updated_at"` in its literal
+field list, a queryset `.update(...)` rooted at a `Versioned` class passes
+`updated_at=`, and a `.bulk_update(...)` on one lists `"updated_at"`; the
+population is derived by class name to a fixed point (rule 75's resolver),
+nothing is listed. A write that skips the stamp leaves the version where it
+was, so the next reader's `version` is a lie and the save that lost the race
+cannot be refused. Valve `# rule-76: <reason>` on the line or the comment block
+above it. Declared blind spots: **a field list the AST cannot read** — a
+variable, a list built at run time, a `**kwargs` spread into `.update()` — is
+never accused (the quiet direction; a service writes a literal); a row held
+where the binding is illegible (a dict value, a comprehension target, `self`
+inside the model's own methods); a raw SQL `UPDATE`; a clock that steps
+backwards between two locked writes (the version is the stamp, and the stamp
+is the clock's); name resolution is by class name, as rule 75's; files outside
+`apps/`, and every test and migration, are not read.
+
+77. **A noun face's road equals its wire** (P24 FE-2, widened to import and
+attach by FE-3; ADR verbs-1; the design's instrument split — the face's Tier A
+rules read source text, the fe leg's census reads the rendered face). Every
+noun face — a directory under `frontend/src/screens/` — that draws a noun whose
+wire (`frontend/openapi.json`) serves a family verb door declares its road
+once, in `road.ts`, and the road's verbs equal the noun's verb doors both ways:
+no road verb without its door (an act the server would not answer) and no door
+the road does not declare (a verb the face forgot). The doors are the
+operations whose operationId names the verb and the noun — archive, restore,
+move, duplicate and merge (POST), update (PATCH, the versioned Edit), the
+history list (GET); import, where the imports app's stage operation takes the
+noun as a `kind`; attach, where the noun's own detail answers `tags` — and the
+road's `bulk:` list equals the bulk door's discriminator, both ways. A wire
+noun with no face is counted and is not red: a capability on REST need not be
+on a screen. Runner `quality/runners/js_verb_road.py`; valve `# rule-77:`.
+**Its ratchet classes are `wire-missing`, `road-missing`, `road-without-door`
+and `door-without-road`, each `0` on the template, and `door-without-road` is
+how the face follows the wire by one wave without a valve on the road:** when
+the worked noun gains a door before its face is drawn, the example's fold
+records the count in `quality/rules.yaml` with the reason and the client
+regenerated (the rule reads the committed `frontend/openapi.json`, so a trial
+merge measures `0` where the train's fold measures the truth), and the face
+rung that draws the verb lowers it to `0` — the worked example recorded `2`
+for duplicate and merge and the face that drew them returned it to `0`.
+Declared blind spots: **attach without tags** — a noun that takes notes or
+files and no tags answers nothing on its detail that says so, and its attach
+door is not seen (a road declaring attach for it reds as road-without-door,
+the loud direction, and a valve names it); which attach owners a face draws is
+not compared, only that the noun takes attachments; an importer whose `kind` is
+not the noun's operationId noun is read under its kind; a door named otherwise
+(a rename route standing for update, as organizations' does); whether the face
+draws what the road says is the face census's — a road is taken at its word;
+a road built at run time; an irregular plural read wrong by the bulk noun's
+singularising.
+
+78. **A family act is constructed from the verb table and never spelled**
+(P24 FE-2; the design's grammar — five seats, one ordered verb table, an act
+drawn iff the verb is in the row's `allowed_acts`, absent never disabled).
+Under `frontend/src/`: (a) no string-literal `data-act="<verb>"` outside
+`frontend/src/screens/verbs.ts`; (b) no permission key `"<noun>.<verb>"` — an
+object-less ask — outside the generated client; (c) no one-press verb (one the
+same face undoes in one press, whose table row opens no sheet) inside the
+dialog primitive as its word, and merge's foot act asked for only in a module
+that draws the dialog primitive; (d) no `order:` or `*-reverse` direction in a
+stylesheet rule whose selector names `[data-seat`; (e) every width media query
+(and `matchMedia` string) is `(width <= 40rem)` or its complement
+`(width > 40rem)` — the book's one breakpoint in range syntax — or the one
+other value a product's drawer records in a fenced `breakpoints` block. Runner
+`quality/runners/js_verb_acts.py`; ratchet classes `hand-act`,
+`objectless-ask`, `leaving-in-dialog`, `merge-outside-confirm`,
+`seat-reordered`, `breakpoint`, each `0`; valve `# rule-78:`, and a finding in
+a `.css` file cannot be valved (rule 53's declared seam gap) — the remedy there
+is the range query or an unreordered seat. Declared blind spots: **layout is
+Tier C** — clause (d) reads a selector that names `[data-seat`; a class on the
+seat's element that reorders it, a `grid` placement, an absolute position and
+the 44 px box are the rendered drive's; a pill that splits is a rendered fact
+no static read sees; an act built at run time (a `data-act` from a variable, a
+key composed from parts); clause (c) reads the element between `<Dialog` and
+its closing tag in one module, so a one-press act a component from another
+module draws inside the dialog is not seen, and a dialog drawn under another
+name is rule 70's; a width condition inside a container query, and a
+`min-`/`max-` query in a `.css` string built at run time.
+
+79. **One word per verb** (P24 FE-2; ADR verbs-1 — a product renames a verb
+once, product-wide, in its lexicon, and never per noun). For every noun whose
+wire carries a family verb, the noun's copy module
+(`frontend/src/copy/**/<noun>.ts`, the noun in kebab case) spells no other
+word for that verb: archive's *Delete · Remove · Trash · Retire · Deactivate ·
+Discard · Hide · Unarchive · Recover*, move's *Transfer · Reassign · Relocate*
+and merge's *Combine · Dedupe · Consolidate* anywhere in it; duplicate's *Copy
+· Clone*, update's *Modify · Update* and history's *Activity · Log · Audit ·
+Timeline* as a label or a title. Every word the code's verb table spends — the
+product's word for each verb and each verb's way back — and every phrase the
+drawer declares in a fenced `verb-words` block is lifted out of a string before
+its words are read. Runner `quality/runners/js_verb_words.py`; ratchet class
+`synonym`; valve `# rule-79:`. Declared blind spots: a word composed at run
+time (a template literal, a string a helper builds) and a word the server
+sends (a refusal's sentence, a history row's) are the backend's and rule 73's;
+copy outside the noun's module — the lexicon, a shared module, a screen's
+inline string — is not a noun's copy and is not read here (rule 72 holds
+labels to the lexicon); a noun whose copy module is named otherwise than its
+wire noun; a synonym in another language or inflected (*Deleting*); the lists
+are the design grammar's, per verb, and grow by visible diff.
+
+80. **The verb table equals the book's** (P24 FE-2; the pattern book § 4's
+fenced `verb-table` block is the one declaration). `frontend/src/screens/verbs.ts`'s
+`VERB_TABLE` equals the pattern book's verb table (the fenced `verb-table`
+block in `docs/product/design/patterns.md`, or a product's whole table in its
+drawer's block, which then stands for the book's) row for row: the same verbs
+in the same order, and per verb the same place in `record-acts`, the same press
+(one · confirm · preview · none), the same weight, and the same presence of
+each of the five forms — pressed, busy, state, refused, way back. A ruling
+stays a token. Runner `quality/runners/js_verb_table.py`; ratchet classes
+`table-missing`, `table-row`, `table-order`, `table-cell`; valve `# rule-80:`.
+Declared blind spots: **the words** — the two tables' words are not compared
+(a product's word is one lexicon line, rule 72, and a verb's synonyms are rule
+79's), only the forms' presence; a row built at run time (spread from another
+array) — a row is an object literal in `VERB_TABLE` whose first key is `verb`;
+the places a verb may be drawn and its foot word are not in the book's table
+and are the face census's; a book row with the wrong number of cells is not
+read, and so reads as a missing row.
+
+81. **An archivable noun's archived rows are reached only through its
+widenings** (P24 B-CORE-3; ADR archive-1; born from the shape the two
+hand-built adopters carried into the family — a hand filter chained after
+`for_tenant` answered `[]` with no error once the manager hid archived rows
+first, and nothing held it closed). Under `apps/` (tests, migrations and
+`apps/core/models.py` — where the widenings themselves live — aside), a
+`.filter(...)` or `.exclude(...)` whose keyword names `archived_at` (or an
+`archived_at__` lookup), on a queryset rooted at an archivable class, is
+refused naming `.archived_only()` and `.including_archived()`; the class is
+resolved by name to a fixed point, nothing is listed. Valve `# rule-81:`.
+Declared blind spots: a lookup the AST cannot read — a `Q(...)` object, a
+`**{...}` spread, a filter built in a helper that is not a queryset-returning
+function in the same module; a raw SQL `WHERE archived_at`; a queryset held
+where the binding is illegible (rule 76's reading); name resolution by class
+name, as rules 75 and 76 read it; a class carrying an `archived_at` column
+without declaring `Archivable` is rule 74's bare-column clause, not this
+rule's.
+
+82. **A write on an archivable row calls `require_live`** (P24 B-CORE-3; ADR
+archive-1 — every write on an archived row other than restore refuses
+`archived` with the restore door, and the trap the worked example's first
+verification named was the writes a product already had, which no golden copy
+reaches). A `@service` in `apps/*/services.py` named for a keyword parameter
+annotated by an archivable class — `<verb>_<param>(*, <param>: Noun)`, a write
+on that row — calls `require_live(...)` in its body, unless it is the noun's
+`archive_<noun>`/`restore_<noun>` pair; the class is resolved by name to a
+fixed point (rule 76's resolver). Ratchet class `unguarded_write`: **born at
+`2`** for the comms consent verbs, which write the consent ledger and never
+the contact, **and lowered to `0` the same day** by the valve that carries
+that sentence on each (`# rule-82: writes the consent ledger, never the
+contact`). Valve `# rule-82:`. Declared blind spots: a service that takes the
+id and reads the row itself — the annotation is the population; a write
+through a helper the service calls (the loud direction — a service that calls
+`require_live` in the helper is accused, and the valve names the helper); a
+service named for something else that writes the row it takes as a reference
+(`send(*, recipient)` is read as writing a message, which it does — the name
+is the claim); **the population is narrowed on purpose** — the literal reading
+(any `@service` taking a keyword parameter annotated by an archivable class)
+measured nine on the tree that added the rule, seven of them services that
+take the row as a reference and write another row, so the recorded mechanism
+is the service named for the row it takes, which measured the two the ratchet
+was set on; a write from a service named otherwise is review's; whether
+`require_live` is called before the write, or on the right row, is review's;
+name resolution by class name.
+
 ## App map — data portability
 
 One app, shipped rather than planned, and its row is here rather than in the
@@ -2646,6 +3120,59 @@ needs it:
 files app, presign posture inherits files-2's TTLs, the tenant-prefixed key
 convention is promoted from this app's local decision to the platform files
 seam, and the artifact reference may migrate onto the files app's blob model.
+
+## App map — the noun-verb family's platform apps (P24; the lead's section)
+
+Three apps shipped with the family, and their rows are here rather than in the
+ingredients table below for the same reason the export's is: they are on
+main. Read off `manage.py introspect` and each app's `apps.py`, not planned.
+
+| app | noun (aggregate) | depends_on | doors exposed | workflows owned | events emitted / consumed |
+|---|---|---|---|---|---|
+| `notes` | `Note` (org-scoped, `Archivable`; a polymorphic subject) | `core, accounts, events` | REST `/api/v1/notes/` (list `?subject=<kind>:<id>` · create · retrieve · update · archive · restore) · MCP `list_notes` / `get_note` / `create_note` / `update_note` / `archive_note` / `restore_note` | none | emits `notes.note.created/.updated/.archived/.restored/.moved` |
+| `tags` | `Tag` (tenant-scoped, `Archivable`) + `TagLink` (org-scoped at the subject's node; `(tag, subject)` unique) | `core, accounts, events` | REST `/api/v1/tags/` (list · create · retrieve · rename · archive · restore) and `/api/v1/tag-links/` (list `?subject=` · create · delete) · MCP `list_tags` / `get_tag` / `create_tag` / `rename_tag` / `archive_tag` / `restore_tag` / `list_tag_links` / `create_tag_link` / `delete_tag_link` | none | emits `tags.tag.created/.renamed/.archived/.restored`, `tags.tag_link.created/.deleted/.moved` |
+| `imports` | `Import` (+ `ImportRow`, bounded by cascade) | `core, accounts, events, workflows, files` | REST `/api/v1/imports/` (list · create · retrieve · apply · cancel · rows `?outcome=`) · MCP `list_imports` / `get_import` / `create_import` / `apply_import` / `cancel_import` / `list_import_rows` | `ValidateImportWorkflow`, `ApplyImportWorkflow`, `PurgeImportsWorkflow` | emits `imports.import.staged/.previewed/.applied/.failed` |
+
+**The three are the family's owners, not nouns of their own.** The mechanism,
+in the order a reader needs it:
+
+- **Notes and tags are attach owners; the files app is the third** (its
+  `StoredFile` gained the nullable subject pair, expand-only). A row lands
+  where ADR attach-1 says, is written only after `core.verbs.resolve_subject`
+  has resolved and authorized its subject, and is read only through that
+  subject — there is no list of all notes. Each owner declares the `"*"` merge
+  repointer in its `merge_repointers.py` under ADR merge-1's contract
+  (`move_notes`, `move_tag_links`, `move_attached_files`), and each ships the
+  `attach_specimen` hook core's conformance imports. Zero per-noun routes: a
+  noun declares `attachments` and the three generic doors serve it.
+- **A tag is a tenant-wide word, its link is a placed fact.** Only root
+  administrators coin, rename or archive a word (rule 55; reads at the acting
+  hat under a dated valve until universal homing lands); a link is org-scoped
+  and lands by the law above; `create_tag_link` is idempotent and a lost race
+  on a tenant-wide subject answers `conflict` with no row.
+- **Import is one platform door, never a per-noun upload.** A noun's app
+  declares `importers.py` (`IMPORTERS = {"<kind>": Importer(row=…,
+  natural_key=…, apply=…)}`) and `apply` calls the noun's own services;
+  `create_import` stages a stored CSV against a declared kind, idempotent by
+  the document's digest (the same bytes answer the same run); the check
+  workflow streams the file through the files seam's one server-side read
+  (`iter_object`, ADR files-2 amended) and previews every row without writing
+  a noun; the apply workflow writes each row once and a retried activity
+  resumes where it stopped — proven by a kill drive that SIGKILLs a worker
+  mid-apply; refused rows are skipped and stay listed with their reasons, the
+  clean rows apply. `natural_key(*, tenant, actor, row)` resolves under the
+  acting hat, so the preview says what the apply will do. `Import` is born
+  purged (thirty days, `PurgeImportsWorkflow`); `ImportRow` follows it by
+  cascade. Whole-file refusals are `import_invalid` (400) naming their errors.
+- **Registration is by discovery**: each app's `apps.py` declares `depends_on`,
+  its router tag is its scope family, and its label path is admitted by rule
+  32's entry ("the resource IS the app's noun"). The five pinned shared
+  surfaces a new platform app touches — rule 32's label paths,
+  `FROZEN_FAMILIES`, `quality/partition.yaml`'s `platform_apps` (held closed by
+  a `@template_shape` census, so a forgotten platform app is a red and a
+  product retires the census with `platform_apps=own`), rule 41's example
+  budget rows, and rules 42/54's ratchet class — are the django-architect
+  skill's "adding an app" list, each assigned to its file's owner in the wave.
 
 ## App map — the ingredients (P6–P7 delta; the lead's section, 2026-08-23)
 

@@ -71,6 +71,7 @@ from apps.comms.schemas import (
     RecipientIn,
     RecipientOut,
     RecipientPatch,
+    RecipientShow,
     TemplateFilter,
     TemplateIn,
     TemplateOut,
@@ -97,6 +98,7 @@ from apps.comms.services import (
     create_template,
     grant_consent,
     register_device,
+    restore_recipient,
     retire_device,
     retire_policy,
     retire_template,
@@ -111,9 +113,12 @@ from apps.comms.services import (
 )
 from apps.core.actor import Actor, actor_from_request
 from apps.core.api import CursorPagination, ordered_by
-from apps.core.api.docs import Tag
+from apps.core.api.docs import Tag, refuses
+from apps.core.api.pagination import ActsPagination
+from apps.core.exceptions import Invalid
 from apps.core.models import Tenant
 from apps.core.requests import TenantRequest
+from apps.core.verbs import with_allowed_acts
 
 # **The root of `/api/v1/`** (ADR api-2, the owner's 2026-08-24 ruling): the
 # first path segment names a RESOURCE, never an app. `comms` is what this
@@ -962,11 +967,11 @@ def retrieve_policy(request: TenantRequest, name: str) -> DeliveryPolicy:
 
 
 @router.get("/recipients/", response=list[RecipientOut], url_name="recipient-list")
-@paginate(CursorPagination)
+@paginate(ActsPagination)
 def list_recipients_route(
     request: TenantRequest,
     filters: Query[RecipientFilter],
-    archived: bool = False,
+    show: RecipientShow = "live",
     ordering: str = "email",
 ) -> QuerySet[Recipient]:
     """List contacts
@@ -980,24 +985,45 @@ def list_recipients_route(
     is `{"items": [...], "has_more": ..., "next_cursor": ...}`, and `count`
     arrives only with `?include_count=true`.
 
-    **Archived contacts are left out.** Pass `?archived=true` to include them.
+    **Archived contacts are left out.** `?show=archived` lists only the
+    archived ones and `?show=all` lists both; the default is `?show=live`.
+    `?archived=` is no longer accepted: it is refused with `400 invalid` naming
+    `show`, the parameter to ask with instead.
 
     Which contacts you see depends on the organization you are acting as (the
     `X-Org` header) — its own and those of organizations beneath it. The same
     person may exist as a separate contact in a different part of the tenant,
     and you will not see that one.
 
+    Every contact carries `allowed_acts` — the acts you may take on that
+    contact as it stands — and the page carries its own `allowed_acts`, which
+    holds `create` when you may add a contact where you are acting.
+
     Refusals you can get here:
 
-    * `400 invalid` — `?ordering=` named a field this list does not accept, or
-      a filter value was malformed. The response says what you may sort by.
+    * `400 invalid` — `?ordering=` named a field this list does not accept,
+      `?show=` named a cut other than `live`, `archived` or `all`, you sent
+      `?archived=`, or a filter value was malformed. `errors` names the
+      parameter and what it accepts.
     * `403 forbidden` — the request resolved no tenant or no acting
       organization. Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
+    if "archived" in request.GET:
+        # The retired spelling, refused loudly rather than ignored: a client
+        # still sending it would otherwise be answered the live book and never
+        # learn that its "include the closed ones" had stopped meaning anything.
+        raise Invalid(
+            {
+                "show": [
+                    "`?archived=` is no longer accepted. Ask with `?show=archived` for the "
+                    "archived contacts alone, or `?show=all` for both."
+                ]
+            }
+        )
     actor, tenant = _acting(request)
     recipients: QuerySet[Recipient] = list_recipients(
-        tenant=tenant, org=actor.org, include_archived=archived, actor=actor
+        tenant=tenant, org=actor.org, show=show, actor=actor
     )
     recipients = filters.filter(recipients)
     return ordered_by(recipients, ordering, allowed=RECIPIENT_ORDERING, default="email")
@@ -1050,7 +1076,7 @@ def create_recipient_route(request: TenantRequest, payload: RecipientIn) -> Stat
         phone=payload.phone,
         chat_handle=payload.chat_handle,
     )
-    return Status(201, recipient)
+    return Status(201, with_allowed_acts([recipient], actor)[0])
 
 
 @router.get("/recipients/{recipient_id}/", response=RecipientOut, url_name="recipient-detail")
@@ -1060,10 +1086,17 @@ def retrieve_recipient(request: TenantRequest, recipient_id: UUID) -> Recipient:
     Fetch one contact by id.
 
     Archived contacts resolve here even though they are out of the list, so a
-    message you found in the log can always be traced to who it went to.
+    message you found in the log can always be traced to who it went to. An
+    archived contact reads read-only: `archived_at` and `archived_by` say when
+    and by whom, and every change other than
+    `POST /api/v1/recipients/{recipient_id}/restore/` is refused with
+    `409 archived`.
 
     A contact your acting organization cannot see, or an id that names nothing,
     answers `404 not_found`.
+
+    `allowed_acts` names the acts you may take on this contact as it stands: an
+    archived contact offers only `restore`.
 
     Consent is not on this shape. Read it at
     `GET /api/v1/recipients/{recipient_id}/preferences/`.
@@ -1078,10 +1111,22 @@ def retrieve_recipient(request: TenantRequest, recipient_id: UUID) -> Recipient:
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
     actor, tenant = _acting(request)
-    return get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
+    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
+    return with_allowed_acts([recipient], actor)[0]
 
 
 @router.patch("/recipients/{recipient_id}/", response=RecipientOut, url_name="recipient-update")
+@refuses(
+    "invalid_body",
+    "invalid",
+    "forbidden",
+    "insufficient_scope",
+    "not_found",
+    "archived",
+    "conflict",
+    "idempotency_key_reuse",
+    "in_progress",
+)
 def update_recipient_route(
     request: TenantRequest, recipient_id: UUID, payload: RecipientPatch
 ) -> Recipient:
@@ -1115,6 +1160,10 @@ def update_recipient_route(
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
+    * `409 archived` — the contact is archived and reads read-only. Restore it
+      with `POST /api/v1/recipients/{recipient_id}/restore/` first.
+    * `409 conflict` — this organization already has a contact at that
+      address.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
       `Idempotency-Key` for a different request, or the first request under
       it has not finished. Resend the identical request, or use a new key.
@@ -1122,7 +1171,7 @@ def update_recipient_route(
     """
     actor, tenant = _acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
-    return update_recipient(
+    updated = update_recipient(
         tenant=tenant,
         actor=actor,
         recipient=recipient,
@@ -1131,10 +1180,18 @@ def update_recipient_route(
         phone=payload.phone,
         chat_handle=payload.chat_handle,
     )
+    return with_allowed_acts([updated], actor)[0]
 
 
 @router.post(
     "/recipients/{recipient_id}/archive/", response=RecipientOut, url_name="recipient-archive"
+)
+@refuses(
+    "archive_blocked",
+    "forbidden",
+    "not_found",
+    "idempotency_key_reuse",
+    "in_progress",
 )
 def archive_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recipient:
     """Archive a contact
@@ -1142,8 +1199,9 @@ def archive_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recip
     Archive a contact.
 
     Takes no body. The contact drops out of `GET /api/v1/recipients/`
-    (pass `?archived=true` to see them again), stays fetchable by id, and stays
-    named on every message already sent to them. Nothing is deleted.
+    (`?show=archived` lists them again), stays fetchable by id, and stays
+    named on every message already sent to them. Nothing is deleted, and
+    `POST /api/v1/recipients/{recipient_id}/restore/` puts them back.
 
     **This is not a "do not contact" instruction and it does not stop sends.**
     A send to an archived contact still goes out. To stop messages reaching
@@ -1151,17 +1209,22 @@ def archive_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recip
     which is checked at send time; archiving is only about your contact book.
 
     **Safe to retry.** Archiving an archived contact answers `200` and keeps the
-    original `archived_at`, rather than conflicting or moving the date.
+    original `archived_at` and `archived_by`, rather than conflicting or moving
+    the date.
 
-    Owner or administrator of the tenant only. Answers `200` with the contact.
+    An administrator of the organization the contact belongs to, or of one
+    above it. Answers `200` with the contact.
 
     Refusals you can get here:
 
-    * `403 forbidden` — you are not an owner or an administrator of the
-      tenant, or the request resolved no tenant or no acting organization.
+    * `403 forbidden` — you do not administer the organization this contact
+      belongs to, or the request resolved no tenant or no acting organization.
     * `404 not_found` — no contact your acting organization can address has
       that id. A contact in a branch you hold no membership over answers
       this too.
+    * `409 archive_blocked` — something your product declared still holds
+      this contact. `blocking` names each thing and where to close it; nothing
+      was changed.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
       `Idempotency-Key` for a different request, or the first request under
       it has not finished. Resend the identical request, or use a new key.
@@ -1169,7 +1232,56 @@ def archive_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recip
     """
     actor, tenant = _acting(request)
     recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
-    return archive_recipient(tenant=tenant, actor=actor, recipient=recipient)
+    archived = archive_recipient(tenant=tenant, actor=actor, recipient=recipient)
+    return with_allowed_acts([archived], actor)[0]
+
+
+@router.post(
+    "/recipients/{recipient_id}/restore/", response=RecipientOut, url_name="recipient-restore"
+)
+@refuses(
+    "restore_blocked",
+    "forbidden",
+    "not_found",
+    "idempotency_key_reuse",
+    "in_progress",
+)
+def restore_recipient_route(request: TenantRequest, recipient_id: UUID) -> Recipient:
+    """Restore a contact
+
+    Put an archived contact back in the contact book.
+
+    Takes no body. The contact is listed by `GET /api/v1/recipients/` again,
+    and `archived_at` and `archived_by` are cleared. What they have agreed to
+    receive is untouched: a suppression recorded while they were archived
+    still stands.
+
+    **Safe to retry.** Restoring a contact that is not archived answers `200`
+    with the contact unchanged.
+
+    An administrator of the organization the contact belongs to, or of one
+    above it — whoever may archive a contact may restore it. Answers `200` with
+    the contact.
+
+    Refusals you can get here:
+
+    * `403 forbidden` — you do not administer the organization this contact
+      belongs to, or the request resolved no tenant or no acting organization.
+    * `404 not_found` — no contact your acting organization can address has
+      that id. A contact in a branch you hold no membership over answers
+      this too.
+    * `409 restore_blocked` — something your product declared stops this
+      contact coming back. `blocking` names each thing and where to resolve
+      it; nothing was changed.
+    * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
+      `Idempotency-Key` for a different request, or the first request under
+      it has not finished. Resend the identical request, or use a new key.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+    """
+    actor, tenant = _acting(request)
+    recipient = get_recipient(tenant=tenant, recipient_id=recipient_id, org=actor.org, actor=actor)
+    restored = restore_recipient(tenant=tenant, actor=actor, recipient=recipient)
+    return with_allowed_acts([restored], actor)[0]
 
 
 # --- preferences: five verbs, and no column a door can set -----------------------

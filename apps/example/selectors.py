@@ -48,17 +48,53 @@ are already living under.
 
 from __future__ import annotations
 
-from typing import Any
+# golden: archive version move bulk history duplicate attach merge import begin
+from typing import Any, Literal
 from uuid import UUID
 
 from apps.core.actor import Actor
 from apps.core.authz import require
 from apps.core.exceptions import NotFound
 from apps.core.models import ScopedQuerySet, Tenant
-from apps.example.models import Widget, WidgetEntry, WidgetPolicy
+from apps.example.models import Widget
+
+# golden: archive version move bulk history duplicate attach merge import end
+# isort: split
+# golden: merge import begin
+from apps.core.exceptions import Invalid
+from apps.core.verbs import Repointed, merge_counts
+
+# golden: merge import end
+# isort: split
+# golden: attach merge import begin
+from apps.tags.models import Tag
+from apps.tags.selectors import list_tag_links
+
+# golden: attach merge import end
+# isort: split
+from apps.example.models import WidgetEntry, WidgetPolicy
+
+# golden: archive version move bulk history duplicate attach merge import begin
+#: Which cut of the book a list reads: the live rows (the default), the archived
+#: ones alone, or both. The list door publishes it as `?show=`, an enum.
+Show = Literal["live", "archived", "all"]
 
 
-def _widgets_in(*, tenant: Tenant | None, org: Any) -> ScopedQuerySet[Widget]:
+def _archive_cut(rows: ScopedQuerySet[Any], show: Show) -> ScopedQuerySet[Any]:
+    """Widen the live book to the cut `show` names — never the tenant or the hat.
+
+    Applied AFTER `for_tenant(...).visible_to(...)`: both widenings only take
+    `for_tenant()`'s live exclusion back out, so the tenant and the hat narrow
+    the archived cut exactly as they narrow the live one.
+    """
+    if show == "archived":
+        return rows.archived_only()
+    if show == "all":
+        return rows.including_archived()
+    return rows
+
+
+def _widgets_in(*, tenant: Tenant | None, org: Any, show: Show = "live") -> ScopedQuerySet[Widget]:
     """The scoped read, without the capability. Private, and nothing calls it raw.
 
     **Why it exists rather than `get_widget` reaching through `list_widgets`.**
@@ -69,10 +105,15 @@ def _widgets_in(*, tenant: Tenant | None, org: Any) -> ScopedQuerySet[Widget]:
     the wrong place, turning a row a branch may read into a refusal about the
     hat. The SCOPING is still written once; it is this function.
     """
-    return Widget.objects.for_tenant(tenant).visible_to(org).select_related("owner", "organization")
+    rows = _archive_cut(Widget.objects.for_tenant(tenant).visible_to(org), show)
+    # `archived_by` is selected because the read shape names the archiver on
+    # every row; without it an archived page is one query per row.
+    return rows.select_related("owner", "organization", "archived_by")
 
 
-def list_widgets(*, tenant: Tenant | None, org: Any = None, actor: Actor) -> ScopedQuerySet[Widget]:
+def list_widgets(
+    *, tenant: Tenant | None, org: Any = None, actor: Actor, show: Show = "live"
+) -> ScopedQuerySet[Widget]:
     """The widgets this hat may see, with the owner the schema reads.
 
     `org` is the acting organization — `request.org` at the REST door,
@@ -88,12 +129,15 @@ def list_widgets(*, tenant: Tenant | None, org: Any = None, actor: Actor) -> Sco
     Filtering, searching and ordering are the route's (`api.py`), from declared
     allow-lists. A selector that took a `**filters` dict would be the same
     unbounded query surface with a tidier name.
+
+    `show` is the one archive widening a list may ask for: the live book by
+    default, `archived` for the archived cut alone, `all` for both.
     """
     # THE CAPABILITY, at the hat, BEFORE the queryset: a list has no row to
     # hide, so somebody without `widget.read` here hears that rather than an
     # empty page that looks like an empty branch.
     require(actor, "widget.read")
-    return _widgets_in(tenant=tenant, org=org)
+    return _widgets_in(tenant=tenant, org=org, show=show)
 
 
 def get_widget(*, tenant: Tenant | None, widget_id: UUID, org: Any = None, actor: Actor) -> Widget:
@@ -108,16 +152,58 @@ def get_widget(*, tenant: Tenant | None, widget_id: UUID, org: Any = None, actor
     The fetch does not go through `list_widgets`: that would ask `widget.read`
     at the HAT, and this asks it at the ROW's node, which is a different
     question the moment a tenant withholds the key on one branch.
+
+    **Archived rows are found too** (`show="all"`): an archived widget answers
+    its detail read-only, and the restore and every refused write have to find
+    the row before they can say what it is.
     """
-    widget = _widgets_in(tenant=tenant, org=org).filter(pk=widget_id).first()
+    widget = _widgets_in(tenant=tenant, org=org, show="all").filter(pk=widget_id).first()
     if widget is None:
         raise NotFound()
     require(actor, "widget.read", widget)
     return widget
 
 
+# golden: archive version move bulk history duplicate attach end
+def get_widget_merge_preview(
+    *, tenant: Tenant | None, actor: Actor, widget: Widget, into: Widget
+) -> tuple[Repointed, ...]:
+    """What merging `widget` into `into` WOULD move, per owning app. Writes nothing.
+
+    The dry run a person reads before confirming: each repointer's title and
+    how many of its rows would leave the loser. Asked as the merge itself is —
+    `widget.merge` on both records — because the counts describe two records
+    only somebody who may merge them has any business comparing.
+    """
+    if widget.pk == into.pk:
+        raise Invalid({"into": ["A record cannot be merged into itself."]})
+    require(actor, "widget.merge", widget)
+    require(actor, "widget.merge", into)
+    return merge_counts(tenant=tenant, loser=widget, noun="widget")
+
+
+# golden: attach begin
+def list_widget_tags(*, tenant: Tenant | None, actor: Actor, widget: Widget) -> list[Tag]:
+    """The words on this widget, as this hat sees them — what its detail answers.
+
+    Read through the tags app's own selector — the subject resolved and the
+    read asked there — so the detail answers exactly what `/tag-links/?subject=`
+    would. Archived words are included: the link stands, the word is read-only.
+    """
+    # The words are tags: reading them is `tag.read`; the links under them are
+    # asked `tag_link.read` by the tags app's own selector.
+    # hat-scoped: a word is tenant-wide and read where the reader stands, exactly
+    # as the tags app's own list of words asks it.
+    require(actor, "tag.read")
+    links = list_tag_links(tenant=tenant, actor=actor, subject=f"widget:{widget.pk}")
+    return [link.tag for link in links]
+
+
+# golden: attach merge import end
+
+
 def list_widget_policies(
-    *, tenant: Tenant | None, org: Any = None, actor: Actor
+    *, tenant: Tenant | None, org: Any = None, actor: Actor, show: Show = "live"
 ) -> ScopedQuerySet[WidgetPolicy]:
     """The policies this hat may **see**. Downward only, like every other list.
 
@@ -136,7 +222,33 @@ def list_widget_policies(
     question ("what governs me?") whose answer they are already living under.
     """
     require(actor, "widget_policy.read")
-    return WidgetPolicy.objects.for_tenant(tenant).visible_to(org).select_related("organization")
+    rows = _archive_cut(WidgetPolicy.objects.for_tenant(tenant).visible_to(org), show)
+    return rows.select_related("organization", "archived_by")
+
+
+def get_widget_policy(
+    *, tenant: Tenant | None, policy_id: UUID, org: Any = None, actor: Actor
+) -> WidgetPolicy:
+    """One policy this hat may SEE — its own node's or one beneath — archived or not.
+
+    The downward read, not `get_governing_widget_policy`'s upward one: this is
+    the row an archive or a restore acts on, and only the node that set a
+    policy (or one above it) may take it out of the book. A policy that merely
+    governs this hat from above is `not_found` here, exactly as it is absent
+    from `list_widget_policies`.
+    """
+    policy = (
+        WidgetPolicy.objects.for_tenant(tenant)
+        .including_archived()
+        .visible_to(org)
+        .select_related("organization", "archived_by")
+        .filter(pk=policy_id)
+        .first()
+    )
+    if policy is None:
+        raise NotFound()
+    require(actor, "widget_policy.read", policy)
+    return policy
 
 
 def get_governing_widget_policy(
@@ -209,5 +321,17 @@ def list_widget_entries(
     require(actor, "widget_entry.read")
     entries = WidgetEntry.objects.for_tenant(tenant).visible_to(org).select_related("organization")
     if widget_id is not None:
-        entries = entries.filter(widget_id=widget_id)
+        # A merged survivor's ledger is its own lines AND its losers': a merge
+        # keeps each line where it was written (`Widget.merge_keeps`), and
+        # `Widget.lineage` is the one widening that reads them together.
+        subject = (
+            Widget.objects.for_tenant(tenant)
+            .including_archived()
+            .visible_to(org)
+            .filter(pk=widget_id)
+            .first()
+        )
+        entries = entries.filter(
+            widget_id__in=[widget_id] if subject is None else Widget.lineage(subject)
+        )
     return entries

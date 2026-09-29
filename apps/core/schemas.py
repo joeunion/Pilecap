@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 from uuid import UUID
 
 from ninja import FilterLookup, FilterSchema, Schema
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 
 def example(value: Any) -> dict[str, Any]:
@@ -124,6 +124,259 @@ class PingOut(Schema):
     #: An agent that cannot see which hat it is wearing cannot tell a partial
     #: answer from an empty table, so `ping` says.
     org: str | None = Field(default=None, json_schema_extra=example("northern-branch"))
+
+
+#: The example person on an archive's `archived_by` — a realistic UUIDv7.
+ARCHIVER_ID = "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d40"
+
+
+class ArchivedByOut(Schema):
+    """WHO pressed *Archive* — an id and a name, never an address.
+
+    The id is there while the person is; `name` is the user's `full_name` when
+    the product's user model carries one, and `null` otherwise — which tells a
+    screen to resolve the id, exactly as it does on the roster. No address is
+    published: the roster is the one read that carries one.
+    """
+
+    id: UUID = Field(json_schema_extra=example(ARCHIVER_ID))
+    name: str | None = Field(default=None, json_schema_extra=example("Maria Delgado"))
+
+
+class ArchivedOut(Schema):
+    """The two archive fields an archivable noun's `Out` carries (E1).
+
+        class WidgetOut(ArchivedOut):
+            id: UUID
+            name: str
+            ...
+
+    **Inherited, never re-declared**, so every archivable noun publishes ONE
+    shape: `archived_at` (the date, `null` while the row is live — D7) and
+    `archived_by` (`ArchivedByOut`, `null` while live, or when the product
+    archived it for itself). The face's band — *Archived ⟨day⟩ by ⟨name⟩* —
+    reads exactly these two. House rule 74 reads the inheritance: an archivable
+    noun's routes answer an `Out` that subclasses this.
+
+    `archived_by` is read off the model's `archived_by` foreign key (a `User`)
+    by a field validator rather than a `resolve_` hook, because a resolver dies
+    inside a `Page` (django-conventions, "Two gotchas") and every list door
+    re-validates its items.
+    """
+
+    archived_at: datetime | None = Field(
+        default=None, json_schema_extra=example("2026-09-26T08:24:00Z")
+    )
+    archived_by: ArchivedByOut | None = Field(
+        default=None,
+        json_schema_extra=example({"id": ARCHIVER_ID, "name": "Maria Delgado"}),
+    )
+
+    @field_validator("archived_by", mode="before")
+    @classmethod
+    def _archiver(cls, value: Any) -> Any:
+        """A `User` row becomes `{id, name}`; a dict, a schema or `None` passes through."""
+        if value is None or isinstance(value, (dict, ArchivedByOut)):
+            return value
+        return {"id": value.pk, "name": getattr(value, "full_name", None) or None}
+
+
+#: An example version: an `updated_at` of 2026-09-26T08:24:00Z in microseconds.
+EXAMPLE_VERSION = 1790411040000000
+
+
+class VersionedOut(Schema):
+    """The one field a `Versioned` noun's `Out` carries: the version to write against.
+
+        class WidgetOut(ArchivedOut, VersionedOut):
+            ...
+
+    Read off the model's `version` property (`core.models.Versioned`), which is
+    `updated_at` in integer microseconds — never a column. A face holds it from
+    the read and sends it back on the write; a mismatch is `stale_version`.
+    """
+
+    version: int = Field(json_schema_extra=example(EXAMPLE_VERSION))
+
+
+class VersionedIn(StrictIn):
+    """The body half of optimistic concurrency: `version` is REQUIRED.
+
+        class WidgetPatch(VersionedIn):
+            name: str | None = None
+
+    A `Versioned` noun's `Patch`, `MoveIn` and `MergeIn` inherit this, so a
+    write that forgot the version is refused at the door (`invalid_body`
+    naming `version`) rather than silently becoming last-write-wins. Required,
+    never defaulted: a default would be a version nobody read (house rule 74
+    reads the requiredness off the update route's body).
+    """
+
+    version: int = Field(json_schema_extra=example(EXAMPLE_VERSION))
+
+
+#: An example node on a move's body and a homed noun's answer.
+EXAMPLE_ORGANIZATION_ID = "019654f6-6c1b-7b0e-9e5f-2f6c4d1a8d41"
+
+
+class HomedOut(Schema):
+    """WHERE a movable noun lives, in words: the node's id and its name.
+
+        class WidgetOut(ArchivedOut, HomedOut):
+            ...
+
+    `organization_name` is read off `core.models.Movable.organization_name` —
+    the record's lede reads a scope NAME, never the slug (DESIGN's ruling), and
+    the move sheet's answer shows where the row went. A list answering it
+    `select_related("organization")`s, so the name costs no query per row.
+    """
+
+    organization_id: UUID = Field(json_schema_extra=example(EXAMPLE_ORGANIZATION_ID))
+    organization_name: str = Field(json_schema_extra=example("Northern branch"))
+
+
+class MoveIn(StrictIn):
+    """Where to move a noun: the destination node, and optionally a new owner.
+
+    Both optional so one body serves both axes; naming neither is a move to
+    where the row already is, which answers the row unchanged. A `Versioned`
+    noun's move takes `VersionedMoveIn`, which requires `version` as well.
+    """
+
+    organization_id: UUID | None = Field(
+        default=None, json_schema_extra=example(EXAMPLE_ORGANIZATION_ID)
+    )
+    owner_id: UUID | None = Field(default=None, json_schema_extra=example(ARCHIVER_ID))
+
+
+class VersionedMoveIn(MoveIn, VersionedIn):
+    """`MoveIn` for a `Versioned` noun: the move names the version it was made against."""
+
+
+class BulkIdsIn(StrictIn):
+    """The selection a bulk verb runs over: 1 to 200 ids, each once.
+
+    The ceiling is refused by the batch itself (`core.bulk.check_ids`, `invalid`
+    naming `ids`), so both doors refuse it identically rather than one door
+    answering `invalid_body` and the other `invalid`.
+    """
+
+    ids: list[UUID] = Field(json_schema_extra=example([EXAMPLE_ORGANIZATION_ID]))
+
+
+class BulkArchiveIn(BulkIdsIn):
+    """Archive every selected row."""
+
+    verb: Literal["archive"] = Field(json_schema_extra=example("archive"))
+
+
+class BulkRestoreIn(BulkIdsIn):
+    """Restore every selected row."""
+
+    verb: Literal["restore"] = Field(json_schema_extra=example("restore"))
+
+
+class BulkMoveIn(BulkIdsIn):
+    """Move every selected row to one node (and, optionally, one owner)."""
+
+    verb: Literal["move"] = Field(json_schema_extra=example("move"))
+    organization_id: UUID | None = Field(
+        default=None, json_schema_extra=example(EXAMPLE_ORGANIZATION_ID)
+    )
+    owner_id: UUID | None = Field(default=None, json_schema_extra=example(ARCHIVER_ID))
+
+
+class BulkRefusalOut(Schema):
+    """One item's refusal: the body a single call would have answered.
+
+    Open (`extra="allow"`) because a refusal's structured half — a blocked
+    archive's `blocking`, a stale write's `current_version` — rides beside the
+    four common keys exactly as it does on a single call.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    detail: str = Field(
+        json_schema_extra=example("This cannot be archived while something still depends on it.")
+    )
+    code: str = Field(json_schema_extra=example("archive_blocked"))
+    remedies: list[dict[str, str]] = Field(default_factory=list)
+
+
+class BulkResultOut(Schema):
+    """One id's answer: `done` and `unchanged` carry the row; `refused` the refusal.
+
+    A noun's bulk answer narrows `item` to its own `Out`
+    (`class WidgetBulkResultOut(BulkResultOut): item: WidgetOut | None`).
+    """
+
+    id: UUID = Field(json_schema_extra=example(EXAMPLE_ORGANIZATION_ID))
+    outcome: Literal["done", "unchanged", "refused"] = Field(json_schema_extra=example("done"))
+    item: Any = None
+    refusal: BulkRefusalOut | None = None
+
+
+class BulkOut(Schema):
+    """The whole batch: one result per id in the order sent, and the three counts."""
+
+    verb: str = Field(json_schema_extra=example("archive"))
+    results: list[BulkResultOut]
+    done: int = Field(json_schema_extra=example(1))
+    unchanged: int = Field(json_schema_extra=example(0))
+    refused: int = Field(json_schema_extra=example(0))
+
+
+#: The keys every service is called with that are never a CHANGE to the row.
+_NOT_A_CHANGE = frozenset({"tenant", "actor", "idempotency_key", "version", "into_version"})
+
+
+class HistoryActorOut(Schema):
+    """Who acted: a person (id and name, when the trail has them) or the product."""
+
+    id: UUID | None = Field(default=None, json_schema_extra=example(ARCHIVER_ID))
+    name: str | None = Field(default=None, json_schema_extra=example("Maria Delgado"))
+    kind: str = Field(json_schema_extra=example("human"))
+
+
+class HistoryEntryOut(Schema):
+    """One thing that happened to a row, read off its audit entry.
+
+    `verb` is the service name's first word (house rule 16's grammar:
+    `update_widget` → `update`); `door` is where it came in (`rest`, `mcp`,
+    `workflow`, …); `changed_fields` is the keys the call was GIVEN, less the
+    platform's own (`tenant`, `actor`, the row itself) — what was sent, never
+    what differed, and never a value: the trail keeps no before or after.
+    """
+
+    at: datetime = Field(json_schema_extra=example("2026-09-26T08:24:00Z"))
+    verb: str = Field(json_schema_extra=example("update"))
+    actor: HistoryActorOut
+    door: str = Field(json_schema_extra=example("rest"))
+    changed_fields: list[str] = Field(json_schema_extra=example(["name"]))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_entry(cls, value: Any) -> Any:
+        """An `AuditEntry` becomes the five fields; a dict passes through."""
+        if isinstance(value, dict) or not hasattr(value, "action"):
+            return value
+        itself = f"{value.object_type}:{value.object_id}"
+        person = value.actor_user
+        return {
+            "at": value.created_at,
+            "verb": str(value.action).rpartition(".")[2].split("_", 1)[0],
+            "actor": {
+                "id": value.actor_user_id,
+                "name": (getattr(person, "full_name", None) or None) if person else None,
+                "kind": value.actor_kind,
+            },
+            "door": value.door,
+            "changed_fields": [
+                key
+                for key, sent in (value.input or {}).items()
+                if key not in _NOT_A_CHANGE and sent != itself
+            ],
+        }
 
 
 class MeasuredBasisOut(Schema):
@@ -804,3 +1057,107 @@ class PermissionPage(ListPage):
     """One page of the vocabulary, in the envelope the HTTP list uses."""
 
     items: list[PermissionOut]
+
+
+def acts_field(*verbs: str) -> Any:
+    """`allowed_acts`, re-declared on one noun's `Out` with THAT noun's example.
+
+        class WidgetOut(ArchivedOut, ActsOut):
+            allowed_acts: list[str] = acts_field("update", "archive", "duplicate")
+
+    The base's example names no verb, because no verb is true of every noun: an
+    example that offers `update` on a noun with no update route teaches a client
+    a door that does not exist. A noun names the acts a realistic row of its
+    own offers, here, in the same field — the value is still the server's
+    per-row answer (`core.verbs.allowed_acts`).
+    """
+    return Field(default_factory=list, json_schema_extra=example(list(verbs)))
+
+
+class ActsOut(Schema):
+    """The verbs this actor may press on THIS row (`core.verbs.allowed_acts`).
+
+        class WidgetOut(ArchivedOut, ActsOut):
+            allowed_acts: list[str] = acts_field("update", "archive")
+
+    Set on the row by `core.verbs.with_allowed_acts` — a page does it for every
+    item through `ActsPagination`, a detail for its one row — and never
+    computed by a client: authority is resolved once, by the server.
+
+    **The two viewer doors only** (REST and MCP, which rule 17 keeps equal).
+    The field is a fact about (row, viewer), and an event has no viewer: every
+    event payload is the `Out` minus `PER_VIEWER_FIELDS`, built by
+    `event_payload()`, and `events.services.emit` refuses a payload carrying
+    one. The socket frame and the webhook body carry the event's envelope
+    (`apps/events/activities.py`), so neither carries acts; a face re-reads the
+    row after a frame to learn what it may press now.
+    """
+
+    allowed_acts: list[str] = Field(default_factory=list, json_schema_extra=example([]))
+
+
+#: The fields a viewer door answers and a broadcast never carries. **Derived**
+#: from `ActsOut` — the one base every per-viewer field is declared on — so a
+#: per-viewer field added there is stripped from every payload the day it lands.
+PER_VIEWER_FIELDS: frozenset[str] = frozenset(ActsOut.model_fields)
+
+
+def event_payload(out: Schema) -> dict[str, Any]:
+    """The one way a service builds an event payload from an `Out`: the row, no viewer.
+
+        emit(name=WIDGET_ARCHIVED, tenant=tenant, payload=event_payload(WidgetOut.from_orm(w)),
+             actor=actor)
+
+    `model_dump(mode="json")` minus `PER_VIEWER_FIELDS` **at any depth** — an
+    `Out` nesting other `Out`s (a row's `entries[]`, each with its own
+    `allowed_acts`) loses them too — so a webhook subscriber and every socket
+    listener, other viewers all of them, read the row as every viewer sees it,
+    never one person's permissions.
+    """
+    stripped: dict[str, Any] = without_per_viewer(out.model_dump(mode="json"))
+    return stripped
+
+
+def without_per_viewer(value: Any) -> Any:
+    """`value` with every per-viewer key removed from every dict in it, any depth."""
+    if isinstance(value, dict):
+        return {
+            key: without_per_viewer(item)
+            for key, item in value.items()
+            if key not in PER_VIEWER_FIELDS
+        }
+    if isinstance(value, list | tuple):
+        return [without_per_viewer(item) for item in value]
+    return value
+
+
+def per_viewer_paths(value: Any, path: str = "") -> list[str]:
+    """Where in `value` a per-viewer key sits — `allowed_acts`, `row.entries[0].allowed_acts`."""
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            here = f"{path}.{key}" if path else str(key)
+            if key in PER_VIEWER_FIELDS:
+                found.append(here)
+            found.extend(per_viewer_paths(item, here))
+    elif isinstance(value, list | tuple):
+        for index, item in enumerate(value):
+            found.extend(per_viewer_paths(item, f"{path}[{index}]"))
+    return found
+
+
+class ActsPage(ListPage):
+    """The list envelope plus the LIST's own acts — `create` when the actor may.
+
+    A face draws the list's create act and its empty state's door from this
+    page-level answer (`core.verbs.page_acts`), exactly as it draws a row's
+    acts from the row's `allowed_acts`.
+    """
+
+    allowed_acts: list[str] = Field(default_factory=list, json_schema_extra=example(["create"]))
+
+
+class HistoryPage(ListPage):
+    """One page of a row's history — the envelope a noun's history twin answers."""
+
+    items: list[HistoryEntryOut]

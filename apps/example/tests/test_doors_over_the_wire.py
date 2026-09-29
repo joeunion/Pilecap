@@ -100,6 +100,7 @@ DETAIL_URL = "/api/v1/widgets/{}/"
 STATS_URL = "/api/v1/widgets/stats/"
 MCP_URL = "/mcp"
 JSON = "application/json"
+PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
 
 # The widget read shape, as a key set, written out rather than derived from the
 # schema — a pin derived from the thing it pins cannot fail. This is the REST
@@ -119,8 +120,28 @@ WIDGET_KEYS = frozenset(
         "updated_at",
         "onboarded_at",
         "policy_id",
+        # The archive shape (`ArchivedOut`) and the per-row acts: an archivable
+        # noun's read shape says when and by whom, and what this caller may press.
+        "archived_at",
+        "archived_by",
+        "allowed_acts",
+        # The rest of the family: the version the next write names, where it
+        # lives in words, and who owns it in words (null when the user model
+        # has no name to give).
+        "version",
+        "organization_name",
+        "owner_name",
+        # The copy it was made from, the widget a merge made it into, and the id
+        # an import finds it by.
+        "duplicated_from_id",
+        "merged_into_id",
+        "external_ref",
     }
 )
+
+# The DETAIL answers the row and the words on it: `tags`, read through the tags
+# app, on the record alone — a list's row and an event's payload are the row.
+DETAIL_KEYS = WIDGET_KEYS | {"tags"}
 
 # Any GET through the CSRF middleware leaves the cookie behind; the admin login
 # page is the one page in this tree that is always mounted and always renders a
@@ -290,7 +311,7 @@ async def test_the_two_doors_put_the_same_key_set_on_the_wire(bearer: str, widge
     # doors are made to agree on, they agree on *this*. Without this half, a
     # future fix could reconcile the doors by moving REST, which is the one
     # direction that breaks a client (E1).
-    assert set(rest_body) == WIDGET_KEYS
+    assert set(rest_body) == DETAIL_KEYS
 
     assert set(over_mcp) == set(rest_body), (
         "The two doors describe the same widget with different keys. "
@@ -588,3 +609,509 @@ async def test_both_doors_refuse_one_revoked_token_with_the_same_code_and_senten
 
     assert rest_body["code"] == mcp_body["code"] == "unauthenticated", (rest_body, mcp_body)
     assert rest_body["detail"] == mcp_body["detail"] == BEARER_NOT_VALID, (rest_body, mcp_body)
+
+
+# --- One press, three tellings ------------------------------------------------
+
+
+async def _mcp_call(
+    client: httpx.AsyncClient, headers: dict[str, str], name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    """`initialize`, then one `tools/call`; the result's `structuredContent`."""
+    initialize = await client.post(
+        MCP_URL,
+        headers=headers,
+        json=_rpc(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "door-parity", "version": "1"},
+            },
+            1,
+        ),
+    )
+    assert initialize.status_code == 200, initialize.text
+    called = await client.post(
+        MCP_URL, headers=headers, json=_rpc("tools/call", {"name": name, "arguments": arguments}, 2)
+    )
+    assert called.status_code == 200, called.text
+    answered = called.json()
+    assert "error" not in answered, answered
+    assert not answered["result"].get("isError"), answered
+    content: dict[str, Any] = answered["result"]["structuredContent"]
+    return content
+
+
+def _canonical(body: dict[str, Any]) -> str:
+    """One byte string per body: sorted keys, the door's own separators."""
+    return json.dumps(body, sort_keys=True, separators=(",", ":"))
+
+
+def _event_payload(tenant: Tenant, name: str) -> dict[str, Any]:
+    """The outbox row's payload for the one event of this name, minus the spine's `v`.
+
+    `v` is the envelope's payload version, which `events.emit` adds to every
+    payload it records (a subscriber branches on it); it is not a field of the
+    widget, so it is the one key the comparison sets aside — and says so here.
+    """
+    from django.apps import apps as django_apps
+
+    outbox = django_apps.get_model("events", "Outbox")
+    rows = list(
+        outbox.objects.filter(event__tenant=tenant, event__name=name).select_related("event")
+    )
+    assert len(rows) == 1, [row.event.name for row in rows]
+    payload: dict[str, Any] = dict(rows[0].event.payload)
+    assert "v" in payload
+    payload.pop("v")
+    return payload
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verb", ["archive", "restore"])
+async def test_one_press_is_one_body_on_rest_mcp_and_the_outbox(
+    bearer: str, widget: Widget, tenant: Tenant, member: User, verb: str
+) -> None:
+    """M4: one viewer's REST and MCP answers are one byte string; the event is the row.
+
+    REST presses first and changes the row (one event); MCP presses the same
+    verb second, which is the idempotent repeat — the same row, unchanged, and
+    no second event. So all three describe one state of one row, and any
+    difference between them is a door disagreeing about the shape, not the
+    data. For `restore` the widget is archived through the service first.
+
+    **An event payload never carries a per-viewer field.** `allowed_acts` is
+    what THIS caller may press; a webhook subscriber and every socket listener
+    are other viewers, so the payload is the viewer's answer MINUS its acts. A
+    second viewer (a member) reading the same row differs from the presser in
+    `allowed_acts` and in nothing else — which is what makes the field
+    per-viewer, and why it cannot ride the event.
+    """
+    from asgiref.sync import sync_to_async
+
+    from apps.core.actor import actor_for
+    from apps.example.services import archive_widget
+    from config.asgi import build_application
+
+    if verb == "restore":
+        owner = await sync_to_async(lambda: widget.owner)()
+        await sync_to_async(archive_widget)(
+            tenant=tenant,
+            actor=actor_for(
+                user=owner, tenant=tenant, org=await sync_to_async(lambda: widget.organization)()
+            ),
+            widget=widget,
+        )
+
+    member_bearer = await sync_to_async(_token_for)(member, tenant)
+    application = build_application()
+    bearer_header = {"authorization": f"Bearer {bearer}"}
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.post(
+                f"{LIST_URL}{widget.pk}/{verb}/", headers={**bearer_header, "accept": JSON}
+            )
+            assert over_http.status_code == 200, over_http.text
+            over_mcp = await _mcp_call(
+                client,
+                {**MCP_HEADERS, **bearer_header},
+                f"{verb}_widget",
+                {"widget_id": str(widget.pk)},
+            )
+            as_member = await client.get(
+                f"{LIST_URL}{widget.pk}/",
+                headers={"authorization": f"Bearer {member_bearer}", "accept": JSON},
+            )
+            assert as_member.status_code == 200, as_member.text
+
+    rest_body: dict[str, Any] = over_http.json()
+    member_body: dict[str, Any] = as_member.json()
+    event = await sync_to_async(_event_payload)(tenant, f"example.widget.{verb}d")
+    assert set(rest_body) == WIDGET_KEYS
+    assert (verb == "archive") == (rest_body["archived_at"] is not None)
+    assert rest_body["allowed_acts"], rest_body
+
+    # One viewer, two doors: one byte string.
+    assert _canonical(over_mcp) == _canonical(rest_body)
+    # The event is the row, never a viewer's acts.
+    assert "allowed_acts" not in event, sorted(event)
+    assert _canonical(event) == _canonical(_without_acts(rest_body))
+    # A second viewer: the same row, other acts — and nothing else different.
+    # The member read the DETAIL, which answers the row and the words on it;
+    # the press answered the row.
+    assert member_body.pop("tags") == []
+    assert _canonical(_without_acts(member_body)) == _canonical(_without_acts(rest_body))
+    assert member_body["allowed_acts"] != rest_body["allowed_acts"]
+    assert not {"archive", "restore"} & set(member_body["allowed_acts"])
+
+
+def _without_acts(body: dict[str, Any]) -> dict[str, Any]:
+    """The row as every viewer sees it: the body minus this viewer's acts."""
+    return {key: value for key, value in body.items() if key != "allowed_acts"}
+
+
+def _token_for(user: User, tenant: Tenant) -> str:
+    """A real bearer token for a second viewer of the same tenant."""
+    _, plaintext = issue_token(
+        user=user, tenant=tenant, name="second-viewer", actor=actor_for(user=user, tenant=tenant)
+    )
+    return plaintext
+
+
+# --- 5 · The rest of the family, on both doors and the outbox (M4) --------------
+#
+# One presser (the owner's bearer) presses each verb on REST first and then the
+# same press on MCP, which is the idempotent repeat — nothing to change, no
+# second event — so the two bodies describe one state of one row and must be one
+# byte string. The event is that row minus the viewer's acts (and, for a move,
+# plus the one key that is true of the EVENT: the node it left). A SECOND viewer
+# — the tenant's plain member — reads the same row and differs in `allowed_acts`
+# and nothing else.
+
+
+@pytest.fixture
+def branch(tenant: Tenant, owner: User) -> Any:
+    from apps.core.services import create_organization, root_organization
+
+    root = root_organization(tenant=tenant)
+    return create_organization(
+        tenant=tenant,
+        parent=root,
+        name="Branch",
+        slug="branch",
+        actor=actor_for(user=owner, tenant=tenant, org=root),
+    )
+
+
+def _one_event(tenant: Tenant, name: str) -> dict[str, Any]:
+    return _event_payload(tenant, name)
+
+
+async def _press(
+    client: httpx.AsyncClient,
+    bearer_header: dict[str, str],
+    verb: str,
+    widget_id: str,
+    version: int,
+    branch_id: str,
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    """The REST press, and the MCP press that repeats it: (REST response, REST body, MCP body)."""
+    headers = {**bearer_header, "accept": JSON}
+    mcp_headers = {**MCP_HEADERS, **bearer_header}
+    if verb == "update":
+        rest = await client.patch(
+            f"{LIST_URL}{widget_id}/", headers=headers, json={"name": "Pressed", "version": version}
+        )
+        body = rest.json()
+        # The repeat names the version REST answered and sends nothing to change.
+        mcp = await _mcp_call(
+            client,
+            mcp_headers,
+            "update_widget",
+            {"widget_id": widget_id, "version": body["version"]},
+        )
+    elif verb == "move":
+        rest = await client.post(
+            f"{LIST_URL}{widget_id}/move/",
+            headers=headers,
+            json={"organization_id": branch_id, "version": version},
+        )
+        body = rest.json()
+        mcp = await _mcp_call(
+            client,
+            mcp_headers,
+            "move_widget",
+            {"widget_id": widget_id, "organization_id": branch_id, "version": body["version"]},
+        )
+    elif verb == "bulk":
+        rest = await client.post(
+            f"{LIST_URL}bulk/", headers=headers, json={"verb": "archive", "ids": [widget_id]}
+        )
+        body = rest.json()
+        mcp = await _mcp_call(
+            client, mcp_headers, "bulk_widgets", {"verb": "archive", "ids": [widget_id]}
+        )
+    else:
+        rest = await client.get(f"{LIST_URL}{widget_id}/history/", headers=headers)
+        body = rest.json()
+        mcp = await _mcp_call(client, mcp_headers, "list_widget_history", {"widget_id": widget_id})
+    return rest, body, mcp
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verb", ["update", "move", "bulk", "history"])
+async def test_each_family_verb_is_one_body_on_rest_mcp_and_the_outbox(
+    bearer: str, widget: Widget, tenant: Tenant, member: User, branch: Any, verb: str
+) -> None:
+    from asgiref.sync import sync_to_async
+
+    from config.asgi import build_application
+
+    version = await sync_to_async(lambda: widget.version)()
+    member_bearer = await sync_to_async(_token_for)(member, tenant)
+    application = build_application()
+    bearer_header = {"authorization": f"Bearer {bearer}"}
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            rest, rest_body, over_mcp = await _press(
+                client, bearer_header, verb, str(widget.pk), version, str(branch.pk)
+            )
+            assert rest.status_code == 200, rest.text
+            as_owner = await client.get(
+                f"{LIST_URL}{widget.pk}/", headers={**bearer_header, "accept": JSON}
+            )
+            as_member = await client.get(
+                f"{LIST_URL}{widget.pk}/",
+                headers={"authorization": f"Bearer {member_bearer}", "accept": JSON},
+            )
+            assert as_member.status_code == 200, as_member.text
+
+    # One viewer, two doors: one byte string. The bulk repeat is the idempotent
+    # one, so its outcome reads `unchanged` where REST's read `done`, and
+    # nothing else about the batch may differ.
+    if verb == "bulk":
+        assert [r["outcome"] for r in rest_body["results"]] == ["done"]
+        assert [r["outcome"] for r in over_mcp["results"]] == ["unchanged"]
+        repeated = {
+            **rest_body,
+            "done": 0,
+            "unchanged": 1,
+            "results": [{**rest_body["results"][0], "outcome": "unchanged"}],
+        }
+        assert _canonical(over_mcp) == _canonical(repeated)
+        row = rest_body["results"][0]["item"]
+    else:
+        assert _canonical(over_mcp) == _canonical(rest_body)
+        row = rest_body if verb != "history" else as_owner.json()
+
+    # The event is the row, never a viewer's acts.
+    said = {
+        "update": "example.widget.updated",
+        "move": "example.widget.moved",
+        "bulk": "example.widget.archived",
+    }.get(verb)
+    if said is not None:
+        event = await sync_to_async(_one_event)(tenant, said)
+        assert "allowed_acts" not in event, sorted(event)
+        if verb == "move":
+            assert event.pop("from_organization_id") == str(widget.organization_id)
+            assert event["organization_id"] == str(branch.pk)
+        assert _canonical(event) == _canonical(_without_acts(row))
+
+    # A second viewer: the same row, other acts — and nothing else different.
+    owner_body = as_owner.json()
+    member_body = as_member.json()
+    assert set(owner_body) == DETAIL_KEYS
+    assert _canonical(_without_acts(member_body)) == _canonical(_without_acts(owner_body))
+    assert member_body["allowed_acts"] != owner_body["allowed_acts"]
+
+
+@pytest.fixture
+def branch_admin_bearer(tenant: Tenant, owner: User) -> tuple[str, list[str]]:
+    """A token for an ADMIN at A in a root/A/A1/B world, and the ids of A and A1."""
+    from apps.accounts.services import create_user
+    from apps.core.actor import system_actor
+    from apps.core.models import Membership
+    from apps.core.services import add_membership, create_organization, root_organization
+
+    root = root_organization(tenant=tenant)
+    acting = actor_for(user=owner, tenant=tenant, org=root)
+    a = create_organization(tenant=tenant, parent=root, name="A", slug="a", actor=acting)
+    create_organization(tenant=tenant, parent=root, name="B", slug="b", actor=acting)
+    a1 = create_organization(tenant=tenant, parent=a, name="A1", slug="a1", actor=acting)
+    manager = create_user(email="a-admin@example.com", password=PASSWORD)
+    add_membership(
+        user=manager,
+        tenant=tenant,
+        organization=a,
+        is_default=True,
+        role=Membership.Role.ADMIN,
+        actor=system_actor(tenant=tenant),
+    )
+    return _token_for(manager, tenant), sorted([str(a.pk), str(a1.pk)])
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_the_move_sheets_destinations_agree_on_both_doors(
+    branch_admin_bearer: tuple[str, list[str]],
+) -> None:
+    """`?can=widget.move` and `list_organizations(can="widget.move")`: A and A1, on both."""
+    from config.asgi import build_application
+
+    token, expected = branch_admin_bearer
+    header = {"authorization": f"Bearer {token}"}
+    application = build_application()
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            over_http = await client.get(
+                "/api/v1/organizations/",
+                params={"can": "widget.move"},
+                headers={**header, "accept": JSON},
+            )
+            assert over_http.status_code == 200, over_http.text
+            over_mcp = await _mcp_call(
+                client, {**MCP_HEADERS, **header}, "list_organizations", {"can": "widget.move"}
+            )
+
+    assert sorted(row["id"] for row in over_http.json()["items"]) == expected
+    assert sorted(row["id"] for row in over_mcp["items"]) == expected
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_a_partial_bulk_answers_the_same_three_outcomes_on_the_machine_door(
+    tenant: Tenant, owner: User, recorded_workflow_starts: None
+) -> None:
+    """`bulk_widgets`: done, refused(`not_found`), done — as `POST /widgets/bulk/` answers."""
+    from asgiref.sync import sync_to_async
+
+    from apps.core.services import create_organization, root_organization
+    from config.asgi import build_application
+
+    def world() -> tuple[str, list[str]]:
+        from apps.accounts.services import create_user
+        from apps.core.actor import system_actor
+        from apps.core.models import Membership
+        from apps.core.services import add_membership
+
+        root = root_organization(tenant=tenant)
+        acting = actor_for(user=owner, tenant=tenant, org=root)
+        a = create_organization(tenant=tenant, parent=root, name="A", slug="a", actor=acting)
+        b = create_organization(tenant=tenant, parent=root, name="B", slug="b", actor=acting)
+        manager = create_user(email="a-admin@example.com", password=PASSWORD)
+        add_membership(
+            user=manager,
+            tenant=tenant,
+            organization=a,
+            is_default=True,
+            role=Membership.Role.ADMIN,
+            actor=system_actor(tenant=tenant),
+        )
+        ids = [
+            str(
+                create_widget(
+                    tenant=tenant, actor=actor_for(user=owner, tenant=tenant, org=node), name=name
+                ).pk
+            )
+            for node, name in ((a, "first"), (b, "sibling"), (a, "third"))
+        ]
+        return _token_for(manager, tenant), ids
+
+    token, ids = await sync_to_async(world)()
+    application = build_application()
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            answered = await _mcp_call(
+                client,
+                {**MCP_HEADERS, "authorization": f"Bearer {token}"},
+                "bulk_widgets",
+                {"verb": "archive", "ids": ids},
+            )
+
+    assert [r["outcome"] for r in answered["results"]] == ["done", "refused", "done"]
+    assert [r["id"] for r in answered["results"]] == ids
+    assert answered["results"][1]["refusal"]["code"] == "not_found"
+
+
+# --- 6 · Duplicate and merge: one press, four tellings (M4) ----------------------
+#
+# `assert_four_doors` holds one presser's REST body and MCP `structuredContent`
+# to one byte string, the recorded payload to the row minus its per-viewer
+# fields, and no per-viewer key in the payload. REST presses first; MCP repeats
+# the press — a duplicate with the same key answers the FIRST copy, a merge of
+# the same pair answers the survivor unchanged — so all four describe one state
+# of one row. A SECOND viewer (the tenant's member) reads the same row's detail
+# and differs from the presser's detail in `allowed_acts` and nothing else.
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verb", ["duplicate", "merge"])
+async def test_duplicate_and_merge_are_one_row_on_four_doors_for_two_viewers(
+    bearer: str, widget: Widget, tenant: Tenant, owner: User, member: User, verb: str
+) -> None:
+    from asgiref.sync import sync_to_async
+
+    from apps.core.tests.doors import assert_four_doors
+    from config.asgi import build_application
+
+    def survivor_and_versions() -> tuple[str, int, int]:
+        into = create_widget(
+            tenant=tenant,
+            actor=actor_for(user=owner, tenant=tenant, org=widget.organization),
+            name="Survivor",
+        )
+        return str(into.pk), Widget.objects.get(pk=widget.pk).version, into.version
+
+    into_id, version, into_version = (
+        await sync_to_async(survivor_and_versions)() if verb == "merge" else ("", 0, 0)
+    )
+    member_bearer = await sync_to_async(_token_for)(member, tenant)
+    header = {"authorization": f"Bearer {bearer}"}
+    application = build_application()
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            if verb == "duplicate":
+                rest = await client.post(
+                    f"{LIST_URL}{widget.pk}/duplicate/",
+                    headers={**header, "accept": JSON, "idempotency-key": "m4-press"},
+                )
+                assert rest.status_code == 201, rest.text
+                over_mcp = await _mcp_call(
+                    client,
+                    {**MCP_HEADERS, **header},
+                    "duplicate_widget",
+                    {"widget_id": str(widget.pk), "idempotency_key": "m4-press"},
+                )
+            else:
+                rest = await client.post(
+                    f"{LIST_URL}{widget.pk}/merge/",
+                    headers={**header, "accept": JSON},
+                    json={"into_id": into_id, "version": version, "into_version": into_version},
+                )
+                assert rest.status_code == 200, rest.text
+                over_mcp = await _mcp_call(
+                    client,
+                    {**MCP_HEADERS, **header},
+                    "merge_widget",
+                    {
+                        "widget_id": str(widget.pk),
+                        "into_id": into_id,
+                        "version": version,
+                        "into_version": into_version,
+                    },
+                )
+            row_id = rest.json()["id"]
+            as_owner = await client.get(f"{LIST_URL}{row_id}/", headers={**header, "accept": JSON})
+            as_member = await client.get(
+                f"{LIST_URL}{row_id}/",
+                headers={"authorization": f"Bearer {member_bearer}", "accept": JSON},
+            )
+            assert as_member.status_code == 200, as_member.text
+
+    payload = await sync_to_async(_event_payload)(tenant, f"example.widget.{verb}d")
+    if verb == "merge":
+        # What is true of the EVENT and not of the row: the widget folded away
+        # and what each owning app moved.
+        assert payload.pop("loser_id") == str(widget.pk)
+        repoints = payload.pop("repoints")
+        assert {row["title"]: row["left"] for row in repoints} == {
+            "Notes": 0,
+            "Tags": 0,
+            "Files": 0,
+        }
+    assert_four_doors(rest=rest.json(), mcp=over_mcp, event_payload=payload)
+    # The second viewer: the same row, other acts — and nothing else different.
+    owner_body, member_body = as_owner.json(), as_member.json()
+    assert set(owner_body) == DETAIL_KEYS
+    assert _canonical(_without_acts(member_body)) == _canonical(_without_acts(owner_body))
+    assert member_body["allowed_acts"] != owner_body["allowed_acts"]

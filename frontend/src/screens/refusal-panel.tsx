@@ -28,8 +28,19 @@
  * own the sentence too, and the sentence belongs to the surface: "The server
  * refused" on a landing page, "Your access here ended" on a socket that was
  * kicked. The panel owns the SHAPE.
+ *
+ * A REMEDY IS A DOOR OR A LABEL, NEVER A TOKEN. The server's `destination` is
+ * a machine token (`route:widget-list`, `header:X-Org`); a reader cannot say it
+ * back to anybody, so it is never printed. A `route:` remedy whose operation a
+ * page draws is a live link to that page (the route table decides, through
+ * `@/screens/remedy-door`); every other remedy is its label alone. Either way
+ * the token rides in `data-destination` for the machine.
+ *
+ * THE SEAT. A verb's refusal sits directly under the act's row, and the panel
+ * says which row with `data-seat`. The prop does that and nothing else.
  */
 
+import { remedyDoor } from "@/screens/remedy-door";
 import type { Refusal, WireRemedy } from "@/screens/state";
 import { unhandledRefusal } from "@/screens/state";
 
@@ -47,17 +58,19 @@ export type RefusalPanelProps = {
     readonly refusal: Refusal;
     readonly words: RefusalWords;
     readonly act?: RefusalAct;
+    /** The seat of the act this refusal answers (`record-acts`, `sheet-acts`, …). */
+    readonly seat?: string;
 };
 
-export function RefusalPanel({ refusal, words, act }: RefusalPanelProps) {
+export function RefusalPanel({ refusal, words, act, seat }: RefusalPanelProps) {
     switch (refusal.kind) {
         case "registry":
             return (
-                <div role="alert" style={panelStyle}>
+                <div role="alert" data-seat={seat} style={panelStyle}>
                     <p style={{ margin: `0 0 var(--space-1)`, color: "var(--ink)", fontWeight: 600 }}>{words.label}</p>
                     <p style={{ margin: `0 0 var(--space-2)`, color: "var(--ink)" }}>{refusal.refusal.detail}</p>
-                    <p style={{ margin: `0 0 var(--space-2)`, fontFamily: "var(--font-mono)", fontSize: "var(--type-facts)", color: "var(--muted)" }}>
-                        {refusal.refusal.code}
+                    <p style={{ margin: `0 0 var(--space-2)` }}>
+                        <code style={codeStyle}>{refusal.refusal.code}</code>
                     </p>
                     <Remedies remedies={refusal.refusal.remedies} heading={words.remedies} />
                     <Act act={act} />
@@ -65,11 +78,11 @@ export function RefusalPanel({ refusal, words, act }: RefusalPanelProps) {
             );
         case "transport":
             return (
-                <div role="alert" style={panelStyle}>
+                <div role="alert" data-seat={seat} style={panelStyle}>
                     <p style={{ margin: `0 0 var(--space-1)`, color: "var(--ink)", fontWeight: 600 }}>{words.label}</p>
                     <p style={{ margin: `0 0 var(--space-2)`, color: "var(--ink)" }}>{refusal.detail}</p>
-                    <p style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: "var(--type-facts)", color: "var(--muted)" }}>
-                        {refusal.code}
+                    <p style={{ margin: 0 }}>
+                        <code style={codeStyle}>{refusal.code}</code>
                     </p>
                     <Act act={act} />
                 </div>
@@ -108,16 +121,32 @@ function Remedies({ remedies, heading }: { readonly remedies: WireRemedy[] | und
             <ul style={{ margin: 0, paddingLeft: "var(--space-3)", color: "var(--ink)" }}>
                 {remedies.map((remedy) => (
                     <li key={`${remedy.destination}:${remedy.label}`}>
-                        {remedy.label}{" "}
-                        <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--type-label)", color: "var(--muted)" }}>
-                            {remedy.destination}
-                        </span>
+                        <RemedyDoorView remedy={remedy} />
                     </li>
                 ))}
             </ul>
         </>
     );
 }
+
+/** One remedy: a live link when the route table maps it, else the label. */
+function RemedyDoorView({ remedy }: { readonly remedy: WireRemedy }) {
+    const door = remedyDoor(remedy);
+    if (door.kind === "link") {
+        return (
+            <a href={door.href} data-destination={door.destination} style={{ color: "var(--accent)" }}>
+                {door.label}
+            </a>
+        );
+    }
+    return <span data-destination={door.destination}>{door.label}</span>;
+}
+
+const codeStyle = {
+    fontFamily: "var(--font-mono)",
+    fontSize: "var(--type-facts)",
+    color: "var(--muted)",
+} as const;
 
 const panelStyle = {
     border: `1px solid var(--accent)`,

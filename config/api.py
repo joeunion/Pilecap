@@ -382,7 +382,7 @@ register_refusal(
     ),
     fact=(
         "The request does not match the shape this operation accepts. Nothing was read "
-        "and nothing was written — no route ran at all. `errors` names each field and "
+        "and nothing was written — no route ran at all. The answer names each field and "
         "what is wrong with it, in the names you sent, including any field that is not "
         "part of this operation: unknown fields are refused rather than ignored, so a "
         "misspelled name can never look like a success."
@@ -1178,14 +1178,21 @@ def _document_operation(path: str, operation: Any) -> None:
             # not a list there.
             paginated=answers_cursor_envelope(operation),
         )
+    # `@also_refuses(...)` ADDS to whichever set the route publishes — the
+    # derived one or its `@refuses` one — and never replaces it.
+    codes = docs.with_added(codes, view)
 
     by_status: dict[int, list[str]] = {}
     for code in codes:
         status = CODE_STATUS.get(code)
         if status is not None:
             by_status.setdefault(status, []).append(code)
+    # The kind this operation answers for fills a registered remedy's `<noun>`
+    # slot, as the raise site's `noun` fills it on the wire (one declaration).
+    noun = docs.noun_of(getattr(operation, "url_name", None), path)
     responses: dict[int, Any] = {
-        status: docs.refusal_response(group) for status, group in sorted(by_status.items())
+        status: docs.refusal_response(group, noun=noun)
+        for status, group in sorted(by_status.items())
     }
     if authenticated:
         # It IS a domain refusal now, so it is documented the way every

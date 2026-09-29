@@ -34,15 +34,41 @@ as its schedule: rule 31 checks the callable is REACHED, not merely named.
 
 from __future__ import annotations
 
+# golden: archive version move bulk history duplicate attach merge import begin
 from typing import ClassVar
 
 from django.conf import settings
-from django.contrib.postgres.indexes import GinIndex
-from django.contrib.postgres.search import SearchVector, SearchVectorField
 from django.db import models
 
 from apps.core.lifecycle import Lifecycle, LifecycleKind
-from apps.core.models import InheritedDownward, OrgScopedModel
+from apps.core.models import Archivable, OrgScopedModel
+
+# golden: archive version move bulk history duplicate attach merge import end
+# isort: split
+# golden: version move bulk history duplicate attach merge import begin
+from apps.core.models import Versioned
+
+# golden: version move bulk history duplicate attach merge import end
+# isort: split
+# golden: move bulk history duplicate attach merge import begin
+from apps.core.models import Movable
+
+# golden: move bulk history duplicate attach merge import end
+# isort: split
+# golden: duplicate attach merge import begin
+from apps.core.models import Duplicable, Duplicate, duplicate_key_constraint
+
+# golden: duplicate attach merge import end
+# isort: split
+# golden: merge import begin
+from apps.core.models import Mergeable
+
+# golden: merge import end
+# isort: split
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVector, SearchVectorField
+
+from apps.core.models import InheritedDownward
 
 #: The Postgres text-search configuration the generated column below is built
 #: under. It is spelled here rather than imported from
@@ -63,7 +89,21 @@ from apps.core.models import InheritedDownward, OrgScopedModel
 SEARCH_CONFIG = "english"
 
 
-class Widget(OrgScopedModel):
+# golden: archive version move bulk history duplicate attach merge import begin
+class Widget(
+    OrgScopedModel,
+    Archivable,
+    # golden: archive end
+    Versioned,
+    # golden: version end
+    Movable,
+    # golden: move bulk history end
+    Duplicable,
+    # golden: duplicate attach end
+    Mergeable,
+    # golden: archive version move bulk history duplicate attach begin
+):
+    # golden: archive version move bulk history duplicate attach merge import end
     """A thing somebody owns, inside exactly one **part** of one tenant.
 
     Org-scoped rather than merely tenant-scoped, and that is the reference
@@ -82,6 +122,39 @@ class Widget(OrgScopedModel):
     than the other: an org-scoped row everybody may see costs a
     `visible_to(root)`, and a tenant-scoped row that should have been
     org-scoped is a leak between the tenant's own customers.
+
+    **It leaves the book by being archived, never by a flag.** `Archivable`
+    brings `archived_at` and `archived_by`, and `for_tenant()` then leaves an
+    archived widget out of every read that does not widen on purpose —
+    `including_archived()` for the detail and the restore, `archived_only()`
+    for the list's `?show=archived`.
+
+    **And it carries the rest of the family, one declaration each.**
+    `Versioned` makes every edit name the version it was made against (a late
+    save is `stale_version`, never a silent overwrite); `Movable` lets an
+    administrator re-home it at another node — and hand it to another owner —
+    with its ledger refusing to follow (`move_blocked`); `bulk_verbs` runs
+    archive, restore and move over a selection; and any of those brings the
+    history card, read off the audit trail. None of the three adds a column.
+    `Duplicable` makes a new widget from this one (the `duplicate` declaration
+    says what carries across); `attachments` takes notes, tags and files, which
+    live in their own apps; `Mergeable` folds a duplicate into the widget it
+    duplicates — its attachments re-pointed, its ledger kept where it was
+    written (`merge_keeps`); and `external_ref` is the natural key a file of widgets is imported by
+    (`importers.py`). Those three verbs add columns, and the migration that adds
+    them is expand-only.
+
+    **The fences, and why they list verbs.** The lines fenced `golden: <verbs>`
+    in this app are the adoption a product copies onto its own noun; the
+    unfenced lines around them are this widget's own business. The verbs are
+    adopted in ONE ORDER — archive, version, move, bulk, history, duplicate,
+    attach, merge, import — and each verb's copy is the noun as it stands after
+    that adoption, so a block belongs to its own verb and to every verb after
+    it, and its fence names them all in one line (`# golden: move bulk history
+    duplicate attach merge import begin`). Attach comes before merge because a
+    merge re-points the attachments: the owners' repointers answer only for a
+    noun that takes them. History is owed by every verb but
+    archive, so its blocks carry version's too.
     """
 
     #: ADR core-13, kind one of three. **The cascade IS the lifecycle.**
@@ -108,6 +181,7 @@ class Widget(OrgScopedModel):
     #: `bounded` carries no `reason` and no `trigger`, on purpose: a cascade is
     #: a mechanism the schema already states, not a decision to defend. The two
     #: reasoned kinds below are the ones that owe a sentence.
+    # golden: archive version move bulk history duplicate attach merge import begin
     lifecycle: ClassVar[Lifecycle] = Lifecycle(kind=LifecycleKind.BOUNDED)
 
     name = models.CharField(max_length=200)
@@ -117,6 +191,50 @@ class Widget(OrgScopedModel):
         related_name="widgets",
     )
     notes = models.TextField(blank=True)
+    # golden: archive version end
+    # The owner axis: a move may hand the widget to another person as well as
+    # re-home it (`core.verbs.rehome` reassigns this field when it is named).
+    move_owner_field: ClassVar[str | None] = "owner"
+    # golden: move end
+    # The verbs a selection runs, each through its own single road.
+    bulk_verbs: ClassVar[tuple[str, ...]] = ("archive", "restore", "move")
+    # golden: bulk history end
+    # What a duplicate carries across, and what it starts again: every concrete
+    # editable field is on one side (house rule 74's duplicate clause). The copy
+    # belongs to the person who pressed and is named `Copy of <name>` — both are
+    # the service's `fill`, set before the copy's one save.
+    duplicate = Duplicate(
+        copies=(
+            "notes",
+            # golden: duplicate attach merge import end
+            "policy",
+            # golden: duplicate attach merge import begin
+        ),
+        resets=(
+            "name",
+            "owner",
+            # golden: duplicate attach merge end
+            "external_ref",
+            # golden: import end
+            "onboarded_at",
+            # golden: duplicate attach merge import begin
+        ),
+    )
+    # golden: duplicate attach end
+    # A merged loser keeps its ledger: every other foreign key into the noun is
+    # re-pointed by the app that owns it (house rule 74's FK census).
+    merge_keeps: ClassVar[dict[str, str]] = {
+        "entries": "an append-only ledger stays where it was written",
+    }
+    # golden: attach begin
+    # Notes, tags and files attach to a widget; the rows live in their own apps.
+    attachments: ClassVar[tuple[str, ...]] = ("notes", "tags", "files")
+    # golden: attach merge end
+    # The natural key an import finds a widget by: the id the row has in the
+    # system it came from. Blank for a widget made here; unique per organization
+    # when set (the partial constraint in `Meta`, which the import copy takes).
+    external_ref = models.CharField(max_length=200, blank=True, default="")
+    # golden: import end
     onboarded_at = models.DateTimeField(
         null=True,
         blank=True,
@@ -184,15 +302,35 @@ class Widget(OrgScopedModel):
         null=True,
     )
 
+    # golden: duplicate attach merge import begin
     class Meta(OrgScopedModel.Meta):
+        # golden: duplicate attach merge import end
         verbose_name = "widget"
         verbose_name_plural = "widgets"
+        # golden: duplicate attach merge import begin
         constraints = [
+            # golden: duplicate attach merge import end
             models.UniqueConstraint(
                 fields=["tenant", "owner", "name"],
                 name="widget_unique_name_per_owner_per_tenant",
             ),
+            # golden: import begin
+            # An import finds a widget by the id it has elsewhere, within one
+            # branch: two branches may each hold the same outside system's `42`.
+            models.UniqueConstraint(
+                fields=["tenant", "organization", "external_ref"],
+                condition=~models.Q(external_ref=""),
+                name="widget_unique_external_ref_per_organization",
+            ),
+            # golden: import end
+            # golden: duplicate attach merge import begin
+            # A repeated duplicate press with one key answers the first copy:
+            # the constraint is the model's, declared here (`core.E001` when it
+            # is missing) — never added by the key field behind the migration's
+            # back, which a fresh database could not migrate.
+            duplicate_key_constraint(),
         ]
+        # golden: duplicate attach merge import end
         # DECLARING `indexes` HERE SHADOWS THE ABSTRACT BASE'S (house rule 37).
         # Django does not merge `Meta.indexes` down an inheritance chain, so the
         # tenant-leading recency composite every `TenantScopedModel` gets is
@@ -226,9 +364,11 @@ class Widget(OrgScopedModel):
             ),
         ]
 
+    # golden: archive version move bulk history duplicate attach merge import begin
     def __str__(self) -> str:
         return self.name
 
+    # golden: archive version move bulk history duplicate attach merge import end
     # The two relation reads `WidgetOut` publishes, as properties rather than as
     # Pydantic field aliases — and that difference is load-bearing rather than
     # stylistic. An alias (`Field(alias="owner.email")`) is a *name*, and the
@@ -242,6 +382,7 @@ class Widget(OrgScopedModel):
     # `selectors.list_widgets` / `get_widget`, which select both relations. The
     # query pins on the list route and the list tool are what keep that true.
 
+    # golden: archive version move bulk history duplicate attach merge import begin
     @property
     def owner_email(self) -> str:
         """Who owns this, without the caller having to fetch the owner."""
@@ -252,8 +393,21 @@ class Widget(OrgScopedModel):
         """Which part of the tenant owns it — the slug an `X-Org` header names."""
         return str(self.organization.slug)
 
+    # golden: archive version end
+    @property
+    def owner_name(self) -> str | None:
+        """Who owns it, in words — the move sheet's owner axis says it back.
 
-class WidgetPolicy(InheritedDownward, OrgScopedModel):
+        The user's `full_name` when the product's user model carries one, and
+        `None` otherwise (`core.schemas.ArchivedByOut.name` reads the same way),
+        which tells a screen to show the address instead. Costs no query: every
+        read selects `owner`.
+        """
+        return getattr(self.owner, "full_name", None) or None
+
+
+# golden: move bulk history duplicate attach merge import end
+class WidgetPolicy(InheritedDownward, OrgScopedModel, Archivable):
     """Configuration one part of a tenant sets, **inherited by everything below**.
 
     This is the second shape a hierarchy needs and the one a flat product never
@@ -285,6 +439,13 @@ class WidgetPolicy(InheritedDownward, OrgScopedModel):
     `body` is deliberately meaningless — this is the template's worked example
     and a policy's *content* is the product's. What is worked here is where the
     row lives and who may resolve it.
+
+    **Archivable, and held in the book by the widgets that name it.** An
+    archived policy stops governing — `governing()` reads through
+    `for_tenant()`, which leaves it out — so archiving one that a live widget
+    still names would leave that widget governed by nothing it can see. The
+    archive refuses instead, naming the widgets (`archive_blockers.py`), and
+    nothing cascades.
     """
 
     #: ADR core-13, kind two of three. Config, not traffic — and a policy has no
@@ -349,6 +510,7 @@ class WidgetPolicy(InheritedDownward, OrgScopedModel):
         return str(self.organization.slug)
 
 
+# golden: move bulk history duplicate attach merge import begin
 class WidgetEntry(OrgScopedModel):
     """One line of a widget's ledger. **Append-only, and it lands where the widget is.**
 
@@ -443,3 +605,6 @@ class WidgetEntry(OrgScopedModel):
     @property
     def organization_slug(self) -> str:
         return str(self.organization.slug)
+
+
+# golden: move bulk history duplicate attach merge import end

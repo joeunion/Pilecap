@@ -2300,16 +2300,17 @@ def test_enrolment_with_the_code_lands_the_person(
     assert "_auth_user_id" in client.session
 
 
-def test_no_face_says_a_forbidden_word(
-    client: Client, door: FakeSignInZitadel, ours: None, settings: Any
-) -> None:
-    """The consumer's F14, adopted: never "MFA", "2FA", "U2F" or "WebAuthn".
+#: A CSRF token that carries a word the sign-in faces must never say. The token
+#: is drawn at random, so a search over the page's bytes met `2FA` inside one
+#: (`...Fzh6ikLG8S2FAxadGm...`) and turned a green tree red on one seed.
+A_TOKEN_CARRYING_A_FORBIDDEN_WORD = "a" * 30 + "2FA" + "b" * 31
 
-    A census over every face the sign-in door can draw, gathered by DRIVING the
-    door rather than by reading the templates — the sentences are the door's
-    constants and the copy a person meets is the rendered document.
-    """
-    settings.PRODUCT_NAME = "Pilecap"
+#: The words the consumer's F14 keeps off every sign-in face.
+FORBIDDEN_ON_THE_FACE = ("MFA", "2FA", "U2F", "WebAuthn", "TOTP", "otpauth")
+
+
+def _every_signin_face(client: Client, door: FakeSignInZitadel) -> dict[str, str]:
+    """Every face the sign-in door can draw, gathered by DRIVING the door."""
     faces: dict[str, str] = {}
 
     _enrol(door, "AUTHENTICATION_METHOD_TYPE_TOTP")
@@ -2331,12 +2332,63 @@ def test_no_face_says_a_forbidden_word(
     faces["J2-c refused"] = client.post(
         LOGIN_URL, {"action": "enrol", "code": "000000"}
     ).content.decode()
+    return faces
 
+
+def _forbidden_words_on(faces: dict[str, str]) -> list[str]:
+    """`<face> says <word>` for every forbidden word in a face's READABLE text.
+
+    Read through the same parser the day-count check reads the skip button
+    with: text nodes only, never an attribute value, a hidden input, a
+    comment, a script or a style block. The CSRF token is an attribute value,
+    so no draw of it can put a word where this looks.
+    """
+    said: list[str] = []
     for name, face in faces.items():
-        readable = _on_the_face(face)
-        for banned in ("MFA", "2FA", "U2F", "WebAuthn", "TOTP", "otpauth"):
-            assert banned not in readable, f"{name} says {banned}"
+        readable = " ".join(_read_skip_face(face).text)
+        said.extend(f"{name} says {word}" for word in FORBIDDEN_ON_THE_FACE if word in readable)
+    return said
+
+
+def test_no_face_says_a_forbidden_word(
+    client: Client, door: FakeSignInZitadel, ours: None, settings: Any
+) -> None:
+    """The consumer's F14, adopted: never "MFA", "2FA", "U2F" or "WebAuthn".
+
+    A census over every face the sign-in door can draw, gathered by DRIVING the
+    door rather than by reading the templates — the sentences are the door's
+    constants and the copy a person meets is the rendered document.
+    """
+    settings.PRODUCT_NAME = "Pilecap"
+    faces = _every_signin_face(client, door)
+
+    assert _forbidden_words_on(faces) == []
     assert len(faces) == 7
+
+
+def test_a_token_carrying_a_forbidden_word_does_not_move_the_verdict(
+    client: Client,
+    door: FakeSignInZitadel,
+    ours: None,
+    settings: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same census, with a CSRF token that happens to carry `2FA`.
+
+    The token is drawn at random, so without this case the word search would
+    meet those letters only by luck — once in a while, on some box.
+    """
+    settings.PRODUCT_NAME = "Pilecap"
+    monkeypatch.setattr(
+        csrf, "_mask_cipher_secret", lambda _secret: A_TOKEN_CARRYING_A_FORBIDDEN_WORD
+    )
+
+    faces = _every_signin_face(client, door)
+
+    assert any(A_TOKEN_CARRYING_A_FORBIDDEN_WORD in face for face in faces.values()), (
+        "the forced token never reached a face"
+    )
+    assert _forbidden_words_on(faces) == []
 
 
 # --- A6.3 · design J7's sentences, one case each ------------------------------

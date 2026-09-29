@@ -429,6 +429,36 @@ def test_a_deleted_widget_takes_its_document_with_it(
     assert ("delete", "widgets") in capturing.writes
 
 
+def test_a_moved_widget_is_found_at_its_new_node(
+    tenant: Tenant, owner_actor: Actor, capturing: CapturingEngine
+) -> None:
+    """Move → the document names the DESTINATION, so the branch it joined finds it.
+
+    The document carries the widget's organization, and the search door filters
+    on it: a move that did not re-index would leave the widget findable by the
+    branch it left and missing for the branch it joined, with no error anywhere.
+    """
+    from apps.core.services import create_organization
+    from apps.example.services import move_widget
+
+    widget = create_widget(tenant=tenant, actor=owner_actor, name="Traveller", notes="")
+    assert owner_actor.org is not None
+    branch = create_organization(
+        tenant=tenant, parent=owner_actor.org, name="Branch", slug="branch", actor=owner_actor
+    )
+    move_widget(
+        tenant=tenant,
+        actor=owner_actor,
+        widget=widget,
+        organization=branch,
+        version=widget.version,
+    )
+
+    assert spine(last_event(tenant=tenant, name=example_events.WIDGET_MOVED)) is True
+    assert capturing.upserted[-1]["id"] == str(widget.pk)
+    assert capturing.upserted[-1]["org_id"] == str(branch.pk)
+
+
 def test_an_event_no_kind_subscribed_to_is_an_ordinary_no_op(
     tenant: Tenant, owner_actor: Actor, capturing: CapturingEngine
 ) -> None:

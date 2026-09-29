@@ -1,0 +1,831 @@
+// golden: face begin
+"use client";
+// golden: face end
+
+/**
+ * EXAMPLE — the worked Widget record's stories: the four `REQUIRED_STORY_EXPORTS`
+ * (`Ready` is the populated case: an onboarding widget with a description,
+ * read by a route that takes no act), then the extras the record's declared
+ * entries name — §16's `Resting`; the family's two hats (`PopulatedAdmin`,
+ * `PopulatedMember`); §20's archive road (`Archived`, `RefusedArchive`,
+ * `RefusedRestore`); §1's two sheets — Edit's lost race (`Stale`) and its
+ * other refusal (`RefusedUpdate`), Move's refusal (`RefusedMove`) and its
+ * empty (`NowhereToMove`); §17's moved-away band (`Moved`); §10's History card
+ * (`History`, `HistoryLoading`, `HistoryEmpty`, `RefusedHistory`); and §6's
+ * `ActsAfterFrame`, the acts row answered by the REST read alone.
+ *
+ * EVERY PRESSABLE STORY GOES THROUGH `RecordWalk`, a stand-in for the route
+ * that answers each press from the fixtures after a short wait. It is the
+ * fixtures' server, not the product's.
+ */
+
+// golden: face begin
+import { useEffect, useState } from "react";
+
+import type { Refusal, SurfaceState, WireRefusal } from "@/screens/state";
+import type { Verb } from "@/screens/verbs";
+import type { Widget, WidgetDetail } from "@/screens/widget/parts";
+import { ADMIN_ACTS, BENCH, LATENCY_MS, MEMBER_ACTS, ROWING } from "@/screens/widget/widget-list.stories";
+import { type RecordPress, type Sheet, WidgetRecord } from "@/screens/widget/widget-record";
+// golden: face end
+// golden: archive begin
+import { archivedOf, restoredOf, RESTORE_BLOCKED } from "@/screens/widget/widget-list.stories";
+// golden: archive end
+// golden: move begin
+import { DESTINATIONS } from "@/screens/widget/widget-list.stories";
+import type { Destination } from "@/screens/widget/parts";
+// golden: move end
+// golden: history begin
+import type { HistoryPage } from "@/screens/widget/parts";
+import type { HistoryPress } from "@/screens/widget/widget-history";
+// golden: history end
+// golden: attach begin
+import type { Note, StoredFile, Tag } from "@/screens/widget/parts";
+import type { AttachPress } from "@/screens/widget/widget-attach";
+// golden: attach end
+// golden: merge begin
+import type { WidgetMergePreview } from "@/screens/widget/parts";
+import type { MergePress } from "@/screens/widget/widget-merge";
+// golden: merge end
+
+// golden: face begin
+const NOT_FOUND: WireRefusal = {
+    code: "not_found",
+    detail: "There is no such row here. A row that exists in another tenant, or in a part of this tenant's tree your acting organization does not cover, answers exactly the same way — not-there and not-yours are one answer, deliberately, because a refusal that told them apart would confirm the row exists.",
+    remedies: [
+        { label: "Check which tenant you are acting in", destination: "header:X-Tenant" },
+        { label: "Check which organization you are wearing", destination: "header:X-Org" },
+    ],
+};
+
+const ADMIN_ROWING: Widget = { ...ROWING, allowed_acts: ADMIN_ACTS };
+const MEMBER_ROWING: Widget = { ...ROWING, allowed_acts: MEMBER_ACTS };
+
+type Answer = { readonly kind: "ok"; readonly data: Widget } | { readonly kind: "refused"; readonly refusal: Refusal };
+
+/** Resolves after the fixtures' server has taken its time. */
+function later<T>(answer: () => T): Promise<T> {
+    return new Promise((resolve) => setTimeout(() => resolve(answer()), LATENCY_MS));
+}
+// golden: face end
+
+// golden: archive begin
+/**
+ * `archive_blocked`, as the archive answers it: the registry's detail and one
+ * remedy per blocker, the blocker's label verbatim and its `route:` door. The
+ * worked Widget has no archive blocker of its own today (the template's one is
+ * its policy's, `apps/example/archive_blockers.py`), so this is that blocker's
+ * label and door, drawn on the face that a product's first blocker lands on:
+ * the widget list, narrowed, which a page draws, so it is a live link.
+ */
+export const ARCHIVE_BLOCKED: WireRefusal = {
+    code: "archive_blocked",
+    detail: "This cannot be archived while something still depends on it.",
+    remedies: [
+        {
+            label: "Archive the widgets that name this policy, or give them another, first",
+            destination: "route:widget-list?policy=0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f51",
+        },
+    ],
+};
+// golden: archive end
+
+// golden: version begin
+/** `stale_version`, as a save that lost a race is answered: the registry's fact and its one remedy, a re-read. */
+export const STALE: WireRefusal = {
+    code: "stale_version",
+    detail: "Somebody else changed this since you read it, so your change was not saved. Nothing was written; `current_version` is the version it has now.",
+    remedies: [{ label: "Read it again, then make your change to what is there now", destination: "self:reread" }],
+};
+
+/** `forbidden` on a save: the hat may read the row and may not change it. */
+const SAVE_FORBIDDEN: WireRefusal = {
+    code: "forbidden",
+    detail: "You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.",
+    remedies: [
+        { label: "Check the role your membership gives you here", destination: "self:membership" },
+        { label: "Ask somebody who administers this organization", destination: "header:X-Org" },
+    ],
+};
+
+/** What the re-read answers after the race: somebody else's newer save, with their notes. */
+const RACED: Widget = { ...ADMIN_ROWING, notes: "Belt replaced in August; the seat rail squeaks.", version: ADMIN_ROWING.version + 1 };
+// golden: version end
+
+// golden: move begin
+/** `move_blocked`: something recorded under the row must stay where it was written. */
+export const MOVE_BLOCKED: WireRefusal = {
+    code: "move_blocked",
+    detail: "This cannot move while something recorded under it has to stay where it was written. Nothing was moved.",
+    remedies: [{ label: "See what holds it where it is", destination: "self:reread" }],
+};
+// golden: move end
+
+// golden: history begin
+const ACTOR = { id: "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f30", name: null, kind: "human" };
+
+/** The row's trail, newest first: an edit of its notes, and its creation. */
+const HISTORY: HistoryPage = {
+    items: [
+        { at: "2026-09-20T08:15:00.000Z", verb: "update", actor: ACTOR, door: "rest", changed_fields: ["notes", "version"] },
+        { at: "2026-09-12T10:00:00.000Z", verb: "update", actor: { ...ACTOR, name: "Maria Delgado" }, door: "mcp", changed_fields: ["name", "notes"] },
+        { at: "2026-08-24T14:05:00.000Z", verb: "create", actor: ACTOR, door: "rest", changed_fields: ["name", "notes"] },
+    ],
+    has_more: true,
+    next_cursor: "eyJrIjpbIjIwMjYtMDgtMjRUMTQ6MDU6MDBaIl0sInYiOjF9.p3Qb1w",
+    count: null,
+};
+
+/** The page before: what *Show earlier* reads. */
+const EARLIER: HistoryPage = {
+    items: [{ at: "2026-08-24T14:04:00.000Z", verb: "move", actor: ACTOR, door: "rest", changed_fields: ["organization"] }],
+    has_more: false,
+    next_cursor: null,
+    count: null,
+};
+
+/** `forbidden` on the history read: the hat may not read this row's trail. */
+const HISTORY_FORBIDDEN: WireRefusal = {
+    code: "forbidden",
+    detail: "You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.",
+    remedies: [{ label: "Ask somebody who administers this organization", destination: "header:X-Org" }],
+};
+// golden: history end
+
+// golden: duplicate begin
+/** The copy the duplicate answers: a new row at the hat, the presser's, named for its source. */
+function copyOf(row: Widget): Widget {
+    return { ...row, id: "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f60", name: `Copy of ${row.name}`, duplicated_from_id: row.id, version: row.version + 1 };
+}
+
+/** `forbidden` on a duplicate: a copy is a create, and this hat may not create here. */
+const DUPLICATE_FORBIDDEN: WireRefusal = {
+    code: "forbidden",
+    detail: "You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.",
+    remedies: [
+        { label: "Check the role your membership gives you here", destination: "self:membership" },
+        { label: "Ask somebody who administers this organization", destination: "header:X-Org" },
+    ],
+};
+// golden: duplicate end
+
+// golden: attach begin
+const AUTHOR = "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f30";
+
+function noteOf(id: string, body: string, at: string): Note {
+    return {
+        id,
+        subject: `widget:${ROWING.id}`,
+        body,
+        author_id: AUTHOR,
+        author_email: "dana@example.com",
+        tenant_id: ROWING.tenant_id,
+        organization_id: ROWING.organization_id,
+        created_at: at,
+        updated_at: at,
+        archived_at: null,
+        archived_by: null,
+    };
+}
+
+/** The row's notes, newest first. */
+const NOTES: readonly Note[] = [
+    noteOf("0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f71", "Squeaks at the top of the stroke.", "2026-09-21T09:00:00.000Z"),
+    noteOf("0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f72", "Serviced by the supplier.", "2026-09-02T09:00:00.000Z"),
+];
+
+/** The row's one file, archivable by this hat. */
+const REPORT: StoredFile = {
+        id: "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f81",
+        organization_id: ROWING.organization_id,
+        filename: "service-report.pdf",
+        purpose: "attachment",
+        current_version: 1,
+        uploaded_by_id: AUTHOR,
+        subject: `widget:${ROWING.id}`,
+        created_at: "2026-09-02T09:05:00.000Z",
+        updated_at: "2026-09-02T09:05:00.000Z",
+    allowed_acts: ["archive"],
+    archived_at: null,
+    archived_by: null,
+};
+const FILES: readonly StoredFile[] = [REPORT];
+
+function tagOf(id: string, name: string): Tag {
+    return {
+        id,
+        name,
+        slug: name.toLowerCase(),
+        tenant_id: ROWING.tenant_id,
+        created_at: "2026-08-01T09:00:00.000Z",
+        updated_at: "2026-08-01T09:00:00.000Z",
+        archived_at: null,
+        archived_by: null,
+    };
+}
+
+/** The tags on the row, and the ones the chooser offers. */
+const ON: readonly Tag[] = [tagOf("0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f91", "Cardio")];
+const TAGS: readonly Tag[] = [...ON, tagOf("0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f92", "Needs service"), tagOf("0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f93", "Loaner")];
+
+/** `forbidden` on an add: this hat may not write here. */
+const ADD_FORBIDDEN: WireRefusal = {
+    code: "forbidden",
+    detail: "You are who you say you are, and this is still not yours to do here. The row exists and you can see it; the action is what was refused.",
+    remedies: [{ label: "Ask somebody who administers this organization", destination: "header:X-Org" }],
+};
+// golden: attach end
+
+// golden: merge begin
+/** The rows the chooser lists: the server's list, each with its own answer; one does not offer `merge`. */
+const CANDIDATES: readonly Widget[] = [
+    { ...BENCH, allowed_acts: ADMIN_ACTS },
+    { ...BENCH, id: "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f49", name: "Rowing machine (old tag)", allowed_acts: ADMIN_ACTS },
+    { ...BENCH, id: "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f4a", name: "Treadmill", allowed_acts: ["update"] },
+];
+
+/** The dry run for a pair: what moves to the survivor, in each owner's words. */
+const PREVIEW: WidgetMergePreview = {
+    loser_id: ROWING.id,
+    into_id: BENCH.id,
+    repoints: [
+        { title: "Notes", left: 3 },
+        { title: "Entries", left: 12 },
+        { title: "Tags", left: 0 },
+    ],
+};
+
+/** `merge_blocked`: something holds the two apart; nothing was re-pointed. */
+export const MERGE_BLOCKED: WireRefusal = {
+    code: "merge_blocked",
+    detail: "These two cannot be merged while something still holds them apart. Nothing was written, and neither record changed.",
+    remedies: [{ label: "See what holds them apart", destination: "self:reread" }],
+};
+
+/** A widget as the merge leaves it: a tombstone, archived, naming the survivor, offering nothing. */
+function mergedOf(row: Widget, into: Widget): Widget {
+    return { ...row, merged_into_id: into.id, archived_at: "2026-09-27T15:10:00.000Z", archived_by: null, allowed_acts: [] };
+}
+// golden: merge end
+
+// golden: face begin
+/** The fixtures' one-press acts: each answers the row as the wire would. */
+function answerFor(verb: Verb, row: Widget): Answer {
+    // golden: face end
+    // golden: archive begin
+    if (verb === "archive") return { kind: "ok", data: archivedOf(row) };
+    if (verb === "restore") return { kind: "ok", data: restoredOf(row) };
+    // golden: archive end
+    // golden: duplicate begin
+    if (verb === "duplicate") return { kind: "ok", data: copyOf(row) };
+    // golden: duplicate end
+    // golden: face begin
+    return { kind: "ok", data: row };
+}
+
+type WalkProps = {
+    readonly initial: Widget;
+    readonly refused?: { readonly verb: Verb; readonly refusal: Refusal } | null;
+    /** What the fixtures' server answers a one-press act with; the wire's by default. */
+    readonly answer?: (verb: Verb, row: Widget) => Answer;
+    /**
+     * A socket frame that arrives once, a wait after the first render. The
+     * frame is a signal and is read for nothing: the route re-reads, and
+     * `reread` is what that read answers.
+     */
+    readonly frame?: { readonly reread: Widget };
+    readonly opened?: Sheet | null;
+    // golden: face end
+    // golden: version begin
+    /** What a save answers: saved, or refused with this. */
+    readonly saveRefusal?: WireRefusal;
+    // golden: version end
+    // golden: move begin
+    /** What the destinations read answers, and what a move answers: moved, moved out of sight, or refused. */
+    readonly destinations?: SurfaceState<readonly Destination[]>;
+    readonly moveAnswer?: "moved" | "away" | WireRefusal;
+    /** The node a move already took the row to, out of this hat's sight. */
+    readonly movedTo?: string;
+    /** The node a refused move was sent to: the sheet opens on it. */
+    readonly chosen?: string;
+    // golden: move end
+    // golden: history begin
+    readonly history?: SurfaceState<HistoryPage>;
+    // golden: history end
+    // golden: duplicate begin
+    /** The row this one was just copied from (the walk opens on the copy). */
+    readonly duplicatedFrom?: { readonly id: string; readonly name: string };
+    // golden: duplicate end
+    // golden: attach begin
+    /** Notes, files and tags on the row; `fileAdd: false` when the files list offers this hat no `create`. */
+    readonly notes?: SurfaceState<readonly Note[]>;
+    readonly files?: SurfaceState<readonly StoredFile[]>;
+    readonly fileAdd?: boolean;
+    readonly tagged?: readonly Tag[];
+    /** What an add answers: added, or refused with this. */
+    readonly addAnswer?: WireRefusal;
+    readonly addRefused?: boolean;
+    // golden: attach end
+    // golden: merge begin
+    /** What the chooser lists, what a merge answers, and the survivor a refused merge was asked into. */
+    readonly candidates?: SurfaceState<readonly Widget[]>;
+    readonly mergeAnswer?: "merged" | WireRefusal;
+    readonly into?: Widget;
+    /** The survivor this (merged) row became. */
+    readonly mergedInto?: Widget;
+    // golden: merge end
+    // golden: face begin
+};
+
+/** The stand-in route: holds its REST read and answers every press from the fixtures. */
+function RecordWalk(props: WalkProps) {
+    const { initial, refused: initialRefused = null, answer = answerFor, frame } = props;
+    const [row, setRow] = useState(initial);
+    const [busy, setBusy] = useState<Verb | null>(null);
+    const [refused, setRefused] = useState(initialRefused);
+    const [frames, setFrames] = useState(0);
+    const reread = frame?.reread;
+    /** The row as the detail read answers it: the row, and what attaches to it. */
+    let shown: WidgetDetail = row;
+    /** What the walk does beside the row's answer when an act lands (a duplicate names its source). */
+    let pressed: (verb: Verb, from: Widget) => void = () => undefined;
+    // golden: face end
+    // golden: duplicate begin
+    const [source, setSource] = useState(props.duplicatedFrom ?? null);
+    pressed = (verb, from) => {
+        if (verb === "duplicate") setSource({ id: from.id, name: from.name });
+    };
+    // golden: duplicate end
+    // golden: face begin
+
+    useEffect(() => {
+        if (reread === undefined) return;
+        // The frame lands; the re-read it prompts answers a wait later.
+        const arrives = setTimeout(() => setFrames((count) => count + 1), LATENCY_MS);
+        const answers = setTimeout(() => setRow(reread), LATENCY_MS * 3);
+        return () => {
+            clearTimeout(arrives);
+            clearTimeout(answers);
+        };
+    }, [reread]);
+
+    let press: RecordPress = {
+        busy,
+        refused,
+        onAct: (verb) => {
+            setBusy(verb);
+            setTimeout(() => {
+                setBusy(null);
+                const out = answer(verb, row);
+                if (out.kind === "refused") {
+                    setRefused({ verb, refusal: out.refusal });
+                    return;
+                }
+                setRefused(null);
+                pressed(verb, row);
+                setRow(out.data);
+            }, LATENCY_MS);
+        },
+    };
+    // golden: face end
+    // golden: version begin
+    const saveRefusal = props.saveRefusal;
+    press = {
+        ...press,
+        edit: {
+            onSave: (patch) => {
+                setBusy("update");
+                return later(() => {
+                    setBusy(null);
+                    // The race is lost once: after the re-read, the save is made against what is true now.
+                    if (saveRefusal !== undefined && row.version === initial.version) {
+                        setRefused({ verb: "update", refusal: { kind: "registry", refusal: saveRefusal } });
+                        return false;
+                    }
+                    setRefused(null);
+                    setRow((now) => ({ ...now, name: patch.name ?? now.name, notes: patch.notes ?? now.notes, version: now.version + 1 }));
+                    return true;
+                });
+            },
+            onReread: () => {
+                void later(() => {
+                    setRefused(null);
+                    setRow((now) => ({ ...RACED, allowed_acts: now.allowed_acts ?? [] }));
+                });
+            },
+        },
+    };
+    // golden: version end
+    // golden: move begin
+    const [movedTo, setMovedTo] = useState<string | null>(props.movedTo ?? null);
+    const moveAnswer = props.moveAnswer ?? "moved";
+    const destinations = props.destinations ?? { kind: "ready", data: DESTINATIONS };
+    press = {
+        ...press,
+        move: {
+            destinations,
+            ...(props.chosen === undefined ? {} : { chosen: props.chosen }),
+            onMove: (organizationId) => {
+                setBusy("move");
+                return later(() => {
+                    setBusy(null);
+                    if (typeof moveAnswer !== "string") {
+                        setRefused({ verb: "move", refusal: { kind: "registry", refusal: moveAnswer } });
+                        return false;
+                    }
+                    setRefused(null);
+                    const node = DESTINATIONS.find((candidate) => candidate.id === organizationId);
+                    if (moveAnswer === "away") setMovedTo(node?.name ?? "");
+                    else setRow((now) => ({ ...now, organization_id: organizationId, organization_name: node?.name ?? now.organization_name }));
+                    return true;
+                });
+            },
+        },
+    };
+    // golden: move end
+    // golden: history begin
+    const [history, setHistory] = useState(props.history);
+    const [earlierBusy, setEarlierBusy] = useState(false);
+    const card: HistoryPress | undefined =
+        history === undefined
+            ? undefined
+            : {
+                  state: history,
+                  earlier: {
+                      busy: earlierBusy,
+                      onShowEarlier: () => {
+                          setEarlierBusy(true);
+                          setTimeout(() => {
+                              setEarlierBusy(false);
+                              setHistory((now) =>
+                                  now?.kind === "ready" ? { kind: "ready", data: { ...EARLIER, items: [...now.data.items, ...EARLIER.items] } } : now,
+                              );
+                          }, LATENCY_MS);
+                      },
+                  },
+              };
+    // golden: history end
+    // golden: attach begin
+    const [notes, setNotes] = useState(props.notes);
+    const [files, setFiles] = useState(props.files);
+    const [tags, setTags] = useState(props.tagged);
+    const [adding, setAdding] = useState(false);
+    const [addRefused, setAddRefused] = useState<Refusal | null>(
+        props.addRefused === true && props.addAnswer !== undefined ? { kind: "registry", refusal: props.addAnswer } : null,
+    );
+    const addAnswer = props.addAnswer;
+    const add = (done: () => void) =>
+        (): Promise<boolean> => {
+            setAdding(true);
+            return later(() => {
+                setAdding(false);
+                if (addAnswer !== undefined) {
+                    setAddRefused({ kind: "registry", refusal: addAnswer });
+                    return false;
+                }
+                setAddRefused(null);
+                done();
+                return true;
+            });
+        };
+    const attach: AttachPress = {
+        ...(notes === undefined
+            ? {}
+            : {
+                  notes: {
+                      state: notes,
+                      busy: adding,
+                      refused: addRefused,
+                      onAdd: (body) =>
+                          add(() =>
+                              setNotes((now) => ({
+                                  kind: "ready",
+                                  data: [noteOf("0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f7f", body, "2026-09-28T09:00:00.000Z"), ...(now?.kind === "ready" ? now.data : [])],
+                              })),
+                          )(),
+                  },
+              }),
+        ...(files === undefined
+            ? {}
+            : {
+                  files: {
+                      state: files,
+                      busy: adding,
+                      refused: null,
+                      onArchive: (id) => setFiles((now) => (now?.kind === "ready" ? { kind: "ready", data: now.data.filter((file) => file.id !== id) } : now)),
+                      ...(props.fileAdd === false ? {} : { onAdd: (file: File) => add(() => setFiles((now) => ({ kind: "ready", data: [{ ...REPORT, id: "0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f8f", filename: file.name }, ...(now?.kind === "ready" ? now.data : [])] })))() }),
+                  },
+              }),
+        ...(tags === undefined
+            ? {}
+            : {
+                  tags: {
+                      choices: { kind: "ready", data: TAGS },
+                      busy: adding,
+                      refused: null,
+                      onRemove: (id) => setTags((now) => (now ?? []).filter((tag) => tag.id !== id)),
+                      onAdd: (tag) =>
+                          add(() =>
+                              setTags((now) => [...(now ?? []), "id" in tag ? (TAGS.find((known) => known.id === tag.id) ?? tagOf(tag.id, tag.id)) : tagOf("0195f1d4-9d2c-7c31-9d0b-0b6f6b3a6f9f", tag.name)]),
+                          )(),
+                  },
+              }),
+    };
+    shown = tags === undefined ? row : { ...row, tags: [...tags] };
+    // golden: attach end
+    // golden: merge begin
+    const mergeAnswer = props.mergeAnswer ?? "merged";
+    const merge: MergePress = {
+        candidates: props.candidates ?? { kind: "ready", data: CANDIDATES },
+        onPick: () => undefined,
+        preview: { kind: "ready", data: PREVIEW },
+        ...(props.into === undefined ? {} : { chosen: props.into }),
+        onMerge: (into) => {
+            setBusy("merge");
+            return later(() => {
+                setBusy(null);
+                if (typeof mergeAnswer !== "string") {
+                    setRefused({ verb: "merge", refusal: { kind: "registry", refusal: mergeAnswer } });
+                    return false;
+                }
+                setRefused(null);
+                setRow(into);
+                return true;
+            });
+        },
+    };
+    press = { ...press, merge };
+    // golden: merge end
+    // golden: face begin
+
+    const face = (
+        <WidgetRecord
+            state={{ kind: "ready", data: shown }}
+            press={press}
+            opened={props.opened ?? null}
+            // golden: face end
+            // golden: move begin
+            movedTo={movedTo}
+            // golden: move end
+            // golden: history begin
+            history={card}
+            // golden: history end
+            // golden: attach begin
+            attach={attach}
+            // golden: attach end
+            // golden: duplicate begin
+            duplicatedFrom={source}
+            // golden: duplicate end
+            // golden: merge begin
+            mergedInto={props.mergedInto === undefined ? null : { id: props.mergedInto.id, name: props.mergedInto.name }}
+            // golden: merge end
+            // golden: face begin
+        />
+    );
+    return reread === undefined ? face : <div data-frames={frames}>{face}</div>;
+}
+
+function story(state: SurfaceState<Widget>) {
+    return function Story() {
+        return <WidgetRecord state={state} />;
+    };
+}
+
+export const Loading = story({ kind: "loading" });
+// The record's empty draws no door: the crumb is its one door to the list (§14).
+export const Empty = story({ kind: "empty" });
+export const Error = story({ kind: "error", refusal: { kind: "registry", refusal: NOT_FOUND } });
+// Onboarding (the departure: one pill) and described; its Onboarded fact is absent, so not drawn.
+export const Ready = story({ kind: "ready", data: ROWING });
+
+/** §16: the resting state (no pill), no description, every fact present. */
+export const Resting = story({ kind: "ready", data: { ...BENCH, notes: "" } });
+
+/** An administrator's hat: the family's acts in the head, in the table's order, *Archive* last; every one pressable. */
+export function PopulatedAdmin() {
+    return <RecordWalk initial={ADMIN_ROWING} />;
+}
+
+/** A member's hat: the row allows nothing, so the head draws no family act at all. */
+export function PopulatedMember() {
+    return <RecordWalk initial={MEMBER_ROWING} />;
+}
+// golden: face end
+
+// golden: archive begin
+/** §20: the archived record — the band under the head, its one act *Restore*, no head acts, no pill. */
+export function Archived() {
+    return <RecordWalk initial={archivedOf(ADMIN_ROWING)} />;
+}
+
+/** §20: `archive_blocked` in the head's refusal seat, its blocker a live door, *Archive* still alive. */
+export function RefusedArchive() {
+    return (
+        <RecordWalk
+            initial={ADMIN_ROWING}
+            refused={{ verb: "archive", refusal: { kind: "registry", refusal: ARCHIVE_BLOCKED } }}
+            answer={(verb, row) => (verb === "archive" ? { kind: "refused", refusal: { kind: "registry", refusal: ARCHIVE_BLOCKED } } : answerFor(verb, row))}
+        />
+    );
+}
+
+/** §20: `restore_blocked` under the band, its blocker's door unlinked (no page draws it), *Restore* still alive. */
+export function RefusedRestore() {
+    return (
+        <RecordWalk
+            initial={archivedOf(ADMIN_ROWING)}
+            refused={{ verb: "restore", refusal: { kind: "registry", refusal: RESTORE_BLOCKED } }}
+            answer={(verb, row) => (verb === "restore" ? { kind: "refused", refusal: { kind: "registry", refusal: RESTORE_BLOCKED } } : answerFor(verb, row))}
+        />
+    );
+}
+
+/**
+ * §6: the acts row is the REST read's answer and nothing else's. Another hat
+ * archives this widget: a socket frame arrives — its envelope carries the
+ * payload and no per-viewer field — and the face does not move; the route
+ * re-reads, and the re-read's `allowed_acts` (only `restore`) is what redraws
+ * it. `data-frames` counts the frames for the walk and the census.
+ */
+export function ActsAfterFrame() {
+    return <RecordWalk initial={ADMIN_ROWING} frame={{ reread: archivedOf(ADMIN_ROWING) }} />;
+}
+// golden: archive end
+
+// golden: version begin
+/**
+ * §1: the edit sheet after a save that lost a race — the server's sentence one
+ * line above the foot and its one act, *Reload*; *Save* alive. Type into a
+ * field first and *Reload* asks *Discard your changes?* in place.
+ */
+export function Stale() {
+    return (
+        <RecordWalk
+            initial={ADMIN_ROWING}
+            opened="update"
+            saveRefusal={STALE}
+            refused={{ verb: "update", refusal: { kind: "registry", refusal: STALE } }}
+        />
+    );
+}
+
+/** §1: a save the hat may not make — *Couldn't save* above the foot, the remedies as labels, *Save* alive, no *Reload*. */
+export function RefusedUpdate() {
+    return (
+        <RecordWalk
+            initial={ADMIN_ROWING}
+            opened="update"
+            saveRefusal={SAVE_FORBIDDEN}
+            refused={{ verb: "update", refusal: { kind: "registry", refusal: SAVE_FORBIDDEN } }}
+        />
+    );
+}
+// golden: version end
+
+// golden: move begin
+/** §1: `move_blocked` one line above the move sheet's foot, the sheet open, *Move* alive. */
+export function RefusedMove() {
+    return (
+        <RecordWalk
+            initial={ADMIN_ROWING}
+            opened="move"
+            chosen={DESTINATIONS[1]?.id ?? ""}
+            moveAnswer={MOVE_BLOCKED}
+            refused={{ verb: "move", refusal: { kind: "registry", refusal: MOVE_BLOCKED } }}
+        />
+    );
+}
+
+/** §1 · §14: no node this hat may move the row to — the sheet's one sentence, *Move* in the foot. */
+export function NowhereToMove() {
+    return <RecordWalk initial={ADMIN_ROWING} opened="move" destinations={{ kind: "empty" }} />;
+}
+
+/** §17: moved out of this hat's sight — the band *Moved to ⟨node⟩.*, no acts, no pill, no primary. */
+export function Moved() {
+    return <RecordWalk initial={ADMIN_ROWING} movedTo="Southern branch" />;
+}
+// golden: move end
+
+// golden: history begin
+/** §10: the History card, last in main — newest first, *Show earlier* at its foot reading the page before. */
+export function History() {
+    return <RecordWalk initial={ADMIN_ROWING} history={{ kind: "ready", data: HISTORY }} />;
+}
+
+/** §10 · §13: the card being read — three still rows under its title. */
+export function HistoryLoading() {
+    return <RecordWalk initial={ADMIN_ROWING} history={{ kind: "loading" }} />;
+}
+
+/** §10 · §14: nothing has happened to the row yet — *No history yet.*, no door. */
+export function HistoryEmpty() {
+    return <RecordWalk initial={ADMIN_ROWING} history={{ kind: "empty" }} />;
+}
+
+/** §10 · §15: the card's read refused — the notice inside the card, under its head. */
+export function RefusedHistory() {
+    return <RecordWalk initial={ADMIN_ROWING} history={{ kind: "error", refusal: { kind: "registry", refusal: HISTORY_FORBIDDEN } }} />;
+}
+// golden: history end
+
+// golden: duplicate begin
+/** §17: the copy, stood on after *Duplicate* — the band *Duplicated from ⟨source⟩.*, the source a live link; its own acts. */
+export function Duplicated() {
+    return <RecordWalk initial={copyOf(ADMIN_ROWING)} duplicatedFrom={{ id: ADMIN_ROWING.id, name: ADMIN_ROWING.name }} />;
+}
+
+/** §6: a duplicate this hat may not make — *Couldn't duplicate* in the head's seat, *Duplicate* alive. */
+export function RefusedDuplicate() {
+    return (
+        <RecordWalk
+            initial={ADMIN_ROWING}
+            refused={{ verb: "duplicate", refusal: { kind: "registry", refusal: DUPLICATE_FORBIDDEN } }}
+            answer={(verb, row) =>
+                verb === "duplicate" ? { kind: "refused", refusal: { kind: "registry", refusal: DUPLICATE_FORBIDDEN } } : answerFor(verb, row)
+            }
+        />
+    );
+}
+// golden: duplicate end
+
+// golden: merge begin
+/**
+ * §1: the merge chooser — *Merge ⟨name⟩ into…*, the search, the rows the
+ * server allows as survivors. The search is not wired in the walk (the
+ * fixtures' list does not narrow); the unit tests carry what it hands the route.
+ */
+export function MergeChoosing() {
+    return <RecordWalk initial={ADMIN_ROWING} opened="merge" />;
+}
+
+/** §1: `merge_blocked` inside the confirm, one line above its foot, *Merge* alive. */
+export function RefusedMerge() {
+    return (
+        <RecordWalk
+            initial={ADMIN_ROWING}
+            opened="merge"
+            into={CANDIDATES[0] ?? BENCH}
+            mergeAnswer={MERGE_BLOCKED}
+            refused={{ verb: "merge", refusal: { kind: "registry", refusal: MERGE_BLOCKED } }}
+        />
+    );
+}
+
+/** §17: the merged row's address — *Merged into ⟨survivor⟩ on ⟨day⟩.*, the survivor a live link; no act, no pill, no primary. */
+export function Merged() {
+    const into = CANDIDATES[0] ?? BENCH;
+    return <RecordWalk initial={mergedOf(ADMIN_ROWING, into)} mergedInto={into} />;
+}
+// golden: merge end
+
+// golden: attach begin
+/**
+ * §10 · §6: the row's notes, files and tags — each card's rows and its add at
+ * the foot, the tag row under the lede. The tag chooser's search is not wired
+ * in the walk (it offers every fixture tag not on the row); the unit tests
+ * carry the typed word's *Add*.
+ */
+export function Attached() {
+    return <RecordWalk initial={ADMIN_ROWING} notes={{ kind: "ready", data: NOTES }} files={{ kind: "ready", data: FILES }} tagged={ON} />;
+}
+
+/**
+ * §10: a member's hat — a note and a tag go on any row the reader can see, so
+ * *Add a note* and *Add a tag* are drawn; the files list offers this hat no
+ * `create`, so *Add a file* is absent, and no file offers it *Archive*.
+ */
+export function AttachedMember() {
+    return (
+        <RecordWalk
+            initial={MEMBER_ROWING}
+            notes={{ kind: "ready", data: NOTES }}
+            files={{ kind: "ready", data: FILES.map((file) => ({ ...file, allowed_acts: [] })) }}
+            fileAdd={false}
+            tagged={ON}
+        />
+    );
+}
+
+/** §10 · §13: the cards being read — still rows under each title. */
+export function AttachLoading() {
+    return <RecordWalk initial={ADMIN_ROWING} notes={{ kind: "loading" }} files={{ kind: "loading" }} tagged={[]} />;
+}
+
+/** §10 · §14: nothing attached yet — *No notes yet.*, *No files yet.*, each with its add; no tags. */
+export function NothingAttached() {
+    return <RecordWalk initial={ADMIN_ROWING} notes={{ kind: "empty" }} files={{ kind: "empty" }} tagged={[]} />;
+}
+
+/** §10 · §15: an add refused — *Couldn't add* inside the Notes card above its foot, *Add a note* alive. */
+export function RefusedAttach() {
+    return <RecordWalk initial={ADMIN_ROWING} notes={{ kind: "ready", data: NOTES }} addAnswer={ADD_FORBIDDEN} addRefused />;
+}
+// golden: attach end
+
+// golden: merge begin
+/** §6: the survivor, reached by the list's two-row *Merge*: the record, its name focused. */
+export function ArrivedAfterMerge() {
+    return <WidgetRecord state={{ kind: "ready", data: ADMIN_ROWING }} landOnName />;
+}
+// golden: merge end

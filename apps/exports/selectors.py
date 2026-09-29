@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from apps.core.actor import Actor
 from apps.core.authz import kind_of, require
 from apps.core.exceptions import Forbidden, NotFound
-from apps.core.models import ScopedQuerySet
+from apps.core.models import ScopedQuerySet, is_archivable
 from apps.exports.census import Disposition
 from apps.exports.models import Export
 
@@ -146,6 +146,17 @@ def list_exportable_rows(
     QUERYSET rather than the manager is what makes the scoping a property of the
     columns, which is where `is_org_scoped` already reads it from.
 
+    **An archived row is still the customer's row, so the archive carries it**
+    (house rule 9). On an `Archivable` noun `for_tenant()` leaves archived rows
+    out, because the book a person works from is the live one; a portability
+    archive is not that book, so every archivable model the census carries is
+    widened with `including_archived()` here — one selector, one rule, and a
+    noun that adopts archive later is carried the same way without this app
+    changing. The widening is about the archive and never about whose rows these
+    are: the tenant and the hat narrow it exactly as before, and `archived_at` /
+    `archived_by` travel as ordinary columns, so an importer can tell the two
+    kinds of row apart.
+
     `.order_by("pk")` because a JSONL file is a sequence and an unordered
     queryset is a different sequence on every run — which would make two
     archives of the same rows two different files, and "is this the archive I
@@ -161,6 +172,8 @@ def list_exportable_rows(
     rows: ScopedQuerySet[Any] = ScopedQuerySet(
         disposition.model, using=disposition.model._default_manager.db
     ).for_tenant(tenant)
+    if is_archivable(disposition.model):
+        rows = rows.including_archived()
     if disposition.org_scoped:
         rows = rows.visible_to(org)
     return rows.order_by("pk")

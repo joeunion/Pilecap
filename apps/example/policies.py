@@ -51,8 +51,24 @@ from __future__ import annotations
 
 from typing import Any
 
+# golden: archive version move bulk history duplicate attach merge import begin
+from apps.core.authz import Policy
+from apps.core.policies import may_archive
+
+# golden: archive version move bulk history duplicate attach merge import end
+# isort: split
+# golden: move bulk history duplicate attach merge import begin
+from apps.core.policies import may_move
+
+# golden: move bulk history duplicate attach merge import end
+# isort: split
+# golden: merge import begin
+from apps.core.policies import may_merge
+
+# golden: merge import end
+# isort: split
 from apps.core.actor import Actor
-from apps.core.authz import Policy, holds, membership_for
+from apps.core.authz import holds, membership_for
 
 #: The key that means "administers widgets in this branch", asked wherever this
 #: file used to compare a role. It is this app's own key on purpose: a product
@@ -142,7 +158,9 @@ def can_record_entry(actor: Actor, obj: Any = None) -> bool:
     return _is_member(actor)
 
 
+# golden: archive version move bulk history duplicate attach merge import begin
 POLICIES: dict[str, Policy] = {
+    # golden: archive version move bulk history duplicate attach merge import end
     "widget.create": can_create,
     "widget.update": owns,
     "widget.delete": owns,
@@ -156,7 +174,29 @@ POLICIES: dict[str, Policy] = {
     "widget.approve": can_approve,
     # The ledger. Append-only and landing-gated, so the bar is membership.
     "widget_entry.record": can_record_entry,
+    # A policy leaves the book the way a widget does: an administrator's press
+    # at the node that set it, never the system's.
+    "widget_policy.archive": may_archive,
+    "widget_policy.restore": may_archive,
+    # Archive and restore are an ADMINISTRATOR's press at the row's own node, and
+    # the system is nobody's: `may_archive` refuses the system actor rather than
+    # exempting it, so a workflow never takes a person's row out of the book on
+    # its own say-so. Declaring the pair is what keeps that refusal: a key with
+    # no policy is one the system actor passes before any policy is read.
+    # golden: archive version move bulk history duplicate attach merge import begin
+    "widget.archive": may_archive,
+    "widget.restore": may_archive,
+    # golden: archive version end
+    # A move is an administrator's press at BOTH ends — asked of the widget where
+    # it lives and of the node it is going to — and never the system's.
+    "widget.move": may_move,
+    # golden: move bulk history duplicate attach end
+    # A merge is an administrator's press on BOTH records — the one folded away
+    # and the one it becomes — and never the system's: nothing un-merges.
+    "widget.merge": may_merge,
+    # golden: archive version move bulk history duplicate attach begin
 }
+# golden: archive version move bulk history duplicate attach merge import end
 # **`widget_policy.create` is deliberately NOT here.** Config travels DOWN, so
 # its bar is authority and not ownership — and "does this person administer this
 # branch" is the data half's whole question since the sweep. A predicate that
@@ -170,7 +210,9 @@ POLICIES: dict[str, Policy] = {
 # The sentence a refused caller reads, per action, and the worked example of the
 # seam: a product declares these beside its policies and never edits `core`.
 # See `core/policies.py` for the register.
+# golden: archive version move bulk history duplicate attach merge import begin
 ACTION_PROSE: dict[str, str] = {
+    # golden: archive version move bulk history duplicate attach merge import end
     "widget.create": "You may not create widgets in this organization.",
     "widget.update": "You may not change that widget.",
     "widget.delete": "You may not delete that widget.",
@@ -178,4 +220,11 @@ ACTION_PROSE: dict[str, str] = {
     "widget.approve": "You may not approve that widget.",
     "widget_policy.create": "You may not set a widget policy for this organization.",
     "widget_entry.record": "You may not add entries to that widget's ledger.",
+    "widget_policy.archive": "You may not archive this widget policy.",
+    "widget_policy.restore": "You may not restore this widget policy.",
+    # A family key — `widget.archive`, `widget.restore`, `widget.move` — needs no
+    # line here: its derived sentence ("You may not archive this widget.") is the
+    # one a refused caller reads, and the prose census accepts it as declared.
+    # golden: archive version move bulk history duplicate attach merge import begin
 }
+# golden: archive version move bulk history duplicate attach merge import end

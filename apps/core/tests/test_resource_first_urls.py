@@ -133,7 +133,50 @@ def test_the_valve_is_declared_and_not_empty(document: dict[str, Any]) -> None:
     valved = allowed_label_paths()
     assert "connections" in valved
     served = {first_segment(path) for path in api_paths(document)}
-    assert valved <= served, f"valve entries no path uses: {sorted(valved - served)}"
+    # Dead weight is judged over the labels INSTALLED here. An entry whose app
+    # is installed and serves no such path is dead weight; an entry for an app
+    # this deployment does not install — an optional app left out, or an app
+    # whose entry landed in a shared commit ahead of its own merge — has no path
+    # to use it in THIS registry, and rule 32 never reads it (a label that is not
+    # installed cannot leak). Still closed at both ends: the installed labels
+    # come off the registry, the paths off the live document.
+    installed = {config.label for config in _local_app_configs()}
+    unused = (valved & installed) - served
+    assert not unused, f"valve entries no path uses: {sorted(unused)}"
+    homeless = homeless_valve_entries(valved, installed, _template_apps())
+    assert not homeless, (
+        f"valve entries naming no app — not installed here and not one of the "
+        f"template's apps (quality/partition.yaml): {homeless}"
+    )
+
+
+def _template_apps() -> set[str]:
+    """The template's own apps, read off the partition's boundary — never typed here."""
+    from quality.partition import platform_apps
+
+    return set(platform_apps())
+
+
+def homeless_valve_entries(valved: set[str], installed: set[str], template: set[str]) -> list[str]:
+    """Entries whose label names no app this tree could ever install.
+
+    The dead-weight judgement above reads installed apps only, so an entry for an
+    app that left the tree stays silent forever: it is never installed, so never
+    judged. The other half of the population is the partition's — an optional
+    app a deployment disabled (`DJB_DISABLED_APPS`) is still one of the
+    template's, and its entry waits for the deployment that installs it.
+    """
+    return sorted(valved - installed - template)
+
+
+def test_a_valve_entry_for_an_app_that_is_gone_is_named() -> None:
+    """The canary: a planted `zzz_gone` entry names itself; a disabled template app does not."""
+    installed = {"connections", "exports"}
+    template = {"connections", "exports", "search"}
+    assert homeless_valve_entries({"connections", "search", "zzz_gone"}, installed, template) == [
+        "zzz_gone"
+    ]
+    assert homeless_valve_entries({"connections", "search"}, installed, template) == []
 
 
 def test_every_path_ends_with_a_slash(document: dict[str, Any]) -> None:
@@ -194,11 +237,20 @@ def test_the_event_types_collection_kept_its_derived_rows(
     assert declared, "no app declares an event — this would pass vacuously"
 
     api.force_login(owner)
+    # The WHOLE collection, walked page by page: one page is 50 rows by default
+    # and the declarations outgrow it, so a pin over the first page alone
+    # compares a prefix and fails the day an app adds an event past the page.
     response = api.get("/api/v1/event-types/")
     assert response.status_code == 200, response.content
     body = response.json()
-    assert [row["name"] for row in body["items"]] == declared
     assert body["count"] is None  # not asked for (ADR core-18)
+    names = [row["name"] for row in body["items"]]
+    while body["has_more"]:
+        response = api.get("/api/v1/event-types/", {"cursor": body["next_cursor"]})
+        assert response.status_code == 200, response.content
+        body = response.json()
+        names.extend(row["name"] for row in body["items"])
+    assert names == declared
     counted = api.get("/api/v1/event-types/?include_count=true").json()
     assert counted["count"] == len(declared)
 

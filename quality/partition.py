@@ -474,6 +474,11 @@ def _digest_sections_in_process() -> dict[str, Any]:
 
         return {label: sorted(names) for label, names in sorted(declared_meters().items())}
 
+    def _verbs() -> Any:
+        from apps.core.verbs import declared_hooks
+
+        return declared_hooks()
+
     def _sockets() -> Any:
         from config.asgi import discovered_websocket_urlpatterns
 
@@ -503,6 +508,10 @@ def _digest_sections_in_process() -> dict[str, Any]:
     take("policies", _policies)
     take("meters", _meters)
     take("sockets", _sockets)
+    # The noun-verb family's hook walk — `core.verbs` is where the discovery
+    # shape moved when `core.authz` became a caller of it, and the hook modules
+    # it reads are a population a product app joins by dropping a file.
+    take("verbs", _verbs)
 
     declared = {str(entry["id"]) for entry in (lockfile().get("digest_sections") or [])}
     if declared != set(sections):

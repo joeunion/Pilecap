@@ -17,6 +17,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.test import Client
 from ninja.renderers import JSONRenderer
@@ -25,6 +26,7 @@ from apps.accounts.models import User
 from apps.core.actor import Actor, system_actor
 from apps.core.exceptions import Forbidden, Invalid
 from apps.core.models import Tenant
+from apps.core.schemas import PER_VIEWER_FIELDS
 from apps.core.service import service
 from apps.events import selectors, services
 from apps.events.events import ENDPOINT_REGISTERED, declared_names
@@ -90,6 +92,38 @@ def test_an_emit_that_rolls_back_promises_nobody_anything(
     assert not Event.objects.for_tenant(tenant).exists()
     assert not Outbox.objects.exists()
     assert not WorkflowRun.objects.for_tenant(tenant).exists()
+
+
+def test_a_payload_carrying_a_per_viewer_field_is_refused_and_writes_nothing(
+    tenant: Tenant, owner_actor: Actor
+) -> None:
+    """`allowed_acts` is what ONE caller may press; an event is broadcast to every
+    subscriber. The spine refuses the key before anything is written — no event,
+    no outbox row — naming it and the helper that leaves it out."""
+    with pytest.raises(ImproperlyConfigured) as raised:
+        services.emit(
+            name=WIDGET_CREATED,
+            tenant=tenant,
+            payload=in_the_root(tenant, {"id": "x", "allowed_acts": ["restore"]}),
+            actor=owner_actor,
+        )
+    assert "'allowed_acts'" in str(raised.value)
+    assert "ActsOut" in str(raised.value)
+    assert "event_payload" in str(raised.value)
+    assert not Event.objects.for_tenant(tenant).exists()
+    assert not Outbox.objects.exists()
+
+    # At any depth: a nested `Out` (a row's children, each with its own acts).
+    nested = {"id": "x", "entries": [{"id": "e1", "allowed_acts": ["delete"]}]}
+    with pytest.raises(ImproperlyConfigured) as deeper:
+        services.emit(
+            name=WIDGET_CREATED,
+            tenant=tenant,
+            payload=in_the_root(tenant, nested),
+            actor=owner_actor,
+        )
+    assert "'entries[0].allowed_acts'" in str(deeper.value)
+    assert not Event.objects.for_tenant(tenant).exists()
 
 
 def test_an_undeclared_name_is_refused_and_writes_nothing(tenant: Tenant) -> None:
@@ -627,6 +661,12 @@ def test_the_event_and_the_rest_body_for_one_row_are_the_same_bytes(
     The door is the example app's, called over HTTP rather than imported: this
     module may not reach into `apps.example.services`, whose own downward call
     into `apps.workflows` would drag the layer contract through an events test.
+
+    **Minus the per-viewer fields** (the lead's R1: an event payload never
+    carries one). `allowed_acts` answers what ONE caller may press, and a
+    subscriber is somebody else, so the payload is the body with those fields
+    taken out — and everything that remains is still one rendering, byte for
+    byte.
     """
     api.force_login(owner)
     created = api.post(
@@ -645,6 +685,16 @@ def test_the_event_and_the_rest_body_for_one_row_are_the_same_bytes(
     assert len(published) == 1
     payload = dict(published[0].payload)
     assert payload.pop("v") == 1
+
+    # The per-viewer fields, derived from `ActsOut` — what a viewer door answers
+    # and a broadcast never carries.
+    per_viewer = set(PER_VIEWER_FIELDS)
+    assert per_viewer <= set(body), "the door answers this viewer's acts"
+    assert not per_viewer & set(payload), "an event never carries a per-viewer field"
+    body = {key: value for key, value in body.items() if key not in per_viewer}
+    # The DETAIL also answers the words on the widget (`tags`, read through the
+    # tags app): the record's, not the row's, and an event is the row.
+    assert body.pop("tags") == []
 
     assert sorted(payload) == sorted(body), "one row, one key set, both doors"
     assert payload == body, "one row, one rendering, both doors"

@@ -30,4 +30,9 @@ class ExampleConfig(AppConfig):
     # imports the spine or the engine (`events` is deliberately absent below for
     # exactly that reason). A declared sideways dependency a reviewer can see is
     # the point of rule 7; the alternative was a magic string naming a model.
-    depends_on: tuple[str, ...] = ("core", "accounts", "workflows", "search")
+    # `tags` joined the day `Widget` took attachments: the detail answers the words
+    # on a widget through the tags app's own selector, and a duplicate carries
+    # them across through its own service — the one consumer of each, so no
+    # core hook stands between (the day a second noun copies tags is the day one
+    # is born).
+    depends_on: tuple[str, ...] = ("core", "accounts", "workflows", "search", "tags")

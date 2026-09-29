@@ -159,11 +159,44 @@ def _field_payload(field: models.Field[Any, Any] | models.ForeignObjectRel) -> d
     return payload
 
 
+#: The declarations a road READS beside its marker — a value rather than a
+#: flag, so `introspect` reports the value: which verbs a noun runs in bulk,
+#: which attachment kinds it takes, which FK a move hands over. A road that
+#: comes to read a further one names it here; the marker half needs no edit.
+ROAD_DECLARATIONS: tuple[str, ...] = ("bulk_verbs", "attachments", "move_owner_field")
+
+
+def family_marker_names() -> frozenset[str]:
+    """Every family declaration `introspect` reports: each road's marker, plus the values.
+
+    DERIVED from `core.verbs.ROADS` — the table house rule 74 reads — so a road
+    that joins the family is reported the moment it is in the table, with no
+    edit here. `ANY_MARKER` is the history road's "any of the others" and is not
+    a declaration a model makes.
+    """
+    from apps.core.verbs import ANY_MARKER, ROADS
+
+    return frozenset(
+        road.marker for road in ROADS.values() if road.marker != ANY_MARKER
+    ) | frozenset(ROAD_DECLARATIONS)
+
+
+def _marker_value(value: Any) -> Any:
+    """`True` for a flag, the value itself (a list for a tuple) for a declaration."""
+    if value is True:
+        return True
+    if isinstance(value, (frozenset, set)):
+        return sorted(str(item) for item in value)
+    if isinstance(value, (tuple, list)):
+        return [str(item) for item in value]
+    return str(value)
+
+
 def _markers_payload(model: type[models.Model]) -> dict[str, Any]:
     """The behavioural declarations a model carries, read off the class.
 
     A model's `bases` already say what it INHERITS; they do not say what it has
-    DECLARED, and the three declarations below change how the row behaves for
+    DECLARED, and the declarations below change how the row behaves for
     everybody who touches it:
 
     * **`append_only`** — rows are created and never updated or deleted (house
@@ -172,17 +205,24 @@ def _markers_payload(model: type[models.Model]) -> dict[str, Any]:
       branch may NAME a row its parent owns (`core.models.InheritedDownward`).
     * **`derive_org_from`** — the FK this row's organization must equal, or
       `None` when it chooses its own (`OrgScopedModel`'s landing gate).
+    * **the noun-verb family** — every road's marker in `core.verbs.ROADS`
+      (`archivable`, `versioned`, `movable`, `bulk_verbs`, … as the family
+      grows), each `true` when the class declares it, plus the values a road
+      reads beside its marker (`ROAD_DECLARATIONS`): `bulk_verbs` and
+      `attachments` as lists, `move_owner_field` as the field's name. House
+      rule 74 demands a road for each marker, so this is the list of the
+      noun's doors a reader should expect.
 
     Before this, a criterion phrased "the marker is visible in `introspect`" was
     unwritable: the payload's keys were exactly app/bases/fields/name/table, so
     the only way to answer "which models are append-only" from the instrument was
     to infer it from a base class that does not carry it.
 
-    DERIVED, not listed: the models come from the registry and each marker is
-    read off the class by the attribute the class declares. What IS pinned is the
-    set of marker KINDS — three today, and a fourth joins this dict as one line.
-    `apps/core/tests/test_introspect.py` holds the key names and refuses a
-    vacuous population.
+    DERIVED, not listed: the models come from the registry, each marker is read
+    off the class by the attribute the class declares, and the family's marker
+    names come off `ROADS` (`family_marker_names`). What IS pinned is the set of
+    marker KINDS — `apps/core/tests/test_introspect.py` holds it equal to the
+    derivation and refuses a vacuous population.
     """
     markers: dict[str, Any] = {}
     if is_append_only(model):
@@ -192,6 +232,10 @@ def _markers_payload(model: type[models.Model]) -> dict[str, Any]:
     derived_from = getattr(model, "derive_org_from", None)
     if derived_from:
         markers["derive_org_from"] = str(derived_from)
+    for name in sorted(family_marker_names()):
+        value = getattr(model, name, None)
+        if value:
+            markers[name] = _marker_value(value)
     return markers
 
 

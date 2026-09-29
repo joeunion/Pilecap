@@ -45,8 +45,8 @@ backend that signs is configured — MinIO on a laptop, in CI and in every
 worktree, S3 in a deployment. There is no filesystem-fallback world here for a
 `get_stream` to serve.
 
-So there is deliberately **no read-the-bytes function on this module**:
-`presign_get` fills `download_url`, and a `/download` door over a files object
+So there is deliberately **no read-the-bytes function on this module for a
+door**: `presign_get` fills `download_url`, and a `/download` door over a files object
 **may 302 to it** rather than proxying. `sha256_of` reads an object, and it is
 not that function wearing a different hat — it measures and returns two numbers,
 it never hands bytes to a caller, and a door that used it to serve a response
@@ -54,7 +54,10 @@ would be putting a whole document through a worker's memory. The one thing this
 whole app is shaped to prevent is bytes travelling through Django, and a
 `get_stream` with no world that needs it would be that shape with a permission
 slip. **The door rung applies this; it is not implemented here** — an ADR-level
-change (a backend that cannot sign) is what would reopen it.
+change (a backend that cannot sign) is what would reopen it. Bytes may reach a
+Temporal ACTIVITY's own parser through `iter_object`, chunk by chunk, and never
+a response: a door that proxied them (a `get_object` or `iter_object` call from
+an `api.py`, `mcp.py` or `consumers.py`) is exactly what this paragraph refuses.
 """
 
 from __future__ import annotations
@@ -73,7 +76,7 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Iterator
+    from collections.abc import Generator, Iterator
 
     from apps.core.models import Tenant
 
@@ -711,6 +714,47 @@ def sha256_of(*, tenant: Tenant, key: str) -> DigestedObject:
     finally:
         body.close()
     return DigestedObject(sha256=digest.hexdigest(), size_bytes=size)
+
+
+def iter_object(*, tenant: Tenant, key: str, chunk: int = DIGEST_CHUNK_BYTES) -> Generator[bytes]:
+    """The object's bytes, a chunk at a time — **for an activity's parser, never a door.**
+
+    The one server-side read of an object's CONTENT this seam offers, and the
+    reason it exists is a worker that must look inside a file the platform was
+    handed (an import validating a CSV row by row) without holding the whole
+    document in memory. It is `sha256_of`'s own walk — the same belt first, the
+    same `get_object`, the same chunk size by default — yielding the chunks
+    instead of hashing them.
+
+    **Eager where it can refuse, lazy where it reads.** `refuse_foreign_key` and
+    a `head_object` run when this is CALLED, so another tenant's key and a missing
+    object both raise at the call site rather than as an empty iterator a caller
+    might mistake for an empty file. The body is opened on the first chunk asked
+    for — an iterator nobody reads holds no connection — and closed in `finally`,
+    so a caller that stops early (a `break` after the header row) releases it
+    rather than leaking it. An object deleted between the two calls raises on the
+    first chunk: late, but never silent.
+
+    Never behind a door (the module docstring, § HOW BYTES COME BACK OUT): a route
+    or a tool that handed these chunks to a client would be bytes travelling
+    through Django, the one shape this app exists to prevent.
+    """
+    if chunk <= 0:
+        raise ValueError("A chunk is a positive number of bytes.")
+    refuse_foreign_key(tenant=tenant, key=key)
+    bucket = bucket_name()
+    client().head_object(Bucket=bucket, Key=key)
+    return _chunks(bucket=bucket, key=key, chunk=chunk)
+
+
+def _chunks(*, bucket: str, key: str, chunk: int) -> Generator[bytes]:
+    """Yield the object in `chunk`-sized reads, and close it however the caller stops."""
+    body = client().get_object(Bucket=bucket, Key=key)["Body"]
+    try:
+        while piece := body.read(chunk):
+            yield piece
+    finally:
+        body.close()
 
 
 def delete_prefix(*, tenant: Tenant) -> int:

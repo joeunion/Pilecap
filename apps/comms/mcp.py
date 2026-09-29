@@ -60,6 +60,7 @@ from apps.comms.api import (
     list_recipients_route,
     list_templates_route,
     register_device_route,
+    restore_recipient_route,
     retire_device_route,
     retire_policy_route,
     retire_template_route,
@@ -103,6 +104,7 @@ from apps.comms.schemas import (
     RecipientFilter,
     RecipientOut,
     RecipientPage,
+    RecipientShow,
     TemplateFilter,
     TemplateOut,
     TemplatePage,
@@ -128,6 +130,7 @@ from apps.comms.services import (
     create_template,
     grant_consent,
     register_device,
+    restore_recipient,
     retire_device,
     retire_policy,
     retire_template,
@@ -144,6 +147,7 @@ from apps.core.api import ordered_by
 from apps.core.api.docs import contract_of
 from apps.core.api.pagination import cursor_page
 from apps.core.mcp import acting_tenant, tool_call
+from apps.core.verbs import with_allowed_acts
 
 
 def register(server: MCPServer[Any]) -> None:
@@ -552,36 +556,43 @@ def register(server: MCPServer[Any]) -> None:
     def list_recipients_tool(
         ctx: Context[Any],
         email: str | None = None,
-        archived: bool = False,
+        show: RecipientShow = "live",
         ordering: str = "email",
         cursor: str | None = None,
         limit: int | None = None,
         include_count: bool = False,
     ) -> RecipientPage:
         with tool_call(ctx) as acting:
+            actor = acting.actor()
             recipients: QuerySet[Recipient] = RecipientFilter(email=email).filter(
                 list_recipients(
                     tenant=acting.tenant,
                     org=acting.org,
-                    include_archived=archived,
-                    actor=acting.actor(),
+                    show=show,
+                    actor=actor,
                 )
             )
             recipients = ordered_by(
                 recipients, ordering, allowed=RECIPIENT_ORDERING, default="email"
             )
+            # `actor=` is what makes this the family's page: every contact's
+            # `allowed_acts` and the list's own, from the seam the REST door's
+            # `ActsPagination` calls, so the two doors cannot disagree about
+            # who may do what.
             page = cursor_page(
                 recipients,
                 tenant=acting.tenant,
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
+                actor=actor,
             )
             return RecipientPage(
                 items=[RecipientOut.from_orm(row) for row in page.items],
                 has_more=page.has_more,
                 next_cursor=page.next_cursor,
                 count=page.count,
+                allowed_acts=list(page.allowed_acts or ()),
             )
 
     @server.tool(
@@ -590,14 +601,11 @@ def register(server: MCPServer[Any]) -> None:
     )
     def get_recipient_tool(ctx: Context[Any], recipient_id: UUID) -> RecipientOut:
         with tool_call(ctx) as acting:
-            return RecipientOut.from_orm(
-                get_recipient(
-                    tenant=acting.tenant,
-                    recipient_id=recipient_id,
-                    org=acting.org,
-                    actor=acting.actor(),
-                )
+            actor = acting.actor()
+            recipient = get_recipient(
+                tenant=acting.tenant, recipient_id=recipient_id, org=acting.org, actor=actor
             )
+            return RecipientOut.from_orm(with_allowed_acts([recipient], actor)[0])
 
     @server.tool(
         name="create_recipient",
@@ -612,16 +620,16 @@ def register(server: MCPServer[Any]) -> None:
     ) -> RecipientOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
-            return RecipientOut.from_orm(
-                create_recipient(
-                    tenant=tenant,
-                    actor=acting.actor(),
-                    email=email,
-                    display_name=display_name,
-                    phone=phone,
-                    chat_handle=chat_handle,
-                )
+            actor = acting.actor()
+            created = create_recipient(
+                tenant=tenant,
+                actor=actor,
+                email=email,
+                display_name=display_name,
+                phone=phone,
+                chat_handle=chat_handle,
             )
+            return RecipientOut.from_orm(with_allowed_acts([created], actor)[0])
 
     @server.tool(
         name="update_recipient",
@@ -637,20 +645,20 @@ def register(server: MCPServer[Any]) -> None:
     ) -> RecipientOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            actor = acting.actor()
             recipient = get_recipient(
-                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=actor
             )
-            return RecipientOut.from_orm(
-                update_recipient(
-                    tenant=tenant,
-                    actor=acting.actor(),
-                    recipient=recipient,
-                    email=email,
-                    display_name=display_name,
-                    phone=phone,
-                    chat_handle=chat_handle,
-                )
+            updated = update_recipient(
+                tenant=tenant,
+                actor=actor,
+                recipient=recipient,
+                email=email,
+                display_name=display_name,
+                phone=phone,
+                chat_handle=chat_handle,
             )
+            return RecipientOut.from_orm(with_allowed_acts([updated], actor)[0])
 
     @server.tool(
         name="archive_recipient",
@@ -659,12 +667,26 @@ def register(server: MCPServer[Any]) -> None:
     def archive_recipient_tool(ctx: Context[Any], recipient_id: UUID) -> RecipientOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            actor = acting.actor()
             recipient = get_recipient(
-                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=acting.actor()
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=actor
             )
-            return RecipientOut.from_orm(
-                archive_recipient(tenant=tenant, actor=acting.actor(), recipient=recipient)
+            pressed = archive_recipient(tenant=tenant, actor=actor, recipient=recipient)
+            return RecipientOut.from_orm(with_allowed_acts([pressed], actor)[0])
+
+    @server.tool(
+        name="restore_recipient",
+        description=contract_of(restore_recipient_route),
+    )
+    def restore_recipient_tool(ctx: Context[Any], recipient_id: UUID) -> RecipientOut:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            actor = acting.actor()
+            recipient = get_recipient(
+                tenant=tenant, recipient_id=recipient_id, org=acting.org, actor=actor
             )
+            pressed = restore_recipient(tenant=tenant, actor=actor, recipient=recipient)
+            return RecipientOut.from_orm(with_allowed_acts([pressed], actor)[0])
 
     # --- preferences: five verbs, no settable column ------------------------
 

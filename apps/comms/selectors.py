@@ -68,7 +68,7 @@ from apps.comms.models import (
 )
 from apps.core.actor import Actor
 from apps.core.authz import require
-from apps.core.exceptions import NotFound
+from apps.core.exceptions import Invalid, NotFound
 from apps.core.models import ScopedQuerySet, Tenant
 
 # --- messages -------------------------------------------------------------------
@@ -292,34 +292,60 @@ def get_device_by_token_hash(
 # --- recipients -----------------------------------------------------------------
 
 
+#: The three cuts of the contact book `show` may ask for, in the order a
+#: refusal names them.
+RECIPIENT_SHOWS: tuple[str, ...] = ("live", "archived", "all")
+
+
 def _recipients_in(
     *,
     tenant: Tenant | None,
     org: Any = None,
-    include_archived: bool = False,
+    show: str = "live",
 ) -> ScopedQuerySet[Recipient]:
-    """The rows, without the capability. `_messages_in`'s shape and its reason."""
-    rows = Recipient.objects.for_tenant(tenant).visible_to(org).select_related("organization")
-    return rows if include_archived else rows.filter(archived_at__isnull=True)
+    """The rows, without the capability. `_messages_in`'s shape and its reason.
+
+    **The cut is the queryset's own widening, never a filter on `archived_at`.**
+    `Recipient` is `Archivable`, so `for_tenant()` has already taken the closed
+    contacts out before anything here runs; a hand filter on the column after it
+    (`archived_at__isnull=False`) answers an empty book with no error, and one
+    that "includes" archived rows by not filtering answers the live book alone.
+    `.including_archived()` and `.archived_only()` are the only two ways back
+    in. `archived_by` rides the same join as the organization, because every
+    read shape of a contact names who closed it.
+    """
+    rows = (
+        Recipient.objects.for_tenant(tenant)
+        .visible_to(org)
+        .select_related("organization", "archived_by")
+    )
+    if show == "live":
+        return rows
+    if show == "archived":
+        return rows.archived_only()
+    if show == "all":
+        return rows.including_archived()
+    raise Invalid({"show": [f"Show one of: {', '.join(RECIPIENT_SHOWS)}."]})
 
 
 def list_recipients(
     *,
     tenant: Tenant | None,
     org: Any = None,
-    include_archived: bool = False,
+    show: str = "live",
     actor: Actor,
 ) -> ScopedQuerySet[Recipient]:
     """The people this hat may address. **Archived contacts are out by default.**
 
     Archiving is what a product does when a contact is closed, and the point of
     it is that the working contact book stops showing them; a list that included
-    them would make the verb do nothing. `include_archived=True` is how the
-    door's `?archived=` filter asks for the whole table — the rows are never
-    deleted, because every `Message` ever sent points at one.
+    them would make the verb do nothing. `show="archived"` is the closed
+    contacts alone and `show="all"` both — the rows are never deleted, because
+    every `Message` ever sent points at one. Any other value is `Invalid`
+    naming `show`.
     """
     require(actor, "recipient.read")
-    return _recipients_in(tenant=tenant, org=org, include_archived=include_archived)
+    return _recipients_in(tenant=tenant, org=org, show=show)
 
 
 def get_recipient(
@@ -337,11 +363,7 @@ def get_recipient(
     un-archiving a contact you cannot fetch would be impossible. Archiving hides
     somebody from the contact book; it does not make them unreadable.
     """
-    recipient = (
-        _recipients_in(tenant=tenant, org=org, include_archived=True)
-        .filter(pk=recipient_id)
-        .first()
-    )
+    recipient = _recipients_in(tenant=tenant, org=org, show="all").filter(pk=recipient_id).first()
     if recipient is None:
         raise NotFound()
     require(actor, "recipient.read", recipient)

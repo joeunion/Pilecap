@@ -321,8 +321,8 @@ def test_with_no_namespace_declared_a_product_rule_is_unmatched_and_gets_no_arro
 # The condition is the ENGINE's own reading and not a second one. There is no
 # sibling template-only mark in this tree to join — the only skip mechanism
 # under `apps/` is `apps/core/tests/template_shape.py`, and it is keyed to the
-# SIX `DJB_IDENTITY_SHAPE` keys (it raises `ValueError` on a seventh, on
-# purpose), so widening it to carry "has this tree folded?" would break the
+# closed `DJB_IDENTITY_SHAPE` key set (it raises `ValueError` on a key outside
+# it, on purpose), so widening it to carry "has this tree folded?" would break the
 # closed population that makes its skips countable. One template-only case
 # exists today, so the helper lives here beside it rather than in
 # `apps/conftest.py`; the second one that arrives is what moves it.

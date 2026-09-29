@@ -668,3 +668,207 @@ async def test_both_doors_refuse_the_same_withheld_read_with_the_same_words(
     # The internal key reaches neither wire.
     assert "message.read" not in json.dumps(rest_body), rest_body
     assert "message.read" not in over_mcp, over_mcp
+
+
+# --- the contact book's archive road: four renderings, one set of bytes ---------
+#
+# `Recipient` is `Archivable`, and each verb of its road is said in three places
+# a client can read: the REST body, the MCP `structuredContent`, and the event
+# payload a webhook subscriber receives. All three are `RecipientOut`, and all
+# three go out through the HTTP door's one encoder (`config.api`), so they are
+# compared as BYTES — a canonical JSON dump of each — rather than as keys: a
+# difference in a timestamp's precision or an archiver's rendering is exactly
+# what a key comparison cannot see.
+#
+# **Less one field on the payload.** `allowed_acts` answers ONE viewer — the
+# acts that caller may press — and an event goes to every subscriber, so the
+# two viewer doors carry it and the payload never does. The payload is the REST
+# body minus `allowed_acts`, byte for byte; a SECOND viewer reads the same row
+# with the same bytes except its own `allowed_acts`.
+
+ARCHIVE_URL = "/api/v1/recipients/{}/archive/"
+RESTORE_URL = "/api/v1/recipients/{}/restore/"
+
+
+#: The read shape's fields that answer one viewer rather than describe the row.
+PER_VIEWER_FIELDS = frozenset({"allowed_acts"})
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _row(body: dict[str, Any]) -> dict[str, Any]:
+    """The row a viewer read, less what describes the viewer."""
+    return {key: value for key, value in body.items() if key not in PER_VIEWER_FIELDS}
+
+
+def _payloads(tenant: Tenant, name: str) -> list[dict[str, Any]]:
+    from apps.events.models import Event
+
+    return [
+        dict(event.payload)
+        for event in Event.objects.for_tenant(tenant).filter(name=name).order_by("created_at")
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_archive_and_restore_say_the_same_bytes_on_rest_mcp_and_the_outbox(
+    bearer: str, tenant: Tenant, recipient: Recipient, recorded_workflow_starts: None
+) -> None:
+    """Archive over REST, press it again over MCP; restore over REST, again over MCP.
+
+    The second press on each door is the idempotent one — it answers the row
+    unchanged, first date and first archiver kept — so the MCP answer, the REST
+    answer and the ONE event each verb emitted must be the same bytes.
+    """
+    from asgiref.sync import sync_to_async
+
+    from config.asgi import build_application
+
+    application = build_application()
+    bearer_header = {"authorization": f"Bearer {bearer}", "accept": JSON}
+    answered: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            headers = {**MCP_HEADERS, **bearer_header}
+            await _initialize(client, headers, "comms-archive-parity")
+            for step, (verb, url) in enumerate(
+                (("archive", ARCHIVE_URL), ("restore", RESTORE_URL)), start=2
+            ):
+                over_http = await client.post(url.format(recipient.pk), headers=bearer_header)
+                assert over_http.status_code == 200, over_http.text
+                called = await client.post(
+                    MCP_URL,
+                    headers=headers,
+                    json=_rpc(
+                        "tools/call",
+                        {
+                            "name": f"{verb}_recipient",
+                            "arguments": {"recipient_id": str(recipient.pk)},
+                        },
+                        step,
+                    ),
+                )
+                assert called.status_code == 200, called.text
+                body = called.json()
+                assert "error" not in body and not body["result"].get("isError"), body
+                answered[verb] = (over_http.json(), body["result"]["structuredContent"])
+
+    archived = await sync_to_async(_payloads)(tenant, "comms.recipient.archived")
+    restored = await sync_to_async(_payloads)(tenant, "comms.recipient.restored")
+    assert len(archived) == 1 and len(restored) == 1, (archived, restored)
+
+    for verb, outbox in (("archive", archived[0]), ("restore", restored[0])):
+        over_rest, over_mcp = answered[verb]
+        # The spine stamps the payload version beside the row (`emit(v=1)`); the
+        # row itself is what the three renderings must agree on, byte for byte.
+        assert outbox.pop("v") == 1, outbox
+        assert over_rest["id"] == str(recipient.pk)
+        assert _canonical(over_mcp) == _canonical(over_rest), (verb, over_mcp, over_rest)
+        assert not PER_VIEWER_FIELDS & set(outbox), (verb, sorted(outbox))
+        assert _canonical(outbox) == _canonical(_row(over_rest)), (verb, outbox, over_rest)
+
+    archive_body = answered["archive"][0]
+    assert archive_body["archived_at"] is not None
+    assert archive_body["archived_by"]["id"] is not None
+    assert answered["restore"][0]["archived_at"] is None
+    assert answered["restore"][0]["archived_by"] is None
+
+
+@pytest.fixture
+def member_bearer(tenant: Tenant, member: User) -> str:
+    """A real token for the least privileged person — the SECOND viewer."""
+    _, plaintext = issue_token(
+        user=member,
+        tenant=tenant,
+        name="comms-door-parity-member",
+        actor=actor_for(user=member, tenant=tenant),
+    )
+    return plaintext
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_a_contacts_acts_are_the_viewers_and_the_payload_is_nobodys(
+    bearer: str,
+    member_bearer: str,
+    tenant: Tenant,
+    recipient: Recipient,
+    recorded_workflow_starts: None,
+) -> None:
+    """The per-viewer contract, three ways, on the contact book.
+
+    * the SAME viewer reads the same bytes on both doors — the list page (the
+      list's own `allowed_acts` included) and the detail;
+    * the event payload is the presser's REST body minus `allowed_acts`;
+    * a SECOND viewer — a member — reads the same row with the same bytes
+      except its own `allowed_acts`, which lack the administrator's `archive`
+      and `restore`.
+    """
+    from asgiref.sync import sync_to_async
+
+    from config.asgi import build_application
+
+    application = build_application()
+    detail = f"/api/v1/recipients/{recipient.pk}/"
+    read: dict[str, dict[str, dict[str, Any]]] = {}
+
+    async with running(application):
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            for who, token in (("owner", bearer), ("member", member_bearer)):
+                auth = {"authorization": f"Bearer {token}", "accept": JSON}
+                headers = {**MCP_HEADERS, **auth}
+                await _initialize(client, headers, f"comms-acts-{who}")
+                answers: dict[str, dict[str, Any]] = {}
+                for step, (label, url, tool, arguments) in enumerate(
+                    (
+                        ("list", "/api/v1/recipients/", "list_recipients", {}),
+                        ("detail", detail, "get_recipient", {"recipient_id": str(recipient.pk)}),
+                    ),
+                    start=2,
+                ):
+                    over_http = await client.get(url, headers=auth)
+                    assert over_http.status_code == 200, over_http.text
+                    called = await client.post(
+                        MCP_URL,
+                        headers=headers,
+                        json=_rpc("tools/call", {"name": tool, "arguments": arguments}, step),
+                    )
+                    assert called.status_code == 200, called.text
+                    body = called.json()
+                    assert "error" not in body and not body["result"].get("isError"), body
+                    over_mcp = body["result"]["structuredContent"]
+                    # Same viewer, both doors: the same bytes, acts included.
+                    assert _canonical(over_mcp) == _canonical(over_http.json()), (who, label)
+                    answers[label] = over_http.json()
+                read[who] = answers
+
+            archived = await client.post(
+                f"{detail}archive/", headers={"authorization": f"Bearer {bearer}", "accept": JSON}
+            )
+            assert archived.status_code == 200, archived.text
+            member_after = await client.get(
+                detail, headers={"authorization": f"Bearer {member_bearer}", "accept": JSON}
+            )
+            assert member_after.status_code == 200, member_after.text
+
+    owner_detail, member_detail = read["owner"]["detail"], read["member"]["detail"]
+    assert "archive" in owner_detail["allowed_acts"], owner_detail
+    assert not {"archive", "restore"} & set(member_detail["allowed_acts"]), member_detail
+    assert _canonical(_row(member_detail)) == _canonical(_row(owner_detail))
+    (listed,) = [row for row in read["member"]["list"]["items"] if row["id"] == str(recipient.pk)]
+    assert "archive" not in listed["allowed_acts"], listed
+
+    (payload,) = await sync_to_async(_payloads)(tenant, "comms.recipient.archived")
+    assert payload.pop("v") == 1
+    assert not PER_VIEWER_FIELDS & set(payload), sorted(payload)
+    assert _canonical(payload) == _canonical(_row(archived.json()))
+    assert archived.json()["allowed_acts"] == ["restore"]
+    # The member reads the archived row: the payload's bytes, and none of the acts.
+    assert _canonical(_row(member_after.json())) == _canonical(payload)
+    assert member_after.json()["allowed_acts"] == []

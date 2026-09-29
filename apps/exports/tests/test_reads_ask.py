@@ -335,7 +335,9 @@ def test_the_create_door_resolves_the_actor_once(
 #: "free because the memo was full" to "not asked". Unmoved either way, because
 #: this request's hat IS the root; a BRANCH-hat request is where the difference
 #: was. The test above says which request this is and why its hat is the root.
-WRITE_QUERY_BUDGET = 60
+#: **60 → 59:** the create key's member predicate asks `membership_for`, which
+#: reads the memberships the actor already memoizes rather than the table.
+WRITE_QUERY_BUDGET = 59
 
 
 # --- 5 · the archive ---------------------------------------------------------

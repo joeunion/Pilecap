@@ -75,7 +75,15 @@ RECIPIENTS_URL = "/api/v1/recipients/"
 # actor: a second `require` in the same request costs nothing, which is what a
 # route that fetches through a `get_` and then calls a service is standing on.
 TEMPLATE_LIST_BUDGET = 10
-RECIPIENT_LIST_BUDGET = 10
+# The contact list is a family noun's page now (`ActsPagination`): every row's
+# `allowed_acts` and the list's own. Measured at ten rows: the ten above, the
+# actor's collection at the rows' node (memberships, grants, role keys — 3),
+# and nothing per row: `recipient.update` and `recipient.create` are answered
+# by `policies.can_send`, whose `_is_member` asks `authz.membership_for`, and
+# `membership_for` reads the memberships the actor already memoizes for
+# `effective_permissions` — so the per-row term that made this 24 at ten rows
+# (34 at twenty) is gone, and the list is 13 statements at 5, 20 and 50 rows.
+RECIPIENT_LIST_BUDGET = 13
 
 
 def _body(response: Any) -> dict[str, Any]:
@@ -121,6 +129,7 @@ def test_the_management_routes_are_where_the_router_put_them() -> None:
         "/unsuppress/"
     )
     assert reverse("api:recipient-archive", kwargs={"recipient_id": "x" * 36}).endswith("/archive/")
+    assert reverse("api:recipient-restore", kwargs={"recipient_id": "x" * 36}).endswith("/restore/")
     assert reverse("api:preference-list", kwargs={"recipient_id": "x" * 36}).endswith(
         "/preferences/"
     )
@@ -447,7 +456,7 @@ def test_an_archived_contact_leaves_the_list_and_stays_readable(
     assert _body(archived)["archived_at"] is not None
 
     assert len(_body(api.get(RECIPIENTS_URL))["items"]) == 0
-    assert len(_body(api.get(f"{RECIPIENTS_URL}?archived=true"))["items"]) == 1
+    assert len(_body(api.get(f"{RECIPIENTS_URL}?show=archived"))["items"]) == 1
     # Still fetchable by id — the message log has to be able to name who it
     # went to, and un-archiving something you cannot fetch is impossible.
     assert _body(api.get(f"{RECIPIENTS_URL}{recipient.pk}/"))["id"] == str(recipient.pk)
@@ -797,7 +806,7 @@ def test_the_machine_door_archives_a_contact_and_the_list_agrees(
 ) -> None:
     tool("archive_recipient")(context_for(owner, tenant), recipient_id=recipient.pk)
     assert len(tool("list_recipients")(context_for(owner, tenant)).items) == 0
-    assert len(tool("list_recipients")(context_for(owner, tenant), archived=True).items) == 1
+    assert len(tool("list_recipients")(context_for(owner, tenant), show="archived").items) == 1
     # Still fetchable, exactly as it is over HTTP.
     assert tool("get_recipient")(context_for(owner, tenant), recipient_id=recipient.pk).archived_at
 

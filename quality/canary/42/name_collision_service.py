@@ -1,3 +1,4 @@
+# collides: deactivate_user — the live false pass replayed: a doorless service sharing its name with a vendor function, which the qualified census must tell apart
 """Planted: its live false pass, verbatim, in the gate's own probe app.
 
 `apps/accounts/activities.py` called `zitadel.deactivate_user(...)` — a

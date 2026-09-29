@@ -69,7 +69,11 @@ function renderState(state: SurfaceState<OrganizationPage>) {
         case "loading":
             return <WelcomeSkeleton />;
         case "empty":
-            return <NextActPrompt label={state.nextAct.label} detail={state.nextAct.detail} />;
+            // This landing's empty always carries its act (the route hands one);
+            // an empty without one would be a sentence the surface does not own.
+            return state.nextAct === undefined ? null : (
+                <NextActPrompt label={state.nextAct.label} detail={state.nextAct.detail} />
+            );
         case "error":
             return <ScreenRefusal refusal={state.refusal} />;
         case "ready":

@@ -1133,7 +1133,7 @@ ZITADEL_JWKS_CACHE_SECONDS: int = env.int("ZITADEL_JWKS_CACHE_SECONDS", default=
 # has). **The platform's own tree declares nothing and runs all of them**, which
 # is why the defaults below ARE the template's shape.
 #
-# The six keys, each with the tests it governs:
+# The seven keys, each with the tests it governs:
 #
 # * `entrance_marker` — the CSS custom property the entrance shell's token block
 #   declares. SKIPS `test_entrance_chain.py::test_the_shell_fetches_nothing` and
@@ -1162,6 +1162,12 @@ ZITADEL_JWKS_CACHE_SECONDS: int = env.int("ZITADEL_JWKS_CACHE_SECONDS", default=
 # * `landing` — `template` if a completed sign-in lands on the shipped
 #   `/welcome/`, `own` if the product named its own. SKIPS
 #   `test_welcome.py::test_the_named_mechanism_has_a_reader`.
+# * `platform_apps` — `template` if the apps under `apps/` are exactly the
+#   template's platform app set (`quality/partition.yaml`'s `platform_apps`),
+#   `own` once the product has added an app of its own. SKIPS
+#   `test_template_shape.py::test_the_platform_app_set_is_every_app_in_the_tree`,
+#   the census that refuses a template app the partition forgot — on a product
+#   tree its own apps are SUPPOSED to sit outside that list.
 #
 # An unknown key, a value outside a closed vocabulary, or an empty value is
 # `ImproperlyConfigured` **at settings import**: a typo in a declaration that
@@ -1186,20 +1192,22 @@ IDENTITY_SHAPE_DEFAULTS: dict[str, str] = {
     "posture_writer": "zitadel_seed",
     "branding_writer": "zitadel_brand",
     "landing": "template",
+    "platform_apps": "template",
 }
 
-# Three of the six are CLOSED: they are a question about this tree with two
+# Four of the seven are CLOSED: they are a question about this tree with two
 # answers. The other three name a product's own string — a marker, a command —
 # and have no vocabulary to check beyond "not empty".
 IDENTITY_SHAPE_VOCABULARY: dict[str, tuple[str, ...]] = {
     "login_page": ("template", "own"),
     "template_files": ("kept", "own"),
     "landing": ("template", "own"),
+    "platform_apps": ("template", "own"),
 }
 
 
 def _identity_shape(declaration: str) -> dict[str, str]:
-    """Parse `key=value;…` over the six keys, refusing anything else by name."""
+    """Parse `key=value;…` over the seven keys, refusing anything else by name."""
     shape = dict(IDENTITY_SHAPE_DEFAULTS)
     for clause in declaration.split(";"):
         clause = clause.strip()
@@ -1214,7 +1222,7 @@ def _identity_shape(declaration: str) -> dict[str, str]:
             )
         if key not in IDENTITY_SHAPE_DEFAULTS:
             raise ImproperlyConfigured(
-                f"DJB_IDENTITY_SHAPE: {key!r} is not one of the six keys "
+                f"DJB_IDENTITY_SHAPE: {key!r} is not one of the seven keys "
                 f"({', '.join(IDENTITY_SHAPE_DEFAULTS)})."
             )
         if not value:

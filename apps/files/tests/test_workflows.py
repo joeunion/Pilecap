@@ -434,7 +434,7 @@ async def test_the_declared_sweep_expires_a_pending_version_and_archives_its_doc
     # in the service knows the word.
     row = await run_db(
         lambda: AuditEntry.objects.for_tenant(tenant).get(
-            action="files.archive_file", object_id=document.pk
+            action="files.archive_emptied_file", object_id=document.pk
         )
     )
     assert row.door == "workflow"

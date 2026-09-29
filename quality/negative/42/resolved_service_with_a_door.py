@@ -1,3 +1,4 @@
+# collides: deactivate_user — the mirror of the canary: the same colliding name with a door that calls both, which must stay silent
 """The mirror of the canary, and the reason the resolution is not a tax.
 
 The same two modules, the same colliding name — and this time the door calls

@@ -325,8 +325,8 @@ FIXTURE_FAST="ruff mypy import-linter djb-checks house-rules migrations goalpost
 # the full path would be one leg running another leg's members under a second
 # name. Its call site is INDENTED inside the `--loop` block, which is what
 # keeps it out of `FULL_LEGS` and out of the fixture below.
-FIXTURE_LOOP="${FIXTURE_FAST} deploy-check fe secrets always-on pytest"
-FIXTURE_FULL="${FIXTURE_FAST} deploy-check fe collectstatic supply-chain temporal-census partition pytest-x2 temporal-census own-tree-census selftest full-house-rules"
+FIXTURE_LOOP="${FIXTURE_FAST} deploy-check plant-collisions fe secrets always-on pytest"
+FIXTURE_FULL="${FIXTURE_FAST} deploy-check plant-collisions fe collectstatic supply-chain temporal-census partition pytest-x2 temporal-census own-tree-census selftest full-house-rules"
 
 # clone_into <dir> — a scratch checkout of this repository. `--shared` keeps it
 # cheap; `--no-hardlinks` keeps a plant in the clone out of the real object

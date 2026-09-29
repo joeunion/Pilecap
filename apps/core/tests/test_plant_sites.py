@@ -104,7 +104,14 @@ EXEMPT_APPS = {"zzz_canary", "example"}
 #: 126 -> 130 (rules 68 and 69 widened): one canary and one negative each, all
 #: created under `frontend/src/zzz_canary/` — rule 68's stylesheet clause
 #: (`pointer-events: none` on a pressable) and rule 69's script word `loader`.
-OUTSIDE_APPS_PLANTS = 130
+#: 130 -> 146 (rules 77-80, the noun-verb family's face rules): eleven canaries
+#: and five negatives — the road, the acts and the words plant under
+#: `frontend/src/{screens,copy}/zzz_canary/` or `frontend/src/zzz_canary/`, and
+#: the verb table's three append into the pattern book's drawer
+#: (`docs/product/design/patterns.local.md`), which is the book rule 80 reads.
+#: 146 -> 149 (rule 77 reads import and attach): two canaries and one
+#: negative, created under `frontend/src/screens/zzz_canary/`.
+OUTSIDE_APPS_PLANTS = 149
 
 #: Measured once, then re-measured every time a rule arrived. Rule 43 added
 #: five product-app plants across three entries. Rule 44 added six — four in the
@@ -353,9 +360,46 @@ OUTSIDE_APPS_PLANTS = 130
 #: (94 -> 126).
 #: 597 -> 601 (rules 68 and 69 widened): two canaries and two negatives, all
 #: OUTSIDE `apps/` (126 -> 130).
-TOTAL_PLANTS = 601
-SCAFFOLD_PLANTS = 172
-EXAMPLE_PLANTS = 228
+#: 601 -> 617 (rules 74 and 75, the noun-verb family's first two): sixteen, every
+#: one into the probe scaffold (172 -> 188). Rule 75's three canaries and three
+#: negatives, one file each; rule 74's two canaries and one negative, each a
+#: model plus its road — and each carrying the probe's `api.py` base as a
+#: `mode: default` extra (and the negative its `mcp.py` twins), which writes
+#: nothing when the whole corpus runs and is the base under `--rule 74` alone.
+#: 617 -> 622 (rule 76, a versioned row's writes move `updated_at`): two
+#: canaries and three negatives, one file each, all into the probe scaffold
+#: (188 -> 193).
+#: 622 -> 637 (rule 74's move, update, bulk, history and system-policy
+#: clauses): fifteen, every one into the probe scaffold (193 -> 208) — five
+#: canaries (nine files: two carry the probe router and their route) and the
+#: whole-family negative (four files) plus the archive negative's policy pair
+#: (two: the probe's `policies.py` base and the appended pair).
+#: 637 -> 638 (rule 47's third canary, the drop through `@also_refuses`):
+#: one, into the worked example's `api.py` like its two siblings (228 -> 229).
+#: 638 -> 675 (the family's closing clauses): thirty-seven. Into the probe
+#: scaffold, twenty-four (208 -> 232): rule 74's duplicate, merge, import,
+#: attach (model, route and the probe router base) and bare-column canaries and
+#: the merge/duplicate negative (six files), and rule 41's two second-hop
+#: canaries and their negative (route, service and app config each) plus the
+#: documented-query canary and negative. Into the worked example, eleven
+#: (229 -> 240): rule 48's door content read and its activity negative, rule
+#: 81's two canaries and two negatives, rule 82's two canaries and three
+#: negatives. Into a product app, two (rule 17's imported-base canary and
+#: negative, both into `apps/workflows/schemas.py`).
+#: 675 -> 678 (rule 74's no-body canary, landed with the adopters' bodiless
+#: archive and restore): three, into the probe scaffold (232 -> 235) — the
+#: model, the probe router base and the bodied routes.
+#: 678 -> 681 (rules 81 and 82 re-homed one form each into the scaffold, so
+#: neither canary plan lives wholly in the optional example): three, into the
+#: probe scaffold (235 -> 238) — rule 81's model-and-filter file, rule 82's
+#: service and its model.
+#: 681 -> 697 (rules 77-80, the family's face rules): sixteen, every one
+#: outside `apps/` (130 -> 146 above).
+#: 697 -> 700 (rule 77 reads import and attach): three, outside `apps/`
+#: (146 -> 149 above).
+TOTAL_PLANTS = 700
+SCAFFOLD_PLANTS = 238
+EXAMPLE_PLANTS = 240
 
 #: The judgement: every plant into a real product app, by rule and site. Each
 #: one carries a dated MOVE-TRIGGER beside it in `quality/rules.yaml`; the test
@@ -504,8 +548,12 @@ PRODUCT_APP_PLANTS = {
 #: for the worked example. Both counts fall by the same two because the pair was
 #: one entry per file — the split the two numbers exist for does not bite here,
 #: and each is written out rather than derived from the other for that reason.
-PRODUCT_APP_PLANT_ENTRIES = 65
-PRODUCT_APP_PLANT_FILES = 69
+#:
+#: 65 -> 67 and 69 -> 71 (the family's closing clauses): rule 17's
+#: imported-base canary and negative, one entry and one file each, into
+#: `apps/workflows/schemas.py` — the tracked module holding one `*Out`.
+PRODUCT_APP_PLANT_ENTRIES = 67
+PRODUCT_APP_PLANT_FILES = 71
 
 #: A trigger is DATED and says the word. Both halves matter: a condition with no
 #: date is a note somebody wrote once, and a date with no condition is a

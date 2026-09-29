@@ -1,4 +1,4 @@
-"""The names of the things this app says happened. **Two, and both are true now.**
+"""The names of the things this app says happened. **Three, and all are true now.**
 
 Names only. `services.py` publishes them with `emit(name=FILE_STORED, ...)` inside
 the write's own transaction, and the grammar is `<app>.<noun>.<past-tense verb>`
@@ -10,8 +10,8 @@ rung, because a route that archives needs a service that archives — rather tha
 being declared ahead of its emitter. A declared name with no emitter is a
 published contract nobody publishes, which reads as a subscriber's missing feature
 rather than as an unbuilt one. The app map's row
-(`docs/product/architecture.md`) says the app emits exactly two; this file now
-holds exactly two.
+(`docs/product/architecture.md`) names what the app emits; `files.file.restored`
+arrived with the archive's undo, in the same change as its emitter.
 
 **What a subscriber may conclude from `files.file.stored`, and what it may not.**
 It may conclude that one version of one document is now readable: the object is in
@@ -20,6 +20,11 @@ are what WE measured rather than what an uploader declared. It may NOT conclude
 that the version it names is the current one — a version finalizing out of order
 does not promote (`record_stored` advances `current_version` only upward), so the
 payload carries both and a subscriber that cares reads `current_version`.
+
+**`files.file.moved` is said once per document a merge re-points** from its
+loser to its survivor: the document's `subject` now names the survivor and it
+lives at the survivor's organization. A subscriber following that document hears
+where it went. A repeat re-point finds nothing left on the loser and says nothing.
 
 **What a subscriber may conclude from `files.file.archived`, and what it may
 not.** It may conclude that the document has left everybody's working set: it is
@@ -50,6 +55,16 @@ FILE_STORED = "files.file.stored"
 #: inside `archive_file`'s transaction, so an archive that rolled back said
 #: nothing.
 FILE_ARCHIVED = "files.file.archived"
+
+#: An archived document is back in the working set. Payload:
+#: `schemas.StoredFileOut` with `archived_at` and `archived_by` null again.
+#: Emitted inside `restore_file`'s transaction, and only when the call changed the
+#: row — restoring a live document says nothing. A subscriber may conclude the
+#: document is listed again; nothing about its versions or its bytes moved in
+#: either direction, because archive never touched them.
+FILE_RESTORED = "files.file.restored"
+
+FILE_MOVED = "files.file.moved"
 
 
 #: Which authorization kind each noun above is about, for the socket door's read

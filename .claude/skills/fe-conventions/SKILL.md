@@ -1045,3 +1045,52 @@ does. Write the invalidation, and say in your report that you did.
 - Anything you could not see: the drive that would not run, the state you could
   not seed. **A frontend rung's most expensive failure mode is a green report
   over a surface nobody looked at.**
+
+---
+
+## 13 · Golden fences — what a product copies from the worked face
+
+The worked face (`frontend/src/screens/widget/`, its copy module
+`frontend/src/copy/widget.ts`) is the example a product copies, and every block
+a product copies is fenced: `// golden: <verb> begin` … `// golden: <verb> end`
+(`/* … */` in a stylesheet, `{/* … */}` inside JSX). The face's base — the list
+and the record with no family verb on them — is fenced `face`.
+`scripts/tests/test_golden_face.sh` copies the base and one verb's blocks into a
+scratch world with the one rename (`Widget`→`Gadget`) and proves the copy holds
+rules 77–80, type-checks and passes the face census. A block that needed a hand
+edit beyond the rename is a finding against the example, not a step.
+
+**Two fence forms, and the question that picks one: does the block need ONE of
+its verbs, or ALL of them?**
+
+- **OR — stacked single-verb fences.** A block SEVERAL verbs each need on their
+  own (a shared import, the sheet's CSS that Edit and Move both use) carries one
+  fence line per verb, stacked, and goes with ANY of them:
+
+  ```ts
+  // golden: move begin
+  // golden: bulk begin
+  import type { Destination } from "@/screens/widget/parts";
+  // golden: bulk end
+  // golden: move end
+  ```
+
+- **AND — one joint fence, `+` between the verbs.** A block that exists only
+  where two verbs meet — the selection bar's *Merge* needs the bulk bar AND the
+  merge confirm — goes only with a copy that holds EVERY verb it lists:
+
+  ```tsx
+  // golden: bulk+merge begin
+  import { type MergePairPress, MergePairSheet } from "@/screens/widget/widget-merge";
+  // golden: bulk+merge end
+  ```
+
+  A single verb's case leaves it behind (the bulk copy has no confirm to open,
+  the merge copy has no bar to sit in); the drive's joint case — every verb at
+  once, in `--all` — takes it and proves it. A joint list names two or more
+  distinct family verbs, or the drive exits 2 naming the fence.
+
+The wrong form for a joint block is the OR form: stacked `bulk` and `merge`
+fences hand the bar's *Merge* to the bulk copy, where it imports a confirm the
+copy does not have, and the copy stops compiling. The wrong form the other way
+is leaving a joint block unfenced: no case ever copies it, so nothing proves it.

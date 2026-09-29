@@ -1,3 +1,4 @@
+# collides: deactivate_user — the vendor function that shares the doorless service name; the shared name is the collision rule 42 resolves by module
 """The colliding name: a vendor client function, not a service.
 
 `apps/accounts/zitadel.py` is the real one. It exists here so the census has a

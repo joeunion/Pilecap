@@ -85,7 +85,7 @@ from django.db import models
 from apps.core.fields import EncryptedCharField
 from apps.core.lifecycle import Lifecycle, LifecycleKind
 from apps.core.log import get_logger
-from apps.core.models import OrgScopedModel, TenantScopedModel
+from apps.core.models import Archivable, OrgScopedModel, TenantScopedModel
 
 log = get_logger("apps.comms.models")
 
@@ -245,13 +245,22 @@ def quiet_opens_in(
     return timedelta(seconds=-(-remaining // timedelta(seconds=1)))
 
 
-class Recipient(OrgScopedModel):
+class Recipient(OrgScopedModel, Archivable):
     """Somebody this product can address. Not necessarily a user.
 
     Written only by `services.create_recipient` / `update_recipient` /
-    `archive_recipient` — never by a door and never by the bare manager outside
-    a fixture, which is what makes the audit row and the org-scoping
-    unavoidable rather than customary.
+    `archive_recipient` / `restore_recipient` — never by a door and never by the
+    bare manager outside a fixture, which is what makes the audit row and the
+    org-scoping unavoidable rather than customary.
+
+    **Archivable** (`core.models.Archivable`): closing a contact is
+    `archived_at` + `archived_by`, and `for_tenant()` leaves a closed contact
+    out of every read that does not widen with `.including_archived()` /
+    `.archived_only()`. It is **not** a consent decision and it does not stop a
+    send — "stop contacting this person" is `ChannelPreference.suppressed_at`,
+    which is per-channel and is enforced inside `send()` where no caller can
+    reach around it. Archiving a recipient a product still emails would be a
+    consent wall in a second place, disagreeing with the first.
     """
 
     #: ADR core-13. **Archived, never deleted — so the table is unbounded and
@@ -299,14 +308,6 @@ class Recipient(OrgScopedModel):
         related_name="comms_recipients",
     )
     display_name = models.CharField(max_length=200, blank=True)
-    #: Set when this contact is closed: they stay in the table because every
-    #: `Message` ever sent to them points here, and they leave the working
-    #: contact book. It is **not** a consent decision and it does not stop a
-    #: send — "stop contacting this person" is `ChannelPreference.suppressed_at`,
-    #: which is per-channel and is enforced inside `send()` where no caller can
-    #: reach around it. Archiving a recipient a product still emails would be a
-    #: consent wall in a second place, disagreeing with the first.
-    archived_at = models.DateTimeField(null=True, blank=True)
 
     class Meta(OrgScopedModel.Meta):
         verbose_name = "recipient"

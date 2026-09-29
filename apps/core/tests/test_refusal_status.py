@@ -42,6 +42,8 @@ from apps.core.exceptions import (
     DomainError,
     Forbidden,
     Remedy,
+    declared_by,
+    declaring_app,
     envelope_codes,
     register_refusal,
 )
@@ -72,7 +74,49 @@ PRE_RUNG_CODE_STATUS: dict[str, int] = {
     "search_unavailable": 503,
     "session_required": 403,
     "unauthenticated": 401,
+    # The noun-verb family's three, each declared `status=409` at its own
+    # `register_refusal` site (`apps/core/exceptions.py`) — pinned here by the
+    # change that added them, so the equality below keeps meaning "nothing joined
+    # the table unseen".
+    "archive_blocked": 409,
+    "restore_blocked": 409,
+    "archived": 409,
+    # The family's concurrency and move codes, the same way.
+    "stale_version": 409,
+    "move_blocked": 409,
+    # The family's merge codes, the same way: a merge a child holds apart, and a
+    # write that named a merged-away row.
+    "merge_blocked": 409,
+    "merged": 409,
+    # And a delete that named a survivor other rows were merged into.
+    "merge_survivor": 409,
+    # `apps/imports`' whole-file refusal, declared `status=400` at its own
+    # `register_refusal` site (`apps/imports/services.py`) — pinned here by the
+    # change that added the app to the template's partition, as the ones above
+    # were by the changes that added them.
+    "import_invalid": 400,
 }
+
+
+def _template_apps() -> set[str]:
+    """The template's own apps: the platform partition's boundary, read, never typed here.
+
+    `quality/partition.yaml`'s `platform_apps` is the record of which apps the
+    template ships (a product's apps are, by construction, not in it). Read
+    as data so this pin and the partition cannot disagree about the boundary.
+    """
+    import yaml
+
+    from config.settings.base import BASE_DIR
+
+    data = yaml.safe_load((BASE_DIR / "quality" / "partition.yaml").read_text())
+    return set(data["platform_apps"])
+
+
+def _is_template_code(code: str) -> bool:
+    """Declared by a template app, or outside `apps/` altogether (`config`, the engine)."""
+    app = declaring_app(code)
+    return app == "" or app in _template_apps()
 
 
 def test_the_derived_table_is_the_table_that_was_typed() -> None:
@@ -82,17 +126,50 @@ def test_the_derived_table_is_the_table_that_was_typed() -> None:
     append block published and the derivation does not is a code that has just
     dropped out of `x-refusal-codes`, which is the exact defect rule 47 exists
     to notice.
+
+    **The equality is over the TEMPLATE's codes only.** A product's
+    `register_refusal(code, status=…)` in its own app is admitted by that
+    declaration — the pin below proves a planted one is — and is censused in
+    the product's own tests, never by editing this table in `core`.
     """
     for code, status in PRE_RUNG_CODE_STATUS.items():
         assert CODE_STATUS.get(code) == status, code
 
-    # And nothing joined it either, which is the other half of "identical". The
-    # `canary_` prefix is the tree's own convention for a code that exists only
-    # inside an instrument or a fixture (`canary_unpublished` is house rule 47's,
-    # planted into the real scope at self-test time); everything else in the live
-    # table is a code this product can actually make.
-    product_codes = {code for code in CODE_STATUS if not code.startswith("canary_")}
-    assert product_codes == set(PRE_RUNG_CODE_STATUS)
+    # And nothing of the TEMPLATE's joined it either, which is the other half of
+    # "identical". The `canary_` prefix is the tree's own convention for a code
+    # that exists only inside an instrument or a fixture (`canary_unpublished`
+    # is house rule 47's, planted into the real scope at self-test time).
+    template_codes = {
+        code for code in CODE_STATUS if not code.startswith("canary_") and _is_template_code(code)
+    }
+    assert template_codes == set(PRE_RUNG_CODE_STATUS)
+
+
+def test_a_product_code_is_admitted_by_its_own_declaration() -> None:
+    """A code registered from a product app publishes with NO edit to this table.
+
+    The declaration is made from a module that stands where a product's would —
+    `apps.zzz_product.exceptions` — and the template pin above stays green.
+    """
+    namespace: dict[str, Any] = {"__name__": "apps.zzz_product.exceptions"}
+    exec(  # noqa: S102 - a declaration made FROM a product module's namespace
+        "from apps.core.exceptions import Remedy, register_refusal\n"
+        "register_refusal(code='zzz_product_held', boundary='service',\n"
+        "    remedy='Nothing - a fixture.', fact='A product code with its number.',\n"
+        "    remedies=(Remedy('Read the registry', 'introspect:refusals'),), status=409)\n",
+        namespace,
+    )
+    assert declaring_app("zzz_product_held") == "zzz_product"
+    assert not _is_template_code("zzz_product_held")
+    assert CODE_STATUS["zzz_product_held"] == 409
+    test_the_derived_table_is_the_table_that_was_typed()
+
+
+def test_the_template_codes_are_declared_by_template_modules() -> None:
+    """The partition is not vacuous: every typed code has a template declarer."""
+    for code in PRE_RUNG_CODE_STATUS:
+        assert _is_template_code(code), (code, declared_by(code))
+    assert declared_by("stale_version") == "apps.core.exceptions"
 
 
 def test_the_registry_and_the_class_table_never_disagree() -> None:

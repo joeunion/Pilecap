@@ -30,11 +30,14 @@ from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.authz import (
     action_prose,
     allows,
+    family_verbs,
     is_read,
+    kind_registry,
     membership_for,
     policies,
     refusal_sentence,
     require,
+    vocabulary,
 )
 from apps.core.exceptions import Forbidden
 from apps.core.models import Membership, Tenant
@@ -206,11 +209,41 @@ def test_an_action_with_no_declared_sentence_still_answers_in_english(
     assert raised.value.detail == "You may not void this invoice."
 
 
+def family_keys() -> set[str]:
+    """`<kind>.<verb>` for every family verb a kind's model declares (`core.verbs.ROADS`).
+
+    Their sentence is DERIVED — `vocabulary()` builds it from the noun's own
+    verbose name — so a typed `ACTION_PROSE` line for one is a copy of a sentence
+    the tree already writes, and a copy is a second place to disagree.
+    """
+    return {
+        f"{kind}.{verb}" for kind, model in kind_registry().items() for verb in family_verbs(model)
+    }
+
+
+def unsentenced(declared: set[str], prose: set[str], family: set[str]) -> list[str]:
+    """Declared actions with neither a typed sentence nor a derived family one."""
+    return sorted(declared - prose - family)
+
+
 def test_every_declared_action_has_a_sentence() -> None:
     """Discovery on both halves: an app that declares a policy declares its
-    prose beside it, in the same file, and `core` owns neither list."""
-    missing = sorted(set(policies()) - set(action_prose()))
+    prose beside it, in the same file, and `core` owns neither list — except a
+    family key (`widget.archive`), whose sentence is derived and needs no line."""
+    missing = unsentenced(set(policies()), set(action_prose()), family_keys())
     assert missing == [], missing
+
+
+def test_a_family_key_is_sentenced_by_derivation_and_nothing_else_is() -> None:
+    """The exemption is exactly the family's keys: its derived sentence is real
+    English, and a non-family key without a line is still the red."""
+    family = family_keys()
+    assert family, "no kind declares a family marker — the exemption is vacuous"
+    vocabulary_ = vocabulary()
+    for key in sorted(family):
+        assert vocabulary_[key].sentence.startswith("You may not "), key
+    planted = {"gadget.polish", next(iter(sorted(family)))}
+    assert unsentenced(planted, set(), family) == ["gadget.polish"]
 
 
 def test_a_three_part_action_drops_the_app_segment() -> None:

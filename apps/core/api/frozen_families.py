@@ -82,8 +82,15 @@ FROZEN_FAMILIES: tuple[str, ...] = (
     # documents, and put one in. Frozen the day the door shipped, like every other
     # key here.
     "files",
+    "imports",
     "invitations",
     "messaging",
+    # A NEW family, the choosing pattern's default: the plural noun of the
+    # section's one resource. `notes:read` is reading what people wrote about a
+    # record, `notes:write` is writing, correcting and archiving it — and neither
+    # reaches the record itself. Frozen the day the door shipped, like every
+    # other key here.
+    "notes",
     "org-structure",
     "roles",
     "runs",
@@ -93,6 +100,14 @@ FROZEN_FAMILIES: tuple[str, ...] = (
     # holding it is trusted with, and there is no `search:write` because there
     # is no write door — indexing is spine-fed and service-only.
     "search",
+    # The attach owner for tags. A NEW family, and the default half of the
+    # choosing pattern: the plural noun of the section's primary resource — a
+    # tag is a noun a caller already has. `tags:read` is reading the tenant's
+    # words and the words a row carries; `tags:write` is putting a word on a row
+    # or taking it off (and, for an administrator of the whole tenant, coining,
+    # renaming and retiring one). Frozen the day the door shipped, like every
+    # other key here.
+    "tags",
     "tenant-settings",
     "tokens",
     # ADR usage-1. A NEW family, and the mildest exception the

@@ -297,3 +297,62 @@ async def test_approving_after_the_run_has_finished_is_refused(
 
             with pytest.raises(Conflict):
                 await run_db(approve_widget, tenant=tenant, actor=owner_actor, widget=widget)
+
+
+# --- An archived widget, mid-run ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_archived_widgets_onboarding_refuses_archived_and_the_run_says_so(
+    tenant: Tenant,
+    owner: User,
+    owner_actor: Actor,
+    admin_actor: Actor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Archived while the run waits: the next activity refuses `archived`, once.
+
+    Every write on an archived row refuses `archived` (`require_live`), and an
+    activity's write is a write: the announcement after the wait is the run's
+    statement that the widget finished onboarding, which is a change nobody
+    reviewing the book would see. The refusal is already true at the first
+    attempt and waiting does not make it false, so it is not retried — the run
+    fails at once and its row's `error` names the code, where the Temporal UI
+    and `GET /workflows/runs/` both read it.
+    """
+    from apps.example.services import archive_widget
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        client = await _local_client(env, monkeypatch)
+        async with build_worker(client):
+            widget = await run_db(
+                create_widget, tenant=tenant, actor=owner_actor, name="Archived mid-run"
+            )
+            handle = client.get_workflow_handle(
+                onboarding_id(tenant, widget), result_type=WidgetOnboarded
+            )
+            # The first activity has marked it before the wait begins.
+            for _ in range(20):
+                marked = await run_db(
+                    lambda: Widget.objects.for_tenant(tenant).get(pk=widget.pk).onboarded_at
+                )
+                if marked is not None:
+                    break
+                await env.sleep(timedelta(seconds=1))
+            await run_db(archive_widget, tenant=tenant, actor=admin_actor, widget=widget)
+            for _ in range(APPROVAL_DAYS + 3):
+                if (await handle.describe()).status is not WorkflowExecutionStatus.RUNNING:
+                    break
+                await env.sleep(timedelta(days=1))
+            status = (await handle.describe()).status
+
+    assert status is WorkflowExecutionStatus.FAILED
+    run = await run_db(
+        lambda: WorkflowRun.objects.for_tenant(tenant).get(
+            workflow_id=onboarding_id(tenant, widget)
+        )
+    )
+    assert run.status == WorkflowRun.Status.FAILED
+    # The code once, as the failure's type, then the sentence.
+    assert "ApplicationError: archived: This is archived" in run.error, run.error
+    assert "archived: archived" not in run.error, run.error

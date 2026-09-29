@@ -55,13 +55,15 @@ export { unhandledRefusal } from "@/api/refusals";
  * What an empty state PROPOSES. The label is the act, in the imperative.
  *
  * An empty state that only reports emptiness has told the person something they
- * could already see.
+ * could already see. It is OPTIONAL because a sentence alone is a legal empty
+ * (patterns.md §14): when there is nothing to propose (no answer says the hat
+ * may create), the surface's copy says what is empty and no act is invented.
  */
 export type NextAct = { readonly label: string; readonly detail?: string };
 
 export type SurfaceState<TData> =
     | { readonly kind: "loading" }
-    | { readonly kind: "empty"; readonly nextAct: NextAct }
+    | { readonly kind: "empty"; readonly nextAct?: NextAct }
     | { readonly kind: "error"; readonly refusal: Refusal }
     | { readonly kind: "ready"; readonly data: TData };
 
@@ -75,6 +77,38 @@ export type SurfaceStateKind = (typeof SURFACE_STATES)[number];
  */
 export const REQUIRED_STORY_EXPORTS = ["Loading", "Empty", "Error", "Ready"] as const;
 export type RequiredStoryExport = (typeof REQUIRED_STORY_EXPORTS)[number];
+
+/**
+ * THE STORIES RULE's other half (patterns.md, the preamble): a story module may
+ * export MORE than the four only when each extra is named for a state or shape
+ * an entry its screen DECLARES (`// patterns: §<n>`) names. This is the one
+ * list of those names, per entry; a module declaring none of these entries
+ * keeps the four exact, and a fifth export there is as wrong as three.
+ */
+export const ENTRY_STORY_EXTRAS: Readonly<Record<string, readonly string[]>> = {
+    // §1: the family's sheets — Edit's lost race and its other refusal, Move's refusal and its empty,
+    // Merge's chooser and its refusal inside the confirm.
+    "§1": ["Stale", "RefusedUpdate", "RefusedMove", "NowhereToMove", "MergeChoosing", "RefusedMerge"],
+    // §5: the import page's states — checking, previewed, importing, imported, the same file again, a file
+    // with no rows, a file refused whole; the list's band while a run is in flight.
+    "§5": ["ImportChecking", "ImportPreviewed", "Importing", "Imported", "ImportRepeated", "NothingToImport", "RefusedImport", "ImportInFlight"],
+    // §6: the acts row is the row's REST answer — a frame arrives and the acts do not move until the re-read;
+    // a one-press act refused in the head's seat.
+    "§6": ["ActsAfterFrame", "RefusedDuplicate", "ArrivedAfterMerge"],
+    // §7: the selection bar takes the control row's seat; a whole batch refused sits under it.
+    "§7": ["Selected", "RefusedBulk"],
+    // §8: Show more closes a page that has more; a name with no break wraps inside the row.
+    "§8": ["HasMore", "LongName"],
+    // §10: the History card — read, being read, empty, refused; the attach cards — read on both hats,
+    // being read, empty, an add refused.
+    "§10": ["History", "HistoryLoading", "HistoryEmpty", "RefusedHistory", "Attached", "AttachedMember", "AttachLoading", "NothingAttached", "RefusedAttach"],
+    // §16: the resting state wears no pill.
+    "§16": ["Resting"],
+    // §17: a band — the moved-away record's, a batch's that some rows were refused in, the copy's, the merged row's.
+    "§17": ["Moved", "BulkPartial", "Duplicated", "Merged"],
+    // §20: the archive road — the two hats, the archived state, its two refusals, the cut being read and empty.
+    "§20": ["PopulatedAdmin", "PopulatedMember", "Archived", "RefusedArchive", "RefusedRestore", "ArchivedLoading", "NothingArchived"],
+};
 
 /** Exhaustiveness, as a compile error rather than as a habit. */
 export function unhandledState(state: never): never {

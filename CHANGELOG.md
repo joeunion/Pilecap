@@ -50,6 +50,300 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.4.0] — Every verb a noun needs is a mechanism it adopts, and the gate refuses the noun until it has the road
+
+**A product met one cost this release closes: every verb its nouns needed —
+archive, move, a version on update, bulk, history, duplicate, merge, import,
+notes and files and tags — was invented by hand, per noun, and each noun
+learned the rules late.** One product built archive alone across twelve apps
+at three-quarters of a builder session each, and learned twice, late, that an
+archived face reads and that the system actor is exempt; this template's own
+first adoption by hand went green inside its app in ten minutes and never
+green as a whole, because a new refusal code reds a table in `apps/core` a
+product may not edit. 2.4.0 ships the noun-verb family: nine verbs as one seam
+in `apps/core` that a noun adopts by declaring a marker, both doors for every
+verb with the MCP twin derived, a house rule that refuses a noun carrying a
+marker without the whole road it demands, the pattern book's grammar for the
+face with four source-text rules under it, three platform apps that own
+attachments and the import road, and — as a strategy — a golden example of
+every verb on the scaffold noun and its worked face, fenced so that a product
+copies the text between the fences and nothing else, proved by two drives that
+copy it out, migrate it, judge it and drop it. The rest is what the same work
+found, fixed: the loop now runs the drives a shell change reaches, a
+population floor is an equality that names its members, and a plant may not
+wear a name the tree serves. 2.4.0 is a minor by the owner's word, on the
+precedent of the last two: rules 74 to 82 red a product until it adopts the
+family — a noun that declares nothing pays nothing, and a noun that declares
+a marker gets a red gate that names each road it lacks, never a wrong answer.
+**Two changes on the wire are named plainly.** `Importer.natural_key` now
+takes the actor — `natural_key(*, tenant, actor, row)` — so the preview looks
+where the apply will write; a consumer importer written to the old signature
+fails at preview. And a product's archive and restore routes take no body:
+`invalid_body` left the eight archive and restore routes the template ships,
+and a client that still sends `{}` is answered exactly as before. Three more
+are additions a client may meet: `merge_survivor` (409) on deleting a survivor
+that carries merged losers, where the database's protect used to surface as
+`conflict`; `?archived=true` on a list answers `400` naming `show`, the
+family's one parameter; and a noun may declare `act_doors` for a verb whose
+door is mounted under another name.
+
+### What a product does at the merge
+
+1. **Adopt the family per noun, one verb per commit, from the golden
+   example.** Each verb's recipe is a section of
+   `.claude/skills/django-conventions/SKILL.md` § 16 ("Adopt archive in one
+   commit" and its eight siblings), and the text a product copies is the block
+   between `# golden: <verb> begin` and `# golden: <verb> end` in
+   `apps/example/**` (a fence may name several verbs — `# golden: archive version move begin` — for a block they share). Prove the copy before you
+   adopt it: `scripts/tests/test_golden_copy.sh --verb archive` (or any of
+   the nine) copies the fenced blocks onto a throwaway noun, migrates it, runs
+   the system checks and the copied test, and drops it;
+   `scripts/tests/test_golden_copy.sh --all` runs the nine in one go.
+2. **The gate names every road a marker demands.** A noun declaring
+   `Archivable`, `Versioned`, `Movable`, `bulk_verbs`, `Mergeable`,
+   `Duplicable`, `attachments` or an `importers.py` key is refused at
+   `manage.py check --tag djb` until it carries the routes, keys, `Out` shapes
+   and parameters `apps/core/verbs.py`'s `ROADS` table lists (`python -m quality.gate --explain 74`); no comment suppresses it. A noun that should
+   not carry a road does not declare its marker.
+3. **Declare `attachments` on the noun, inside its fence** —
+   `attachments = ("notes", "files", "tags")` — and read notes, files and
+   tag links through the three platform doors with `?subject=<kind>:<id>`. A
+   noun that lists `tags` answers `tags` on its detail; there are no per-noun
+   attachment routes.
+4. **A `Duplicable` noun declares `Duplicate(copies=…, resets=…)` over every
+   editable field, and its service fills every reset** —
+   `duplicate_row(..., fill={...})` refuses a missing key — while the copy is
+   cleaned under `invalid` before its one save. **Its key constraint is the
+   model's own**, declared in `Meta` and checked by `core.E001`, so a fresh
+   noun with constraints migrates from scratch.
+5. **A `Mergeable` noun requires `Archivable`, re-points every foreign key
+   into it through its owning app's `merge_repointers.py` or keeps it on the
+   loser in `merge_keeps` with a reason**, previews a merge at
+   `GET /<nouns>/{id}/merge/?into=`, and refuses `merge_survivor` on
+   deleting a survivor with losers.
+6. **A `Versioned` noun requires `version` in its update, move and merge
+   bodies** and refuses `stale_version` with `current_version` and the
+   remedy `self:reread`; every write on it lists `updated_at` (`python -m quality.gate --explain 76`).
+7. **An archivable noun's other writes call `require_live`, and its archived
+   rows are reached only through `.including_archived()` and
+   `.archived_only()`** (`python -m quality.gate --explain 81`, `python -m quality.gate --explain 82`). The system actor is refused by the noun's
+   `@refuses_system` policy pair; a workflow's maintenance act gets its own
+   service and audit action.
+8. **Record rule 63's classes at the fold.** Rule 63 now declares a ratchet
+   class per finding class its runner emits, at `0` on the template; a
+   product whose face has a backlog records the numbers the refusal prints
+   under `ratchets:` in `quality/local/rules.yaml` and ratchets them down by
+   territory, as rules 64 to 71 already work.
+9. **Draw a face's road once, in `road.ts`, equal to the wire both ways**
+   (`python -m quality.gate --explain 77`). When a noun gains a door before
+   its face draws the verb, record `door-without-road` at the fold with the
+   client regenerated — the rule reads the committed `frontend/openapi.json`
+   — and lower it in the face rung; never valve the road. Construct every act
+   from `frontend/src/screens/verbs.ts`, spell one word per verb in the
+   noun's copy module, and keep the code's verb table equal to the book's
+   fenced `verb-table` block (rules 78 to 80). Prove a copied face with
+   `scripts/tests/test_golden_face.sh --verb archive` or
+   `scripts/tests/test_golden_face.sh --all`; it judges the planted noun's
+   findings only and prints what it saw on the real face without judging it.
+10. **A `scripts/check.sh --loop` now pays for what a shell change reaches.**
+    The always-on leg's third source, `touched`, runs every drive whose
+    `# drives:` line covers a tracked shell file that changed since the fold
+    point (a banked verdict is reused when the bytes match), and `sweep` runs
+    on any shell change; an `apps/**`-only rung prints `touched 0` and pays
+    nothing, and an edit to `scripts/check.sh` selects every drive that names
+    it.
+11. **Every population floor in `apps/conftest.py` is an equality.** A member
+    above a floor is a `UsageError` naming the population and the undeclared
+    member, and the apps-root population is declared by member name; a product
+    declares its own members in `DJB_POPULATION_FLOOR_MEMBERS` and its counts
+    in `DJB_POPULATION_FLOOR_ADDENDS` in `apps/conftest_local.py`. A drawer
+    that under-declares goes red at the fold and at the full gate with the
+    members named — the remedy is the sentence the refusal prints.
+12. **A plant never carries a name the tree serves, or it says so.** The
+    plant-collision census runs at the self-test's head and as the
+    `plant-collisions` leg of `scripts/check.sh --loop` (`python -m quality.gate --plant-collisions`): every service, route, url_name, tool
+    and event name under `quality/canary/**`, `quality/negative/**` and
+    `scripts/tests/fixtures/**` is read against what the tree serves, and a
+    collision is exit 2 unless the plant declares it on its first line —
+    `# collides: <name> — <why it is the form under test>`. A test module
+    that isolates a registry uses `apps.core.tests.isolation.isolated_apps`;
+    a bare `isolate_apps` is refused.
+13. **CI's self-test shards install the frontend toolchain** by the fe leg's
+    own function, on every row of the legs job, so a drive that reads
+    `frontend/` looks where the train measures. The workflow is
+    template-owned; a product's CI steps stay in `scripts/local/ci/`.
+14. **A new platform app touches five pinned shared surfaces** — rule 32's
+    label paths, `FROZEN_FAMILIES`, `quality/partition.yaml`'s
+    `platform_apps`, rule 41's example budget rows, rules 42/54's ratchet
+    class — and `platform_apps` is held closed by a `@template_shape` census
+    a product retires with `platform_apps=own`.
+
+### Added
+
+- **The family's seam in `apps/core`.** `core.verbs` (the declared markers per
+  model, `allowed_acts(actor, row)` as the server's answer per row — offered
+  only where a door exists — `resolve_subject`, `require_live`, the `ROADS`
+  table), `core.blockers` (a closed walk over each app's
+  `<verb>_blockers.py`), `core.bulk.run_bulk` (ordered per-item outcomes in
+  one transaction on both doors, a refusal audit row per refused item, a retry
+  converges), `core.concurrency` (`version_of`, `require_version`), the
+  refusal grammar with `wire_extra` carried byte for byte on REST and MCP, and
+  the `Repointer` and `Importer` dataclasses.
+- **Nine verbs on the worked noun and its face.** `Widget` is `Archivable`,
+  `Versioned`, `Movable`, bulk-archivable, historied, `Duplicable`,
+  `Mergeable`, an attach subject and an import kind; `frontend/src/screens/widget/`
+  draws every road — the archive band and the *Archived* cut, the edit sheet
+  whose lost race is answered by *Reload*, the move sheet, the selection bar
+  and its per-batch band, the History card, the duplicate band, the merge
+  chooser and its one confirm, the Notes and Files cards and the tag row, and
+  the import page that walks choose, checking, previewed, importing and
+  imported. Every block a product copies is fenced by verb.
+- **Three platform apps.** `apps/notes` (a note against any noun declaring
+  notes; only its author edits), `apps/tags` (a tenant-wide word and its
+  org-scoped link; `create_tag_link` idempotent), `apps/imports` (stage, check,
+  preview, apply; idempotent by the file's digest and per row; `Import` purged
+  after thirty days). Each is registered by discovery, each answers REST and
+  MCP byte for byte, and the two attach owners plus the files app each declare
+  the `"*"` merge repointer.
+- **Rules 74 to 82.** 74 a noun carrying a marker carries the marker's whole
+  road; 75 no model is both append-only and archivable; 76 a versioned write
+  moves `updated_at`; 77 a noun face's road equals its wire; 78 a family act
+  is constructed, never spelled; 79 one word per verb; 80 the verb table
+  equals the book's; 81 the archive's widenings are the only widenings; 82 a
+  write on an archivable row calls `require_live`. Each ships with canaries,
+  negatives and — for 77 to 80 and 82 — ratchet classes at zero.
+- **The ratchet headroom reader.** For every rule that declares `ratchets:`,
+  a class recorded above its count on the tree is a red naming the file to
+  lower it in, judged on the template's own shape only and said aloud on any
+  other; before it, a recorded number above a count was a note for every
+  rule.
+- **The golden drives.** `scripts/tests/test_golden_copy.sh` copies a verb's
+  fenced blocks onto a throwaway noun under `DJB_DISABLED_APPS=example`, reads
+  the road's last route from the road itself, refuses a fragment that lands
+  after a `return` in the copy, prints its census on a failing step, and
+  proves its own self-case against an empty scratch source rather than the
+  real app; `scripts/tests/test_golden_face.sh` copies the worked face one verb
+  at a time against a planted wire, runs rules 77 to 80, the typecheck and the
+  face census on the copy, learns a fence a block several verbs own jointly
+  (`// golden: bulk+merge begin`, copied only when every listed verb is in
+  the copy), and reds its negative on rule 77.
+- **The pattern book's verb grammar.** The five seats, the fenced `verb-table`
+  block, one press unless there is no one-press undo (merge's one confirm,
+  import's preview), the refusal under the act's row with a `route:` remedy
+  drawn as a live door through the route table, the landing rule for a
+  restored cut row, and a face's own token-only stylesheet with one
+  breakpoint in range syntax.
+- **`?can=<key>` on the organizations list** narrows it to the nodes the
+  actor may move a row into, on both doors; page-level `allowed_acts` carries
+  `create`; `?show=live|archived|all` on every archivable list; the per-row
+  history road (`<noun>_history-list`) over the audit rows, on one
+  concurrently built index.
+
+### Changed
+
+- **`Importer.natural_key(*, tenant, actor, row)`** — the actor is new, and the
+  preview resolves under the acting hat exactly as the apply does.
+- **Archive and restore take no body** on every noun the template ships; the
+  `?archived=` boolean the two hand-built halves took answers `400` naming
+  `show`.
+- **`@refuses` narrows exactly as shipped and `@also_refuses(*codes)` widens**
+  the derived set; the refusal pin is partitioned, so a product's own code is
+  admitted by its declaration while the template's table stays typed.
+- **An event payload never carries a per-viewer field.** `allowed_acts` rides
+  the two viewer doors; the outbox payload is the `Out` minus
+  `PER_VIEWER_FIELDS`, and `emit` refuses a payload carrying one at any depth.
+  Existing payloads are byte-identical to what shipped before.
+- **The tenant export keeps archived rows** for every archivable noun the
+  census carries, with `archived_at` and `archived_by`.
+- **The population floors are equalities** and the always-on leg runs the
+  drives a shell change reaches — both a price a rung now pays and the
+  refusal prints.
+
+### Fixed
+
+- **A hand `archived_at` filter after `for_tenant` answered live rows only**
+  with no error — the manager hides first; the two hand-built adopters now
+  use the widenings and rule 81 holds the shape closed.
+- **A test registry left the real user model's relations rewritten** for
+  every module collected after it, under one seed in twelve — an isolation
+  helper clears the cache on exit, a teardown guard names the module that
+  breaks it, and a census refuses the bare form.
+- **The duplicate seam saved before the service could fill a non-null
+  field**, a unique constraint over copied fields was a 500, and a duplicable
+  noun with constraints could not migrate from scratch.
+- **A repointer refused a mergeable noun that takes no attachments**, and a
+  merge's blocker door was composed by hand rather than read off the mount.
+- **The golden-copy drive's self-case appended its fixture into a copy of the
+  real app** and died the day the app grew the same fence; its non-vacuity
+  step deleted a route by a hand template the history road did not fit; a
+  fenced line landed after a `return` as dead code and went green; a failing
+  step died under `pipefail` before printing its census.
+- **Three train reds in one day followed seven green loops each**: a drive
+  that changed in the rung and whose self-case no loop ran; a population one
+  above a floor no loop re-measured; a canary named after the example's
+  future that the example grew into. Each is now an instrument.
+- **The ratchet headroom reader judged a consumer-shaped clone against the
+  template's rows** and exited 2 under enforcement broken with no rule line
+  carrying it; it now reads the judged shape once.
+- **The golden face drive could not look on CI** — no shard installed the
+  toolchain every verifier box had — and once it could, it read the whole
+  frontend as a second gate with a stricter opinion; it judges its copy.
+- **Six stale valves came out** once rules 41 and 17 learned the family's
+  shapes (the second hop into `core.verbs`, imported bases); one valve stays
+  with its reason corrected, because rule 41's reach stops one hop short of a
+  service's own helper.
+- **A refusal's sentence carried a machine token**, and three refusals
+  published a remedy the wire did not send; the registry now holds each remedy
+  with a noun slot that the class and the published document fill from one
+  declaration.
+- **The selftest leg's drive** clears every `DJB_SELFTEST_*` it did not set;
+  the loop's subshell case reads its pid without `BASHPID`, so the Mac loop
+  runs end to end again.
+- **A second approve appended a second ledger line** on the worked noun; the
+  contract says it changes nothing, and now it does not.
+- **`membership_for` reads the memberships the actor already caches**, so
+  every adopter's list is flat in rows on both doors.
+
+### Known
+
+- **A narrowed self-test can be short and say nothing**: a rule whose canaries
+  ride another rule's plant reports short when run alone.
+- **The self-test leg's partition is blind to its heaviest members**: a member
+  whose duration row is written under another name, or never written, is
+  predicted at the median.
+- **Main's post-merge run re-measures a tree the pull request's run already
+  banked.**
+- **The verifier box's loop does not forward the no-cache switch.**
+- **The loop is blind to the residence census**: rules 81 and 82 each keep
+  one form in the probe scaffold so the recorded backlog stands, and no loop
+  runs the census that would say so.
+- **Rule 41's narrowed self-test is not self-contained**, and its reach stops
+  one hop short of a service's own module-local helper — the one valve kept.
+- **A rule that reads the committed contract document is blind to a door
+  until the fold** regenerates the client; the ratchet row is recorded at the
+  fold for that reason.
+- **Rule 6 reads a migration's file name** for the word it refuses.
+- **A ratchet refusal sends the template's own writer to the drawer** rather
+  than to the template's file.
+- **An input a verifier box has and a CI shard does not is invisible to every
+  loop** until each drive declares what it needs and the shard installs
+  exactly that; the frontend toolchain was the first.
+- **Seven wire gaps the worked face found while drawing the last verbs** —
+  from the merge preview's sentence to the import run's progress — are the
+  next cycle's; the face draws what the wire gives.
+- **A merge to a tenant-wide survivor re-lands links at the merging actor's
+  hat**, and the tenant-wide one-per-pair constraint answers `conflict` to a
+  second branch's press.
+- **A hard-deleted attach subject leaves orphans** until a purge reacts to
+  its deleted event; the first product that hard-deletes a subject is the
+  trigger.
+- **Restore-a-version is not built**: the audit rows carry no field values,
+  so history shows what was sent, never what differed.
+- **The history clause's population is deliberately narrower than "any
+  marker"**: an archive-only noun owes no history route.
+- **A fragment after a call that never returns** (`assert False`,
+  `sys.exit`) is not seen by the golden drive's placement step.
+
 ## [2.3.0] — A product's first face meets a floor it set, and a train pays for one measurement
 
 **A product met two failures this release closes: two verifiers passed a
@@ -3480,7 +3774,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.3.0...HEAD
+[Unreleased]: ../../compare/v2.4.0...HEAD
+[2.4.0]: ../../compare/v2.3.0...v2.4.0
 [2.3.0]: ../../compare/v2.2.1...v2.3.0
 [2.2.1]: ../../compare/v2.2.0...v2.2.1
 [2.2.0]: ../../compare/v2.1.7...v2.2.0

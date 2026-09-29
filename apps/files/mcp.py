@@ -1,4 +1,4 @@
-"""The machine door onto documents — the same eight capabilities the REST door has.
+"""The machine door onto documents — the same nine capabilities the REST door has.
 
 Door parity (house rule 17): every capability `api.py` offers a person, this
 offers a machine, over the *same* selectors, the *same* services and the *same*
@@ -41,6 +41,7 @@ from apps.core.api import ordered_by
 from apps.core.api.docs import contract_of
 from apps.core.api.pagination import cursor_page
 from apps.core.mcp import acting_tenant, tool_call
+from apps.core.verbs import with_allowed_acts
 from apps.files.api import (
     ORDERING,
     VERSION_ORDERING,
@@ -54,6 +55,7 @@ from apps.files.api import (
     issue_download_url_route,
     list_files_route,
     list_versions_route,
+    restore_file_route,
     retrieve_file,
 )
 from apps.files.models import FileVersion, StoredFile
@@ -66,15 +68,22 @@ from apps.files.schemas import (
     StoredFileOut,
     UploadTicketOut,
 )
-from apps.files.selectors import get_version, list_versions
+from apps.files.selectors import SHOW_LIVE, get_version, list_versions
 from apps.files.selectors import list_files as list_files_selector
-from apps.files.services import add_version, archive_file, confirm_upload, create_file
+from apps.files.services import (
+    add_version,
+    archive_file,
+    confirm_upload,
+    create_file,
+    restore_file,
+)
 
 
-def _ticket(ticket: Any) -> UploadTicketOut:
-    """The upload ticket's wire shape, built the same way `api.py` builds it."""
+def _ticket(ticket: Any, actor: Any) -> UploadTicketOut:
+    """The upload ticket's wire shape, built the same way `api.py` builds it —
+    the document carrying this caller's `allowed_acts`, as every read of it does."""
     return UploadTicketOut(
-        file=StoredFileOut.model_validate(ticket.file),
+        file=StoredFileOut.model_validate(with_allowed_acts([ticket.file], actor)[0]),
         version=FileVersionOut.model_validate(ticket.version),
         upload_url=ticket.upload_url,
         expires_in=ticket.expires_in,
@@ -96,6 +105,8 @@ def register(server: MCPServer[Any]) -> None:
         cursor: str | None = None,
         limit: int | None = None,
         include_count: bool = False,
+        show: str = SHOW_LIVE,
+        subject: str | None = None,
     ) -> FilePage:
         with tool_call(ctx) as acting:
             # Scoped first and only narrowed after — the type widens from
@@ -103,21 +114,32 @@ def register(server: MCPServer[Any]) -> None:
             # `api.py`: filtering returns the plain one, and narrowing a queryset
             # cannot widen its tenant.
             files: QuerySet[StoredFile] = FileFilter(purpose=purpose, filename=filename).filter(
-                list_files_selector(tenant=acting.tenant, org=acting.org, actor=acting.actor())
+                list_files_selector(
+                    tenant=acting.tenant,
+                    org=acting.org,
+                    actor=acting.actor(),
+                    show=show,
+                    subject=subject,
+                )
             )
             files = ordered_by(files, ordering, allowed=ORDERING, default="-created_at")
+            # The actor passed, so every document's `allowed_acts` and the list's
+            # own come from the seam the REST door's `ActsPagination` calls — the
+            # two doors cannot disagree about who may do what.
             page = cursor_page(
                 files,
                 tenant=acting.tenant,
                 cursor=cursor,
                 limit=limit,
                 include_count=include_count,
+                actor=acting.actor(),
             )
             return FilePage(
                 items=[StoredFileOut.model_validate(row) for row in page.items],
                 has_more=page.has_more,
                 next_cursor=page.next_cursor,
                 count=page.count,
+                allowed_acts=list(page.allowed_acts or ()),
             )
 
     @server.tool(
@@ -129,14 +151,11 @@ def register(server: MCPServer[Any]) -> None:
             # A document in another tenant, or in a branch this hat cannot see, is
             # `not_found` exactly as it is over HTTP: a refusal that distinguished
             # the two would tell the caller the document exists.
-            return StoredFileOut.model_validate(
-                document_of(
-                    tenant=acting_tenant(acting),
-                    org=acting.org,
-                    file_id=file_id,
-                    actor=acting.actor(),
-                )
+            actor = acting.actor()
+            document = document_of(
+                tenant=acting_tenant(acting), org=acting.org, file_id=file_id, actor=actor
             )
+            return StoredFileOut.model_validate(with_allowed_acts([document], actor)[0])
 
     @server.tool(
         name="create_file",
@@ -148,17 +167,21 @@ def register(server: MCPServer[Any]) -> None:
         content_type: str,
         size_bytes: int,
         purpose: str = "upload",
+        subject: str | None = None,
     ) -> UploadTicketOut:
         with tool_call(ctx) as acting:
+            actor = acting.actor()
             return _ticket(
                 create_file(
                     tenant=acting_tenant(acting),
-                    actor=acting.actor(),
+                    actor=actor,
                     filename=filename,
                     content_type=content_type,
                     size_bytes=size_bytes,
                     purpose=purpose,
-                )
+                    subject=subject,
+                ),
+                actor,
             )
 
     @server.tool(
@@ -173,16 +196,16 @@ def register(server: MCPServer[Any]) -> None:
     ) -> UploadTicketOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            actor = acting.actor()
             return _ticket(
                 add_version(
                     tenant=tenant,
-                    actor=acting.actor(),
-                    file=document_of(
-                        tenant=tenant, org=acting.org, file_id=file_id, actor=acting.actor()
-                    ),
+                    actor=actor,
+                    file=document_of(tenant=tenant, org=acting.org, file_id=file_id, actor=actor),
                     content_type=content_type,
                     size_bytes=size_bytes,
-                )
+                ),
+                actor,
             )
 
     @server.tool(
@@ -273,12 +296,25 @@ def register(server: MCPServer[Any]) -> None:
     def archive_file_tool(ctx: Context[Any], file_id: UUID) -> StoredFileOut:
         with tool_call(ctx) as acting:
             tenant = acting_tenant(acting)
+            actor = acting.actor()
+            document = document_of(tenant=tenant, org=acting.org, file_id=file_id, actor=actor)
             return StoredFileOut.model_validate(
-                archive_file(
-                    tenant=tenant,
-                    actor=acting.actor(),
-                    file=document_of(
-                        tenant=tenant, org=acting.org, file_id=file_id, actor=acting.actor()
-                    ),
-                )
+                with_allowed_acts([archive_file(tenant=tenant, actor=actor, file=document)], actor)[
+                    0
+                ]
+            )
+
+    @server.tool(
+        name="restore_file",
+        description=contract_of(restore_file_route),
+    )
+    def restore_file_tool(ctx: Context[Any], file_id: UUID) -> StoredFileOut:
+        with tool_call(ctx) as acting:
+            tenant = acting_tenant(acting)
+            actor = acting.actor()
+            document = document_of(tenant=tenant, org=acting.org, file_id=file_id, actor=actor)
+            return StoredFileOut.model_validate(
+                with_allowed_acts([restore_file(tenant=tenant, actor=actor, file=document)], actor)[
+                    0
+                ]
             )

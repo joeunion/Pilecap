@@ -18,6 +18,7 @@ and house rule 8 is disabled with the reason recorded.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, ClassVar, Final, TypeVar
 
 from django.conf import settings
@@ -215,6 +216,44 @@ def is_inherited_downward(model: type[models.Model]) -> bool:
     just as loudly as one that inherits the marker.
     """
     return bool(getattr(model, "inherited_downward", False))
+
+
+# The class attribute `Archivable` sets to declare that a noun leaves the book by
+# being ARCHIVED. Named once, here, for `APPEND_ONLY_ATTR`'s reason: the mixin
+# that declares it, the walk that discovers it, `introspect` that prints it and
+# house rule 75 that reads it say the same word.
+ARCHIVABLE_ATTR = "archivable"
+
+#: The two columns the mixin brings. `archived_at` is the name `comms` and
+#: `files` already carry on their hand-built halves — lifted, never renamed.
+ARCHIVED_AT = "archived_at"
+ARCHIVED_BY = "archived_by"
+
+
+def is_archivable(model: type[models.Model]) -> bool:
+    """Whether this model declared `Archivable` (`archivable = True`).
+
+    An attribute lookup, as `is_append_only` and `is_inherited_downward` are:
+    the declaration is the fact, and it is inherited — a proxy or subclass of an
+    archivable noun is archivable, and one that meant otherwise would have to
+    say `archivable = False` in its own body, where a reviewer sees it.
+    """
+    return bool(getattr(model, ARCHIVABLE_ATTR, False))
+
+
+def archivable_models(*, registry: Any = None) -> list[type[models.Model]]:
+    """Every model in the product that declared `Archivable`. **Discovered, never listed.**
+
+    The population the list door's `?show=`, the face's archive road and house
+    rules 74 and 75 all ask about. A product adds a noun by declaring the mixin
+    on it, in the same commit, with no edit to `core`. `registry` is an app
+    registry to ask instead of the global one — a test's `isolate_apps`
+    registry, which is how `core` proves the discovery against a planted model.
+    """
+    from django.apps import apps as django_apps
+
+    source = registry if registry is not None else django_apps
+    return [model for model in source.get_models() if is_archivable(model)]
 
 
 #: What `BaseModel.authz_kind` holds until a model says otherwise: "derive my
@@ -622,18 +661,112 @@ class Membership(BaseModel):
 _ScopedT = TypeVar("_ScopedT", bound="TenantScopedModel")
 
 
+#: Which archive cut a queryset has chosen. `None` is the default and means "not
+#: yet decided": `for_tenant()` decides it as LIVE. The two widenings set it
+#: before or after the scope, and it rides every clone so a later
+#: `for_tenant()` does not re-narrow a widened read.
+ARCHIVE_SCOPE_LIVE = "live"
+ARCHIVE_SCOPE_ALL = "all"
+ARCHIVE_SCOPE_ARCHIVED = "archived"
+
+
 class ScopedQuerySet(models.QuerySet[_ScopedT]):
     """A queryset that can only be narrowed to one tenant, never widened.
 
     `for_tenant(None)` returns nothing. That is the whole fail-closed
     behaviour: an unresolved tenant reads an empty table rather than the
     table.
+
+    **On an `Archivable` noun, `for_tenant()` also leaves archived rows out**:
+    the book a person works from is the live one, and every list, search and
+    count gets that for free. `including_archived()` and `archived_only()` are
+    the only two widenings, and the list door's `?show=archived` is the one
+    reader of the second. Neither widens the TENANT or the HAT: they are about
+    the archive, never about whose rows these are. **A model that has not
+    declared the mixin reads exactly as it always did** — its `for_tenant()`
+    SQL is byte-identical, and both widenings refuse on it.
     """
+
+    #: See `ARCHIVE_SCOPE_*`. A class default, copied through `_clone`.
+    archive_scope: str | None = None
+
+    def _clone(self) -> ScopedQuerySet[_ScopedT]:
+        # `_clone` is Django's private copy seam; django-stubs does not declare it.
+        clone: ScopedQuerySet[_ScopedT] = super()._clone()  # type: ignore[misc]
+        clone.archive_scope = self.archive_scope
+        return clone
 
     def for_tenant(self, tenant: Tenant | None) -> ScopedQuerySet[_ScopedT]:
         if tenant is None:
             return self.none()
-        return self.filter(tenant=tenant)
+        scoped = self.filter(tenant=tenant)
+        if is_archivable(self.model) and self.archive_scope is None:
+            scoped = scoped.filter(**{f"{ARCHIVED_AT}__isnull": True})
+            scoped.archive_scope = ARCHIVE_SCOPE_LIVE
+        return scoped
+
+    def _require_archivable(self, widening: str) -> None:
+        if not is_archivable(self.model):
+            raise TypeError(
+                f"{self.model.__name__} has not declared `Archivable`, so {widening}() "
+                "is not legal on it: it has no archived rows to include. A noun joins "
+                "the archive by declaring the mixin (apps.core.models.Archivable)."
+            )
+
+    def including_archived(self) -> ScopedQuerySet[_ScopedT]:
+        """Live AND archived rows — the widening a restore, a detail read or an
+        audit read makes. Legal before or after `for_tenant()`; the tenant and
+        the hat still narrow it exactly as they did."""
+        self._require_archivable("including_archived")
+        widened: ScopedQuerySet[_ScopedT] = self.all()
+        if widened.archive_scope == ARCHIVE_SCOPE_LIVE:
+            widened._drop_live_exclusion()
+        elif widened.archive_scope == ARCHIVE_SCOPE_ARCHIVED:
+            raise TypeError(
+                "archived_only() already chose the archived cut; including_archived() "
+                "after it would be a second answer to one question. Ask for one."
+            )
+        widened.archive_scope = ARCHIVE_SCOPE_ALL
+        return widened
+
+    def archived_only(self) -> ScopedQuerySet[_ScopedT]:
+        """Archived rows alone — the list door's `?show=archived` cut (exclusive)."""
+        self._require_archivable("archived_only")
+        narrowed = self.including_archived().filter(**{f"{ARCHIVED_AT}__isnull": False})
+        narrowed.archive_scope = ARCHIVE_SCOPE_ARCHIVED
+        return narrowed
+
+    def _drop_live_exclusion(self) -> None:
+        """Take `for_tenant()`'s `archived_at IS NULL` back out of this clone's WHERE.
+
+        It is a top-level AND clause of the query `for_tenant()` built, and it
+        stays one through every `filter()`, `exclude()` and `visible_to()` —
+        each of those ANDs a clause beside it. What moves it is an OR
+        combination (`qs1 | qs2`), after which it is nested inside the OR and
+        removing it would change what the OR means; that refuses rather than
+        guesses.
+        """
+        from django.db.models.lookups import IsNull
+
+        field = self.model._meta.get_field(ARCHIVED_AT)
+        where = self.query.where
+        if where.connector == "AND" and not where.negated:
+            for child in list(where.children):
+                lhs = getattr(child, "lhs", None)
+                if (
+                    isinstance(child, IsNull)
+                    and child.rhs is True
+                    and getattr(lhs, "target", None) is field
+                    and getattr(lhs, "alias", None) == self.query.base_table
+                ):
+                    where.children.remove(child)
+                    return
+        raise TypeError(
+            f"{self.model.__name__}: including_archived() could not find the live "
+            "exclusion for_tenant() added — the queryset was OR-combined (or negated) "
+            "after it. Widen before combining: "
+            "`Model.objects.for_tenant(t).including_archived().filter(...) | ...`."
+        )
 
     def visible_to(self, actor_or_org: Any) -> ScopedQuerySet[_ScopedT]:
         """Narrow to one organization's **subtree**. The second half of a read.
@@ -748,6 +881,12 @@ class ScopedManager(models.Manager[_ScopedT]):
 
     def governing(self, org: Organization | None) -> ScopedQuerySet[_ScopedT]:
         return self.get_queryset().governing(org)
+
+    def including_archived(self) -> ScopedQuerySet[_ScopedT]:
+        return self.get_queryset().including_archived()
+
+    def archived_only(self) -> ScopedQuerySet[_ScopedT]:
+        return self.get_queryset().archived_only()
 
 
 class TenantScopedModel(BaseModel):
@@ -1046,6 +1185,431 @@ class OrgScopedModel(TenantScopedModel):
                 ]
             }
         )
+
+
+class Archivable(models.Model):
+    """Declare that this noun leaves the book by being **archived**.
+
+        class Widget(OrgScopedModel, Archivable):
+            ...
+
+    **List it AFTER the scoped base.** Django hands a model that declares no
+    `Meta` the Meta of the first base that has one; a mixin listed first would
+    hand over its own and the noun would silently lose the scoped base's
+    ordering and its tenant-leading recency index (house rule 37). The order is
+    therefore refused at class definition rather than documented and hoped for.
+
+    **What it brings — two columns and one read discipline, nothing else:**
+
+    * `archived_at` — WHEN, and the whole state (D7: a date, never an
+      `is_archived`/`is_active` boolean). The name `comms` and `files` already
+      carry, lifted and never renamed.
+    * `archived_by` — WHO, a `PROTECT` foreign key to the user (users are kept,
+      so an archive can always say whose press it was). `NULL` for a row
+      archived by the product acting for itself, or before this column existed.
+      No reverse accessor: `related_name="+"`.
+    * `ScopedQuerySet.for_tenant()` leaves archived rows out, and
+      `.including_archived()` / `.archived_only()` are the only widenings.
+
+    **What it deliberately does NOT bring:** a writer. Archiving and restoring a
+    noun is that noun's own service pair — `archive_<noun>` / `restore_<noun>`,
+    keyword-only, `tenant` + `actor`, idempotent, `authz.require` →
+    `core.policies.may_archive`, over `core.verbs.archive_row` /
+    `restore_row`, emitting `<app>.<noun>.archived` / `.restored` inside the
+    transaction and never cascading — because a write belongs to the app that
+    owns the row (A3), and a generic writer here would be a door outside the
+    noun's app. **An archived row's reads answer read-only; its writes other
+    than restore refuse `archived`** (`core.verbs.require_live`).
+
+    **Append-only and archivable are disjoint** (D8): a ledger's rows are
+    witnessed facts, and hiding one is a rewrite by another name. A model
+    declaring both is refused here at class definition, and house rule 75
+    refuses the same shape in the source without running it.
+    """
+
+    archivable: ClassVar[bool] = True
+
+    # rule-22: an ABSTRACT mixin's fields add no column to core; each declaring
+    # noun's own app makes its migration (`makemigrations <app>`), expand-only.
+    archived_at = models.DateTimeField(null=True, blank=True)
+    # rule-22: the same abstract mixin's second column — no table in core owns it.
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        abstract = True
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if is_append_only(cls):
+            raise TypeError(
+                f"{cls.__qualname__} declares both `{APPEND_ONLY_ATTR} = True` and "
+                "`Archivable`. They are disjoint (D8): an append-only row is a "
+                "witnessed fact and archiving one is a rewrite by another name. A "
+                "ledger is superseded by a new row, never archived."
+            )
+        mro = cls.__mro__
+        if BaseModel in mro and mro.index(Archivable) < mro.index(BaseModel):
+            raise TypeError(
+                f"{cls.__qualname__} lists `Archivable` before its scoped base. List "
+                "it after — `class Noun(OrgScopedModel, Archivable)` — or the noun "
+                "inherits the mixin's Meta and loses the base's ordering and its "
+                "recency index (house rule 37)."
+            )
+
+    @property
+    def is_archived(self) -> bool:
+        """Derived from the date, never stored (D7)."""
+        return self.archived_at is not None
+
+
+# The class attribute `Movable` sets: this noun changes node (and, optionally,
+# owner) through the family's move verb.
+MOVABLE_ATTR = "movable"
+
+
+def is_movable(model: type[models.Model]) -> bool:
+    """Whether this model declared `Movable` (`movable = True`). Inherited."""
+    return bool(getattr(model, MOVABLE_ATTR, False))
+
+
+class Movable:
+    """Declare that this noun can be MOVED — re-homed at another node of the tree.
+
+        class Widget(OrgScopedModel, Archivable, Movable):
+            move_owner_field = "owner"
+
+    **A marker, no column**: the row already has its `organization`. What the
+    declaration buys is the road (house rule 74: a `<noun>-move` route and its
+    twin, `<kind>.move` in the vocabulary) and the one seam every noun's
+    `move_<noun>` service calls — `core.verbs.rehome(row, organization)`, which
+    moves the row and every MUTABLE row that derives its organization from it
+    (`derive_org_from`), in one transaction, and refuses `move_blocked` over an
+    APPEND-ONLY derived row: a ledger line is recorded where it was written,
+    and rewriting its organization is the update house rule 20 forbids.
+
+    `move_owner_field` names the FK a move may also reassign (the owner axis),
+    or `None` when the noun has no owner to hand over.
+
+    `organization_name` is here so an `Out` can say WHERE the row lives in
+    words (`core.schemas.HomedOut`) — the record's lede reads a name, never the
+    slug; a list that answers it `select_related("organization")`s.
+    """
+
+    movable: ClassVar[bool] = True
+    move_owner_field: ClassVar[str | None] = None
+
+    @property
+    def organization_name(self) -> str:
+        """The name of the node this row lives at."""
+        return str(getattr(getattr(self, "organization", None), "name", "") or "")
+
+
+# The class attribute `Versioned` sets: this noun's writes carry the version they
+# were made against. Named once, here, for `ARCHIVABLE_ATTR`'s reason.
+VERSIONED_ATTR = "versioned"
+
+
+def is_versioned(model: type[models.Model]) -> bool:
+    """Whether this model declared `Versioned` (`versioned = True`). Inherited."""
+    return bool(getattr(model, VERSIONED_ATTR, False))
+
+
+class Versioned:
+    """Declare that a write to this noun names the version it was made against.
+
+        class Widget(OrgScopedModel, Archivable, Versioned):
+            ...
+
+    **Opt-in, and no column** (the owner's ruling; `architecture.md`'s
+    concurrency row: last-write-wins under `select_for_update` by default, an
+    optimistic token per noun where the product decides). The version is
+    DERIVED from `updated_at` — `BaseModel.updated_at` is `auto_now`, so every
+    save that names it moves it — in integer microseconds since the epoch
+    (`core.concurrency.version_of`): exact, monotonic under the row lock, and
+    below 2**53, so a browser holds it as a plain number.
+
+    **What adopting it demands** — the noun's `Patch` (and `MoveIn`, `MergeIn`)
+    carries `version` REQUIRED (`core.schemas.VersionedIn`), its `Out` carries
+    it (`core.schemas.VersionedOut`), and its service locks, then calls
+    `core.concurrency.require_version(locked, version)` before writing — a
+    stale one is `stale_version` (409) naming the current version. House rule
+    74 demands the body field; house rule 76 demands that no write to the noun
+    leaves `updated_at` where it was (a `save(update_fields=[…])` or a queryset
+    `.update(…)` that does not name it), because a write that does not move the
+    token is a write the next reader's version cannot see.
+
+    A plain mixin rather than an abstract model: it brings no field and no
+    Meta, so it cannot disturb the scoped base's (the reason `Archivable` must
+    be listed after it does not arise here).
+    """
+
+    versioned: ClassVar[bool] = True
+
+    @property
+    def version(self) -> int:
+        """The optimistic-concurrency token: `updated_at` in integer microseconds."""
+        from apps.core.concurrency import version_of
+
+        return version_of(self)
+
+
+# The class attribute `Mergeable` sets: two rows of this noun can become one.
+MERGEABLE_ATTR = "mergeable"
+
+
+def is_mergeable(model: type[models.Model]) -> bool:
+    """Whether this model declared `Mergeable` (`mergeable = True`). Inherited."""
+    return bool(getattr(model, MERGEABLE_ATTR, False))
+
+
+class Mergeable(models.Model):
+    """Declare that two rows of this noun can be MERGED — the loser folded into a survivor.
+
+        class Widget(OrgScopedModel, Archivable, Mergeable):
+            merge_keeps = {"entries": "an append-only ledger stays where it was written"}
+
+    **The redirect lives on the loser row** (principle 9: one owner). A merged
+    loser is never deleted — a `PROTECT` child or an append-only ledger may
+    still name it — so it survives as a tombstone: ARCHIVED (`archived_by` the
+    merging person) with `merged_into` naming the survivor. Its reads answer
+    read-only; its writes refuse `merged` (`core.verbs.require_live`), naming
+    the survivor's detail door.
+
+    **What it demands:**
+
+    * `Archivable` — the loser leaves the book by being archived, so a
+      mergeable noun that is not archivable is refused HERE, at class
+      definition, before anything could merge it;
+    * `merge_keeps` — `{reverse accessor name: reason}` for every foreign key
+      into this noun that stays on the loser (an append-only ledger, `PROTECT`
+      history). Every OTHER foreign key into the noun is re-pointed by its
+      owning app's `merge_repointers.py`; house rule 74's merge clause asks
+      the closed question over the ORM's own `_meta.related_objects`.
+
+    One nullable self-FK, `PROTECT`, no reverse accessor. A chain is never two
+    hops long: `core.verbs.merge_rows` re-points every earlier loser of the
+    loser at the survivor in the same transaction.
+
+    **No unmerge** (principle 6): merge is an administrator's press, confirmed
+    twice on the face precisely because it is not undone here.
+    """
+
+    mergeable: ClassVar[bool] = True
+    merge_keeps: ClassVar[dict[str, str]] = {}
+
+    # rule-22: an ABSTRACT mixin's field adds no column to core; each declaring
+    # noun's own app makes its migration (`makemigrations <app>`), expand-only.
+    merged_into = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        abstract = True
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if not is_archivable(cls):
+            raise TypeError(
+                f"{cls.__qualname__} declares `Mergeable` without `Archivable`. A merged "
+                "loser leaves the book by being archived (it survives as a tombstone "
+                "naming its survivor), so a mergeable noun is archivable first: "
+                f"`class {cls.__name__}(OrgScopedModel, Archivable, Mergeable)`."
+            )
+        mro = cls.__mro__
+        if BaseModel in mro and mro.index(Mergeable) < mro.index(BaseModel):
+            raise TypeError(
+                f"{cls.__qualname__} lists `Mergeable` before its scoped base. List it "
+                "after — the noun would otherwise inherit the mixin's Meta and lose the "
+                "base's ordering and its recency index (house rule 37)."
+            )
+
+    @classmethod
+    def lineage(cls, survivor: Any) -> list[Any]:
+        """The survivor's pk and every loser's merged into it — for a read that must widen.
+
+        A child a merge KEPT on the loser (`merge_keeps`) still names the loser;
+        a survivor's aggregate read that must include it filters
+        `<fk>__in=Noun.lineage(survivor)`. One hop is always enough: chains are
+        compressed at merge time.
+        """
+        manager: Any = cls.objects  # type: ignore[attr-defined]
+        losers = (
+            # rule-24: the losers of one survivor the caller already reached, by
+            # primary key only — the survivor's reach is the read's authorization.
+            manager.for_tenant(survivor.tenant)
+            .including_archived()
+            .filter(merged_into=survivor)
+            .values_list("pk", flat=True)
+        )
+        return [survivor.pk, *losers]
+
+
+# The class attribute `Duplicable` sets: a row of this noun can be saved as new.
+DUPLICABLE_ATTR = "duplicable"
+
+
+@dataclass(frozen=True, slots=True)
+class Duplicate:
+    """What a duplicate carries across: `copies` from the source, `resets` to the default.
+
+        duplicate = Duplicate(
+            copies=("notes", "policy"), resets=("name", "owner", "onboarded_at", "external_ref")
+        )
+
+    **Every concrete editable field of the noun is in exactly one of them**, or
+    is a platform key the family owns (the id, the tenant, the organization,
+    the timestamps, the archive/merge/duplicate columns) — house rule 74's
+    duplicate clause is that closed question over `_meta.concrete_fields`, so a
+    field added later is refused until somebody decides which side it is on.
+    `resets` means the model field's own default (`None` for a nullable field
+    without one) — unless the noun's service FILLS it: an owner FK reset to the
+    pressing person, a name the copy takes, are the service's
+    `duplicate_row(..., fill={...})`, set BEFORE the copy's one save (a NOT NULL
+    owner cannot be set after it — the save would already have failed), and the
+    copy is validated first, so a clash on a unique constraint is `invalid`.
+    """
+
+    copies: tuple[str, ...] = ()
+    resets: tuple[str, ...] = ()
+
+
+#: The unique constraint every duplicable noun declares, by suffix.
+DUPLICATE_KEY_CONSTRAINT = "duplicate_key"
+#: The system check a duplicable noun without that constraint fails.
+DUPLICATE_KEY_CHECK_ID = "core.E001"
+
+
+def duplicate_key_constraint() -> models.UniqueConstraint:
+    """The partial unique constraint a duplicable noun declares in its own `Meta`.
+
+        class Meta(OrgScopedModel.Meta):
+            constraints = [duplicate_key_constraint()]
+
+    `(tenant, duplicated_from, duplicate_key)` unique where the key is
+    non-empty — a repeated press with one key finds the first copy (the
+    exports shape). Named `<app_label>_<model>_duplicate_key` by Django's own
+    `%(app_label)s` / `%(class)s` interpolation, so one call serves every noun
+    and a copied noun names its own.
+
+    **The constraint is the model's, never the field's.** It used to be added
+    by the key field as it was contributed — and a migration renders its model
+    STATES into classes too, so a state that did not hold the constraint yet (a
+    `CreateModel` the autodetector split an `AddConstraint` out of, which a
+    circular foreign key forces) rendered into a table that did, and the
+    `AddConstraint` after it failed `DuplicateTable` on a fresh database. A
+    constraint the `Meta` declares is one the migration state holds exactly.
+    """
+    return models.UniqueConstraint(
+        fields=["tenant", "duplicated_from", "duplicate_key"],
+        condition=~models.Q(duplicate_key=""),
+        name=f"%(app_label)s_%(class)s_{DUPLICATE_KEY_CONSTRAINT}",
+    )
+
+
+class DuplicateKeyField(models.CharField):  # type: ignore[type-arg]
+    """`duplicate_key`, the caller's idempotency key — and the check that its constraint is there.
+
+    The field adds nothing to the model (`duplicate_key_constraint` says why);
+    it only CHECKS: a concrete noun carrying it whose `Meta` does not declare
+    `duplicate_key_constraint()` is a system-check error naming the line to
+    add. `makemigrations` runs the checks, so the omission is refused before a
+    migration is written without it.
+    """
+
+    def check(self, **kwargs: Any) -> list[Any]:
+        from django.core import checks
+
+        errors: list[Any] = [*super().check(**kwargs)]
+        model = getattr(self, "model", None)
+        if model is None or model._meta.abstract:
+            return errors
+        meta = model._meta
+        wanted = f"{meta.app_label}_{meta.model_name}_{DUPLICATE_KEY_CONSTRAINT}"
+        if not any(c.name == wanted for c in meta.constraints):
+            errors.append(
+                checks.Error(
+                    f"{model.__name__} declares `Duplicable` and its `Meta` does not declare "
+                    f"the duplicate key's constraint `{wanted}`: add "
+                    "`duplicate_key_constraint()` (apps.core.models) to its "
+                    "`Meta.constraints`. The constraint is the model's, never the field's — "
+                    "a constraint a field adds is one a migration state does not hold.",
+                    obj=model,
+                    id=DUPLICATE_KEY_CHECK_ID,
+                )
+            )
+        return errors
+
+
+def is_duplicable(model: type[models.Model]) -> bool:
+    """Whether this model declared `Duplicable` (`duplicable = True`). Inherited."""
+    return bool(getattr(model, DUPLICABLE_ATTR, False))
+
+
+class Duplicable(models.Model):
+    """Declare that a row of this noun can be DUPLICATED — saved as a new row.
+
+        class Widget(OrgScopedModel, Archivable, Duplicable):
+            duplicate = Duplicate(
+                copies=("notes", "policy"),
+                resets=("name", "owner", "onboarded_at", "external_ref"),
+            )
+
+            class Meta(OrgScopedModel.Meta):
+                constraints = [duplicate_key_constraint()]
+
+    **Two columns, a constraint and a declaration.** `duplicated_from` names the source
+    (`SET_NULL`: lineage is a courtesy, not a claim — the source may be
+    purged); `duplicate_key` is the caller's idempotency key, unique per
+    `(tenant, duplicated_from)` when non-empty, so a retried press answers the
+    FIRST copy rather than a second one — by the constraint the noun declares
+    in its OWN `Meta` (`constraints = [duplicate_key_constraint()]`; a
+    duplicable noun without it fails `core.E001`). `duplicate` says which fields copy and
+    which reset (`Duplicate`); the seam every noun's `duplicate_<noun>` calls is
+    `core.verbs.duplicate_row`, which also copies the owned children the
+    declaration lists and NEVER an append-only one (a ledger is the source's
+    history, not the copy's).
+
+    A duplicate IS a create: the noun's service asks `<noun>.create` at the
+    acting hat, where the copy lands (ADR core-20), and reach on the source.
+    """
+
+    duplicable: ClassVar[bool] = True
+    duplicate: ClassVar[Duplicate] = Duplicate()
+
+    # rule-22: an ABSTRACT mixin's field adds no column to core; each declaring
+    # noun's own app makes its migration (`makemigrations <app>`), expand-only.
+    duplicated_from = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    # rule-22: the same abstract mixin's second column — no table in core owns it.
+    duplicate_key = DuplicateKeyField(max_length=200, blank=True, default="")
+
+    class Meta:
+        abstract = True
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        mro = cls.__mro__
+        if BaseModel in mro and mro.index(Duplicable) < mro.index(BaseModel):
+            raise TypeError(
+                f"{cls.__qualname__} lists `Duplicable` before its scoped base. List it "
+                "after — the noun would otherwise inherit the mixin's Meta and lose the "
+                "base's ordering and its recency index (house rule 37)."
+            )
 
 
 class Invitation(OrgScopedModel):

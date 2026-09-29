@@ -17,8 +17,13 @@ caller):
   the digest, the size, the meter and the event, all in one transaction;
 * `issue_download_url` — the audited read: a short-lived link to ONE version's
   bytes, and an `AuditEntry` naming which version was signed for;
-* `archive_file` — out of the working set, softly: `archived_at` is set, the
-  versions stay readable and the objects stay in the bucket;
+* `archive_file` / `restore_file` — out of the working set and back, softly:
+  `archived_at` and `archived_by` are set and cleared, the versions stay
+  readable and the objects stay in the bucket;
+* `archive_emptied_file` — the sweep's own archive of a document it left with no
+  version at all: the product acting for itself, which a person's archive refuses;
+* `move_attached_files` — a merge's re-point: the documents filed against a
+  merged-away record follow it to the survivor;
 * `store_bytes` — the document-generation seam: one call an activity makes with
   bytes the platform rendered itself;
 * `store_stream` — the same seam for a body too large to hold: an archive goes to
@@ -76,14 +81,16 @@ from apps.core.actor import Actor, system_actor
 from apps.core.authz import may_be_named, require
 from apps.core.exceptions import Conflict, Invalid, NotFound, as_invalid
 from apps.core.log import get_logger
-from apps.core.models import Organization, Tenant
+from apps.core.models import Organization, Tenant, is_org_scoped
 from apps.core.service import service
+from apps.core.verbs import archive_row, require_live, restore_row
 from apps.events.services import emit
 from apps.files import storage
-from apps.files.events import FILE_ARCHIVED, FILE_STORED
+from apps.files.events import FILE_ARCHIVED, FILE_MOVED, FILE_RESTORED, FILE_STORED
 from apps.files.meters import STORAGE_BYTES
 from apps.files.models import FileVersion, StoredFile
 from apps.files.schemas import FileStoredOut, FileVersionOut, StoredFileOut
+from apps.files.selectors import get_subject
 from apps.files.types import (
     FINALIZE_WORKFLOW,
     FinalizeUpload,
@@ -92,7 +99,18 @@ from apps.files.types import (
 from apps.usage.services import record_usage
 from apps.workflows.services import start_workflow_on_commit, workflow_id
 
+# The read shape's fields that answer ONE viewer rather than describe the document
+# (`core.schemas.ActsOut`). An event goes to every subscriber, so no payload this
+# app emits carries them — an event payload never carries a per-viewer field. A
+# hand exclusion until core's `event_payload()` helper lands and replaces it.
+PER_VIEWER_FIELDS = {"allowed_acts"}
+
 log = get_logger("apps.files.services")
+
+#: The noun the family seam knows a document by — its authorization kind
+#: (`StoredFile.authz_kind`), which is also what names its refusals' remedies
+#: (`route:file-restore`) and its road (`file-archive`, `file-restore`).
+NOUN = "file"
 
 #: What may appear un-redacted in this app's log lines and audit `input`
 #: (`core.service`). An allow-list, not a blocklist.
@@ -136,6 +154,7 @@ LOG_KEYS: frozenset[str] = frozenset(
         "file",
         "version",
         "before",
+        "subject",
     }
 )
 
@@ -265,24 +284,6 @@ def _check_declared_size(size_bytes: int) -> None:
                     f"which is a different upload contract than the one this door offers."
                 ]
             }
-        )
-
-
-def _refuse_an_archived_document(file: StoredFile) -> None:
-    """Nothing new goes into a document somebody has taken out of the working set.
-
-    Archive is soft — the row stays, the versions stay and the objects stay
-    in the bucket until purge lands — but it means the document is out of
-    everybody's list, so a version added to one would be bytes filed into a place
-    no reader looks. `Conflict` rather than `NotFound`: the caller resolved this
-    document through a door that could see it, so telling them the truth about
-    its state costs nothing and hiding it would produce a 404 for a row they were
-    just handed.
-    """
-    if file.archived_at is not None:
-        raise Conflict(
-            "This document was archived, so it takes no new versions. Bytes added to an "
-            "archived document would be filed where nobody lists them."
         )
 
 
@@ -441,6 +442,7 @@ def create_file(
     content_type: str,
     size_bytes: int,
     purpose: str,
+    subject: str | None = None,
 ) -> UploadTicket:
     """File a new document, at version 1, and mint the URL its bytes go to.
 
@@ -457,23 +459,45 @@ def create_file(
     `size_bytes` is what the caller SAYS it is about to upload. It is checked
     against the size policy and it is never written — see
     `MAX_DECLARED_UPLOAD_BYTES` for what that does and does not buy.
+
+    **`subject`** (`<kind>:<id>`) files the document AGAINST a record. The record
+    is resolved first (`selectors.get_subject`, over `core.verbs.resolve_subject`):
+    one this caller cannot reach is `not_found` — never `forbidden` — and a kind
+    that does not list `files` among its `attachments` is `invalid` naming
+    `subject`. The document then **lands in the subject's organization**, not at
+    the hat: a document about a record lives where the record lives, so every
+    reader of the record can read it. That is never a widening — the subject was
+    reached through `visible_to` the hat, so its node is the hat or beneath it,
+    where the hat's authority to file already reaches. A subject with no
+    organization of its own (a tenant-wide noun) leaves the document at the hat.
     """
     require(actor, "file.create")
     hat = _the_hat(actor)
     _check_declared_size(size_bytes)
     person = _uploader_id(actor)
+    home: Organization = hat
+    subject_kind, subject_id = "", None
+    if subject is not None:
+        row = get_subject(actor=actor, subject=subject)
+        subject_kind, subject_id = subject.partition(":")[0], row.pk
+        landing = getattr(row, "organization", None) if is_org_scoped(type(row)) else None
+        if isinstance(landing, Organization):
+            home = landing
     file = StoredFile(
         tenant=tenant,
-        # ADR core-20: the acting hat, never the root, and never a parameter.
-        organization=hat,
+        # ADR core-20: the acting hat, never the root, and never a parameter —
+        # or, filed against a subject, the subject's own node (above).
+        organization=home,
         filename=filename,
         purpose=purpose,
         uploaded_by_id=person,
+        subject_kind=subject_kind,
+        subject_id=subject_id,
     )
     with as_invalid():
         file.full_clean()
     file.save()
-    version = _next_version(file=file, org=hat, content_type=content_type, uploaded_by_id=person)
+    version = _next_version(file=file, org=home, content_type=content_type, uploaded_by_id=person)
     return UploadTicket(
         file=file,
         version=version,
@@ -515,7 +539,7 @@ def add_version(
     require(actor, "file.replace", file)
     hat = _the_hat(actor)
     _check_declared_size(size_bytes)
-    _refuse_an_archived_document(file)
+    require_live(file, noun=NOUN)
     version = _next_version(
         file=file, org=hat, content_type=content_type, uploaded_by_id=_uploader_id(actor)
     )
@@ -606,6 +630,24 @@ def confirm_upload(
     return version
 
 
+def _locked_document(*, tenant: Tenant, hat: Organization, file_id: Any) -> StoredFile:
+    """The document a finalize writes, locked — **archived or not**.
+
+    `including_archived()` because a finalize measures bytes already in the store,
+    and a document archived while its upload was in flight still has to admit to
+    them: the scoped read would otherwise hide the row and leave an object no row
+    accounts for. Both halves of the read otherwise (house rules 8 and 24), under
+    the run's own hat.
+    """
+    return (
+        StoredFile.objects.for_tenant(tenant)
+        .including_archived()
+        .visible_to(hat)
+        .select_for_update()
+        .get(pk=file_id)
+    )
+
+
 @service
 def record_stored(
     *,
@@ -680,12 +722,7 @@ def record_stored(
         # so this adds no failure mode the activity has not already met, and it
         # keeps the finalize inside the same boundary every other read in the
         # product sits in.
-        file = (
-            StoredFile.objects.for_tenant(tenant)
-            .visible_to(hat)
-            .select_for_update()
-            .get(pk=version.file_id)
-        )
+        file = _locked_document(tenant=tenant, hat=hat, file_id=version.file_id)
         fresh = (
             FileVersion.objects.for_tenant(tenant)
             .visible_to(hat)
@@ -726,7 +763,7 @@ def record_stored(
                 payload=FileStoredOut(
                     **StoredFileOut.model_validate(file).model_dump(),
                     version=FileVersionOut.model_validate(fresh),
-                ).model_dump(mode="json"),
+                ).model_dump(mode="json", exclude=PER_VIEWER_FIELDS),
                 actor=actor,
             )
     return fresh
@@ -803,63 +840,211 @@ def issue_download_url(
 def archive_file(*, tenant: Tenant, actor: Actor, file: StoredFile) -> StoredFile:
     """Take a document out of the working set. **Soft, and the objects stay.**
 
-    `archived_at` is set and nothing else happens: every version stays readable by
-    id, stays presignable through `issue_download_url`, and **the objects stay in
-    the bucket** until purge lands (ADR files-2 § exclusions; `StoredFile.lifecycle`
-    carries that residual with its dated trigger). What changes is that the
-    document leaves every list, and that nothing new can be filed into it —
-    `_refuse_an_archived_document` is the fence, and it is why `add_version` on an
-    archived document is a `conflict` rather than a silent new version.
+    `archived_at` and `archived_by` are set and nothing else happens: every version
+    stays readable by id, stays presignable through `issue_download_url`, and **the
+    objects stay in the bucket** until purge lands (ADR files-2 § exclusions;
+    `StoredFile.lifecycle` carries that residual with its dated trigger). What
+    changes is that the document leaves every list, and that nothing new can be
+    filed into it — every other write on it refuses `archived`
+    (`core.verbs.require_live`), which is why `add_version` on an archived document
+    is a `409` rather than a silent new version.
 
-    **Archiving takes a role**, which filing and replacing do not. It is the
-    nearest thing to a delete this app has and it is not one: it makes a tenant's
-    own record less complete without making the liability smaller, which is an
-    administrative decision rather than an ordinary one (`policies.py`).
+    **Archiving is an administrator's press at the document's own node**
+    (`core.policies.may_archive`, declared in `policies.py`), which filing and
+    replacing are not: it makes a tenant's own record less complete without making
+    the liability smaller. And it refuses the product acting for itself — the
+    sweep's archive of an emptied document is its own service,
+    `archive_emptied_file`, and says so.
 
-    **Archiving twice is not an error and not a second event.** The row is already
-    where the caller wants it, so this returns quietly and emits nothing —
-    a retried call must not put a second `files.file.archived` on the spine, and a
-    caller cannot tell whether their first attempt or their second was the one
-    that landed anyway.
-
-    The `emit` is inside the transaction, so an archive that rolled
-    back said nothing.
+    **Archiving twice is not an error and not a second event**
+    (`core.verbs.archive_row`): the row is locked, a document already archived is
+    returned as it is — the first press's date and archiver kept — and nothing is
+    emitted, so a retried call cannot put a second `files.file.archived` on the
+    spine. The `emit` is inside the transaction `@service` opens, so an archive
+    that rolled back said nothing.
     """
-    # REACH BEFORE CAPABILITY (rule 26's order, `core.services.revoke_membership`'s
-    # shape). A row in a branch this hat does not cover is `not_found`, and it has
-    # to answer BEFORE the wall does: a `Forbidden` about a row they cannot see
-    # confirms the row exists, which is the fact the scoping was hiding. Every one
-    # of these services takes a MODEL INSTANCE, so a caller who resolved one
-    # elsewhere hands it straight in. The two lines were the other way round until
-    # the Phase R sweep.
+    # REACH BEFORE CAPABILITY (rule 26's order): a row in a branch this hat does
+    # not cover is `not_found`, before the wall can confirm it exists.
     if not may_be_named(actor, file):
         raise NotFound()
     require(actor, "file.archive", file)
-    if file.archived_at is not None:
-        log.info("files.file.already_archived", file_id=str(file.pk))
-        return file
-    with transaction.atomic():
-        fresh = (
-            StoredFile.objects.for_tenant(tenant)
-            .visible_to(actor)
-            .select_for_update()
-            .get(pk=file.pk)
-        )
-        if fresh.archived_at is not None:
-            # Somebody else archived it between the read above and this lock. The
-            # same quiet answer, for the same reason.
-            return fresh
-        fresh.archived_at = timezone.now()
-        with as_invalid():
-            fresh.full_clean()
-        fresh.save(update_fields=["archived_at", "updated_at"])
+    return _archived(tenant=tenant, actor=actor, file=file)
+
+
+def _archived(*, tenant: Tenant, actor: Actor, file: StoredFile) -> StoredFile:
+    """The row half of an archive, shared by the person's press and the sweep's.
+
+    `core.verbs.archive_row` locks, returns early for a document already archived,
+    asks every child app's `archive_blockers.py` (none holds a document today) and
+    sets both columns; the event goes out only when THIS call changed the row.
+    """
+    row: StoredFile
+    row, changed = archive_row(tenant=tenant, actor=actor, row=file, noun=NOUN)
+    if changed:
         emit(
             name=FILE_ARCHIVED,
             tenant=tenant,
-            payload=StoredFileOut.model_validate(fresh).model_dump(mode="json"),
+            payload=StoredFileOut.model_validate(row).model_dump(
+                mode="json", exclude=PER_VIEWER_FIELDS
+            ),
             actor=actor,
         )
-    return fresh
+    else:
+        log.info("files.file.already_archived", file_id=str(row.pk))
+    return row
+
+
+@service
+def restore_file(*, tenant: Tenant, actor: Actor, file: StoredFile) -> StoredFile:
+    """Put an archived document back in the working set. **The archive's undo.**
+
+    The mirror of `archive_file`, through `core.verbs.restore_row`: the same
+    administrator's press at the document's own node (`may_archive` answers both),
+    the same refusal of the product acting for itself, both columns cleared, and
+    `files.file.restored` emitted once. Restoring a live document answers it
+    unchanged and emits nothing — safe to retry.
+
+    Nothing about the versions or the objects moves in either direction: archive
+    never touched them, so restore has nothing to put back but the row's place in
+    the lists.
+    """
+    # REACH BEFORE CAPABILITY (rule 26's order), as for `archive_file`.
+    if not may_be_named(actor, file):
+        raise NotFound()
+    require(actor, "file.restore", file)
+    row: StoredFile
+    row, changed = restore_row(tenant=tenant, actor=actor, row=file, noun=NOUN)
+    if changed:
+        emit(
+            name=FILE_RESTORED,
+            tenant=tenant,
+            payload=StoredFileOut.model_validate(row).model_dump(
+                mode="json", exclude=PER_VIEWER_FIELDS
+            ),
+            actor=actor,
+        )
+    else:
+        log.info("files.file.already_live", file_id=str(row.pk))
+    return row
+
+
+# door: only this tree's own hands reach it — `purge_pending_versions` (the sweep,
+# run by its scheduled activity) is its one caller, and no route or tool offers it.
+@service
+def archive_emptied_file(*, tenant: Tenant, actor: Actor, file: StoredFile) -> StoredFile:
+    """Archive a document the sweep left with **no version at all**. The product, acting.
+
+    A person's archive (`archive_file`) is an administrator's press and refuses the
+    system actor — a workflow does not take a person's document out of the book on
+    its own say-so. This is the one case the product does, and it is its own
+    service so the audit row says which it was: `purge_pending_versions` expired
+    the only version a document had, so the row holds no bytes, never will, and
+    would otherwise sit in somebody's list looking like a document.
+
+    # authz: the caller is the deployment's own retention sweep, which is scoped
+    # by the clock rather than by anybody; the document it hands in is one whose
+    # every version it has just expired, re-checked below (no version remains).
+    # A permission that could refuse this would leave an empty husk in the list
+    # with no one able to see why — and the row is archived, never deleted, so a
+    # person restores it with `restore_file` if the sweep was wrong.
+    """
+    # The sweep resolves the document from its own expired versions and passes
+    # the document's OWN hat (`system_actor(document.tenant,
+    # document.organization)`), so the row is at the hat by construction; asked
+    # anyway, because a caller that handed a foreign row in must not archive it.
+    if not may_be_named(actor, file):
+        raise NotFound()
+    remaining = (
+        FileVersion.objects.for_tenant(tenant)
+        .visible_to(file.organization)
+        .filter(file=file)
+        .exists()
+    )
+    if remaining:
+        raise Conflict(
+            "This document still has a version, so it is not the sweep's to archive. "
+            "An administrator archives a document that holds bytes."
+        )
+    return _archived(tenant=tenant, actor=actor, file=file)
+
+
+# door: only this tree's own hands reach it — the merge seam calls it through this
+# app's `merge_repointers.py`; no route or tool offers a re-point on its own.
+@service
+def move_attached_files(*, tenant: Tenant, actor: Actor, loser: Any, survivor: Any) -> int:
+    """A merge's re-point: every document filed against `loser` now names `survivor`.
+
+    Called by the merge seam through this app's `merge_repointers.py` (`"*"`: a
+    document may be filed against any noun that takes files), never by a door. Both
+    records are the SAME kind — a merge joins two rows of one noun — so only the
+    id moves; and because a document filed against a record lives where the record
+    lives (`create_file`'s landing), each one moves to the survivor's organization
+    with its versions beside it (`FileVersion.derive_org_from = "file"`), so every
+    reader of the survivor reads what was filed against either row.
+
+    Archived documents move too: an archived document is still filed against the
+    record, and restoring it later must find it where its record went.
+
+    Each moved document says so: `files.file.moved`, once per document, inside
+    the transaction, carrying the document as the read doors render it (minus the
+    per-viewer acts) with `subject` naming the survivor.
+
+    Returns how many documents moved. Idempotent: a second call finds none left
+    pointing at the loser, moves nothing and emits nothing.
+
+    # authz: the merge itself is the act, authorized by the merging noun's own
+    # `<noun>.merge` on both rows before any repointer is called; the documents
+    # follow their record and a second permission here could only half-finish a
+    # merge the actor was allowed to make.
+    """
+    from apps.core import authz
+
+    if not may_be_named(actor, loser) or not may_be_named(actor, survivor):
+        raise NotFound()
+    kind = authz.kind_of(type(loser))
+    if kind is None or authz.kind_of(type(survivor)) != kind:
+        raise Invalid({"survivor": ["A merge joins two records of one kind."]})
+    attached = (
+        # rule-24: the population is "every document filed against this record", in
+        # the tenant, whichever node it sits at (a record may have moved since), and
+        # only a count leaves; the merge is authorized on both records, and its dry
+        # run (`merge_repointers.py`) counts the same population, so what it shows moves.
+        StoredFile.objects.for_tenant(tenant)
+        .including_archived()
+        .filter(subject_kind=kind, subject_id=loser.pk)
+    )
+    ids = list(attached.values_list("pk", flat=True))
+    if not ids:
+        return 0
+    home = survivor.organization if is_org_scoped(type(survivor)) else None
+    # Every moving write names its stamp: a queryset `.update()` skips `auto_now`,
+    # and a re-pointed document whose `updated_at` stood still would read as
+    # untouched to anything that syncs on it (house rule 76's form, on every
+    # repointer, versioned or not).
+    stamp = timezone.now()
+    # rule-24: exactly the primary keys gathered above, re-read to write them.
+    moved = StoredFile.objects.for_tenant(tenant).including_archived().filter(pk__in=ids)
+    if home is None:
+        moved.update(subject_id=survivor.pk, updated_at=stamp)
+    else:
+        moved.update(subject_id=survivor.pk, organization=home, updated_at=stamp)
+        # rule-24: the versions of exactly those documents follow them (derive_org_from).
+        versions = FileVersion.objects.for_tenant(tenant).filter(file_id__in=ids)
+        versions.update(organization=home, updated_at=stamp)
+    # Said once per document, inside this transaction: its subject and its
+    # organization both changed, and a subscriber following the document hears
+    # where it went. A repeat found nothing left on the loser and returned above.
+    for row in moved.select_related("organization", "uploaded_by", "archived_by"):
+        emit(
+            name=FILE_MOVED,
+            tenant=tenant,
+            payload=StoredFileOut.model_validate(row).model_dump(
+                mode="json", exclude=PER_VIEWER_FIELDS
+            ),
+            actor=actor,
+        )
+    log.info("files.file.subject_moved", count=len(ids), kind=kind)
+    return len(ids)
 
 
 # door: the document-GENERATION seam, and it is deliberately not a door at all.
@@ -959,7 +1144,7 @@ def store_bytes(
             raise NotFound()
         require(actor, "file.replace", file)
         hat = _the_hat(actor)
-        _refuse_an_archived_document(file)
+        require_live(file, noun=NOUN)
         document = file
 
     version = _next_version(
@@ -1058,7 +1243,7 @@ def store_stream(
             raise NotFound()
         require(actor, "file.replace", file)
         hat = _the_hat(actor)
-        _refuse_an_archived_document(file)
+        require_live(file, noun=NOUN)
         document = file
 
     version = _next_version(
@@ -1190,14 +1375,14 @@ def _archive_the_emptied(documents: Iterable[StoredFile]) -> int:
 
     **The condition is "nothing left", not "no stored version."** A document whose
     upload from yesterday expired while another one is in flight this morning
-    keeps its place: archiving it would make `_refuse_an_archived_document` refuse
-    the finalize that is about to arrive, and that would be a conflict about bytes
-    already on the wire.
+    keeps its place: archiving it would take out of every list a document whose
+    bytes are on the wire right now.
 
-    **Through `archive_file`, never by writing the column** (house rule 10 read at
-    its own level): the same soft archive a person performs at the door, with the
-    same fence against new versions, the same `files.file.archived` on the spine
-    and the same audit row.
+    **Through `archive_emptied_file`, never by writing the column** (house rule 10
+    read at its own level): the same row half a person's archive runs
+    (`core.verbs.archive_row`), the same fence against new versions and the same
+    `files.file.archived` on the spine — and its OWN audit row, because a
+    person's `archive_file` refuses the product acting for itself.
 
     **Each document under its own hat.** `system_actor(document.tenant,
     document.organization)` — the document's OWN branch and never the root — which
@@ -1207,7 +1392,7 @@ def _archive_the_emptied(documents: Iterable[StoredFile]) -> int:
     still rides, exactly as it does for the finalize activity's own writes.
 
     Returns how many it archived, and a document somebody archived by hand in the
-    meantime is not counted: `archive_file` already answers quietly for one, and a
+    meantime is not counted: the row half already answers quietly for one, and a
     count that grew on replay is a report that lies about how much work there was.
     """
     archived = 0
@@ -1222,7 +1407,7 @@ def _archive_the_emptied(documents: Iterable[StoredFile]) -> int:
         )
         if remaining:
             continue
-        archive_file(
+        archive_emptied_file(
             tenant=document.tenant,
             actor=system_actor(document.tenant, document.organization),
             file=document,

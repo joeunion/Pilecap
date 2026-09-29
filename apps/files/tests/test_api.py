@@ -61,7 +61,17 @@ JSON = "application/json"
 #: node reads exactly three tables — their memberships in the tenant, the grants
 #: on those memberships, the role-delta rows for the role keys — once per actor.
 #: Once, not once per key: the actor carries the memo (PR0).
-LIST_QUERY_BUDGET = 10
+#:
+#: **10 → 17 for `allowed_acts`, and the seven are named** (`ActsPagination`,
+#: `core.verbs.with_allowed_acts`, measured on this fixture's three documents at
+#: three nodes). The paginator resolves its own actor from the request, so the
+#: collection the route's `file.read` memoized is read again — memberships,
+#: grants, role keys (3). **17 → 13:** the four membership reads that followed —
+#: one per NODE the page's rows sat at, and one at the hat for the list's own
+#: `create` — were `membership_for` asking afresh, and it reads the actor's memo
+#: now; and no row is offered `update` or `delete`, which have no door here. It
+#: grows with nothing: not the nodes, not the rows.
+LIST_QUERY_BUDGET = 13
 
 #: The same for one document's version history. One statement more than the
 #: document list, and the extra one is the document itself: the route resolves the
@@ -133,7 +143,7 @@ def test_the_list_answers_in_the_cursor_envelope(
 
     assert response.status_code == 200, response.content
     body = response.json()
-    assert set(body) == {"items", "has_more", "next_cursor", "count"}
+    assert set(body) == {"items", "has_more", "next_cursor", "count", "allowed_acts"}
     assert body["count"] is None, "a total costs a second statement; it is opt-in"
     assert len(body["items"]) == 3
     assert body["items"][0]["current_version"] == 0, "nothing has finished uploading yet"
@@ -422,7 +432,12 @@ def test_every_write_route_honours_the_idempotency_key(
         )
 
     # One new document and one new version, from four calls made twice each.
-    assert StoredFile.objects.for_tenant(world.tenant).count() == len(documents) + 1
+    # `including_archived()`: the archive call above took one of them out of the
+    # working set, and this counts documents, not the working set.
+    assert (
+        StoredFile.objects.for_tenant(world.tenant).including_archived().count()
+        == len(documents) + 1
+    )
     assert FileVersion.objects.for_tenant(world.tenant).count() == versions_before + 2
 
 
@@ -447,7 +462,7 @@ def test_replacing_adds_a_version_beside_the_old_one(
     assert document.current_version == 0, "promotion waits for the bytes to be measured"
 
 
-def test_replacing_an_archived_document_is_a_conflict(
+def test_replacing_an_archived_document_is_refused_archived(
     api: Client, world: World, documents: list[StoredFile]
 ) -> None:
     """Archiving is what stops new versions arriving; this is that fence, at the door."""
@@ -462,7 +477,7 @@ def test_replacing_an_archived_document_is_a_conflict(
     )
 
     assert response.status_code == 409, response.content
-    assert response.json()["code"] == "conflict"
+    assert response.json()["code"] == "archived"
 
 
 def test_confirming_answers_202_and_starts_one_run(

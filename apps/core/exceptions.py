@@ -97,7 +97,9 @@ next to the class, and the class cannot be defined without it.
 
 from __future__ import annotations
 
+import json
 import re
+import sys
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -136,6 +138,10 @@ CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 #: assumes is that the number means "no".
 REFUSAL_STATUS_RANGE = range(400, 600)
 
+#: The four keys every refusal body may carry and no refusal may redefine —
+#: `wire_refusal`'s own grammar. A refusal's `wire_extra` sits BESIDE them.
+WIRE_COMMON_KEYS = frozenset({"detail", "code", "errors", "remedies"})
+
 
 @dataclass(frozen=True, slots=True)
 class Remedy:
@@ -169,6 +175,16 @@ class Remedy:
 
     label: str
     destination: str
+
+
+def fill_noun(remedies: Sequence[Remedy], noun: str | None) -> tuple[Remedy, ...]:
+    """`remedies` with every destination's `<noun>` slot filled; unfilled when `noun` is None."""
+    if noun is None:
+        return tuple(remedies)
+    return tuple(
+        Remedy(r.label, r.destination.replace(NOUN_SLOT, noun)) if NOUN_SLOT in r.destination else r
+        for r in remedies
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +313,14 @@ def as_remedies(remedies: Sequence[Remedy] | None, *, where: str) -> tuple[Remed
     return tuple(out)
 
 
+#: The slot a registered remedy's destination leaves for the refused row's
+#: kind: `route:<noun>-archive`. The registry holds ONE remedy per code; the wire
+#: fills the slot from the raise site's `noun` (`remedies_for_noun`) and the API
+#: document from the operation's own kind (`apps.core.api.docs.refusal_response`),
+#: so the published remedy and the sent one are one declaration rendered twice.
+NOUN_SLOT = "<noun>"
+
+
 def register_refusal(
     *,
     code: str,
@@ -389,7 +413,44 @@ def register_refusal(
             )
         return existing
     _registry[code] = refusal
+    # WHO declared it: the calling module, read once at the one writer. Kept
+    # beside the registry rather than on `Refusal`, whose equality is the
+    # "same meaning twice is a no-op" test above — the declarer is a fact about
+    # the declaration, not about the code's meaning.
+    _declared_in[code] = str(sys._getframe(1).f_globals.get("__name__", ""))
     return refusal
+
+
+#: code -> the module that registered it. See `declared_by`.
+_declared_in: dict[str, str] = {}
+
+
+def declared_by(code: str) -> str:
+    """The module that registered `code` (`apps.<app>.<module>`), or `""`.
+
+    What lets a pin tell the TEMPLATE's codes from a PRODUCT's: a typed table
+    of the template's codes is a record the template keeps, and a product's
+    `register_refusal(code, status=…)` is admitted by its own declaration in
+    its own app — a product never edits a table in `core` to publish a code.
+    """
+    return _declared_in.get(code, "")
+
+
+def declaring_app(code: str) -> str:
+    """The app label that registered `code` (`apps.<label>…` → `<label>`), or `""`."""
+    parts = declared_by(code).split(".")
+    return parts[1] if len(parts) >= 2 and parts[0] == "apps" else ""
+
+
+def remedies_for_noun(code: str, noun: str) -> tuple[Remedy, ...]:
+    """The registered remedies for `code`, the `<noun>` slot filled with the refused row's kind.
+
+    The one way a raise site that knows its noun says so: the registry holds the
+    remedy, this only fills its slot — so the wire cannot send a remedy the API
+    document does not publish.
+    """
+    registered = _registry.get(code)
+    return fill_noun(registered.remedies if registered is not None else (), noun)
 
 
 def refusal_for(code: str) -> Refusal | None:
@@ -515,6 +576,39 @@ class DomainError(Exception):
         registered = self.refusal
         return registered.remedies if registered is not None else ()
 
+    #: See `wire_extra`. Empty for every refusal that has nothing structured to
+    #: add; a class default so no raise site pays for one it does not declare.
+    _wire_extra: Mapping[str, Any] = MappingProxyType({})
+
+    @property
+    def wire_extra(self) -> Mapping[str, Any]:
+        """What this refusal says on the wire BEYOND the four common keys.
+
+        A refusal that has something STRUCTURED to say — a blocked archive's
+        `noun` and the `blocking` children, a stale write's `current_version` —
+        declares it here, beside itself, and says it once for both doors:
+        `wire_refusal` is still the only composer and reads this attribute
+        exactly as `config/api.py` reads `retry_after` off `RateLimited`.
+
+        **The four common keys are not overridable, and that is refused AT
+        RAISE** — the setter below — rather than when the body is composed: a
+        refusal that could rewrite `code` or `detail` from a raise site would be
+        a second composer wearing an attribute name, and a mistake found only
+        on the unhappy path is found in production.
+        """
+        return self._wire_extra
+
+    @wire_extra.setter
+    def wire_extra(self, value: Mapping[str, Any]) -> None:
+        colliding = sorted(set(value) & WIRE_COMMON_KEYS)
+        if colliding:
+            raise ValueError(
+                f"{type(self).__name__}.wire_extra may not redefine {', '.join(colliding)}: "
+                "the four common keys are the grammar every client branches on, and a "
+                "raise site that could rewrite one would be a second composer."
+            )
+        self._wire_extra = MappingProxyType(dict(value))
+
     def __str__(self) -> str:
         return self.detail
 
@@ -619,8 +713,9 @@ register_refusal(
         "input that failed rather than at the request."
     ),
     fact=(
-        "The input does not hold. `errors` says which field and why, in the schema's own "
-        "field names, so the failure can be pointed at rather than guessed at."
+        "The input does not hold. The answer names each field that is wrong and why, in "
+        "the schema's own field names, so the failure can be pointed at rather than "
+        "guessed at."
     ),
     remedies=(
         Remedy("Read the failing fields and resend", "field:errors"),
@@ -1021,7 +1116,9 @@ def wire_refusal(exc: DomainError) -> dict[str, Any]:
 
     `{detail, code}` always, `errors` when the refusal names fields, `remedies`
     when there are any — which, for every registered code, is always, because
-    `register_refusal` refuses a code with none.
+    `register_refusal` refuses a code with none. Plus whatever a particular
+    refusal declared in `wire_extra` (a blocked archive's `noun` and
+    `blocking`), beside the four and never over one of them.
 
     **Additive, on purpose**: `remedies` joins a body that already carried
     `detail`, `code` and `errors`, and nothing was renamed or removed. A client
@@ -1033,6 +1130,14 @@ def wire_refusal(exc: DomainError) -> dict[str, Any]:
     body: dict[str, Any] = {"detail": exc.detail, "code": exc.code}
     if exc.errors:
         body["errors"] = exc.errors
+    # What a refusal has to say BEYOND the four common keys, declared beside
+    # itself (`DomainError.wire_extra`) and said once for both doors. The setter
+    # refused a colliding key at raise; this re-check is the belt for a
+    # subclass that bypassed the property.
+    for key, value in exc.wire_extra.items():
+        if key in WIRE_COMMON_KEYS:
+            raise ValueError(f"{type(exc).__name__}.wire_extra may not redefine {key!r}.")
+        body[key] = value
     remedies = exc.remedies
     if remedies:
         body["remedies"] = [
@@ -1041,7 +1146,13 @@ def wire_refusal(exc: DomainError) -> dict[str, Any]:
     return body
 
 
-def refusal_message(body: Mapping[str, Any]) -> str:
+#: What introduces a refusal's `wire_extra` on a text door: the keys REST's body
+#: carries beside the common four, as ONE compact JSON object at the end of the
+#: line — so a machine reader parses exactly what REST sent (`refusal_extra`).
+REFUSAL_EXTRA_MARKER = " | carries: "
+
+
+def refusal_message(body: Mapping[str, Any], *, extra: bool = True) -> str:
     """One line of text for a door with no status codes and no JSON body.
 
     Rendered from `wire_refusal`'s output rather than from the exception, so
@@ -1049,6 +1160,13 @@ def refusal_message(body: Mapping[str, Any]) -> str:
     rather than by two modules agreeing. The `code` leads because it is what a
     client branches on; the order of everything after it is the order the body
     holds, so the same refusal renders the same string every time.
+
+    **Every key beyond the common four rides too** (a refusal's `wire_extra` —
+    a stale save's `current_version`, a blocked verb's `noun` and `blocking`):
+    appended after `REFUSAL_EXTRA_MARKER` as one JSON object, sorted and
+    compact, so the MCP door answers the same facts REST does and a client
+    branches on the value rather than re-reading. `extra=False` is for a human
+    reader (the admin's message bar), where a JSON tail is noise.
     """
     message = f"{body['code']}: {body['detail']}"
     errors = body.get("errors") or {}
@@ -1059,7 +1177,20 @@ def refusal_message(body: Mapping[str, Any]) -> str:
     if remedies:
         offered = "; ".join(f"{entry['label']} [{entry['destination']}]" for entry in remedies)
         message = f"{message} — you can: {offered}"
+    carried = {key: value for key, value in body.items() if key not in WIRE_COMMON_KEYS}
+    if extra and carried:
+        encoded = json.dumps(carried, sort_keys=True, separators=(",", ":"), default=str)
+        message = f"{message}{REFUSAL_EXTRA_MARKER}{encoded}"
     return message
+
+
+def refusal_extra(message: str) -> dict[str, Any]:
+    """The `wire_extra` keys a text-door refusal carried, parsed back; `{}` when none."""
+    head, marker, tail = message.rpartition(REFUSAL_EXTRA_MARKER)
+    if not marker:
+        return {}
+    parsed = json.loads(tail)
+    return dict(parsed) if isinstance(parsed, dict) else {}
 
 
 @contextmanager
@@ -1079,3 +1210,390 @@ def as_invalid() -> Iterator[None]:
         yield
     except DjangoValidationError as exc:
         raise Invalid.from_django(exc) from exc
+
+
+# --- the noun-verb family's blocker shape ---------------------------------------
+#
+# One shape for "a live child holds this noun where it is", shared by every verb
+# that can be held — archive, restore, move, merge. A child app answers with
+# these from its `<verb>_blockers.py` (`apps.core.blockers`); the parent's
+# service raises the verb's `Blocked` refusal over whatever came back, so the
+# refusal is composed once by the parent and the children only ever say WHICH
+# rows and WHERE the reader clears them.
+
+#: A blocker's noun: the child's kind in lower snake case (`widget_entry`).
+_BLOCKER_NOUN = re.compile(r"^[a-z][a-z0-9_]*$")
+
+#: A door is ONE remedy kind, `route:` — the blocking child's operation by its
+#: `url_name` (the house's spelling: `widget-list`, `widget_entry-record`), with
+#: an optional query naming the parent (`route:widget-list?policy=<id>`). Never
+#: a URL and never another remedy kind: `self:`, `header:` and `docs:` say
+#: something about the CALLER, and a blocker is a row somewhere else.
+_BLOCKER_DOOR = re.compile(r"^route:[a-z][a-z0-9_]*(?:-[a-z0-9_]+)*(?:\?[A-Za-z0-9_=&.-]+)?$")
+
+
+@dataclass(frozen=True, slots=True)
+class Blocker:
+    """One live child holding a noun where it is, and where the reader clears it.
+
+    `noun` is the child's kind (`widget`); `door` the remedy destination that
+    lands on it — a `route:<url_name>[?query]` token, never a URL (ADR core-5);
+    `label` the act as the reader takes it (*Move or archive the widgets that
+    name this policy first*). Refused at construction when malformed, so a bad
+    blocker fails where it is written rather than on the wire.
+    """
+
+    noun: str
+    door: str
+    label: str
+
+    def __post_init__(self) -> None:
+        if not _BLOCKER_NOUN.match(self.noun):
+            raise ValueError(
+                f"Blocker.noun is the child's kind in lower snake case (`widget`, "
+                f"`widget_entry`); got {self.noun!r}."
+            )
+        if not _BLOCKER_DOOR.match(self.door):
+            raise ValueError(
+                f"Blocker.door is the blocking child's operation as a `route:` remedy — "
+                f"`route:widget-list?policy=<id>` — never a URL and never another remedy "
+                f"kind; got {self.door!r}."
+            )
+        if not self.label.strip():
+            raise ValueError("Blocker.label is the act the reader takes; got none.")
+
+
+class Blocked(Conflict):
+    """A live child holds this noun where it is; the verb refuses and names it (E9).
+
+        raise ArchiveBlocked(
+            "This policy is still named by live widgets.",
+            noun="widget_policy",
+            blocking=(
+                Blocker(
+                    noun="widget",
+                    door=f"route:widget-list?policy={policy.pk}",
+                    label="Move or archive the widgets that name this policy first",
+                ),
+            ),
+        )
+
+    The family's one blocked shape — each held verb is a subclass with its own
+    code (`archive_blocked`, `restore_blocked`, later `move_blocked`,
+    `merge_blocked`) because the way out differs per verb. A `Conflict`, so the
+    door answers 409 by the MRO: nothing collides, something depends. The
+    blockers become the refusal's REMEDIES (label + door), and ride `wire_extra`
+    as `noun` + `blocking: [{noun, door}]`, so a client branching on which
+    child held it reads a field rather than parsing a sentence. Nothing was
+    written, and nothing cascades.
+    """
+
+    def __init__(
+        self,
+        detail: str | None = None,
+        *,
+        noun: str,
+        blocking: Sequence[Blocker],
+    ) -> None:
+        held = tuple(blocking)
+        if not held or not all(isinstance(entry, Blocker) for entry in held):
+            raise ValueError(
+                f"{type(self).__name__} names its blocking children — at least one "
+                "Blocker(noun=…, door=…, label=…). A block with nothing named is a dead "
+                "end: the reader could not clear the way."
+            )
+        if not _BLOCKER_NOUN.match(noun):
+            raise ValueError(
+                f"{type(self).__name__}.noun is the kind the verb was asked of; got {noun!r}."
+            )
+        super().__init__(
+            detail,
+            remedies=tuple(Remedy(entry.label, entry.door) for entry in held),
+        )
+        self.noun = noun
+        self.blocking = held
+        self.wire_extra = {
+            "noun": noun,
+            "blocking": [{"noun": entry.noun, "door": entry.door} for entry in held],
+        }
+
+
+register_refusal(
+    code="archive_blocked",
+    boundary="service",
+    remedy=(
+        "A live child still holds this noun in the book — a child app's "
+        "`archive_blockers.py` said so (`core.blockers.blockers_for`). The archive does "
+        "not cascade; the raise site names each blocker as a structured remedy — its "
+        "noun and its door — and the caller clears the way by hand, then archives "
+        "again. Raise `ArchiveBlocked(detail, noun=…, blocking=…)`."
+    ),
+    fact=(
+        "This cannot be archived while something live still depends on it. Nothing "
+        "was written, and nothing it depends on was touched."
+    ),
+    remedies=(Remedy("Clear what still depends on it, then archive again", "self:reread"),),
+    status=409,
+)
+
+
+class ArchiveBlocked(Blocked):
+    """A live child holds this noun in the book; the archive refuses and names it."""
+
+    code = "archive_blocked"
+    default_detail = "This cannot be archived while something still depends on it."
+
+
+register_refusal(
+    code="restore_blocked",
+    boundary="service",
+    remedy=(
+        "Something a restore would bring back into the book is not there for it any "
+        "more — a child app's `restore_blockers.py` said so (a row it names was itself "
+        "archived, a name it held is now another live row's). Nothing cascades back; "
+        "the raise site names each blocker as a structured remedy and the caller "
+        "clears the way first. Raise `RestoreBlocked(detail, noun=…, blocking=…)`."
+    ),
+    fact=(
+        "This cannot be restored until something it depends on is put right. Nothing "
+        "was written; it is still archived."
+    ),
+    remedies=(Remedy("Put right what it depends on, then restore again", "self:reread"),),
+    status=409,
+)
+
+
+class RestoreBlocked(Blocked):
+    """Something the restored row depends on is not there for it; the restore refuses."""
+
+    code = "restore_blocked"
+    default_detail = "This cannot be restored until what it depends on is put right."
+
+
+register_refusal(
+    code="archived",
+    boundary="service",
+    remedy=(
+        "The row is ARCHIVED: its reads answer, read-only, and every write other than "
+        "its restore refuses (`core.verbs.require_live`). Restore it through "
+        "`restore_<noun>` — the remedy names the route — and write again; an archived "
+        "row is never edited in place, because an edit nobody can see in the book is a "
+        "change nobody reviews."
+    ),
+    fact=(
+        "This is archived. It can be read, and it cannot be changed until it is "
+        "restored. Nothing was written."
+    ),
+    remedies=(Remedy("Restore it first", f"route:{NOUN_SLOT}-restore"),),
+    status=409,
+)
+
+
+class Archived(Conflict):
+    """A write named an archived row. Restore it first.
+
+        raise Archived(noun="widget")
+
+    The remedy is the noun's own restore door (`route:<noun>-restore`), and
+    `noun` rides `wire_extra` so a client knows which restore to offer without
+    parsing the sentence.
+    """
+
+    code = "archived"
+    default_detail = "This is archived; restore it before changing it."
+
+    def __init__(self, detail: str | None = None, *, noun: str) -> None:
+        if not _BLOCKER_NOUN.match(noun):
+            raise ValueError(f"Archived.noun is the archived row's kind; got {noun!r}.")
+        super().__init__(detail, remedies=remedies_for_noun(self.code, noun))
+        self.noun = noun
+        self.wire_extra = {"noun": noun}
+
+
+register_refusal(
+    code="stale_version",
+    boundary="service",
+    remedy=(
+        "The row is `Versioned` and the write carried a `version` that is no longer "
+        "the row's: somebody else saved it in between (`core.concurrency."
+        "require_version`, under the row lock). Re-read the row, show the person what "
+        "changed, and send the write again with the version the re-read answered — "
+        "never retry blindly with the new number, which would overwrite what the "
+        "other save said."
+    ),
+    fact=(
+        "Somebody else changed this since you read it, so your change was not saved. "
+        "Nothing was written; the answer says which version it has now."
+    ),
+    remedies=(Remedy("Read it again, then make your change to what is there now", "self:reread"),),
+    status=409,
+)
+
+
+class StaleVersion(Conflict):
+    """A write to a `Versioned` row carried a version the row no longer has.
+
+        raise StaleVersion(current_version=version_of(locked))
+
+    Raised by `core.concurrency.require_version` and nowhere else. The row's
+    CURRENT version rides `wire_extra` so a face can reload and re-offer the
+    edit without a second request to learn what it should have sent.
+    """
+
+    code = "stale_version"
+    default_detail = "This changed since you read it; read it again and retry."
+
+    def __init__(self, detail: str | None = None, *, current_version: int) -> None:
+        if isinstance(current_version, bool) or not isinstance(current_version, int):
+            raise ValueError(
+                f"StaleVersion.current_version is the row's version as an int; got "
+                f"{current_version!r}."
+            )
+        # The version it has now, said in words to the reader; the machine's
+        # copy is `wire_extra`'s key, never a token in the sentence.
+        super().__init__(
+            detail
+            or (
+                "This changed since you read it; it is at version "
+                f"{current_version} now. Read it again and retry."
+            )
+        )
+        self.current_version = current_version
+        self.wire_extra = {"current_version": current_version}
+
+
+register_refusal(
+    code="move_blocked",
+    boundary="service",
+    remedy=(
+        "Something that must stay where it is holds this noun where it is: an "
+        "APPEND-ONLY row derives its organization from it (a ledger line is recorded "
+        "where it was written, and moving it is the rewrite house rule 20 forbids), or "
+        "a child app's `move_blockers.py` said so (`core.blockers.blockers_for`). "
+        "Nothing moved. The raise site names each blocker; a product that wants its "
+        "ledger to follow declares its own road, deliberately. Raise "
+        "`MoveBlocked(detail, noun=…, blocking=…)`."
+    ),
+    fact=(
+        "This cannot move while something recorded under it has to stay where it was "
+        "written. Nothing was moved."
+    ),
+    remedies=(Remedy("See what holds it where it is", "self:reread"),),
+    status=409,
+)
+
+
+class MoveBlocked(Blocked):
+    """Something that must stay put holds this noun at its node; the move refuses."""
+
+    code = "move_blocked"
+    default_detail = "This cannot move while something recorded under it must stay put."
+
+
+register_refusal(
+    code="merge_blocked",
+    boundary="service",
+    remedy=(
+        "Something holds this noun apart from the one it would be merged into — a "
+        "child app's `merge_blockers.py` said so (`core.blockers.blockers_for`). "
+        "Nothing was re-pointed and neither row changed. The raise site names each "
+        "blocker as a structured remedy; the caller clears the way, then merges "
+        "again. Raise `MergeBlocked(detail, noun=…, blocking=…)`."
+    ),
+    fact=(
+        "These two cannot be merged while something still holds them apart. Nothing "
+        "was written, and neither record changed."
+    ),
+    remedies=(Remedy("See what holds them apart", "self:reread"),),
+    status=409,
+)
+
+
+class MergeBlocked(Blocked):
+    """Something holds the two rows apart; the merge refuses and names it."""
+
+    code = "merge_blocked"
+    default_detail = "These cannot be merged while something still holds them apart."
+
+
+register_refusal(
+    code="merged",
+    boundary="service",
+    remedy=(
+        "The row was MERGED into another and survives only as a tombstone: its reads "
+        "answer, read-only, naming the survivor in `merged_into`, and every write "
+        "refuses (`core.verbs.require_live`). Write to the survivor instead — the "
+        "remedy names its detail door and `merged_into` its id. There is no unmerge."
+    ),
+    fact=(
+        "This was merged into another record and can no longer be changed. Nothing "
+        "was written; the answer names the record it became."
+    ),
+    remedies=(Remedy("Open the record it became", f"route:{NOUN_SLOT}-detail"),),
+    status=409,
+)
+
+
+class Merged(Conflict):
+    """A write named a merged-away row. Write to its survivor.
+
+        raise Merged(noun="widget", merged_into=loser.merged_into_id)
+
+    The remedy is the noun's detail door (`route:<noun>-detail`) and the
+    survivor's id rides `wire_extra` beside `noun`, so a client re-reads the
+    right row without parsing the sentence.
+    """
+
+    code = "merged"
+    default_detail = "This was merged into another record; change that one instead."
+
+    def __init__(self, detail: str | None = None, *, noun: str, merged_into: Any) -> None:
+        if not _BLOCKER_NOUN.match(noun):
+            raise ValueError(f"Merged.noun is the merged row's kind; got {noun!r}.")
+        super().__init__(detail, remedies=remedies_for_noun(self.code, noun))
+        self.noun = noun
+        self.merged_into = str(merged_into)
+        self.wire_extra = {"noun": noun, "merged_into": str(merged_into)}
+
+
+register_refusal(
+    code="merge_survivor",
+    boundary="service",
+    remedy=(
+        "The row is a merge's SURVIVOR: earlier records were merged into it and their "
+        "tombstones name it (`Mergeable.merged_into`, PROTECT), so deleting it would "
+        "leave them pointing at nothing. Refuse before the delete "
+        "(`core.verbs.require_no_merged_losers`) rather than letting the database's "
+        "PROTECT surface as a generic `conflict`; the caller archives the row instead, "
+        "which keeps every tombstone's answer true."
+    ),
+    fact=(
+        "Other records were merged into this one and still point at it, so it cannot be "
+        "deleted. Nothing was removed; archive it to take it out of the book."
+    ),
+    remedies=(Remedy("Archive it instead", f"route:{NOUN_SLOT}-archive"),),
+    status=409,
+)
+
+
+class MergeSurvivor(Conflict):
+    """A delete named a row others were merged into. Archive it instead.
+
+        raise MergeSurvivor(noun="widget")
+
+    The remedy is the noun's archive door (`route:<noun>-archive`) and `noun`
+    rides `wire_extra`, so a client offers the archive without parsing the
+    sentence.
+    """
+
+    code = "merge_survivor"
+    default_detail = (
+        "Other records were merged into this one, so it cannot be deleted; archive it instead."
+    )
+
+    def __init__(self, detail: str | None = None, *, noun: str) -> None:
+        if not _BLOCKER_NOUN.match(noun):
+            raise ValueError(f"MergeSurvivor.noun is the survivor's kind; got {noun!r}.")
+        super().__init__(detail, remedies=remedies_for_noun(self.code, noun))
+        self.noun = noun
+        self.wire_extra = {"noun": noun}

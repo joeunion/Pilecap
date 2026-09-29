@@ -63,6 +63,7 @@ from django.contrib.auth.base_user import AbstractBaseUser
 from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
 from django.db import models
 
+from apps.core import verbs
 from apps.core.actor import Actor, actor_for
 from apps.core.exceptions import Forbidden
 from apps.core.log import get_logger
@@ -119,22 +120,15 @@ _announced: set[str] = set()
 def _declarations(module: str, attribute: str) -> list[tuple[AppConfig, dict[Any, Any]]]:
     """Every app's `<module>.<attribute>` dict, in app order, with its declarer.
 
-    The one discovery walk. `policies.py` and `roles.py` are found the same way
-    for the same reason — drop the file and the declaration counts, with no
-    registration anywhere — and the `AppConfig` travels with the dict because
-    every refusal below has to name WHICH app declared the thing it is refusing.
+    A caller of `core.verbs.declared`, which is THE discovery walk — lifted
+    there so the vocabulary and the noun-verb family's hooks share one walk
+    rather than two copies of it (principle 13). `policies.py` and `roles.py`
+    are found the same way for the same reason — drop the file and the
+    declaration counts, with no registration anywhere — and the `AppConfig`
+    travels with the dict because every refusal below has to name WHICH app
+    declared the thing it is refusing.
     """
-    found: list[tuple[AppConfig, dict[Any, Any]]] = []
-    for config in django_apps.get_app_configs():
-        if not config.name.startswith("apps."):
-            continue
-        module_name = f"{config.name}.{module}"
-        if importlib.util.find_spec(module_name) is None:
-            continue
-        declared = getattr(importlib.import_module(module_name), attribute, None)
-        if isinstance(declared, dict):
-            found.append((config, declared))
-    return found
+    return verbs.declared(module, attribute)
 
 
 def action_prose() -> dict[str, str]:
@@ -201,6 +195,36 @@ def policies() -> dict[str, Policy]:
     if _registry is None:
         _registry = _discover()
     return _registry
+
+
+#: The predicates the `system` actor must answer to. Filled only by
+#: `refuses_system` at import of the declaring module, and never by discovery —
+#: so `reset_policies` leaves it alone.
+_refuses_system: set[Policy] = set()
+
+
+def refuses_system[P: Policy](predicate: P) -> P:
+    """Declare that this predicate is asked of the `system` actor too.
+
+    **The rule: the product acting for itself is refused only by a policy that
+    says so; every other policy keeps the exemption.** `allows` step 1 waves a
+    workflow, a schedule or a command through before any predicate runs, and
+    that stays the default — the system has no membership to consult and the
+    scoped manager still enforces the tenancy. A predicate decorated here is
+    the one exception: for its keys the system actor gets the predicate's own
+    answer, and a no raises the same `Forbidden` with the same sentence a
+    member reads. A declaration beside the predicate, never a list of keys in
+    `core`, so the exception lives where a reviewer reads the rule it guards.
+
+    Returns the predicate unchanged, so the decorated name is the registered one.
+    """
+    _refuses_system.add(predicate)
+    return predicate
+
+
+def refusing_system() -> frozenset[Policy]:
+    """The predicates that declared `refuses_system`, as a read-only set."""
+    return frozenset(_refuses_system)
 
 
 def reset_policies() -> None:
@@ -661,7 +685,10 @@ def _derived_sentence(model: type[models.Model], verb: str) -> str:
         return f"You may not read this {one}."
     if verb == "update":
         return f"You may not change this {one}."
-    return f"You may not delete this {one}."
+    if verb == "delete":
+        return f"You may not delete this {one}."
+    # A family verb a marker derived (`archive`, `restore`, …): its own word.
+    return f"You may not {verb} this {one}."
 
 
 def _classify(action: str, kinds: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -688,6 +715,22 @@ def _classify(action: str, kinds: Mapping[str, Any]) -> tuple[str, str, str]:
     return (kind, verb, "")
 
 
+def family_verbs(model: type[models.Model]) -> tuple[str, ...]:
+    """The noun-verb family's verbs this model's markers derive, in road order.
+
+    `Archivable` → `("archive", "restore")`, `Movable` → `("move",)` — each
+    road's `grants`, never its routes (a bulk route grants nothing: it runs the
+    noun's own verbs). The roads are `core.verbs.ROADS`,
+    the same table house rule 74 reads, so the vocabulary and the rule that
+    demands the doors cannot come to disagree about which verbs a marker means.
+    """
+    found: list[str] = []
+    for road in verbs.ROADS.values():
+        if road.marker != verbs.ANY_MARKER and getattr(model, road.marker, False):
+            found.extend(verb for verb in road.grants if verb not in found)
+    return tuple(found)
+
+
 def _pattern_matches(pattern: str, action: str) -> bool:
     """A role pattern against a key. **Reserved keys match nothing.**"""
     if action in RESERVED_PERMISSIONS:
@@ -706,9 +749,11 @@ def _build() -> tuple[dict[str, Permission], dict[str, str]]:
 
     words: dict[str, Permission] = {}
 
-    # 1 · derived — four verbs per kind, the sentence overridable by prose.
+    # 1 · derived — four verbs per kind, plus the verbs each family marker the
+    #     kind's model declares (`Archivable` → `archive`, `restore`; read off
+    #     `core.verbs.ROADS`, never typed here), the sentence overridable by prose.
     for kind, model in kinds.items():
-        for verb in CRUD_VERBS:
+        for verb in (*CRUD_VERBS, *family_verbs(model)):
             action = f"{kind}.{verb}"
             words[action] = Permission(
                 action=action,
@@ -1557,9 +1602,19 @@ def membership_for(actor: Actor) -> Membership | None:
     """
     if actor.user is None or actor.tenant is None:
         return None
+    # The memberships the actor already caches (`_memo_box` — the rows
+    # `effective_permissions` reads, on the actor's own memo): a predicate asking
+    # "is this person a member here" per ROW of a page used to read the table
+    # once per row; it reads it once per actor now, whichever of the two asks
+    # first. The same raw rows, the same `forget_permissions()` invalidation.
+    box = _memo_box(actor.user, actor.tenant, actor)
+    memberships: tuple[Membership, ...] | None = box.get("memberships")
+    if memberships is None:
+        memberships = tuple(memberships_in(actor.user, actor.tenant))
+        box["memberships"] = memberships
     candidates = [
         membership
-        for membership in memberships_in(actor.user, actor.tenant)
+        for membership in memberships
         if actor.org is None or is_descendant_path(actor.org.path, membership.organization.path)
     ]
     if not candidates:
@@ -1589,6 +1644,10 @@ def allows(actor: Actor, action: str, obj: Any = None) -> bool:
     1. `system` is the product acting for itself — a workflow, a schedule, a
        command. There is no membership to consult and no person to ask, and
        the tenancy is still enforced by the scoped manager on every read.
+       **Unless the key's predicate declared `refuses_system`** — then the
+       system actor gets that predicate's own answer (`core.policies.
+       may_archive` is the first: an archive is an admin's press, and a
+       workflow is nobody's admin).
     2. **Where** — `where_of(actor, obj)`: the node the object names, the
        acting hat when it names none, and the tenant-wide union when there is
        neither.
@@ -1631,7 +1690,12 @@ def allows(actor: Actor, action: str, obj: Any = None) -> bool:
     do not reach — silence is still no.
     """
     if actor.kind == "system":
-        return True
+        # Exempt unless the key's predicate declared `refuses_system`; then its
+        # own answer. Renames resolve first, as below.
+        declared_predicate = policies().get(resolve_renamed(action))
+        if declared_predicate is None or declared_predicate not in _refuses_system:
+            return True
+        return bool(declared_predicate(actor, obj))
 
     at = where_of(actor, obj)
     action = resolve_renamed(action)

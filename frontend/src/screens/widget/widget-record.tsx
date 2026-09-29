@@ -1,0 +1,719 @@
+// golden: face begin
+// patterns: §1, §6, §9, §10, §13, §15, §16, §17, §20
+"use client";
+// golden: face end
+
+/**
+ * EXAMPLE — the worked Widget record: the record head (patterns.md §6) over the
+ * record page grid (§9) of cards (§10), total over the four states — loading
+ * (§13), empty (a record that is not here), refused (§15), ready. The head's
+ * one pill is the noun's standing state (§16). The family's acts sit in the
+ * head's acts row in the verb table's order, *Archive* last: *Edit* opens the
+ * edit sheet (§1), *Move* the move sheet (§1), *Archive* leaves the book (§20)
+ * and the archived record wears the band (§17) with its one act, *Restore*. A
+ * record the hat moved out of its sight wears the moved-away band. The History
+ * card is the last card in main. A product copies it for its own noun.
+ *
+ * It renders and never fetches (fe-conventions §4, Law 4): the route hands it
+ * the state of its REST read, and `press` when the route can take the acts.
+ * WHO SEES AN ACT IS THE ROW'S `allowed_acts`, from that read and nothing else:
+ * a socket frame carries no per-viewer field, so a frame is a signal for the
+ * route to re-read, never a source of acts (fe-conventions §7).
+ *
+ * An act with no handler to take it is absent, never dead: with no `press`, the
+ * head draws no act and the band draws its sentence alone; *Edit* and *Move*
+ * need their sheet's handlers too.
+ *
+ * ONE HONEST ABSENCE, the book's own ruling until the wire answers: the details
+ * card names no owner, because the template's user has no name to give and an
+ * address never reaches a reader.
+ */
+
+// golden: face begin
+import { type ReactNode, type Ref, type RefObject, useEffect, useRef, useState } from "react";
+
+import { WIDGET_COPY as C, widgetStateWord } from "@/copy/widget";
+import { RefusalPanel } from "@/screens/refusal-panel";
+import { pathFor } from "@/screens/routes";
+import type { Refusal, SurfaceState } from "@/screens/state";
+import { unhandledState } from "@/screens/state";
+import { type Act, actsFor, footAct, type Place, VERB_TABLE, type Verb } from "@/screens/verbs";
+import { Card, dayOf, Pill, StillLine, type WidgetDetail as Widget } from "@/screens/widget/parts";
+import { ROAD } from "@/screens/widget/road";
+import "@/screens/widget/widget-face.css";
+// golden: face end
+// golden: archive begin
+import { archivedSentence } from "@/copy/widget";
+// golden: archive end
+// golden: version begin
+import { type EditPress, EditSheet } from "@/screens/widget/widget-edit";
+// golden: version end
+// golden: move begin
+import { movedSentence, moveSheetTitle } from "@/copy/widget";
+import { type MovePress, MoveSheet } from "@/screens/widget/widget-move";
+// golden: move end
+// golden: history begin
+import { HistoryCard, type HistoryPress } from "@/screens/widget/widget-history";
+// golden: history end
+// golden: duplicate begin
+import { duplicatedBand } from "@/copy/widget";
+// golden: duplicate end
+// golden: attach begin
+import { type AttachPress, FilesCard, NotesCard, TagRow, useAdding } from "@/screens/widget/widget-attach";
+// golden: attach end
+// golden: merge begin
+import { mergedBand } from "@/copy/widget";
+import { type MergePress, MergeSheet } from "@/screens/widget/widget-merge";
+// golden: merge end
+
+// golden: face begin
+/** What the route hands the face when it can take the acts: the press, the act at work, and the last refusal. */
+export type RecordPress = {
+    /** A one-press act (*Archive*, *Restore*): the route writes, and hands back the row. */
+    readonly onAct: (verb: Verb) => void;
+    readonly busy?: Verb | null;
+    readonly refused?: { readonly verb: Verb; readonly refusal: Refusal } | null;
+    // golden: face end
+    // golden: version begin
+    /** *Edit*'s sheet: its save and its re-read. Without it, *Edit* is absent. */
+    readonly edit?: EditPress;
+    // golden: version end
+    // golden: move begin
+    /** *Move*'s sheet: its destinations and its move. Without it, *Move* is absent. */
+    readonly move?: MovePress;
+    // golden: move end
+    // golden: merge begin
+    /** *Merge*'s chooser and confirm: the candidates, the dry run and the merge. Without it, *Merge* is absent. */
+    readonly merge?: MergePress;
+    // golden: merge end
+    // golden: face begin
+};
+
+export type WidgetRecordProps = {
+    readonly state: SurfaceState<Widget>;
+    readonly press?: RecordPress;
+    /** A sheet the route opens with the face (a link straight to it); the face holds it from there. */
+    readonly opened?: Sheet | null;
+    // golden: face end
+    // golden: attach begin
+    /** Notes, files and tags: each kind the route reads and can take; a kind with no press is not drawn. */
+    readonly attach?: AttachPress | undefined;
+    // golden: attach end
+    // golden: history begin
+    /** The History card's read; the card is drawn when the route reads it. */
+    readonly history?: HistoryPress | undefined;
+    // golden: history end
+    // golden: move begin
+    /** The node a move took the row to, when the hat can no longer see it there: the moved-away band. */
+    readonly movedTo?: string | null;
+    // golden: move end
+    // golden: duplicate begin
+    /** The row this one was just copied from: the copy's band names it, until the next navigation. */
+    readonly duplicatedFrom?: { readonly id: string; readonly name: string } | null;
+    // golden: duplicate end
+    // golden: merge begin
+    /** The survivor a merged row became, as the route read it: the merged band names it. */
+    readonly mergedInto?: { readonly id: string; readonly name: string } | null;
+    /** The face was reached by a merge pressed on another page (the list's bar): focus lands on the name. */
+    readonly landOnName?: boolean;
+    // golden: merge end
+    // golden: face begin
+};
+
+/** The sheets a head act opens: *Edit*'s, *Move*'s and *Merge*'s chooser. */
+export type Sheet = "update" | "move" | "merge";
+
+export function WidgetRecord(props: WidgetRecordProps) {
+    return (
+        <main
+            style={{
+                maxWidth: "calc(var(--measure) * 1.5 + var(--space-4))",
+                margin: "0 auto",
+                padding: "var(--space-4) var(--space-3)",
+            }}
+        >
+            <Crumb />
+            {body(props)}
+        </main>
+    );
+}
+
+function body(props: WidgetRecordProps) {
+    const { state } = props;
+    switch (state.kind) {
+        case "loading":
+            return (
+                <div aria-busy="true" aria-live="polite">
+                    <StillLine />
+                    <p style={{ margin: "0 0 var(--space-3)", color: "var(--muted)" }}>{C.loadingOne}</p>
+                    <Grid
+                        main={
+                            <Card title={C.aboutTitle} busy>
+                                <StillLine />
+                            </Card>
+                        }
+                        rail={
+                            <Card title={C.detailsTitle} busy>
+                                <StillLine />
+                                <StillLine />
+                            </Card>
+                        }
+                    />
+                </div>
+            );
+        case "empty":
+            // Not a claim about the record (that is `not_found`, §15): under the
+            // crumb alone, one sentence, and no second door: the crumb is the
+            // record's one door to the list (§14).
+            return <p style={{ margin: "0 0 var(--space-2)", color: "var(--ink)" }}>{C.gone}</p>;
+        case "error":
+            // The head carries the crumb alone; the notice sits in the content seat.
+            return <RecordRefusal refusal={state.refusal} />;
+        case "ready":
+            return <Ready {...props} widget={state.data} />;
+    }
+    return unhandledState(state);
+}
+
+/** §6: the crumb is one link to the list route, wearing the list's title, at the act floor (`.widget-crumb`). */
+function Crumb() {
+    const list = pathFor("widget-list");
+    return (
+        <p style={{ margin: "0 0 var(--space-2)", fontSize: "var(--type-facts)" }}>
+            {list === null ? (
+                C.title
+            ) : (
+                <a href={list} className="widget-crumb">
+                    {C.title}
+                </a>
+            )}
+        </p>
+    );
+}
+
+function Ready(props: WidgetRecordProps & { readonly widget: Widget }) {
+    const { widget, press } = props;
+    const archivedAt = widget.archived_at ?? null;
+    const [sheet, setSheet] = useState<Sheet | null>(props.opened ?? null);
+    const name = useRef<HTMLHeadingElement>(null);
+    const wayBack = useRef<HTMLButtonElement>(null);
+    const band = useRef<HTMLParagraphElement>(null);
+    const openers = useRef(new Map<Verb, HTMLButtonElement>());
+    const road = useLanding(archivedAt !== null, widget.id, press?.refused ?? null, sheet, { name, wayBack, band, openers });
+    // golden: face end
+    // golden: merge begin
+    // A merge pressed on the list brought the face here: the landing is the survivor's name, as on the record.
+    const arrived = props.landOnName === true;
+    useEffect(() => {
+        if (arrived) name.current?.focus();
+    }, [arrived]);
+    // golden: merge end
+    // golden: face begin
+    let movedAway = false;
+    let merged = false;
+    // golden: face end
+    // golden: move begin
+    movedAway = props.movedTo !== null && props.movedTo !== undefined;
+    // golden: move end
+    // golden: merge begin
+    merged = widget.merged_into_id !== null && widget.merged_into_id !== undefined;
+    // golden: merge end
+    // golden: face begin
+    const live = archivedAt === null && !movedAway && !merged;
+    // golden: face end
+    // golden: attach begin
+    const adding = useAdding();
+    // An archived or merged row keeps what is on it, and offers no act on it.
+    const attachRoad = live ? ROAD : { ...ROAD, verbs: [] };
+    // golden: attach end
+    // golden: face begin
+
+    /** A press on a head act: a sheet verb opens its sheet; a one-press verb goes to the route. */
+    const pressed = (verb: Verb) => {
+        road.arm(verb);
+        // golden: face end
+        // golden: version begin
+        if (verb === "update" && press?.edit !== undefined) return setSheet("update");
+        // golden: version end
+        // golden: move begin
+        if (verb === "move" && press?.move !== undefined) {
+            press.move.onOpen?.();
+            return setSheet("move");
+        }
+        // golden: move end
+        // golden: merge begin
+        if (verb === "merge" && press?.merge !== undefined) {
+            press.merge.onOpen?.();
+            return setSheet("merge");
+        }
+        // golden: merge end
+        // golden: face begin
+        press?.onAct(verb);
+    };
+    const closed = (done: boolean) => {
+        road.closing(sheet, done);
+        setSheet(null);
+    };
+    // A sheet verb whose handler the route did not hand over is absent, never dead.
+    const takes = (verb: Verb) => VERB_TABLE.find((row) => row.verb === verb)?.foot === null || sheetTaken(press, verb);
+
+    return (
+        <>
+            <header>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", columnGap: "var(--space-2)" }}>
+                    <h1
+                        ref={name}
+                        tabIndex={-1}
+                        style={{ fontSize: "var(--type-title)", margin: 0, color: "var(--ink)", overflowWrap: "anywhere" }}
+                    >
+                        {widget.name}
+                    </h1>
+                    {/* An archived or moved-away head wears no pill: its band says it (§16). */}
+                    {live ? <StatePill onboardedAt={widget.onboarded_at} /> : null}
+                </div>
+                {/* §6: the lede is one fact, the scope the record lives in, by name. */}
+                <p style={{ margin: "var(--space-1) 0 0", fontSize: "var(--type-facts)", color: "var(--muted)" }}>
+                    {widget.organization_name}
+                </p>
+                {/* golden: face end */}
+                {/* golden: attach begin */}
+                {/* §6: the tag row, directly under the lede. */}
+                {props.attach?.tags === undefined ? null : (
+                    <TagRow road={ROAD} live={live} tags={widget.tags ?? []} part={props.attach.tags} adding={adding} />
+                )}
+                {/* golden: attach end */}
+                {/* golden: face begin */}
+                {live ? <HeadActs widget={widget} press={press} takes={takes} onPressed={pressed} openers={openers} /> : null}
+            </header>
+            {/* golden: face end */}
+            {/* golden: archive begin */}
+            {archivedAt === null || merged ? null : (
+                <ArchivedBand widget={widget} archivedAt={archivedAt} press={press} onPressed={pressed} wayBack={wayBack} />
+            )}
+            {/* golden: archive end */}
+            {/* golden: move begin */}
+            {movedAway ? (
+                <div data-band="moved" className="widget-band">
+                    <p ref={band} tabIndex={-1}>
+                        {movedSentence(props.movedTo ?? "")}
+                    </p>
+                </div>
+            ) : null}
+            {/* golden: move end */}
+            {/* golden: duplicate begin */}
+            {props.duplicatedFrom === null || props.duplicatedFrom === undefined ? null : <DuplicatedBand source={props.duplicatedFrom} />}
+            {/* golden: duplicate end */}
+            {/* golden: merge begin */}
+            {merged ? <MergedBand widget={widget} survivor={props.mergedInto ?? null} /> : null}
+            {/* golden: merge end */}
+            {/* golden: face begin */}
+            <Grid
+                main={
+                    <>
+                        <Card title={C.aboutTitle}>
+                            <p style={{ margin: 0, color: widget.notes === "" ? "var(--muted)" : "var(--ink)" }}>
+                                {widget.notes === "" ? C.descriptionEmpty : widget.notes}
+                            </p>
+                        </Card>
+                        {/* golden: face end */}
+                        {/* golden: attach begin */}
+                        {/* Notes, then Files, before History. */}
+                        {props.attach?.notes === undefined ? null : <NotesCard road={attachRoad} part={props.attach.notes} adding={adding} />}
+                        {props.attach?.files === undefined ? null : <FilesCard road={attachRoad} part={props.attach.files} adding={adding} />}
+                        {/* golden: attach end */}
+                        {/* golden: history begin */}
+                        {/* §2.6: History is the LAST card in main. */}
+                        {props.history === undefined ? null : <HistoryCard history={props.history} />}
+                        {/* golden: history end */}
+                        {/* golden: face begin */}
+                    </>
+                }
+                rail={
+                    <Card title={C.detailsTitle}>
+                        <dl style={{ margin: 0 }}>
+                            <Fact label={C.addedLabel} value={dayOf(widget.created_at)} />
+                            <Fact label={C.changedLabel} value={dayOf(widget.updated_at)} />
+                            {widget.onboarded_at === null || widget.onboarded_at === undefined ? null : (
+                                <Fact label={C.onboardedLabel} value={dayOf(widget.onboarded_at)} />
+                            )}
+                        </dl>
+                    </Card>
+                }
+            />
+            {/* golden: face end */}
+            {/* golden: version begin */}
+            {sheet === "update" && press?.edit !== undefined ? (
+                <EditSheetFor widget={widget} press={press} edit={press.edit} onClose={closed} />
+            ) : null}
+            {/* golden: version end */}
+            {/* golden: move begin */}
+            {sheet === "move" && press?.move !== undefined ? (
+                <MoveSheetFor widget={widget} press={press} move={press.move} onClose={closed} />
+            ) : null}
+            {/* golden: move end */}
+            {/* golden: merge begin */}
+            {sheet === "merge" && press?.merge !== undefined ? (
+                <MergeSheet
+                    widget={widget}
+                    road={ROAD}
+                    busy={press.busy === "merge"}
+                    refused={press.refused?.verb === "merge" ? press.refused.refusal : null}
+                    press={press.merge}
+                    onClose={closed}
+                />
+            ) : null}
+            {/* golden: merge end */}
+            {/* golden: face begin */}
+        </>
+    );
+}
+
+/** Whether the route handed over the sheet a verb opens (a verb with no sheet answers false here). */
+function sheetTaken(press: RecordPress | undefined, verb: Verb): boolean {
+    let taken = false;
+    // golden: face end
+    // golden: version begin
+    if (verb === "update") taken = press?.edit !== undefined;
+    // golden: version end
+    // golden: move begin
+    if (verb === "move") taken = press?.move !== undefined;
+    // golden: move end
+    // golden: merge begin
+    if (verb === "merge") taken = press?.merge !== undefined;
+    // golden: merge end
+    // golden: face begin
+    return taken;
+}
+
+/**
+ * §6: the head's acts row — the road's acts the row allows and the route can
+ * take, in table order, *Archive* last — and the refusal seat directly under
+ * it for a one-press act (a sheet's refusal sits in its sheet). Absent, never
+ * an empty element, when the row allows nothing here or no handler can take it.
+ */
+function HeadActs({
+    widget,
+    press,
+    takes,
+    onPressed,
+    openers,
+}: {
+    readonly widget: Widget;
+    readonly press: RecordPress | undefined;
+    readonly takes: (verb: Verb) => boolean;
+    readonly onPressed: (verb: Verb) => void;
+    readonly openers: RefObject<Map<Verb, HTMLButtonElement>>;
+}) {
+    const acts = press === undefined ? [] : actsFor({ allowed_acts: widget.allowed_acts ?? [] }, ROAD).filter((act) => takes(act.verb));
+    if (acts.length === 0) return null;
+    return (
+        <>
+            <div data-seat="record-acts" className="widget-acts">
+                {acts.map((act) => (
+                    <ActButton
+                        key={act.verb}
+                        act={act}
+                        press={press}
+                        onPressed={onPressed}
+                        buttonRef={(el) => {
+                            if (el === null) openers.current.delete(act.verb);
+                            else openers.current.set(act.verb, el);
+                        }}
+                    />
+                ))}
+            </div>
+            <RefusalSeat press={press} acts={acts} place="record-acts" />
+        </>
+    );
+}
+// golden: face end
+
+// golden: archive begin
+/**
+ * §17 · §20: the archived record's band, under the head — *Archived ⟨day⟩ by
+ * ⟨name⟩.* and its one act, *Restore*, quiet — then the seat for a refused
+ * restore under it. The head's acts row is not drawn and no card holds an act.
+ */
+function ArchivedBand({
+    widget,
+    archivedAt,
+    press,
+    onPressed,
+    wayBack,
+}: {
+    readonly widget: Widget;
+    readonly archivedAt: string;
+    readonly press: RecordPress | undefined;
+    readonly onPressed: (verb: Verb) => void;
+    readonly wayBack: Ref<HTMLButtonElement>;
+}) {
+    const acts = press === undefined ? [] : actsFor({ allowed_acts: widget.allowed_acts ?? [] }, ROAD, "band");
+    return (
+        <>
+            <div data-band="archived" className="widget-band">
+                <p>{archivedSentence(dayOf(archivedAt), widget.archived_by?.name)}</p>
+                {acts.map((act) => (
+                    <ActButton key={act.verb} act={act} press={press} onPressed={onPressed} buttonRef={wayBack} />
+                ))}
+            </div>
+            <RefusalSeat press={press} acts={acts} place="band" />
+        </>
+    );
+}
+// golden: archive end
+
+// golden: version begin
+/** *Edit*'s sheet over the record: *Save* from the verb table, busy while the route saves, its refusal above the foot. */
+function EditSheetFor({
+    widget,
+    press,
+    edit,
+    onClose,
+}: {
+    readonly widget: Widget;
+    readonly press: RecordPress;
+    readonly edit: EditPress;
+    readonly onClose: (done: boolean) => void;
+}) {
+    const save = footAct({ allowed_acts: widget.allowed_acts ?? [] }, ROAD, "update");
+    if (save === null) return null;
+    const refused = press.refused?.verb === "update" ? press.refused.refusal : null;
+    return <EditSheet widget={widget} save={save} busy={press.busy === "update"} refused={refused} press={edit} onClose={onClose} />;
+}
+// golden: version end
+
+// golden: move begin
+/** *Move*'s sheet over the record: *Move* from the verb table, the current node marked, its refusal above the foot. */
+function MoveSheetFor({
+    widget,
+    press,
+    move,
+    onClose,
+}: {
+    readonly widget: Widget;
+    readonly press: RecordPress;
+    readonly move: MovePress;
+    readonly onClose: (done: boolean) => void;
+}) {
+    const act = footAct({ allowed_acts: widget.allowed_acts ?? [] }, ROAD, "move");
+    if (act === null) return null;
+    const refused = press.refused?.verb === "move" ? press.refused.refusal : null;
+    return (
+        <MoveSheet
+            title={moveSheetTitle(widget.name)}
+            currentId={widget.organization_id}
+            move={act}
+            busy={press.busy === "move"}
+            refused={refused}
+            press={move}
+            onClose={onClose}
+        />
+    );
+}
+// golden: move end
+
+// golden: duplicate begin
+/** §17: the copy's band — *Duplicated from ⟨source⟩.*, the source a live link — until the next navigation. */
+function DuplicatedBand({ source }: { readonly source: { readonly id: string; readonly name: string } }) {
+    const words = duplicatedBand();
+    const door = pathFor("widget-detail", { id: source.id });
+    return (
+        <div data-band="duplicated" className="widget-band">
+            <p>
+                {words.lead} {door === null ? source.name : <a href={door}>{source.name}</a>}
+                {words.tail}
+            </p>
+        </div>
+    );
+}
+// golden: duplicate end
+
+// golden: merge begin
+/**
+ * §17: the merged row's band — *Merged into ⟨survivor⟩ on ⟨day⟩.*, the
+ * survivor a live link — with no act: a merge has no way back. The head draws
+ * no act and no pill, and there is no primary.
+ */
+function MergedBand({ widget, survivor }: { readonly widget: Widget; readonly survivor: { readonly id: string; readonly name: string } | null }) {
+    const words = mergedBand(dayOf(widget.archived_at ?? widget.updated_at));
+    const door = survivor === null ? null : pathFor("widget-detail", { id: survivor.id });
+    return (
+        <div data-band="merged" className="widget-band">
+            <p>
+                {survivor === null ? (
+                    words.alone
+                ) : (
+                    <>
+                        {words.lead} {door === null ? survivor.name : <a href={door}>{survivor.name}</a>}
+                        {words.tail}
+                    </>
+                )}
+            </p>
+        </div>
+    );
+}
+// golden: merge end
+
+// golden: face begin
+/**
+ * The focus road — focus lands where the next act is: a leaving act lands on
+ * the way back (the band's *Restore*); the way back lands on the record's
+ * name; an act that opened a sheet lands, when the sheet goes down, back on
+ * its opener — or, after a move, on the record's name (on the band when the
+ * hat can no longer see the row there). A refusal leaves focus on the pressed
+ * act, which stays drawn and alive, so the landing is forgotten when a
+ * refusal answers.
+ */
+function useLanding(
+    archived: boolean,
+    rowId: string,
+    refused: RecordPress["refused"],
+    sheet: Sheet | null,
+    {
+        name,
+        wayBack,
+        band,
+        openers,
+    }: {
+        readonly name: RefObject<HTMLHeadingElement | null>;
+        readonly wayBack: RefObject<HTMLButtonElement | null>;
+        readonly band: RefObject<HTMLParagraphElement | null>;
+        readonly openers: RefObject<Map<Verb, HTMLButtonElement>>;
+    },
+) {
+    const landing = useRef<Verb | null>(null);
+    const after = useRef<{ readonly verb: Sheet; readonly done: boolean } | null>(null);
+
+    useEffect(() => {
+        if (landing.current === "archive" && archived) wayBack.current?.focus();
+        if (landing.current === "restore" && !archived) name.current?.focus();
+        landing.current = null;
+    }, [archived, name, wayBack]);
+
+    useEffect(() => {
+        if (refused !== null && refused !== undefined) landing.current = null;
+    }, [refused]);
+
+    // An act that answered ANOTHER row (a duplicate's copy, a merge's survivor)
+    // stands the face on it: focus lands on its name.
+    const shown = useRef(rowId);
+    useEffect(() => {
+        if (shown.current === rowId) return;
+        shown.current = rowId;
+        if (landing.current !== null) name.current?.focus();
+        landing.current = null;
+    }, [rowId, name]);
+
+    // A sheet went down: back to its opener, or past it when its press moved the row.
+    useEffect(() => {
+        const went = after.current;
+        if (sheet !== null || went === null) return;
+        after.current = null;
+        if (went.verb === "move" && went.done) (band.current ?? name.current)?.focus();
+        else if (went.verb === "merge" && went.done) name.current?.focus();
+        else openers.current.get(went.verb)?.focus();
+    }, [sheet, band, name, openers]);
+
+    return {
+        arm: (verb: Verb) => {
+            landing.current = verb;
+        },
+        closing: (verb: Sheet | null, done: boolean) => {
+            if (verb !== null) after.current = { verb, done };
+        },
+    };
+}
+
+/** One family act: a native button from the verb table; a one-press act's busy form on the same button, alive. */
+function ActButton({
+    act,
+    press,
+    onPressed,
+    buttonRef,
+}: {
+    readonly act: Act;
+    readonly press: RecordPress | undefined;
+    readonly onPressed: (verb: Verb) => void;
+    readonly buttonRef?: Ref<HTMLButtonElement>;
+}) {
+    // A sheet's act says its progressive in the sheet's foot; the head's act that opened it stays its word.
+    const busy = press?.busy === act.verb && act.words.foot === null;
+    return (
+        <button
+            type="button"
+            className="widget-act"
+            ref={buttonRef}
+            {...act.attrs}
+            aria-busy={busy ? "true" : undefined}
+            onClick={() => onPressed(act.verb)}
+        >
+            {busy ? act.busy : act.label}
+        </button>
+    );
+}
+
+/** The seat directly under an act's row: the refusal of a one-press act pressed there, first line the verb's refused label. */
+function RefusalSeat({
+    press,
+    acts,
+    place,
+}: {
+    readonly press: RecordPress | undefined;
+    readonly acts: readonly Act[];
+    readonly place: Place;
+}) {
+    const refused = press?.refused;
+    if (refused === null || refused === undefined) return null;
+    const act = acts.find((candidate) => candidate.verb === refused.verb && candidate.words.foot === null);
+    if (act === undefined) return null;
+    return (
+        <div className="widget-refusal-seat">
+            <RefusalPanel refusal={refused.refusal} seat={place} words={{ label: act.words.refused, remedies: C.remedies }} />
+        </div>
+    );
+}
+
+/** §16: the pill is the departure; the resting state wears none. */
+function StatePill({ onboardedAt }: { readonly onboardedAt: string | null | undefined }) {
+    const word = widgetStateWord(onboardedAt);
+    return word === null ? null : <Pill word={word} />;
+}
+
+/** §9: main (the work, at most the measure wide) and the rail beside it; one column on a phone. */
+function Grid({ main, rail }: { readonly main: ReactNode; readonly rail: ReactNode }) {
+    return (
+        <div
+            style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "flex-start",
+                gap: "var(--space-4)",
+                marginBlockStart: "var(--space-4)",
+            }}
+        >
+            <div style={{ flex: "2 1 calc(var(--measure) / 2)", maxWidth: "var(--measure)", display: "grid", gap: "var(--space-3)" }}>
+                {main}
+            </div>
+            <aside style={{ flex: "1 1 calc(var(--measure) / 3)", display: "grid", gap: "var(--space-3)" }}>{rail}</aside>
+        </div>
+    );
+}
+
+function Fact({ label, value }: { readonly label: string; readonly value: string }) {
+    return (
+        <div style={{ margin: "0 0 var(--space-1)" }}>
+            <dt style={{ fontSize: "var(--type-facts)", color: "var(--muted)" }}>{label}</dt>
+            <dd style={{ margin: 0, color: "var(--ink)" }}>{value}</dd>
+        </div>
+    );
+}
+
+function RecordRefusal({ refusal }: { readonly refusal: Refusal }) {
+    return (
+        <RefusalPanel
+            refusal={refusal}
+            words={{ label: refusal.kind === "registry" ? C.errorLabel : C.transportLabel, remedies: C.remedies }}
+        />
+    );
+}
+// golden: face end

@@ -61,6 +61,7 @@ TOOL_FOR_ROUTE: dict[str, str] = {
     "recipient-create": "create_recipient",
     "recipient-update": "update_recipient",
     "recipient-archive": "archive_recipient",
+    "recipient-restore": "restore_recipient",
     "recipient-suppress": "suppress_recipient",
     "recipient-unsuppress": "unsuppress_recipient",
     # C2-comms-b. `policies-list` rather than `policy-list` is deliberate and is

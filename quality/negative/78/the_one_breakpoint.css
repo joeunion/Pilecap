@@ -1,0 +1,12 @@
+/* The book's one breakpoint, in range syntax, and its complement. */
+@media (width <= 40rem) {
+    .zzz-canary-row {
+        display: block;
+    }
+}
+
+@media (width > 40rem) {
+    .zzz-canary-row {
+        display: grid;
+    }
+}

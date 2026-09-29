@@ -61,11 +61,14 @@ from apps.search.types import Searchable
 #: `Widget object (…)` while the index is down and `Bench press #4` while it is
 #: up would be a difference a user sees every time this product fails over.
 #:
-#: `refresh_on` names three of this app's four events and leaves one out on
-#: purpose. Created, updated and deleted each change what a reader would find —
-#: the third is the one that REMOVES the document, and a kind that subscribed
+#: `refresh_on` names the events that change what a reader would find, and
+#: leaves one out on purpose. Created, updated and deleted each change the
+#: document — the third is the one that REMOVES it, and a kind that subscribed
 #: only to the first two would leave deleted rows findable until the hourly
-#: reconcile got to them. `WIDGET_ONBOARDED` is not here because onboarding
+#: reconcile got to them. Moved changes WHO may find it: the document carries
+#: the widget's organization, and a moved widget whose document still named the
+#: old node would be found by the branch it left and missed by the one it
+#: joined. `WIDGET_ONBOARDED` is not here because onboarding
 #: moves `onboarded_at`, which is neither a searchable field nor the display:
 #: subscribing to it would buy one engine round trip per onboarding and change
 #: no document.
@@ -78,6 +81,7 @@ SEARCHABLES: list[Searchable] = [
             events.WIDGET_CREATED,
             events.WIDGET_UPDATED,
             events.WIDGET_DELETED,
+            events.WIDGET_MOVED,
         ),
         display="name",
     ),

@@ -148,6 +148,20 @@ EXPECTED: frozenset[str] = frozenset(
         # and the export artifact is itself one of those.
         "files.FileVersion",
         "files.StoredFile",
+        # Five lines, and they are the diff the pin exists to make somebody
+        # read. The census is DERIVED, so all five were already in every
+        # tenant's archive the day their apps merged; what moved is the pin's
+        # BOUNDARY — `imports`, `notes` and `tags` joined the template's
+        # partition (`quality/partition.yaml`), so `platform_only` now counts
+        # them as this tree's own. They belong: a note, a tag and where it is
+        # attached are the customer's own words about their own records, and an
+        # import run with its rows is their record of what they brought in and
+        # what was refused.
+        "imports.Import",
+        "imports.ImportRow",
+        "notes.Note",
+        "tags.Tag",
+        "tags.TagLink",
         # The census is DERIVED, so `usage.UsageEntry` joined the
         # archive the moment the model existed; this line is the diff the pin
         # exists to make somebody read. It BELONGS in a tenant's archive: the
@@ -477,12 +491,18 @@ def test_the_counts_this_report_states(capsys: Any) -> None:
     # expect: each carries a `tenant`, so each joins `scoped_models()`, and none
     # is excluded, so each is dispositioned into the archive. A diff that moved
     # only one of the three would be the thing to look at.
-    assert concrete == 48, (
+    # 48 -> 53: `imports.Import`, `imports.ImportRow`, `notes.Note`, `tags.Tag`
+    # and `tags.TagLink` — not new tables, a moved boundary: their three apps
+    # joined the template's partition, so a count scoped to this tree's own apps
+    # now sees them. All three numbers move together (each carries a `tenant`,
+    # none is excluded).
+    assert concrete == 53, (
         "the review's 38, plus exports.Export, usage.UsageEntry, "
         "comms.MessageEngagement, the two files models, "
-        "comms.Device, accounts.IdentityBranding and the three permission tables"
+        "comms.Device, accounts.IdentityBranding, the three permission tables "
+        "and the five of imports, notes and tags"
     )
-    assert len(not_a_product_model(scoped_models())) == 32
-    assert len(platform_only(dispositions())) == 29
+    assert len(not_a_product_model(scoped_models())) == 37
+    assert len(platform_only(dispositions())) == 34
     assert len(platform_only(exclusions())) == 3
     assert issubclass(dispositions()["core.AuditEntry"].model, BaseModel)

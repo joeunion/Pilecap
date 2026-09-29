@@ -13,7 +13,7 @@ case ":${SHELLOPTS:-}:" in
     exit 2
     ;;
 esac
-# drives: .github/workflows/ci.yml .github/workflows/nightly-proof.yml deploy/provision.sh scripts/check.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/drive_preamble.sh quality/rules.yaml quality/runners/workflow_credential_pins.py
+# drives: .github/workflows/ci.yml .github/workflows/nightly-proof.yml deploy/provision.sh scripts/check.sh scripts/fe_gate.sh scripts/gate_ledger.sh scripts/gate_refuse.sh scripts/tests/drive_preamble.sh quality/rules.yaml quality/runners/workflow_credential_pins.py
 # cites: scripts/pm_fold.sh scripts/pm_push.sh scripts/githooks/pre-push deploy/stage.sh deploy/tests/test_stage.sh
 #
 # THE WORKFLOW DRIVE — what `.github/workflows/ci.yml` measures, once, and what
@@ -25,7 +25,7 @@ esac
 # WHY IT EXISTS. The workflow is shell inside YAML, and shell inside YAML is the
 # least driven code in any repository: it runs on a runner, once, on somebody
 # else's machine, and the only way to learn it was wrong is a red run — or, far
-# worse, a GREEN one. Five properties of it are invisible when they are right
+# worse, a GREEN one. Six properties of it are invisible when they are right
 # and silent when they are wrong:
 #
 #   * THE MATRIX IS THE GATE'S ANSWER. `derive` asks `./scripts/check.sh
@@ -48,6 +48,11 @@ esac
 #     `[derive, legs, images]`; no job can write contents; the two read grants
 #     the consult spends sit on the consult's job alone; house rule 62 is clean
 #     on the file.
+#   * THE ROW'S TOOLCHAIN. Every row installs `frontend/node_modules` before
+#     the gate, whatever its unit, through the fe leg's own sourced function
+#     (`fe_leg_frozen_lockfile`), with the pnpm store cached — and the step
+#     never decides the row. A drive input a verifier box has from `setup.sh`
+#     and a runner row did not is invisible to every loop; this pins it.
 #   * THE DEPLOY. `deploy-staging` stands behind `verdict` and `images`, runs
 #     on a push to main only, and SKIPS WITH A NOTICE unless the product's
 #     variables name a stage box and a deploy role; `deploy-prod` is a
@@ -601,6 +606,84 @@ PYTHON
     fresh_derive
     drive "the row step on an indivisible unit" 0 -- block_run "$ROW_SH" UNIT=fast SHARD=
     holds "the artifact name" "member-walls-fast" "$(output_of walls_artifact)"
+}
+
+case_every_row_installs_the_frontend_toolchain_by_the_fe_legs_own_function() {
+    # A DRIVE INPUT A BOX HAS AND A RUNNER DOES NOT. A self-test drive that
+    # type-checks with this checkout's `frontend/node_modules` passes on every
+    # verifier box (`setup.sh` installed it) and could not look on every row
+    # whose unit does not carry the fe leg — the one leg that installed. So
+    # the install is a row step, on EVERY row (no `if:`, the stack step's
+    # rule), before the gate; it is the fe leg's own sourced function, never a
+    # typed `pnpm install`; and it never decides the row. The pnpm store is
+    # cached by the node step, which needs pnpm on the PATH first.
+    local order install node
+    order=$("$PY" - "$WORKFLOW" <<'PYTHON'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+names = [s.get("name") or s.get("uses") or "" for s in doc["jobs"]["legs"]["steps"]]
+want = [
+    "the frontend toolchain — pnpm",
+    "the frontend toolchain — node",
+    "the frontend toolchain — install (the fe leg's own function)",
+    "the gate, one unit (./scripts/check.sh --leg)",
+]
+try:
+    at = [names.index(w) for w in want]
+except ValueError as missing:
+    print(f"missing: {missing}")
+else:
+    print("in order" if at == sorted(at) else f"out of order: {at}")
+PYTHON
+    )
+    holds "pnpm, then node, then the install, then the gate" "in order" "$order"
+    node=$(step_json legs "the frontend toolchain — node")
+    holds "the node step caches the pnpm store" "pnpm" "$(printf '%s' "$node" | jq -r '.with.cache // ""')"
+    holds "keyed on the frontend's lockfile" "frontend/pnpm-lock.yaml" \
+        "$(printf '%s' "$node" | jq -r '.with["cache-dependency-path"] // ""')"
+    install=$(step_json legs "the frontend toolchain — install (the fe leg's own function)")
+    holds "the install has no if: — every row runs it" "unset" "$(printf '%s' "$install" | jq -r '.if // "unset"')"
+    local block="$WORK/fe-install.sh"
+    if ! extract_run legs "the frontend toolchain — install (the fe leg's own function)" "$block"; then
+        bad "the legs job has no install step with a run block"
+        return 0
+    fi
+    holds "it sources the fe leg's own file" "1" "$(grep -c '^\s*\. \./scripts/fe_gate\.sh\s*$' "$block" || true)"
+    holds "and calls the leg's own function" "1" "$(grep -c 'fe_leg_frozen_lockfile ' "$block" || true)"
+    holds "and types no pnpm command of its own" "0" "$(grep -vE '^\s*(#|echo )' "$block" | grep -c 'pnpm ' || true)"
+
+    # DRIVEN, with the REAL `scripts/fe_gate.sh` and a pnpm shim that records
+    # its argv and its directory and exits with the case's knob.
+    local shim="$WORK/pnpm-shim"
+    cat >"$shim" <<'SHIM'
+#!/usr/bin/env bash
+printf '%s|%s\n' "${PWD##*/}" "$*" >>"$DJB_DRIVE_ARGV_LOG"
+exit "${DJB_DRIVE_PNPM_RC:-0}"
+SHIM
+    chmod +x "$shim"
+    fe_world() {
+        fresh_derive
+        cp "$ROOT/scripts/fe_gate.sh" "$CASE_DIR/scripts/fe_gate.sh"
+        if [ "${1:-}" = "with-frontend" ]; then
+            mkdir -p "$CASE_DIR/frontend"
+            printf '{"name":"fixture","private":true}\n' >"$CASE_DIR/frontend/package.json"
+            printf 'lockfileVersion: 9.0\n' >"$CASE_DIR/frontend/pnpm-lock.yaml"
+        fi
+    }
+    fe_world with-frontend
+    drive "an installing row" 0 -- block_run "$block" FE_PNPM="$shim" \
+        AWS_ACCESS_KEY_ID= AWS_SECRET_ACCESS_KEY= AWS_SESSION_TOKEN=
+    holds "the one pnpm call is the leg's frozen form, in frontend/" \
+        "frontend|install --frozen-lockfile --reporter=silent" "$(paste -sd'#' "$ARGV_LOG")"
+    fe_world with-frontend
+    drive "a lockfile pnpm refuses never fails the row" 0 -- block_run "$block" FE_PNPM="$shim" DJB_DRIVE_PNPM_RC=1 \
+        AWS_ACCESS_KEY_ID= AWS_SECRET_ACCESS_KEY= AWS_SESSION_TOKEN=
+    says "::warning::pnpm install --frozen-lockfile exited 1"
+    fe_world
+    drive "a tree with no frontend/" 0 -- block_run "$block" FE_PNPM="$shim" \
+        AWS_ACCESS_KEY_ID= AWS_SECRET_ACCESS_KEY= AWS_SESSION_TOKEN=
+    says "nothing to install"
+    holds "and pnpm is never called" "0" "$(grep -c . "$ARGV_LOG" || true)"
 }
 
 case_the_workflow_types_no_unit_name_of_its_own() {
@@ -1420,6 +1503,7 @@ case_a_refusing_listing_fails_the_job_with_no_fallback
 case_the_seed_is_minted_once
 case_the_row_invokes_the_gate_and_nothing_else
 case_every_row_writes_its_walls_and_uploads_them
+case_every_row_installs_the_frontend_toolchain_by_the_fe_legs_own_function
 case_the_workflow_types_no_unit_name_of_its_own
 case_the_record_is_the_measured_tree_and_every_field
 case_a_red_or_cancelled_job_is_rc_1_and_a_narrowed_pr_says_so

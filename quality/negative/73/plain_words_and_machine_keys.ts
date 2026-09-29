@@ -1,3 +1,4 @@
+// collides: sign-in — an English compound that is also a URL name; a plain word must stay silent
 import type { LexiconWord } from "@/copy/lexicon";
 
 export const PLAIN_COPY = {

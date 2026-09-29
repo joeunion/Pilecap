@@ -91,6 +91,7 @@ from apps.core.models import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from apps.core.audit import AuditEntry
     from apps.core.models import ScopedQuerySet
 
 
@@ -170,6 +171,90 @@ def list_organizations(
     # — and the read goes through the scoped manager, which is what house rule 8
     # is watching for.
     return _organizations_in(tenant=tenant, org=org)
+
+
+def list_organizations_where(
+    organizations: QuerySet[Organization], *, actor: Actor, can: str
+) -> QuerySet[Organization]:
+    """The nodes of `organizations` at which this actor may `can` — `?can=<kind>.<verb>`.
+
+    The move sheet's destinations (and any "where may I do this" picker): the
+    same list the hat already sees, narrowed to the nodes where
+    `allows(actor, can, node)` answers yes — the data half AND the key's
+    predicate, asked AT that node (`where_of` reads an `Organization` as its own
+    node). No per-noun destinations read exists, and none is needed.
+
+    **An unknown key is refused `invalid` naming `can`**, never answered with an
+    empty page: a misspelled key and "you may do this nowhere" must not look
+    the same. Asked once per node the hat covers; `allows` memoizes the
+    collection per node on the actor, so the cost is the subtree's size, not a
+    query per node per request twice.
+    """
+    from apps.core.authz import allows, resolve_renamed
+    from apps.core.exceptions import Invalid
+
+    # The list it narrows asked this already; asked again here so the narrowing
+    # is a read in its own right wherever it is called from (memoized: free).
+    require(actor, "organization.read")
+    key = resolve_renamed(can.strip())
+    if key not in vocabulary():
+        raise Invalid(
+            {
+                "can": [
+                    f"{can!r} is not a permission this product has. Send a key from "
+                    "the vocabulary — `<kind>.<verb>`, as `GET /permissions/` lists them."
+                ]
+            }
+        )
+    nodes = list(organizations.order_by().only("pk", "path", "tenant_id"))
+    return organizations.filter(pk__in=[node.pk for node in nodes if allows(actor, key, node)])
+
+
+# read-open: a row's history is authorized by the ROW's own `<kind>.read`, asked
+# below at the row's node — the entries answer only what happened to that row.
+def list_history(*, tenant: Tenant | None, actor: Actor, row: Any) -> QuerySet[AuditEntry]:
+    """What happened to THIS row, newest first — the History card's read.
+
+    **Over the audit trail, and nothing else** (no second table: the trail is
+    already written by `@service` for every successful call, with the row it
+    returned as `object_id`). Only `ok` rows: a refused attempt is a security
+    fact for the audit reader, not for everybody who may read the row. The
+    answer is a queryset for the one paginator; each entry reads as
+    `core.schemas.HistoryEntryOut` (`verb`, `actor`, `door`, `changed_fields`).
+
+    **Reach first, then the read**: a row this actor could not have named — a
+    sibling branch's, another tenant's — is `NotFound`, never `Forbidden`
+    (C8); a reachable row whose kind this actor may not read is `Forbidden`.
+    Served by `auditentry_object_history` (tenant, object_id, -created_at).
+
+    DOES NOT COVER — declared: acts on a CHILD row (a ledger line files under
+    its own id, not its parent's); `changed_fields` means "sent", not "differed"
+    (the trail keeps the keys a call was given, never before- and after-values,
+    so a version cannot be restored from it).
+    """
+    from apps.core.audit import AuditEntry
+    from apps.core.authz import kind_of, may_be_named
+    from apps.core.models import is_org_scoped
+
+    if tenant is None or getattr(row, "tenant_id", None) != tenant.pk:
+        raise NotFound()
+    if isinstance(row, Organization):
+        # A node is its own reach: within the hat's subtree, as
+        # `get_organization` reads it — a sibling branch is not found.
+        hat = actor.org
+        if hat is None or not is_descendant_path(row.path, hat.path):
+            raise NotFound()
+    elif is_org_scoped(type(row)) and not may_be_named(actor, row):
+        raise NotFound()
+    kind = kind_of(type(row))
+    if kind is not None:
+        require(actor, f"{kind}.read", row)
+    return (
+        AuditEntry.objects.for_tenant(tenant)
+        .filter(object_id=row.pk, outcome=AuditEntry.Outcome.OK)
+        .select_related("actor_user")
+        .order_by("-created_at", "-id")
+    )
 
 
 def get_organization(

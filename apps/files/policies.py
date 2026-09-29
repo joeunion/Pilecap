@@ -5,7 +5,8 @@ file is never registered anywhere. The key is `<noun>.<verb>`, the predicate
 takes the acting `Actor` and the object, and it returns a bool.
 
 **The rule for this app is one sentence: anybody in the tenant may put a
-document in and take one out; only an owner or an admin may archive one.**
+document in and take one out; only an administrator of the document's own node
+may archive one, or restore it.**
 
 **After the sweep this file asks no role, and two of its four predicates are
 gone.** What `admin` and `member` are is `apps/core/roles.py`'s, a tenant's own
@@ -17,9 +18,11 @@ own organization instead of nowhere in particular.
 * `can_read` asked "does this actor carry a membership in the tenant" and never
   looked at the document. `member` holds `*.read` by its declared pattern, so
   the role layer answers it and no declaration had to move.
-* `can_archive` asked for an owner or an admin. That is the data half's question
-  exactly: `admin` holds `file.archive` by `*`, `member` matches no pattern that
-  gives it, and neither reading is this file's to make.
+* `can_archive` asked for an owner or an admin. It is now the family's one
+  predicate, `core.policies.may_archive`, for archive AND restore: whoever
+  administers the document's own node (`organization.update` held there,
+  inheriting downward) — and never the system actor, which a person's archive
+  refuses (the sweep's archive of an emptied document is its own service).
 
 **DEFERRED, by the PM's ruling of 2026-09-16, and named here so it is not
 mistaken for an oversight: `can_file` and `can_replace` still admit any
@@ -61,6 +64,7 @@ from typing import Any
 
 from apps.core.actor import Actor
 from apps.core.authz import Policy, membership_for
+from apps.core.policies import may_archive
 
 
 def can_file(actor: Actor, obj: Any = None) -> bool:
@@ -85,14 +89,19 @@ def can_replace(actor: Actor, obj: Any = None) -> bool:
 
 
 POLICIES: dict[str, Policy] = {
-    # Two, not four. `file.read` and `file.archive` are the role layer's
-    # questions and it answers them — see the module docstring. These two are
-    # here only until the deferred `DEFAULT_ROLES` rung moves their membership
-    # half, at which point this mapping is empty and the file is prose, prose
-    # that still earns its place because `ACTION_PROSE` below is what a refused
-    # caller reads.
+    # `file.read` is the role layer's question and it answers it — see the
+    # module docstring. `file.create` and `file.replace` are here only until the
+    # deferred `DEFAULT_ROLES` rung moves their membership half.
     "file.create": can_file,
     "file.replace": can_replace,
+    # The archive pair is the family's one predicate (`core.policies.may_archive`,
+    # which declares `@refuses_system`): an administrator of the document's OWN
+    # node, inheriting downward, and never the product acting for itself. Both
+    # keys are derived from `StoredFile` declaring `Archivable`; restore is the
+    # same question as archive, because a narrower door back would be a second,
+    # weaker door onto the same state.
+    "file.archive": may_archive,
+    "file.restore": may_archive,
 }
 
 
@@ -138,5 +147,10 @@ ACTION_PROSE: dict[str, str] = {
         "You may not archive this document. Archiving takes it out of everyone's "
         "working set while the stored bytes remain, so it is kept to the people "
         "who administer this part of the organization."
+    ),
+    "file.restore": (
+        "You may not restore this document. Bringing an archived document back into "
+        "everyone's working set is kept to the people who administer this part of the "
+        "organization, the same people who may archive it."
     ),
 }

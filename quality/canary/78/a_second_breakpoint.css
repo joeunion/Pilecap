@@ -1,0 +1,6 @@
+/* A third width: a query naming a number that is not the book's breakpoint. */
+@media (max-width: 600px) {
+    .zzz-canary-row {
+        display: block;
+    }
+}

@@ -1,3 +1,4 @@
+# collides: create_endpoint_route — a replace-mode stand-in for the real route module: the post-contraction route under its real name
 """THE CONTRACTION, third of three: the contract prose after v1 is gone.
 
 One scheme documented, and the sentence that promised v1 would not be withdrawn

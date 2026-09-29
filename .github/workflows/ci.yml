@@ -650,6 +650,18 @@ jobs:
           POSTGRES_DB="$DATABASE_NAME" \
             docker compose up -d --wait db redis temporal minio meilisearch
 
+      - name: the frontend toolchain — pnpm
+        # THE VERSION IS READ OUT OF `packageManager`, never typed. That field
+        # is the frontend's own declaration and this action honours it, so the
+        # pnpm CI runs is the pnpm a laptop runs.
+        #
+        # BEFORE NODE, AND ON PURPOSE: the node step below caches the pnpm
+        # store, and `setup-node` can only find the store of a pnpm that is
+        # already on the PATH when it runs.
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+
       - name: the frontend toolchain — node
         # THE TOOLCHAIN SHIPS IN THE SAME COMMIT AS THE TREE IT SERVES, and
         # that is a criterion rather than a convenience. The gate's frontend
@@ -657,7 +669,7 @@ jobs:
         # skip (a Python-only product pays nothing and is never told it is
         # broken); **tree present + toolchain absent** is exit 2 naming it —
         # could-not-look, which outranks a pass everywhere here. So a `frontend/`
-        # that merged without these two steps would redden CI by construction,
+        # that merged without these steps would redden CI by construction,
         # and it would redden it in the one way that is hardest to read: an
         # instrument saying it could not look, on a runner nobody is watching.
         #
@@ -668,25 +680,59 @@ jobs:
         # supported FLOOR, which is a different question and is enforced by
         # pnpm (`engine-strict=true` in `frontend/.npmrc` — without it,
         # `engines` is a comment and a broken pin ships unnoticed for days).
+        #
+        # THE PNPM STORE IS CACHED, keyed on the lockfile: every row installs
+        # (the next step), so every row would otherwise download the same
+        # packages. The cache is a download shortcut and nothing else — the
+        # install below still resolves every entry against the lockfile, and a
+        # cold or evicted cache costs minutes, never a different tree.
         uses: actions/setup-node@v5
         with:
           node-version-file: frontend/.nvmrc
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - name: the frontend toolchain — pnpm
-        # THE VERSION IS READ OUT OF `packageManager`, never typed. That field
-        # is the frontend's own declaration and this action honours it, so the
-        # pnpm CI runs is the pnpm a laptop runs.
+      - name: the frontend toolchain — install (the fe leg's own function)
+        # EVERY ROW INSTALLS, WHATEVER ITS UNIT — the same one-setup-for-every-
+        # row rule the stack step keeps. A drive under the self-test unit
+        # (the golden face copy) type-checks and censuses with this checkout's
+        # own `frontend/node_modules`; a verifier box has that directory from
+        # `setup.sh`, a runner has it only if a step makes it, and the row
+        # that used to make it was the one whose unit carries the fe leg. So
+        # the drive passed on every box and could not look on every self-test
+        # shard, and no loop could see the difference.
         #
-        # WHAT THIS STEP DELIBERATELY DOES NOT DO: install. `pnpm install
-        # --frozen-lockfile` is a gate LEG, and the leg — with its own
-        # tri-state and its own frozen-lockfile assertion — belongs to the rung
-        # that owns `scripts/check.sh`. Installing here would put a second,
-        # unmeasured copy of that leg in this file, which is the exact drift
-        # this workflow's header exists to refuse: CI does not have its own list
-        # of legs. CI runs the gate.
-        uses: pnpm/action-setup@v4
-        with:
-          package_json_file: frontend/package.json
+        # NOT A SECOND COPY OF THE LEG. The command is the fe leg's own
+        # function, `fe_leg_frozen_lockfile` out of `scripts/fe_gate.sh`,
+        # sourced — one source, the frozen-lockfile form — which is also what
+        # `scripts/rung_start.sh` runs on a worktree. The VERDICT stays the
+        # leg's: this step never fails the row. A lockfile that no longer
+        # satisfies the manifest is printed here as a warning and reported by
+        # the fe leg as its finding, and a drive that then meets no toolchain
+        # says it could not look — both loud, neither decided in YAML.
+        #
+        # A PRODUCT WITH NO `frontend/` PAYS NOTHING: a printed skip, exit 0.
+        env:
+          # Pinned empty (house rule 62): an install runs third-party package
+          # scripts, and nothing it does needs the MinIO pull's identity.
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""
+        run: |
+          set -uo pipefail
+          . ./scripts/fe_gate.sh
+          if [ ! -d "$FE_FRONTEND_DIR" ]; then
+            echo "no ${FE_FRONTEND_DIR}/ in this tree — nothing to install"
+            exit 0
+          fi
+          rc=0
+          fe_leg_frozen_lockfile "$FE_FRONTEND_DIR" || rc=$?
+          if [ "$rc" = "0" ]; then
+            echo "${FE_FRONTEND_DIR}/node_modules: pnpm install --frozen-lockfile (the fe leg's own form)"
+          else
+            echo "::warning::pnpm install --frozen-lockfile exited ${rc} in ${FE_FRONTEND_DIR}/ — the fe leg reports it as its finding; a drive that needs the toolchain will say it could not look"
+          fi
+          exit 0
 
       - name: the gate, one unit (./scripts/check.sh --leg)
         # THE step. Not piped, not wrapped, not summarised: its exit status is

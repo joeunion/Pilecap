@@ -95,6 +95,20 @@ cd "$(dirname "$0")/../.."
 # success. Opting in makes that could-not-look instead.
 DRIVE_OPTED_IN_TO_FINISH=1
 
+# THE LEG'S OWN KNOBS ARE THIS DRIVE'S TO SET, NEVER ITS CALLER'S. Every
+# `DJB_SELFTEST_*` variable is a switch on the leg under drive (no reuse, the
+# drives directory, the shapes drive's whole run), and each case that wants one
+# sets it itself. One inherited from the shell that ran this drive — a
+# `DJB_SELFTEST_NO_REUSE=1` exported to force a fresh leg, say — would reach
+# every case that did not ask for it and red the cases asserting a REUSED line
+# for the switch rather than the property. So every one is cleared here, and
+# each clearing is said.
+while IFS= read -r inherited; do
+    [ -n "$inherited" ] || continue
+    echo "  (cleared the inherited ${inherited} — a switch on the leg under drive is this drive's to set, per case)"
+    unset "$inherited"
+done < <(compgen -e | grep '^DJB_SELFTEST_' || true)
+
 PASSED=0
 FAILED=0
 
@@ -512,6 +526,8 @@ run_leg_body() {
     if [ -n "$LEG_NO_REUSE" ]; then
         DJB_SELFTEST_NO_REUSE=1
         export DJB_SELFTEST_NO_REUSE
+    else
+        unset DJB_SELFTEST_NO_REUSE
     fi
     . scripts/gate_refuse.sh
     . scripts/gate_ledger.sh
@@ -853,9 +869,21 @@ EOF
 # put it back would make the parent's handlers LIVE in the leg's shell. The
 # parent here is a planted shell whose EXIT and TERM handlers each append a
 # word to a file; the leg runs in a subshell of it, sets nothing first, drives
-# two members to their end, and then sends ITSELF a TERM. A TERM with no
-# handler of the leg's own is the signal's 143 and nothing else, so the file
-# must hold the parent's own `exit` and never a `term` or a second `exit`.
+# two members to their end, and then is sent a TERM aimed at its own pid. A
+# TERM with no handler of the leg's own is the signal's 143 and nothing else,
+# so the file must hold the parent's own `exit` and never a `term` or a
+# second `exit`.
+#
+# THE LEG'S OWN PID IS READ WITHOUT `BASHPID`, which bash 3.2 (macOS's
+# /bin/bash) does not have, so under `set -u` the case died of the unbound
+# name before it ever asked the question. `$$` would be the DRIVE's pid in
+# every subshell, so it names the wrong shell. A child `sh` started as a
+# plain command in the leg's shell has that shell — and only it — as its
+# parent, so `$PPID` there is the leg's pid on every bash and every `sh`,
+# and the child signals that one pid (never a process group). The leg's
+# shell is waiting on that child when the TERM lands, and with no handler
+# of its own the default disposition ends it, which is the 143 the parent
+# reads exactly as when it signalled itself.
 case_a_leg_in_a_subshell_does_not_bring_its_parents_handlers_to_life() {
     CURRENT=case_a_leg_in_a_subshell_does_not_bring_its_parents_handlers_to_life
     new_ledger parent-traps
@@ -864,7 +892,7 @@ case_a_leg_in_a_subshell_does_not_bring_its_parents_handlers_to_life() {
     plant_drive_set "$dir" 1_alpha:0 2_bravo:0
     LEG_OUT="${WORK}/parent-traps.out"
     # shellcheck disable=SC2016  # evaluated in the leg's own shell
-    LEG_POSTLUDE='kill -s TERM "$BASHPID"'
+    LEG_POSTLUDE='sh -c '\''kill -s TERM "$PPID"'\'''
     (
         # shellcheck disable=SC2064  # the path is fixed when the trap is set
         trap "printf 'exit\n' >>\"${ran}\"" EXIT

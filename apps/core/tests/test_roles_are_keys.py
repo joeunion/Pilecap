@@ -176,14 +176,46 @@ def migrate_to(target: list[tuple[str, str | None]]) -> None:
     executor.migrate(target)
 
 
+#: The migrations above `0018` that a rewind inside this test's transaction must
+#: step over by hand: each builds its index CONCURRENTLY in a non-atomic
+#: migration, which Postgres refuses inside a transaction block — and a pytest
+#: test IS one. Stepped over with the plain (transactional) DROP/CREATE of the
+#: same index and the recorder's own bookkeeping; everything is rolled back with
+#: the test either way, so nothing here reaches a real database's history.
+_CONCURRENT_ABOVE_0018: tuple[tuple[str, str], ...] = (
+    ("0019_audit_trail_reads_a_rows_history", "auditentry_object_history"),
+)
+
+
+def _step_over_concurrent(*, forwards: bool) -> None:
+    from importlib import import_module
+
+    from apps.core.audit import AuditEntry
+
+    executor = MigrationExecutor(connection)
+    steps = _CONCURRENT_ABOVE_0018 if forwards else tuple(reversed(_CONCURRENT_ABOVE_0018))
+    for name, index_name in steps:
+        migration = import_module(f"apps.core.migrations.{name}").Migration
+        (index,) = [op.index for op in migration.operations if op.index.name == index_name]
+        with connection.schema_editor(atomic=False) as editor:
+            if forwards:
+                editor.add_index(AuditEntry, index)
+                executor.recorder.record_applied("core", name)
+            else:
+                editor.remove_index(AuditEntry, index)
+                executor.recorder.record_unapplied("core", name)
+
+
 @pytest.fixture
 def at_0017() -> Any:
     """Rewind `core` to `0017`, and put it back afterwards whatever happens."""
+    _step_over_concurrent(forwards=False)
     migrate_to([("core", "0017_tenant_leading_recency_composite")])
     try:
         yield
     finally:
         migrate_to([("core", "0018_roles_are_keys")])
+        _step_over_concurrent(forwards=True)
 
 
 def _victim_tenant(slug: str) -> tuple[Tenant, Organization]:
@@ -358,14 +390,21 @@ def test_0018_reverses_to_0017s_exact_schema(at_0017: None) -> None:
         assert cursor.fetchone()[0] == 16
 
 
-def test_0018_is_the_leaf(at_0017: None) -> None:
-    """One leaf per app (rule 6), and it is this one."""
+def test_0018_is_on_the_one_line_to_the_leaf(at_0017: None) -> None:
+    """One leaf per app (rule 6), and `0018` is on the line to it.
+
+    It WAS the leaf; the history index's `0019` (non-atomic, CONCURRENTLY) sits
+    above it now, which is why the rewind above steps over it by hand.
+    """
     from pathlib import Path
 
     from django.conf import settings
 
     leaf = Path(settings.BASE_DIR) / "apps" / "core" / "migrations" / "max_migration.txt"
-    assert leaf.read_text().strip() == "0018_roles_are_keys"
+    assert leaf.read_text().strip() == _CONCURRENT_ABOVE_0018[-1][0]
+    graph = MigrationExecutor(connection).loader.graph
+    line_to_leaf = graph.forwards_plan(("core", leaf.read_text().strip()))
+    assert ("core", "0018_roles_are_keys") in line_to_leaf
 
 
 # --- P2.3 · the compat surface ------------------------------------------------

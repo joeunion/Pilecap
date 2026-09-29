@@ -1,0 +1,5 @@
+/* A stylesheet reordering a seat's acts: the census reads DOM order. */
+.zzz-canary-acts[data-seat="record-acts"] {
+    display: flex;
+    flex-direction: row-reverse;
+}

@@ -56,6 +56,8 @@ been fixed fails until its line is removed.
 
 **DOES NOT COVER — declared.**
 
+* A published `version` is per row, so it is SEEDED from the row the path names
+  (`_version_seed`), never taken as published.
 * `Out`-shaped examples. An `Out` cannot be submitted to anything: it is what a
   door answers with, so there is no door to hand it to. Their whole check is
   validation (`test_published_examples.py`). That defect's own instance was an `Out`
@@ -77,6 +79,14 @@ been fixed fails until its line is removed.
   made; the cross-operation claim is a different (and much larger) one.
 * Whether the answer is the RIGHT one. A `201` here means the door took the
   example, not that what it created is what the example described.
+* An `In` example whose value is a registry key a PRODUCT declares. `ImportIn`'s
+  `kind` names an importer a noun's app declares in its `importers.py`; a
+  template that declares none cannot take any value for it, so the example is
+  refused with a declared REASON rather than taken. The template's own
+  declaration (the worked `Widget` importer, `apps/example/importers.py`) is
+  what makes it takeable — and on that day the REASON line in
+  `DECLARED_REFUSALS` comes out by this module's own healed-refusal branch,
+  which fails until it does.
 """
 
 from __future__ import annotations
@@ -85,6 +95,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
+from uuid import UUID
 
 import pytest
 from django.db import transaction
@@ -94,8 +105,10 @@ from ninja import FilterSchema
 from apps.accounts.models import User
 from apps.accounts.services import create_sso_connection, create_user
 from apps.core.actor import actor_for
+from apps.core.concurrency import version_of
 from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import add_membership, create_organization
+from apps.core.verbs import declared_models
 from apps.example.models import Widget, WidgetPolicy
 from apps.example.services import create_widget, create_widget_policy
 from apps.files import storage
@@ -150,6 +163,14 @@ DECLARED_REFUSALS: dict[str, str] = {
         "The `404` is the right answer to a token that is not a token, and the "
         "example's SHAPE is what the document is promising here."
     ),
+    "WidgetMergeIn": (
+        "apps/example — REASON: a merge names a SECOND of the caller's own widgets "
+        "(`into_id`) and the version each was read at. The seeded world's one widget "
+        "cannot be both rows — merging it into itself is `invalid` naming `into` — and "
+        "merging it into another would archive the row every later example in this "
+        "drive names. The published id is a shape, and the `404` is the right answer "
+        "to a widget that is not there."
+    ),
     "SsoConnectionIn": (
         "apps/accounts — DEFECT: `email_domains` publishes `['email domains']`, "
         "the synthesiser's echo of the field name inside a list, and the service "
@@ -175,6 +196,13 @@ DECLARED_REFUSALS: dict[str, str] = {
 
 
 # --- the seeded world ---------------------------------------------------------
+
+
+#: The attachment kinds the seeded widget must take for the world to write its
+#: note and its tag link — planted for the world's own run until the worked
+#: example declares them (`Widget.attachments`), the same mechanism
+#: `test_pagination.py` uses.
+_SEEDED_ATTACHMENTS = ("notes", "tags")
 
 
 @dataclass(frozen=True)
@@ -210,10 +238,22 @@ class World:
     #: the create route is driven with that example and would answer `409` if
     #: the world had already taken the key.
     role_key: str
+    #: A note about `widget`, written through its own door, so `{note_id}` names
+    #: a note the doors may edit.
+    note_id: str
+    #: A word this tenant coined, so `{tag_id}` names a tag the doors may edit.
+    #: DELIBERATELY NOT `Urgent`, which is `TagIn`'s own published example.
+    tag_id: str
 
 
 @pytest.fixture
-def world(settings: Any, tenant: Tenant, owner: User, root_org: Organization) -> World:
+def world(
+    settings: Any,
+    tenant: Tenant,
+    owner: User,
+    root_org: Organization,
+    monkeypatch: pytest.MonkeyPatch,
+) -> World:
     """The world the examples are pasted into.
 
     **The comms and connections rows are made THROUGH THE DOORS, and that is a
@@ -281,6 +321,21 @@ def world(settings: Any, tenant: Tenant, owner: User, root_org: Organization) ->
     )
     assert made_role.status_code == 201, made_role.content
 
+    # A note and a tag link each need a subject that takes them. The widget is
+    # that subject, and a widget takes an attachment only once the worked example
+    # declares it; until then the world plants the missing kinds for its own run,
+    # ADDED to whatever it declares — a no-op the day `Widget.attachments` names
+    # them all.
+    declared = tuple(getattr(Widget, "attachments", ()) or ())
+    missing = tuple(kind for kind in _SEEDED_ATTACHMENTS if kind not in declared)
+    if missing:
+        monkeypatch.setattr(Widget, "attachments", (*declared, *missing), raising=False)
+    widget = create_widget(tenant=tenant, actor=actor, name="Seeded widget")
+    note = _through_the_door(
+        client, "/api/v1/notes/", {"subject": f"widget:{widget.pk}", "body": "Seeded note."}
+    )
+    tag = _through_the_door(client, "/api/v1/tags/", {"name": "Seeded word"})
+
     return World(
         client=client,
         tenant=tenant,
@@ -291,7 +346,7 @@ def world(settings: Any, tenant: Tenant, owner: User, root_org: Organization) ->
         newcomer=newcomer,
         membership=membership,
         recipient_id=str(recipient["id"]),
-        widget=create_widget(tenant=tenant, actor=actor, name="Seeded widget"),
+        widget=widget,
         widget_policy=create_widget_policy(
             tenant=tenant, actor=actor, name="Seeded policy", body="Two approvals."
         ),
@@ -311,6 +366,8 @@ def world(settings: Any, tenant: Tenant, owner: User, root_org: Organization) ->
         document=_document(tenant=tenant, org=root_org, owner=owner, stored=2),
         pending_document=_document(tenant=tenant, org=root_org, owner=owner, stored=0),
         role_key=str(made_role.json()["key"]),
+        note_id=str(note["id"]),
+        tag_id=str(tag["id"]),
     )
 
 
@@ -384,9 +441,26 @@ def _body_seeds(world: World) -> dict[str, str]:
         "parent_id": str(world.root_org.pk),
         "new_parent_id": str(world.other_branch.pk),
         "user_id": str(world.newcomer.pk),
+        # A move's new owner: somebody who belongs where the row is going.
+        "owner_id": str(world.owner.pk),
         "policy_id": str(world.widget_policy.pk),
         "widget_id": str(world.widget.pk),
+        # A document with a STORED version — what `POST /imports/` stages.
+        "file_id": str(world.document.pk),
+        "tag_id": world.tag_id,
     }
+
+
+def _schema_seeds(world: World) -> dict[str, dict[str, str]]:
+    """Substitutions keyed on the SCHEMA, where a field name alone is ambiguous.
+
+    `subject` is an attachment's pointer (`<kind>:<id>`) on `NoteIn`,
+    `NoteFilter` and `TagLinkIn`, and an email's subject line on a template, so
+    it cannot join `_body_seeds`: the pointer names one of the caller's own rows,
+    and the published example's id is a shape, never a row this world has.
+    """
+    pointer = {"subject": f"widget:{world.widget.pk}"}
+    return {"NoteIn": pointer, "NoteFilter": pointer, "TagLinkIn": pointer}
 
 
 def _path_seeds(world: World) -> dict[str, str]:
@@ -398,6 +472,8 @@ def _path_seeds(world: World) -> dict[str, str]:
         "connection_id": world.connection_id,
         "endpoint_id": world.endpoint_id,
         "widget_id": str(world.widget.pk),
+        "note_id": world.note_id,
+        "tag_id": world.tag_id,
         "file_id": str(world.document.pk),
         "key": world.role_key,
         "permission": "widget.approve",
@@ -560,12 +636,41 @@ def _address(operation: Operation, world: World) -> str:
     return path
 
 
+def _version_seed(operation: Operation, world: World) -> dict[str, int]:
+    """A `version` field's value: the version of the `Versioned` row the path names.
+
+    A version is per ROW — the one the caller read — so no published number can
+    be one a real row has, and every `Versioned` noun's edit would be refused
+    `stale_version` as pasted. A caller pastes the version they read; this reads
+    it the same way (`core.concurrency.version_of`) off whichever row a UUID in
+    the address names among the models that declared `Versioned`, so the next
+    noun to adopt it is seeded with no line here.
+    """
+    if not isinstance(operation.example, dict) or "version" not in operation.example:
+        return {}
+    named: list[UUID] = []
+    for segment in _address(operation, world).split("/"):
+        try:
+            named.append(UUID(segment))
+        except ValueError:
+            continue
+    for model in declared_models("versioned"):
+        row = model._default_manager.filter(pk__in=named).first()
+        if row is not None:
+            return {"version": version_of(row)}
+    return {}
+
+
 def _pasted(operation: Operation, world: World) -> Any:
     """The published example with this world's ids substituted, and nothing else."""
     example = operation.example
     if not isinstance(example, dict):
         return example
-    seeds = _body_seeds(world)
+    seeds = {
+        **_body_seeds(world),
+        **_schema_seeds(world).get(operation.schema, {}),
+        **_version_seed(operation, world),
+    }
     return {field: seeds.get(field, value) for field, value in example.items()}
 
 

@@ -25,6 +25,7 @@ from apps.core.bridge import BridgeNotRegistered
 from apps.core.exceptions import Forbidden, Invalid
 from apps.core.models import Tenant
 from apps.core.observability import configure
+from apps.core.schemas import PER_VIEWER_FIELDS
 from apps.core.services import add_membership, root_organization
 from apps.example import services
 from apps.example.events import (
@@ -183,11 +184,13 @@ def test_a_write_publishes_its_declared_event(
         WIDGET_DELETED,
     ]
     # The payload is the schema a REST client gets, so a webhook subscriber and
-    # an API client see one shape for one fact.
+    # an API client see one shape for one fact — minus the fields that answer
+    # ONE viewer (`allowed_acts`), because a subscriber is somebody else.
     created = published[0][1]
     assert created["id"] == str(widget.pk)
     assert created["owner_email"] == owner_actor.user.email  # type: ignore[union-attr]
-    assert set(created) == set(WidgetOut.model_fields)
+    assert set(created) == set(WidgetOut.model_fields) - PER_VIEWER_FIELDS
+    assert "allowed_acts" not in created
 
 
 def test_an_event_with_nowhere_to_go_does_not_fail_the_write(
@@ -451,6 +454,13 @@ def test_the_services_this_app_offers_are_these_and_no_others() -> None:
         "announce_widget_onboarded",
         "create_widget_policy",
         "record_widget_entry",
+        "archive_widget",
+        "restore_widget",
+        "move_widget",
+        "duplicate_widget",
+        "merge_widget",
+        "archive_widget_policy",
+        "restore_widget_policy",
     }, public
 
 

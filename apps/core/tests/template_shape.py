@@ -11,7 +11,7 @@ whether a completed sign-in lands on the shipped `/welcome/`.
 A product that replaced a shape and then read a red suite learned nothing, and a
 product that deleted those tests lost the mechanisms with them. So a product
 declares what it replaced, once, in `DJB_IDENTITY_SHAPE` — the settings block
-beside `ZITADEL_*` in `config/settings/base.py` is the authority on the six keys
+beside `ZITADEL_*` in `config/settings/base.py` is the authority on the seven keys
 and their vocabularies — and the tests that assert the replaced shape skip.
 
 **The skips carry ONE fixed prefix** (`PREFIX` below) so they are countable:
@@ -19,7 +19,7 @@ and their vocabularies — and the tests that assert the replaced shape skip.
 sees how much of the suite a declaration turned off rather than a scattering of
 individually-worded skips.
 
-**A key outside the six is a `ValueError` at import**, not a skip and not a
+**A key outside the seven is a `ValueError` at import**, not a skip and not a
 silent pass. A mark is a claim about a closed population; a mark naming a key
 nobody declares is a test that can never run again and nothing would say so.
 
@@ -48,6 +48,9 @@ IDENTITY_SHAPE_MODULES: tuple[str, ...] = (
     "apps/accounts/tests/test_identity_branding.py",
     "apps/accounts/tests/test_first_admin_command.py",
     "apps/core/tests/test_welcome.py",
+    # The seventh key's one mark: the template's platform app set, which a
+    # product's first app of its own retires by declaring `platform_apps=own`.
+    "apps/core/tests/test_template_shape.py",
 )
 
 
@@ -71,7 +74,7 @@ def template_shape(key: str, *, shape: Mapping[str, str] | None = None) -> pytes
     defaults: dict[str, str] = settings.IDENTITY_SHAPE_DEFAULTS
     if key not in defaults:
         raise ValueError(
-            f"template_shape({key!r}): not one of the six declared keys "
+            f"template_shape({key!r}): not one of the seven declared keys "
             f"({', '.join(defaults)}). A mark naming a key nobody declares is a "
             "test that can never run again."
         )

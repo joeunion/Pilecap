@@ -43,6 +43,7 @@ from apps.core import context
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import add_membership, create_tenant, root_organization
+from apps.core.tests.isolation import registry_difference, registry_field_names
 from apps.core.tests.tree_census import source_tree
 
 PASSWORD = "a-long-enough-password"  # pragma: allowlist secret
@@ -171,7 +172,9 @@ if importlib.util.find_spec("apps.conftest_local") is not None:
 # hides them. A function-level import inside a HELPER is attributed to the whole
 # file rather than to the tests that call it, deliberately (above), so a module
 # can be withheld more widely than it strictly needs. And the graph is static:
-# an `importlib.import_module` of an absent app is invisible to it.
+# an `importlib.import_module` or an `__import__` of an absent app is invisible
+# to it. A RELATIVE import is not a blind spot: it is resolved against the
+# importing file's package, as the import system resolves it.
 
 #: The invocation, spelled once. Pinned by `apps/core/tests/test_optional_apps.py`
 #: and repeated in `.env.example` beside the flag, which is the file an operator
@@ -224,19 +227,37 @@ def _dotted(path: pathlib.Path) -> str:
     return ".".join(parts)
 
 
-def _imported_modules(node: ast.AST) -> frozenset[str]:
+def _imported_modules(node: ast.AST, package: str = "") -> frozenset[str]:
     """Every module name one `import` statement could be naming.
 
     `from apps.core import context` names `apps.core` and may be reaching
     `apps.core.context` — a module or an attribute of a package, and which one
     it is cannot be told from the syntax. Both are returned; the caller resolves
     each against the tree and keeps what exists.
+
+    **A relative import is resolved against `package`** — the dotted package
+    the importing file lives in (`_dotted` of its directory, or of itself for an
+    `__init__.py`) — exactly as the import system resolves it: `level` 1 is that
+    package, each further level one parent up. Treating `from .helper import x`
+    as naming nothing was the planner's silent narrowing: a test reaching an
+    absent app through a sibling helper was collected and errored at import.
+    A level that climbs above `apps` names nothing this tree can reach.
     """
     if isinstance(node, ast.Import):
         return frozenset(alias.name for alias in node.names)
-    if isinstance(node, ast.ImportFrom) and node.module and not node.level:
-        return frozenset([node.module, *(f"{node.module}.{alias.name}" for alias in node.names)])
-    return frozenset()
+    if not isinstance(node, ast.ImportFrom):
+        return frozenset()
+    if node.level:
+        parts = package.split(".") if package else []
+        if node.level > len(parts):
+            return frozenset()
+        base = ".".join(parts[: len(parts) - node.level + 1])
+        module = f"{base}.{node.module}" if node.module else base
+    elif node.module:
+        module = node.module
+    else:
+        return frozenset()
+    return frozenset([module, *(f"{module}.{alias.name}" for alias in node.names)])
 
 
 def _absent_app_reach(
@@ -272,15 +293,18 @@ def _absent_app_reach(
     def apps_only(names: frozenset[str]) -> frozenset[str]:
         return frozenset(name for name in names if name.split(".")[0] == "apps")
 
+    # The package a relative import in this file resolves against.
+    package = _dotted(path) if path.name == "__init__.py" else _dotted(path.parent / "__init__.py")
+
     at_import: set[str] = set()
     per_test: dict[str, frozenset[str]] = {}
     for statement in tree.body:
-        own = apps_only(_imported_modules(statement))
+        own = apps_only(_imported_modules(statement, package))
         if own:
             at_import |= own
             continue
         nested = apps_only(
-            frozenset().union(*(_imported_modules(node) for node in ast.walk(statement)))
+            frozenset().union(*(_imported_modules(node, package) for node in ast.walk(statement)))
         )
         if not nested:
             continue
@@ -622,11 +646,18 @@ DJB_REACH_POPULATIONS: dict[str, tuple[str, ...]] = {
     "mcp_catalogue_readers": ("_list_tools(",),
 }
 
-#: LAYER 2. Named populations and the number of MODULES this tree must still
-#: hold for each — every one of these seven integers was DERIVED by collecting
-#: this suite, never chosen. A legitimate deletion reddens them and that is the
-#: trade: the alternative is a floor that cannot tell a deletion from a
-#: derivation going blind, which is the gap this layer exists to close.
+#: LAYER 2. Named populations and the number of MODULES this tree holds for
+#: each — every one of these integers was DERIVED by collecting this suite,
+#: never chosen — and the floor is an EQUALITY: a population BELOW its number
+#: lost a member (a deletion, or a derivation going blind), and a population
+#: ABOVE it gained one no declaration names. Both refuse, naming the members.
+#: A legitimate deletion or addition reddens them and that is the trade: the
+#: alternative is a floor that cannot tell a deletion from a derivation going
+#: blind, and — the one-sided `<` this replaced — a floor that stays green while
+#: its population grows past it, so the NEXT member moved aside is invisible.
+#: Measured: four populations sat above their floors with no red, and
+#: `apps_root_modules` went 3 → 4 → 5 → 6 with every join found later by a
+#: drive's moved-aside case, never at the commit that joined.
 #:
 #: THE DERIVATION IS A COMMAND, NOT A WORD — pasted here because "derived" was
 #: once true of four of these and false of the fifth for long enough that a
@@ -634,9 +665,11 @@ DJB_REACH_POPULATIONS: dict[str, tuple[str, ...]] = {
 #: the populations are built in `pytest_collection_modifyitems` below BEFORE
 #: anything is deselected, so the scope a run was asked for does not move these
 #: numbers. Two of the seven are a path shape and five are tokens declared above
-#: (`DJB_REACH_TOKENS`, `DJB_REACH_POPULATIONS`), matched as FIXED strings (an
-#: unescaped `.` in the introspect token also matches
-#: `management/commands/introspect.py` and reads one more):
+#: (`DJB_REACH_TOKENS`, `DJB_REACH_POPULATIONS`), matched as FIXED strings — in
+#: prose as well as code: a docstring that spells a token makes its module a
+#: member, which is declared here rather than decided (an unescaped `.` in the
+#: introspect token also matches `management/commands/introspect.py` and reads
+#: one more):
 #:
 #:   uv run pytest --collect-only -q | sed -n 's/::.*//p' | sort -u > /tmp/m
 #:   grep -c '^apps/test_[^/]*\.py$'      /tmp/m                      # apps_root_modules
@@ -647,115 +680,216 @@ DJB_REACH_POPULATIONS: dict[str, tuple[str, ...]] = {
 #:   xargs grep -lF 'get_openapi_schema(' < /tmp/m | wc -l            # openapi_document_readers
 #:   xargs grep -lF '_list_tools('     < /tmp/m | wc -l              # mcp_catalogue_readers
 #:
-#: RUN 2026-09-27 on a verifier box (aarch64 Linux), tree
-#: 88f17ef8f17c2bd7e04d6f185bd9259fe5932d59, N = 4492 items collected over 284
-#: modules → 5 · 14 · 3 · 7 · 8 · 18 · 2. ALL SEVEN INTEGERS BELOW ARE THAT RUN
-#: (the last read 8 while the MCP token was the bare `tools/list` method; the
-#: token moved to the catalogue helper and the population was re-derived).
-#: Two of them closed a recorded gap: `door_parity_census`
-#: and `introspect_registry_readers` had carried 10 and 4 from the 2026-09-07
-#: run on tree 08c4120e while the tree held 14 and 7 (measured 2026-09-21 and
-#: again here), and a floor left under its own derivation cannot tell a deletion
-#: from a derivation going blind. The last two are the halves of the
-#: `door_registry` reach kind (`DJB_REACH_POPULATIONS`), floored separately
-#: because either could empty while layer 1 stayed green.
+#: RUN 2026-09-28 on a verifier box (aarch64 Linux), tree
+#: b81706ae09bb0bc33e07650bb0cc62aeeaa57348, N = 4824 items collected over 328
+#: modules → 6 · 17 · 4 · 7 · 9 · 20 · 2.
+#: ALL SEVEN NUMBERS BELOW ARE THAT RUN. The joiners since the 2026-09-27 run
+#: (tree 88f17ef8: 5 · 14 · 3 · 7 · 8 · 18 · 2), each named with the change
+#: that added it, because a number re-derived without its member is the shape
+#: this paragraph exists to end:
 #:
-#: `apps_root_modules` has been re-derived TWICE for the same reason, and the
-#: repeat is the point: 3 → 4 when `apps/test_census_markers.py` joined the
-#: population (2026-09-18), and 4 → 5 when `apps/test_retry_floor.py` joined it
-#: (2026-09-21 — a cross-app tripwire that lives at the apps root because the
-#: layer contract forbids `apps.workflows` importing `apps.events`). BOTH TIMES
-#: the symptom was the same: a floor one under its own membership lets a member
-#: be moved aside without the refusal ever naming the population it emptied, and
-#: both times `test_loop_scope.sh`'s moved-aside case is what found it. **A rung
-#: that adds a member of any population here raises its integer in the same
-#: commit** (a product: its drawer, below); not a number read off the tree
-#: later. The floor that moved is RE-DERIVED, not reworded, so the paragraph
-#: above stays a fact of it.
+#:   door_parity_census 14 → 17: apps/imports/tests/test_doors_over_the_wire.py
+#:     (the imports app), apps/notes/tests/test_doors_over_the_wire.py (the
+#:     notes app), apps/tags/tests/test_doors_over_the_wire.py (the tags app).
+#:   absent_world_consumers 3 → 4: apps/core/tests/test_resource_first_urls.py —
+#:     joined by a DOCSTRING sentence carrying the fixed-string token, not by a
+#:     reader of the absent world; counted, as the property above says.
+#:   lifecycle_registry_walkers 8 → 9: apps/imports/tests/test_lifecycle.py.
+#:   openapi_document_readers 18 → 20: apps/files/tests/test_archive_road.py,
+#:     apps/imports/tests/test_api.py.
+#:   apps_root_modules 5 → 6: apps/test_absent_relative_imports.py — the fourth
+#:     re-derivation of this one population (3 → 4 test_census_markers.py,
+#:     4 → 5 test_retry_floor.py), and the reason it is now declared BY MEMBER.
+#:   introspect_registry_readers (7) and mcp_catalogue_readers (2): unchanged.
+#:   openapi_document_readers 20 → 21 (after that run, by the change that made
+#:     a family refusal's published remedy the one the wire sends):
+#:     apps/core/tests/test_remedies_published_equal_wire.py.
+#:
+#: **A rung that adds or removes a member of any population here changes its
+#: declaration in the same commit, and names the member in this paragraph** (a
+#: product: its drawer, below); the equality refuses the commit that forgot.
+#:
+#: WHERE IT IS ASSERTED, and where it is not. Over a collection of the WHOLE
+#: tree — every run whose pytest arguments are the `apps` test path or none —
+#: whichever branch below that run takes. A collection narrowed BY PATH (a
+#: drive collecting a fixture world, a hand run over one directory) is not the
+#: tree's population, so layer 2 asserts nothing there; layer 1 still does.
+DJB_POPULATION_FLOOR_MEMBERS: dict[str, tuple[str, ...]] = {
+    # CLOSED BY A PATH SHAPE (`apps/test_*.py`), so its members can be named and
+    # a refusal can say WHICH one joined or left. The six token populations are
+    # open — a fixed-string match over the collection — and keep integers: a
+    # hand list of a population that is found rather than declared is the list
+    # that goes stale first.
+    "apps_root_modules": (
+        "apps/test_absent_relative_imports.py",
+        "apps/test_absent_world.py",
+        "apps/test_census_markers.py",
+        "apps/test_gate_liveness.py",
+        "apps/test_retry_floor.py",
+        "apps/test_temporal_guard.py",
+    ),
+}
 DJB_POPULATION_FLOORS: dict[str, int] = {
-    "apps_root_modules": 5,
-    "door_parity_census": 14,
-    "absent_world_consumers": 3,
+    "apps_root_modules": len(DJB_POPULATION_FLOOR_MEMBERS["apps_root_modules"]),
+    "door_parity_census": 17,
+    "absent_world_consumers": 4,
     "introspect_registry_readers": 7,
-    "lifecycle_registry_walkers": 8,
-    "openapi_document_readers": 18,
+    "lifecycle_registry_walkers": 9,
+    "openapi_document_readers": 21,
     "mcp_catalogue_readers": 2,
 }
 
-# THE DRAWER RAISES A FLOOR; IT NEVER EDITS ONE. The integers above are the
-# TEMPLATE's populations and a product cannot change them: this file is
-# template-owned and a fold overwrites it, so "a rung that adds an
-# `apps/test_*.py` raises this integer in the same commit" was a remedy only
-# the template could take. A product with a sixth apps-root module had a floor
-# one under its own membership — the moved-aside case read `wanted '4', got '0'`
-# on the first consumer, because five of six remained and five met the floor.
-#
-# So the product declares its OWN members in its fixtures drawer,
+# THE DRAWER DECLARES A PRODUCT'S MEMBERS; IT NEVER EDITS THE TEMPLATE'S. The
+# declarations above are the TEMPLATE's populations and a product cannot change
+# them: this file is template-owned and a fold overwrites it. A product with a
+# seventh apps-root module declares it in its fixtures drawer, by NAME for a
+# population the template declares by member and by COUNT for the others:
 #
 #     # apps/conftest_local.py
-#     DJB_POPULATION_FLOOR_ADDENDS = {"apps_root_modules": 1}
+#     DJB_POPULATION_FLOOR_MEMBERS = {"apps_root_modules": ("apps/test_acme.py",)}
+#     DJB_POPULATION_FLOOR_ADDENDS = {"door_parity_census": 2}
 #
-# and the floor asserted is the template's number PLUS the drawer's. It is the
+# The members asserted are the template's UNION the drawer's; the number
+# asserted is that union's size plus any addend. It is the
 # `DRAWER_RATCHET_PARTS` shape in `quality/gate.py`: the two halves are kept
 # apart so the refusal can say which number lives in which file, because a
-# reader told "floor 6" looks for a 6 written in neither.
+# reader told "floor 7" looks for a 7 written in neither. An addend on a
+# member-declared population is still legal — it is how a drawer written
+# before members existed keeps working — and it counts members the refusal
+# then cannot name, which is why a member list is the better declaration.
 #
-# ONE READER, `_population_floors`, and nothing else reads the declaration.
-# `test_loop_scope.sh` plants a drawer row and proves the refusal names the
+# ONE READER, `_population_floors`, and nothing else reads either declaration.
+# `test_loop_scope.sh` plants drawer rows and proves the refusal names the
 # drawer's half — a declaration no reader reads would otherwise be a comment.
 #
-# RAISES ONLY. An addend is a non-negative integer for a population the
-# template declares; a negative one would let a drawer silence the canary the
-# floor is, and a name the template does not declare is a typo that would
-# otherwise raise nothing. Both are a refusal naming the drawer, never a
-# silent skip.
+# RAISES ONLY. An addend is a non-negative integer and a member is a path, for
+# a population the template declares; a negative addend would let a drawer
+# silence the canary the floor is, and a name the template does not declare is
+# a typo that would otherwise raise nothing. Each is a refusal naming the
+# drawer, never a silent skip. A declared member path the tree lacks is refused
+# at the floor, naming the file.
 DJB_POPULATION_FLOOR_DRAWER = "apps/conftest_local.py"
 
+#: The remedy every layer-2 refusal prints, in one place.
+DJB_POPULATION_FLOOR_REMEDY = (
+    "Raise the declaration and its paragraph in the same commit (lower them for a "
+    "member that left), naming the member, in apps/conftest.py; a product: "
+    f"DJB_POPULATION_FLOOR_MEMBERS / DJB_POPULATION_FLOOR_ADDENDS in {DJB_POPULATION_FLOOR_DRAWER}."
+)
 
-def _population_floors() -> dict[str, tuple[int, int]]:
-    """Each named population's floor as `(template's, drawer's addend)`.
 
-    The ONE reader of `DJB_POPULATION_FLOOR_ADDENDS` in the fixtures drawer.
-    No drawer, or a drawer that declares nothing, is `(n, 0)` for every
-    population — the template's floors, unchanged.
+class PopulationFloor(NamedTuple):
+    """One named population's declaration, as `_population_floors` read it."""
+
+    template: int
+    addend: int
+    members: frozenset[str] | None
+
+
+def _population_floors() -> dict[str, PopulationFloor]:
+    """Each named population's declaration: the template's half and the drawer's.
+
+    The ONE reader of `DJB_POPULATION_FLOOR_ADDENDS` and
+    `DJB_POPULATION_FLOOR_MEMBERS` in the fixtures drawer. `addend` is the
+    drawer's whole half — its extra members plus its addend — so the number
+    asserted is always `template + addend`; `members` is the declared member
+    set (template's union drawer's) for a population declared by member, and
+    `None` for one declared by count. No drawer is the template's floors,
+    unchanged.
     """
-    parts = {name: (floor, 0) for name, floor in DJB_POPULATION_FLOORS.items()}
+    template_members = {
+        name: frozenset(paths) for name, paths in DJB_POPULATION_FLOOR_MEMBERS.items()
+    }
+    extra: dict[str, frozenset[str]] = {}
+    addends: dict[str, int] = {}
     drawer = _fixtures_drawer()
-    if drawer is None:
-        return parts
-    declared = getattr(drawer, "DJB_POPULATION_FLOOR_ADDENDS", None)
-    if declared is None:
-        return parts
-    where = f"{DJB_POPULATION_FLOOR_DRAWER}'s DJB_POPULATION_FLOOR_ADDENDS"
-    if not isinstance(declared, dict):
-        raise pytest.UsageError(
-            f"{where} is a {type(declared).__name__}, not a dict of population name to addend."
-        )
-    for name, addend in declared.items():
-        if name not in parts:
+    declared = getattr(drawer, "DJB_POPULATION_FLOOR_ADDENDS", None) if drawer else None
+    if declared is not None:
+        where = f"{DJB_POPULATION_FLOOR_DRAWER}'s DJB_POPULATION_FLOOR_ADDENDS"
+        if not isinstance(declared, dict):
             raise pytest.UsageError(
-                f"{where} names {name!r}, which is not a population apps/conftest.py "
-                f"declares ({', '.join(sorted(parts))}) — an addend for no population "
-                "raises nothing, so it is refused rather than ignored."
+                f"{where} is a {type(declared).__name__}, not a dict of population name to addend."
             )
-        if isinstance(addend, bool) or not isinstance(addend, int) or addend < 0:
+        for name, addend in declared.items():
+            if name not in DJB_POPULATION_FLOORS:
+                raise pytest.UsageError(
+                    f"{where} names {name!r}, which is not a population apps/conftest.py "
+                    f"declares ({', '.join(sorted(DJB_POPULATION_FLOORS))}) — an addend for "
+                    "no population raises nothing, so it is refused rather than ignored."
+                )
+            if isinstance(addend, bool) or not isinstance(addend, int) or addend < 0:
+                raise pytest.UsageError(
+                    f"{where}[{name!r}] is {addend!r} — an addend is a non-negative integer: "
+                    "a drawer raises a floor by its own members and never lowers the template's."
+                )
+            addends[name] = addend
+    named = getattr(drawer, "DJB_POPULATION_FLOOR_MEMBERS", None) if drawer else None
+    if named is not None:
+        where = f"{DJB_POPULATION_FLOOR_DRAWER}'s DJB_POPULATION_FLOOR_MEMBERS"
+        if not isinstance(named, dict):
             raise pytest.UsageError(
-                f"{where}[{name!r}] is {addend!r} — an addend is a non-negative integer: "
-                "a drawer raises a floor by its own members and never lowers the template's."
+                f"{where} is a {type(named).__name__}, not a dict of population name to paths."
             )
-        parts[name] = (parts[name][0], addend)
-    return parts
+        for name, paths in named.items():
+            if name not in template_members:
+                raise pytest.UsageError(
+                    f"{where} names {name!r}, which apps/conftest.py does not declare by "
+                    f"member ({', '.join(sorted(template_members))}); a population "
+                    "declared by count takes DJB_POPULATION_FLOOR_ADDENDS."
+                )
+            if not isinstance(paths, (tuple, list)) or not all(
+                isinstance(path, str) and path.startswith("apps/") for path in paths
+            ):
+                raise pytest.UsageError(
+                    f"{where}[{name!r}] is {paths!r} — members are a tuple of repo-relative "
+                    "paths under apps/."
+                )
+            extra[name] = frozenset(paths) - template_members[name]
+    floors: dict[str, PopulationFloor] = {}
+    for name, number in DJB_POPULATION_FLOORS.items():
+        mine = extra.get(name, frozenset())
+        members = template_members[name] | mine if name in template_members else None
+        floors[name] = PopulationFloor(number, len(mine) + addends.get(name, 0), members)
+    return floors
 
 
-def _population_floor_text(name: str, parts: tuple[int, int], derived: int) -> str:
-    """One unmet floor, saying which half of the number lives in which file."""
-    template, addend = parts
+def _population_floor_text(name: str, floor: PopulationFloor, derived: set[str]) -> str | None:
+    """One population's refusal, or `None` when it holds its declaration exactly.
+
+    Says the declared number, which half of it lives in which file, the
+    derived count, and — the part an integer could never say — WHICH members:
+    every derived member by path when the population is above its number, and
+    for a population declared by member, the undeclared ones that joined and
+    the declared ones that left (naming a file the tree lacks as such).
+    """
+    template, addend, members = floor
+    total = template + addend
+    missing = sorted(members - derived) if members is not None else []
+    if len(derived) == total and not missing:
+        return None
     if not addend:
-        return f"{name} (floor {template}, derived {derived} module(s))"
-    return (
-        f"{name} (floor {template + addend} = {template} in apps/conftest.py + {addend} in "
-        f"{DJB_POPULATION_FLOOR_DRAWER}, derived {derived} module(s))"
-    )
+        head = f"{name} (floor {total} in apps/conftest.py, derived {len(derived)} module(s))"
+    else:
+        head = (
+            f"{name} (floor {total} = {template} in apps/conftest.py + {addend} in "
+            f"{DJB_POPULATION_FLOOR_DRAWER}, derived {len(derived)} module(s))"
+        )
+    notes: list[str] = []
+    if len(derived) > total:
+        notes.append(
+            f"ABOVE its declaration — the derived members are {', '.join(sorted(derived))}"
+        )
+    if members is not None:
+        joined = sorted(derived - members)
+        if joined and len(derived) != total:
+            notes.append(f"not declared: {', '.join(joined)}")
+    for path in missing:
+        present = (DJB_REPO_ROOT / path).exists()
+        notes.append(
+            f"declared but not collected: {path}"
+            + ("" if present else " (the tree has no such file)")
+        )
+    return head + ("" if not notes else " — " + "; ".join(notes))
 
 
 # THE DRAWER DECLARES A REACH KIND; IT NEVER EDITS ONE. `DJB_REACH_TOKENS`
@@ -787,6 +921,7 @@ DJB_REACH_KINDS_KEY = "DJB_REACH_KINDS"
 #: Every `DJB_*` name the drawer may declare, and the one reader of each.
 DJB_DRAWER_KEYS: dict[str, str] = {
     "DJB_POPULATION_FLOOR_ADDENDS": "_population_floors",
+    "DJB_POPULATION_FLOOR_MEMBERS": "_population_floors",
     DJB_REACH_KINDS_KEY: "_reach_tokens",
 }
 
@@ -1510,6 +1645,93 @@ def _population_members(path: str, nodeid: str) -> frozenset[str]:
     return frozenset(members)
 
 
+def _collects_the_whole_tree(config: pytest.Config) -> bool:
+    """Whether this collection is the TREE's population, so layer 2 can assert.
+
+    True when every pytest argument is the `apps` test path, the repository
+    root, or nothing (pytest then collects `testpaths`), AND the run is the
+    ordinary world. A collection narrowed BY PATH — a drive collecting a
+    fixture world, a hand run over one directory — holds some other
+    population, and an absent-app world (`DJB_DISABLED_APPS`) withholds real
+    members on purpose; asserting the tree's declarations over either would be
+    measuring the wrong thing.
+    """
+    if _DJB_ABSENT_WORLD.report:
+        return False
+    root = DJB_REPO_ROOT
+    whole = {root, root / "apps"}
+    bases = {pathlib.Path(config.invocation_params.dir), pathlib.Path(config.rootpath)}
+    for arg in config.args:
+        spelled = pathlib.Path(str(arg).split("::", 1)[0])
+        candidates = [spelled] if spelled.is_absolute() else [base / spelled for base in bases]
+        if not any(candidate.resolve() in whole for candidate in candidates):
+            return False
+    return True
+
+
+def _reach_and_populations(
+    items: list[pytest.Item],
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Every reach kind's modules and every named population's modules."""
+    reached_kinds: dict[str, set[str]] = {}
+    populations: dict[str, set[str]] = {}
+    for item in items:
+        path = str(getattr(item, "path", "") or "")
+        module = _module_of(item.nodeid)
+        for kind in _module_reach(path) if path else frozenset():
+            reached_kinds.setdefault(kind, set()).add(module)
+        for name in _population_members(path, item.nodeid):
+            populations.setdefault(name, set()).add(module)
+    return reached_kinds, populations
+
+
+def _assert_the_floors(
+    reached_kinds: dict[str, set[str]], populations: dict[str, set[str]], whole: bool
+) -> None:
+    """Both layers of floors, or a `pytest.UsageError` naming what is wrong.
+
+    LAYER 1 always (a reach kind nothing reads is a derivation gone blind,
+    whatever was collected); LAYER 2 only over the whole tree
+    (`_collects_the_whole_tree`) and as an EQUALITY with its members named
+    (`_population_floor_text`). Raised before anything is deselected.
+    """
+    unmet_reach = sorted(
+        f"{kind} (floor {floor}, derived {len(reached_kinds.get(kind, ()))} module(s))"
+        for kind, floor in _reach_floors().items()
+        if len(reached_kinds.get(kind, ())) < floor
+    )
+    unmet_population: list[str] = []
+    if whole:
+        for name, floor in sorted(_population_floors().items()):
+            text = _population_floor_text(name, floor, populations.get(name, set()))
+            if text is not None:
+                unmet_population.append(text)
+    if not unmet_reach and not unmet_population:
+        return
+    raise pytest.UsageError(
+        "the --loop scope's always-on derivation is not answering, so "
+        "NOTHING was deselected. "
+        + ("LAYER 1 (reach kind): " + "; ".join(unmet_reach) + ". " if unmet_reach else "")
+        + (
+            "LAYER 2 (named population): "
+            + "; ".join(unmet_population)
+            + ". "
+            + DJB_POPULATION_FLOOR_REMEDY
+            + " "
+            if unmet_population
+            else ""
+        )
+        + "A scope narrows the suite to the active rung's apps and leans on the "
+        "always-on set for everything that quantifies over the whole tree. "
+        "A derivation that stopped seeing a kind reads exactly like a tree "
+        "that no longer has one, an EMPTIED population reads exactly like a "
+        "smaller suite, and a GROWN one is a member no declaration names — so "
+        "this refuses instead of running a tier nobody can trust. The "
+        "declaration and the floors are the sentinel block in apps/conftest.py; "
+        "the scope that asked for this is scripts/loop_tier.sh."
+    )
+
+
 def _is_always_on(item: pytest.Item, reach: frozenset[str], changed: frozenset[str]) -> bool:
     """Whether this item runs whatever the scope is.
 
@@ -1860,6 +2082,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         # the full gate reads as a clean tree and banks. Nothing is
         # deselected on this branch, so the file says `selected=<everything>`
         # and `deselected=0`: a population, not a scope.
+        #
+        # AND IT ASSERTS THE FLOORS WHEN IT HOLDS THE WHOLE TREE. A `--loop` whose
+        # rung changed shared test infrastructure runs the WHOLE suite on this
+        # branch — and adding an apps-root module IS that change — so a floor
+        # read only under narrowing was never read by the one loop that grew its
+        # population (measured: a seventh apps-root module, a whole-suite loop,
+        # green). One cached source read per collected module per collector.
+        if _collects_the_whole_tree(config):
+            _assert_the_floors(*_reach_and_populations(items), whole=True)
         if counts_dir:
             _write_scope_counts(
                 config,
@@ -1936,36 +2167,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                 always_on.add(item.nodeid)
                 always_on_ways.setdefault(module, _way_in(item.nodeid, reach))
 
-        unmet_reach = sorted(
-            f"{kind} (floor {floor}, derived {len(reached_kinds.get(kind, ()))} module(s))"
-            for kind, floor in _reach_floors().items()
-            if len(reached_kinds.get(kind, ())) < floor
-        )
-        floor_parts = _population_floors()
-        unmet_population = sorted(
-            _population_floor_text(name, parts, len(populations.get(name, ())))
-            for name, parts in floor_parts.items()
-            if len(populations.get(name, ())) < parts[0] + parts[1]
-        )
-        if unmet_reach or unmet_population:
-            raise pytest.UsageError(
-                "the --loop scope's always-on derivation is not answering, so "
-                "NOTHING was deselected. "
-                + ("LAYER 1 (reach kind): " + "; ".join(unmet_reach) + ". " if unmet_reach else "")
-                + (
-                    "LAYER 2 (named population): " + "; ".join(unmet_population) + ". "
-                    if unmet_population
-                    else ""
-                )
-                + "A scope narrows the suite to the active rung's apps and leans on the "
-                "always-on set for everything that quantifies over the whole tree. "
-                "A derivation that stopped seeing a kind reads exactly like a tree "
-                "that no longer has one, and an EMPTIED population reads exactly "
-                "like a smaller suite — so this refuses instead of running a "
-                "narrowed tier nobody can trust. The declaration and the floors are "
-                "the sentinel block in apps/conftest.py; the scope that asked for "
-                "this is scripts/loop_tier.sh."
-            )
+        _assert_the_floors(reached_kinds, populations, _collects_the_whole_tree(config))
+    elif _collects_the_whole_tree(config):
+        _assert_the_floors(*_reach_and_populations(items), whole=True)
 
     if manifest and not hasattr(config, "workerinput"):
         lines = []
@@ -2917,6 +3121,102 @@ def _no_test_server_outlives_the_test_that_started_it() -> Iterator[None]:
             "before widening this net; scripts/temporal_sweep.sh is the census.",
             stacklevel=2,
         )
+
+
+# --- registry integrity: no module leaves the real models' relations rewritten --
+#
+# A model built in a throwaway registry writes its reverse-relation graph onto
+# the REAL classes that registry holds (`apps/core/tests/isolation.py` has the
+# mechanism), and nothing expires it on the way out. The damage surfaces in
+# whichever unrelated test next recomputes a real model's field map, on
+# whichever worker, under whichever seed — `FieldError: Cannot resolve keyword
+# 'memberships'` a thousand tests away from the module that caused it. Or it
+# surfaces nowhere: a fixture that happens to define a related model expires the
+# poisoned tree first, and the suite is green over a registry that was wrong.
+#
+# So the PROPERTY is tested, not a spelling: every real model's field names are
+# snapshotted once per session and recomputed at every test MODULE's teardown,
+# and a difference fails THAT module, naming the model and the field. Every road
+# that rewrites the registry is caught — `isolate_apps` under any import alias,
+# a hand-built `Apps`, a model defined mid-run with a relation to a real one —
+# because the guard reads the result, never the road. The source census
+# (`apps/core/tests/test_isolation_discipline.py`) closes the common spelling
+# cheaply; this is the net behind it.
+#
+# What the recompute does and does not disturb: it resets each model's
+# `get_fields()` memo ONLY (`_expire_cache(forward=False, reverse=False)`), so
+# the answer is rebuilt from `_relation_tree` AS FOUND — expiring the tree too,
+# or letting another model's rebuild overwrite it first, would rebuild it from
+# the real registry and heal the very poison it is looking for (measured: the
+# first version of this guard read `core.Tenant` before `accounts.User`, and
+# Tenant's expired tree rebuilt User's). After a failure the guard heals
+# (`apps.clear_cache()`), so one poisoner is one red, not a cascade through
+# every module the worker runs next.
+#
+# DOES NOT COVER: a rewrite that a later statement in the SAME module repairs
+# before the module ends (nothing is left to find, and nothing is left to harm);
+# a rewrite confined to a model's forward fields that leaves `get_fields()` names
+# unchanged (a field swapped for a same-named one); a model that is not in the
+# global registry at all (an isolated registry's own planted models, which die
+# with it). A model defined into the GLOBAL registry mid-run that changes no
+# real model's field names — a proxy defined bare in a test body, measured: it
+# added a `<kind>.read` key to every registry census that ran after it on that
+# worker — IS covered: a label the session did not start with is a red naming
+# it (`joined the registry`), and the heal takes it back out. The granularity
+# is the MODULE, like every other finding here: the red names the module whose
+# teardown found the class, never the test function inside it that defined it.
+#
+# The two readers (`registry_field_names`, `registry_difference`) live in
+# `apps/core/tests/isolation.py`, beside the drop-in they back, so the guard's
+# canary in core's own tests can import them without importing this file.
+
+
+@pytest.fixture(scope="session")
+def _djb_registry_at_session_start() -> dict[str, tuple[str, ...]]:
+    """The real registry's field names, before any test module ran."""
+    return registry_field_names()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _no_module_rewrites_the_real_registry(
+    request: pytest.FixtureRequest, _djb_registry_at_session_start: dict[str, tuple[str, ...]]
+) -> Iterator[None]:
+    """Fail the MODULE that left a real model's relations rewritten, by name."""
+    yield
+    after = registry_field_names()
+    moved = registry_difference(_djb_registry_at_session_start, after)
+    if not moved:
+        return
+    from django.apps import apps as global_apps
+
+    from apps.core import authz
+
+    for label in set(after) - set(_djb_registry_at_session_start):
+        app_label, _, name = label.partition(".")
+        global_apps.all_models[app_label].pop(name.lower(), None)
+    global_apps.clear_cache()
+    authz.reset_policies()  # the kind registry is cached; a joiner may be in it
+    # Re-read after the heal, so a damage the heal cannot undo (a model that
+    # left) is reported once, by the module that did it, and not again by
+    # every module this worker runs next.
+    healed = registry_field_names()
+    for label in list(_djb_registry_at_session_start):
+        if label in healed:
+            _djb_registry_at_session_start[label] = healed[label]
+        else:
+            del _djb_registry_at_session_start[label]
+    pytest.fail(
+        f"REGISTRY REWRITTEN by {request.node.nodeid}: the real models' field names "
+        "differ from the session's start after this module ran —\n    "
+        + "\n    ".join(moved)
+        + "\n  A model built in a throwaway registry wrote its relation graph onto a "
+        "real class and nothing expired it, or a model class defined in a test body "
+        "joined the real registry and nothing took it out. Build it under "
+        "`apps.core.tests.isolation.isolated_apps`, which keeps the class out of the "
+        "real registry and rebuilds every real model's relation caches on the way out. "
+        "(The registry was healed after this report, so no other module reds for it.)",
+        pytrace=False,
+    )
 
 
 @pytest.fixture(autouse=True)

@@ -1160,7 +1160,7 @@ unset DB_PIN_NOTE_OFF
 # leg. `--list-legs` derives the announced sequence from this file's own leg
 # call sites and refuses (exit 2) when the two disagree, which is what stops the
 # next one.
-FULL_LEGS=ruff,mypy,import-linter,djb-checks,house-rules,migrations,goalpost-census,queue-index,db-pin,archaeology,adr-census,dangling-docs,loop-names,ci-env,deploy-check,fe,collectstatic,supply-chain,temporal-census,partition,pytest-x2,own-tree-census,selftest,full-house-rules
+FULL_LEGS=ruff,mypy,import-linter,djb-checks,house-rules,migrations,goalpost-census,queue-index,db-pin,archaeology,adr-census,dangling-docs,loop-names,ci-env,deploy-check,plant-collisions,fe,collectstatic,supply-chain,temporal-census,partition,pytest-x2,own-tree-census,selftest,full-house-rules
 #: THE TEMPLATE'S OWN SET, UNDER ITS OWN NAME, because `FULL_LEGS` above GROWS.
 #: A product's drawer (`scripts/local/legs/`, the local-legs block below)
 #: appends one `local:<name>` per declared leg to `FULL_LEGS` at startup, so the
@@ -2137,7 +2137,7 @@ gate_unit() {
 gate_unit static db 0 \
     ruff mypy import-linter djb-checks house-rules migrations goalpost-census \
     queue-index db-pin archaeology adr-census dangling-docs loop-names ci-env \
-    deploy-check fe collectstatic
+    deploy-check plant-collisions fe collectstatic
 # The only leg that leaves this machine.
 gate_unit supply-chain network 0 supply-chain
 # Before-and-after facts about ONE suite on ONE machine: the temporal census is
@@ -2247,7 +2247,11 @@ gate_unpaired_legs() {
 # next full gate and the member LEAVES at the next `--store-durations`; nothing
 # drops out silently.
 #
-# TWO DERIVATION SOURCES, ONE LEG, TWO PRINTED LISTS. The other half is
+# THREE DERIVATION SOURCES, ONE LEG, THREE PRINTED LISTS. The third is the
+# drives a SHELL CHANGE reaches — `touched`, argued in its own block below
+# (`always_on__changed_files` and the functions after it), each selected member
+# printed with its source and reason before the first runs, and the summary
+# counting the three sources apart. The other half of the first two is
 # DECLARED: a drive that walks the source tree — `scripts/*.sh`, `apps/**` —
 # makes a claim about the whole tree, and a scope that narrowed the suite to two
 # apps has not narrowed what such a drive is about. Those mark themselves with
@@ -2535,6 +2539,234 @@ always_on__drive_file() {
             awk -F'\t' -v n="$name" '$1 == n && !seen { p = $2; seen = 1 } END { print p }')
     fi
     printf '%s\n' "${path:-scripts/tests/test_${name}.sh}"
+}
+
+# --- THE THIRD SOURCE: the drives a shell change REACHES ----------------------
+#
+# THE MEASUREMENT THAT OPENED IT. Two trains in one day went red at a drive no
+# `--loop` before them had run: one drive CHANGED in the rung (a case added to
+# it, its own self-case broken by the addition), and one drive measured a
+# population the rung had grown. Both rungs had seven green box `--loop`s. The
+# declared half runs censuses and the measured half runs what is cheap; neither
+# asks the one question a shell change raises — WHICH DRIVES DOES THIS REACH.
+#
+# THE ANSWER IS ALREADY DECLARED, AND IT IS READ, NEVER RE-DERIVED. Every drive
+# names what it drives on its `# drives:` line, and `drive_key`
+# (scripts/gate_ledger.sh) keys the drive's banked verdict on exactly those
+# paths plus the two that are always in the key (the drive's own file and the
+# `drive_preamble.sh` beside it), with `scripts/check.sh` carrying the libraries
+# it sources. So "this change reaches that drive" is "this change moved a byte
+# of that drive's key", asked through the same readers — `drive_marker_line`,
+# `drive_check_sh_sources`, and `drive__expand`'s prefix rule, handed a listing
+# of the changed files instead of the tree — and the consult below can then
+# REUSE only when no covered byte moved, because the key is the same set.
+#
+# THE CHANGED SET IS THE LOOP SCOPE'S (`LOOP_SCOPE_CHANGED_FILES`, one
+# derivation over the secret scan's — the merge-base with main is the fold
+# point); a changed path is a SHELL FILE when it is tracked and ends `.sh`,
+# which every drive, library and gate script in this tree does. An executable
+# with no suffix is `test_scripts_census.sh`'s question, and it is declared
+# rather than read here.
+#
+# `sweep` IS SELECTED ON EVERY SHELL CHANGE, beside the derivation. It drives
+# `scripts/db.sh` — the checkout's derived identity that every other drive and
+# the loop itself stand on — and a sourced library broken anywhere in
+# `scripts/` fails in db.sh's callers first. Its own `# drives:` line covers
+# most of those files; the clause is the floor under the derivation for a
+# library it sources but has not yet named, and it prints as its own reason.
+#
+# THE PRICE IS PRINTED, per changed shell file: `touched: <n> drives cover
+# <path>`. A `scripts/check.sh` edit reaches every drive that declares the gate
+# — the whole price of a gate edit — and a shell change no drive declares runs
+# nothing extra and says so (`touched: 0 drives cover <path>`); whether that is
+# legal is the goalpost census's question, not this leg's.
+#
+# A TOUCHED MEMBER RUNS BY ITS FENCED INVOCATION, which in this file is the
+# drive BARE — the self-case — never a flag this leg would have to type. The
+# fence is read (`# >>> drive: <name> >>>` in this file); a fence that invokes
+# its drive with anything but the bare self-case is the fence's defect and
+# prints a FINDING line, and the leg still runs the self-case.
+#
+# WHAT IT DOES NOT COVER, declared: a drive whose `# drives:` line
+# UNDER-declares (a path its body reads and does not name) is not selected by a
+# change to that path — the goalpost census refuses under-declaration only for
+# a drive the rung TOUCHED; a Python change under `scripts/*.py` is not a shell
+# file (the pytest leg's impact map is its reader, and a `.py` a drive shells to
+# belongs on that drive's `# drives:` line); a deleted shell file is not in the
+# changed set (the secret scan's derivation filters deletions).
+
+# always_on__changed_files — the paths this run is narrowed to, one per line.
+# `DJB_ALWAYS_ON_CHANGED_FILES` is the drives' plant point, read ONLY when it is
+# set; otherwise the loop scope's own set, computed once above and read here.
+always_on__changed_files() {
+    set -f
+    if [ -n "${DJB_ALWAYS_ON_CHANGED_FILES+x}" ]; then
+        # shellcheck disable=SC2086 # repo paths, space-joined, none with a space
+        [ -z "$DJB_ALWAYS_ON_CHANGED_FILES" ] || printf '%s\n' $DJB_ALWAYS_ON_CHANGED_FILES
+    else
+        # shellcheck disable=SC2086 # repo paths, space-joined by the scope, none with a space
+        [ -z "${LOOP_SCOPE_CHANGED_FILES:-}" ] || printf '%s\n' $LOOP_SCOPE_CHANGED_FILES
+    fi
+    set +f
+}
+
+# always_on__shell_changed — the changed SHELL files: tracked, ending `.sh`,
+# one per line, sorted. Empty is the ordinary answer for an `apps/**` rung.
+always_on__shell_changed() {
+    local cand
+    cand=$(always_on__changed_files | awk '/\.sh$/')
+    [ -n "$cand" ] || return 0
+    # ONE git call for the whole set: tracked is the index's answer.
+    printf '%s\n' "$cand" | tr '\n' '\0' | xargs -0 git ls-files -- | LC_ALL=C sort -u
+}
+
+# always_on__covers <drive file> <changed listing> — every changed path the
+# drive's KEY covers, one per line, sorted. The listing is `git ls-tree -r`
+# shaped (`drive__expand` reads that shape) and holds only the changed shell
+# files. A drive with no `# drives:` line is covered only through its own file
+# and its preamble — the two paths every drive key holds.
+always_on__covers() {
+    local file=$1 listing=$2 marker decls="" preamble sourced d
+    if marker=$(drive_marker_line "$file"); then
+        decls=${marker#*drives:}
+    fi
+    # THE SAME EXPANSION `drive_key` MAKES, for its reason: a drive that
+    # declares the gate is driving the gate and the libraries it sources.
+    case " $decls " in
+    *" scripts/check.sh "* | *" scripts/ "* | *" scripts "*)
+        sourced=$(drive_check_sh_sources "scripts/check.sh") || sourced=""
+        [ -z "$sourced" ] || decls="${decls} $(printf '%s' "$sourced" | tr '\n' ' ')"
+        ;;
+    esac
+    case "$file" in
+    */*) preamble="${file%/*}/drive_preamble.sh" ;;
+    *) preamble="drive_preamble.sh" ;;
+    esac
+    set -f
+    # shellcheck disable=SC2086 # declared patterns, never globbed (set -f)
+    for d in $decls "$file" "$preamble"; do
+        drive__expand "$listing" "$d"
+    done | awk '{ print $2 }' | LC_ALL=C sort -u
+    set +f
+}
+
+# always_on__registry — `name<TAB>path` for every drive this leg may run: the
+# planted set under `DJB_SELFTEST_DRIVES_DIR`, else the registry's own
+# `--with-path` listing (the one reader of every drive home).
+always_on__registry() {
+    local name
+    if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ]; then
+        for name in $(always_on__drives); do
+            printf '%s\t%s/test_%s.sh\n' "$name" "$DJB_SELFTEST_DRIVES_DIR" "$name"
+        done
+        return 0
+    fi
+    selftest_registered_drives --with-path
+}
+
+# always_on__fence_finding <name> <path> — prints a FINDING line when the
+# drive's fence in this file invokes it with anything but the bare self-case;
+# prints nothing for a bare fence or a drive with no fence (its registry line
+# is bare by the registry's own pattern). `DJB_ALWAYS_ON_FENCE_FILE` is the
+# drives' plant point.
+ALWAYS_ON_FINDINGS=0
+always_on__fence_finding() {
+    local name=$1 path=$2 fencefile=${DJB_ALWAYS_ON_FENCE_FILE:-scripts/check.sh} odd one
+    [ -r "$fencefile" ] || return 0
+    # `opener`/`closer`, never `open`/`close`: gawk refuses a builtin's name as
+    # a variable, and a reader that died here would read as a bare fence.
+    odd=$(awk -v opener="# >>> drive: ${name} >>>" -v closer="# <<< drive: ${name} <<<" \
+        -v p1="./${path}" -v p2="${path}" '
+        $0 == opener { on = 1; fenced = 1; next }
+        $0 == closer { on = 0; next }
+        on {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            for (k = 1; k <= 2; k++) {
+                p = (k == 1 ? p1 : p2)
+                if (index(line, p) == 1) {
+                    rest = substr(line, length(p) + 1)
+                    if (rest == "") { bare = 1 }
+                    else if (rest ~ /^[ \t]/) { print line }
+                    break
+                }
+            }
+        }
+        END { if (fenced && !bare) print "(no bare invocation in the fence)" }
+    ' "$fencefile") || odd="(the fence in ${fencefile} could not be read)"
+    [ -n "$odd" ] || return 0
+    while IFS= read -r one; do
+        [ -n "$one" ] || continue
+        echo "  touched ${name}: FINDING — its fence in ${fencefile} invokes '${one}', which is not the bare self-case; the leg runs the self-case bare (the fence is the defect)"
+    done <<ODD
+${odd}
+ODD
+    ALWAYS_ON_FINDINGS=$((ALWAYS_ON_FINDINGS + 1))
+}
+
+# always_on__touched <declared names> <measured names> — prints every selection
+# line, then `selected:` and the selected names space-joined as the LAST line
+# (a prefix, because a command substitution strips an empty last line). A member the declared or measured half already runs is named and not
+# selected twice. Exit 1 when the selection could not be read.
+always_on__touched() {
+    local declared_names=$1 measured=$2 shell listing lines rows name path covered first more n p sel="" s1
+    shell=$(always_on__shell_changed) || return 1
+    if [ -z "$shell" ]; then
+        # NO LINE OF ITS OWN: an `apps/**` rung's transcript differs from the
+        # one before this source existed only by the summary's `touched 0`.
+        echo "selected:"
+        return 0
+    fi
+    s1=$(printf '%s\n' "$shell" | sed -n '1p')
+    listing=$(mktemp "${TMPDIR:-/tmp}/djb-always-on-touched.XXXXXX") || return 1
+    lines=$(mktemp "${TMPDIR:-/tmp}/djb-always-on-covers.XXXXXX") || {
+        rm -f "$listing"
+        return 1
+    }
+    printf '%s\n' "$shell" | awk 'NF { printf "100644 blob 0\t%s\n", $0 }' >"$listing"
+    rows=$(always_on__registry) || {
+        rm -f "$listing" "$lines"
+        return 1
+    }
+    while IFS="$(printf '\t')" read -r name path; do
+        [ -n "$name" ] && [ -f "$path" ] || continue
+        always_on__covers "$path" "$listing" | awk -v n="$name" 'NF { print n "\t" $0 }' >>"$lines"
+    done <<ROWS
+${rows}
+ROWS
+    for p in $shell; do
+        n=$(awk -F'\t' -v p="$p" '$2 == p { c++ } END { print c + 0 }' "$lines")
+        echo "  always-on (touched): ${n} drives cover ${p}"
+    done
+    for name in $(awk -F'\t' '!seen[$1]++ { print $1 }' "$lines"); do
+        covered=$(awk -F'\t' -v n="$name" '$1 == n { print $2 }' "$lines")
+        first=$(printf '%s\n' "$covered" | sed -n '1p')
+        more=$(printf '%s\n' "$covered" | awk 'END { print NR - 1 }')
+        if [ "$more" = "0" ]; then more=""; else more=" (and ${more} more)"; fi
+        if printf '%s\n' "$declared_names" | always_on__names_has "$name"; then
+            echo "  always-on (touched): ${name}: touched: ${first}${more} — already selected (declared); runs once there"
+        elif printf '%s\n' $measured | always_on__names_has "$name"; then
+            echo "  always-on (touched): ${name}: touched: ${first}${more} — already selected (measured); runs once there"
+        else
+            echo "  always-on (touched): ${name}: touched: ${first}${more}"
+            sel="${sel} ${name}"
+        fi
+    done
+    # THE FLOOR UNDER THE DERIVATION: sweep, on any shell change, unless the
+    # derivation above already named it.
+    if ! awk -F'\t' '$1 == "sweep" { f = 1 } END { exit(f ? 0 : 1) }' "$lines"; then
+        if [ -n "${DJB_SELFTEST_DRIVES_DIR:-}" ] && ! always_on__drives | always_on__names_has sweep; then
+            echo "  always-on (touched): sweep is not a member of this planted set — the shell-change floor selects nothing here"
+        elif printf '%s\n' "$declared_names" | always_on__names_has sweep ||
+            printf '%s\n' $measured | always_on__names_has sweep; then
+            echo "  always-on (touched): sweep: touched: ${s1} (a shell file changed) — already selected; runs once there"
+        else
+            echo "  always-on (touched): sweep: touched: ${s1} (a shell file changed)"
+            sel="${sel} sweep"
+        fi
+    fi
+    rm -f "$listing" "$lines"
+    echo "selected:${sel}"
 }
 
 # --- THE MEMBER'S VERDICT, CONSULTED BEFORE IT RUNS --------------------------
@@ -2862,6 +3094,23 @@ EOF
         echo "  always-on (local): joins this loop —${locals}"
     fi
 
+    # --- the third source: the drives a SHELL CHANGE reaches -----------------
+    # The derivation, the sweep floor and the declared blind spots are the
+    # THIRD SOURCE block above `always_on__changed_files`. The selection lines
+    # print before any member runs; the last line is the selected names.
+    local touched="" touched_out="" declared_count measured_count touched_count
+    touched_out=$(always_on__touched "$declared_names" "$measured") || {
+        echo "!! the always-on leg COULD NOT DERIVE the drives this run's shell changes reach." >&2
+        echo "   Nothing was judged: an underived selection is not an empty one." >&2
+        return 2
+    }
+    printf '%s\n' "$touched_out" | sed '$d'
+    touched=$(printf '%s\n' "$touched_out" | sed -n '$s/^selected://p')
+    declared_count=$(printf '%s\n' "$declared" | awk -F'\t' 'NF && $1 != "" { c++ } END { print c + 0 }')
+    measured_count=$(printf '%s\n' $measured | awk 'NF { c++ } END { print c + 0 }')
+    touched_count=$(printf '%s\n' $touched | awk 'NF { c++ } END { print c + 0 }')
+    echo "  always-on: selected — declared ${declared_count} · measured ${measured_count} · touched ${touched_count}"
+
     # --- run them ------------------------------------------------------------
     if [ -n "$declared" ]; then
         while IFS="$(printf '\t')" read -r ALWAYS_ON_PATH ALWAYS_ON_REASON; do
@@ -2874,6 +3123,13 @@ EOF
     fi
     for name in $measured; do
         always_on__run member "$name"
+    done
+    ALWAYS_ON_FINDINGS=0
+    for name in $touched; do
+        # BY ITS FENCED INVOCATION: the fence is read for the self-case, and a
+        # fence that invokes anything else is printed as its own defect.
+        always_on__fence_finding "$name" "$(always_on__drive_file "$name")"
+        always_on__run touched "$name"
     done
     for name in $locals; do
         # THE LOOP HALF PROVISIONS TOO, and it did not: `always_on__run` is the
@@ -2899,6 +3155,8 @@ EOF
     [ -z "$ALWAYS_ON_TABLE" ] || rm -f "$ALWAYS_ON_TABLE"
     ALWAYS_ON_TABLE=""
     echo "  always-on: ${ALWAYS_ON_GREEN} member(s) green · ${ALWAYS_ON_RED} red · ${ALWAYS_ON_CANNOT} could-not-look (${ALWAYS_ON_WALL}s of member wall, $(($(date +%s) - t0))s of leg)"
+    [ "$ALWAYS_ON_FINDINGS" = "0" ] ||
+        echo "  always-on: ${ALWAYS_ON_FINDINGS} fence FINDING(s) above — a fence that does not invoke its drive's bare self-case"
     if [ "$ALWAYS_ON_CANNOT" -gt 0 ]; then
         echo "!! COULD NOT LOOK:${ALWAYS_ON_CANNOT_NAMES}" >&2
         [ "$ALWAYS_ON_RED" = "0" ] || echo "!! and RED:${ALWAYS_ON_RED_NAMES}" >&2
@@ -5165,6 +5423,40 @@ DJANGO_SETTINGS_MODULE=config.settings.production \
 }
 gate_run_body deploy-check gate_leg_deploy_check
 
+# --- the plant-collision leg: a plant never carries a name a real app serves --
+#
+# THE CLASS IS CAUGHT ONLY ON THE TREE THAT GROWS INTO IT. A real app gaining a
+# name some plant already carries changes no shell file and no plant, so the
+# engine's self-test — which asks the same question at its head — finds it only
+# when the self-test next runs, and that has been the train. This leg asks it
+# on every `--loop`, where trees grow: `python -m quality.gate
+# --plant-collisions`, which runs `manage.py introspect` once and reads every
+# plant the plan names and every drive fixture by AST or by word (seconds; the
+# engine prints its wall on its own line). The census, its declaration
+# grammar and its blind spots are the engine's (`quality/gate.py`, beside the
+# plant-namespace census); this block adds nothing to them.
+#
+# AT COLUMN ZERO, BESIDE `deploy-check`, AND NOT INSIDE THE `--loop` BLOCK: a
+# leg inside that block is one the full path never runs, and a leg the full
+# gate never announces cannot stand in `FULL_LEGS` or the `static` unit. So it
+# runs in `--loop` and in the full gate alike (and never at `--fast`, which has
+# exited above). EXIT 2 ON ANY REFUSAL — an undeclared collision is a dead
+# canary in waiting, which is broken enforcement, never a violation — and 0
+# otherwise; the engine never answers 1 here.
+leg plant-collisions "plant-collision census — no plant carries a name the tree serves (introspect + an @service walk) unless it declares the collision on the plant"
+gate_leg_plant_collisions() {
+set +e
+uv run python -m quality.gate --plant-collisions
+PLANT_COLLISIONS_RC=$?
+set -e
+if [ "$PLANT_COLLISIONS_RC" != "0" ]; then
+    echo "!! plant-collisions: the census answered exit ${PLANT_COLLISIONS_RC} — the refusals above name each plant, its" >&2
+    echo "   name and the real site; an undeclared collision is broken enforcement (exit 2), never a finding." >&2
+    exit 2
+fi
+}
+gate_run_body plant-collisions gate_leg_plant_collisions
+
 # --- the fe leg: ON THE FULL PATH, and it used to be inside the --loop block
 # below. A tri-state leg that prints `skip` when there is no client is still a
 # leg that RAN, and a leg the full gate never announces is a leg no verdict row
@@ -5306,7 +5598,7 @@ if [ "$MODE" = "--loop" ]; then
     # expensive thing starts, and the leg holds nothing while it looks. The
     # derivation, the two halves and the declared blind spots are the
     # `always-on-leg` fence above — read that before changing what this claims.
-    leg always-on "the full-only members the loop can afford — drives declaring themselves cross-app (always, whatever the price) plus every member the committed measurement puts under the floor; each consulted against its banked drive verdict first"
+    leg always-on "the full-only members the loop can afford — drives declaring themselves cross-app (always, whatever the price), every member the committed measurement puts under the floor, and every drive whose # drives: line covers a shell file the active rung changed (sweep on any shell change); each consulted against its banked drive verdict first"
     gate_leg_always_on() {
     set +e
     always_on_leg
@@ -9880,6 +10172,84 @@ elif [ "$CI_DERIVE_DRIVE_RC" != "0" ]; then
     exit "$CI_DERIVE_DRIVE_RC"
 fi
 # <<< drive: ci_derive <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin golden_copy; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: golden_copy >>>
+# THE GOLDEN-COPY DRIVE'S SELF-CASE. Every noun-verb family verb ships a worked
+# example on the scaffold noun, fenced `# golden: <verb> begin|end`, and
+# `scripts/tests/test_golden_copy.sh --verb <verb>` copies exactly the fenced
+# text into a throwaway product app (`Widget`→`Gadget`), builds it, checks it
+# (rules 17 and 74 over the copy), runs its copied test, deletes the road's last
+# route to watch rule 74 go red, and drops everything. Bare (`--self`) is the
+# drive proving ITSELF: it plants its own fenced blocks into an empty scratch
+# source, so it can run — and fail — whether or not the worked example is
+# fenced, and a green here never waited on somebody else's fence. A `--verb`
+# case joins this block in the change that fences that verb's example.
+#
+# It works in a scratch copy of the tracked tree and a test database named for
+# the run, never in this checkout: an app appearing in the tree a gate measures
+# would be an app every other leg collects. It needs the compose Postgres, as
+# this leg already does; ~1 min, nearly all of it migrating a fresh test database.
+set +e
+./scripts/tests/test_golden_copy.sh
+GOLDEN_COPY_DRIVE_RC=$?
+set -e
+if [ "$GOLDEN_COPY_DRIVE_RC" = "2" ]; then
+    echo "!! the golden-copy drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$GOLDEN_COPY_DRIVE_RC" != "0" ]; then
+    echo "!! the golden-copy drive's own cycle no longer holds: a fenced block copied" >&2
+    echo "   out of the worked example no longer builds, checks, passes, reds rule 74" >&2
+    echo "   without its last route, or leaves nothing behind. Every verb's worked" >&2
+    echo "   example is proven by this cycle, so it failing is every example unproven." >&2
+    exit "$GOLDEN_COPY_DRIVE_RC"
+fi
+# <<< drive: golden_copy <<<
+) || SELFTEST_BLOCK_RC=$?
+selftest_member_end "$SELFTEST_BLOCK_RC"
+fi
+
+if selftest_member_begin golden_face; then
+SELFTEST_BLOCK_RC=0
+(
+# >>> drive: golden_face >>>
+# THE GOLDEN-FACE DRIVE, EVERY CASE. The face half of the golden examples:
+# every block of the worked face (`frontend/src/screens/widget/`, its words in
+# `frontend/src/copy/widget.ts`) a product copies to draw a family verb is
+# fenced `// golden: <verb>`, and `scripts/tests/test_golden_face.sh` copies the
+# face's base and one verb's blocks into a scratch world (`Widget`→`Gadget`),
+# plants the wire that verb adopts, and wants house rules 77-80 silent, the copy
+# type-checked on its own and the verb face census green over it — then proves
+# it can fail: the copy's road naming `merge` against a wire without it must
+# red rule 77. Bare is every case: the real face is the only subject, and a
+# case per verb is what a product copying one verb meets.
+#
+# It works in a scratch world (the tracked frontend, quality and pattern book,
+# this checkout's node_modules linked in), never in this checkout; it needs no
+# database. ~1-2 min, most of it the client's generation and five type-checks.
+set +e
+./scripts/tests/test_golden_face.sh
+GOLDEN_FACE_DRIVE_RC=$?
+set -e
+if [ "$GOLDEN_FACE_DRIVE_RC" = "2" ]; then
+    echo "!! the golden-face drive COULD NOT LOOK — see above." >&2
+    echo "   A driver that could not run its cases has not cleared them." >&2
+    exit 2
+elif [ "$GOLDEN_FACE_DRIVE_RC" != "0" ]; then
+    echo "!! the golden-face drive's cases no longer hold: a fenced block copied out" >&2
+    echo "   of the worked face no longer holds the face rules, compiles or passes the" >&2
+    echo "   census against the wire its verb adopts, or the drive's negative stayed" >&2
+    echo "   green. Every verb's worked face is proven here, so it failing is every" >&2
+    echo "   face a product copies unproven." >&2
+    exit "$GOLDEN_FACE_DRIVE_RC"
+fi
+# <<< drive: golden_face <<<
 ) || SELFTEST_BLOCK_RC=$?
 selftest_member_end "$SELFTEST_BLOCK_RC"
 fi

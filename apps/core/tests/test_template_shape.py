@@ -10,12 +10,12 @@ read as defects in the product. So an unknown key, a value outside a closed
 vocabulary, and an empty value are each `ImproperlyConfigured` **at settings
 import**, driven here by importing `config.settings.base` under each one.
 
-**Is every mark a real mark?** The marks are a closed population: six keys, five
+**Is every mark a real mark?** The marks are a closed population: seven keys, six
 modules. A mark naming a seventh key is a test that can never run again, and a
-mark in a sixth module is the mechanism growing somewhere nobody decided it
+mark in a seventh module is the mechanism growing somewhere nobody decided it
 should. Both are read out of the tree by `ast`, not asserted from a list.
 
-**Is the declaration documented where it is read?** The six keys are only useful
+**Is the declaration documented where it is read?** The seven keys are only useful
 if a product can find out what declaring one turns off, and the place a person
 looks is the settings block that reads the variable.
 
@@ -59,6 +59,7 @@ TEMPLATE_SHAPE: dict[str, str] = {
     "posture_writer": "zitadel_seed",
     "branding_writer": "zitadel_brand",
     "landing": "template",
+    "platform_apps": "template",
 }
 
 
@@ -74,7 +75,7 @@ def test_the_six_keys_and_their_defaults_are_what_this_template_ships() -> None:
     `settings.IDENTITY_SHAPE` here reds on the first product that declares
     anything — the divergence class this whole mechanism exists to end,
     re-entering through the test that polices it. What is pinned is the
-    mechanism: declare nothing, get the template's six.
+    mechanism: declare nothing, get the template's seven.
     """
     assert settings.IDENTITY_SHAPE_DEFAULTS == TEMPLATE_SHAPE
 
@@ -94,10 +95,10 @@ def test_an_unknown_key_refuses_at_settings_import() -> None:
 
 @pytest.mark.parametrize(
     "declaration",
-    ["login_page=mine", "template_files=x", "landing=theirs"],
+    ["login_page=mine", "template_files=x", "landing=theirs", "platform_apps=mine"],
 )
 def test_an_illegal_enum_value_refuses(declaration: str) -> None:
-    """Three of the six are closed questions with two answers; a third is a typo."""
+    """Four of the seven are closed questions with two answers; a third is a typo."""
     with pytest.raises(ImproperlyConfigured) as refusal:
         with _settings_module("config.settings.base", DJB_IDENTITY_SHAPE=declaration):
             pass  # pragma: no cover - the import above is the subject
@@ -196,7 +197,7 @@ def test_every_mark_names_a_key_and_lives_in_an_identity_shape_module(capsys: An
 
     A mark naming a seventh key is a test that can never run again (and
     `template_shape` raises on it at import, which is the belt); a mark in a
-    module outside the declared five is the mechanism spreading somewhere nobody
+    module outside the declared six is the mechanism spreading somewhere nobody
     decided it should, which nothing else in the tree would notice.
 
     The note at the end is decision 7's answer to the vacuous-suite question:
@@ -220,7 +221,7 @@ def test_every_mark_names_a_key_and_lives_in_an_identity_shape_module(capsys: An
     assert marks, "the census found no shape marks at all — it stopped looking"
 
     unknown = [(path, name, key) for path, name, key in marks if key not in TEMPLATE_SHAPE]
-    assert unknown == [], "shape marks naming a key that is not one of the six"
+    assert unknown == [], "shape marks naming a key that is not one of the seven"
 
     outside = sorted({path for path, _, _ in marks} - set(IDENTITY_SHAPE_MODULES))
     assert outside == [], "shape marks outside the declared identity-shape modules"
@@ -267,8 +268,9 @@ def test_the_marks_are_where_this_rung_put_them() -> None:
         "apps/accounts/tests/test_identity_branding.py": 4,
         "apps/accounts/tests/test_first_admin_command.py": 0,
         "apps/core/tests/test_welcome.py": 1,
+        "apps/core/tests/test_template_shape.py": 1,
     }
-    assert len(marks) == 22
+    assert len(marks) == 23
 
 
 def test_a_mark_naming_a_key_outside_the_six_refuses_at_import() -> None:
@@ -300,6 +302,11 @@ def test_a_differing_value_skips_and_an_agreeing_one_does_not() -> None:
 
     assert differing.args[0] is True
     assert differing.kwargs["reason"] == f"{PREFIX} login_page=own"
+
+    # The seventh key retires the same way: a product that added its own app.
+    retired = template_shape("platform_apps", shape=TEMPLATE_SHAPE | {"platform_apps": "own"})
+    assert retired.args[0] is True
+    assert retired.kwargs["reason"] == f"{PREFIX} platform_apps=own"
 
 
 # --- the keys are documented where the setting is read -----------------------
@@ -350,6 +357,45 @@ def test_the_env_example_ships_the_declaration_commented() -> None:
     assert "# DJB_IDENTITY_SHAPE=" in text
     for key, value in TEMPLATE_SHAPE.items():
         assert f"{key}={value}" in text
+
+
+# --- the template's platform app set -----------------------------------------
+
+
+@template_shape("platform_apps")
+def test_the_platform_app_set_is_every_app_in_the_tree() -> None:
+    """Every app under `apps/` is one the partition names, and nothing else is.
+
+    `quality/partition.yaml`'s `platform_apps` is the record of the template's
+    own apps: the partition's skip key closes over them, and the refusal pin
+    (`test_refusal_status.py::_template_apps`) reads the same list to decide
+    which codes are the template's. An app merged into the template and
+    forgotten there is silently classed a PRODUCT's — its tests always run and
+    its refusal codes leave the typed pin. No marker both trees share can tell a
+    forgotten template app from a product's, so the question is asked as a
+    SHAPE: on the template's own tree the two sets are equal.
+
+    A product retires it by the mark's protocol — `platform_apps=own` in
+    `DJB_IDENTITY_SHAPE` the day it adds its first app — because on a product
+    tree its own apps are SUPPOSED to sit outside the template's list (the
+    lockfile's header says so: the live registry is a superset).
+    """
+    from apps.core.tests.tree_census import TRANSIENT_APP_MODULES
+    from quality.partition import platform_apps
+
+    # A test elsewhere plants `apps/zzz_probe/` for a moment; it is not an app.
+    planted = {module.split(".")[1] for module in TRANSIENT_APP_MODULES}
+    tree = {
+        path.name
+        for path in (BASE_DIR / "apps").iterdir()
+        if (path / "apps.py").exists() and path.name not in planted
+    }
+    listed = set(platform_apps())
+    assert listed == tree, (
+        f"in the tree and absent from platform_apps: {sorted(tree - listed)}; "
+        f"listed and absent from the tree: {sorted(listed - tree)}. A template app goes "
+        "in quality/partition.yaml in the commit that adds it."
+    )
 
 
 #: THE ONE DELIBERATELY ENVIRONMENT-DERIVED TEST IN THIS MODULE, named here so

@@ -24,22 +24,50 @@ per thread is a connection leaked forever.
 Both are **idempotent**, because Temporal guarantees an activity runs at least
 once: the mark keeps the first timestamp it wrote, and the announcement says the
 same thing twice rather than something different.
+
+**An archived widget is refused, once.** Both services refuse `archived` (every
+write on an archived row does), and that refusal is already true at the first
+attempt and is not made false by waiting — so it leaves here as a
+NON-RETRYABLE failure whose type and message carry the code, the run fails at
+once, and its row's `error` says `archived` instead of the run retrying an
+answer it already has.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 from uuid import UUID
 
 from django.db import close_old_connections
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from apps.core.actor import system_actor
+from apps.core.exceptions import Archived
 from apps.example import services
 from apps.example.selectors import get_widget
 from apps.example.types import WidgetAnnouncement, WidgetOnboarding
 from apps.workflows.context import workflow_context
+
+
+@contextmanager
+def _refused_for_good() -> Iterator[None]:
+    """An `archived` refusal leaves as a failure Temporal does not retry.
+
+    The type is the refusal's CODE, so the workflow's history, the Temporal UI
+    and the run row's `error` all name it; the message is the sentence a person
+    reads. Only `archived` is here: a refusal that waiting
+    can change (a conflict, a transport's error) keeps the retry policy's
+    answer.
+    """
+    try:
+        yield
+    except Archived as refused:
+        # The message is the sentence alone: an `ApplicationError` already says
+        # its type first (`archived: …`), so the code is never written twice.
+        raise ApplicationError(refused.detail, type=refused.code, non_retryable=True) from refused
 
 
 @activity.defn(name="mark_widget_onboarded", no_thread_cancel_exception=True)
@@ -72,11 +100,12 @@ def mark_widget_onboarded(payload: WidgetOnboarding) -> str:
         # created the widget last week would make the audit trail read plausibly
         # and be false. The hat still rides on it, so the audit row says which
         # part of the network the work was done for.
-        marked = services.mark_widget_onboarded(
-            tenant=widget.tenant,
-            actor=system_actor(widget.tenant, org),
-            widget=widget,
-        )
+        with _refused_for_good():
+            marked = services.mark_widget_onboarded(
+                tenant=widget.tenant,
+                actor=system_actor(widget.tenant, org),
+                widget=widget,
+            )
         return marked.onboarded_at.isoformat() if marked.onboarded_at is not None else ""
     finally:
         close_old_connections()
@@ -108,12 +137,13 @@ def announce_widget_onboarded(payload: WidgetAnnouncement) -> str:
             org=org,
             actor=system_actor(tenant, org),
         )
-        announced = services.announce_widget_onboarded(
-            tenant=widget.tenant,
-            actor=system_actor(widget.tenant, org),
-            widget=widget,
-            approved=payload.approved,
-        )
+        with _refused_for_good():
+            announced = services.announce_widget_onboarded(
+                tenant=widget.tenant,
+                actor=system_actor(widget.tenant, org),
+                widget=widget,
+                approved=payload.approved,
+            )
         return str(announced.pk)
     finally:
         close_old_connections()

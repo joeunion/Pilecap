@@ -33,6 +33,8 @@ from django.conf import settings
 from django.core.checks import CheckMessage, Error, Info, Warning, register
 from django.db import models
 
+from apps.core.verbs import HOOK_MODULES
+
 DJB = "djb"
 
 # Module names an app may use for the canonical jobs (house rule 11). A file
@@ -88,6 +90,14 @@ CANONICAL_MODULES = {
     # `apps/<x>/roles.py` is not `djb.E011` on sight, with the adoption path
     # documented and boot-refused until somebody edits `quality/`.
     "roles",
+    # THE NOUN-VERB FAMILY'S HOOKS, by the same promotion and the same argument,
+    # and DERIVED rather than typed: `core.verbs.HOOK_MODULES` is the closed tuple
+    # the family's walk reads (`archive_blockers.py`, `merge_repointers.py`,
+    # `importers.py`, …), so the day a hook kind joins the tuple it is canonical
+    # here in the same commit. A child app registering a blocker against its
+    # parent's noun is the documented adoption path, and it must not be
+    # boot-refused as a novel module name.
+    *HOOK_MODULES,
 }
 BANNED_MODULES = {"utils", "helpers", "logic", "misc", "common", "lib", "managers"}
 
@@ -512,6 +522,8 @@ _VERB_TOOLS = {
     "create": ("create_{noun}",),
     "update": ("update_{noun}", "set_{noun}"),
     "delete": ("delete_{noun}", "remove_{noun}"),
+    # The family's bulk verb: `<noun>-bulk` → `bulk_<noun>s` (the selection is plural).
+    "bulk": ("bulk_{noun}s",),
 }
 
 
@@ -568,6 +580,476 @@ def check_door_parity(app_configs: Any = None, **kwargs: Any) -> list[CheckMessa
                     id="djb.E017",
                 )
             )
+    return found
+
+
+# --- rule 74: a noun that declares a family marker carries the whole road -------
+#
+# The noun-verb family's one rule, over one table: `core.verbs.ROADS` says which
+# routes each marker demands, and this check reads the live ninja registry for
+# them. A noun that declared `Archivable` and drew only half the road — an
+# archive with no restore, a restore with no `ArchivedOut` on its answer, a list
+# nobody can ask for the archived cut of — is a half-built noun, and the half
+# that is missing is the half a person needs on the day they need it. Its MCP
+# twins are rule 17's question, derived from the same `url_name`s, so the two
+# rules together demand both doors without either restating the other.
+#
+# BOTH POPULATIONS ARE CLOSED: the nouns are the model registry's declared
+# markers (`verbs.declared_models`), the routes are the live mount. Nothing here
+# is a list.
+
+#: The `url_name` verbs whose 200 answers the noun itself — each must be an
+#: `ArchivedOut` for an archivable noun, so a face can draw the band from any of
+#: them.
+_ANSWERS_THE_NOUN = ("detail", "archive", "restore")
+
+
+def _response_schema(operation: Any) -> Any:
+    """The schema a route answers on success (200, else 201), or None."""
+    for status in (200, 201):
+        model = (getattr(operation, "response_models", None) or {}).get(status)
+        if model is None:
+            continue
+        field = getattr(model, "model_fields", {}).get("response")
+        return getattr(field, "annotation", None)
+    return None
+
+
+def _offers_query(operation: Any, name: str) -> bool:
+    """Whether a route accepts `?<name>=` — a bare parameter or a filter schema's field."""
+    from pydantic import BaseModel
+
+    for param_model in getattr(operation, "models", None) or []:
+        for field_name, field in getattr(param_model, "model_fields", {}).items():
+            if field_name == name:
+                return True
+            annotation = getattr(field, "annotation", None)
+            if (
+                isinstance(annotation, type)
+                and issubclass(annotation, BaseModel)
+                and name in annotation.model_fields
+            ):
+                return True
+    return False
+
+
+def _list_names(noun: str) -> set[str]:
+    """The `url_name`s a noun's list may carry: `<noun>-list` or its plural."""
+    plurals = {f"{noun}s", f"{noun}es"}
+    if noun.endswith("y"):
+        plurals.add(f"{noun[:-1]}ies")
+    return {f"{form}-list" for form in {noun, *plurals}}
+
+
+def _body_schemas(operation: Any) -> list[Any]:
+    """The request-body schemas a route takes (ninja's body param models, unwrapped)."""
+    from pydantic import BaseModel
+
+    found: list[Any] = []
+    for param_model in getattr(operation, "models", None) or []:
+        if getattr(param_model, "__ninja_param_source__", None) != "body":
+            continue
+        for field in getattr(param_model, "model_fields", {}).values():
+            annotation = getattr(field, "annotation", None)
+            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                found.append(annotation)
+    return found
+
+
+def _requires(schema: Any, name: str) -> bool:
+    field = getattr(schema, "model_fields", {}).get(name)
+    return field is not None and field.is_required()
+
+
+def _versioned_findings(model: Any, noun: str, operations: dict[str, Any]) -> list[CheckMessage]:
+    """A `Versioned` noun's writes that edit it carry `version` REQUIRED; its answer carries it."""
+    found: list[CheckMessage] = []
+    label = model._meta.label
+    for verb in ("update", "move", "merge"):
+        operation = operations.get(f"{noun}-{verb}")
+        if operation is None:
+            continue
+        bodies = _body_schemas(operation)
+        if not any(_requires(schema, "version") for schema in bodies):
+            names = ", ".join(getattr(s, "__name__", str(s)) for s in bodies) or "no body"
+            found.append(
+                Error(
+                    f"`{noun}-{verb}` takes {names}, which does not REQUIRE `version`: {label} "
+                    "is `Versioned`, so every write that edits it names the version it was "
+                    "made against — inherit `core.schemas.VersionedIn` (house rule 74).",
+                    obj=f"{noun}-{verb}",
+                    id="djb.E074",
+                )
+            )
+        schema = _response_schema(operation)
+        if not (isinstance(schema, type) and "version" in getattr(schema, "model_fields", {})):
+            found.append(
+                Error(
+                    f"`{noun}-{verb}` answers {getattr(schema, '__name__', schema)!r}, which "
+                    f"carries no `version`: {label} is `Versioned`, so the answer hands back "
+                    "the version the next write names — inherit `core.schemas.VersionedOut` "
+                    "(house rule 74).",
+                    obj=f"{noun}-{verb}",
+                    id="djb.E074",
+                )
+            )
+    return found
+
+
+def _bulk_findings(model: Any, noun: str, operations: dict[str, Any]) -> list[CheckMessage]:
+    """Every verb a noun lists in `bulk_verbs` has its own single road."""
+    found: list[CheckMessage] = []
+    for verb in getattr(model, "bulk_verbs", ()) or ():
+        if f"{noun}-{verb}" not in operations:
+            found.append(
+                Error(
+                    f"{model._meta.label} lists {verb!r} in `bulk_verbs` and has no "
+                    f"`{noun}-{verb}` route: a bulk verb runs the noun's OWN single verb per "
+                    "item, so the single road comes first (house rule 74).",
+                    obj=f"{noun}-{verb}",
+                    id="djb.E074",
+                )
+            )
+    return found
+
+
+def _system_policy_findings(model: Any, noun: str) -> list[CheckMessage]:
+    """An archivable noun's archive and restore keys carry a `@refuses_system` policy.
+
+    Without the pair the keys have no predicate, so `allows` step 1 waves the
+    system actor through and a workflow may archive a person's row on its own
+    say-so — the exemption the archive road exists to close.
+    """
+    from apps.core.authz import policies, refusing_system
+
+    registry = policies()
+    refusing = refusing_system()
+    found: list[CheckMessage] = []
+    for verb in ("archive", "restore"):
+        action = f"{noun}.{verb}"
+        predicate = registry.get(action)
+        if predicate is None or predicate not in refusing:
+            has = (
+                "no policy"
+                if predicate is None
+                else "a policy that did not declare `@refuses_system`"
+            )
+            found.append(
+                Error(
+                    f"{model._meta.label} is archivable and `{action}` has {has}: "
+                    "the system actor would be waved through. Declare the pair in the app's "
+                    f'`policies.py` — `POLICIES = {{"{noun}.archive": may_archive, '
+                    f'"{noun}.restore": may_archive}}` (`core.policies.may_archive`) '
+                    "(house rule 74).",
+                    obj=action,
+                    id="djb.E074",
+                )
+            )
+    return found
+
+
+def _no_body_findings(model: Any, noun: str, operations: dict[str, Any]) -> list[CheckMessage]:
+    """An archivable noun's archive and restore routes take NO body.
+
+    The press is the whole request: a route that declares a body — even an
+    empty `{}` one — answers 422 to a bodiless press, a door disagreement with
+    every other adopter, and publishes `invalid_body` for a refusal nothing can
+    earn.
+    """
+    found: list[CheckMessage] = []
+    for verb in ("archive", "restore"):
+        operation = operations.get(f"{noun}-{verb}")
+        if operation is None:
+            continue
+        bodies = _body_schemas(operation)
+        if bodies:
+            names = ", ".join(getattr(schema, "__name__", str(schema)) for schema in bodies)
+            found.append(
+                Error(
+                    f"`{noun}-{verb}` takes a body ({names}): {model._meta.label} is "
+                    "archivable, and its archive and restore routes take none — the press "
+                    "is the whole request, and a body turns a bodiless press into a 422 "
+                    "(house rule 74).",
+                    obj=f"{noun}-{verb}",
+                    id="djb.E074",
+                )
+            )
+    return found
+
+
+def _merge_fk_findings(model: Any, noun: str) -> list[CheckMessage]:
+    """Every foreign key INTO a mergeable noun is re-pointed or declared kept.
+
+    The population is the ORM's own relation registry, hidden relations
+    included (a `related_name="+"` FK still names the loser after a merge):
+    each is either re-pointed by its owning app's `merge_repointers.py`
+    (`REPOINTERS[noun]`) or listed in the noun's `merge_keeps` — by reverse
+    accessor or by `app.Model.field` — with the reason it stays on the loser.
+    """
+    from apps.core.verbs import hook
+
+    repointing_apps = {
+        config.label for config, declared in hook("merge_repointers") if noun in declared
+    }
+    keeps: dict[str, str] = dict(getattr(model, "merge_keeps", {}) or {})
+    found: list[CheckMessage] = []
+    for relation in model._meta.get_fields(include_hidden=True):
+        if not getattr(relation, "auto_created", False) or getattr(relation, "concrete", True):
+            continue
+        field = getattr(relation, "field", None)
+        related = getattr(relation, "related_model", None)
+        if field is None or related is None or getattr(field, "many_to_many", False):
+            continue
+        if related is model and field.name in ("merged_into", "duplicated_from"):
+            continue
+        where = f"{related._meta.label}.{field.name}"
+        accessor = relation.get_accessor_name() if not relation.hidden else None
+        if where in keeps or (accessor is not None and accessor in keeps):
+            continue
+        if related._meta.app_label in repointing_apps:
+            continue
+        found.append(
+            Error(
+                f"{where} points at {model._meta.label}, which is mergeable, and nothing "
+                f"re-points it or keeps it: declare `REPOINTERS[{noun!r}]` in "
+                f"apps/{related._meta.app_label}/merge_repointers.py, or list it in "
+                f"`{model.__name__}.merge_keeps` with the reason it stays on the loser "
+                "(house rule 74).",
+                obj=where,
+                id="djb.E074",
+            )
+        )
+    return found
+
+
+def _duplicate_findings(model: Any, noun: str) -> list[CheckMessage]:
+    """Every concrete editable field is in `copies` or `resets` — a closed question."""
+    from apps.core.verbs import duplicate_fields, owned_children
+
+    declared = getattr(model, "duplicate", None)
+    copies = tuple(getattr(declared, "copies", ()) or ())
+    resets = tuple(getattr(declared, "resets", ()) or ())
+    classified = set(copies) | set(resets)
+    children = set(owned_children(model))
+    fields = duplicate_fields(model)
+    found: list[CheckMessage] = []
+    for name in fields:
+        if name not in classified:
+            found.append(
+                Error(
+                    f"{model._meta.label}.{name} is neither copied nor reset by "
+                    f"`{model.__name__}.duplicate`: a duplicate must say which side every "
+                    "field is on — add it to `copies` or `resets` (house rule 74).",
+                    obj=f"{noun}-duplicate",
+                    id="djb.E074",
+                )
+            )
+    for name in sorted(classified - set(fields) - children):
+        found.append(
+            Error(
+                f"`{model.__name__}.duplicate` names {name!r}, which is not a field of "
+                f"{model._meta.label} it could copy or reset, nor an owned child "
+                "(house rule 74).",
+                obj=f"{noun}-duplicate",
+                id="djb.E074",
+            )
+        )
+    return found
+
+
+def _attach_findings(operations: dict[str, Any]) -> list[CheckMessage]:
+    """A noun that takes tags answers them: its detail's `Out` carries `tags`.
+
+    The population is every model declaring `tags` in `attachments` — a
+    declaration, whatever other marker the noun carries.
+    """
+    from apps.core.authz import kind_of
+    from apps.core.verbs import declared_models
+
+    found: list[CheckMessage] = []
+    for model in declared_models("attachments"):
+        if model._meta.abstract or "tags" not in tuple(model.attachments or ()):  # type: ignore[attr-defined]
+            continue
+        noun = kind_of(model)
+        operation = operations.get(f"{noun}-detail") if noun else None
+        if operation is None:
+            continue
+        schema = _response_schema(operation)
+        if isinstance(schema, type) and "tags" in getattr(schema, "model_fields", {}):
+            continue
+        found.append(
+            Error(
+                f"`{noun}-detail` answers {getattr(schema, '__name__', schema)!r}, which "
+                f"carries no `tags`: {model._meta.label} lists `tags` in `attachments`, so "
+                "the record answers the words on it (house rule 74).",
+                obj=f"{noun}-detail",
+                id="djb.E074",
+            )
+        )
+    return found
+
+
+def _importer_findings(operations: dict[str, Any]) -> list[CheckMessage]:
+    """Every `IMPORTERS` key names a noun with a create road — an import is creates."""
+    from apps.core.verbs import hook
+
+    found: list[CheckMessage] = []
+    for config, declared in hook("importers"):
+        for noun in declared:
+            if f"{noun}-create" in operations:
+                continue
+            found.append(
+                Error(
+                    f"apps/{config.label}/importers.py imports {noun!r} and there is no "
+                    f"`{noun}-create` route: an import applies the noun's own creates, so "
+                    "the single create road comes first (house rule 74).",
+                    obj=f"{noun}-create",
+                    id="djb.E074",
+                )
+            )
+    return found
+
+
+def _bare_archived_at_findings() -> list[CheckMessage]:
+    """A field named `archived_at` on a class that never declared `Archivable`.
+
+    A hand-built archive half: the list hides nothing (`for_tenant()` only
+    hides what the mixin declared), no restore road is demanded, and the face
+    draws a band for a state nothing enforces.
+    """
+    from django.apps import apps as django_apps
+
+    from apps.core.models import ARCHIVED_AT, is_archivable
+
+    found: list[CheckMessage] = []
+    for model in django_apps.get_models():
+        if model._meta.abstract or not model.__module__.startswith("apps."):
+            continue
+        if is_archivable(model):
+            continue
+        if any(field.name == ARCHIVED_AT for field in model._meta.concrete_fields):
+            found.append(
+                Error(
+                    f"{model._meta.label} ({_model_file(model)}) carries `{ARCHIVED_AT}` and "
+                    "never declared `Archivable`: declare the mixin "
+                    "(`class Noun(OrgScopedModel, Archivable)`) so the book hides what it "
+                    "archives and the road is demanded (house rule 74).",
+                    obj=model._meta.label,
+                    id="djb.E074",
+                )
+            )
+    return found
+
+
+def _marker_word(marker: str) -> str:
+    """The marker as a reader names it: `*` is "a family marker"."""
+    from apps.core.verbs import ANY_MARKER
+
+    return "a family marker" if marker == ANY_MARKER else marker
+
+
+@register(DJB)
+def check_noun_verb_roads(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
+    """Rule 74. Every family marker a noun declares brings its whole road."""
+    from apps.core.authz import kind_of, vocabulary
+    from apps.core.schemas import ArchivedOut
+    from apps.core.verbs import ROADS, road_population
+
+    words = _derived_or_none(vocabulary)
+    if words is None:
+        return []
+    operations = {
+        str(operation.url_name or ""): operation for _prefix, operation in _bound_operations()
+    }
+    found: list[CheckMessage] = []
+    for family_verb, road in ROADS.items():
+        for model in road_population(road):
+            if model._meta.abstract or not model.__module__.startswith("apps."):
+                continue
+            label = model._meta.label
+            noun = kind_of(model)
+            if noun is None:
+                found.append(
+                    Error(
+                        f"{label} ({_model_file(model)}) declares `{road.marker}` and opted "
+                        "out of the vocabulary (`authz_kind = None`), so its "
+                        f"{family_verb} road has no key to authorize and no noun to route "
+                        "(house rule 74).",
+                        obj=label,
+                        id="djb.E074",
+                    )
+                )
+                continue
+            demanded = road.url_names(noun)
+            for url_name in demanded:
+                if url_name not in operations:
+                    found.append(
+                        Error(
+                            f"{label} ({_model_file(model)}) declares "
+                            f"`{_marker_word(road.marker)}` and has no `{url_name}` route: the "
+                            f"{family_verb} road is {', '.join(demanded)}, both doors "
+                            "(rule 17 derives the MCP twin from the same url_name) "
+                            "(house rule 74).",
+                            obj=url_name,
+                            id="djb.E074",
+                        )
+                    )
+            for verb in road.grants:
+                action = f"{noun}.{verb}"
+                if action not in words:
+                    found.append(
+                        Error(
+                            f"{label} declares `{road.marker}` and the vocabulary holds no "
+                            f"`{action}` — the derivation stopped reading the road "
+                            "(house rule 74).",
+                            obj=action,
+                            id="djb.E074",
+                        )
+                    )
+            if road.marker == "versioned":
+                found.extend(_versioned_findings(model, noun, operations))
+            if road.marker == "bulk_verbs":
+                found.extend(_bulk_findings(model, noun, operations))
+            if road.marker == "mergeable":
+                found.extend(_merge_fk_findings(model, noun))
+            if road.marker == "duplicable":
+                found.extend(_duplicate_findings(model, noun))
+            if road.marker != "archivable":
+                continue
+            found.extend(_system_policy_findings(model, noun))
+            found.extend(_no_body_findings(model, noun, operations))
+            for verb in _ANSWERS_THE_NOUN:
+                operation = operations.get(f"{noun}-{verb}")
+                if operation is None:
+                    continue
+                schema = _response_schema(operation)
+                if not (isinstance(schema, type) and issubclass(schema, ArchivedOut)):
+                    found.append(
+                        Error(
+                            f"`{noun}-{verb}` answers {getattr(schema, '__name__', schema)!r}, "
+                            f"which does not subclass `ArchivedOut`: {label} is archivable, so "
+                            "every answer that is the noun carries `archived_at` and "
+                            "`archived_by` — the archived face's band reads them "
+                            "(house rule 74).",
+                            obj=f"{noun}-{verb}",
+                            id="djb.E074",
+                        )
+                    )
+            for list_name in sorted(_list_names(noun) & set(operations)):
+                if not _offers_query(operations[list_name], "show"):
+                    found.append(
+                        Error(
+                            f"`{list_name}` takes no `?show=`: {label} is archivable, so its "
+                            "list is the live book by default and `?show=archived` is the one "
+                            "reader of the archived cut (`archived_only()`) "
+                            "(house rule 74).",
+                            obj=list_name,
+                            id="djb.E074",
+                        )
+                    )
+    found.extend(_importer_findings(operations))
+    found.extend(_attach_findings(operations))
+    found.extend(_bare_archived_at_findings())
     return found
 
 
@@ -906,9 +1388,63 @@ def _twin_tools() -> dict[str, Any]:
     return {tool.name: tool for tool in server._tool_manager.list_tools()}
 
 
+#: A query parameter a contract docstring documents: `?name=` opening a backticked
+#: span (`?show=archived`, `?cursor=<token>`). Only the backticked form is read —
+#: prose that merely mentions a question mark is not a promise.
+_DOCUMENTED_QUERY = re.compile(r"`\?([a-z_][a-z0-9_]*)=")
+
+#: A passage that documents a parameter as REFUSED is not a promise the route
+#: takes it: a refusal bullet (`* `400 invalid` — … `?archived=` was sent`), or a
+#: sentence saying so (`There is no `?archived=` — it is refused`).
+_REFUSED_PARAMETER = re.compile(r"\b(refused|no longer accepted|there is no)\b", re.IGNORECASE)
+_REFUSAL_BULLET = re.compile(r"^\s*\*\s+`\d{3}\b")
+
+
+def _passages(contract: str) -> list[str]:
+    """The contract as passages: a bullet with its continuation lines, or a paragraph."""
+    passages: list[list[str]] = []
+    for line in contract.splitlines():
+        if not line.strip():
+            passages.append([])
+            continue
+        if line.lstrip().startswith("* ") or not passages:
+            passages.append([line])
+        else:
+            passages[-1].append(line)
+    return ["\n".join(chunk) for chunk in passages if chunk]
+
+
+def _documented_queries(contract: str) -> list[str]:
+    """The query parameters a contract promises, in order, refusals set aside."""
+    found: list[str] = []
+    for passage in _passages(contract):
+        if _REFUSAL_BULLET.match(passage) or _REFUSED_PARAMETER.search(passage):
+            continue
+        for name in _DOCUMENTED_QUERY.findall(passage):
+            if name not in found:
+                found.append(name)
+    return found
+
+
+def _sibling_list_offers(url_name: str, name: str, by_name: dict[str, Any]) -> bool:
+    """Whether the same noun's LIST declares `?name=` — a record's route may point there.
+
+    An archive route saying "find it again under `?show=archived`" documents
+    its noun's list, not itself; the list is found by the noun's `url_name`
+    forms, the same ones rule 74 demands `?show=` of.
+    """
+    noun = url_name.rsplit("-", 1)[0] if "-" in url_name else ""
+    return any(
+        _offers_query(by_name[list_name], name)
+        for list_name in _list_names(noun)
+        if list_name in by_name
+    )
+
+
 @register(DJB)
 def check_contract_documentation(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
     from apps.core.api.docs import (
+        added_refusals,
         contract_of,
         declared_refusals,
         description_of,
@@ -948,6 +1484,7 @@ def check_contract_documentation(app_configs: Any = None, **kwargs: Any) -> list
     #: Every tag any operation carries, with one route that carries it — so the
     #: finding can point at something a reader can go and look at.
     faulty_tags: dict[str, str] = {}
+    by_name = {str(operation.url_name or ""): operation for _prefix, operation in operations}
 
     for _prefix, operation in operations:
         view = operation.view_func
@@ -1043,12 +1580,32 @@ def check_contract_documentation(app_configs: Any = None, **kwargs: Any) -> list
         for tag in tags:
             faulty_tags.setdefault(tag, url_name or where)
 
+        # A documented query parameter exists on the route: a backticked
+        # `?name=` in the contract names a parameter this operation declares.
+        # A replace-all once pasted `?can=` onto a route that takes none, and
+        # only a human reading the document caught it.
+        for name in _documented_queries(contract or ""):
+            if not _offers_query(operation, name) and not _sibling_list_offers(
+                url_name, name, by_name
+            ):
+                found.append(
+                    Error(
+                        f"route {url_name or where} ({where}) documents `?{name}=` and "
+                        f"declares no `{name}` query parameter: a caller who sends it is "
+                        "ignored (or refused), and the contract said it would work "
+                        "(house rule 41).",
+                        obj=url_name or where,
+                        id="djb.E041",
+                    )
+                )
+
         declared = declared_refusals(view)
-        for code in declared or ():
+        for code in (*(declared or ()), *added_refusals(view)):
             if code not in REFUSALS:
                 found.append(
                     Error(
-                        f"route {url_name or where} ({where}) declares `@refuses({code!r})`, "
+                        f"route {url_name or where} ({where}) declares {code!r} "
+                        "(`@refuses` / `@also_refuses`), "
                         "which is not in the refusal registry — the document would teach a "
                         "code the wire never speaks. Register it beside the class that "
                         "raises it (house rule 41).",

@@ -40,7 +40,6 @@ import pytest
 from django.core.exceptions import FieldDoesNotExist
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, models
-from django.test.utils import isolate_apps
 
 from apps.accounts.models import User
 from apps.core.actor import Actor, actor_for, system_actor
@@ -55,6 +54,7 @@ from apps.core.models import (
     is_inherited_downward,
 )
 from apps.core.services import create_organization, root_organization
+from apps.core.tests.isolation import isolated_apps
 
 pytestmark = pytest.mark.django_db
 
@@ -108,7 +108,7 @@ def built() -> Any:
     is only a claim if there is an identical model on the other side of the
     line, differing in the declaration and in nothing else.
     """
-    with isolate_apps("apps.core"):
+    with isolated_apps("apps.core"):
 
         class CanaryPolicy(InheritedDownward, OrgScopedModel):
             """Configuration a branch inherits from whoever set it above."""

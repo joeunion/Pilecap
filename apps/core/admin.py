@@ -199,7 +199,7 @@ class ServiceModelAdmin[M: Model](admin.ModelAdmin[M]):
     def render_refusal(self, request: HttpRequest, exc: DomainError) -> None:
         """Say no, where the person who clicked Save is looking."""
         setattr(request, REFUSAL_ATTR, exc)
-        messages.error(request, refusal_message(wire_refusal(exc)))
+        messages.error(request, refusal_message(wire_refusal(exc), extra=False))
 
     def message_user(self, request: HttpRequest, message: Any, *args: Any, **kwargs: Any) -> Any:
         """Drop a success message on a request that was refused.

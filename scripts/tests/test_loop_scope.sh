@@ -1056,6 +1056,7 @@ case_a_floor_member_moved_aside_is_a_refusal() {
     mv "$hidden" "$victim"
     is "$RC" "4" "the exit status"
     says "apps_root_modules"
+    says "declared but not collected: apps/test_absent_world.py (the tree has no such file)"
     CURRENT="layer 1 alone would not have noticed"
     if grep -q "LAYER 1 (reach kind)" "$OUT"; then
         bad "a layer-1 floor also fired — this case can no longer show layer 2 catching what layer 1 misses"
@@ -1113,12 +1114,256 @@ case_a_drawer_raised_floor_refuses_a_member_moved_aside_on_a_six_module_tree() {
         bad "the exit status: wanted '4', got '${RC}' — the drawer's addend was not read; its one reader is _population_floors in apps/conftest.py"
     fi
     says "apps_root_modules"
+    says "declared but not collected: apps/test_absent_world.py"
     CURRENT="the refusal names the drawer's half of the floor"
     if grep -q "apps_root_modules (floor [0-9]* = [0-9]* in apps/conftest.py + [0-9]* in apps/conftest_local.py" "$OUT"; then
         ok "the floor is printed as template + drawer — _population_floors read the planted row"
     else
         bad "no 'template + drawer' floor in the refusal — the planted DJB_POPULATION_FLOOR_ADDENDS row was not read by _population_floors (apps/conftest.py), the one reader of the drawer's declaration"
     fi
+}
+
+# --- the floor is an EQUALITY, and the apps root is declared by member -------
+#
+# THE CLASS THESE CASES PIN: a population that GREW past its declaration. The
+# one-sided floor this replaced stayed green while `apps_root_modules` went
+# 3 -> 4 -> 5 -> 6 and four token populations sat above their numbers; each join
+# was found later, by the moved-aside case above, never at the commit that
+# joined. The drawer below is planted and restored exactly as the drawer-raised
+# case plants it, so a product tree carrying its own drawer is measured with
+# its own rows plus the case's.
+DRAWER_PLANT_PATH="${ROOT}/apps/conftest_local.py"
+DRAWER_PLANT_BACKUP=""
+drawer_plant() {
+    # drawer_plant <line>... — appended to the drawer (created if absent).
+    if [ -z "$DRAWER_PLANT_BACKUP" ]; then
+        DRAWER_PLANT_BACKUP="${WORK}/conftest_local.equality-backup"
+        if [ -f "$DRAWER_PLANT_PATH" ]; then
+            cp "$DRAWER_PLANT_PATH" "$DRAWER_PLANT_BACKUP"
+        else
+            : >"${DRAWER_PLANT_BACKUP}.absent"
+        fi
+        drive_at_exit "drawer_restore"
+    fi
+    printf '%s\n' '' '# planted by test_loop_scope.sh: the equality cases' "$@" >>"$DRAWER_PLANT_PATH"
+}
+# drawer_plant_root_member <path> — the product's road for one apps-root
+# member, as a UNION with whatever the drawer (a product's own included)
+# already declares.
+drawer_plant_root_member() {
+    drawer_plant 'DJB_POPULATION_FLOOR_MEMBERS = {' \
+        '    **globals().get("DJB_POPULATION_FLOOR_MEMBERS", {}),' \
+        "    \"apps_root_modules\": (*globals().get(\"DJB_POPULATION_FLOOR_MEMBERS\", {}).get(\"apps_root_modules\", ()), \"$1\")," \
+        '}'
+}
+drawer_restore() {
+    [ -n "$DRAWER_PLANT_BACKUP" ] || return 0
+    if [ -f "${DRAWER_PLANT_BACKUP}.absent" ]; then
+        rm -f "$DRAWER_PLANT_PATH" "${DRAWER_PLANT_BACKUP}.absent"
+    else
+        cp "$DRAWER_PLANT_BACKUP" "$DRAWER_PLANT_PATH"
+        rm -f "$DRAWER_PLANT_BACKUP"
+    fi
+    DRAWER_PLANT_BACKUP=""
+}
+
+SEVENTH_PLANT="${ROOT}/apps/test_zzz_seventh.py"
+plant_seventh() {
+    [ -e "$SEVENTH_PLANT" ] &&
+        cannot_look "apps/test_zzz_seventh.py already exists — this case plants that path and will not overwrite it"
+    drive_at_exit "rm -f \"$SEVENTH_PLANT\" 2>/dev/null || true"
+    printf '%s\n' '"""A planted seventh apps-root module (test_loop_scope.sh, the equality cases)."""' \
+        '' '' 'def test_zzz_seventh() -> None:' '    assert True' >"$SEVENTH_PLANT"
+}
+
+case_a_member_above_the_floor_is_a_refusal_naming_it() {
+    # (i) The PR #7 shape, one member the other way: a seventh apps-root module
+    # the declaration does not name. Refused on the narrowed collection AND on
+    # the whole-suite branch — the branch a shared-infrastructure `--loop`
+    # takes, which is exactly what adding an apps-root module is.
+    plant_seventh
+    collect_scope "a member above the floor (narrowed)" --djb-tier=fast --djb-scope-narrow
+    is "$RC" "4" "the exit status (pytest UsageError; scripts/check.sh maps 4 to exit 2)"
+    says "LAYER 2 (named population): apps_root_modules (floor 6 in apps/conftest.py, derived 7 module(s))"
+    says "ABOVE its declaration"
+    says "not declared: apps/test_zzz_seventh.py"
+    says "apps/test_absent_world.py, apps/test_census_markers.py"
+    says "DJB_POPULATION_FLOOR_MEMBERS / DJB_POPULATION_FLOOR_ADDENDS in apps/conftest_local.py"
+    collect_scope "a member above the floor (the whole-suite branch)"
+    is "$RC" "4" "the exit status"
+    says "not declared: apps/test_zzz_seventh.py"
+    # A COLLECTION NARROWED BY PATH is not the tree's population, and layer 2
+    # asserts nothing there — a fixture world's members are not the tree's.
+    collect_scope "a collection narrowed by path asserts no population" \
+        apps/test_zzz_seventh.py apps/core/tests
+    is "$RC" "0" "the exit status"
+    rm -f "$SEVENTH_PLANT"
+}
+
+case_the_drawers_member_declaration_lifts_it() {
+    # (ii) The product's road: the drawer names its member and the union holds.
+    plant_seventh
+    drawer_plant_root_member apps/test_zzz_seventh.py
+    collect_scope "the drawer declares the seventh member" --djb-tier=fast --djb-scope-narrow
+    is "$RC" "0" "the exit status"
+    collect_scope "the drawer declares the seventh member (the whole-suite branch)"
+    is "$RC" "0" "the exit status"
+    drawer_restore
+    rm -f "$SEVENTH_PLANT"
+}
+
+case_a_declared_member_absent_from_the_tree_is_a_refusal_naming_the_file() {
+    # (iii) The other direction: a declared member the tree lacks.
+    drawer_plant_root_member apps/test_zzz_ghost.py
+    collect_scope "a declared member the tree lacks" --djb-tier=fast --djb-scope-narrow
+    drawer_restore
+    is "$RC" "4" "the exit status"
+    says "apps_root_modules (floor 7 = 6 in apps/conftest.py + 1 in apps/conftest_local.py, derived 6 module(s))"
+    says "declared but not collected: apps/test_zzz_ghost.py (the tree has no such file)"
+    # And a drawer that names a population declared by COUNT is refused by name.
+    drawer_plant 'DJB_POPULATION_FLOOR_MEMBERS = {"door_parity_census": ("apps/core/tests/test_x.py",)}'
+    collect_scope "members for a population declared by count" --djb-tier=fast --djb-scope-narrow
+    drawer_restore
+    is "$RC" "4" "the exit status"
+    says "does not declare by member"
+}
+
+# --- the always-on LEG's third source: the drives a shell change reaches -----
+#
+# THE LEG BODY IS EXTRACTED FROM ITS FENCE AND SOURCED, never reached through a
+# nested gate (the per-checkout gate lock refuses one — rung-execution §2). The
+# sentinels are assembled so this file is never mistaken for the fence. The
+# member set is PLANTED (`DJB_SELFTEST_DRIVES_DIR`), the changed set is planted
+# (`DJB_ALWAYS_ON_CHANGED_FILES`, real tracked paths, so "tracked" is the
+# index's own answer), and the fence file is planted for the one case about a
+# fence (`DJB_ALWAYS_ON_FENCE_FILE`). The ledger is a scratch file, never the
+# shared one.
+LEG_SENT_OPEN="# >>> always-on-""leg >>>"
+LEG_SENT_CLOSE="# <<< always-on-""leg <<<"
+LEG_BODY=""
+leg_extract() {
+    LEG_BODY="${WORK}/always_on_leg_body.sh"
+    sed -n "/^${LEG_SENT_OPEN}\$/,/^${LEG_SENT_CLOSE}\$/p" "${ROOT}/scripts/check.sh" >"$LEG_BODY"
+    grep -q '^always_on__touched() {' "$LEG_BODY" ||
+        cannot_look "scripts/check.sh's always-on fence defines no always_on__touched — the third source this section drives is gone"
+}
+
+# leg_plant <dir> <name>:<declared path>... — a member set; every member exits 0
+# and declares the one path after its colon.
+leg_plant() {
+    local dir="$1" spec name decl
+    shift
+    drive_require_scratch dir "${dir:-}"
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    printf '# a scratch member set preamble — never sourced, always keyed\n' >"${dir}/drive_preamble.sh"
+    for spec in "$@"; do
+        name="${spec%%:*}"
+        decl="${spec#*:}"
+        printf '%s\n' '#!/bin/sh' "# drives: ${decl}" "echo \"planted member ${name} speaking\"" 'exit 0' \
+            >"${dir}/test_${name}.sh"
+        chmod +x "${dir}/test_${name}.sh"
+    done
+}
+
+# leg_run <dir> <changed files> [<fence file>] — the leg body over the set.
+leg_run() {
+    local dir="$1" changed="$2" fence="${3:-}"
+    N=$((N + 1))
+    OUT="${WORK}/leg${N}.log"
+    RC=0
+    (
+        set +e
+        cd "$ROOT" || exit 2
+        export DJB_SELFTEST_DRIVES_DIR="$dir"
+        export DJB_GATE_LEDGER="${WORK}/leg-verdicts${N}"
+        export DJB_GATE_MEMBER_DURATIONS="${WORK}/there-is-no-durations-file.json"
+        export DJB_ALWAYS_ON_CHANGED_FILES="$changed"
+        [ -z "$fence" ] || export DJB_ALWAYS_ON_FENCE_FILE="$fence"
+        : >"$DJB_GATE_LEDGER"
+        . scripts/gate_refuse.sh
+        . scripts/gate_ledger.sh
+        . scripts/loop_tier.sh
+        . "$LEG_BODY"
+        MEASURED_START=$(gate_measured_tree 2>/dev/null || true)
+        export MEASURED_START
+        always_on_leg
+    ) >"$OUT" 2>&1 || RC=$?
+}
+
+leg_silent_about() {
+    if grep -qF -- "$1" "$OUT"; then
+        bad "the leg said \"$1\" and should not have"
+    else
+        ok "the leg says nothing about \"$1\""
+    fi
+}
+
+case_a_shell_change_selects_the_drives_that_declare_it() {
+    # (v) + (vi): the touched drive is selected, the untouched one is not, and
+    # each selection is printed with its reason before the first member runs.
+    leg_extract
+    local dir="${WORK}/leg-touched"
+    leg_plant "$dir" reach:scripts/kill_mine.sh aside:scripts/queue_cited.sh sweep:scripts/db.sh
+    CURRENT="a planted shell change reaches the drive that declares it"
+    leg_run "$dir" "scripts/kill_mine.sh apps/example/api.py"
+    is "$RC" "0" "the leg's exit"
+    says "always-on (touched): 1 drives cover scripts/kill_mine.sh"
+    says "always-on (touched): reach: touched: scripts/kill_mine.sh"
+    says "always-on: selected — declared 0 · measured 0 · touched 2"
+    CURRENT="the selection prints before the first member runs"
+    local sel ran
+    sel=$(grep -n 'always-on (touched): reach: touched:' "$OUT" | cut -d: -f1 | head -1)
+    ran=$(grep -n '^  touched reach: exit 0' "$OUT" | cut -d: -f1 | head -1)
+    if [ -n "$sel" ] && [ -n "$ran" ] && [ "$sel" -lt "$ran" ]; then
+        ok "selected at line ${sel}, ran at line ${ran}"
+    else
+        bad "selection line '${sel:-none}' / run line '${ran:-none}'"
+    fi
+    CURRENT="an untouched drive is not selected"
+    leg_silent_about "aside: touched"
+    leg_silent_about "touched aside:"
+    CURRENT="a shell change no drive declares runs nothing extra and says so"
+    leg_run "$dir" "scripts/secrets_scan.sh"
+    is "$RC" "0" "the leg's exit"
+    says "always-on (touched): 0 drives cover scripts/secrets_scan.sh"
+}
+
+case_sweep_runs_on_any_shell_change() {
+    # (vii) sweep, on a shell change it does not declare, printed as its own
+    # reason; and NOT on an apps-only change, whose transcript carries only the
+    # summary's `touched 0`.
+    leg_extract
+    local dir="${WORK}/leg-sweep"
+    leg_plant "$dir" reach:scripts/kill_mine.sh sweep:scripts/db.sh
+    CURRENT="sweep joins on a shell change it does not declare"
+    leg_run "$dir" "scripts/kill_mine.sh"
+    is "$RC" "0" "the leg's exit"
+    says "always-on (touched): sweep: touched: scripts/kill_mine.sh (a shell file changed)"
+    says "  touched sweep: exit 0"
+    CURRENT="an apps-only change selects no touched member"
+    leg_run "$dir" "apps/example/api.py"
+    is "$RC" "0" "the leg's exit"
+    says "always-on: selected — declared 0 · measured 0 · touched 0"
+    leg_silent_about "always-on (touched)"
+    leg_silent_about "touched sweep:"
+}
+
+case_a_fence_that_is_not_the_bare_self_case_is_a_finding() {
+    # (viii) The fence names the drive with a flag: a FINDING line, and the
+    # self-case still runs bare.
+    leg_extract
+    local dir="${WORK}/leg-fence" fence="${WORK}/planted-fence.sh"
+    leg_plant "$dir" reach:scripts/kill_mine.sh sweep:scripts/db.sh
+    printf '%s\n' '# >>> drive: reach >>>' "${dir}/test_reach.sh --verb archive" '# <<< drive: reach <<<' \
+        '# >>> drive: sweep >>>' "${dir}/test_sweep.sh" '# <<< drive: sweep <<<' >"$fence"
+    CURRENT="a fence that invokes its drive with a flag"
+    leg_run "$dir" "scripts/kill_mine.sh" "$fence"
+    is "$RC" "0" "the leg's exit (a finding is printed, not a red)"
+    says "touched reach: FINDING — its fence in ${fence} invokes '${dir}/test_reach.sh --verb archive', which is not the bare self-case"
+    says "  touched reach: exit 0"
+    says "always-on: 1 fence FINDING(s) above"
+    leg_silent_about "touched sweep: FINDING"
 }
 
 # --- the door registry, the banner's ways in, and the drawer's reach kinds ----
@@ -1276,6 +1521,10 @@ case_a_product_app_walking_the_door_registry_is_always_on() {
         echo "    document = api.get_openapi_schema()"
         echo "    assert all(document[\"paths\"].values())"
     } >"$dir/${module}"
+    # THE PRODUCT DECLARES ITS OWN READER: the module joins the
+    # `openapi_document_readers` population, and a population is an equality.
+    printf '%s\n' '"""The fixtures drawer, planted by test_loop_scope.sh."""' '' \
+        'DJB_POPULATION_FLOOR_ADDENDS = {"openapi_document_readers": 1}' >"$dir/apps/conftest_local.py"
     probe_collect "$dir" "an undeclared door-registry walker in a product app"
     is "$RC" "0" "the exit status"
     says "${module}::test_every_published_path_has_an_operation"
@@ -1535,6 +1784,10 @@ derivation rather than the structural rule this case exists to pin.
 def test_the_planted_edge_census_is_collected() -> None:
     assert 1 + 1 == 2
 PY
+    # THE PLANT IS A MEMBER, DECLARED: `apps_root_modules` is an equality over
+    # named members, so the product's road — the drawer naming it — is taken
+    # while it stands and undone when it goes.
+    drawer_plant_root_member apps/test_zzz_edge.py
     local empty_with leaf_with pr_with mine_with
     local empty_without leaf_without pr_without mine_without
 
@@ -1584,6 +1837,7 @@ PY
     # difference of exactly one is what makes the nodeid assertions above mean
     # the plant was ADDED to each selection.
     rm -f "$plant"
+    drawer_restore
     collect_scope_memo empty "the empty scope with the plant removed" \
         --djb-tier=fast --djb-scope-narrow
     is "$RC" "0" "the exit status"
@@ -2259,6 +2513,7 @@ if os.environ.get("PYTEST_XDIST_WORKER", "") in _victims:
 def test_zzz_dying_collector_is_inert_by_default() -> None:
     assert True
 PLANT
+    drawer_plant_root_member apps/test_zzz_dying_collector.py
     CURRENT="a collector that dies during collection"
     N=$((N + 1))
     OUT="${WORK}/dying${N}.log"
@@ -2268,6 +2523,7 @@ PLANT
         --djb-tier=fast --djb-scope-narrow "--djb-scope-counts=$counts" \
         -k test_the_namer_unwraps_and_never_reaches_for_repr) >"$OUT" 2>&1 || RC=$?
     rm -f "$plant"
+    drawer_restore
 
     local files n
     files=$(find "$counts" -type f | sort)
@@ -2854,6 +3110,9 @@ if os.environ.get("PYTEST_XDIST_WORKER", "") in _victims:
 def test_zzz_g1_full_collector_is_inert_by_default() -> None:
     assert True
 PLANT
+    # AN APPS-ROOT MODULE IS A POPULATION MEMBER, and the population is an
+    # equality: the plant is declared by the product's road while it stands.
+    drawer_plant_root_member apps/test_zzz_g1_full_collector.py
 }
 
 # The two tests this drive's `-k` selects: one real test of this tree's, and the
@@ -2945,6 +3204,7 @@ case_a_dying_collector_under_the_full_gate_leg_body_is_exit_2_and_banks_nothing(
         bad "the leg does not map the passes' exit 2 to 2 — broken enforcement would read as a finding"
     fi
     rm -f "$X2_PLANT"
+    drawer_restore
     GATE_X2_COUNTS_DIR=""
 }
 
@@ -3001,6 +3261,7 @@ case_a_dying_collector_under_pr_is_exit_2_and_writes_no_narrowed_run_note() {
         bad "the leg does not reuse GATE_PR_COUNTS_DIR — two --djb-scope-counts flags, and the last one wins silently"
     fi
     rm -f "$X2_PLANT"
+    drawer_restore
     GATE_X2_COUNTS_DIR=""
 }
 
@@ -5455,6 +5716,12 @@ case_a_broken_changed_file_derivation_is_the_inherited_exit_2
 case_the_floors_refuse_when_the_cross_app_derivation_returns_nothing
 case_a_floor_member_moved_aside_is_a_refusal
 case_a_drawer_raised_floor_refuses_a_member_moved_aside_on_a_six_module_tree
+case_a_member_above_the_floor_is_a_refusal_naming_it
+case_the_drawers_member_declaration_lifts_it
+case_a_declared_member_absent_from_the_tree_is_a_refusal_naming_the_file
+case_a_shell_change_selects_the_drives_that_declare_it
+case_sweep_runs_on_any_shell_change
+case_a_fence_that_is_not_the_bare_self_case_is_a_finding
 case_an_example_only_change_keeps_the_door_schema_parity_module
 case_a_product_app_walking_the_door_registry_is_always_on
 case_a_drawer_reach_kind_makes_its_reader_always_on

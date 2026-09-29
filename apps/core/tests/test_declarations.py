@@ -30,6 +30,7 @@ from apps.core.models import (
     is_append_only,
 )
 from apps.core.schemas import MeasuredBasisOut, MeasuredOut
+from apps.core.tests.isolation import isolated_apps
 
 # --- append-only (ADR core-6) ------------------------------------------------
 
@@ -69,13 +70,19 @@ def test_the_declaration_survives_a_subclass() -> None:
     append-only model is append-only, and a subclass that wanted to opt out
     would have to say `append_only = False` out loud, in its own class body,
     where a reviewer sees it.
+
+    Built in a throwaway registry: a model class defined bare in a test body
+    registers itself in the GLOBAL one and nothing takes it out, so every
+    registry reader that runs after this test on the same worker — the derived
+    `<kind>.read` keys among them — would count a model no product has.
     """
+    with isolated_apps("apps.core"):
 
-    class BetterNamedEntry(AuditEntry):
-        class Meta:
-            proxy = True
+        class BetterNamedEntry(AuditEntry):
+            class Meta:
+                proxy = True
 
-    assert is_append_only(BetterNamedEntry)
+        assert is_append_only(BetterNamedEntry)
 
 
 # --- Measured (ADR core-7) ---------------------------------------------------

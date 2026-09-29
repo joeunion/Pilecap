@@ -40,12 +40,14 @@ from ninja.pagination import paginate
 from apps.accounts.auth import API_AUTH
 from apps.core.actor import Actor, actor_from_request
 from apps.core.api import CursorPagination, ordered_by
-from apps.core.api.docs import Tag, refuses
+from apps.core.api.docs import Tag, also_refuses, refuses
+from apps.core.api.pagination import ActsPagination
+from apps.core.exceptions import Invalid
 from apps.core.models import Tenant
 from apps.core.requests import TenantRequest
+from apps.core.verbs import with_allowed_acts
 from apps.files.models import FileVersion, StoredFile
 from apps.files.schemas import (
-    ArchiveIn,
     ConfirmUploadIn,
     DownloadUrlIn,
     FileDownloadOut,
@@ -56,7 +58,13 @@ from apps.files.schemas import (
     UploadTicketOut,
     VersionIn,
 )
-from apps.files.selectors import get_downloadable_version, get_file, get_version, list_versions
+from apps.files.selectors import (
+    SHOW_LIVE,
+    get_downloadable_version,
+    get_file,
+    get_version,
+    list_versions,
+)
 from apps.files.selectors import list_files as list_files_selector
 from apps.files.services import (
     DownloadTicket,
@@ -66,6 +74,7 @@ from apps.files.services import (
     confirm_upload,
     create_file,
     issue_download_url,
+    restore_file,
 )
 
 # The path says what the resource is, not which app holds it (house rule 32).
@@ -153,6 +162,21 @@ def _acting(request: TenantRequest) -> tuple[Actor, Tenant]:
     return actor_from_request(request), request.tenant
 
 
+#: What `?archived=` answers. The list has ONE way to ask for the archive —
+#: `?show=` — and a second spelling that was quietly ignored would hand a caller
+#: the live list while it believed it was reading the archived one.
+ARCHIVED_SWITCH_REFUSED = (
+    "`archived` is not a parameter of this list. Send `show=archived` for the archived "
+    "documents, `show=all` for both, or leave it out for the live ones."
+)
+
+
+def refuse_the_archived_switch(request: TenantRequest) -> None:
+    """`?archived=` is `400 invalid` naming `show`, never silently ignored."""
+    if "archived" in request.GET:
+        raise Invalid({"show": [ARCHIVED_SWITCH_REFUSED]})
+
+
 def document_of(*, tenant: Tenant | None, org: object, file_id: UUID, actor: Actor) -> StoredFile:
     """One document this hat may see, or `not_found` — **one lookup, both doors**.
 
@@ -190,10 +214,15 @@ def downloadable(
     return issue_download_url(tenant=tenant, actor=actor, file=document, version=row)
 
 
-def _ticket(ticket: UploadTicket) -> UploadTicketOut:
-    """The wire shape of an upload ticket, built once for both doors."""
+def _ticket(ticket: UploadTicket, actor: Actor) -> UploadTicketOut:
+    """The wire shape of an upload ticket, built once for both doors.
+
+    The document carries the caller's `allowed_acts` like every other read of it —
+    an empty list would read as "you may do nothing", which is not what filing it
+    meant.
+    """
     return UploadTicketOut(
-        file=StoredFileOut.model_validate(ticket.file),
+        file=StoredFileOut.model_validate(with_allowed_acts([ticket.file], actor)[0]),
         version=FileVersionOut.model_validate(ticket.version),
         upload_url=ticket.upload_url,
         expires_in=ticket.expires_in,
@@ -218,19 +247,30 @@ def download_body(ticket: DownloadTicket) -> FileDownloadOut:
 
 
 @router.get("/", response=list[StoredFileOut], url_name="file-list")
-@paginate(CursorPagination)
+@paginate(ActsPagination)
 def list_files_route(
     request: TenantRequest,
     filters: Query[FileFilter],
     ordering: str = "-created_at",
+    show: str = SHOW_LIVE,
+    subject: str | None = None,
 ) -> QuerySet[StoredFile]:
     """List documents
 
     The documents your organization has stored, newest first.
 
-    **Archived documents are not here.** Archiving takes a document out of
-    everyone's working set, and this is the working set. A document you archived is
-    still readable by its id, and its versions are still fetchable.
+    **Archived documents are not here by default.** Archiving takes a document out
+    of everyone's working set, and this is the working set. `?show=archived` lists
+    the archived documents and only them; `?show=all` lists both; `?show=live` is
+    the default. A document you archived is still readable by its id, and its
+    versions are still fetchable. There is no `?archived=` — it is refused, naming
+    `show`, rather than ignored.
+
+    **Filed against a record:** `?subject=<kind>:<id>` — for example
+    `?subject=widget:<id>` — lists the documents filed against that record. A
+    record you cannot see answers `404 not_found`, exactly as one that does not
+    exist does, and a kind that does not take documents answers `400 invalid`
+    naming `subject`.
 
     **Narrow** with `purpose`, which matches exactly — whatever short label you
     filed the document under — and with `filename`, which matches anywhere in the
@@ -257,14 +297,22 @@ def list_files_route(
     Each document says which version is `current_version`; `0` means nothing has
     finished uploading yet, which is a real state and not a placeholder.
 
+    **Each document carries `allowed_acts`** — what you may do to it as it stands:
+    an administrator reads `archive` on a live document and `restore` on an
+    archived one, a member reads neither. The page carries its own `allowed_acts`
+    too, holding `create` when you may file a document where you are acting.
+
     Refusals you can get here:
 
-    * `400 invalid` — `?ordering=` named a field this list does not accept, or a
-      filter value was malformed. The response says what you may sort by.
+    * `400 invalid` — `?ordering=` named a field this list does not accept, a
+      filter value was malformed, `?show=` was not `live`, `archived` or `all`
+      (or `?archived=` was sent), or `?subject=` was not `<kind>:<id>` or names a
+      kind that takes no documents. The response names the parameter.
     * `403 forbidden` — the request resolved no tenant or no acting organization.
       Send `X-Tenant` and `X-Org` naming ones you belong to.
     * `403 insufficient_scope` — the token authenticated and its ceiling does not
       carry `files:read`. Mint one that does.
+    * `404 not_found` — `?subject=` names a record you cannot see, or none at all.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
@@ -272,8 +320,13 @@ def list_files_route(
     `ScopedQuerySet` to `QuerySet` here: filtering returns the plain one, and
     narrowing a queryset cannot widen its tenant.
     """
+    refuse_the_archived_switch(request)
     files: QuerySet[StoredFile] = list_files_selector(
-        tenant=request.tenant, org=request.org, actor=actor_from_request(request)
+        tenant=request.tenant,
+        org=request.org,
+        actor=actor_from_request(request),
+        show=show,
+        subject=subject,
     )
     files = filters.filter(files)
     return ordered_by(files, ordering, allowed=ORDERING, default="-created_at")
@@ -313,6 +366,13 @@ def create_file_route(request: TenantRequest, payload: FileIn) -> Status[UploadT
     request that resolves no organization is refused rather than filed at the top
     of your account.
 
+    **Filing against a record:** send `subject` as `<kind>:<id>` — for example
+    `widget:<id>` — and the document is filed against that record and lands in
+    **the record's organization**, so everyone who can read the record can read
+    it; list them with `GET /files/?subject=<kind>:<id>`. A record you cannot see
+    answers `404 not_found`, the same as one that does not exist, and a kind that
+    does not take documents answers `400 invalid` naming `subject`.
+
     **Your credential must belong to a person.** A document records who filed it,
     for as long as it exists, so a machine token with no user behind it is refused
     with `400 invalid` naming `uploaded_by`.
@@ -324,13 +384,15 @@ def create_file_route(request: TenantRequest, payload: FileIn) -> Status[UploadT
     Refusals you can get here:
 
     * `400 invalid` — the declared size is above the limit, your credential
-      resolved no person, or the request resolved no acting organization. Nothing
+      resolved no person, the request resolved no acting organization, or
+      `subject` was malformed or names a kind that takes no documents. Nothing
       was created.
     * `422 invalid_body` — the body carried a field this endpoint does not accept,
       or one was missing or the wrong type. `errors` names the fields.
     * `403 forbidden` — the request resolved no tenant, or you may not file
       documents in this organization.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
+    * `404 not_found` — `subject` names a record you cannot see, or none at all.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
       `Idempotency-Key` header for a different request, or the first request under
       it has not finished. Resend the identical request, or use a new key.
@@ -344,8 +406,9 @@ def create_file_route(request: TenantRequest, payload: FileIn) -> Status[UploadT
         content_type=payload.content_type,
         size_bytes=payload.size_bytes,
         purpose=payload.purpose,
+        subject=payload.subject,
     )
-    return Status(201, _ticket(ticket))
+    return Status(201, _ticket(ticket, actor))
 
 
 @router.get("/{file_id}/", response=StoredFileOut, url_name="file-detail")
@@ -354,10 +417,15 @@ def retrieve_file(request: TenantRequest, file_id: UUID) -> StoredFile:
 
     One document, with the version a reader who names none would get.
 
-    `current_version` is `0` while nothing has finished uploading. `archived_at` is
-    `null` while the document is in the working set and a timestamp once somebody
-    has archived it — an archived document is still here, still readable, and its
-    versions are still fetchable; it is simply out of the lists.
+    `current_version` is `0` while nothing has finished uploading. `archived_at` and
+    `archived_by` are `null` while the document is in the working set, and say when
+    and by whom once somebody has archived it — an archived document is still
+    here, **read-only**: still readable, its versions still fetchable on a signed
+    link, and every change to it refused with `409 archived` until it is restored.
+
+    `allowed_acts` says what you may do to it as it stands — `archive` for an
+    administrator of its organization while it is live, `restore` once archived,
+    neither for a member.
 
     A document belonging to an organization you cannot see answers `404 not_found`,
     the same answer an id that names nothing gets.
@@ -370,17 +438,22 @@ def retrieve_file(request: TenantRequest, file_id: UUID) -> StoredFile:
     * `404 not_found` — nothing has that id where you can see.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
     """
-    return document_of(
-        tenant=request.tenant,
-        org=request.org,
-        file_id=file_id,
-        actor=actor_from_request(request),
-    )
+    actor = actor_from_request(request)
+    document = document_of(tenant=request.tenant, org=request.org, file_id=file_id, actor=actor)
+    return with_allowed_acts([document], actor)[0]
 
 
 @router.post("/{file_id}/archive/", response=StoredFileOut, url_name="file-archive")
-@refuses("forbidden", "insufficient_scope", "invalid_body", "not_found", "rate_limited")
-def archive_file_route(request: TenantRequest, file_id: UUID, payload: ArchiveIn) -> StoredFile:
+@refuses(
+    "archive_blocked",
+    "forbidden",
+    "insufficient_scope",
+    "not_found",
+    "rate_limited",
+)
+def archive_file_route(  # rule-41: raised via archive_file's _archived helper, one hop past reach
+    request: TenantRequest, file_id: UUID
+) -> StoredFile:
     """Archive a document
 
     Take a document out of everyone's working set. It disappears from the list, and
@@ -389,37 +462,92 @@ def archive_file_route(request: TenantRequest, file_id: UUID, payload: ArchiveIn
     **This is not a delete, and the difference matters.** Every version stays
     readable, every version stays fetchable on a signed link, and the stored bytes
     remain exactly where they were. What changes is that the document stops
-    appearing in the list and that `POST /files/{id}/versions` on it is refused.
+    appearing in the list (find it with `?show=archived`) and that every change to
+    it — `POST /files/{id}/versions` included — is refused with `409 archived` until
+    it is restored with `POST /files/{id}/restore/`.
 
     **It takes administrator rights**, unlike filing and replacing, which are open
-    to anybody in the account. Archiving makes your own record less complete
-    without making anything smaller, so it is kept to the people who administer
-    that part of the organization.
+    to anybody in the account: you must administer the part of the organization the
+    document belongs to. Archiving makes your own record less complete without
+    making anything smaller, so it is kept to the people who administer that part of
+    the organization.
 
-    Archiving something already archived answers `200` with the document unchanged
-    and does nothing — safe to retry.
+    The answer carries `archived_at` and `archived_by` — when, and who. Archiving
+    something already archived answers `200` with the document unchanged — the
+    first archive's date and archiver kept — and does nothing: safe to retry.
 
-    The body is empty; send `{}`.
+    **Takes no body.** A client that still sends `{}` is answered exactly the
+    same; nothing reads it.
 
     Refusals you can get here:
 
-    * `422 invalid_body` — the body carried a field this endpoint does not accept.
-    * `403 forbidden` — you are not an owner or an administrator of the part of the
-      organization this document belongs to, or the request resolved no tenant or
-      no acting organization.
+    * `403 forbidden` — you do not administer the part of the organization this
+      document belongs to, or the request resolved no tenant or no acting
+      organization.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
     * `404 not_found` — nothing has that id where you can see.
+    * `409 archive_blocked` — something still depends on this document; the answer
+      names what. Nothing was changed.
     * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
 
     ---
-    `@refuses` narrows the derived set by exactly one code: a POST derives
-    `conflict`, and this route has no conflicting state to be in — archiving an
-    archived document is the quiet no-op above rather than a refusal. Documenting a
-    409 here would teach a client to handle one that never comes.
+    `archive_blocked` is raised one call down, in `core.verbs.archive_row`, for a
+    blocker any installed app declares against `file` in its `archive_blockers.py`
+    — discovered, so a product that adds one needs no edit here. None is declared
+    in the template today; the code is published because the declaration is the
+    product's to make at any time.
     """
     actor, tenant = _acting(request)
     document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
-    return archive_file(tenant=tenant, actor=actor, file=document)
+    return with_allowed_acts([archive_file(tenant=tenant, actor=actor, file=document)], actor)[0]
+
+
+@router.post("/{file_id}/restore/", response=StoredFileOut, url_name="file-restore")
+@refuses(
+    "forbidden",
+    "insufficient_scope",
+    "not_found",
+    "rate_limited",
+    "restore_blocked",
+)
+def restore_file_route(request: TenantRequest, file_id: UUID) -> StoredFile:
+    """Restore a document
+
+    Put an archived document back in everyone's working set. It is listed again,
+    and it takes new versions again.
+
+    Nothing about its versions or its stored bytes changes — archiving never moved
+    them, so there is nothing to put back but the document's place in the list.
+    `archived_at` and `archived_by` read `null` again.
+
+    **It takes the same administrator rights archiving does**: you must administer
+    the part of the organization the document belongs to.
+
+    Restoring a document that is not archived answers `200` with it unchanged and
+    does nothing — safe to retry.
+
+    **Takes no body.** A client that still sends `{}` is answered exactly the
+    same; nothing reads it.
+
+    Refusals you can get here:
+
+    * `403 forbidden` — you do not administer the part of the organization this
+      document belongs to, or the request resolved no tenant or no acting
+      organization.
+    * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
+    * `404 not_found` — nothing has that id where you can see.
+    * `409 restore_blocked` — something stops this document coming back; the answer
+      names what. Nothing was changed.
+    * `429 rate_limited` — wait for the `Retry-After` seconds and try again.
+
+    ---
+    `restore_blocked` is raised in `core.verbs.restore_row` for a blocker any app
+    declares against `file` in its `restore_blockers.py`, discovered; none is
+    declared in the template today.
+    """
+    actor, tenant = _acting(request)
+    document = document_of(tenant=tenant, org=actor.org, file_id=file_id, actor=actor)
+    return with_allowed_acts([restore_file(tenant=tenant, actor=actor, file=document)], actor)[0]
 
 
 @router.post("/{file_id}/download-url/", response=FileDownloadOut, url_name="download_url-issue")
@@ -531,6 +659,7 @@ def list_versions_route(
 
 
 @router.post("/{file_id}/versions/", response={201: UploadTicketOut}, url_name="version-add")
+@also_refuses("archived")
 def add_version_route(
     request: TenantRequest, file_id: UUID, payload: VersionIn
 ) -> Status[UploadTicketOut]:
@@ -552,7 +681,7 @@ def add_version_route(
     it. A document that needs a different name is a different document.
 
     An **archived** document cannot be replaced — that is what archiving is for —
-    and answers `409 conflict`.
+    and answers `409 archived`; restore it first.
 
     Send `Idempotency-Key` and a retry of the identical request replays the first
     answer instead of allocating a second version.
@@ -566,7 +695,8 @@ def add_version_route(
       in this organization.
     * `403 insufficient_scope` — the token's ceiling does not carry `files:write`.
     * `404 not_found` — nothing has that id where you can see.
-    * `409 conflict` — the document is archived, so nothing new goes into it.
+    * `409 archived` — the document is archived, so nothing new goes into it.
+      Restore it with `POST /files/{id}/restore/` first.
     * `409 idempotency_key_reuse` / `409 in_progress` — you reused an
       `Idempotency-Key` header for a different request, or the first request under
       it has not finished.
@@ -581,7 +711,7 @@ def add_version_route(
         content_type=payload.content_type,
         size_bytes=payload.size_bytes,
     )
-    return Status(201, _ticket(ticket))
+    return Status(201, _ticket(ticket, actor))
 
 
 @router.post(

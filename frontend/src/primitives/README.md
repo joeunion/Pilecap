@@ -49,7 +49,8 @@ thing. That single rule is what lets frontend rungs fan out at all.
 **A missing ingredient stops the rung.** An agent asked to fill a visual gap
 fills it *plausibly*, which is the documented failure mode wearing CSS. If the
 primitive you need is not here, say so and stop — do not inline a style, a
-class on a host element, or a second stylesheet.
+class on a host element, or a stylesheet the design did not give. A face's own
+prefixed, token-only sheet beside its screens IS the pattern (the book's §26).
 
 The wrong forms and the right ones are in
 `.claude/skills/fe-conventions/SKILL.md` §2 and §5. This file points there; it

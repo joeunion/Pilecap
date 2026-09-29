@@ -63,13 +63,17 @@ service_function_length:
   apps/events/services.py: 35 # record_event — took the ceiling from
   # `enqueue_dispatch`, whose 54 was largely the ADR events-3 resume argument. 35 lines of code
   # writing an event and its outbox row is what this module's biggest job actually costs.
-  apps/example/services.py: 50 # create_widget — was 66. The worked example, and
+  apps/example/services.py: 62 # update_widget — was 50 (create_widget). The worked
+  # example's versioned edit: the lock, the version compared, the policy lines kept OUT of the
+  # copy — and eighteen of the lines are the golden fences a product copies the edit by (each
+  # fence names every verb whose copy carries the block), not code.
+  # create_widget — was 66. The worked example, and
   # the one whose old note said outright that its growth was "signature and prose"; the new number
   # is what that sentence was describing.
   apps/exports/services.py: 73 # create_export — was 102. Keeps the ceiling: two
   # refusals, the idempotency read, the row, the authorization, validate-and-save, the event and
   # the workflow start, which is the list its old note gave.
-  apps/files/services.py: 84 # record_stored — was 123. Note that this one does
+  apps/files/services.py: 79 # record_stored — was 123. Note that this one does
   # NOT fall to the "BODY is 40 lines" its old note claimed: rule 26's `# reach:` valve (8 lines)
   # and rule 13's `# authz:` valve (6) are comments inside the body and are still counted, by the
   # ruling that refused to exclude rule-mandated blocks. Recorded at the measured number.
@@ -84,6 +88,9 @@ service_function_length:
   apps/workflows/services.py: 55 # start_replay — took the ceiling from
   # `record_run` (94 recorded, 93 measured on this tree before the change — a stale ceiling this
   # re-measure also closes). ADR workflows-6's 2x2 is an argument; the replay door is code.
+  apps/imports/services.py: 62
+  apps/notes/services.py: 19
+  apps/tags/services.py: 26
 
 out_schema_fields:
   # Declared fields per published *Out schema. An Out crossing its ceiling is a
@@ -145,7 +152,7 @@ out_schema_fields:
   # and nothing else, so a read shape that omits it emits an event no branch owns and the bridge
   # delivers it to the whole tenant. One field, and it is the one that decides who hears the row.
   # Was 11 (C1-1b — consent's two dates, the window, the suppression)
-  apps/comms/schemas.py::RecipientOut: 9 # C2-comms-b — + phone/chat_handle, the addresses the
+  apps/comms/schemas.py::RecipientOut: 8 # C2-comms-b — + phone/chat_handle, the addresses the
   # other channel kinds reach; was 7 (C1-1b)
   apps/comms/schemas.py::TemplateOut: 10 # C1-1b — the words included; a template IS its body
   apps/connections/schemas.py::ConnectionOut: 11
@@ -236,7 +243,12 @@ out_schema_fields:
   # Recorded at the measured number rather than trimmed to look better: this ceiling catches an
   # Out becoming a dump of the row, and every one of these is answering a question somebody asks
   # while a webhook is broken.
-  apps/example/schemas.py::WidgetOut: 12 # + policy_id (P0 W1-R3) — the id and not the row:
+  apps/example/schemas.py::WidgetOut: 17 # + owner_name (the move's owner axis in words), + duplicated_from_id, merged_into_id, external_ref (the copy's source, the merge's survivor, the import's natural key)
+  # (version and organization_name come from VersionedOut and HomedOut and are not own fields).
+  # Was 13: + allowed_acts — the server's per-row answer to what
+  # the acting hat may press on THIS row, so a face draws acts and never computes authority (the
+  # two archive fields come from ArchivedOut and are not this class's own). Was 12: + policy_id
+  # (P0 W1-R3) — the id and not the row:
   # a widget's governing policy may live one or more levels UP, and embedding it would put
   # exactly the upward visibility governing() was built not to grant onto the wire. Was 11 (A10)
   apps/example/schemas.py::WidgetEntryOut: 8 # P0 W1-R3 — a ledger line: what it is about
@@ -382,6 +394,28 @@ out_schema_fields:
   apps/example/schemas.py::WidgetStatsOut: 1 # P0 W1-R3 — one field, and it is a MeasuredOut
   # rather than an int (ADR core-7). A second aggregate would be a second MeasuredOut beside
   # it, never a naked number added to it; this ceiling is what makes that a visible diff.
+  apps/core/schemas.py::ArchivedByOut: 2
+  apps/core/schemas.py::ArchivedOut: 2
+  apps/imports/schemas.py::ImportCountsOut: 4
+  apps/imports/schemas.py::ImportOut: 19
+  apps/imports/schemas.py::ImportStagedOut: 1
+  apps/imports/schemas.py::ImportRowOut: 9
+  apps/notes/schemas.py::NoteOut: 9
+  apps/core/schemas.py::VersionedOut: 1
+  apps/core/schemas.py::HomedOut: 2
+  apps/core/schemas.py::BulkRefusalOut: 3
+  apps/core/schemas.py::BulkResultOut: 4
+  apps/core/schemas.py::BulkOut: 5
+  apps/core/schemas.py::HistoryActorOut: 3
+  apps/core/schemas.py::HistoryEntryOut: 5
+  apps/core/schemas.py::ActsOut: 1
+  apps/tags/schemas.py::TagOut: 6
+  apps/tags/schemas.py::TagLinkOut: 10
+  apps/example/schemas.py::WidgetBulkResultOut: 1 # the item narrowed to WidgetOut
+  apps/example/schemas.py::WidgetBulkOut: 1 # the results narrowed to the widget's result
+  apps/example/schemas.py::WidgetDetailOut: 1
+  apps/example/schemas.py::RepointOut: 2
+  apps/example/schemas.py::WidgetMergePreviewOut: 3
 
 hot_path_lookup_columns:
   # Cycle P3 F2 ( P-1). Rule 35's `index_served` clause asks that

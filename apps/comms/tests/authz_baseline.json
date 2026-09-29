@@ -2,7 +2,10 @@
   "_": "DERIVED, never typed. Every cell is `allows(actor, key, obj)` for the comms app's own keys on a tenant shaped root -> A -> A1 with a sibling B, three people hatted at A, one per template role, and one Recipient row per node. The test re-runs the same census on this tree and asserts equality; a moved answer prints (key, role, state, before, after).",
   "_baseline": "4f4fbc69",
   "_command": "uv run python manage.py shell -c \"from apps.comms.tests.test_authz_sweep import write_authz_baseline as w; w('apps/comms/tests/authz_baseline.json')\" \u2014 run IN PLACE on the rung's own baseline tree (4f4fbc69, the tree `rung_start.sh` reset to, before a byte of the rung was written), which IS the baseline rather than a scratch clone of it",
-  "accepted_deltas": {},
+  "accepted_deltas": {
+    "recipient.archive/admin/none": "Recipient became Archivable, so recipient.archive is the family's key and asks core.policies.may_archive: the node's administration WHERE THE CONTACT LIVES. With no row there is no node to ask at, and the predicate fails closed \u2014 every cell with a row is unchanged.",
+    "recipient.archive/owner/none": "Recipient became Archivable, so recipient.archive is the family's key and asks core.policies.may_archive: the node's administration WHERE THE CONTACT LIVES. With no row there is no node to ask at, and the predicate fails closed \u2014 every cell with a row is unchanged."
+  },
   "answers": {
     "channel_preference.create": {
       "admin": {

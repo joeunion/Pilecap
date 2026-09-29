@@ -35,19 +35,29 @@ export type DialogProps = {
     readonly onDismiss: () => void;
     /** The acts, and only acts. No dismiss word here (house rule 70). */
     readonly foot?: ReactNode;
+    /**
+     * Open with focus on the head's words: a sheet whose head is a QUESTION
+     * (a confirm) lands on the question, so it is read before any act is
+     * reached. Otherwise the opener places focus.
+     */
+    readonly focusTitle?: boolean;
     readonly children: ReactNode;
 };
 
-export function Dialog({ open, title, onDismiss, foot, children }: DialogProps) {
+export function Dialog({ open, title, onDismiss, foot, focusTitle, children }: DialogProps) {
     const ref = useRef<HTMLDialogElement>(null);
+    const head = useRef<HTMLHeadingElement>(null);
     const titleId = useId();
 
     useEffect(() => {
         const sheet = ref.current;
         if (sheet === null) return;
-        if (open && !sheet.open) sheet.showModal();
+        if (open && !sheet.open) {
+            sheet.showModal();
+            if (focusTitle === true) head.current?.focus();
+        }
         if (!open && sheet.open) sheet.close();
-    }, [open]);
+    }, [open, focusTitle]);
 
     return (
         <dialog
@@ -75,7 +85,12 @@ export function Dialog({ open, title, onDismiss, foot, children }: DialogProps) 
                     padding: "var(--space-2) var(--space-3)",
                 }}
             >
-                <h2 id={titleId} style={{ margin: 0, fontSize: "var(--type-section)" }}>
+                <h2
+                    id={titleId}
+                    ref={head}
+                    tabIndex={focusTitle === true ? -1 : undefined}
+                    style={{ margin: 0, fontSize: "var(--type-section)" }}
+                >
                     {title}
                 </h2>
                 <button type="button" onClick={onDismiss}>
