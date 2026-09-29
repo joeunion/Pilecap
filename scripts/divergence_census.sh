@@ -32,13 +32,26 @@ esac
 #   ./scripts/divergence_census.sh --if-declared  the gate's form: no base declared is
 #                                                 a printed SKIP, never a refusal
 #   DJB_TEMPLATE_BASE=<ref> ./scripts/divergence_census.sh
+#   ./scripts/divergence_census.sh --against <release ref>
+#                                                 the same census, AND the collision
+#                                                 census against the release about
+#                                                 to be folded (THE COLLISION CENSUS
+#                                                 below) — run after `git fetch
+#                                                 template --tags`, before the merge
 #
 # Exit: 0 nothing diverged, or every divergence is NAMED in the product's own
 #       `architecture.md` · 1 an unnamed divergence (the path, and the line to
 #       add) · 2 COULD NOT LOOK — no checkout, no base, a base that does not
-#       resolve, a git read that failed. 2 outranks a pass here the way it does
-#       in `scripts/check.sh`, and for the same reason: a census that could not
-#       read the base has not found a clean tree, it has found nothing.
+#       resolve, a git read that failed, an `--against` ref that does not
+#       resolve — OR, with `--against`, a NAME COLLISION: an app label, table,
+#       index, unique constraint, authorization kind, REST mount or router tag
+#       of the release that one of the product's own apps already holds, or a
+#       product app, mount or tag under the template's reserved prefix. A collision is exit 2 whatever the
+#       divergence half concluded:
+#       the fold cannot proceed, so the divergence verdict is not a verdict on
+#       it. 2 outranks a pass here the way it does in `scripts/check.sh`, and
+#       for the same reason: a census that could not read the base has not
+#       found a clean tree, it has found nothing.
 #
 # IT WRITES NOTHING, EVER. No file is created, moved or staged; no ref is
 # fetched; no branch moves. Every git call below is a read. That is a property
@@ -131,13 +144,28 @@ ROOT=$(pwd -P)
 # ended the run rather than this script.
 CENSUS_END=""
 cleanup() { :; }
+# THE COLLISION CENSUS OUTRANKS THE DIVERGENCE VERDICT, and this is the one
+# place that is decided: every authored end goes through here, so a pair found
+# before the divergence half ran makes the whole run exit 2 whatever that half
+# concluded. Its scratch directory is removed here too, because `cleanup` is
+# redefined below as each divergence file is made.
+COLL_PAIRS=0
+COLL_TMP=""
 census_exit() {
     CENSUS_END=1
-    exit "$1"
+    local rc=$1
+    if [ "${COLL_PAIRS:-0}" -gt 0 ]; then
+        printf '== REFUSED · %s name collision(s) against %s — exit 2 whatever the\n' "$COLL_PAIRS" "$AGAINST"
+        printf '   divergence verdict above says: the release'"'"'s migrations would die on\n'
+        printf '   them one step after the merge. Rename YOURS, then run this again.\n'
+        rc=2
+    fi
+    exit "$rc"
 }
 census_on_exit() {
     local status=$1
     cleanup
+    [ -z "${COLL_TMP:-}" ] || rm -rf "$COLL_TMP"
     [ -n "${CENSUS_END:-}" ] && return 0
     echo "" >&2
     echo "!! divergence_census: DIED part-way (the shell ended it, status ${status})." >&2
@@ -190,14 +218,25 @@ if [ -z "${RULES_FOR+set}" ]; then
 fi
 
 IF_DECLARED=0
+AGAINST=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --if-declared)
         IF_DECLARED=1
         shift
         ;;
+    --against)
+        [ -n "${2:-}" ] || {
+            echo "!! --against needs the release ref you are about to fold (a tag, after" >&2
+            echo "   \`git fetch template --tags\`) — a collision census against nothing is not one" >&2
+            census_exit 2
+        }
+        AGAINST=$2
+        shift 2
+        ;;
     *)
-        echo "!! unknown argument '$1': divergence_census.sh takes nothing or --if-declared" >&2
+        echo "!! unknown argument '$1': divergence_census.sh takes nothing, --if-declared" >&2
+        echo "   or --against <release ref>" >&2
         census_exit 2
         ;;
     esac
@@ -464,6 +503,486 @@ template
 }
 
 say "== divergence census · $ROOT"
+
+# ---------------------------------------------------------------------------
+# THE COLLISION CENSUS — `--against <release ref>`, before the merge.
+#
+# A release that adds a platform app adds an app LABEL, the TABLES its models
+# create, the INDEX and UNIQUE-CONSTRAINT names its migrations spell, the
+# AUTHORIZATION KIND each model's class name derives, the REST MOUNT its router
+# answers at and the router TAGS that are its scope families — and every one of
+# those is one namespace: the first four in the product's database, the fifth
+# in its grant vocabulary, the sixth on its wire and the seventh in its tokens. A product whose own app already holds one of them does
+# not get a merge conflict; it gets a merge that succeeds and a `migrate` (or
+# a `check`) that dies one step later. So the question is asked of both trees
+# BEFORE the merge, and a pair is exit 2.
+#
+# ONE PARSER, TWO READERS. `census_names` is the only reader of an app's
+# names, and it is handed a reader: `tree` (the working tree — YOURS, the tree
+# the fold is about to hand to a merge) or a ref (the release, read with
+# `git ls-tree` and `git show`, so nothing is checked out or fetched). The two
+# sides therefore cannot be parsed differently.
+#
+# THE POPULATION, per app:
+#   label       the `label = "…"` literal in apps.py if one is typed, else the
+#               last segment of `name = "apps.…"`
+#   table       every `CreateModel` → `<label>_<lower(name)>`, replaced by the
+#               `"db_table": "…"` literal when that CreateModel's options carry one
+#   index       every `name="…"` inside a call whose name ends in `Index(` —
+#               `models.Index` and every subclass (`GinIndex`, `GistIndex`,
+#               `BTreeIndex`, `BrinIndex`, `HashIndex`, `SpGistIndex`), dotted
+#               or bare; an operation (`migrations.AddIndex(`) is read as the
+#               operation it is, never as the index inside it — the scoped base's
+#               `%(class)s_recency` is rendered as a literal in a migration, so
+#               an inherited recency index IS in the population
+#   constraint  every `name="…"` inside a `UniqueConstraint(`
+#   kind        every `CreateModel`'s name in snake case, the authorization kind
+#               `apps/core/authz.py` derives from the class name — unless that
+#               class's body in `models.py` types `authz_kind = "…"` (the word
+#               replaces it), `authz_kind = None` (no kind) or a non-None
+#               `authz_kind_of` (a child, authorized under its parent's kind)
+#   mount       the first path segment the app's router answers at, read from
+#               `api.py` and `api/*.py` (`census_mounts`): `PREFIX = "<x>"` when
+#               spelled non-empty; the label when no `PREFIX =` line is spelled;
+#               under `PREFIX = ""`, the first literal segment of every route
+#               decorator and every `add_router("/<seg>/…`. Two apps on one
+#               mount are two routers on one path: the wire answers with the one
+#               discovered first and the document describes the other, and
+#               nothing refuses it until `check` runs AFTER the merge (house
+#               rule 83, `djb.E083`) — this is the reader before it
+#   tag         every string literal in a `tags=[…]` list in those files — a
+#               router's or a route's own. A tag is a scope family. The `TAGS`
+#               dict's keys are NOT read: rule 41 holds each `TAGS` key to a
+#               router tag and each router tag to a `TAGS` key, so one side is
+#               both sides
+# the schema classes are read from `migrations/*.py` — the tree's own record
+# of what created the schema — and never from `models.py`: an abstract model
+# creates nothing. The
+# one thing read from `models.py` is the kind's override, because it lives
+# nowhere else. Django's own `models.E030` refuses two equal index names at
+# `check` time: that is the belt behind this census, and it fires only AFTER
+# the merge.
+#
+# YOURS IS WHAT THE PARTITION DOES NOT CLAIM. The product's side is its apps
+# absent from `platform_apps` — the same reader the ownership table above uses
+# — so a platform app the product already carries is the template's own and is
+# never compared with its next release. The release's side is every app the
+# ref carries.
+#
+# WHAT IT CANNOT SEE, declared rather than discovered:
+#   · A NAME CHANGED AFTER CREATION — `RenameModel`, `AlterModelTable`,
+#     `RenameIndex`, `RemoveIndex` after the `CreateModel` or `AddIndex`. The
+#     name is read where it is created, so a renamed table is read by its old
+#     name.
+#   · A REMOVAL SPELLED WITHOUT ITS MODULE READ AS A CREATION — a bare
+#     `RemoveIndex(name="…")` (no `migrations.` before it) ends in `Index(`, so
+#     the name it removes is read as an index the app creates: a false pair,
+#     loud (exit 2 naming the file), never a silent one. `makemigrations`
+#     always writes the prefix.
+#   · CHECK-CONSTRAINT NAMES, by design: they are per-table in Postgres and
+#     two equal ones never collide.
+#   · AUTO-GENERATED foreign-key and index names — hashed with the table, so a
+#     table that does not collide cannot carry one that does.
+#   · A `db_table` COMPUTED rather than spelled — this reads text and runs no
+#     Django on either side (the release's apps are not installed in this
+#     checkout), so a name built by code is invisible rather than falsely clean.
+#   · A KIND OVERRIDE NOT TYPED IN THE CLASS'S OWN BODY — one inherited from an
+#     intermediate class, or computed rather than spelled as a string literal,
+#     is read as the class name's derivation. A `DeleteModel` does not take a
+#     model out of the population.
+#   · A `name=` BETWEEN A CALL AND ITS OWN NAME. This reads text: the first
+#     `name="…"` after `Index(`, `UniqueConstraint(` or `CreateModel(` is taken
+#     as that call's name, so a hand-written operation that places another
+#     keyword spelled `name=` (inside a nested call) before the call's own is
+#     misread. `makemigrations` never writes that shape.
+#   · A MOUNT OR A TAG NOT SPELLED AS A LITERAL — a `PREFIX` or a route path
+#     computed (an f-string, a variable, a constant imported from elsewhere), a
+#     `tags=` list built from a variable or spread over several lines, a route
+#     registered by `add_api_operation` rather than a decorator, a sub-router
+#     whose `add_router` literal lives in a file the two globs do not read. A
+#     sub-router added by a line the reader does not parse (its path not a
+#     literal, or the call over several lines) has its own route segments read
+#     as root segments — which can only add a false pair, loud, never hide one.
+#   · A SEGMENT SHADOWED BY A PARAMETER — `/x/links/` beside `/x/{id}/` — is no
+#     pair here (only first segments are read), and it is house rule 83's
+#     declared blind spot too.
+#   · MODELS OUTSIDE `apps/` — a vendored app's tables, or anything a product's
+#     `local/` drawer creates; rule 60's census has the same blind spot.
+#   · THE RELEASE MUST BE FETCHED. A ref this checkout cannot resolve is exit 2
+#     naming the fetch, never a clean census of nothing.
+# ---------------------------------------------------------------------------
+COLL_REMEDY="remedy: rename YOURS — CHANGELOG.md § [2.4.1] › What a product does at the merge › the rename road; the template's name is the release's"
+# A kind is fixed on the PRODUCT's side, and in one line: the release's kinds
+# are the platform contract every product's grants and roles are written
+# against, so it is the product's model that takes a word of its own.
+COLL_KIND_REMEDY="remedy: give YOUR model a kind of its own — one line on its class, authz_kind = \"<its own word>\"; the release's kind is the platform contract every product grants against, and it does not move"
+# A mount and a tag are fixed on the PRODUCT's side too: the release's mount is
+# the platform's path, and its tag is a scope family tokens already name.
+COLL_MOUNT_REMEDY="remedy: mount YOURS elsewhere — PREFIX = \"<its own word>\" in your api.py (or the route path's first segment, when PREFIX is \"\"); the release's mount is the platform's"
+COLL_TAG_REMEDY="remedy: tag YOURS with a word of its own — Router(tags=[\"<its own word>\"]) and the matching TAGS key; a tag is a scope family, and one key across two apps is one token ceiling that reaches both"
+
+# census_read <reader> <path> — the file's bytes, from the working tree or a ref.
+census_read() {
+    if [ "$1" = tree ]; then
+        cat "$ROOT/$2"
+    else
+        git show "$1:$2"
+    fi
+}
+
+# census_mounts <reader> <app dir> <label> — the app's REST mounts and router
+# tags, read as text from `<app>/api.py` and `<app>/api/*.py` (a package, as
+# core's is) with the same reader as every other class. One line each,
+# `mount\t<first path segment>\t<api file>` and `tag\t<key>\t<api file>`.
+#
+# The mount is what `config/api.py` binds: `PREFIX = "<x>"` when one is spelled
+# non-empty (its first segment); the LABEL when no `PREFIX =` line is spelled
+# and a `Router(` is; and, when `PREFIX = ""`, the first literal segment of
+# every route decorator `@<router>.<get|post|patch|put|delete>("/<seg>/…` —
+# its path on the decorator's line or the line after — and of every
+# `<router>.add_router("/<seg>/", <sub>)`, whose `<sub>`'s own decorators are
+# then nested under that segment and name no mount of their own (a sub-router
+# added at `""` is at the root, and its decorators count). A route at `"/"`
+# under an empty prefix is the root and names nothing; a first segment that is
+# a `{parameter}` names nothing. The tags are every string literal inside a
+# `tags=[…]` keyword on one line — a `Router(…)` or a route decorator; an
+# assignment spelled `tags = […]` is a variable, never a keyword, and is not
+# read.
+census_mounts() {
+    local reader=$1 appdir=$2 label=$3 apifiles f
+    if [ "$reader" = tree ]; then
+        apifiles=$(
+            cd "$ROOT" || exit 2
+            for f in "$appdir/api.py" "$appdir"/api/*.py; do
+                if [ -f "$f" ]; then printf '%s\n' "$f"; fi
+            done
+        ) || return 2
+    else
+        apifiles=$(git ls-tree -r --name-only "$reader" -- "$appdir/api.py" "$appdir/api/") || return 2
+    fi
+    [ -n "$apifiles" ] || return 0
+    while IFS= read -r f; do
+        [[ "$f" == *.py ]] || continue
+        # The api package's own subdirectories are not the module's.
+        case "${f#"$appdir"/}" in api/*/*) continue ;; esac
+        printf '@@census-file %s\n' "$f"
+        census_read "$reader" "$f" || exit 2
+        printf '\n'
+    done <<<"$apifiles" | awk -v label="$label" '
+        function first(path,  n, seg) {
+            sub(/^\/+/, "", path)
+            n = split(path, seg, "/")
+            if (n == 0 || seg[1] == "" || seg[1] ~ /^\{/) return ""
+            return seg[1]
+        }
+        function emit(class, value, file) {
+            if (value == "" || ((class, value, file) in seen)) return
+            seen[class, value, file] = 1
+            printf "%s\t%s\t%s\n", class, value, file
+        }
+        function route(owner, path, file,  s) {
+            s = first(path)
+            if (s != "") { nroute++; rowner[nroute] = owner; rseg[nroute] = s; rfile[nroute] = file }
+        }
+        function owner_of(line,  o) {
+            o = line; sub(/^[ \t]*@?/, "", o); sub(/\..*$/, "", o)
+            return o
+        }
+        /^@@census-file / { file = substr($0, 15); pending = ""; next }
+        pending != "" {
+            if (match($0, /^[ \t]*["\047]\/[^"\047]*/)) {
+                v = substr($0, RSTART, RLENGTH); sub(/^[ \t]*["\047]/, "", v); route(pending, v, file)
+            }
+            pending = ""
+        }
+        /^[ \t]*#/ { next }
+        /^PREFIX[ \t]*(:[^=]*)?=[ \t]*["\047]/ {
+            v = $0; sub(/^[^"\047]*["\047]/, "", v); sub(/["\047].*$/, "", v)
+            spelled = 1
+            gsub(/^\/+|\/+$/, "", v)
+            if (v == "") empty = 1
+            else emit("mount", first(v), file)
+        }
+        /^[A-Za-z_][A-Za-z0-9_]*[ \t]*(:[^=]*)?=[ \t]*Router\(/ && routerfile == "" { routerfile = file }
+        {
+            line = $0
+            if (match(line, /^[ \t]*@[A-Za-z_][A-Za-z0-9_]*\.(get|post|patch|put|delete)\([ \t]*$/)) pending = owner_of(line)
+            else if (match(line, /^[ \t]*@[A-Za-z_][A-Za-z0-9_]*\.(get|post|patch|put|delete)\([ \t]*["\047]\/[^"\047]*/)) {
+                v = substr(line, RSTART, RLENGTH); sub(/^[^"\047]*["\047]/, "", v); route(owner_of(line), v, file)
+            }
+            if (match(line, /^[ \t]*[A-Za-z_][A-Za-z0-9_]*\.add_router\([ \t]*["\047][^"\047]*["\047][ \t]*,[ \t]*[A-Za-z_][A-Za-z0-9_]*/)) {
+                v = substr(line, RSTART, RLENGTH); sub(/^[^"\047]*["\047]/, "", v)
+                sub_ = v; sub(/^.*,[ \t]*/, "", sub_)
+                sub(/["\047].*$/, "", v)
+                if (first(v) != "") { nested[sub_] = 1; route(owner_of(line), v, file) }
+            }
+            while (match(line, /(^|[(, \t])tags=\[[^]]*\]/)) {
+                t = substr(line, RSTART, RLENGTH)
+                line = substr(line, RSTART + RLENGTH)
+                while (match(t, /"[^"]*"|\047[^\047]*\047/)) {
+                    emit("tag", substr(t, RSTART + 1, RLENGTH - 2), file)
+                    t = substr(t, RSTART + RLENGTH)
+                }
+            }
+        }
+        END {
+            if (!spelled && routerfile != "") emit("mount", label, routerfile)
+            if (empty) for (i = 1; i <= nroute; i++) if (!(rowner[i] in nested)) emit("mount", rseg[i], rfile[i])
+        }
+    '
+}
+
+# census_names <reader> <apps.py path> <migrations dir> — one line per name,
+# `<class>\t<value>\t<path it was read from>`; an app with no migrations
+# directory prints `unparsed\t<app dir>\t-` after its label, never nothing.
+census_names() {
+    local reader=$1 appspy=$2 migdir=$3 appdir label body files f
+    appdir=${appspy%/apps.py}
+    body=$(census_read "$reader" "$appspy") || return 2
+    label=$(printf '%s\n' "$body" | awk '
+        /^[ \t]+label[ \t]*=[ \t]*["\047]/ { v = $0; sub(/^[^"\047]*["\047]/, "", v); sub(/["\047].*$/, "", v); lbl = v }
+        /^[ \t]+name[ \t]*=[ \t]*["\047]/ && nm == "" { v = $0; sub(/^[^"\047]*["\047]/, "", v); sub(/["\047].*$/, "", v); nm = v }
+        END { if (lbl != "") print lbl; else if (nm != "") { n = split(nm, p, "."); print p[n] } }
+    ')
+    # An apps.py that spells neither is read as Django would default it for a
+    # module at that path: the directory's name.
+    [ -n "$label" ] || label=${appdir##*/}
+    printf 'label\t%s\t%s\n' "$label" "$appdir"
+    census_mounts "$reader" "$appdir" "$label" || return 2
+    if [ "$reader" = tree ]; then
+        if [ ! -d "$ROOT/$migdir" ]; then
+            printf 'unparsed\t%s\t-\n' "$appdir"
+            return 0
+        fi
+        files=$(
+            cd "$ROOT" || exit 2
+            for f in "$migdir"/*.py; do
+                if [ -f "$f" ]; then printf '%s\n' "$f"; fi
+            done
+        ) || return 2
+    else
+        files=$(git ls-tree --name-only "$reader" -- "$migdir/") || return 2
+        if [ -z "$files" ]; then
+            printf 'unparsed\t%s\t-\n' "$appdir"
+            return 0
+        fi
+    fi
+    printf 'parsed\t%s\t-\n' "$appdir"
+    # Two statements: `local a=… b=$a` expands `$a` before `a` is assigned.
+    local nl=$'\n' mig overrides mfiles
+    local IFS=$nl
+    mig=$(for f in $files; do
+        [[ "$f" == *.py ]] || continue
+        body=$(census_read "$reader" "$f") || exit 2
+        printf '%s\n' "$body" | awk -v label="$label" -v file="$f" '
+            function flush(  t) {
+                if (model != "") {
+                    t = (dbt != "") ? dbt : label "_" tolower(model)
+                    printf "table\t%s\t%s\n", t, file
+                    printf "model\t%s\t%s\n", model, file
+                }
+                model = ""; dbt = ""; inmodel = 0
+            }
+            /^[ \t]*#/ { next }
+            {
+                line = $0
+                while (match(line, /migrations\.[A-Za-z]+\(|UniqueConstraint\(|CheckConstraint\(|[A-Za-z0-9_]*Index\(|[^A-Za-z0-9_]name *= *"[^"]*"|^name *= *"[^"]*"|"db_table" *: *"[^"]*"/)) {
+                    tok = substr(line, RSTART, RLENGTH)
+                    line = substr(line, RSTART + RLENGTH)
+                    if (tok ~ /^migrations\./) {
+                        flush()
+                        if (tok ~ /CreateModel\($/) { inmodel = 1; want = "model" } else want = ""
+                    } else if (tok ~ /UniqueConstraint\($/) {
+                        want = "constraint"
+                    } else if (tok ~ /CheckConstraint\($/) {
+                        want = "check"
+                    } else if (tok ~ /Index\($/) {
+                        want = "index"
+                    } else if (tok ~ /^"db_table"/) {
+                        if (inmodel) { v = tok; sub(/^"db_table" *: *"/, "", v); sub(/"$/, "", v); dbt = v }
+                    } else {
+                        v = tok; sub(/^.*name *= *"/, "", v); sub(/"$/, "", v)
+                        if (want == "model") model = v
+                        else if (want == "index") printf "index\t%s\t%s\n", v, file
+                        else if (want == "constraint") printf "constraint\t%s\t%s\n", v, file
+                        want = ""
+                    }
+                }
+            }
+            END { flush() }
+        '
+    done) || return 2
+    if [ -n "$mig" ]; then printf '%s\n' "$mig"; fi
+
+    # THE AUTHORIZATION KINDS. A concrete model's kind is its class name in
+    # snake case (`apps/core/authz.py`, `_own_kind`: `WidgetEntry` →
+    # `widget_entry`) unless the class body says otherwise — `authz_kind =
+    # "<word>"` replaces it, `authz_kind = None` opts it out, and a non-None
+    # `authz_kind_of` makes it a child authorized under its parent's kind with
+    # none of its own. Two models claiming one kind is a deployment whose
+    # `check` refuses to derive the vocabulary at all, however different their
+    # labels and tables are. The POPULATION is the migrations' `CreateModel`
+    # names read above — what exists, never an abstract class — and the
+    # overrides are read from the class bodies in `models.py`.
+    if [ "$reader" = tree ]; then
+        mfiles=$(
+            cd "$ROOT" || exit 2
+            for f in "$appdir/models.py" "$appdir"/models/*.py; do
+                if [ -f "$f" ]; then printf '%s\n' "$f"; fi
+            done
+        ) || return 2
+    else
+        mfiles=$(git ls-tree -r --name-only "$reader" -- "$appdir/models.py" "$appdir/models/") || return 2
+    fi
+    overrides=$(for f in $mfiles; do
+        [[ "$f" == *.py ]] || continue
+        body=$(census_read "$reader" "$f") || exit 2
+        printf '%s\n' "$body" | awk '
+            /^class [A-Za-z_][A-Za-z0-9_]*[(:]/ { cls = $2; sub(/[(:].*$/, "", cls); next }
+            /^[^ \t#]/ { cls = "" }
+            cls != "" && /^    authz_kind[ \t]*(:[^=]*)?=/ {
+                v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]*(#.*)?$/, "", v)
+                if (v == "None") printf "override\t%s\t@none\n", cls
+                else if (v ~ /^"[^"]*"$/ || v ~ /^\047[^\047]*\047$/) printf "override\t%s\t%s\n", cls, substr(v, 2, length(v) - 2)
+            }
+            cls != "" && /^    authz_kind_of[ \t]*(:[^=]*)?=/ {
+                v = $0; sub(/^[^=]*=[ \t]*/, "", v); sub(/[ \t]*(#.*)?$/, "", v)
+                if (v != "None") printf "override\t%s\t@child\n", cls
+            }
+        '
+    done) || return 2
+    printf '%s\n%s\n' "$overrides" "$mig" | awk -F'\t' -v app="$appdir" '
+        function snake(s,  i, c, o) {
+            o = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (i > 1 && c ~ /[A-Z]/) o = o "_"
+                o = o tolower(c)
+            }
+            return o
+        }
+        $1 == "override" { if (!($2 in ov) || $3 == "@child") ov[$2] = $3; next }
+        $1 == "model" {
+            if ($2 in seen) next
+            seen[$2] = 1
+            k = ($2 in ov) ? ov[$2] : snake($2)
+            if (k == "@none" || k == "@child") next
+            printf "kind\t%s\t%s · %s\n", k, app, $2
+        }
+    '
+}
+
+if [ -z "$AGAINST" ]; then
+    say "collisions: not measured (no --against <release ref>)"
+else
+    if ! git rev-parse -q --verify "$AGAINST^{commit}" >/dev/null 2>&1; then
+        echo "!! --against $AGAINST does not resolve to a commit in this checkout." >&2
+        echo "   A release you have not fetched cannot be compared with. Fetch it and re-run:" >&2
+        echo "     git fetch template --tags" >&2
+        echo "   This census writes nothing, so it will not fetch for you. Could-not-look," >&2
+        echo "   never a clean collision census." >&2
+        census_exit 2
+    fi
+    COLL_TMP=$(mktemp -d "${TMPDIR:-/tmp}/djb-divergence-collisions.XXXXXX") || census_exit 2
+    say ""
+    say "-- collisions: the release's app names against yours ($AGAINST)"
+
+    # THE RELEASE'S APPS, read whole and then sliced — `git ls-tree -r` of the
+    # apps directory, filtered to `apps/<app>/apps.py` exactly.
+    rel_listing=$(git ls-tree -r --name-only "$AGAINST" -- apps/) || {
+        echo "!! git could not list apps/ at $AGAINST — could-not-look" >&2
+        census_exit 2
+    }
+    : >"$COLL_TMP/release"
+    for p in $(printf '%s\n' "$rel_listing" | awk -F/ 'NF == 3 && $1 == "apps" && $3 == "apps.py"'); do
+        census_names "$AGAINST" "$p" "${p%/apps.py}/migrations" >>"$COLL_TMP/release" || {
+            echo "!! a git read of $p (or its migrations) at $AGAINST failed — could-not-look" >&2
+            census_exit 2
+        }
+    done
+    # YOURS: every app in the working tree the partition does not claim.
+    : >"$COLL_TMP/yours"
+    for p in "$ROOT"/apps/*/apps.py; do
+        [ -f "$p" ] || continue
+        p=${p#"$ROOT"/}
+        is_platform_app_path "$p" && continue
+        census_names tree "$p" "${p%/apps.py}/migrations" >>"$COLL_TMP/yours" || {
+            echo "!! $p (or its migrations) could not be read — could-not-look" >&2
+            census_exit 2
+        }
+    done
+
+    # THE PAIRS, one line each and a remedy under each. A label pair names the
+    # two app directories; every other class names the two migration files.
+    awk -F'\t' -v ref="$AGAINST" -v remedy="$COLL_REMEDY" -v kremedy="$COLL_KIND_REMEDY" \
+        -v mremedy="$COLL_MOUNT_REMEDY" -v tremedy="$COLL_TAG_REMEDY" -v out="$COLL_TMP/counts" '
+        FNR == NR {
+            if ($1 == "label" || $1 == "table" || $1 == "index" || $1 == "constraint" || $1 == "kind" || $1 == "mount" || $1 == "tag")
+                if (!(($1, $2) in rel)) rel[$1, $2] = $3
+            next
+        }
+        ($1 == "mount" || $1 == "tag") && $2 ~ /^djb_/ {
+            printf "collision: reserved prefix djb_ — %s %s in %s (yours); djb_ is the template%cs namespace for its platform apps\n", $1, $2, $3, 39
+            printf "   %s\n", ($1 == "mount") ? mremedy : tremedy
+            n["reserved"]++
+            next
+        }
+        ($1 == "mount" || $1 == "tag") && (($1, $2) in rel) {
+            printf "collision: %s %s — yours (%s) vs %s (%s)\n", $1, $2, $3, ref, rel[$1, $2]
+            printf "   %s\n", ($1 == "mount") ? mremedy : tremedy
+            n[$1]++
+            next
+        }
+        $1 == "kind" && (($1, $2) in rel) {
+            printf "collision: kind %s — yours (%s) vs %s (%s)\n", $2, $3, ref, rel[$1, $2]
+            printf "   %s\n", kremedy
+            n["kind"]++
+            next
+        }
+        $1 == "label" && $2 ~ /^djb_/ {
+            printf "collision: reserved prefix djb_ — %s (yours); djb_ is the template%cs namespace for its platform apps\n", $3, 39
+            printf "   %s\n", remedy
+            n["reserved"]++
+        }
+        ($1 == "label" || $1 == "table" || $1 == "index" || $1 == "constraint") && (($1, $2) in rel) {
+            if ($1 == "label")
+                printf "collision: label %s — %s (yours) vs %s (%s)\n", $2, $3, rel[$1, $2], ref
+            else
+                printf "collision: %s %s — yours (%s) vs %s (%s)\n", $1, $2, $3, ref, rel[$1, $2]
+            printf "   %s\n", remedy
+            n[$1]++
+        }
+        $1 == "unparsed" { printf "   unparsed: %s (yours) — no migrations/ directory: its label was read, its tables, indexes and constraints were not\n", $2 }
+        END {
+            printf "%d %d %d %d %d %d %d %d\n", n["label"], n["table"], n["index"], n["constraint"], n["kind"], n["reserved"], n["mount"], n["tag"] > out
+        }
+    ' "$COLL_TMP/release" "$COLL_TMP/yours"
+    [ -s "$COLL_TMP/counts" ] || {
+        echo "!! the collision pairing wrote no counts — could-not-look" >&2
+        census_exit 2
+    }
+    read -r c_label c_table c_index c_constraint c_kind c_reserved c_mount c_tag <"$COLL_TMP/counts"
+    awk -F'\t' '$1 == "unparsed" { printf "   unparsed: %s (%s) — no migrations/ directory\n", $2, "release" }' "$COLL_TMP/release"
+    rel_parsed=$(awk -F'\t' '$1 == "parsed"' "$COLL_TMP/release" | wc -l | tr -d ' ')
+    rel_unparsed=$(awk -F'\t' '$1 == "unparsed"' "$COLL_TMP/release" | wc -l | tr -d ' ')
+    your_parsed=$(awk -F'\t' '$1 == "parsed"' "$COLL_TMP/yours" | wc -l | tr -d ' ')
+    your_unparsed=$(awk -F'\t' '$1 == "unparsed"' "$COLL_TMP/yours" | wc -l | tr -d ' ')
+    COLL_PAIRS=$((c_label + c_table + c_index + c_constraint + c_kind + c_reserved + c_mount + c_tag))
+    printf 'collisions: labels=%s tables=%s indexes=%s constraints=%s kinds=%s reserved=%s mounts=%s tags=%s · release %s parsed=%s unparsed=%s · yours parsed=%s unparsed=%s\n' \
+        "$c_label" "$c_table" "$c_index" "$c_constraint" "$c_kind" "$c_reserved" "$c_mount" "$c_tag" \
+        "$AGAINST" "$rel_parsed" "$rel_unparsed" "$your_parsed" "$your_unparsed"
+    if [ "$rel_parsed" -eq 0 ]; then
+        echo "!! the release at $AGAINST carries not one app with migrations — this reader is" >&2
+        echo "   looking at something that is not a release of this template. Could-not-look." >&2
+        COLL_PAIRS=0
+        census_exit 2
+    fi
+    if [ "$COLL_PAIRS" -eq 0 ]; then
+        say "collisions: none against $AGAINST"
+    fi
+    rm -rf "$COLL_TMP"
+    COLL_TMP=""
+fi
 
 if ! declare_base; then
     if [ "$IF_DECLARED" = 1 ]; then

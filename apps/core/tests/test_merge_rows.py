@@ -283,7 +283,7 @@ def test_a_mergeable_that_takes_no_attachment_merges_with_every_real_repointer_a
     loser = _row(crate, tenant, root_org, "dup")
     survivor = _row(crate, tenant, root_org, "keep")
     owners = [label for label, _ in verbs.repointers_for(NOUN)]
-    assert {"notes", "files", "tags"} <= set(owners), owners
+    assert {"djb_notes", "files", "djb_tags"} <= set(owners), owners
 
     counted = merge_counts(tenant=tenant, loser=loser, noun=NOUN)
     outcome = _merge(tenant, owner_actor, loser, survivor)

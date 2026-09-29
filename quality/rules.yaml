@@ -3956,33 +3956,41 @@ rules:
             one door serves every registered kind, so a new kind must add no
             URL. This is the valve doing exactly what it was written for: a name
             that was never a leak.
-        - label: imports
+        # THE PLATFORM'S NAMESPACE (the owner's ruling of 2026-09-29: the
+        # platform apps a release adds take names no product spells). The
+        # template mounts its notes, tags and imports under the `djb_` words —
+        # the same word that is each app's label — so the three coincidences
+        # below are declared, not dodged. None of them is an infrastructure
+        # name in the sense above: each is a RESOURCE under the template's
+        # namespace, and the URL says exactly that — the template's notes, not
+        # a module of ours a caller has to learn. A product that owns `notes`
+        # keeps `/api/v1/notes/` for its own app and meets nothing here.
+        - label: djb_imports
           reason: >
-            A1's convention working, the way `exports` did: `apps/imports` is an
-            app named as the plural of its aggregate, and `an import` is a noun a
-            caller already has — they stage one, read its preview, apply it and
-            poll it. `/api/v1/imports/` is the URL a stranger would guess, and it
-            is the mirror of `/api/v1/exports/` beside it. The alternatives are
-            worse in the ways this rule cares about: `uploads` names the file, not
-            the run over it, and `import-runs` names our internal row rather than
-            the caller's word for what they asked for.
-        - label: notes
+            `/api/v1/djb_imports/` is the template's imports — a resource a
+            caller stages, previews, applies and polls — under the platform's
+            namespace word. The segment is the app's label by design: the
+            platform's mount carries the platform's namespace so that a
+            product's own `imports` app mounts at `/api/v1/imports/` beside it
+            and neither answers for the other. It names a resource under a
+            namespace, never an infrastructure module.
+        - label: djb_notes
           reason: >
-            A1's convention working: `apps/notes` is named as the plural of its
-            aggregate, and `a note` is a noun every caller already has — they
-            write one on a record and read the record's notes back.
-            `/api/v1/notes/?subject=` is the URL a stranger would guess. The
-            alternatives are worse: `comments` is a different product noun (a
-            thread, a reply) that a product may want for itself, and
-            `annotations` is a word nobody types.
-        - label: tags
+            `/api/v1/djb_notes/?subject=` is the template's notes on a record,
+            under the platform's namespace word; the attachment kind a noun
+            declares stays `notes`. The segment is the app's label by design —
+            the platform's mount carries the platform's namespace so that a
+            product's own `notes` app keeps `/api/v1/notes/` — and it names a
+            resource under a namespace, never an infrastructure module.
+        - label: djb_tags
           reason: >
-            A1's convention working: `apps/tags` is named as the plural of its
-            aggregate, and `a tag` is a noun every caller already has — they make
-            one, put it on a record and filter by it. `/api/v1/tags/` is the URL a
-            stranger would guess. The alternatives are worse: `labels` collides
-            with this very rule's word for an app's name, and `categories` names
-            a hierarchy tags deliberately are not.
+            `/api/v1/djb_tags/` is the template's tenant-wide words, under the
+            platform's namespace word; the attachment kind stays `tags`, and the
+            links a row carries are the second resource at
+            `/api/v1/djb_tag_links/`, which is no label. The segment is the
+            app's label by design, so that a product's own `tags` app keeps
+            `/api/v1/tags/`; it names a resource under a namespace, never an
+            infrastructure module.
     floors:
       mounted_routers: 6
       app_labels: 6
@@ -3992,13 +4000,14 @@ rules:
       whether `delivery-policies` beats `policies`, whether a plural is the
       right plural, or whether two resources should have been one. That is
       review's and the owner's, and ADR api-2's three renames were made by
-      judgement, not by this check. CROSS-APP FIRST-SEGMENT UNIQUENESS is not
-      checked either: ninja refuses only an exact duplicate path, so two apps
-      could each mount routes under one segment and this rule would stay
-      silent. The map is collision-free today (the one near-miss,
-      `/widgets/policies/` beside `/delivery-policies/`, is a sub-path and not a
-      first segment) and the trigger to widen is the first app that wants a
-      segment another app already serves. THE TRAILING-SLASH HALF of the ruling
+      judgement, not by this check. TWO APPS ON ONE PATH is not this rule's
+      either, and it is not ninja's: django-ninja 1.6.3 refuses NOTHING on a
+      duplicate (measured — the wire answers with the module discovered first
+      and the document describes the other). The trigger this sentence once
+      named fired — a product's own `notes` app beside a platform app mounted at
+      `/notes/` — and the class is house rule 83's (one app per path pattern,
+      one app per tag key). Two apps sharing a first segment under DIFFERENT
+      paths stays legal, and nothing here reads it. THE TRAILING-SLASH HALF of the ruling
       is not here: "every collection path ends with a slash" is a census over
       the exported document and it lives as a test
       (`apps/core/tests/test_resource_first_urls.py`), because the five routes
@@ -7662,7 +7671,7 @@ rules:
       # bucket itself.
       - { fixture: allowed_probe_import.py, plant_at: apps/core/health.py, mode: append }
       # THE CONTENT READ WHERE IT BELONGS: an activity reading a file row by row
-      # through the seam (`apps/imports/activities.py`'s shape). Firing here
+      # through the seam (`apps/djb_imports/activities.py`'s shape). Firing here
       # would make the one legal reader of an object's bytes a finding.
       - { fixture: content_read_in_activity.py, plant_at: apps/example/activities.py,
           mode: append }
@@ -11585,6 +11594,95 @@ rules:
       - { fixture: guarded_write.py, plant_at: apps/example/services.py, mode: append }
       # A service on a row of a class that is not archivable.
       - { fixture: non_archivable_param.py, plant_at: apps/example/services.py, mode: append }
+
+  - id: "83"
+    name: one-app-per-path-and-per-family
+    enabled: true
+    memo:
+      "no": "this rule reports through the Django system-check leg (manage.py check --tag djb), which
+        boots the app registry and the URL configuration; those registries are a population assembled at
+        import time out of the installed environment, not a file set a blob sha can stand for"
+    # THE SILENT COLLISION. The mount binds every discovered router under its
+    # `PREFIX` or its label and asks nobody whether the path is taken, and
+    # django-ninja 1.6.3 refuses NOTHING on a duplicate (measured: two modules
+    # on one path — the wire answers with the module discovered first, the
+    # published document describes the other). A product that owns an app
+    # named for a noun a release's platform app also mounts under stops being
+    # reachable at its own path, and nothing says so. The same holds for a tag:
+    # a tag is a scope family, and one key carried by two apps is one token
+    # ceiling reaching both and one document section describing either.
+
+    # WHAT COLLIDES, READ OFF THE MECHANISM. Seven routers share the root
+    # prefix "" and answer side by side, so the rule never reads a prefix: it
+    # reads the MOUNTED PATH (parameter names erased — `/x/{a}/` and `/x/{b}/`
+    # are one Django pattern) grouped by the module that binds it, and every
+    # tag key grouped by the app that declares it (`TAGS`) or carries it (an
+    # operation's own tags). Both populations are closed: the live mount and the
+    # tag discovery the scope census reads.
+    statement: >
+      No mounted path pattern is bound by two api modules, and no tag key is
+      declared or carried by two apps. The paths come off the live mount with
+      their parameter names erased, the tags off every app's `TAGS` and every
+      bound operation's tags, so neither side is a hand-list. There is no
+      valve: one of the two takes a word of its own.
+    check: null
+    django_check_ids: [djb.E083]
+    floor_proxy: count_mount_surface
+    doc:
+      file: docs/product/architecture.md
+      contains: "one app per path, one app per family"
+    valve:
+      none: "this rule reports only through the django system-check leg (manage.py check --tag djb), and those findings never pass through apply_overrides, so no comment anywhere suppresses one. The collision is resolved by one of the two modules taking a word of its own"
+    scope: {}
+    floors:
+      mounted_routers: 6
+      app_labels: 6
+    does_not_cover: >
+      A LITERAL SEGMENT SHADOWED BY ANOTHER ROUTER'S PARAMETER SEGMENT —
+      `/x/links/` beside `/x/{id}/` — because patterns are compared as strings,
+      not as the sets of URLs they match; the one that binds first captures the
+      literal and nothing here sees it. TWO ROUTES IN ONE MODULE on one path
+      (ninja's business and the module author's). PLAIN DJANGO VIEWS —
+      `/healthz`, the allauth flow, the door index — outside ninja's bound
+      operations, rule 32's gap held. A ROUTER BOUND OUTSIDE DISCOVERY. WHICH OF
+      THE TWO ANSWERS on the wire: the finding refuses both and names the
+      discovery order only in its sentence. A PATH BOUND BY TWO APPS BEFORE THEY
+      ARE INSTALLED TOGETHER — the check reads the assembled tree, so a
+      product meets it only after it merges a release; before the merge, the
+      fold's collision census (`scripts/divergence_census.sh`, its mount and
+      tag classes) is the reader, and it reads text.
+    selftest_floor: { canaries: 2, negatives: 2 }
+    canaries:
+      # ONE PATH, TWO MODULES: a route path on a real root-mounted module that
+      # a platform app already serves. Not a `PREFIX` on the probe app: that is
+      # one module global every django form appends to, and rule 32's canary
+      # owns it.
+      # MOVE-TRIGGER 2026-09-29: planted in a real api module because the probe
+      # cannot carry a mount of its own per form; moves to the probe app the
+      # day the django probe plants each rule's forms in an app of their own,
+      # or the day `apps/events/api.py` leaves the root prefix.
+      - { fixture: a_second_router_on_the_platforms_path.py, plant_at: apps/events/api.py,
+          mode: append, via: django, expect: { id: djb.E083, contains: "apps/djb_notes/api.py" } }
+      # ONE TAG, TWO APPS: a route-level tag on a second real app, carrying
+      # the platform's family key.
+      # MOVE-TRIGGER 2026-09-29: planted in a real api module so the second
+      # app is a real one and no probe router is rebound; moves to the probe
+      # app with its sibling above, or the day `apps/usage/api.py` loses its
+      # module-level `router`.
+      - { fixture: a_second_app_declaring_the_platforms_tag.py, plant_at: apps/usage/api.py,
+          mode: append, via: django, expect: { id: djb.E083, contains: "'djb_notes' is declared by" } }
+    negatives:
+      # THE ROOT, SHARED: a router at `PREFIX = ""` beside the seven live ones,
+      # on a path and a tag of its own — the reason the rule reads paths.
+      - fixture: a_root_router_of_its_own.py
+        plant_at: apps/zzz_canary/api.py
+        mode: default
+        via: django
+        extra_files:
+          - { fixture: probe_twins.py, plant_at: apps/zzz_canary/mcp.py, mode: default }
+      # A TAG OF ITS OWN: a new family one app adds is growth, never a finding.
+      - { fixture: a_tag_of_its_own.py, plant_at: apps/zzz_canary/api.py, mode: append,
+          via: django }
 
 # THE PEER-FORK MIGRATION PATH (rules 51-53, the redemption item for the
 # living-workaround finding of the FEEDBACK-2 survey). That finding recorded

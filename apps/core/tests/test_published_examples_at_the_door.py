@@ -332,9 +332,9 @@ def world(
         monkeypatch.setattr(Widget, "attachments", (*declared, *missing), raising=False)
     widget = create_widget(tenant=tenant, actor=actor, name="Seeded widget")
     note = _through_the_door(
-        client, "/api/v1/notes/", {"subject": f"widget:{widget.pk}", "body": "Seeded note."}
+        client, "/api/v1/djb_notes/", {"subject": f"widget:{widget.pk}", "body": "Seeded note."}
     )
-    tag = _through_the_door(client, "/api/v1/tags/", {"name": "Seeded word"})
+    tag = _through_the_door(client, "/api/v1/djb_tags/", {"name": "Seeded word"})
 
     return World(
         client=client,

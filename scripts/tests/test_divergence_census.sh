@@ -22,7 +22,7 @@ case ":${SHELLOPTS:-}:" in
     ;;
 esac
 # drives: quality/partition.yaml scripts/archaeology_lib.sh scripts/divergence_census.sh scripts/gate_refuse.sh
-# cites: .github/workflows .github/workflows/ci.yml .github/workflows/nightly-proof.yml scripts/pm_fold.sh docs/product/build-contract.md docs/product/design docs/product/design/patterns.md docs/product/design/patterns.local.md scripts/queue_cited.sh scripts/kill_mine.sh scripts/sweep.sh scripts/check.sh scripts/publish.sh scripts/tests/test_gate_lease.sh scripts/tests/test_publish.sh scripts/tests/drive_preamble.sh TEMPLATE_VERSION docs/product/instruments.md docs/product/architecture.md apps/core/roles.py apps/core/api/frozen_families.py pyproject.toml docs/product/queue.md apps/core/services.py quality/gate.py scripts/local/template-base scripts/local/legs
+# cites: .github/workflows .github/workflows/ci.yml .github/workflows/nightly-proof.yml scripts/pm_fold.sh docs/product/build-contract.md docs/product/design docs/product/design/patterns.md docs/product/design/patterns.local.md scripts/queue_cited.sh scripts/kill_mine.sh scripts/sweep.sh scripts/check.sh scripts/publish.sh scripts/tests/test_gate_lease.sh scripts/tests/test_publish.sh scripts/tests/drive_preamble.sh TEMPLATE_VERSION docs/product/instruments.md docs/product/architecture.md apps/core/roles.py apps/core/api/frozen_families.py pyproject.toml docs/product/queue.md apps/core/services.py quality/gate.py scripts/local/template-base scripts/local/legs CHANGELOG.md apps/core
 # The refusal-and-property drive for `scripts/divergence_census.sh`.
 #
 # Exit: 0 every case held · 1 a case did not hold · 2 COULD NOT LOOK (no git, a
@@ -499,6 +499,581 @@ case_a_platform_app_edit_is_seen_against_the_real_partition_list() {
     rm -rf "$w"
 }
 
+# --- THE COLLISION CENSUS: a release's app against the product's own --------
+# `--against <ref>` reads every app the RELEASE carries and every app the
+# product owns, and a name both sides spell in one class — the app label, a
+# table, an index, a unique constraint — is a pair the release's migrations
+# would die on one step after the merge. Each case below builds its own world:
+# a product at v0.1.0 whose template ships a platform app with a membership
+# model (the base-inherited recency index added the way the real tree adds it,
+# by `AddIndex`), and a release v0.2.0 on a branch that adds a platform app with
+# a note model. The product's own apps are planted into the working tree, which
+# is the side the census reads for YOURS.
+plant_app() { # plant_app <repo> <dir> — an apps.py whose label is its directory
+    mkdir -p "$1/apps/$2"
+    printf 'from django.apps import AppConfig\n\n\nclass ZzzConfig(AppConfig):\n    name = "apps.%s"\n' \
+        "$2" >"$1/apps/$2/apps.py"
+}
+
+# plant_initial <repo> <dir> <model> <index name> [<unique name>] [<db_table>]
+# — a first migration in the shape `makemigrations` writes: the model's name
+# first, a field tuple that spells `"name"`, a foreign key whose `related_name`
+# is not a name, the options block with the index, the unique constraint and a
+# check constraint whose name is shared by every plant (check constraints are
+# per-table in Postgres, so an equal one is never a pair).
+plant_initial() {
+    local repo=$1 app=$2 model=$3 index=$4 unique=${5:-} table=${6:-}
+    mkdir -p "$repo/apps/$app/migrations"
+    : >"$repo/apps/$app/migrations/__init__.py"
+    {
+        printf 'from django.db import migrations, models\n\n\n'
+        printf 'class Migration(migrations.Migration):\n    initial = True\n\n    dependencies = []\n\n'
+        printf '    operations = [\n        migrations.CreateModel(\n            name="%s",\n' "$model"
+        printf '            fields=[\n'
+        printf '                ("id", models.BigAutoField(primary_key=True)),\n'
+        printf '                ("name", models.CharField(max_length=10)),\n'
+        printf '                (\n                    "owner",\n                    models.ForeignKey(\n'
+        printf '                        on_delete=models.PROTECT,\n'
+        printf '                        related_name="%%(app_label)s_%%(class)s_set",\n'
+        printf '                        to="core.membership",\n                    ),\n                ),\n'
+        printf '            ],\n            options={\n                "verbose_name": "zzz",\n'
+        [ -z "$table" ] || printf '                "db_table": "%s",\n' "$table"
+        printf '                "indexes": [\n'
+        printf '                    models.Index(fields=["id"], name="%s"),\n' "$index"
+        printf '                ],\n                "constraints": [\n'
+        [ -z "$unique" ] || printf '                    models.UniqueConstraint(fields=("name",), name="%s"),\n' "$unique"
+        printf '                    models.CheckConstraint(\n'
+        printf '                        condition=models.Q(("name", ""), _negated=True),\n'
+        printf '                        name="zzz_check_shared_by_every_plant",\n'
+        printf '                    ),\n                ],\n            },\n        ),\n    ]\n'
+    } >"$repo/apps/$app/migrations/0001_initial.py"
+}
+
+build_collision_world() { # build_collision_world <dir>; leaves main checked out
+    local w=$1
+    build_repo "$w" || return 1
+    plant_app "$w" core
+    mkdir -p "$w/apps/core/migrations"
+    : >"$w/apps/core/migrations/__init__.py"
+    printf 'from django.db import migrations, models\n\n\nclass Migration(migrations.Migration):\n    initial = True\n\n    dependencies = []\n\n    operations = [\n        migrations.CreateModel(\n            name="Membership",\n            fields=[("id", models.BigAutoField(primary_key=True))],\n        ),\n    ]\n' \
+        >"$w/apps/core/migrations/0001_initial.py"
+    printf 'from django.db import migrations, models\n\n\nclass Migration(migrations.Migration):\n    dependencies = [("core", "0001_initial")]\n\n    operations = [\n        migrations.AddIndex(\n            model_name="membership",\n            index=models.Index(fields=["id"], name="membership_recency"),\n        ),\n    ]\n' \
+        >"$w/apps/core/migrations/0002_membership_recency.py"
+    gitq "$w" add -A
+    gitq "$w" commit -q -m "the template at v0.1.0, with a platform app's schema"
+    gitq "$w" tag -f -a v0.1.0 -m v0.1.0 HEAD >/dev/null
+    gitq "$w" checkout -q -b zzz_release
+    plant_app "$w" zzz_notes
+    plant_initial "$w" zzz_notes Note note_recency note_zzz_unique
+    gitq "$w" add -A
+    gitq "$w" commit -q -m "the release adds a platform app"
+    gitq "$w" tag -a v0.2.0 -m v0.2.0 HEAD
+    gitq "$w" checkout -q main
+    [ ! -e "$w/apps/zzz_notes" ] || return 1
+    # The product's own app gets its schema in the PRODUCT's history, after
+    # the base — the release never carries it, exactly as in a real product.
+    plant_app "$w" zzz_product_app
+    plant_initial "$w" zzz_product_app Ledger ledger_recency
+    gitq "$w" add -A
+    gitq "$w" commit -q -m "the product's own app makes its first migration"
+}
+
+# run_against <world> <args...> — the census with the fixture's own base
+# declared, so the divergence half runs and is clean, and whatever the exit
+# says is the collision half's.
+run_against() {
+    local w=$1
+    shift
+    local saved=${DJB_TEMPLATE_BASE-}
+    export DJB_TEMPLATE_BASE=v0.1.0
+    run "$w" "$@"
+    if [ -n "$saved" ]; then export DJB_TEMPLATE_BASE="$saved"; else unset DJB_TEMPLATE_BASE; fi
+}
+
+REMEDY="remedy: rename YOURS — CHANGELOG.md § [2.4.1] › What a product does at the merge › the rename road; the template's name is the release's"
+KIND_REMEDY='remedy: give YOUR model a kind of its own — one line on its class, authz_kind = "<its own word>"'
+
+case_a_release_app_sharing_your_label_table_index_and_constraint_is_exit_2_per_pair() {
+    local w="$WORK/collide-all"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    # The product's OWN app, in the directory the release is about to add, with
+    # the release's model name and the base's inherited index name.
+    plant_app "$w" zzz_notes
+    plant_initial "$w" zzz_notes Note note_recency
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: label zzz_notes — apps/zzz_notes (yours) vs apps/zzz_notes (v0.2.0)" "$OUT" &&
+        grep -qF "collision: table zzz_notes_note — yours (apps/zzz_notes/migrations/0001_initial.py) vs v0.2.0 (apps/zzz_notes/migrations/0001_initial.py)" "$OUT" &&
+        grep -qF "collision: index note_recency — yours (apps/zzz_notes/migrations/0001_initial.py) vs v0.2.0 (apps/zzz_notes/migrations/0001_initial.py)" "$OUT" &&
+        grep -qF "collision: kind note — yours (apps/zzz_notes · Note) vs v0.2.0 (apps/zzz_notes · Note)" "$OUT" &&
+        grep -qF "collisions: labels=1 tables=1 indexes=1 constraints=0 kinds=1" "$OUT" &&
+        [ "$(grep -c '^collision: ' "$OUT")" = 4 ] &&
+        [ "$(grep -cF "$REMEDY" "$OUT")" = 3 ] && [ "$(grep -cF "$KIND_REMEDY" "$OUT")" = 1 ]; then
+        ok "a product app with the release's label, model and index: exit 2, label/table/index/kind lines, a remedy each, labels=1 tables=1 indexes=1 constraints=0 kinds=1"
+    else
+        bad "label/table/index/kind collision: exit $RC, want 2 with four lines, their remedies and the trailer"
+        sed 's/^/         /' "$OUT"
+    fi
+    # AND THE FOURTH CLASS: the same app with the release's unique constraint.
+    plant_initial "$w" zzz_notes Note note_recency note_zzz_unique
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: constraint note_zzz_unique — yours (apps/zzz_notes/migrations/0001_initial.py) vs v0.2.0 (apps/zzz_notes/migrations/0001_initial.py)" "$OUT" &&
+        grep -qF "collisions: labels=1 tables=1 indexes=1 constraints=1 kinds=1" "$OUT" &&
+        [ "$(grep -c '^collision: ' "$OUT")" = 5 ]; then
+        ok "all five classes at once: five collision lines, constraints=1 — and the shared check-constraint name is no pair"
+    else
+        bad "five-class collision: exit $RC, want 2 with five collision lines and constraints=1"
+        sed 's/^/         /' "$OUT"
+    fi
+    if grep -q "zzz_check_shared_by_every_plant" "$OUT"; then
+        bad "a check constraint's name was read as a pair — it is per-table in Postgres"
+    else
+        ok "the check constraint both sides spell is not in the population"
+    fi
+    rm -rf "$w"
+}
+
+case_distinct_labels_and_model_names_are_no_collision() {
+    local w="$WORK/collide-none"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    plant_app "$w" zzz_orders
+    plant_initial "$w" zzz_orders Order order_recency order_zzz_unique
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 0 ] && grep -qF "collisions: none against v0.2.0" "$OUT" &&
+        grep -qF "collisions: labels=0 tables=0 indexes=0 constraints=0" "$OUT" &&
+        ! grep -q '^collision: ' "$OUT" && grep -q "^== CLEAN" "$OUT"; then
+        ok "distinct labels and model names: 'collisions: none against v0.2.0', and the divergence verdict stands (exit 0, CLEAN)"
+    else
+        bad "no-collision world: exit $RC, want 0 with 'collisions: none against v0.2.0'"
+        sed 's/^/         /' "$OUT"
+    fi
+    # THE POPULATION WAS READ, not skipped: the release's two apps and the
+    # product's two were parsed, and the platform app the product carries is
+    # the template's, never YOURS.
+    if grep -qE "release v0.2.0 parsed=2 unparsed=0 · yours parsed=2 unparsed=0" "$OUT"; then
+        ok "and the trailer says what it read — release parsed=2, yours parsed=2 (the platform app is not yours)"
+    else
+        bad "the trailer does not read release parsed=2 and yours parsed=2"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+case_a_db_table_spelled_onto_a_release_table_is_a_table_pair() {
+    local w="$WORK/collide-table"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    plant_app "$w" zzz_other
+    plant_initial "$w" zzz_other Other other_recency "" zzz_notes_note
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: table zzz_notes_note — yours (apps/zzz_other/migrations/0001_initial.py) vs v0.2.0 (apps/zzz_notes/migrations/0001_initial.py)" "$OUT" &&
+        grep -qF "collisions: labels=0 tables=1 indexes=0 constraints=0" "$OUT" &&
+        [ "$(grep -c '^collision: ' "$OUT")" = 1 ]; then
+        ok "a db_table spelled onto the release's table is one table pair — the literal replaces <label>_<model>"
+    else
+        bad "db_table collision: exit $RC, want 2 with one table line"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+case_an_inherited_index_name_collides_with_the_release_platform_app() {
+    local w="$WORK/collide-index"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    # The base names every recency index after the CLASS, so a product model
+    # named like a platform model inherits the platform's index name.
+    plant_app "$w" zzz_people
+    plant_initial "$w" zzz_people Membership membership_recency
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: index membership_recency — yours (apps/zzz_people/migrations/0001_initial.py) vs v0.2.0 (apps/core/migrations/0002_membership_recency.py)" "$OUT" &&
+        grep -qF "collision: kind membership — yours (apps/zzz_people · Membership) vs v0.2.0 (apps/core · Membership)" "$OUT" &&
+        grep -qF "collisions: labels=0 tables=0 indexes=1 constraints=0 kinds=1" "$OUT" &&
+        [ "$(grep -c '^collision: ' "$OUT")" = 2 ]; then
+        ok "a product model named like a platform model: one index pair against the platform app's AddIndex, and the kind it derives from the same class name"
+    else
+        bad "inherited index collision: exit $RC, want 2 with one index line naming apps/core's 0002 and one kind line"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+# AN INDEX SUBCLASS NAMES AN INDEX TOO. `GinIndex`, `GistIndex`, `BTreeIndex`
+# and the rest carry a `name=` that is schema-global exactly like a plain
+# `models.Index`'s, so a product's GIN index spelling a release index's name is
+# the same pair. The release side here adds its GIN index the way the real
+# tree does — `AddIndex` with the dotted postgres path, the name on the next
+# line — and the product's spells the class bare.
+case_an_index_subclass_name_is_in_the_population() {
+    local w="$WORK/collide-gin"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    gitq "$w" checkout -q zzz_release
+    printf 'import django.contrib.postgres.indexes\nfrom django.db import migrations\n\n\nclass Migration(migrations.Migration):\n    dependencies = [("zzz_notes", "0001_initial")]\n\n    operations = [\n        migrations.AddIndex(\n            model_name="note",\n            index=django.contrib.postgres.indexes.GinIndex(\n                fields=["name"], name="note_name_gin_zzz"\n            ),\n        ),\n    ]\n' \
+        >"$w/apps/zzz_notes/migrations/0002_note_name_gin.py"
+    gitq "$w" add apps/zzz_notes/migrations/0002_note_name_gin.py
+    gitq "$w" commit -q -m "the release adds a GIN index"
+    gitq "$w" tag -f -a v0.2.0 -m v0.2.0 HEAD >/dev/null
+    gitq "$w" checkout -q main
+    plant_app "$w" zzz_search
+    plant_initial "$w" zzz_search Document document_recency
+    printf 'from django.contrib.postgres.indexes import GinIndex\nfrom django.db import migrations\n\n\nclass Migration(migrations.Migration):\n    dependencies = [("zzz_search", "0001_initial")]\n\n    operations = [\n        migrations.AddIndex(\n            model_name="document",\n            index=GinIndex(fields=["name"], name="note_name_gin_zzz"),\n        ),\n    ]\n' \
+        >"$w/apps/zzz_search/migrations/0002_document_name_gin.py"
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: index note_name_gin_zzz — yours (apps/zzz_search/migrations/0002_document_name_gin.py) vs v0.2.0 (apps/zzz_notes/migrations/0002_note_name_gin.py)" "$OUT" &&
+        grep -qF "collisions: labels=0 tables=0 indexes=1 constraints=0 kinds=0" "$OUT" &&
+        [ "$(grep -c '^collision: ' "$OUT")" = 1 ]; then
+        ok "a GinIndex name on both sides — dotted on one, bare on the other — is one index pair"
+    else
+        bad "GinIndex collision: exit $RC, want 2 with one index line for note_name_gin_zzz"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+# THE AUTHORIZATION KIND is derived from the model's CLASS name, so a product
+# model named like a release model claims the release's kind however different
+# the label and the table are — and the deployment's `check` refuses to derive
+# the vocabulary at all. The product's own word on its class silences it.
+case_a_model_named_like_a_release_model_collides_on_its_kind() {
+    local w="$WORK/collide-kind"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    plant_app "$w" zzz_crm
+    plant_initial "$w" zzz_crm Note crm_note_recency
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: kind note — yours (apps/zzz_crm · Note) vs v0.2.0 (apps/zzz_notes · Note)" "$OUT" &&
+        grep -qF "collisions: labels=0 tables=0 indexes=0 constraints=0 kinds=1" "$OUT" &&
+        [ "$(grep -c '^collision: ' "$OUT")" = 1 ] && grep -qF "$KIND_REMEDY" "$OUT"; then
+        ok "a product Note in its own app — distinct label, table and index — still collides on the kind note, with the remedy on the product's side"
+    else
+        bad "kind collision: exit $RC, want 2 with one kind line and the kind remedy"
+        sed 's/^/         /' "$OUT"
+    fi
+    printf 'class Note(TenantScopedModel):\n    authz_kind = "crm_note"\n' >"$w/apps/zzz_crm/models.py"
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 0 ] && grep -qF "collisions: none against v0.2.0" "$OUT"; then
+        ok "and authz_kind = \"crm_note\" typed on the class silences it"
+    else
+        bad "kind override: exit $RC, want 0 with 'collisions: none against v0.2.0'"
+        sed 's/^/         /' "$OUT"
+    fi
+    printf 'class Note(TenantScopedModel):\n    authz_kind: ClassVar[str] = "crm_note"  # its own word\n' >"$w/apps/zzz_crm/models.py"
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 0 ] && grep -qF "collisions: none against v0.2.0" "$OUT"; then
+        ok "and so does the annotated ClassVar form, comment and all"
+    else
+        bad "annotated kind override: exit $RC, want 0"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+case_no_against_prints_not_measured_and_changes_no_verdict() {
+    local w="$WORK/collide-unasked"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    plant_app "$w" zzz_notes
+    plant_initial "$w" zzz_notes Note note_recency note_zzz_unique
+    run_against "$w"
+    if [ "$RC" = 0 ] && grep -qF "collisions: not measured (no --against <release ref>)" "$OUT" &&
+        ! grep -q '^collision: ' "$OUT" && grep -q "^== CLEAN" "$OUT"; then
+        ok "no --against: 'collisions: not measured', and the census's own verdict is untouched (exit 0, CLEAN) over a world that would collide"
+    else
+        bad "no --against: exit $RC, want 0 with the not-measured line and no collision line"
+        sed 's/^/         /' "$OUT"
+    fi
+    # The gate's form, on a tree with no base: still the SKIP, still exit 0.
+    run "$w" --if-declared
+    if [ "$RC" = 0 ] && grep -q "SKIPPED" "$OUT" &&
+        grep -qF "collisions: not measured (no --against <release ref>)" "$OUT"; then
+        ok "and --if-declared with no base is the same SKIP at exit 0 — rule 60's reading passes nothing new"
+    else
+        bad "--if-declared, no --against: exit $RC, want 0 SKIPPED with the not-measured line"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+case_an_unresolvable_against_is_exit_2_naming_the_ref() {
+    local w="$WORK/collide-unresolved"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    run_against "$w" --against zzz_nope
+    if [ "$RC" = 2 ] && grep -qF "zzz_nope" "$OUT" && grep -qF "git fetch template --tags" "$OUT" &&
+        ! grep -q "collisions: none" "$OUT"; then
+        ok "an --against that does not resolve is exit 2, naming the ref and the fetch to type"
+    else
+        bad "unresolvable --against: exit $RC, want 2 naming zzz_nope and the fetch"
+        sed 's/^/         /' "$OUT"
+    fi
+    run_against "$w" --against
+    [ "$RC" = 2 ] && ok "and --against with no ref is exit 2, never a run against nothing" ||
+        bad "--against with no ref: exit $RC, want 2"
+    rm -rf "$w"
+}
+
+case_the_reserved_prefix_is_a_pair_in_waiting() {
+    local w="$WORK/collide-reserved"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    plant_app "$w" djb_zzz
+    plant_initial "$w" djb_zzz Reserved reserved_recency
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: reserved prefix djb_ — apps/djb_zzz (yours); djb_ is the template's namespace for its platform apps" "$OUT"; then
+        ok "a product app labelled djb_… is exit 2 on its own line — the prefix is the template's"
+    else
+        bad "reserved prefix: exit $RC, want 2 with the reserved-prefix line"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w/apps/djb_zzz"
+    plant_app "$w" zzz_djb
+    plant_initial "$w" zzz_djb Reserved reserved_recency
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 0 ] && ! grep -q "reserved prefix" "$OUT" && grep -qF "collisions: none against v0.2.0" "$OUT"; then
+        ok "and zzz_djb — the prefix elsewhere in the label — is silent on the class"
+    else
+        bad "zzz_djb: exit $RC, want 0 with no reserved-prefix line"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+case_an_app_with_no_migrations_is_counted_unparsed() {
+    local w="$WORK/collide-unparsed"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    plant_app "$w" zzz_nomig
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 0 ] && grep -qF "unparsed: apps/zzz_nomig (yours)" "$OUT" &&
+        grep -qE "yours parsed=1 unparsed=1" "$OUT" && grep -qF "collisions: none against v0.2.0" "$OUT"; then
+        ok "an app with no migrations/ is printed and counted unparsed — never silently clean — and the exit is unchanged by it"
+    else
+        bad "unparsed app: exit $RC, want 0 with 'unparsed: apps/zzz_nomig (yours)' and yours unparsed=1"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+# --- THE MOUNTS AND THE TAGS ------------------------------------------------
+# A router's mount and its tags are two more names a release's platform app and
+# a product's own app can share, and nothing refuses the pair until `check`
+# runs after the merge (house rule 83). The census reads both as text from
+# `api.py`, the same reader on both sides. The api modules planted here carry
+# the literals only: no Django runs on either side, so they need not import.
+
+# plant_api <repo> <dir> <PREFIX or -> <tag or -> [<route path>…] — a minimal
+# api.py: a `PREFIX` line unless `-`, one `Router(...)` with the tag unless
+# `-`, and one route decorator per path.
+plant_api() {
+    local repo=$1 app=$2 prefix=$3 tag=$4 path
+    shift 4
+    mkdir -p "$repo/apps/$app"
+    {
+        printf 'from ninja import Router\n\n'
+        [ "$prefix" = - ] || printf 'PREFIX = "%s"\n\n' "$prefix"
+        if [ "$tag" = - ]; then printf 'router = Router()\n'; else printf 'router = Router(tags=["%s"])\n' "$tag"; fi
+        for path in "$@"; do
+            printf '\n\n@router.get("%s")\ndef zzz_route(request):\n    return {}\n' "$path"
+        done
+    } >"$repo/apps/$app/api.py"
+}
+
+# release_api <world> <PREFIX or -> <tag or -> [<route path>…] — the same file
+# on the RELEASE's platform app, committed on its branch and re-tagged.
+release_api() {
+    local w=$1
+    shift
+    gitq "$w" checkout -q zzz_release
+    plant_api "$w" zzz_notes "$@"
+    gitq "$w" add apps/zzz_notes/api.py
+    gitq "$w" commit -q -m "the release's platform app mounts a router"
+    gitq "$w" tag -f -a v0.2.0 -m v0.2.0 HEAD >/dev/null
+    gitq "$w" checkout -q main
+}
+
+MOUNT_REMEDY='remedy: mount YOURS elsewhere — PREFIX = "<its own word>" in your api.py'
+TAG_REMEDY='remedy: tag YOURS with a word of its own — Router(tags=["<its own word>"]) and the matching TAGS key'
+
+case_a_release_mount_and_tag_your_app_also_spells_is_a_pair_each() {
+    local w="$WORK/collide-mount"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    release_api "$w" notes notes /
+    plant_app "$w" zzz_crm
+    plant_api "$w" zzz_crm notes notes /
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: mount notes — yours (apps/zzz_crm/api.py) vs v0.2.0 (apps/zzz_notes/api.py)" "$OUT" &&
+        grep -qF "collision: tag notes — yours (apps/zzz_crm/api.py) vs v0.2.0 (apps/zzz_notes/api.py)" "$OUT" &&
+        grep -qF "reserved=0 mounts=1 tags=1" "$OUT" &&
+        [ "$(grep -c '^collision: ' "$OUT")" = 2 ] &&
+        [ "$(grep -cF "$MOUNT_REMEDY" "$OUT")" = 1 ] && [ "$(grep -cF "$TAG_REMEDY" "$OUT")" = 1 ]; then
+        ok "a product router on the release's PREFIX and tag: exit 2, one mount line and one tag line, a remedy each on YOUR side, mounts=1 tags=1"
+    else
+        bad "mount/tag collision: exit $RC, want 2 with a mount line, a tag line, their remedies and mounts=1 tags=1"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+case_a_root_route_on_the_release_mount_is_a_mount_pair() {
+    local w="$WORK/collide-root"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    release_api "$w" notes notes /
+    plant_app "$w" zzz_crm
+    plant_api "$w" zzz_crm "" crm_notes / /notes/ "/notes/{note_id}/" "/{row_id}/"
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: mount notes — yours (apps/zzz_crm/api.py) vs v0.2.0 (apps/zzz_notes/api.py)" "$OUT" &&
+        grep -qF "reserved=0 mounts=1 tags=0" "$OUT" &&
+        [ "$(grep -c '^collision: ' "$OUT")" = 1 ]; then
+        ok "PREFIX = \"\" and a route at /notes/: one mount line — the root and a {parameter} first segment name nothing"
+    else
+        bad "root-mounted route: exit $RC, want 2 with one mount line"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+case_a_sub_router_on_the_release_mount_is_a_mount_pair() {
+    local w="$WORK/collide-subrouter"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    release_api "$w" notes notes /
+    plant_app "$w" zzz_crm
+    printf 'from ninja import Router\n\nPREFIX = ""\n\nlinks = Router(tags=["crm_links"])\nrouter = Router()\nrouter.add_router("/notes/", links)\n' \
+        >"$w/apps/zzz_crm/api.py"
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: mount notes — yours (apps/zzz_crm/api.py) vs v0.2.0 (apps/zzz_notes/api.py)" "$OUT" &&
+        grep -qF "reserved=0 mounts=1 tags=0" "$OUT" &&
+        [ "$(grep -c '^collision: ' "$OUT")" = 1 ]; then
+        ok "a sub-router added at /notes/ under an empty prefix: one mount line"
+    else
+        bad "sub-router: exit $RC, want 2 with one mount line"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+case_an_app_with_no_prefix_mounts_at_its_label() {
+    local w="$WORK/collide-label-mount"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    # The release mounts its platform app at a word that is YOUR app's label.
+    release_api "$w" zzz_crm notes /
+    plant_app "$w" zzz_crm
+    plant_api "$w" zzz_crm - crm_notes /
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: mount zzz_crm — yours (apps/zzz_crm/api.py) vs v0.2.0 (apps/zzz_notes/api.py)" "$OUT" &&
+        grep -qF "labels=0 " "$OUT" && grep -qF "reserved=0 mounts=1 tags=0" "$OUT" &&
+        [ "$(grep -c '^collision: ' "$OUT")" = 1 ]; then
+        ok "no PREFIX line: the router mounts at its label, and the release's PREFIX on that word is one mount line (no label pair)"
+    else
+        bad "label-as-mount: exit $RC, want 2 with one mount line and labels=0"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+case_a_product_mount_or_tag_under_djb_is_the_reserved_line() {
+    local w="$WORK/collide-reserved-mount"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    release_api "$w" notes notes /
+    plant_app "$w" zzz_crm
+    plant_api "$w" zzz_crm djb_x crm_notes /
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: reserved prefix djb_ — mount djb_x in apps/zzz_crm/api.py (yours)" "$OUT" &&
+        grep -qF "reserved=1 mounts=0 tags=0" "$OUT" && grep -qF "$MOUNT_REMEDY" "$OUT"; then
+        ok "a product PREFIX = \"djb_x\" is the reserved line, with the mount remedy"
+    else
+        bad "reserved mount: exit $RC, want 2 with the reserved line for mount djb_x"
+        sed 's/^/         /' "$OUT"
+    fi
+    plant_api "$w" zzz_crm crm-notes djb_x /
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 2 ] &&
+        grep -qF "collision: reserved prefix djb_ — tag djb_x in apps/zzz_crm/api.py (yours)" "$OUT" &&
+        grep -qF "reserved=1 mounts=0 tags=0" "$OUT" && grep -qF "$TAG_REMEDY" "$OUT"; then
+        ok "and tags=[\"djb_x\"] is the reserved line, with the tag remedy"
+    else
+        bad "reserved tag: exit $RC, want 2 with the reserved line for tag djb_x"
+        sed 's/^/         /' "$OUT"
+    fi
+    plant_api "$w" zzz_crm x_djb crm_notes /
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 0 ] && ! grep -q "reserved prefix" "$OUT" && grep -qF "collisions: none against v0.2.0" "$OUT"; then
+        ok "and PREFIX = \"x_djb\" — the prefix elsewhere in the word — is silent on the class"
+    else
+        bad "x_djb: exit $RC, want 0 with no reserved line"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
+case_a_mount_and_a_tag_of_your_own_are_no_collision() {
+    local w="$WORK/collide-own-mount"
+    build_collision_world "$w" || {
+        bad "the collision world would not build"
+        return 0
+    }
+    release_api "$w" notes notes /
+    plant_app "$w" zzz_crm
+    plant_api "$w" zzz_crm crm-notes crm_notes /
+    run_against "$w" --against v0.2.0
+    if [ "$RC" = 0 ] && grep -qF "collisions: none against v0.2.0" "$OUT" &&
+        grep -qF "reserved=0 mounts=0 tags=0" "$OUT" && ! grep -q '^collision: ' "$OUT"; then
+        ok "PREFIX = \"crm-notes\" and tags=[\"crm_notes\"] beside the release's notes: collisions: none, exit 0"
+    else
+        bad "own mount and tag: exit $RC, want 0 with collisions: none"
+        sed 's/^/         /' "$OUT"
+    fi
+    rm -rf "$w"
+}
+
 build_repo "$REPO" || {
     echo "!! the fixture would not build" >&2
     exit 2
@@ -765,6 +1340,22 @@ run_case case_the_drawer_count_is_the_list_and_not_the_filesystem
 run_case case_a_library_that_sets_no_rules_for_is_exit_2_naming_both_files_to_take
 run_case case_a_death_part_way_is_exit_2_on_every_bash
 run_case case_a_platform_app_edit_is_seen_against_the_real_partition_list
+run_case case_a_release_app_sharing_your_label_table_index_and_constraint_is_exit_2_per_pair
+run_case case_distinct_labels_and_model_names_are_no_collision
+run_case case_a_db_table_spelled_onto_a_release_table_is_a_table_pair
+run_case case_an_inherited_index_name_collides_with_the_release_platform_app
+run_case case_a_model_named_like_a_release_model_collides_on_its_kind
+run_case case_an_index_subclass_name_is_in_the_population
+run_case case_no_against_prints_not_measured_and_changes_no_verdict
+run_case case_an_unresolvable_against_is_exit_2_naming_the_ref
+run_case case_the_reserved_prefix_is_a_pair_in_waiting
+run_case case_an_app_with_no_migrations_is_counted_unparsed
+run_case case_a_release_mount_and_tag_your_app_also_spells_is_a_pair_each
+run_case case_a_root_route_on_the_release_mount_is_a_mount_pair
+run_case case_a_sub_router_on_the_release_mount_is_a_mount_pair
+run_case case_an_app_with_no_prefix_mounts_at_its_label
+run_case case_a_product_mount_or_tag_under_djb_is_the_reserved_line
+run_case case_a_mount_and_a_tag_of_your_own_are_no_collision
 
 # --- the derived reader: a 'template' remote and TEMPLATE_VERSION -----------
 UPSTREAM="$WORK/upstream"

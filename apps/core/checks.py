@@ -1174,6 +1174,102 @@ def check_resource_first_paths(app_configs: Any = None, **kwargs: Any) -> list[C
     return found
 
 
+# --- rule 83: one app per path, one app per family ----------------------------
+# The mount (`config/api.py`) binds each discovered router under its `PREFIX`
+# or its label and asks nobody whether the path is taken: django-ninja 1.6.3
+# refuses NOTHING on a duplicate. Two modules binding one path give one URL
+# pattern per module, Django's resolver answers with whichever was discovered
+# first — for every method, so a method only the later module binds answers
+# 405 — and the published document describes the other. Nothing 500s and no
+# test goes red; a product that grows its own `notes` app beside a platform
+# app mounted at `/notes/` simply stops answering, silently.
+#
+# WHAT COLLIDES, READ OFF THE MECHANISM rather than off the word "prefix".
+# Seven routers share the root prefix "" and answer side by side, so a guard on
+# the prefix would refuse the tree itself. What collides is ONE PATH PATTERN
+# bound by TWO MODULES — compared with the parameter names erased, because
+# `/x/{a}/` and `/x/{b}/` are one Django pattern — and ONE TAG KEY declared by
+# TWO APPS, because a tag is a scope family and one key across two apps is one
+# token ceiling that reaches both.
+#
+# BOTH POPULATIONS ARE CLOSED: the paths off the live mount (`_mounted_paths`),
+# the tags off each app's `TAGS` (the same discovery the scope census reads)
+# and each bound operation's own tags. No hand list, no valve — the shape is
+# corrected, or one of the two apps takes a word of its own.
+
+
+def _path_pattern(path: str) -> str:
+    """The pattern a mounted path binds, parameter names erased."""
+    return re.sub(r"\{[^}]*\}", "{}", path)
+
+
+def _app_label_of(dotted: str) -> str:
+    config = apps.get_containing_app_config(dotted)
+    return str(config.label) if config is not None else dotted
+
+
+@register(DJB)
+def check_one_app_per_path_and_family(app_configs: Any = None, **kwargs: Any) -> list[CheckMessage]:
+    """Refuse a path bound by two modules, and a tag key declared by two apps.
+
+    One finding per path pattern and one per tag key, each naming BOTH sides —
+    the modules for a path, the apps for a tag — for the reason rule 32's
+    finding names its module: a person has to know which file to edit, and the
+    gate's negative probe recognises a false positive by the planted app's name.
+    """
+    from apps.core.api.scopes import _tag_declarations_by_app
+
+    bound: dict[str, dict[str, set[str]]] = {}
+    spelled: dict[str, str] = {}
+    tag_apps: dict[str, set[str]] = {}
+    for path, operation in _mounted_paths():
+        dotted = str(getattr(operation.view_func, "__module__", ""))
+        pattern = _path_pattern(path)
+        spelled.setdefault(pattern, path)
+        methods = bound.setdefault(pattern, {}).setdefault(dotted, set())
+        methods.update(str(method) for method in (operation.methods or ()))
+        for tag in operation.tags or ():
+            tag_apps.setdefault(str(tag), set()).add(_app_label_of(dotted))
+    for label, declared in _tag_declarations_by_app().items():
+        for tag in declared:
+            tag_apps.setdefault(str(tag), set()).add(label)
+
+    found: list[CheckMessage] = []
+    for pattern, modules in sorted(bound.items()):
+        if len(modules) < 2:
+            continue
+        path = spelled[pattern]
+        verbs = ", ".join(sorted({m for methods in modules.values() for m in methods}))
+        sides = " and ".join(
+            f"{dotted.replace('.', '/')}.py ({', '.join(sorted(methods))})"
+            for dotted, methods in sorted(modules.items())
+        )
+        found.append(
+            Error(
+                f"{verbs} {path} is answered by {sides}; the mount serves whichever was "
+                "discovered first and the document describes the other, silently — give "
+                "the newer module a PREFIX of its own (or a route path whose first segment "
+                'is its own word when PREFIX is "") (house rule 83).',
+                obj=path,
+                id="djb.E083",
+            )
+        )
+    for tag, owners in sorted(tag_apps.items()):
+        if len(owners) < 2:
+            continue
+        found.append(
+            Error(
+                f"the tag {tag!r} is declared by apps {' and '.join(sorted(owners))}; a tag "
+                "is a scope family, and one key across two apps is one token ceiling that "
+                "reaches both — give the newer router (and its TAGS entry) a key of its own "
+                "(house rule 83).",
+                obj=tag,
+                id="djb.E083",
+            )
+        )
+    return found
+
+
 # --- rule 21: admin goes through services --------------------------------------
 
 

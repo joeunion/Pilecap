@@ -1917,6 +1917,19 @@ subject answers `conflict` with no row and no event), and a merge re-landing
 links at the merging actor's hat. *Trigger to revisit*: universal homing —
 when the tenant-wide class dissolves, the second clause goes with it.
 
+**ADR mounts-1 · the platform's REST mounts, router tags and scope families
+carry the `djb_` namespace, and no path or tag key is served by two apps (rule
+83).** *Accepted 2026-09-29.* The three platform apps mount at
+`/api/v1/djb_notes/`, `/api/v1/djb_tags/` and `/api/v1/djb_tag_links/`,
+`/api/v1/djb_imports/`, under the router tags (the scope families)
+`djb_notes`, `djb_tags`, `djb_imports`; the attachment kinds stay `notes`,
+`tags`, `files`. *Rejected*: keeping the resource words on the platform's
+mounts (a product's own noun mounts there first and answers first, silently —
+measured on django-ninja 1.6.3); a hyphenated namespace (a second spelling of
+the word every label, kind, table and family spells with an underscore).
+*Trigger to reopen*: a product that must reach the platform's notes at
+`/notes/` — that is a proxy in its own tree, never a template change.
+
 ### Enforcement design ("fold it in")
 
 Reviews are the weakest rung; every architect rule that can move from review
@@ -2404,7 +2417,7 @@ tenant, key, chunk)`, `refuse_foreign_key` first, the same `get_object` walk
 activity and never from a door; rule 48 is unchanged (the read stays inside
 the one module); the docstring's paragraph says bytes may reach an activity's
 parser and never a response. *Alternatives rejected:* a valve on a second
-`get_object` in `apps/imports` (a permission slip for the exact shape the rule
+`get_object` in `apps/djb_imports` (a permission slip for the exact shape the rule
 stops); `presign_get` + an HTTP client from the activity (the rule's declared
 raw-HTTPS blind spot, worn on purpose); an upload road that bypasses the files
 app (a second key grammar). *Risk:* a door that finds `iter_object` and
@@ -3063,6 +3076,28 @@ was set on; a write from a service named otherwise is review's; whether
 `require_live` is called before the write, or on the right row, is review's;
 name resolution by class name.
 
+83. **One app per path, one app per family: no path and no tag key is served
+by two apps** (2026-09-29; ADR mounts-1; born from a measurement — django-ninja
+1.6.3 refuses nothing on a duplicate: two modules binding one path answer on
+the wire with the one discovered first while the published document describes
+the other, and a tag carried by two apps is one scope family, one token
+ceiling reaching both — and from the class a product meets the day it folds a
+release whose platform app mounts where its own noun already does). A Django
+system check, `djb.E083`: every mounted path pattern (parameter names erased,
+since `/x/{a}/` and `/x/{b}/` are one Django pattern) is bound by one api
+module, and every tag key is declared (`TAGS`) or carried (an operation's
+tags) by one app — both populations off the live mount and the tag discovery
+the scope census reads, never a hand list. It reads paths and never prefixes:
+seven routers share the root prefix and answer side by side. No valve — one of
+the two takes a word of its own, and the finding names both. Declared blind
+spots: a literal segment shadowed by another router's parameter segment
+(`/x/links/` beside `/x/{id}/` — patterns are compared as strings, not as
+match sets); two routes in one module on one path; plain Django views; a
+router bound outside discovery; which of the two answers on the wire; and two
+apps not yet installed together — before a merge, the fold's collision census
+reads the mounts and tags as text, and after it this check reads the
+assembled tree.
+
 ## App map — data portability
 
 One app, shipped rather than planned, and its row is here rather than in the
@@ -3126,12 +3161,19 @@ seam, and the artifact reference may migrate onto the files app's blob model.
 Three apps shipped with the family, and their rows are here rather than in the
 ingredients table below for the same reason the export's is: they are on
 main. Read off `manage.py introspect` and each app's `apps.py`, not planned.
+Their labels, tables, index names and authorization kinds carry the
+template's own `djb_` prefix so that a product's app or model of the same noun
+never collides with them — and with the kinds, the url_names, the policy keys
+and the MCP tool names derived from them (`djb_note-archive`, `djb_note.create`,
+`archive_djb_note`). Their REST mounts and scope families carry the prefix
+too (`/api/v1/djb_notes/`, `djb_notes:read` — ADR mounts-1); the attachment
+words (`notes`, `tags`, `files`) are the generic words and do not move.
 
 | app | noun (aggregate) | depends_on | doors exposed | workflows owned | events emitted / consumed |
 |---|---|---|---|---|---|
-| `notes` | `Note` (org-scoped, `Archivable`; a polymorphic subject) | `core, accounts, events` | REST `/api/v1/notes/` (list `?subject=<kind>:<id>` · create · retrieve · update · archive · restore) · MCP `list_notes` / `get_note` / `create_note` / `update_note` / `archive_note` / `restore_note` | none | emits `notes.note.created/.updated/.archived/.restored/.moved` |
-| `tags` | `Tag` (tenant-scoped, `Archivable`) + `TagLink` (org-scoped at the subject's node; `(tag, subject)` unique) | `core, accounts, events` | REST `/api/v1/tags/` (list · create · retrieve · rename · archive · restore) and `/api/v1/tag-links/` (list `?subject=` · create · delete) · MCP `list_tags` / `get_tag` / `create_tag` / `rename_tag` / `archive_tag` / `restore_tag` / `list_tag_links` / `create_tag_link` / `delete_tag_link` | none | emits `tags.tag.created/.renamed/.archived/.restored`, `tags.tag_link.created/.deleted/.moved` |
-| `imports` | `Import` (+ `ImportRow`, bounded by cascade) | `core, accounts, events, workflows, files` | REST `/api/v1/imports/` (list · create · retrieve · apply · cancel · rows `?outcome=`) · MCP `list_imports` / `get_import` / `create_import` / `apply_import` / `cancel_import` / `list_import_rows` | `ValidateImportWorkflow`, `ApplyImportWorkflow`, `PurgeImportsWorkflow` | emits `imports.import.staged/.previewed/.applied/.failed` |
+| `djb_notes` | `Note` (org-scoped, `Archivable`; a polymorphic subject) | `core, accounts, events` | REST `/api/v1/djb_notes/` (list `?subject=<kind>:<id>` · create · retrieve · update · archive · restore) · MCP `list_djb_notes` / `get_djb_note` / `create_djb_note` / `update_djb_note` / `archive_djb_note` / `restore_djb_note` | none | emits `djb_notes.note.created/.updated/.archived/.restored/.moved` |
+| `djb_tags` | `Tag` (tenant-scoped, `Archivable`) + `TagLink` (org-scoped at the subject's node; `(tag, subject)` unique) | `core, accounts, events` | REST `/api/v1/djb_tags/` (list · create · retrieve · rename · archive · restore) and `/api/v1/djb_tag_links/` (list `?subject=` · create · delete) · MCP `list_djb_tags` / `get_djb_tag` / `create_djb_tag` / `rename_djb_tag` / `archive_djb_tag` / `restore_djb_tag` / `list_djb_tag_links` / `create_djb_tag_link` / `delete_djb_tag_link` | none | emits `djb_tags.tag.created/.renamed/.archived/.restored`, `djb_tags.tag_link.created/.deleted/.moved` |
+| `djb_imports` | `Import` (+ `ImportRow`, bounded by cascade) | `core, accounts, events, workflows, files` | REST `/api/v1/djb_imports/` (list · create · retrieve · apply · cancel · rows `?outcome=`) · MCP `list_djb_imports` / `get_djb_import` / `create_djb_import` / `apply_djb_import` / `cancel_djb_import` / `list_djb_import_rows` | `ValidateImportWorkflow`, `ApplyImportWorkflow`, `PurgeImportsWorkflow` | emits `djb_imports.import.staged/.previewed/.applied/.failed` |
 
 **The three are the family's owners, not nouns of their own.** The mechanism,
 in the order a reader needs it:

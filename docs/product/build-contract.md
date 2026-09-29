@@ -59,11 +59,11 @@ Pilecap/
 │   │                           #   Django) · services (two-phase upload; store_bytes/store_stream need a person-carrying actor) ·
 │   │                           #   FinalizeUpload workflow · meters.py (`files.storage.bytes` → usage) · policies · events.py ·
 │   │                           #   api.py (PREFIX = "files"; list with `?subject=<kind>:<id>` · upload · versions · archive · download) + mcp.py twins · the "*" merge repointer
-│   ├── imports/                # Import (+ ImportRow, bounded by cascade) — the family's import road: stage a stored CSV against a
+│   ├── djb_imports/            # Import (+ ImportRow, bounded by cascade) — the family's import road: stage a stored CSV against a
 │   │                           #   declared `importers.py` kind, idempotent by the file's digest; the check workflow previews every row
 │   │                           #   through files' `iter_object` and writes no noun; the apply workflow writes each row once · api.py
-│   │                           #   (PREFIX = "imports"; list · create · retrieve · apply · cancel · rows) · mcp.py twins · purged at thirty days
-│   ├── notes/                  # Note (org-scoped, Archivable) — an attach owner: filed against any noun declaring `attachments`
+│   │                           #   (PREFIX = "djb_imports"; list · create · retrieve · apply · cancel · rows) · mcp.py twins · purged at thirty days
+│   ├── djb_notes/              # Note (org-scoped, Archivable) — an attach owner: filed against any noun declaring `attachments`
 │   │                           #   containing "notes", read only through its subject (`?subject=<kind>:<id>`), lands per ADR attach-1;
 │   │                           #   only its author edits · the "*" merge repointer `move_notes` · api.py + mcp.py twins · events.py
 │   ├── search/                 # NO ORM models (the Meili document is the projection; an ADOPTING app owns its tsvector column) ·
@@ -71,9 +71,9 @@ Pilecap/
 │   │                           #   `apps/<x>/search.py` declarations) · selectors.py the read chokepoint (tenant+org scoping at query
 │   │                           #   time) · api.py (PREFIX = "search") + mcp.py · indexer activities off the events spine · rebuild
 │   │                           #   workflow with boot reconcile
-│   ├── tags/                   # Tag (tenant-scoped, Archivable — root administrators coin, rename and archive a word) + TagLink
+│   ├── djb_tags/               # Tag (tenant-scoped, Archivable — root administrators coin, rename and archive a word) + TagLink
 │   │                           #   (org-scoped at the subject's node, `(tag, subject)` unique, `create_tag_link` idempotent) — an attach
-│   │                           #   owner read through `?subject=` · the "*" merge repointer `move_tag_links` · api.py (`/tags/`, `/tag-links/`)
+│   │                           #   owner read through `?subject=` · the "*" merge repointer `move_tag_links` · api.py (`/djb_tags/`, `/djb_tag_links/`)
 │   │                           #   + mcp.py twins · events.py
 │   ├── usage/                  # UsageEntry (append-only, org-scoped) · record_usage — THE shared metering seam (idempotent replay;
 │   │                           #   corrections supersede, never edit) · meters.py (`<app>.<noun>.<unit>` grammar, import-validated) ·

@@ -93,6 +93,96 @@
       "member": true,
       "owner": true
     },
+    "djb_import.apply": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "djb_import.cancel": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "djb_import.create": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "djb_import.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "djb_note.archive": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "djb_note.create": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "djb_note.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "djb_note.restore": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "djb_note.update": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "djb_tag.archive": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "djb_tag.create": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "djb_tag.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "djb_tag.restore": {
+      "admin": false,
+      "member": false,
+      "owner": false
+    },
+    "djb_tag.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
+    "djb_tag_link.create": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "djb_tag_link.delete": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "djb_tag_link.read": {
+      "admin": true,
+      "member": true,
+      "owner": true
+    },
+    "djb_tag_link.update": {
+      "admin": true,
+      "member": false,
+      "owner": true
+    },
     "endpoint.create": {
       "admin": true,
       "member": false,
@@ -183,26 +273,6 @@
       "member": true,
       "owner": true
     },
-    "import.apply": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
-    "import.cancel": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
-    "import.create": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
-    "import.read": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
     "inbound_webhook.read": {
       "admin": true,
       "member": true,
@@ -287,31 +357,6 @@
       "admin": true,
       "member": false,
       "owner": true
-    },
-    "note.archive": {
-      "admin": false,
-      "member": false,
-      "owner": false
-    },
-    "note.create": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
-    "note.read": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
-    "note.restore": {
-      "admin": false,
-      "member": false,
-      "owner": false
-    },
-    "note.update": {
-      "admin": false,
-      "member": false,
-      "owner": false
     },
     "organization.create": {
       "admin": true,
@@ -416,51 +461,6 @@
     "suppression_surge.read": {
       "admin": true,
       "member": true,
-      "owner": true
-    },
-    "tag.archive": {
-      "admin": false,
-      "member": false,
-      "owner": false
-    },
-    "tag.create": {
-      "admin": true,
-      "member": false,
-      "owner": true
-    },
-    "tag.read": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
-    "tag.restore": {
-      "admin": false,
-      "member": false,
-      "owner": false
-    },
-    "tag.update": {
-      "admin": true,
-      "member": false,
-      "owner": true
-    },
-    "tag_link.create": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
-    "tag_link.delete": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
-    "tag_link.read": {
-      "admin": true,
-      "member": true,
-      "owner": true
-    },
-    "tag_link.update": {
-      "admin": true,
-      "member": false,
       "owner": true
     },
     "tenant.read": {

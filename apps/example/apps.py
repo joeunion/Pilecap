@@ -35,4 +35,4 @@ class ExampleConfig(AppConfig):
     # them across through its own service — the one consumer of each, so no
     # core hook stands between (the day a second noun copies tags is the day one
     # is born).
-    depends_on: tuple[str, ...] = ("core", "accounts", "workflows", "search", "tags")
+    depends_on: tuple[str, ...] = ("core", "accounts", "workflows", "search", "djb_tags")

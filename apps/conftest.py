@@ -688,15 +688,15 @@ DJB_REACH_POPULATIONS: dict[str, tuple[str, ...]] = {
 #: that added it, because a number re-derived without its member is the shape
 #: this paragraph exists to end:
 #:
-#:   door_parity_census 14 → 17: apps/imports/tests/test_doors_over_the_wire.py
-#:     (the imports app), apps/notes/tests/test_doors_over_the_wire.py (the
-#:     notes app), apps/tags/tests/test_doors_over_the_wire.py (the tags app).
+#:   door_parity_census 14 → 17: apps/djb_imports/tests/test_doors_over_the_wire.py
+#:     (the imports app), apps/djb_notes/tests/test_doors_over_the_wire.py (the
+#:     notes app), apps/djb_tags/tests/test_doors_over_the_wire.py (the tags app).
 #:   absent_world_consumers 3 → 4: apps/core/tests/test_resource_first_urls.py —
 #:     joined by a DOCSTRING sentence carrying the fixed-string token, not by a
 #:     reader of the absent world; counted, as the property above says.
-#:   lifecycle_registry_walkers 8 → 9: apps/imports/tests/test_lifecycle.py.
+#:   lifecycle_registry_walkers 8 → 9: apps/djb_imports/tests/test_lifecycle.py.
 #:   openapi_document_readers 18 → 20: apps/files/tests/test_archive_road.py,
-#:     apps/imports/tests/test_api.py.
+#:     apps/djb_imports/tests/test_api.py.
 #:   apps_root_modules 5 → 6: apps/test_absent_relative_imports.py — the fourth
 #:     re-derivation of this one population (3 → 4 test_census_markers.py,
 #:     4 → 5 test_retry_floor.py), and the reason it is now declared BY MEMBER.

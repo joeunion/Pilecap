@@ -151,17 +151,17 @@ EXPECTED: frozenset[str] = frozenset(
         # Five lines, and they are the diff the pin exists to make somebody
         # read. The census is DERIVED, so all five were already in every
         # tenant's archive the day their apps merged; what moved is the pin's
-        # BOUNDARY — `imports`, `notes` and `tags` joined the template's
+        # BOUNDARY — `djb_imports`, `djb_notes` and `djb_tags` joined the template's
         # partition (`quality/partition.yaml`), so `platform_only` now counts
         # them as this tree's own. They belong: a note, a tag and where it is
         # attached are the customer's own words about their own records, and an
         # import run with its rows is their record of what they brought in and
         # what was refused.
-        "imports.Import",
-        "imports.ImportRow",
-        "notes.Note",
-        "tags.Tag",
-        "tags.TagLink",
+        "djb_imports.Import",
+        "djb_imports.ImportRow",
+        "djb_notes.Note",
+        "djb_tags.Tag",
+        "djb_tags.TagLink",
         # The census is DERIVED, so `usage.UsageEntry` joined the
         # archive the moment the model existed; this line is the diff the pin
         # exists to make somebody read. It BELONGS in a tenant's archive: the
@@ -491,8 +491,8 @@ def test_the_counts_this_report_states(capsys: Any) -> None:
     # expect: each carries a `tenant`, so each joins `scoped_models()`, and none
     # is excluded, so each is dispositioned into the archive. A diff that moved
     # only one of the three would be the thing to look at.
-    # 48 -> 53: `imports.Import`, `imports.ImportRow`, `notes.Note`, `tags.Tag`
-    # and `tags.TagLink` — not new tables, a moved boundary: their three apps
+    # 48 -> 53: `djb_imports.Import`, `djb_imports.ImportRow`, `djb_notes.Note`, `djb_tags.Tag`
+    # and `djb_tags.TagLink` — not new tables, a moved boundary: their three apps
     # joined the template's partition, so a count scoped to this tree's own apps
     # now sees them. All three numbers move together (each carries a `tenant`,
     # none is excluded).

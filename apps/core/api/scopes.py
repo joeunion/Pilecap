@@ -28,7 +28,8 @@ which is a credential-breaking change of the same class as renaming a URL —
 and the failure is silent, because the token goes on authenticating and simply
 starts being refused at every door. `FROZEN_FAMILIES` is the census of what has
 shipped and `family_freeze_findings` is the predicate; `SANCTIONED_RENAMES`
-carries the one departure an owner has ruled, which is the last cheap one.
+carries the departures an owner has ruled — the org-tree split, and the words
+released because their keys never had a holder (`Released`).
 
 **Where this is read.** The two door seams — `config/api.py` for HTTP and the
 MCP mount — and nowhere below them. A service, selector or policy that
@@ -45,7 +46,7 @@ from typing import Any
 
 from django.apps import apps as django_apps
 
-from apps.core.api.frozen_families import FROZEN_FAMILIES, SANCTIONED_RENAMES
+from apps.core.api.frozen_families import FROZEN_FAMILIES, SANCTIONED_RENAMES, Released
 from apps.core.exceptions import Forbidden, Invalid, Remedy, register_refusal
 
 __all__ = [
@@ -53,6 +54,7 @@ __all__ = [
     "READ",
     "RENAME_IS_CLOSED",
     "SANCTIONED_RENAMES",
+    "Released",
     "SCOPE_SEPARATOR",
     "UNSCOPED",
     "VERB_CLASSES",
@@ -258,7 +260,9 @@ def vocabulary() -> tuple[str, ...]:
 #: is a deprecation with two live keys and a migration window, not an edit.
 RENAME_IS_CLOSED = (
     "The three-way split of 2026-08-24 was the LAST cheap rename this vocabulary "
-    "gets: scoped tokens were days old and the break was sanctioned. Any rename "
+    "gets: scoped tokens were days old and the break was sanctioned (2.4.1's "
+    "three moves to the djb_ words were the same case — keys shipped in a release "
+    "no product had taken — and are recorded in SANCTIONED_RENAMES). Any rename "
     "after it meets credentials held by people who cannot be asked, so it is a "
     "deprecation — both keys live, a window, and a way for a holder to find out "
     "— and never an edit to a key."
@@ -298,7 +302,9 @@ def family_freeze_findings(live: Sequence[str] | None = None) -> tuple[str, ...]
             f"{RENAME_IS_CLOSED}"
         )
     for retired, successors in SANCTIONED_RENAMES.items():
-        if retired not in present:
+        # A released word had no holders, so it was given back: a product
+        # that tags it owns a new family, and there is no token to re-arm.
+        if retired not in present or isinstance(successors, Released):
             continue
         findings.append(
             f"the family key {retired!r} was retired and is live again. It became "
@@ -316,8 +322,11 @@ def _rename_advice(unknown: Sequence[str]) -> tuple[str, ...]:
     Only for a key this tree ONCE HAD. A typo gets the plain refusal — telling
     somebody who wrote `orgnaizations:read` that it "was renamed" would be a
     fluent, confident lie, and the plain sentence plus the vocabulary is what
-    they actually need.
+    they actually need. And only while the old word is NOT a live family: a
+    product that reclaimed a released word owns its scopes outright, and advice
+    pointing at the platform's successor would be the same lie.
     """
+    live = set(families())
     advice: list[str] = []
     for entry in unknown:
         parsed = parse_scope(entry)
@@ -325,13 +334,20 @@ def _rename_advice(unknown: Sequence[str]) -> tuple[str, ...]:
             continue
         family, verb = parsed
         successors = SANCTIONED_RENAMES.get(family)
-        if not successors:
+        if not successors or family in live:
             continue
         replacements = ", ".join(f"`{name}{SCOPE_SEPARATOR}{verb}`" for name in successors)
+        if len(successors) == 1:
+            advice.append(
+                f"`{entry}` was retired: the {family!r} section became "
+                f"`{successors[0]}`, so ask for {replacements}."
+            )
+            continue
+        became = ", ".join(f"`{name}`" for name in successors)
         advice.append(
             f"`{entry}` was retired: the {family!r} section became "
-            f"{len(successors)} sections, so ask for {replacements} — whichever "
-            "of them this token's job actually needs, and no more."
+            f"{len(successors)} sections: {became}, so ask for {replacements} — "
+            "whichever of them this token's job actually needs, and no more."
         )
     return tuple(advice)
 

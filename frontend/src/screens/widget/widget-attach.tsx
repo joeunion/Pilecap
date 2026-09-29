@@ -29,8 +29,8 @@
  * and the list's `?tag=` chip is not drawn, because the list read takes no
  * tag narrowing.
  *
- * It renders and never fetches: the route reads `/notes/?subject=`,
- * `/files/?subject=` and the tag chooser's `/tags/?q=`, and writes.
+ * It renders and never fetches: the route reads `/djb_notes/?subject=`,
+ * `/files/?subject=` and the tag chooser's `/djb_tags/?q=`, and writes.
  */
 
 // golden: attach begin

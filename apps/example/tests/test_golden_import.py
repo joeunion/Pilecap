@@ -11,8 +11,8 @@ import pytest
 
 from apps.core.actor import Actor
 from apps.core.models import Tenant
+from apps.djb_imports.selectors import list_importers
 from apps.example.models import Widget
-from apps.imports.selectors import list_importers
 
 pytestmark = pytest.mark.django_db
 

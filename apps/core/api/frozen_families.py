@@ -37,7 +37,26 @@ quantifier to the lockfile population.*
 
 from __future__ import annotations
 
-__all__ = ["FROZEN_FAMILIES", "SANCTIONED_RENAMES"]
+__all__ = ["FROZEN_FAMILIES", "SANCTIONED_RENAMES", "Released"]
+
+
+class Released(tuple[str, ...]):
+    """A sanctioned departure whose old key had NO HOLDERS, so its word is given back.
+
+    The successors, exactly as a plain entry carries them — this IS the tuple,
+    so every reader that walks `SANCTIONED_RENAMES` sees the same successors —
+    and one fact more, carried by the type rather than by a second record that
+    could disagree with it: nobody could have minted a token on the old key, so
+    the freeze has no holder to protect. A product may therefore reclaim the old
+    word as a family of its own: `family_freeze_findings` does not call it
+    "live again", and a token asking for it is told about the successor only
+    while no app here declares it.
+
+    A plain tuple entry is the other kind — a departure from keys people did
+    hold (`organizations`) — and the freeze keeps refusing its word forever.
+    """
+
+    __slots__ = ()
 
 
 #: Every family key a minted token could already be carrying.
@@ -67,6 +86,26 @@ FROZEN_FAMILIES: tuple[str, ...] = (
     # shape `usage:write` has below. Frozen from the day the door shipped, like
     # every other key here.
     "devices",
+    # The import road's family: bringing rows in from a file. `djb_imports:read`
+    # is reading an import and its preview, `djb_imports:write` is staging,
+    # applying and cancelling one. Shipped at 2.4.0 as `imports`; moved at 2.4.1
+    # to the platform's namespace word while no product had taken that release,
+    # so a product's own `imports` app can own `imports` — the departure is
+    # recorded in SANCTIONED_RENAMES below.
+    "djb_imports",
+    # The attach owner for notes. `djb_notes:read` is reading what people wrote
+    # about a record, `djb_notes:write` is writing, correcting and archiving it —
+    # and neither reaches the record itself. Shipped at 2.4.0 as `notes`; moved
+    # at 2.4.1 to the platform's namespace word while no product had taken that
+    # release — the departure is recorded in SANCTIONED_RENAMES below.
+    "djb_notes",
+    # The attach owner for tags. `djb_tags:read` is reading the tenant's words
+    # and the words a row carries; `djb_tags:write` is putting a word on a row or
+    # taking it off (and, for an administrator of the whole tenant, coining,
+    # renaming and retiring one). Shipped at 2.4.0 as `tags`; moved at 2.4.1 to
+    # the platform's namespace word while no product had taken that release —
+    # the departure is recorded in SANCTIONED_RENAMES below.
+    "djb_tags",
     "events",
     # A NEW family rather than a rename: taking a copy of your own
     # data out of the product is a capability no existing key covered, and
@@ -82,15 +121,8 @@ FROZEN_FAMILIES: tuple[str, ...] = (
     # documents, and put one in. Frozen the day the door shipped, like every other
     # key here.
     "files",
-    "imports",
     "invitations",
     "messaging",
-    # A NEW family, the choosing pattern's default: the plural noun of the
-    # section's one resource. `notes:read` is reading what people wrote about a
-    # record, `notes:write` is writing, correcting and archiving it — and neither
-    # reaches the record itself. Frozen the day the door shipped, like every
-    # other key here.
-    "notes",
     "org-structure",
     "roles",
     "runs",
@@ -100,14 +132,6 @@ FROZEN_FAMILIES: tuple[str, ...] = (
     # holding it is trusted with, and there is no `search:write` because there
     # is no write door — indexing is spine-fed and service-only.
     "search",
-    # The attach owner for tags. A NEW family, and the default half of the
-    # choosing pattern: the plural noun of the section's primary resource — a
-    # tag is a noun a caller already has. `tags:read` is reading the tenant's
-    # words and the words a row carries; `tags:write` is putting a word on a row
-    # or taking it off (and, for an administrator of the whole tenant, coining,
-    # renaming and retiring one). Frozen the day the door shipped, like every
-    # other key here.
-    "tags",
     "tenant-settings",
     "tokens",
     # ADR usage-1. A NEW family, and the mildest exception the
@@ -125,12 +149,22 @@ FROZEN_FAMILIES: tuple[str, ...] = (
 
 #: The departures an owner has ruled: a retired key, and what it became.
 #:
-#: One entry, and it is meant to stay one. `organizations` shipped as a single
-#: family covering the org tree, the role grants and the invitation lifecycle;
-#: the owner's ruling of 2026-08-24 (`docs/product/design-agreements.md`, "the
+#: Four entries, of two kinds. `organizations` shipped as a single family
+#: covering the org tree, the role grants and the invitation lifecycle; the
+#: owner's ruling of 2026-08-24 (`docs/product/design-agreements.md`, "the
 #: three-way scope split") split it three ways after FT-1′ demonstrated from the
 #: persona seat that the narrowest token which did any one of those jobs could
 #: do all three.
+#:
+#: The other three are a different case: a RELEASED departure, a departure with
+#: no holder, marked by its type (`Released`). `imports`, `notes` and `tags`
+#: shipped at 2.4.0 and moved to their `djb_` words at 2.4.1 on the owner's
+#: ruling of 2026-09-29 (the platform apps a release adds take names no product
+#: spells). No product had taken 2.4.0, so no token outside this repository can
+#: hold the old keys, and the words are GIVEN BACK to products: a product's own
+#: `notes` app may tag `notes` and own `notes:read` outright. The entries stay
+#: so that a template developer's own dev token, while no app here owns the old
+#: word, is told what to ask for instead of being refused blankly.
 #:
 #: **What this is NOT: a compatibility shim.** `organizations:write` is refused,
 #: not translated. An alias would go on granting all three capabilities forever,
@@ -140,4 +174,11 @@ FROZEN_FAMILIES: tuple[str, ...] = (
 #: `family_freeze_findings` can tell a ruled migration from an accident.
 SANCTIONED_RENAMES: dict[str, tuple[str, ...]] = {
     "organizations": ("org-structure", "roles", "invitations"),
+    # The owner's non-colliding-names ruling of 2026-09-29: the three platform
+    # apps' families take the namespace word their labels carry. RELEASED,
+    # because no product had taken the release that shipped the old keys: the
+    # words are given back to products.
+    "imports": Released(("djb_imports",)),
+    "notes": Released(("djb_notes",)),
+    "tags": Released(("djb_tags",)),
 }

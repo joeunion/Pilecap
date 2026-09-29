@@ -90,15 +90,21 @@ esac
 #      returns, a `while … break` and any other early return from a loop
 #      reading a pipe are the same class and are NOT in the grep. The valve
 #      comment is where the next shape gets recorded when somebody finds it.
-#   2. THE ASSERTED POPULATION IS THE SCRIPTS, NOT THE DRIVES. `scripts/*.sh`,
-#      `deploy/*.sh` and the hooks are asserted to zero: those are the files
-#      whose exit status becomes a verdict, a merge, a release or a backup, and
-#      a SIGPIPE there is a ritual that stopped halfway. The drives under
-#      `scripts/tests/` and `deploy/tests/` are PRINTED and not asserted — a
-#      drive that dies of this fails loudly and is re-run, and several of those
-#      files belong to lanes that are open. The notice is derived from the
-#      directory, never typed, so the count cannot go stale silently; closing it
-#      is a rung of its own and `docs/product/instruments.md` carries the row.
+#   2. THE ASSERTED POPULATION IS THE SCRIPTS, AND THE DRIVES NAMED IN
+#      `asserted_drives` — NOT EVERY DRIVE. `scripts/*.sh`, `deploy/*.sh` and
+#      the hooks are asserted to zero: those are the files whose exit status
+#      becomes a verdict, a merge, a release or a backup, and a SIGPIPE there is
+#      a ritual that stopped halfway. A drive joins them when a SIGPIPE in it
+#      has been paid for: the `--loop` scope drive read a passing case as
+#      could-not-look on a CI runner whose collection log was bigger than the
+#      builders' (`sort -u | head -1` over the log), and the db-template drive
+#      carried the same `sort | head -1` shape — both are asserted now. Every
+#      OTHER drive under `scripts/tests/` and `deploy/tests/` is PRINTED and not
+#      asserted — a drive that dies of this fails loudly and is re-run, and
+#      several of those files belong to lanes that are open. The notice is
+#      derived from the directory, never typed, so the count cannot go stale
+#      silently; closing it is a rung of its own and
+#      `docs/product/instruments.md` carries the row.
 #   3. It proves the two REWRITTEN gate lines survive a padded producer. It does
 #      not prove the gate's surrounding logic is right — the counts-file
 #      comparison and the pass-2 classifier have their own drives.
@@ -175,21 +181,37 @@ padded_producer() {
 # the fourth is a different failure by the same route — see the header.
 CENSUS_RE='\| *(head|grep -m|awk[^|]*exit|tee([[:space:]]|$))'
 
-# The population whose exit status is a verdict, a merge, a release or a backup.
-# Derived from the directories, never typed.
+# The drives that are ASSERTED to zero beside the scripts — see blind spot 2.
+# Typed, because joining is a decision about a drive, and each one is a drive
+# whose SIGPIPE was paid for; a name here that is not a file is a FAILED
+# assertion in the census case, never a quiet skip.
+asserted_drives() {
+    printf '%s\n' \
+        scripts/tests/test_loop_scope.sh \
+        scripts/tests/test_db_template.sh
+}
+
+# The population whose exit status is a verdict, a merge, a release or a backup,
+# derived from the directories and never typed — and then the asserted drives.
 gated_population() {
     local f
     for f in scripts/*.sh deploy/*.sh .githooks/* githooks/*; do
         [ -f "$f" ] || continue
         printf '%s\n' "$f"
     done
+    asserted_drives
 }
 
-# The population that is printed and not asserted — see blind spot 2.
+# The population that is printed and not asserted — see blind spot 2. Every
+# drive in the directories EXCEPT the asserted ones, which the census reads.
 drive_population() {
-    local f
+    local f asserted
+    asserted="$(asserted_drives)"
     for f in scripts/tests/test_*.sh deploy/tests/test_*.sh; do
         [ -f "$f" ] || continue
+        case $'\n'"${asserted}"$'\n' in
+        *$'\n'"${f}"$'\n'*) continue ;;
+        esac
         printf '%s\n' "$f"
     done
 }
@@ -208,10 +230,12 @@ hit_is_disposed() {
     case "$stripped" in
     '#'*) return 0 ;;
     esac
-    # `{ producer || true; } | reader`
-    case "$text" in
-    *'|| true; }'*'|'*) return 0 ;;
-    esac
+    # `{ producer || true; } | reader` — and the brace must close DIRECTLY before
+    # the reader's pipe. `{ grep … || true; } | sort -u | head -1` braces grep,
+    # but the producer `head` orphans is `sort`, which is unbraced: that line
+    # took SIGPIPE on a CI runner while this test read it as disposed.
+    local braced_reader='\|\| true; \}[[:space:]]*\|[[:space:]]*(head|grep -m|awk[^|]*exit|tee([[:space:]]|$))'
+    [[ "$text" =~ $braced_reader ]] && return 0
     return 1
 }
 
@@ -385,6 +409,10 @@ case_no_early_exit_reader_follows_a_pipe_under_pipefail() {
     fi
     while IFS= read -r file; do
         [ -n "$file" ] || continue
+        [ -r "$file" ] || {
+            bad "the asserted population names ${file} and it is not a readable file — the census would pass by not looking"
+            return
+        }
         # `grep -n` into an EOF reader: the whole file's hits are wanted.
         while IFS= read -r line; do
             [ -n "$line" ] || continue

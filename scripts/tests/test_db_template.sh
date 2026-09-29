@@ -663,7 +663,7 @@ case_a_template_that_is_not_published_is_never_exported() {
     N=$((N + 1))
     OUT="${WORK}/spend-absent${N}.log"
     local victim before after
-    victim="$(cd "$ROOT" && find apps -type f -path '*/migrations/0001_initial.py' | LC_ALL=C sort | head -1)"
+    victim="$(cd "$ROOT" && find apps -type f -path '*/migrations/0001_initial.py' | LC_ALL=C sort | sed -n '1p')"
     if [ -z "$victim" ]; then
         cannot_look "no migration file to perturb — the absent-template case cannot be arranged"
     fi

@@ -54,7 +54,7 @@ export const ROUTE_TABLE: readonly RouteRow[] = [
         path: "/example/widgets/import",
         job: "Walk every state of the worked widget import page — choose, check, preview, apply — the example a product copies; a 404 in production.",
         primarySeat: "import-preview",
-        operation: "import-detail",
+        operation: "djb_import-detail",
         devOnly: true,
     },
     {

@@ -1313,8 +1313,8 @@ case_a_shell_change_selects_the_drives_that_declare_it() {
     says "always-on: selected — declared 0 · measured 0 · touched 2"
     CURRENT="the selection prints before the first member runs"
     local sel ran
-    sel=$(grep -n 'always-on (touched): reach: touched:' "$OUT" | cut -d: -f1 | head -1)
-    ran=$(grep -n '^  touched reach: exit 0' "$OUT" | cut -d: -f1 | head -1)
+    sel=$(grep -n 'always-on (touched): reach: touched:' "$OUT" | cut -d: -f1 | sed -n '1p')
+    ran=$(grep -n '^  touched reach: exit 0' "$OUT" | cut -d: -f1 | sed -n '1p')
     if [ -n "$sel" ] && [ -n "$ran" ] && [ "$sel" -lt "$ran" ]; then
         ok "selected at line ${sel}, ran at line ${ran}"
     else
@@ -1644,7 +1644,7 @@ case_the_always_on_set_survives_the_real_parallel_invocation() {
     else
         ok "${n} collector files written under -n 2"
     fi
-    first=$(printf '%s\n' "$files" | head -1)
+    first=$(printf '%s\n' "$files" | sed -n '1p')
     CURRENT="the collectors agree"
     local f disagreed=""
     for f in $files; do
@@ -2046,7 +2046,7 @@ case_mine_runs_own_apps_only_and_never_banks() {
     local always
     mine_collection_once "the --mine selection, with the counts writer on"
     is "$RC" "0" "the exit status"
-    always=$(counts_field always_on "$(find "$MINE_COUNTS" -type f 2>/dev/null | sort | head -1)")
+    always=$(counts_field always_on "$(find "$MINE_COUNTS" -type f 2>/dev/null | sort | sed -n '1p')")
     CURRENT="the always-on set runs under --mine"
     if [ -n "$always" ] && [ "$always" -gt 0 ]; then
         ok "always_on=${always} under --mine — the cross-app tripwires are outside the narrowing"
@@ -2241,7 +2241,7 @@ case_the_edited_test_module_runs_whatever_tier_it_is_in() {
     manifest_all
     local victim app
     victim=$(awk -F'\t' '$1 == "slow" && $3 ~ /^apps\/comms\/tests\// {split($3, a, "::"); print a[1]}' \
-        "$MANIFEST_ALL" | sort -u | head -1)
+        "$MANIFEST_ALL" | sort -u | sed -n '1p')
     [ -n "$victim" ] || cannot_look "no organ-reaching module under apps/comms/tests/ — the subject is gone"
     app=comms
     collect_scope "the edited organ-reaching module is selected anyway" \
@@ -2328,8 +2328,8 @@ case_the_banner_prints_every_decision_before_the_first_test() {
     prerun_xdist_once "the pre-run banner lands before the first test"
     is "$RC" "0" "the exit status"
     local banner_at first_test_at
-    banner_at=$(grep -n 'scope   selected ' "$OUT" | head -1 | cut -d: -f1)
-    first_test_at=$(grep -n 'PASSED' "$OUT" | head -1 | cut -d: -f1)
+    banner_at=$(grep -n 'scope   selected ' "$OUT" | sed -n '1p' | cut -d: -f1)
+    first_test_at=$(grep -n 'PASSED' "$OUT" | sed -n '1p' | cut -d: -f1)
     CURRENT="the selected/deselected line exists"
     if [ -z "$banner_at" ]; then
         bad "no 'scope   selected' line in the run — the pre-run banner never printed"
@@ -2374,11 +2374,11 @@ case_the_pre_run_counts_agree_with_the_reconciliation() {
         return
     fi
     ok "${n} collector files written under -n 2"
-    first=$(printf '%s\n' "$files" | head -1)
+    first=$(printf '%s\n' "$files" | sed -n '1p')
     file_selected=$(counts_field selected "$first")
     file_deselected=$(counts_field deselected "$first")
-    banner_selected=$(sed -n 's/.*scope   selected \([0-9][0-9]*\) .*/\1/p' "$OUT" | head -1)
-    banner_deselected=$(sed -n 's/.*scope   selected [0-9][0-9]* · deselected \([0-9][0-9]*\).*/\1/p' "$OUT" | head -1)
+    banner_selected=$(sed -n 's/.*scope   selected \([0-9][0-9]*\) .*/\1/p' "$OUT" | sed -n '1p')
+    banner_deselected=$(sed -n 's/.*scope   selected [0-9][0-9]* · deselected \([0-9][0-9]*\).*/\1/p' "$OUT" | sed -n '1p')
     is "${banner_selected:-unset}" "${file_selected:-unset}" "the banner's selected count"
     is "${banner_deselected:-unset}" "${file_deselected:-unset}" "the banner's deselected count"
     CURRENT="the banner says how many collectors it reconciled"
@@ -2422,7 +2422,7 @@ case_a_tests_only_core_touch_widens_to_every_cross_app_importer() {
     # The edited module is derived off the tree, never named here: any collected
     # module under apps/core/tests/ is a `core` tests-only touch.
     local edited
-    edited=$( { grep -o '^apps/core/tests/test_[a-z_]*\.py' "$full_log" || true; } | sort -u | head -1)
+    edited=$( { grep -o '^apps/core/tests/test_[a-z_]*\.py' "$full_log" || true; } | sort -u | sed -n '1p')
     [ -n "$edited" ] ||
         cannot_look "no collected module under apps/core/tests/ — the subject of a core tests-only touch is gone"
 
@@ -2942,7 +2942,7 @@ case_a_bank_runs_every_slots_share_and_the_census_agrees() {
     CURRENT="every collector reported, and each one recorded the population it belongs to"
     n=$(find "$BANK_COUNTS" -type f | wc -l | tr -d ' ')
     is "$n" "$BANK_WORKERS" "the counts files found"
-    first=$(find "$BANK_COUNTS" -type f | sort | head -1)
+    first=$(find "$BANK_COUNTS" -type f | sort | sed -n '1p')
     recorded=$(awk -F= '$1 == "workers" { print $2; exit }' "$first")
     is "$recorded" "$BANK_WORKERS" "the workers= the collectors recorded"
 
@@ -3007,7 +3007,7 @@ case_a_dead_collector_under_a_bank_still_refuses() {
     cp "$BANK_COUNTS"/* "$scratch"/
     rm -f "$(find "$scratch" -type f | sort | tail -1)"
     n=$(find "$scratch" -type f | wc -l | tr -d ' ')
-    first=$(find "$scratch" -type f | sort | head -1)
+    first=$(find "$scratch" -type f | sort | sed -n '1p')
 
     CURRENT="one collector short of a full bank is still a refusal"
     gate_refuse_reset
@@ -3293,7 +3293,7 @@ case_the_full_gate_passes_write_counts_and_the_whole_suite_reconciles() {
     n=$(printf '%s\n' "$files" | grep -c . || true)
     is "$n" "2" "the counts files pass 2 left"
     CURRENT="and the collectors agree"
-    first=$(printf '%s\n' "$files" | head -1)
+    first=$(printf '%s\n' "$files" | sed -n '1p')
     local file
     for file in $files; do
         if ! cmp -s "$first" "$file"; then
@@ -4661,7 +4661,7 @@ case_an_organ_test_in_a_closure_added_app_runs_under_pr_and_not_under_loop() {
     # parametrised id is skipped so the literal grep below stays a literal one.
     local victim
     victim=$(awk -F'\t' '$1 == "slow" && $3 ~ /^apps\/exports\/tests\// && $3 !~ /\[/ {print $3}' \
-        "$MANIFEST_ALL" | sort -u | head -1)
+        "$MANIFEST_ALL" | sort -u | sed -n '1p')
     [ -n "$victim" ] ||
         cannot_look "no organ-reaching test under apps/exports/tests/ — the subject this case needs is gone"
 
@@ -5202,7 +5202,7 @@ PY_PLANT
     if [ "$rc" = "1" ] && grep -q 'FAILED apps/core/tests/test_vocabulary.py::test_the_census_refuses_a_nineteenth' "$out"; then
         ok "$(grep -m1 '^FAILED' "$out")"
     else
-        bad "the planted declaration left the census green (exit ${rc}): $(tail -2 "$out" | head -1)"
+        bad "the planted declaration left the census green (exit ${rc}): $(tail -2 "$out" | sed -n '1p')"
     fi
 
     CURRENT="and the plant is restored byte-identical"

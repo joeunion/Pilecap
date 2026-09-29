@@ -67,8 +67,8 @@ from apps.core.verbs import Repointed, merge_counts
 # golden: merge import end
 # isort: split
 # golden: attach merge import begin
-from apps.tags.models import Tag
-from apps.tags.selectors import list_tag_links
+from apps.djb_tags.models import Tag
+from apps.djb_tags.selectors import list_tag_links
 
 # golden: attach merge import end
 # isort: split
@@ -187,14 +187,14 @@ def list_widget_tags(*, tenant: Tenant | None, actor: Actor, widget: Widget) -> 
     """The words on this widget, as this hat sees them — what its detail answers.
 
     Read through the tags app's own selector — the subject resolved and the
-    read asked there — so the detail answers exactly what `/tag-links/?subject=`
+    read asked there — so the detail answers exactly what `/djb_tag_links/?subject=`
     would. Archived words are included: the link stands, the word is read-only.
     """
-    # The words are tags: reading them is `tag.read`; the links under them are
-    # asked `tag_link.read` by the tags app's own selector.
+    # The words are tags: reading them is `djb_tag.read`; the links under them are
+    # asked `djb_tag_link.read` by the tags app's own selector.
     # hat-scoped: a word is tenant-wide and read where the reader stands, exactly
     # as the tags app's own list of words asks it.
-    require(actor, "tag.read")
+    require(actor, "djb_tag.read")
     links = list_tag_links(tenant=tenant, actor=actor, subject=f"widget:{widget.pk}")
     return [link.tag for link in links]
 

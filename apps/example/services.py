@@ -80,8 +80,8 @@ from apps.example.events import WIDGET_MERGED
 # golden: merge import end
 # isort: split
 # golden: attach merge import begin
-from apps.tags.selectors import list_tag_links
-from apps.tags.services import create_tag_link
+from apps.djb_tags.selectors import list_tag_links
+from apps.djb_tags.services import create_tag_link
 
 # golden: attach merge import end
 # isort: split

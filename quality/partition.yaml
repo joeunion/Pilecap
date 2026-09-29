@@ -33,15 +33,15 @@ platform_apps:
   - comms
   - connections
   - core
+  - djb_imports
+  - djb_notes
+  - djb_tags
   - events
   - example
   - exports
   - files
-  - imports
-  - notes
   - realtime
   - search
-  - tags
   - usage
   - workflows
 

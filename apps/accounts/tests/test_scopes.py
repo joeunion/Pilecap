@@ -144,9 +144,8 @@ def test_the_implication_never_crosses_a_section() -> None:
         assert not scopes.within_ceiling(ceiling=["widgets:write"], scope=scope), scope
 
 
-@pytest.fixture
-def scratch_tagged_app(tmp_path: Path) -> Iterator[str]:
-    """A brand-new app with a tagged router, and nothing else in the tree touched.
+def _plant_tagged_app(tmp_path: Path, *, label: str, tag: str) -> Iterator[str]:
+    """Install a brand-new app whose router carries `tag`, for the length of a test.
 
     Written into a directory that is added to the `apps` package's own search
     path rather than into the repository, so the plant leaves nothing behind:
@@ -154,33 +153,45 @@ def scratch_tagged_app(tmp_path: Path) -> Iterator[str]:
     vocabulary, and a fixture that had to edit a second file would be proving
     the opposite.
     """
-    package = tmp_path / "scratchscopes"
+    package = tmp_path / label
     package.mkdir()
     (package / "__init__.py").write_text("")
     (package / "apps.py").write_text(
         "from django.apps import AppConfig\n\n\n"
         "class ScratchScopesConfig(AppConfig):\n"
-        '    name = "apps.scratchscopes"\n'
-        '    label = "scratchscopes"\n'
+        f'    name = "apps.{label}"\n'
+        f'    label = "{label}"\n'
         '    depends_on = ("core",)\n'
     )
     (package / "api.py").write_text(
         "from ninja import Router\n\n"
         "from apps.accounts.auth import API_AUTH\n"
         "from apps.core.api.docs import Tag\n\n"
-        'PREFIX = "doodads"\n'
-        'TAGS = {"doodads": Tag("Doodads", "A section that did not exist yesterday.")}\n'
-        'router = Router(tags=["doodads"], auth=API_AUTH)\n'
+        f'PREFIX = "{label}-things"\n'
+        f'TAGS = {{"{tag}": Tag("Planted", "A section that did not exist yesterday.")}}\n'
+        f'router = Router(tags=["{tag}"], auth=API_AUTH)\n'
     )
     apps_package.__path__.append(str(tmp_path))
-    installed = [*settings.INSTALLED_APPS, "apps.scratchscopes"]
+    installed = [*settings.INSTALLED_APPS, f"apps.{label}"]
     try:
         with override_settings(INSTALLED_APPS=installed):
-            yield "doodads"
+            yield tag
     finally:
         apps_package.__path__.remove(str(tmp_path))
-        for name in [key for key in sys.modules if key.startswith("apps.scratchscopes")]:
+        for name in [key for key in sys.modules if key.startswith(f"apps.{label}")]:
             del sys.modules[name]
+
+
+@pytest.fixture
+def scratch_tagged_app(tmp_path: Path) -> Iterator[str]:
+    """A brand-new app with a tagged router, and nothing else in the tree touched."""
+    yield from _plant_tagged_app(tmp_path, label="scratchscopes", tag="doodads")
+
+
+@pytest.fixture
+def product_notes_app(tmp_path: Path) -> Iterator[str]:
+    """A PRODUCT's own app whose router is tagged `notes` — the word the platform gave back."""
+    yield from _plant_tagged_app(tmp_path, label="zzz_product_notes", tag="notes")
 
 
 def test_a_new_app_grows_the_vocabulary_with_nothing_else_edited(
@@ -362,6 +373,76 @@ def test_the_retired_key_coming_back_is_refused_too() -> None:
     assert "organizations" in " ".join(findings)
 
 
+def test_a_key_that_moved_to_the_namespace_word_is_told_its_successor() -> None:
+    """A holder of a 2.4.0 platform key is told the key it became, not refused blankly.
+
+    The three platform apps' families moved to the `djb_` words while no product
+    had taken the release that shipped the old keys. A template developer's own
+    token minted on that release still carries `notes:read`; presenting it again
+    is refused — the old key is never translated — and the refusal names
+    `djb_notes:read`, the way the org-tree split names its three successors.
+    """
+    for retired, successor in (
+        ("notes", "djb_notes"),
+        ("tags", "djb_tags"),
+        ("imports", "djb_imports"),
+    ):
+        with pytest.raises(Invalid) as refused:
+            scopes.ceiling_from_request([f"{retired}:read"])
+        said = str(refused.value.detail)
+        assert f"{retired}:read" in said, said
+        assert f"`{successor}:read`" in said, said
+        assert retired not in scopes.families()
+        # The app label and the family are one word now, so a scoped socket
+        # hears a `djb_notes.*` frame under `djb_notes:read` and nothing else.
+        assert scopes.families_of_app(successor) == (successor,)
+
+
+def test_a_released_word_reclaimed_by_a_product_is_the_products_family(
+    product_notes_app: str,
+) -> None:
+    """A departure with no holders gave its word back: a product may own it outright.
+
+    The platform's notes family moved to `djb_notes` while no product had taken
+    the release that shipped `notes`, and the entry records it as RELEASED. A
+    product whose own app tags `notes` is then a new family like any other —
+    the freeze says nothing, and `notes:read` is the product's scope, stored as
+    asked, with no advice pointing anywhere else.
+    """
+    assert isinstance(scopes.SANCTIONED_RENAMES["notes"], scopes.Released)
+    assert product_notes_app in scopes.families()
+    assert scopes.families_of_app("zzz_product_notes") == ("notes",)
+    assert scopes.family_freeze_findings() == ()
+    assert scopes.ceiling_from_request(["notes:read"]) == ["notes:read"]
+
+
+def test_a_released_word_nobody_reclaimed_is_refused_naming_its_successor() -> None:
+    """Without a product that owns `notes`, the old key is refused — and told where it went."""
+    assert "notes" not in scopes.families()
+    with pytest.raises(Invalid) as refused:
+        scopes.ceiling_from_request(["notes:read"])
+    said = str(refused.value.detail)
+    assert "`djb_notes:read`" in said, said
+    assert "became `djb_notes`" in said, said
+    assert "became 1 sections" not in said, said
+
+
+def test_a_split_names_every_successor_in_one_sentence() -> None:
+    """The many form: a key that became several says how many, and lists them."""
+    with pytest.raises(Invalid) as refused:
+        scopes.ceiling_from_request(["organizations:read"])
+    said = str(refused.value.detail)
+    assert "became 3 sections: `org-structure`, `roles`, `invitations`" in said, said
+
+
+def test_a_retired_word_that_was_not_released_is_still_refused_coming_back() -> None:
+    """Released is a property of one entry, never of the freeze: the split stays closed."""
+    assert not isinstance(scopes.SANCTIONED_RENAMES["organizations"], scopes.Released)
+    findings = scopes.family_freeze_findings([*scopes.families(), "organizations"])
+    assert findings and "organizations" in " ".join(findings)
+    assert scopes.family_freeze_findings([*scopes.families(), "notes"]) == ()
+
+
 def test_a_family_key_nobody_has_shipped_yet_is_free_to_arrive(
     scratch_tagged_app: str,
 ) -> None:
@@ -376,7 +457,7 @@ def test_a_family_key_nobody_has_shipped_yet_is_free_to_arrive(
 
 
 def test_the_three_renames_are_recorded_as_the_sanctioned_migration() -> None:
-    """The one departure this tree has taken, written down with what it became."""
+    """The departures this tree has taken, each written down with what it became."""
     assert scopes.SANCTIONED_RENAMES["organizations"] == (
         "org-structure",
         "roles",

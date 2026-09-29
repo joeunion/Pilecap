@@ -6220,6 +6220,66 @@ for attempt in 1 2; do
 done
 rm -f "$PIP_AUDIT_OUT"
 
+# THE OVERRIDE'S TRIGGER. `pyproject.toml`'s `[tool.uv] override-dependencies`
+# replaces django-allauth's `oauthlib<4` cap so the CVE-2026-49265 fix can enter
+# the lock. It is a dated exception, and it comes out the day allauth's OWN
+# specifier admits oauthlib 4 — the installed release's, or the newest one on
+# the index. Either answer reds here, naming the line to delete. The index is
+# read as pip-audit reads it: two attempts, and a network failure on both is
+# could-not-look (exit 2), never a pass. With no override declared, nothing runs.
+uv run python - <<'OVERRIDE_TRIGGER'
+import importlib.metadata as md
+import json
+import sys
+import tomllib
+import urllib.request
+
+from packaging.requirements import Requirement
+
+with open("pyproject.toml", "rb") as fh:
+    overrides = tomllib.load(fh).get("tool", {}).get("uv", {}).get("override-dependencies", [])
+if not any(Requirement(o).name == "oauthlib" for o in overrides):
+    sys.exit(0)
+
+
+def cap_lifted(requires):
+    for line in requires or []:
+        req = Requirement(line)
+        if req.name == "oauthlib" and (req.marker is None or req.marker.evaluate({"extra": "socialaccount"})):
+            return req.specifier.contains("4.0.0", prereleases=False), str(req.specifier)
+    return True, "(no oauthlib requirement on the socialaccount extra)"
+
+
+lifted, spec = cap_lifted(md.requires("django-allauth"))
+installed = md.version("django-allauth")
+if lifted:
+    print(f"!! the oauthlib override in pyproject.toml is DEAD WEIGHT: the installed django-allauth "
+          f"{installed} declares oauthlib{spec}, which admits 4 — delete the override", file=sys.stderr)
+    sys.exit(1)
+
+data = None
+for attempt in (1, 2):
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/django-allauth/json", timeout=60) as r:
+            data = json.load(r)
+        break
+    except OSError as exc:
+        print(f"  the index could not be read (attempt {attempt}): {exc}")
+if data is None:
+    print("!! SUPPLY CHAIN UNPROVEN — could not read django-allauth's newest release from the index, "
+          "so whether the oauthlib override is still forced was not judged", file=sys.stderr)
+    sys.exit(2)
+latest = data["info"]["version"]
+lifted, latest_spec = cap_lifted(data["info"].get("requires_dist"))
+if lifted:
+    print(f"!! the oauthlib override in pyproject.toml has FIRED: django-allauth {latest} declares "
+          f"oauthlib{latest_spec}, which admits 4 — upgrade django-allauth and delete the override",
+          file=sys.stderr)
+    sys.exit(1)
+print(f"  oauthlib override still forced: django-allauth {installed} (installed) declares "
+      f"oauthlib{spec}, {latest} (newest) declares oauthlib{latest_spec}")
+OVERRIDE_TRIGGER
+
 uv run python - <<'LICENSES'
 import json
 import re

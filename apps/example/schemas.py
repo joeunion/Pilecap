@@ -42,7 +42,7 @@ from apps.core.schemas import EXAMPLE_VERSION
 # golden: merge import end
 # isort: split
 # golden: attach merge import begin
-from apps.tags.schemas import TagOut
+from apps.djb_tags.schemas import TagOut
 
 # golden: attach merge import end
 # isort: split

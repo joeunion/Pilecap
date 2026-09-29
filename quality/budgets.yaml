@@ -88,9 +88,9 @@ service_function_length:
   apps/workflows/services.py: 55 # start_replay — took the ceiling from
   # `record_run` (94 recorded, 93 measured on this tree before the change — a stale ceiling this
   # re-measure also closes). ADR workflows-6's 2x2 is an argument; the replay door is code.
-  apps/imports/services.py: 62
-  apps/notes/services.py: 19
-  apps/tags/services.py: 26
+  apps/djb_imports/services.py: 62
+  apps/djb_notes/services.py: 19
+  apps/djb_tags/services.py: 26
 
 out_schema_fields:
   # Declared fields per published *Out schema. An Out crossing its ceiling is a
@@ -396,11 +396,11 @@ out_schema_fields:
   # it, never a naked number added to it; this ceiling is what makes that a visible diff.
   apps/core/schemas.py::ArchivedByOut: 2
   apps/core/schemas.py::ArchivedOut: 2
-  apps/imports/schemas.py::ImportCountsOut: 4
-  apps/imports/schemas.py::ImportOut: 19
-  apps/imports/schemas.py::ImportStagedOut: 1
-  apps/imports/schemas.py::ImportRowOut: 9
-  apps/notes/schemas.py::NoteOut: 9
+  apps/djb_imports/schemas.py::ImportCountsOut: 4
+  apps/djb_imports/schemas.py::ImportOut: 19
+  apps/djb_imports/schemas.py::ImportStagedOut: 1
+  apps/djb_imports/schemas.py::ImportRowOut: 9
+  apps/djb_notes/schemas.py::NoteOut: 9
   apps/core/schemas.py::VersionedOut: 1
   apps/core/schemas.py::HomedOut: 2
   apps/core/schemas.py::BulkRefusalOut: 3
@@ -409,8 +409,8 @@ out_schema_fields:
   apps/core/schemas.py::HistoryActorOut: 3
   apps/core/schemas.py::HistoryEntryOut: 5
   apps/core/schemas.py::ActsOut: 1
-  apps/tags/schemas.py::TagOut: 6
-  apps/tags/schemas.py::TagLinkOut: 10
+  apps/djb_tags/schemas.py::TagOut: 6
+  apps/djb_tags/schemas.py::TagLinkOut: 10
   apps/example/schemas.py::WidgetBulkResultOut: 1 # the item narrowed to WidgetOut
   apps/example/schemas.py::WidgetBulkOut: 1 # the results narrowed to the widget's result
   apps/example/schemas.py::WidgetDetailOut: 1

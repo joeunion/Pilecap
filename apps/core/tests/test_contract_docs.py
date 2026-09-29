@@ -792,7 +792,7 @@ GUIDE_HEADINGS = (
 #: How a scope family is listed in the two-planes bullets. Anchored at the start
 #: of a line so a family named inside a sentence — `POST /auth/realm` sits in
 #: one of the bullets — is not read as a second entry.
-PLANE_ENTRY = re.compile(r"^\* `([a-z][a-z0-9-]*)` — ", re.MULTILINE)
+PLANE_ENTRY = re.compile(r"^\* `([a-z][a-z0-9_-]*)` — ", re.MULTILINE)
 
 
 def overview_section(description: str, heading: str) -> str:

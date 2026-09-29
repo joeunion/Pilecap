@@ -27,14 +27,14 @@ from apps.accounts.models import User
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.asyncdb import run_db
 from apps.core.models import Organization, Tenant
+from apps.djb_imports.models import Import, ImportRow
+from apps.djb_imports.services import apply_import, create_import
+from apps.djb_imports.tests.conftest import memory_store, stored_csv
+from apps.djb_imports.types import ImportSettled
+from apps.djb_notes.tests.attach_specimen import attach as note_one
+from apps.djb_tags.tests.attach_specimen import attach as tag_one
 from apps.example.models import Widget
 from apps.example.services import create_widget
-from apps.imports.models import Import, ImportRow
-from apps.imports.services import apply_import, create_import
-from apps.imports.tests.conftest import memory_store, stored_csv
-from apps.imports.types import ImportSettled
-from apps.notes.tests.attach_specimen import attach as note_one
-from apps.tags.tests.attach_specimen import attach as tag_one
 from apps.workflows import client as client_module
 from apps.workflows.client import attach_interceptors, build_worker
 from apps.workflows.services import workflow_id
@@ -64,7 +64,7 @@ def test_the_detail_answers_the_tags_and_the_notes_app_answers_for_the_widget(
 
     detail = api.get(f"{WIDGETS}{widget.pk}/")
     bare = api.get(f"{WIDGETS}{other.pk}/")
-    notes = api.get("/api/v1/notes/", {"subject": f"widget:{widget.pk}"})
+    notes = api.get("/api/v1/djb_notes/", {"subject": f"widget:{widget.pk}"})
 
     assert detail.status_code == 200, detail.content
     assert [tag["name"] for tag in body(detail)["tags"]] == ["Specimen"]
@@ -90,7 +90,7 @@ THE_SAME_ROWS_AGAIN = THREE_ROWS.replace("\r\n", "\n")
 
 
 def _run_id(tenant: Tenant, run: Import, phase: str) -> str:
-    return workflow_id(tenant=tenant, app="imports", noun="import", key=f"{run.pk}-{phase}")
+    return workflow_id(tenant=tenant, app="djb_imports", noun="import", key=f"{run.pk}-{phase}")
 
 
 async def _local_client(

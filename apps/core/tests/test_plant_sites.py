@@ -397,8 +397,10 @@ OUTSIDE_APPS_PLANTS = 149
 #: outside `apps/` (130 -> 146 above).
 #: 697 -> 700 (rule 77 reads import and attach): three, outside `apps/`
 #: (146 -> 149 above).
-TOTAL_PLANTS = 700
-SCAFFOLD_PLANTS = 238
+#: 700 -> 705 (rule 83): two canaries in real api modules (the product bucket)
+#: and three negative files in the scaffold (238 -> 241).
+TOTAL_PLANTS = 705
+SCAFFOLD_PLANTS = 241
 EXAMPLE_PLANTS = 240
 
 #: The judgement: every plant into a real product app, by rule and site. Each
@@ -522,6 +524,11 @@ PRODUCT_APP_PLANTS = {
     ("17", "canaries", "apps/realtime/schemas.py"),
     ("17", "negatives", "apps/workflows/schemas.py"),
     ("17", "negatives", "apps/realtime/schemas.py"),
+    # Rule 83's two canaries: a second app on the platform's path and on its
+    # tag, which the probe app cannot be for one path while rule 32 owns its
+    # `PREFIX` — each is a real api module by construction.
+    ("83", "canaries", "apps/events/api.py"),
+    ("83", "canaries", "apps/usage/api.py"),
 }
 
 #: Three counts, and rule 43 is what pulled them apart — before it all three
@@ -552,8 +559,11 @@ PRODUCT_APP_PLANTS = {
 #: 65 -> 67 and 69 -> 71 (the family's closing clauses): rule 17's
 #: imported-base canary and negative, one entry and one file each, into
 #: `apps/workflows/schemas.py` — the tracked module holding one `*Out`.
-PRODUCT_APP_PLANT_ENTRIES = 67
-PRODUCT_APP_PLANT_FILES = 71
+#:
+#: 67 -> 69 and 71 -> 73 (2026-09-29): rule 83's two canaries, one entry and
+#: one file each, into `apps/events/api.py` and `apps/usage/api.py`.
+PRODUCT_APP_PLANT_ENTRIES = 69
+PRODUCT_APP_PLANT_FILES = 73
 
 #: A trigger is DATED and says the word. Both halves matter: a condition with no
 #: date is a note somebody wrote once, and a date with no condition is a

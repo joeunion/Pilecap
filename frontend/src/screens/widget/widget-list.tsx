@@ -732,7 +732,7 @@ function BulkBand({
  */
 function importsHead(props: WidgetListProps): { readonly act: ReactNode; readonly band: ReactNode } {
     const listActs = props.state.kind === "ready" ? (props.state.data.allowed_acts ?? []) : [];
-    const page = pathFor("import-detail");
+    const page = pathFor("djb_import-detail");
     const act = props.imports === undefined || page === null ? null : importHeadAct(ROAD, listActs);
     const run = props.imports?.importing ?? null;
     return {

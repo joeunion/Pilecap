@@ -801,7 +801,7 @@ def _query_seeds(*, tenant: Tenant, owner: User) -> dict[str, dict[str, str]]:
     """The REQUIRED query parameters a paginated list needs to answer at all, by route.
 
     The twin of `_path_seeds` in `test_published_examples_at_the_door.py`. A list
-    read only through its subject (`/notes/?subject=<kind>:<id>`) refuses a
+    read only through its subject (`/djb_notes/?subject=<kind>:<id>`) refuses a
     request with no subject before it reads the cursor, so driving it bare would
     measure the missing parameter and never the cursor seam. Such a route is
     driven WITH its seed; a paginated route with a required query parameter and
@@ -812,8 +812,8 @@ def _query_seeds(*, tenant: Tenant, owner: User) -> dict[str, dict[str, str]]:
         tenant=tenant, actor=actor_for(user=owner, tenant=tenant, org=root), name="Subject"
     )
     return {
-        "/api/v1/notes/": {"subject": f"widget:{subject.pk}"},
-        "/api/v1/tag-links/": {"subject": f"widget:{subject.pk}"},
+        "/api/v1/djb_notes/": {"subject": f"widget:{subject.pk}"},
+        "/api/v1/djb_tag_links/": {"subject": f"widget:{subject.pk}"},
     }
 
 

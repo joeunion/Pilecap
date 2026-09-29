@@ -50,6 +50,437 @@ than advertising the drawers.
 
 Nothing yet.
 
+## [2.4.1] — A release's new platform apps do not collide with a product's own, and a product with an earlier archive has a road into the seam
+
+**A product's first fold of 2.4.0 stopped at the merge, three ways at once:
+the release's new platform app `notes` carried the label and the table of an
+app the product already owned, so the tag could not merge into it; the seam's
+files landed where the product's own hand-built archive already sat; and seven
+modify/delete conflicts arrived in face files the release had modified and the
+product had moved.** 2.4.1 gives the three platform apps 2.4.0 added names no
+product spells — `djb_notes`, `djb_tags`, `djb_imports`, and everything that
+derives from the label or the kind — so a product that owns a `notes`, `tags`
+or `imports` app merges the tag with no add/add conflict in it and renames
+nothing. It adds the collision census a fold runs before the merge, which
+refuses by name every label, table, index, unique constraint, authorization
+kind, REST mount and router tag a release's app shares with one of the
+product's own, and prints the road for the product's side; a house rule that
+refuses two apps on one path or one tag at `check`; the road a product with a
+pre-seam archive takes into the seam; and the face's rename map, measured.
+2.4.1 is a patch by the owner's word, on the hotfix road: it renames names on
+the wire, which the reading above would call more than a patch, and it is a
+patch because it makes 2.4.0 the thing it was meant to be — platform apps a
+product can merge — before any product took it. **The wire changes are named
+plainly, and each has a reader.** The three apps' REST paths moved under
+`/api/v1/djb_notes/`, `/api/v1/djb_tags/`, `/api/v1/djb_tag_links/` and
+`/api/v1/djb_imports/`, and their scope families and router tags to
+`djb_notes`, `djb_tags` and `djb_imports`: a client regenerated from the tag
+sees the paths, and a token asking for `notes:read` while nothing here serves
+`notes` is refused and told `djb_notes:read`. The names derived from the label
+or the kind moved with them — the OpenAPI operation ids a regenerated client
+sees, the event names an outbox subscriber sees, the MCP tool names an MCP
+client sees, the policy keys a grant or a role spells, the url_names and the
+archived-refusal remedies a face resolves, the audit actions an audit reader
+filters on and the import runs' workflow ids. The map under *What a product
+does at the merge* lists every one with its count. No product took 2.4.0, so
+none of them was written against.
+
+### What a product does at the merge
+
+Four parts, each read from the tree it names. **The map** is what moved
+between 2.4.0 and 2.4.1 and who sees it. **The rename road** is what a
+product does when the collision census names one of its own apps. **The
+pre-seam road** is for a product that built archive by hand before 2.4.0.
+**The face's rename map** is measured, and it is empty.
+
+#### The map, 2.4.0 → 2.4.1
+
+The three platform apps 2.4.0 added take the `djb_` namespace: their labels,
+modules, tables, index and constraint names, authorization kinds, REST mounts
+and router tags carry it, and every name derived from those moved with them. Read off
+`uv run python manage.py introspect` on the two trees and
+`frontend/openapi.json` at each tag.
+
+| what | 2.4.0 | 2.4.1 |
+|---|---|---|
+| labels | `notes`, `tags`, `imports` | `djb_notes`, `djb_tags`, `djb_imports` |
+| modules | `apps.notes`, `apps.tags`, `apps.imports` | `apps.djb_notes`, `apps.djb_tags`, `apps.djb_imports` |
+| tables | `notes_note`; `tags_tag`, `tags_taglink`; `imports_import`, `imports_importrow` | `djb_notes_note`; `djb_tags_tag`, `djb_tags_taglink`; `djb_imports_import`, `djb_imports_importrow` |
+| index and constraint names (13) | `note_recency`, `note_subject_recency`, `note_subject_kind_not_empty`; `tag_recency`, `tags_tag_slug_per_tenant`, `taglink_recency`, `taglink_subject`, `tags_taglink_one_per_subject`; `import_recency`, `import_one_live_run_per_digest`, `import_unique_idempotency_key_per_organization`, `importrow_recency`, `importrow_one_row_per_line` | each is `<table>_<suffix>`: `djb_notes_note_recency`, `djb_notes_note_subject_recency`, `djb_notes_note_subject_kind_not_empty`; `djb_tags_tag_recency`, `djb_tags_tag_slug_per_tenant`, `djb_tags_taglink_recency`, `djb_tags_taglink_subject`, `djb_tags_taglink_one_per_subject`; `djb_imports_import_recency`, `djb_imports_import_one_live_run_per_digest`, `djb_imports_import_unique_idempotency_key_per_organization`, `djb_imports_importrow_recency`, `djb_imports_importrow_one_row_per_line` |
+| authorization kinds (4) | `note`, `tag`, `tag_link`, `import` (an `ImportRow` is authorized under its run's kind) | `djb_note`, `djb_tag`, `djb_tag_link`, `djb_import` (an `ImportRow` resolves to `djb_import`) |
+| policy keys (22) | `note.{archive,create,delete,read,restore,update}`, `tag.{archive,create,delete,read,restore,update}`, `tag_link.{create,delete,read,update}`, `import.{apply,cancel,create,delete,read,update}` | the same verbs under `djb_note.`, `djb_tag.`, `djb_tag_link.`, `djb_import.` |
+| url_names (21) | `note-{list,create,detail,update,archive,restore}`, `tag-{list,create,detail,rename,archive,restore}`, `tag_links-list`, `tag_link-{create,delete}`, `import-{list,create,detail,apply,cancel}`, `import_rows-list` | the same, each with `djb_` in front: `djb_note-archive`, `djb_tag_links-list`, `djb_import_rows-list` … |
+| MCP tool names (21) | `list_notes`, `create_note`, `get_note`, `update_note`, `archive_note`, `restore_note`; `list_tags`, `create_tag`, `get_tag`, `rename_tag`, `archive_tag`, `restore_tag`; `list_tag_links`, `create_tag_link`, `delete_tag_link`; `list_imports`, `create_import`, `get_import`, `apply_import`, `cancel_import`, `list_import_rows` | the noun takes `djb_`: `list_djb_notes`, `archive_djb_note`, `create_djb_tag_link`, `list_djb_import_rows` … |
+| OpenAPI operation ids (21) | `apps_notes_api_<function>`, `apps_tags_api_<function>`, `apps_imports_api_<function>` | `apps_djb_notes_api_<function>`, `apps_djb_tags_api_<function>`, `apps_djb_imports_api_<function>` |
+| event names (16) | `notes.note.{created,updated,archived,restored,moved}`, `tags.tag.{created,renamed,archived,restored}`, `tags.tag_link.{created,deleted,moved}`, `imports.import.{staged,previewed,applied,failed}` | the label in front, the noun unchanged: `djb_notes.note.created`, `djb_tags.tag_link.moved`, `djb_imports.import.applied` … |
+| archived-refusal remedies in the OpenAPI document (4) | `route:note-restore` (in the description and as the `destination`), `route:tag-restore`, `route:tag_link-restore` | `route:djb_note-restore` (twice), `route:djb_tag-restore`, `route:djb_tag_link-restore` |
+| audit actions | `<label>.<service>`: `notes.create_note` … | `djb_notes.create_note` … |
+| workflow ids | `<tenant>:imports:import:<run>-check` and `-apply`; the purge schedule's `platform:imports:purge:<queue>` | `<tenant>:djb_imports:import:<run>-check` and `-apply`; `platform:djb_imports:purge:<queue>` |
+| REST paths (15) | `/api/v1/notes/…`, `/api/v1/tags/…`, `/api/v1/tag-links/…`, `/api/v1/imports/…` | `/api/v1/djb_notes/…`, `/api/v1/djb_tags/…`, `/api/v1/djb_tag_links/…`, `/api/v1/djb_imports/…` |
+| scope families and router tags (3) | `notes`, `tags`, `imports` | `djb_notes`, `djb_tags`, `djb_imports` — recorded in `SANCTIONED_RENAMES` (`apps/core/api/frozen_families.py`), so a token holding an old key is refused and told the new one |
+| rule 32 valve entries | `notes`, `tags`, `imports` | `djb_notes`, `djb_tags`, `djb_imports` |
+| reverse accessors (Python, not the wire) | `FileVersion.imports`, `User.imports_requested`, `User.imports_applied`; the scoped bases' `%(app_label)s_%(class)s_set`: `Tenant.notes_note_set`, `Organization.tags_taglink_set` … on every model of the three | `FileVersion.djb_imports`, `User.djb_imports_requested`, `User.djb_imports_applied`; `Tenant.djb_notes_note_set`, `Organization.djb_tags_taglink_set` … |
+
+**What did not move:** the attachment kinds a noun declares and a list reads
+with `?subject=` — `attachments = ("notes", "files", "tags")`,
+`?subject=<kind>:<id>` — the `Out` schemas, the verbs of the MCP tool names,
+the shape of the url_names and tool names (`<noun>-<verb>`,
+`<verb>_<noun>`), and every OTHER app's mount and family. The instruments are
+the OpenAPI document's `paths` at the two tags (15 keys moved, every other key
+and every other path's body byte-identical) and the two `introspect` dumps
+(21 route and URL patterns moved, every name the same; the 21 tools differ
+only in their descriptions — the derived scope line, and three docstrings
+that spell a path; models, events, policies,
+refusals, roles, consumers and workflows byte-identical).
+
+**These are wire changes, and each one has a reader.** A client regenerated
+from the tag sees the 15 path keys and the 21 operation ids. A token minted on
+a 2.4.0 checkout with `notes:read` is refused, and the refusal names
+`djb_notes:read`. A subscriber to the outbox sees the
+16 event names. An MCP client sees the 21 tool names. A policy file, a role or
+a grant that spells a key sees the 22 policy keys. A face that resolves a page
+by url_name sees the 21 url_names, and a face that draws a `route:` remedy
+sees the four. An audit reader sees the actions, and a Temporal search by id
+sees the import runs' ids. **Nobody who took a tag is affected: no product
+took 2.4.0**, so every name above changes before anything was written against
+it. A product's OWN nouns are untouched — their kinds, keys, url_names and
+tools are their own words.
+
+#### The rename road
+
+The collision census prints `remedy: rename YOURS` under a `collision:` line
+and points here. Each step says what you see if you skip it.
+
+1. **Take the census from the tag, then run it against the tag.** `git fetch
+   template --tags`; then, as [2.1.1]'s item 1 says, take the census AND its
+   classifier from the tag you are folding — `git show
+   <tag>:scripts/divergence_census.sh > scripts/divergence_census.sh` and
+   `git show <tag>:scripts/archaeology_lib.sh > scripts/archaeology_lib.sh`
+   — and run `./scripts/divergence_census.sh --against <tag>` before the
+   merge. It reads the release's apps and yours for seven name classes —
+   label, table, index, unique constraint, authorization kind, REST mount,
+   router tag — plus a label, mount or tag of yours under the template's
+   reserved `djb_` prefix, and prints one `collision:` line per pair with the
+   remedy under it, then `collisions: labels=… tables=… indexes=…
+   constraints=… kinds=… reserved=… mounts=… tags=…`. Any pair is
+   exit 2 whatever the divergence half said. It writes nothing and fetches
+   nothing. Skip it and the merge succeeds: the collision arrives one step
+   later, as a `migrate` that dies on a relation that already exists or a
+   start-up that refuses one authorization kind claimed by two models.
+2. **A `kind` line is fixed on your model, in one line, and is its own
+   step.** Type `authz_kind = "<its own word>"` on the class the census named
+   (`apps/core/authz.py` derives a kind from the class name unless the class
+   types one). The release's kind is the platform contract every product's
+   grants are written against, so it is never the one that moves. Your
+   model's policy keys become `<word>.<verb>`, and rule 74 then asks for its
+   url_names as `<word>-<verb>` (`python -m quality.gate --explain 74`), which
+   renames its MCP tools with them. The tenant rows that spell the old keys
+   move BEFORE the merge, while the old word is still only yours: declare each
+   pair in your app's `RENAMED_PERMISSIONS`, deploy, run
+   `manage.py rename_permission --declared`, and retire the pairs before the
+   tag lands, because after it the old word is the release's. Skip it and
+   the vocabulary cannot be derived at all: start-up refuses, naming both
+   models that `both claim the authorization kind`.
+3. **A `label` or `reserved prefix` line: move the app.** `git mv
+   apps/<label> apps/<yours>_<label>` and set `name =
+   "apps.<yours>_<label>"` in its `apps.py`. Type no `label =`: Django's
+   label is then the last segment of `name`, so the directory IS the label,
+   and the mount, the tables and the census all read one word. Never choose a
+   name that starts `djb_`. Skip it and the merge lands two
+   apps with one label, which Django refuses at start.
+4. **Every reference to the old label.** Every `depends_on` that names it
+   (house rule 7 refuses an import an app has not declared), every `from
+   apps.<label>` import — `git grep -ln 'apps\.<label>\b'` is the list — and
+   every migration that names the app by label: its own chain's
+   `dependencies` tuples, and every other app's `("<label>", "<migration>")`
+   dependency and `"<label>.<Model>"` reference. Skip the migrations and the
+   next `migrate` dies on a dependency on an app that does not exist.
+5. **Your routes' paths.** An `api.py` with no `PREFIX` is mounted under its
+   LABEL (`config/api.py`'s discovery), so a moved app moves its URLs. To keep
+   the path a client already calls, add `PREFIX = "<label>"` to the moved
+   app's `api.py`; the release's platform apps mount under `djb_` words a
+   product never spells, so the old path is yours to keep. Skip it and every
+   client of the app answers 404.
+6. **The tables.** A table's default name is `<label>_<model>`, so the moved
+   app's models now name tables that do not exist, and `django_migrations`
+   holds its chain under the old label. Two ways, one per case:
+   - **The census named a table** — rename it. Keep the moved chain; once per
+     database, before `migrate`, run `UPDATE django_migrations SET app =
+     '<yours>_<label>' WHERE app = '<label>'` (the one step no migration can
+     carry, because Django reads that table to decide what to run); then add a
+     migration to the app whose `migrations.RunSQL("ALTER TABLE <old> RENAME
+     TO <new>", reverse_sql="ALTER TABLE <new> RENAME TO <old>")` renames each
+     table, the automatic many-to-many tables included. The chain's state
+     already names the new tables, so the SQL brings the database to where the
+     state is and `makemigrations` reports no change. **A renamed table keeps
+     the index names Django generated for it**, and Django builds those from
+     the table's name — `<table>_<columns>_<digest of the table and columns>`
+     (`_create_index_name` in `django/db/backends/base/schema.py`) — so every
+     foreign key's index on a moved table (`<old table>_tenant_id_<hash>` on
+     each tenant-scoped model) still carries the OLD table's name, and the
+     release's `CreateModel` for that table computes byte-identical names.
+     Rename each one in the same migration:
+     `ALTER INDEX <generated name> RENAME TO <name carrying the new table>`,
+     with the reverse. List them with `SELECT indexname FROM pg_indexes WHERE
+     tablename = '<new table>'` after the table rename (the names that still
+     start with the old table's are the ones), or read the names the release
+     will try to create with `manage.py sqlmigrate <release app> 0001` on the
+     merged tree. The primary key's constraint and the id sequence need
+     nothing: Postgres picks a free name when the release creates its own.
+     This bites a later release, never 2.4.1 itself — the three apps it adds
+     are under `djb_`, which no product label may use. Skip it and the
+     release's migration dies on `relation "<old table>_tenant_id_<hash>"
+     already exists`.
+   - **The census named the label and no table** — keep the tables. Delete
+     the moved chain's migration files (keep `__init__.py`), type `db_table =
+     "<old table>"` in each model's `Meta`, let `makemigrations
+     <yours>_<label>` write one `0001_initial`, point every other app's
+     dependency on the old chain at `("<yours>_<label>", "0001_initial")`, and
+     `migrate <yours>_<label> --fake-initial`. Django fakes an initial
+     migration only when every table its `CreateModel`s name already exists.
+     Without the `db_table` it creates a second, empty set of tables beside
+     your data, or dies on an index name the old tables already hold.
+
+   Either way, then `UPDATE django_content_type SET app_label =
+   '<yours>_<label>' WHERE app_label = '<label>'`. Skip it and every row that
+   points at a content type by id points at the old label's, while Django
+   makes a new, empty one.
+7. **An `index` or `constraint` line: rename yours.** Index and unique
+   constraint names are global to the schema. Shadow `Meta.indexes` on the
+   model in house rule 37's form, with the inherited recency composite
+   re-added under a name that carries your table (`apps/djb_tags/models.py`'s
+   `TagLink` is the worked shape), and let `makemigrations` write the
+   `RenameIndex`. A unique constraint has no rename operation: `makemigrations`
+   writes a remove and an add, which rebuilds its index. Do this after step
+   6's `migrate`, so the rename runs against the names your database holds.
+   Skip it and the release's migration dies on `relation "<name>" already
+   exists`.
+8. **What else your label carried.** A product's own event names
+   (`<label>.<noun>.<verb>`), audit actions (`<label>.<service>`) and
+   operation ids (the module path) follow the label, exactly as the map above
+   shows for the template's three. Tell your outbox subscribers and your
+   client, and regenerate the client with `frontend/scripts/pin_client.sh
+   --write`. A workflow id takes `app=` as a string your code spells, so it
+   moves only where you move it; a run already started keeps its id.
+9. **The mounts and the tags, which the census reads and `check` refuses.**
+   Step 1's census prints a `collision: mount <segment>` or `collision: tag
+   <key>` line for each first path segment or router tag of yours that the
+   release also serves, with the remedy on your side — `remedy: mount YOURS
+   elsewhere — PREFIX = "<its own word>" in your api.py (or the route path's
+   first segment, when PREFIX is ""); the release's mount is the platform's`
+   and `remedy: tag YOURS with a word of its own — Router(tags=["<its own
+   word>"]) and the matching TAGS key; a tag is a scope family, and one key
+   across two apps is one token ceiling that reaches both`. After the merge,
+   `manage.py check` refuses one path pattern bound by two apps, or one tag key
+   declared by two (`djb.E083`, house rule 83). A path of yours is the census's
+   business only when it collides with a CORE app's mount — the platform apps
+   that keep their words (`connections`, `exports`, `files`, `search`,
+   `widgets`) and the root-mounted segments the census lists for the release —
+   never a `djb_` one, which a product does not spell. Skip it and the
+   release's `djb_` routes still answer beside yours with nothing colliding;
+   a core collision you skipped answers with whichever app was discovered
+   first, and `check` refuses the deployment. The step is now a check you run,
+   not a comparison you make by hand.
+10. **`manage.py fold_migrations` is not part of this road.** It grafts an
+    arriving template chain onto your leaf in an app you SHARE with the
+    template (`core`, `accounts` — `apps/core/management/commands/fold_migrations.py`
+    says so at its head). An app you renamed receives no template migration,
+    because the release's app carries its own name.
+11. **Prove it.** `./scripts/check.sh --loop` exit 0, then the census again:
+    `./scripts/divergence_census.sh --against <tag>` prints `collisions: none
+    against <tag>`. Then merge.
+
+#### The pre-seam road
+
+For a product that built archive by hand, on its own nouns, before 2.4.0.
+The seam's files are read from the release diff,
+`git diff --name-status v2.3.0 v2.4.0 -- apps`; for 2.4.1 read the same
+command with `v2.4.1`, which adds the three platform apps under their `djb_`
+names. Each step says what you see if you skip it.
+
+- **The seam's NON-TEST files 2.4.0 adds:** `apps/core/verbs.py`,
+  `apps/core/blockers.py`, `apps/core/bulk.py`, `apps/core/concurrency.py`,
+  `apps/core/migrations/0019_audit_trail_reads_a_rows_history.py`,
+  `apps/comms/migrations/0010_recipient_archived_by.py`,
+  `apps/files/merge_repointers.py`,
+  `apps/files/migrations/0002_archivable_and_subject.py`,
+  `apps/example/archive_blockers.py`, `apps/example/restore_blockers.py`,
+  `apps/example/importers.py`,
+  `apps/example/migrations/0012_widget_and_policy_archivable.py` and
+  `apps/example/migrations/0013_widget_copies_folds_and_external_ref.py`.
+- **Its TESTS:** 31 new modules under `apps/core/tests/` (among them
+  `test_archivable.py`, `attach_world.py`, `isolation.py`, `doors.py`),
+  `apps/comms/tests/test_allowed_acts.py`, `apps/comms/tests/test_archive.py`,
+  `apps/files/tests/attach_specimen.py`,
+  `apps/files/tests/test_archive_road.py`,
+  `apps/files/tests/test_iter_object.py`, 14 under `apps/example/tests/`,
+  `apps/exports/tests/test_archived_rows.py` and
+  `apps/test_absent_relative_imports.py`. Both lists, exactly, are
+  `git diff --name-only --diff-filter=A v2.3.0 v2.4.0 -- apps` without the
+  three platform apps.
+- **It MODIFIES** 34 files in `core`, 14 in `comms`, 19 in `files`, 20 in
+  `example`, and ten more across `accounts`, `events`, `exports`, `usage`,
+  `workflows` and `apps/conftest.py`.
+
+1. **Before the merge, name every hand-built archive file under a PLATFORM
+   app** in `docs/product/architecture.md` as `divergence: <path> — pre-seam
+   archive, retired noun by noun`, so the divergence census ([2.1.1]'s item
+   1) is exit 0. An add/add conflict on `apps/core/verbs.py`,
+   `apps/core/tests/test_archivable.py` or `apps/comms/tests/test_archive.py`
+   means your product wrote a file at a template-owned path. Skip it and the
+   census is exit 1 on paths you meant to keep, and the merge's conflicts are
+   the first place you learn which.
+2. **At the merge, take the seam's core and the seam's tests WHOLE from the
+   tag** — `git checkout <tag> -- <path>` for every path in the two lists
+   above — and never hunk-merge a template test into a production app. Those
+   tests measure the template's seam; a product's edits to them are a drive
+   that proves nothing about a product noun. Move your own implementation of
+   the same file out first — to your nouns' apps or the `local/` drawer — so
+   nothing of it is lost. "Whole" is right for a template-owned path only:
+   the census's ownership reading is the arbiter, and a path it calls
+   `product` is yours to merge. Skip it and the seam runs with your edits in
+   it, green on your tree and wrong about the template's.
+3. **Prove the recipe on this tree before touching a noun:**
+   `scripts/tests/test_golden_copy.sh --verb archive` exit 0. It copies the
+   fenced blocks onto a throwaway noun, migrates it, runs the checks and the
+   copied test, and drops it. Exit 1 is a case that failed on this tree — a
+   tree the recipe does not land on; exit 2 is could-not-look (no venv, no
+   database, an unknown verb), never a pass. Either way exit 0 is the bar, and
+   the noun work waits for it. Skip it and the first noun meets the tree's
+   defect and reads it as its own.
+4. **Adopt noun by noun, one commit each, from the fence** —
+   `.claude/skills/django-conventions/SKILL.md` § 16, "Adopt archive in one
+   commit". Declare `Archivable` and keep the hand-built pair beside the
+   seam's until step 5. Skip the one-commit rule and a noun is half on each
+   road, which rule 74 refuses without saying which half is yours.
+5. **"The noun's road is green" is three exits:** `uv run python manage.py
+   check --tag djb` exit 0 with no rule 74 finding naming the noun
+   (`python -m quality.gate --explain 74`), the noun's own
+   `pytest apps/<noun app>` green, and `./scripts/check.sh --loop` exit 0.
+   Then retire the hand-built pair — its service, route, tool and test — in
+   the same commit, and strike the `divergence:` line. Skip the retirement and
+   the noun answers two archive roads that disagree.
+6. **A noun that gains its archive door before its face draws the verb**
+   records `door-without-road` at the fold, with the client regenerated, and
+   lowers it in the face rung that draws archive ([2.4.0]'s item 9); the road
+   is never valved. Skip it and rule 77 reds the face at the fold, because the
+   committed `frontend/openapi.json` carries a door the face's road does not
+   draw.
+
+#### The face's rename map
+
+`git diff -M50% --name-status v2.3.0 v2.4.0 -- frontend/src` on the released
+repository prints **no `R` row and no `D` row**: 2.4.0 moved and deleted
+nothing under `frontend/src`. It added 29 files and modified ten:
+`frontend/src/api/generated/schema.d.ts`, `frontend/src/copy/dialog.ts`,
+`frontend/src/copy/lexicon.ts`, `frontend/src/primitives/README.md`,
+`frontend/src/primitives/dialog.tsx`, `frontend/src/screens/refusal-panel.tsx`,
+`frontend/src/screens/routes.ts`, `frontend/src/screens/state.test.ts`,
+`frontend/src/screens/state.ts` and
+`frontend/src/screens/welcome/welcome-screen.tsx`. So the rename map has no
+rows. A modify/delete conflict on one of these is one side modifying and the
+other deleting: the RELEASE modified a file your PRODUCT moved. The road for
+a moved one: `git show v2.4.0:<old path> > <old path>` is not the answer — it
+resurrects the file you moved. Apply the release's hunks to the file at its
+NEW path — `git diff v2.3.0 v2.4.0 -- <old path>`, its paths rewritten to the
+new one, through `git apply --3way`, or by hand for a short hunk — then
+`git rm <old path>` to settle the conflict as deleted. A later release that
+does move files prints rows here, and this sentence becomes a table.
+
+### Added
+
+- **The collision census, before the merge.** `scripts/divergence_census.sh
+  --against <tag>` reads the release's apps at the tag and the product's own
+  apps in its working tree through one parser, and compares seven name
+  classes: labels, tables, index names (a `models.Index` and every subclass of
+  it), unique-constraint names, authorization kinds, REST mounts and router
+  tags. Each pair is one `collision:` line with its remedy under it, any pair
+  is exit 2 whatever the divergence half concluded, and the trailer counts
+  each class. The schema's names are read from migrations, because a
+  migration says what exists and an abstract model creates nothing. Without
+  `--against` it says the collisions were not measured and runs as before; a
+  ref it cannot resolve is exit 2 naming the fetch.
+- **The `djb_` promise.** The template's platform apps take their names under
+  `djb_`, the prefix the tree already uses for what it derives and a product
+  never names, and the census refuses a product label, mount or tag under that
+  prefix on a line of its own. So a platform app a later release adds under
+  `djb_` cannot collide with a product that folded clean — not only these
+  three.
+- **House rule 83, `djb.E083`: one app per path pattern, one app per tag.** A
+  Django system check refuses a path pattern bound by two api modules, and a
+  tag key declared or carried by two apps, both read off the live mount and
+  tag discovery. django-ninja refuses neither: two modules on one path answer
+  on the wire with the one discovered first while the document describes the
+  other, and one tag across two apps is one token ceiling reaching both. No
+  valve; the finding names both apps. ADR mounts-1 in
+  `docs/product/architecture.md` records the decision and what was rejected.
+- **Erasure is pinned on a note's author.** `apps/djb_notes/tests/test_erasure.py`
+  erases a person who wrote a note, live and archived: the erasure completes,
+  the note keeps its author and its body, and a reader sees the erased
+  address. The one place the original address survives is the note's own
+  events, a declared retention.
+
+### Changed
+
+- **The three platform apps are `djb_notes`, `djb_tags` and `djb_imports`** —
+  label, module, tables, index and constraint names, authorization kinds,
+  REST mounts, router tags and scope families, and every name derived from
+  those. The map under *What a product does at the merge* is the list, and
+  the paragraph under it says who sees each wire change. Four kinds moved —
+  `djb_note`, `djb_tag`, `djb_tag_link`, `djb_import` — and an import row
+  resolves to `djb_import`, as it resolved to its run's kind before. The
+  attachment kinds a noun declares (`notes`, `files`, `tags`) and
+  `?subject=<kind>:<id>` did not move.
+- **The scope-family freeze knows a released departure.** The three old
+  families are recorded in `SANCTIONED_RENAMES`
+  (`apps/core/api/frozen_families.py`) as `Released` departures: no token
+  outside this repository held them, so the words are given back. A
+  product's own app may tag `notes` and owns `notes:read` outright; only while
+  nothing serves the old word is a token asking for it told its successor.
+
+### Fixed
+
+- **A platform app's index and unique-constraint names carry its table.**
+  Those names are global to the schema, and the scoped base names every
+  recency index `<class>_recency`, so a product's own `Note` already held
+  `note_recency` and the relabelled app's `migrate` would have died on it one
+  step after a clean merge. Every hand-named index and constraint of the three
+  apps is `<table>_<suffix>`.
+
+### Known
+
+- **Every app not renamed here still names its recency index
+  `<class>_recency`** from the scoped base, so a product model whose class
+  name equals a template model's (`Recipient`, `Membership`, `StoredFile` …)
+  collides on that index. The census shows it as an `index` pair before the
+  merge; the base's own fix, for every app, is a later release's.
+- **A template developer's existing database keeps orphans** under the old
+  labels: the tables `notes_note` and the rest, their `django_content_type` and
+  `django_migrations` rows, and audit rows whose actions carry the old label.
+  Harmless and dev-only — a fresh checkout derives a fresh database — and
+  `manage.py remove_stale_contenttypes` plus a `DROP TABLE` the developer types
+  clear them.
+- **A product whose erasure deletes `User` rows meets `PROTECT`** on a note's
+  `author` and `archived_by`, by design: it anonymises instead, as the
+  template's erasure does, or decides first what becomes of that person's
+  notes.
+- **The collision census reads text.** A bare `RemoveIndex(` with no
+  `migrations.` in front is read as a creation — a false pair, loud, never a
+  silent one; a hand-written operation that places another `name=` before the
+  call's own is misread; a `PREFIX`, route path or `tags=` list that is
+  computed, or a router assembled in a file the census does not read, is
+  invisible; a name changed after its creation is read by its old name; models
+  outside `apps/` are not read. Rule 83 sees the assembled mounts, but only
+  after the merge, when both apps are installed.
+- **Rule 83 compares path patterns as strings**, not as the paths they match:
+  a literal segment shadowed by another router's parameter (`/x/links/` beside
+  `/x/{id}/`) is declared, not caught.
+- **The archived tag link's remedy names a route that does not exist**
+  (`route:djb_tag_link-restore`; a tag link is deleted, never restored). It
+  did so under its old name too, and it is booked.
+- **Attach owners are the platform's three.** A registry a product's own app
+  joins to own an attachment kind is a later release's work.
+
 ## [2.4.0] — Every verb a noun needs is a mechanism it adopts, and the gate refuses the noun until it has the road
 
 **A product met one cost this release closes: every verb its nouns needed —
@@ -3774,7 +4205,8 @@ history rather than at ours, and the template names no account of its own in a
 file a stranger inherits.
 -->
 
-[Unreleased]: ../../compare/v2.4.0...HEAD
+[Unreleased]: ../../compare/v2.4.1...HEAD
+[2.4.1]: ../../compare/v2.4.0...v2.4.1
 [2.4.0]: ../../compare/v2.3.0...v2.4.0
 [2.3.0]: ../../compare/v2.2.1...v2.3.0
 [2.2.1]: ../../compare/v2.2.0...v2.2.1

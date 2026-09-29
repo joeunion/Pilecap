@@ -1,6 +1,6 @@
 """How a file of widgets is imported: the row, its natural key, and its apply.
 
-`apps/imports` finds this module by discovery (`core.verbs.hook("importers")`) —
+`apps/djb_imports` finds this module by discovery (`core.verbs.hook("importers")`) —
 nothing registers it — and does the rest: stages the file, previews every row
 with `natural_key` (read-only, the dry run), and applies the clean rows through
 `apply` once a person presses apply, one row at a time, each in its own

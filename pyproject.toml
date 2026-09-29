@@ -201,6 +201,19 @@ dev = [
     "pytest-cov>=7.0",
 ]
 
+[tool.uv]
+# THE ONE OVERRIDE, AND IT IS A DATED EXCEPTION (the owner's decision,
+# 2026-09-29). CVE-2026-49265 (GHSA-xpv3-w29h-x7cv) is fixed in oauthlib
+# 4.0.0, and every published django-allauth release (through 65.19.5) declares
+# `oauthlib<4,>=3.3.0` on its `socialaccount` extra — so without this line the
+# resolver holds oauthlib at 3.x silently and the supply-chain leg stays red.
+# The override replaces allauth's cap, which is a combination allauth has not
+# tested; this tree's suite and an authorize-URL construction through allauth's
+# own OAuth 1 and OAuth 2 clients are what vouch for it. IT COMES OUT the day
+# allauth's own specifier admits oauthlib 4: the supply-chain leg in
+# `scripts/check.sh` reds then, naming this line as dead weight.
+override-dependencies = ["oauthlib>=4"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

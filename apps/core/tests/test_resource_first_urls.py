@@ -143,10 +143,11 @@ def test_the_valve_is_declared_and_not_empty(document: dict[str, Any]) -> None:
     installed = {config.label for config in _local_app_configs()}
     unused = (valved & installed) - served
     assert not unused, f"valve entries no path uses: {sorted(unused)}"
-    homeless = homeless_valve_entries(valved, installed, _template_apps())
+    homeless = homeless_valve_entries(valved, installed, _template_apps(), served=served)
     assert not homeless, (
-        f"valve entries naming no app — not installed here and not one of the "
-        f"template's apps (quality/partition.yaml): {homeless}"
+        f"valve entries naming no app — not installed here, not one of the "
+        f"template's apps (quality/partition.yaml) and no resource the template "
+        f"serves: {homeless}"
     )
 
 
@@ -157,7 +158,13 @@ def _template_apps() -> set[str]:
     return set(platform_apps())
 
 
-def homeless_valve_entries(valved: set[str], installed: set[str], template: set[str]) -> list[str]:
+def homeless_valve_entries(
+    valved: set[str],
+    installed: set[str],
+    template: set[str],
+    *,
+    served: set[str] | frozenset[str] = frozenset(),
+) -> list[str]:
     """Entries whose label names no app this tree could ever install.
 
     The dead-weight judgement above reads installed apps only, so an entry for an
@@ -165,8 +172,17 @@ def homeless_valve_entries(valved: set[str], installed: set[str], template: set[
     judged. The other half of the population is the partition's — an optional
     app a deployment disabled (`DJB_DISABLED_APPS`) is still one of the
     template's, and its entry waits for the deployment that installs it.
+
+    **A resource the template serves is at home too.** The template mounts its
+    notes, tags and imports under the `djb_` words (`/djb_notes/`,
+    `/djb_tags/`, `/djb_tag_links/`, `/djb_imports/`), so a product's own
+    `notes` label coincides with nothing of the template's. The clause stays
+    for the words the template still serves as resources — `files`, `search` —
+    where a PRODUCT that owns an app of that label coincides with the
+    template's first segment: the entry is that product's valve, and it names a
+    path this tree serves (`served`), not an app.
     """
-    return sorted(valved - installed - template)
+    return sorted(valved - installed - template - served)
 
 
 def test_a_valve_entry_for_an_app_that_is_gone_is_named() -> None:
@@ -177,6 +193,10 @@ def test_a_valve_entry_for_an_app_that_is_gone_is_named() -> None:
         "zzz_gone"
     ]
     assert homeless_valve_entries({"connections", "search"}, installed, template) == []
+    # A served first segment no app here is labelled — a product's coinciding
+    # label — is at home; the same word the template does not serve is not.
+    assert homeless_valve_entries({"notes"}, installed, template, served={"notes"}) == []
+    assert homeless_valve_entries({"notes"}, installed, template, served={"tags"}) == ["notes"]
 
 
 def test_every_path_ends_with_a_slash(document: dict[str, Any]) -> None:

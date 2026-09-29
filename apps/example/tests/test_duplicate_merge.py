@@ -28,11 +28,11 @@ from apps.accounts.services import create_user
 from apps.core.actor import Actor, actor_for, system_actor
 from apps.core.models import Membership, Organization, Tenant
 from apps.core.services import add_membership, create_organization, root_organization
+from apps.djb_notes.tests.attach_specimen import attach as note_one
+from apps.djb_tags.tests.attach_specimen import attach as tag_one
 from apps.example.models import Widget, WidgetEntry
 from apps.example.services import create_widget, record_widget_entry
 from apps.files.tests.attach_specimen import attach as file_one
-from apps.notes.tests.attach_specimen import attach as note_one
-from apps.tags.tests.attach_specimen import attach as tag_one
 
 pytestmark = pytest.mark.django_db
 
@@ -260,7 +260,7 @@ def test_a_merge_repoints_the_attachments_and_leaves_a_read_only_tombstone(
     assert body(tombstone)["allowed_acts"] == []
 
     # The attachments answer through the survivor now.
-    notes = api.get("/api/v1/notes/", {"subject": f"widget:{survivor.pk}"})
+    notes = api.get("/api/v1/djb_notes/", {"subject": f"widget:{survivor.pk}"})
     assert notes.status_code == 200, notes.content
     assert len(body(notes)["items"]) == 1
     assert tag_names(api.get(f"{WIDGETS}{survivor.pk}/")) == ["Specimen"]

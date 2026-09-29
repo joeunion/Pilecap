@@ -16,9 +16,9 @@ from django.test import Client
 from apps.accounts.models import User
 from apps.core.actor import Actor
 from apps.core.models import Organization, Tenant
+from apps.djb_notes.services import create_note
+from apps.djb_tags.services import create_tag, create_tag_link
 from apps.example.models import Widget
-from apps.notes.services import create_note
-from apps.tags.services import create_tag, create_tag_link
 
 pytestmark = pytest.mark.django_db
 
@@ -41,7 +41,7 @@ def test_a_widget_takes_a_note_and_a_tag_and_answers_them(
     api.force_login(owner)
 
     detail = api.get(f"{WIDGETS_URL}{widget.pk}/")
-    notes = api.get("/api/v1/notes/", {"subject": subject})
+    notes = api.get("/api/v1/djb_notes/", {"subject": subject})
 
     assert detail.status_code == 200, detail.content
     assert [tag["name"] for tag in _body(detail)["tags"]] == ["Urgent"]

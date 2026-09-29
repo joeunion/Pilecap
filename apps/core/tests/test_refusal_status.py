@@ -90,8 +90,8 @@ PRE_RUNG_CODE_STATUS: dict[str, int] = {
     "merged": 409,
     # And a delete that named a survivor other rows were merged into.
     "merge_survivor": 409,
-    # `apps/imports`' whole-file refusal, declared `status=400` at its own
-    # `register_refusal` site (`apps/imports/services.py`) — pinned here by the
+    # `apps/djb_imports`' whole-file refusal, declared `status=400` at its own
+    # `register_refusal` site (`apps/djb_imports/services.py`) — pinned here by the
     # change that added the app to the template's partition, as the ones above
     # were by the changes that added them.
     "import_invalid": 400,
